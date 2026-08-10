@@ -77,3 +77,20 @@ pub fn pick<T>(real: T, broken: T) -> T {
 pub fn perform() -> bool {
     !active()
 }
+
+/// Declines to sabotage, because this machine cannot supply the failure
+/// condition the control needs.
+///
+/// Distinct from a check being unrunnable: the check itself runs and passes
+/// here, only its *control* is impossible -- a rig with one loopback link
+/// cannot permute a mapping, and one with no MIDI cannot make a MIDI-less
+/// profile declare a device. Reported separately so the two are not confused.
+#[macro_export]
+macro_rules! no_control_here {
+    ($($arg:tt)+) => {
+        return Err($crate::outcome::CheckError::Skipped(format!(
+            "[no usable control on this machine] {}",
+            format!($($arg)+)
+        )))
+    };
+}

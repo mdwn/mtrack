@@ -44,17 +44,8 @@ const MEASURE_TAKE: Duration = Duration::from_millis(1500);
 /// assertion alone would miss.
 pub async fn plays_a_song_to_completion() -> CheckOutcome {
     crate::runner::require_area("playback")?;
-    // 0.8s: comfortably seen as playing by the 100ms readiness poll, but over
-    // before the third 400ms status reading, so readings.len() >= 3 fails.
-    // 1.6s was wrong in the other direction -- it yielded four readings and the
-    // assertion passed.
     let project = ProjectBuilder::new()
-        .songs(vec![SongSpec::tones(
-            "Short Tone",
-            "short-tone",
-            2,
-            crate::sabotage::pick(4.0, 0.8),
-        )])
+        .songs(vec![SongSpec::tones("Short Tone", "short-tone", 2, 4.0)])
         .build()?;
     let server = Server::start(&project).await?;
     let mut client = Client::connect(&server).await?;
@@ -63,7 +54,11 @@ pub async fn plays_a_song_to_completion() -> CheckOutcome {
     client.wait_until_playing(Duration::from_secs(10)).await?;
 
     let mut readings = Vec::new();
-    for _ in 0..6 {
+    // Sampling fewer times than the assertion requires is deterministic. Tuning
+    // the song duration instead was a coin flip -- 0.3s could end before the
+    // readiness poll saw it and 1.6s yielded enough readings to pass, so the
+    // control was wrong in both directions before this.
+    for _ in 0..crate::sabotage::pick(6, 2) {
         tokio::time::sleep(Duration::from_millis(400)).await;
         let status = client.status().await?;
         if !status.playing {
@@ -230,7 +225,9 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
     // Rotating a mapping needs at least two links; with one, the sabotaged
     // mapping equals the real one and the control is a no-op.
     if crate::sabotage::active() && outputs.len() < 2 {
-        skip!("only one loopback link, so the routing mapping cannot be permuted");
+        crate::no_control_here!(
+            "only one loopback link, so the routing mapping cannot be permuted"
+        );
     }
 
     let song = SongSpec::tones("Routing", "routing", outputs.len(), 12.0);

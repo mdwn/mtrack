@@ -25,8 +25,7 @@ use crate::client::Client;
 use crate::outcome::CheckOutcome;
 use crate::project::{ProfileSpec, ProjectBuilder, Subsystem};
 use crate::server::Server;
-use crate::{check, check_eq, fail, skip};
-use mtrack::proto::player::v1::PlayRequest;
+use crate::{check, check_eq, fail};
 
 /// How long to watch a deliberately-broken subsystem before concluding it
 /// degraded rather than misbehaved.
@@ -67,7 +66,9 @@ pub async fn absent_midi_is_skipped_not_fatal() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
     if crate::sabotage::active() && Capabilities::get().midi_out.is_none() {
-        skip!("this machine has no MIDI device, so making the profile declare one is a no-op");
+        crate::no_control_here!(
+            "this machine has no MIDI device, so making the profile declare one is a no-op"
+        );
     }
     profile.midi = crate::sabotage::pick(Subsystem::Absent, Subsystem::Detected);
 
@@ -133,7 +134,9 @@ pub async fn bogus_midi_device_degrades_gracefully() -> CheckOutcome {
     // Same no-op as its sibling above: where no MIDI device exists, render_midi
     // returns early and the sabotaged profile is byte-identical.
     if crate::sabotage::active() && Capabilities::get().midi_out.is_none() {
-        skip!("this machine has no MIDI device, so making the profile declare one is a no-op");
+        crate::no_control_here!(
+            "this machine has no MIDI device, so making the profile declare one is a no-op"
+        );
     }
     profile.midi = crate::sabotage::pick(
         Subsystem::Bogus("e2e-nonexistent-midi-device".to_string()),
@@ -230,12 +233,29 @@ pub async fn first_profile_wins() -> CheckOutcome {
         // exist and the player fails to boot -- the control would then die
         // before this check's assertion.
         let wanted = caps.audio_out.as_ref().map(|d| d.max_channels).unwrap_or(0);
+        // render_audio also pins the *selected* device's rate into every
+        // profile, so a decoy that cannot play it dies at startup for a reason
+        // unrelated to which profile won.
+        let pinned: Option<u32> = caps
+            .audio_out
+            .as_ref()
+            .filter(|d| !d.sample_rates.is_empty() && !d.sample_rates.contains(&44_100))
+            .and_then(|d| {
+                if d.sample_rates.contains(&48_000) {
+                    Some(48_000)
+                } else {
+                    d.sample_rates.iter().copied().max()
+                }
+            });
         match caps.all_audio_out.iter().find(|d| {
-            Some(&d.name) != caps.audio_out.as_ref().map(|s| &s.name) && d.max_channels >= wanted
+            Some(&d.name) != caps.audio_out.as_ref().map(|s| &s.name)
+                && d.max_channels >= wanted
+                && pinned.is_none_or(|rate| d.sample_rates.contains(&rate))
         }) {
             Some(other) => Subsystem::Named(other.name.clone()),
-            None => skip!(
-                "no alternative output with at least {wanted} channels, so no usable decoy exists"
+            None => crate::no_control_here!(
+                "no alternative output matching {wanted} channels and the pinned rate, so no \
+                 usable decoy exists"
             ),
         }
     } else {
@@ -264,14 +284,15 @@ pub async fn controllers_restart_while_idle() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let project = crate::checks::standard_project()?;
     let server = Server::start(&project).await?;
-    let mut client = Client::connect(&server).await?;
+    let client = Client::connect(&server).await?;
 
-    if crate::sabotage::active() {
-        client.grpc().play(PlayRequest {}).await?;
-        client.wait_until_playing(Duration::from_secs(10)).await?;
-    }
+    // Ask an endpoint that does not exist, so the restart request itself fails.
+    // The previous control started playback and bet that restart-while-playing
+    // is rejected -- which worked only because a live player defect made it so.
+    // A control that breaks when the subject is fixed points the wrong way.
+    let endpoint = crate::sabotage::pick("controllers/restart", "controllers/restart-nonexistent");
     let (status, body) = client
-        .send_text(reqwest::Method::POST, "controllers/restart", String::new())
+        .send_text(reqwest::Method::POST, endpoint, String::new())
         .await?;
     check!(
         status.is_success(),

@@ -22,6 +22,7 @@
 #   ./scripts/hardware-test.sh                  # everything available
 #   ./scripts/hardware-test.sh --only lighting  # one area or case-name filter
 #   ./scripts/hardware-test.sh --list           # what would run, then exit
+#   ./scripts/hardware-test.sh --self-test      # prove every check can fail
 #   ./scripts/hardware-test.sh --repeat 20      # repeat, to hunt intermittents
 #   ./scripts/hardware-test.sh --rediscover     # re-measure cabling, ignore cache
 #   ./scripts/hardware-test.sh --probe-all      # probe every device pair, not just the selected one
@@ -36,6 +37,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FILTER=""
 REPEAT=1
 LIST_ONLY=false
+SELF_TEST=false
 SKIP_BUILD=false
 
 usage() {
@@ -74,6 +76,7 @@ while [[ $# -gt 0 ]]; do
             REPEAT="$2"; shift; shift ;;
         --json)       need_value "$@"; JSON_OUT="$2"; shift; shift ;;
         --list)       LIST_ONLY=true; shift ;;
+        --self-test)  SELF_TEST=true; shift ;;
         --rediscover) export MTRACK_E2E_REDISCOVER=1; shift ;;
         --probe-all)  export MTRACK_E2E_PROBE_ALL=1; shift ;;
         --no-build)   SKIP_BUILD=true; shift ;;
@@ -119,6 +122,10 @@ ARGS=()
 
 if [[ "$LIST_ONLY" == "true" ]]; then
     exec "$HARNESS" --list "${ARGS[@]}"
+fi
+
+if [[ "$SELF_TEST" == "true" ]]; then
+    exec "$HARNESS" --self-test "${ARGS[@]}"
 fi
 
 exec "$HARNESS" "${ARGS[@]}"

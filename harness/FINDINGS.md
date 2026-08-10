@@ -132,6 +132,15 @@ world-level version killed startup before the assertion ran, and `--self-test`
 prints how many of its passes rest on them. Read that number alongside the
 total.
 
+**Proof is opt-in.** Only the assertion macros (`check!`, `check_eq!`, `fail!`)
+and constructors named `*_assertion` may mark a failure as coming from a
+check's own assertion. Every shared helper -- log checks, readiness waits, RPC
+conversions, `inconclusive!` -- produces a pre-assertion value and *cannot*
+claim a control worked. Three review rounds running found helpers minting proof
+for controls that never reached the assertion, each time fixed instance by
+instance; the invariant is stated in `outcome.rs` so the class is closed rather
+than the examples.
+
 Only an assertion counts. Failures carry a `from_assertion` flag, because a
 control that dies inside `Server::start` reports `Failed` and would otherwise
 be indistinguishable from one that drove its assertion to failure -- the same

@@ -278,6 +278,18 @@ impl CheckResult {
     }
 }
 
+// INVARIANT: only the assertion macros below (`check!`, `check_eq!`, `fail!`)
+// and constructors named `*_assertion` may set `from_assertion`. Every shared
+// helper -- log checks, readiness waits, RPC conversions, `inconclusive!` --
+// must produce a `before_assertion` value.
+//
+// The reason is empirical. Three review rounds in a row found helpers minting
+// proof for controls that never reached the check's own assertion, and each
+// time the fix addressed the instances named rather than the class. Making
+// proof opt-in, and stating it here, turns a recurring finding into a rule: a
+// helper cannot accidentally claim a control worked, because it has no way to
+// say so.
+
 /// Reports a defect when `cond` is false.
 ///
 /// The counterpart to `assert!`, except it yields a value instead of
@@ -337,8 +349,28 @@ macro_rules! skip {
 }
 
 /// Ran, but the measurement cannot be trusted.
+///
+/// Does *not* count as proof in `--self-test`: most uses report that something
+/// went wrong before the assertion could be evaluated (an interface underrun,
+/// an unmet precondition), which says nothing about whether the check works.
+/// Where an inconclusive verdict genuinely *is* the check's conclusion, use
+/// [`inconclusive_verdict!`].
 #[macro_export]
 macro_rules! inconclusive {
+    ($($arg:tt)+) => {
+        return Err($crate::outcome::CheckError::Inconclusive {
+            message: format!($($arg)+),
+            from_assertion: false,
+        })
+    };
+}
+
+/// The check's own conclusion is that the measurement cannot be trusted.
+///
+/// For checks whose strongest possible verdict is "I cannot trust this" rather
+/// than "this is broken". Counts as proof in `--self-test`.
+#[macro_export]
+macro_rules! inconclusive_verdict {
     ($($arg:tt)+) => {
         return Err($crate::outcome::CheckError::inconclusive_assertion(format!($($arg)+)))
     };

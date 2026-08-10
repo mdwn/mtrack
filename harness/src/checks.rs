@@ -46,8 +46,8 @@ macro_rules! entry {
     };
 }
 
-/// Checks whose sabotage substitutes the value the assertion *reads*, rather
-/// than changing the world the assertion observes.
+/// Checks whose sabotage breaks the *world* the assertion observes, rather than
+/// substituting the value it reads.
 ///
 /// The distinction matters and is easy to lose. A world-level control breaks an
 /// input and requires the check to notice; a predicate-level one swaps the
@@ -63,30 +63,44 @@ macro_rules! entry {
 /// at a bogus device and timed out during startup, never reaching the assertion.
 /// They are listed so the self-test can say how much of its score rests on the
 /// weaker evidence rather than burying it in a single number.
-const PREDICATE_LEVEL: &[&str] = &[
-    "advertised_devices_are_openable",
-    "selected_output_is_real_hardware",
-    "player_starts_against_detected_hardware",
-    "generated_project_loads_all_songs",
-    "song_midi_notes_are_transmitted",
-    "beat_clock_runs_at_the_song_tempo",
-    "configured_midi_device_transmits",
-    "midi_beat_clock_persists",
-    "show_written_via_api_is_readable",
+const WORLD_LEVEL: &[&str] = &[
+    "plays_a_song_to_completion",
+    "stop_halts_playback",
+    "playlist_navigation_moves_between_songs",
+    "tracks_route_to_their_mapped_channels",
+    "beat_clock_is_silent_when_disabled",
+    "stale_checksum_is_rejected",
+    "active_playlist_persists_across_restart",
+    "absent_midi_is_skipped_not_fatal",
+    "absent_dmx_is_skipped_not_fatal",
+    "bogus_midi_device_degrades_gracefully",
+    "bogus_audio_device_degrades_gracefully",
+    "first_profile_wins",
+    "controllers_restart_while_idle",
+    "generated_show_passes_validation",
+    "malformed_show_is_rejected",
+    "song_lighting_produces_cues",
+    "lighting_effects_activate_during_playback",
 ];
 
 /// Whether this check's negative control only substitutes the asserted value.
+///
+/// Unlisted means predicate-level, so a new check -- or one whose control is
+/// later weakened -- is counted as weak evidence until someone says otherwise.
+/// Listing the weak ones instead would let an omission silently overstate the
+/// score, which is the exact failure this accounting exists to prevent.
 pub fn is_predicate_level(name: &str) -> bool {
-    PREDICATE_LEVEL.contains(&name)
+    !WORLD_LEVEL.contains(&name)
 }
 
-/// Names in [`PREDICATE_LEVEL`] that no longer match a registered check.
+/// Names in [`WORLD_LEVEL`] that no longer match a registered check.
 ///
-/// A stale entry would quietly overstate the self-test's strength, so it is
-/// reported rather than ignored.
+/// A stale entry credits a check that no longer exists, so it is reported.
+/// The opposite direction needs no check: an unlisted name is already treated
+/// as the weaker class.
 pub fn stale_predicate_entries() -> Vec<&'static str> {
     let names: Vec<&str> = all().into_iter().map(|c| c.name).collect();
-    PREDICATE_LEVEL
+    WORLD_LEVEL
         .iter()
         .filter(|p| !names.contains(p))
         .copied()

@@ -248,6 +248,7 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
     let mut cannot_fail = Vec::new();
     let mut proved = 0;
     let mut not_runnable = Vec::new();
+    let mut no_control = Vec::new();
     let mut predicate_level = 0;
     let mut unproven: Vec<(&str, &str)> = Vec::new();
 
@@ -313,12 +314,17 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
             // The machine cannot run this check at all, so the control says
             // nothing either way.
             Outcome::Skipped | Outcome::Blocked => {
-                println!(
-                    "  not run here {:<46} {}",
-                    check.name,
-                    result.detail.as_deref().unwrap_or("")
-                );
-                not_runnable.push(check.name);
+                let detail = result.detail.as_deref().unwrap_or("");
+                // The check itself runs here; only its control is impossible.
+                // Filing that under "not runnable" would read as missing
+                // hardware rather than missing verification.
+                if detail.starts_with("[no usable control") {
+                    println!("  NO CONTROL   {:<46} {}", check.name, detail);
+                    no_control.push(check.name);
+                } else {
+                    println!("  not run here {:<46} {detail}", check.name);
+                    not_runnable.push(check.name);
+                }
             }
             // The control broke the run before the assertion could be reached.
             // A check that crashes under sabotage has been shown to crash, not
@@ -351,6 +357,16 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
             not_runnable.len(),
             not_runnable.join(", ")
         );
+    }
+    if !no_control.is_empty() {
+        println!(
+            "\n  {} check(s) run here but have no usable control on this hardware:",
+            no_control.len()
+        );
+        for name in &no_control {
+            println!("    {name}");
+        }
+        println!("  They pass in a normal run; nothing here proves they could fail.");
     }
     if !unproven.is_empty() {
         println!(

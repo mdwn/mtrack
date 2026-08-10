@@ -317,7 +317,7 @@ impl Server {
         if unexpected.is_empty() {
             Ok(())
         } else {
-            Err(crate::outcome::CheckError::assertion(format!(
+            Err(crate::outcome::CheckError::before_assertion(format!(
                 "mtrack logged {} unexpected error(s):\n{}",
                 unexpected.len(),
                 unexpected.join("\n")
@@ -348,7 +348,7 @@ impl Server {
         if ignored.is_empty() {
             Ok(())
         } else {
-            Err(crate::outcome::CheckError::assertion(format!(
+            Err(crate::outcome::CheckError::before_assertion(format!(
                 "mtrack ignored part of the generated config:\n{}",
                 ignored.join("\n")
             )))
