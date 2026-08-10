@@ -66,34 +66,47 @@ pub(crate) fn list_profile_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Player {
     /// The controller configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
     controller: Option<Controller>,
     /// The controllers configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
     controllers: Option<Vec<Controller>>,
     /// The audio device to use. (legacy)
+    #[serde(skip_serializing_if = "Option::is_none")]
     audio_device: Option<String>,
     /// The audio configuration section. (legacy)
+    #[serde(skip_serializing_if = "Option::is_none")]
     audio: Option<Audio>,
     /// The track mappings for the player. (legacy, now optional when using profiles)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     track_mappings: Option<TrackMappings>,
     /// The MIDI device to use. (legacy)
+    #[serde(skip_serializing_if = "Option::is_none")]
     midi_device: Option<String>,
     /// The MIDI configuration section. (legacy)
+    #[serde(skip_serializing_if = "Option::is_none")]
     midi: Option<Midi>,
     /// The DMX configuration. (legacy)
+    #[serde(skip_serializing_if = "Option::is_none")]
     dmx: Option<Dmx>,
     /// Audio trigger configuration. (legacy, now in profiles)
+    #[serde(skip_serializing_if = "Option::is_none")]
     trigger: Option<TriggerConfig>,
     /// Unified hardware profiles, tried in priority order.
     /// Each profile contains audio (optional), MIDI (optional), and DMX (optional) configs.
+    #[serde(skip_serializing_if = "Option::is_none")]
     profiles: Option<Vec<Profile>>,
     /// Directory of external profile YAML files, loaded and prepended before inline profiles.
+    #[serde(skip_serializing_if = "Option::is_none")]
     profiles_dir: Option<String>,
     /// Events to emit to report status out via MIDI.
+    #[serde(skip_serializing_if = "Option::is_none")]
     status_events: Option<StatusEvents>,
     /// The path to the playlist.
+    #[serde(skip_serializing_if = "Option::is_none")]
     playlist: Option<String>,
     /// Directory containing playlist YAML files.
+    #[serde(skip_serializing_if = "Option::is_none")]
     playlists_dir: Option<String>,
     /// The active playlist name (persisted across restarts). Switching to
     /// "all_songs" is session-only and deliberately not stored here, so the
@@ -106,11 +119,13 @@ pub struct Player {
     #[serde(default)]
     samples: HashMap<String, SampleDefinition>,
     /// Path to external samples configuration file.
+    #[serde(skip_serializing_if = "Option::is_none")]
     samples_file: Option<String>,
     /// Sample trigger mappings.
     #[serde(default)]
     sample_triggers: Vec<SampleTrigger>,
     /// Maximum number of concurrent sample voices globally.
+    #[serde(skip_serializing_if = "Option::is_none")]
     max_sample_voices: Option<u32>,
     /// Player-wide metronome defaults. Songs enable the metronome with a
     /// `metronome:` block; sounds not overridden there fall back to these.
@@ -648,6 +663,17 @@ impl Player {
     /// Returns a mutable reference to the profiles list.
     pub fn profiles_mut(&mut self) -> &mut Option<Vec<Profile>> {
         &mut self.profiles
+    }
+
+    /// The profiles as loaded, in declaration order and without hostname
+    /// filtering.
+    ///
+    /// Distinct from [`Player::profiles`], which filters to the ones that apply
+    /// to a given host. Persistence needs the unfiltered list, because when
+    /// profiles come from `profiles_dir` their position in this list is what
+    /// identifies the file each one came from.
+    pub fn profile_list(&self) -> Option<&[Profile]> {
+        self.profiles.as_deref()
     }
 
     /// Sets the inline sample definitions.

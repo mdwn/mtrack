@@ -29,6 +29,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Subsystem config edits now reach the profile that owns them** ([#358](https://github.com/mdwn/mtrack/issues/358)):
+  `update_audio`, `update_midi` and `update_dmx` — the gRPC `UpdateMidi` family, the MCP tools, and
+  `PUT /api/config/{audio,midi,dmx}` — wrote to the top-level `audio:`/`midi:`/`dmx:` blocks, which
+  the loader *discards* as soon as `profiles:` is present. The value came back from the API, showed
+  up in the served config, was covered by the checksum, and was thrown away on the next restart,
+  with nothing but a log line to say so. Edits now go to the active profile whenever the config has
+  profiles, and to the legacy top-level blocks only when it has none. An audio update keeps the
+  profile's track mappings and gains rather than replacing the whole block, so an edit can no longer
+  silence a rig by wiping its routing.
+
+- **`profiles_dir` layouts are no longer collapsed into the main config**: with profiles loaded from
+  a directory, every config mutation re-serialized the in-memory copy of them back into
+  `mtrack.yaml`, inlining a duplicate of every profile into the one file the layout exists to avoid.
+  The main config is now written without that copy, and only the profile files an edit actually
+  touched are rewritten — so unrelated profile files keep their comments. Adding or removing a
+  profile through the API is refused on a directory layout, where list position is the only thing
+  identifying a profile's file, instead of being written to a guessed destination. A mutation that
+  cannot be persisted is now rolled back in memory rather than being served until the next restart.
+  Unset optional fields are also no longer expanded to explicit `~` on every write.
+
 - **`static` no longer discards its level on fixtures without a dimmer channel**: the level was
   passed through only when its name matched a real DMX channel, so on an RGB-only fixture (an
   Astera PixelBrick, say) both `intensity:` and `dimmer:` were dropped and the colour rendered

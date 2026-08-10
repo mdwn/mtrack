@@ -55,9 +55,14 @@ confirming before fixing.
 
 ---
 
-## 2. `UpdateMidi` persists to a location the loader discards
+## 2. `UpdateMidi` persists to a location the loader discards — FIXED
 
-**Tracked as [#358](https://github.com/mdwn/mtrack/issues/358).**
+**Tracked as [#358](https://github.com/mdwn/mtrack/issues/358). Fixed in
+[#344](https://github.com/mdwn/mtrack/pull/344);** `midi_beat_clock_persists`
+passes on the test rig. Subsystem updates now route to the active profile,
+`profiles_dir` layouts are no longer inlined into the main config, and only the
+profile files an edit touches are rewritten. The description below is kept as
+the record of what the check found.
 
 **Check:** `midi_beat_clock_persists` (area `midi-config`)
 
