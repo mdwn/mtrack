@@ -203,7 +203,7 @@ pub(super) async fn put_profile(
     let fp = file_path;
     let yaml_owned = yaml;
     spawn_blocking_io("write profile", move || {
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        crate::util::create_dir_all(&dir).map_err(|e| e.to_string())?;
         config_io::atomic_write(&fp, &yaml_owned)
     })
     .await?;

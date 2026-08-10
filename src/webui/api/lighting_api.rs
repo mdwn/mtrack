@@ -657,7 +657,8 @@ fn load_light_files_from_dir(
 /// Ensures a lighting directory exists (sync version for use inside spawn_blocking).
 fn ensure_lighting_dir_sync(dir: &std::path::Path) -> Result<(), String> {
     if !dir.exists() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create directory: {}", e))?;
+        crate::util::create_dir_all(dir)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
     }
     Ok(())
 }

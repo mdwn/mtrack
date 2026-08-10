@@ -17,9 +17,15 @@ use std::path::Path;
 
 use crate::config;
 use crate::lighting::parser::parse_light_shows;
+use crate::util;
 
 /// Atomically writes content to a file by writing to a temporary file first,
 /// then renaming it into place.
+///
+/// The rename swaps in a new inode, so the temp file first adopts the ownership
+/// and mode of whatever it is replacing — otherwise a single run under `sudo`
+/// would leave every config file `root:root` and mode 0600. See
+/// [`crate::util::preserve_ownership`].
 pub fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     let parent = path
         .parent()
@@ -30,6 +36,9 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
 
     tmp.write_all(content.as_bytes())
         .map_err(|e| format!("Failed to write temp file: {}", e))?;
+
+    util::preserve_ownership(tmp.as_file(), path)
+        .map_err(|e| format!("Failed to set ownership of {}: {}", path.display(), e))?;
 
     tmp.persist(path)
         .map_err(|e| format!("Failed to rename temp file to {}: {}", path.display(), e))?;

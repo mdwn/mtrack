@@ -58,6 +58,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot be persisted is now rolled back in memory rather than being served until the next restart.
   Unset optional fields are also no longer expanded to explicit `~` on every write.
 
+- **Saving a config file no longer changes who owns it**: mtrack rewrites its own configuration —
+  profiles, playlists, song YAML, light shows, the song cache — by writing a temp file and renaming
+  it over the original. A rename swaps in a new inode, so the file that landed on disk carried the
+  temp file's ownership and mode (whoever ran mtrack, mode 0600) rather than the ones it had a
+  moment earlier. One `sudo mtrack` to debug something was enough to leave the selected profile
+  `root:root` and mode 0600 — after which running mtrack normally could no longer read or write it,
+  with no way back short of a manual `chown`. Replacement files now adopt the ownership and mode of
+  the file they replace, and files and directories mtrack creates adopt them from the directory
+  they land in, so a privileged run leaves the config exactly as it found it. Handing a file to
+  another user needs privilege, so when an unprivileged process edits a file owned by someone else
+  the write still succeeds and the mismatch is logged.
+
 - **`static` no longer discards its level on fixtures without a dimmer channel**: the level was
   passed through only when its name matched a real DMX channel, so on an RGB-only fixture (an
   Astera PixelBrick, say) both `intensity:` and `dimmer:` were dropped and the colour rendered
