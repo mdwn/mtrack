@@ -145,8 +145,20 @@ impl Report {
             .iter()
             .filter(|r| r.outcome == Outcome::Inconclusive)
             .collect();
+        // Only reachable from a sabotage-guarded call site today, but the
+        // constructor is public: an unguarded use would otherwise drop the
+        // check from every section while still counting toward the total.
+        let no_control: Vec<&CheckResult> = self
+            .results
+            .iter()
+            .filter(|r| r.outcome == Outcome::NoControlHere)
+            .collect();
 
-        if unverifiable.is_empty() && blocked.is_empty() && inconclusive.is_empty() {
+        if unverifiable.is_empty()
+            && blocked.is_empty()
+            && inconclusive.is_empty()
+            && no_control.is_empty()
+        {
             return;
         }
 
@@ -179,6 +191,18 @@ impl Report {
             }
         }
 
+        if !no_control.is_empty() {
+            println!("\n{}", "-".repeat(72));
+            println!(
+                "  Runs here, but has no usable negative control ({})",
+                no_control.len()
+            );
+            println!("{}", "-".repeat(72));
+            for result in no_control {
+                println!("  {}\n      {}", result.name, detail_of(result));
+            }
+        }
+
         if !inconclusive.is_empty() {
             println!("\n{}", "-".repeat(72));
             println!(
@@ -198,6 +222,7 @@ impl Report {
         let skipped = self.count(Outcome::Skipped);
         let blocked = self.count(Outcome::Blocked);
         let inconclusive = self.count(Outcome::Inconclusive);
+        let no_control = self.count(Outcome::NoControlHere);
         let harness = self.count(Outcome::HarnessError);
 
         println!("\n{}", "=".repeat(72));
@@ -216,6 +241,9 @@ impl Report {
         }
         if inconclusive > 0 {
             print!(", {inconclusive} inconclusive");
+        }
+        if no_control > 0 {
+            print!(", {no_control} without a control");
         }
         println!(" (of {} checks)", self.results.len());
 

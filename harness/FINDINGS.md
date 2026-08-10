@@ -133,13 +133,14 @@ prints how many of its passes rest on them. Read that number alongside the
 total.
 
 **Proof is opt-in.** Only the assertion macros (`check!`, `check_eq!`, `fail!`)
-and constructors named `*_assertion` may mark a failure as coming from a
-check's own assertion. Every shared helper -- log checks, readiness waits, RPC
-conversions, `inconclusive!` -- produces a pre-assertion value and *cannot*
-claim a control worked. Three review rounds running found helpers minting proof
-for controls that never reached the assertion, each time fixed instance by
-instance; the invariant is stated in `outcome.rs` so the class is closed rather
-than the examples.
+and constructors named `*_assertion` mark a failure as coming from a check's
+own assertion; shared helpers -- log checks, readiness waits, RPC conversions,
+`inconclusive!` -- produce pre-assertion values. The flag is private to
+`outcome`, so it cannot be set by struct literal, which is how `inconclusive!`
+set it wrongly for three rounds. That closes the accidental case. It does not
+close the deliberate one: the constructors are public, and
+`Client::wait_for_status` takes an `assertion` parameter by design. A helper
+claiming proof must now say so in its own source.
 
 Only an assertion counts. Failures carry a `from_assertion` flag, because a
 control that dies inside `Server::start` reports `Failed` and would otherwise

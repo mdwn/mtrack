@@ -58,11 +58,18 @@ macro_rules! entry {
 /// whatever mtrack does -- a predicate-level control would still score
 /// "assertion fired", because it replaces the value after the read.
 ///
-/// These are deliberate trade-offs, not oversights. `configured_midi_device_transmits`
-/// was moved here precisely because its world-level control pointed the profile
-/// at a bogus device and timed out during startup, never reaching the assertion.
-/// They are listed so the self-test can say how much of its score rests on the
-/// weaker evidence rather than burying it in a single number.
+/// The weaker class is the *default*: anything absent from this list counts as
+/// predicate-level, so a new check, or one whose control is later weakened, is
+/// treated as weak evidence until someone deliberately promotes it. Listing the
+/// weak ones instead would let an omission overstate the score.
+///
+/// Absences are usually deliberate trade-offs.
+/// `configured_midi_device_transmits` is predicate-level because its
+/// world-level control pointed the profile at a bogus device and timed out
+/// during startup, never reaching the assertion;
+/// `plays_a_song_to_completion` because making a transport clock misbehave
+/// needs a broken player. The self-test prints how many of its passes rest on
+/// this class rather than burying it in one number.
 const WORLD_LEVEL: &[&str] = &[
     "stop_halts_playback",
     "playlist_navigation_moves_between_songs",
@@ -75,7 +82,6 @@ const WORLD_LEVEL: &[&str] = &[
     "bogus_midi_device_degrades_gracefully",
     "bogus_audio_device_degrades_gracefully",
     "first_profile_wins",
-    "controllers_restart_while_idle",
     "generated_show_passes_validation",
     "malformed_show_is_rejected",
     "song_lighting_produces_cues",

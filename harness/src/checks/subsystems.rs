@@ -236,13 +236,22 @@ pub async fn first_profile_wins() -> CheckOutcome {
         // device, so a narrower decoy maps tracks to channels that do not
         // exist and the player fails to boot -- the control would then die
         // before this check's assertion.
-        let wanted = caps.audio_out.as_ref().map(|d| d.max_channels).unwrap_or(0);
+        // Mirrors render_audio: it clamps the channel count to a minimum of two
+        // and pins a rate only for a *raw* device, so screening on anything else
+        // rejects usable decoys and admits unusable ones.
+        let wanted = caps
+            .audio_out
+            .as_ref()
+            .map(|d| d.max_channels)
+            .unwrap_or(2)
+            .max(2);
         // render_audio also pins the *selected* device's rate into every
         // profile, so a decoy that cannot play it dies at startup for a reason
         // unrelated to which profile won.
         let pinned: Option<u32> = caps
             .audio_out
             .as_ref()
+            .filter(|d| d.name.contains("hw:CARD=") && !d.name.contains("plughw:"))
             .filter(|d| !d.sample_rates.is_empty() && !d.sample_rates.contains(&44_100))
             .and_then(|d| {
                 if d.sample_rates.contains(&48_000) {
@@ -290,10 +299,6 @@ pub async fn controllers_restart_while_idle() -> CheckOutcome {
     let server = Server::start(&project).await?;
     let client = Client::connect(&server).await?;
 
-    // Ask an endpoint that does not exist, so the restart request itself fails.
-    // The previous control started playback and bet that restart-while-playing
-    // is rejected -- which worked only because a live player defect made it so.
-    // A control that breaks when the subject is fixed points the wrong way.
     let endpoint = "controllers/restart";
     let (status, body) = client
         .send_text(reqwest::Method::POST, endpoint, String::new())
@@ -308,9 +313,14 @@ pub async fn controllers_restart_while_idle() -> CheckOutcome {
     // failure here is a defect in the player -- not, as it was previously
     // reported, an error in the harness.
     // Sabotage the *reconnect*, which is the assertion this check exists for --
-    // "controllers must come back, or control is silently lost". Breaking the
-    // restart request instead only proved the status check above, leaving the
-    // interesting assertion unexercised.
+    // "controllers must come back, or control is silently lost".
+    //
+    // Weaker than a predicate-level substitution: the error is injected without
+    // calling `Client::connect` at all, so it proves the match arm and `fail!`
+    // render, not that a real failed reconnect is detected. Making a genuine
+    // reconnect fail needs a second server or a wrong address, which is the
+    // improvement to make here. Listed as predicate-level in the meantime, so
+    // the score does not credit it as strong evidence.
     let reconnect = if crate::sabotage::active() {
         Err("sabotage: reconnect not attempted".into())
     } else {

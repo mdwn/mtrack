@@ -29,12 +29,15 @@ use std::time::Duration;
 
 /// A defect report, and whether the check's own assertion produced it.
 ///
-/// The flag is private and settable only through the constructors below, so the
-/// invariant is held by the compiler rather than by a comment. Three review
-/// rounds running found shared helpers minting proof for controls that never
-/// reached the check's assertion; each was fixed instance by instance while the
-/// rule stayed advisory. Now a helper cannot claim a control worked, because it
-/// has no way to say so.
+/// The flag is private, so it cannot be set by writing a struct literal -- which
+/// is how `inconclusive!` set it wrongly for three rounds. That stops the
+/// accidental case, and only that: [`CheckError::assertion`] is public and the
+/// assertion macros are exported, so a helper that deliberately calls one can
+/// still mint proof. `Client::wait_for_status` does exactly that, on purpose,
+/// via its `assertion` parameter.
+///
+/// So the rule is enforced against accidents, not against intent. A helper that
+/// claims proof must now say so in its own source, where a reader will see it.
 #[derive(Debug)]
 pub struct Defect {
     message: String,
