@@ -48,11 +48,16 @@ COPY .git/ .git/
 COPY src/ src/
 # Required to parse the manifest: Cargo.toml declares the mixer bench.
 COPY benches/ benches/
+# Likewise: Cargo.toml declares a workspace with the harness as a member, so its
+# manifest must exist for the workspace to load. Only the manifest is copied --
+# the harness is a hardware-verification tool with no place in this image, and
+# the build below is scoped to mtrack so its sources are never needed.
+COPY harness/Cargo.toml harness/Cargo.toml
 
 # Build the Svelte frontend (embedded into the Rust binary).
 RUN cd src/webui/svelte && npm ci && buf generate && npm run build
 
-RUN cargo build --release
+RUN cargo build --release -p mtrack --bin mtrack
 
 # --- Test stage ---
 FROM ubuntu:24.04
