@@ -193,6 +193,23 @@
     </label>
   </div>
 
+  <div class="field">
+    <label for="midi-persist-tempo">
+      <input
+        id="midi-persist-tempo"
+        type="checkbox"
+        checked={midi.persist_tempo ?? false}
+        disabled={!(midi.beat_clock ?? false)}
+        onchange={(e) => {
+          const checked = (e.target as HTMLInputElement).checked;
+          setOrDelete("persist_tempo", checked || undefined);
+        }}
+      />
+      {$t("midi.persistTempo")}
+      <Tooltip text={$t("tooltips.midi.persistTempo")} />
+    </label>
+  </div>
+
   <div class="midi-to-dmx-section">
     <div class="field-header">
       <span class="field-label"

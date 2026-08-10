@@ -51,6 +51,11 @@ impl AudioConfig {
         }
     }
 
+    /// Replaces the device settings, leaving track mappings and gains intact.
+    pub fn set_audio(&mut self, audio: Audio) {
+        self.audio = audio;
+    }
+
     /// Returns the per-track gains in dB.
     pub fn track_gains(&self) -> &IndexMap<String, f32> {
         &self.track_gains
@@ -195,9 +200,38 @@ impl Profile {
         self.midi.as_ref()
     }
 
+    /// Replaces the MIDI configuration.
+    pub fn set_midi(&mut self, midi: Option<Midi>) {
+        self.midi = midi;
+    }
+
     /// Returns the DMX configuration.
     pub fn dmx(&self) -> Option<&Dmx> {
         self.dmx.as_ref()
+    }
+
+    /// Replaces the DMX configuration.
+    pub fn set_dmx(&mut self, dmx: Option<Dmx>) {
+        self.dmx = dmx;
+    }
+
+    /// Replaces the audio device settings, keeping this profile's track
+    /// mappings and gains.
+    ///
+    /// A profile's `audio` is an [`AudioConfig`]: the device settings plus the
+    /// routing and gains that belong to this machine. An update carries only
+    /// the device settings, so overwriting wholesale would silently wipe the
+    /// routing -- which is the difference between a rig that plays and one that
+    /// is silent. Clearing audio entirely (`None`) does discard them, because
+    /// there is then no audio config to hold them.
+    pub fn set_audio(&mut self, audio: Option<Audio>) {
+        match (audio, self.audio.as_mut()) {
+            (Some(audio), Some(existing)) => existing.set_audio(audio),
+            (Some(audio), None) => {
+                self.audio = Some(AudioConfig::new(audio, IndexMap::new()));
+            }
+            (None, _) => self.audio = None,
+        }
     }
 
     /// Returns a mutable reference to the DMX configuration.

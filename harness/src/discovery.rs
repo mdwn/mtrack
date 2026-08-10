@@ -162,11 +162,19 @@ impl Discovery {
     }
 
     /// A MIDI port pair usable as a loopback, preferring one where both
-    /// directions are the same port.
+    /// directions are the same port, and hardware over the OS through-port.
+    ///
+    /// Hardware first because the through-port loops back with no cable
+    /// attached: on a rig that has both, it is the one port whose success says
+    /// nothing about the interface the operator actually uses. Preferred
+    /// against rather than excluded -- a machine with only the through-port
+    /// still verifies mtrack's MIDI generation, and every result says which
+    /// path it ran on.
     pub fn midi_pair(&self) -> Option<&MidiLoopback> {
         self.midi
             .iter()
-            .find(|l| l.out_port == l.in_port)
+            .find(|l| l.out_port == l.in_port && !is_through_port(&l.out_port))
+            .or_else(|| self.midi.iter().find(|l| l.out_port == l.in_port))
             .or_else(|| self.midi.first())
     }
 
@@ -425,6 +433,17 @@ fn probe_all_devices() -> bool {
 /// Manufacturer ID reserved for non-commercial use, so the probe's SysEx
 /// cannot be mistaken for a real device's message.
 const PROBE_SYSEX_ID: u8 = 0x7D;
+
+/// Whether a MIDI port is the OS's software through-port rather than an
+/// interface.
+///
+/// ALSA's is `Midi Through Port-0`; it loops back with no cable present. Matched
+/// on the full `midi through` rather than bare `through`, which would also claim
+/// any interface with the word in its name -- a "Passthrough 4x4" is real
+/// hardware and must not be demoted to a software port.
+pub fn is_through_port(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("midi through")
+}
 
 /// Probes every MIDI output port to see which input ports receive its traffic.
 ///

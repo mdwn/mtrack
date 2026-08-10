@@ -20,7 +20,7 @@
 //! the song's tempo or it is not.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use midir::{Ignore, MidiInput, MidiInputConnection};
 
@@ -35,7 +35,21 @@ pub const STOP: u8 = 0xFC;
 #[derive(Debug, Clone)]
 pub struct TimedMessage {
     /// Microseconds since the port was opened, as reported by the driver.
+    ///
+    /// Good for the *rate* of a continuous run of messages, and nothing else.
+    /// On ALSA it does not advance while no events are flowing: a Stop and the
+    /// Start of the next song a second later report the same value. Anything
+    /// measuring silence must use [`TimedMessage::at`], or it will measure zero
+    /// however long the silence was.
     pub micros: u64,
+    /// When the harness itself received the message.
+    ///
+    /// One monotonic clock that keeps running whether or not MIDI is arriving,
+    /// so gaps are real. Costs a syscall in the callback and carries the
+    /// scheduling delay between the wire and this process -- irrelevant at the
+    /// scale of a dropped clock, fatal for measuring inter-tick jitter, which is
+    /// what `micros` is for.
+    pub at: Instant,
     pub bytes: Vec<u8>,
 }
 
@@ -108,6 +122,7 @@ impl MidiCapture {
                     .expect("midi capture buffer poisoned")
                     .push(TimedMessage {
                         micros,
+                        at: Instant::now(),
                         bytes: bytes.to_vec(),
                     });
             },

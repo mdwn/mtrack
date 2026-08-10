@@ -109,6 +109,44 @@ impl PlaybackClock {
         self.inner.start_condvar.notify_all();
     }
 
+    /// Whether [`PlaybackClock::start`] has been called.
+    pub fn has_started(&self) -> bool {
+        *self.inner.start_mutex.lock().unwrap()
+    }
+
+    /// Waits for the start signal, giving up after `timeout`. Returns whether
+    /// the clock has started.
+    ///
+    /// For callers that must keep doing something while they wait rather than
+    /// blocking outright. The MIDI beat clock engine uses it to go on emitting
+    /// timing clocks at the held tempo during the gap between a play request
+    /// and every subsystem reporting ready -- otherwise the clock falls silent
+    /// for exactly as long as startup takes, which is the gap tempo
+    /// persistence exists to cover.
+    pub fn wait_for_start_or_cancel_until(&self, cancel: &CancelHandle, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut started = self.inner.start_mutex.lock().unwrap();
+        while !*started {
+            if cancel.is_cancelled() {
+                return false;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            // Still capped at 10ms so cancellation stays responsive even when
+            // the caller asks to wait much longer.
+            let wait = (deadline - now).min(Duration::from_millis(10));
+            let (guard, _) = self
+                .inner
+                .start_condvar
+                .wait_timeout(started, wait)
+                .unwrap();
+            started = guard;
+        }
+        true
+    }
+
     /// Blocks until the clock has been started (`elapsed() > ZERO`) or the
     /// cancel handle is cancelled. Uses a condvar instead of spinning.
     pub fn wait_for_start_or_cancel(&self, cancel: &CancelHandle) {

@@ -55,9 +55,14 @@ confirming before fixing.
 
 ---
 
-## 2. `UpdateMidi` persists to a location the loader discards
+## 2. `UpdateMidi` persists to a location the loader discards — FIXED
 
-**Tracked as [#358](https://github.com/mdwn/mtrack/issues/358).**
+**Tracked as [#358](https://github.com/mdwn/mtrack/issues/358). Fixed in
+[#344](https://github.com/mdwn/mtrack/pull/344);** `midi_beat_clock_persists`
+passes on the test rig. Subsystem updates now route to the active profile,
+`profiles_dir` layouts are no longer inlined into the main config, and only the
+profile files an edit touches are rewritten. The description below is kept as
+the record of what the check found.
 
 **Check:** `midi_beat_clock_persists` (area `midi-config`)
 
@@ -84,6 +89,14 @@ The same write is destructive in two further ways:
 `store.rs` does have `profiles_dir` write-back handling (it resolves the owning
 profile file), so `update_midi` appears not to route through it. Likely also
 affects `update_audio` and `update_dmx`, which were not exercised.
+
+**Scope: the programmatic path only, not the web UI.** `MidiSection.svelte` is
+rendered inside `ProfileEditor.svelte`, and `ConfigEditor.svelte` branches on
+`profiles_dir` -- `saveProfileFile()` for a directory layout, `updateProfile()`
+otherwise. Nothing in the Svelte API layer calls `PUT /config/midi`. So MIDI
+settings edited in the UI, `persist_tempo` included, reach the profile that owns
+them. What is broken is `update_midi` itself: gRPC `UpdateMidi`, the MCP tool,
+and `PUT /api/config/midi`.
 
 ---
 

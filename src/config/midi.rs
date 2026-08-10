@@ -34,6 +34,11 @@ pub struct Midi {
     /// Enable MIDI beat clock output (24 ppqn timing clock).
     beat_clock: Option<bool>,
 
+    /// Keep the beat clock free-running at the last known tempo once a song
+    /// stops, until the next song starts. Only meaningful when `beat_clock` is
+    /// enabled.
+    persist_tempo: Option<bool>,
+
     /// MIDI to DMX passthrough configurations.
     midi_to_dmx: Option<Vec<MidiToDmx>>,
 }
@@ -45,6 +50,7 @@ impl Midi {
             device: device.to_string(),
             playback_delay,
             beat_clock: None,
+            persist_tempo: None,
             midi_to_dmx: None,
         }
     }
@@ -62,6 +68,12 @@ impl Midi {
     /// Returns whether beat clock output is enabled.
     pub fn beat_clock(&self) -> bool {
         self.beat_clock.unwrap_or(false)
+    }
+
+    /// Returns whether the beat clock should keep free-running at the last known
+    /// tempo once a song stops, until the next song starts.
+    pub fn persist_tempo(&self) -> bool {
+        self.persist_tempo.unwrap_or(false)
     }
 
     /// Returns the MIDI to DMX configuration.
@@ -583,6 +595,27 @@ mod test {
             .build()?
             .try_deserialize()?;
         assert!(midi.beat_clock());
+        Ok(())
+    }
+
+    #[test]
+    fn persist_tempo_default_is_false() {
+        let midi = super::Midi::new("dev", None);
+        assert!(!midi.persist_tempo());
+    }
+
+    #[test]
+    fn persist_tempo_deserialization() -> Result<(), Box<dyn Error>> {
+        let yaml = r#"
+            device: test
+            beat_clock: true
+            persist_tempo: true
+        "#;
+        let midi: super::Midi = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert!(midi.persist_tempo());
         Ok(())
     }
 

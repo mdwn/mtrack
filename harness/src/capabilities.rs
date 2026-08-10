@@ -506,8 +506,18 @@ fn select_midi(all: &[MidiPort], skips: &mut Vec<Skip>) -> (Option<MidiPort>, Op
         None => all
             .iter()
             .filter(|d| d.has_output && !is_synthetic(&d.name))
-            // Prefer a device that can also receive, so we can verify what we sent.
-            .max_by_key(|d| d.has_input as u8)
+            // Prefer a device that can also receive, so we can verify what we
+            // sent; then real hardware over the OS through-port, which loops
+            // back with no cable and is not what an operator would drive. The
+            // second key matters once a rig has a real DIN loop: without it the
+            // through-port wins on enumeration order, and the checks report
+            // running on hardware while the configured device says otherwise.
+            .max_by_key(|d| {
+                (
+                    d.has_input as u8,
+                    !crate::discovery::is_through_port(&d.name) as u8,
+                )
+            })
             .cloned(),
     };
 

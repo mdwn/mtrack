@@ -18,7 +18,7 @@
 
 use std::time::Duration;
 
-use mtrack::proto::player::v1::{PlayRequest, StopRequest};
+use mtrack::proto::player::v1::{NextRequest, PlayRequest, StopRequest};
 
 use crate::capabilities::Capabilities;
 use crate::client::Client;
@@ -34,23 +34,142 @@ use crate::{check, check_eq, inconclusive, skip};
 /// derived from a default rather than from the file is obvious.
 const TEMPO_BPM: f32 = 104.0;
 
-/// Builds a project whose song carries a MIDI file, optionally with beat clock.
-fn midi_project(beat_clock: bool) -> Result<crate::project::Project, Box<dyn std::error::Error>> {
-    let song = SongSpec::tones("Midi Song", "midi-song", 1, 10.0)
-        .with_midi(MidiSpec::scale("song.mid", TEMPO_BPM, 8));
+/// Tempo of the second song in the between-songs checks. Distinct from
+/// [`TEMPO_BPM`] by enough that a clock still running at the first song's tempo
+/// is unmistakable, and equally un-round.
+const SECOND_TEMPO_BPM: f32 = 152.0;
 
+/// How long the beat clock may go silent across a song boundary before the
+/// tempo it is meant to be holding has, from downstream gear's point of view,
+/// been dropped.
+///
+/// Four ticks at [`TEMPO_BPM`] (~96 ms), not a round number of milliseconds,
+/// because the quantity that matters downstream is missing *pulses*.
+///
+/// Two of those four are structural and cannot be removed: a song's ticks sit on
+/// its own beat grid, so the last held tick and the new song's first tick are up
+/// to an interval apart at each end of the handover. The measured gap on the
+/// test rig is a stable 48 ms, so this catches a doubling while leaving room for
+/// a loaded machine.
+///
+/// What this does *not* cover is the startup window -- the stretch between the
+/// play request and every subsystem reporting ready. On a fast rig that is ~40
+/// ms whether or not the engine holds tempo through it, so an absolute budget
+/// cannot tell the two apart. That case is pinned by the unit test
+/// `holds_tempo_while_waiting_for_the_go_signal`, which drives a non-zero wait
+/// directly.
+const MAX_BOUNDARY_SILENCE: Duration =
+    Duration::from_micros((4.0 * 60.0 / (TEMPO_BPM as f64 * 24.0) * 1_000_000.0) as u64);
+
+/// How long the player sits stopped between the two songs.
+///
+/// Must be comfortably longer than [`MAX_BOUNDARY_SILENCE`], and that is the
+/// entire point. Driving `stop → next → play` back to back leaves only the
+/// player's own startup latency to bridge -- about 40 ms on the test rig, which
+/// an engine with no persistence at all covers just as well as one with it. The
+/// first version of this check did exactly that and could not fail. A real gap
+/// between songs is an operator talking to an audience, and it is measured in
+/// seconds; that is the gap `persist_tempo` exists for, so it is the gap this
+/// check has to reproduce.
+const BETWEEN_SONGS_PAUSE: Duration = Duration::from_secs(2);
+
+/// The beat clock settings a generated project applies to its profile.
+#[derive(Clone, Copy, Default)]
+struct BeatClock {
+    enabled: bool,
+    persist_tempo: bool,
+}
+
+impl BeatClock {
+    fn off() -> BeatClock {
+        BeatClock::default()
+    }
+
+    fn on() -> BeatClock {
+        BeatClock {
+            enabled: true,
+            persist_tempo: false,
+        }
+    }
+
+    fn persisting(persist: bool) -> BeatClock {
+        BeatClock {
+            enabled: true,
+            persist_tempo: persist,
+        }
+    }
+}
+
+/// Builds a project from the given songs, with the given beat clock settings.
+fn midi_project_with(
+    songs: Vec<SongSpec>,
+    clock: BeatClock,
+) -> Result<crate::project::Project, Box<dyn std::error::Error>> {
     let mut profile = ProfileSpec::detected("01-e2e");
     if let Some(pair) = Discovery::get().midi_pair() {
         profile.midi = Subsystem::Named(pair.out_port.clone());
     }
-    if beat_clock {
+    if clock.enabled {
         profile = profile.with_midi_key("beat_clock", "true");
+    }
+    if clock.persist_tempo {
+        profile = profile.with_midi_key("persist_tempo", "true");
     }
 
     ProjectBuilder::new()
         .profiles(vec![profile])
-        .songs(vec![song])
+        .songs(songs)
         .build()
+}
+
+/// Builds a project whose song carries a MIDI file, optionally with beat clock.
+fn midi_project(beat_clock: bool) -> Result<crate::project::Project, Box<dyn std::error::Error>> {
+    let song = SongSpec::tones("Midi Song", "midi-song", 1, 10.0)
+        .with_midi(MidiSpec::scale("song.mid", TEMPO_BPM, 8));
+    let clock = if beat_clock {
+        BeatClock::on()
+    } else {
+        BeatClock::off()
+    };
+    midi_project_with(vec![song], clock)
+}
+
+/// A song whose MIDI runs the full length of its audio.
+///
+/// The beat clock follows the *MIDI file*, not the song: when the schedule runs
+/// out mid-song the engine sends Stop and, with persistence on, begins holding
+/// tempo while audio is still playing. A check that meant to observe the
+/// between-songs state would then be observing the end-of-schedule state
+/// instead, and would pass for the wrong reason. Sizing the MIDI to outlast the
+/// audio keeps "the schedule ended" and "the song ended" from being confused.
+fn covered_song(name: &str, dir: &str, tempo_bpm: f32, secs: f32) -> SongSpec {
+    let beats = (secs * tempo_bpm / 60.0).ceil() as usize + 4;
+    SongSpec::tones(name, dir, 1, secs).with_midi(MidiSpec::scale("song.mid", tempo_bpm, beats))
+}
+
+/// The longest silence between consecutive timing clocks, and how far into the
+/// run it began.
+///
+/// Measured on the harness's own arrival clock, never the driver's `micros`:
+/// the latter does not advance while the port is quiet, so every silence
+/// measures as roughly zero and a check built on it passes whatever mtrack
+/// does. That is exactly how the first version of this check reported a 48 ms
+/// boundary gap with persistence on and 49 ms with it off.
+///
+/// Reported rather than merely compared so a failure says *how* badly the clock
+/// stalled -- a 300 ms gap and a 4 s gap are the same boolean and very different
+/// defects.
+fn longest_clock_gap(pulses: &[midi::TimedMessage]) -> Option<(Duration, Duration)> {
+    let first = pulses.first()?.at;
+    pulses
+        .windows(2)
+        .map(|w| {
+            (
+                w[1].at.saturating_duration_since(w[0].at),
+                w[0].at.saturating_duration_since(first),
+            )
+        })
+        .max_by_key(|(gap, _)| *gap)
 }
 
 /// The ports these checks transmit and listen on.
@@ -254,6 +373,303 @@ pub async fn beat_clock_is_silent_when_disabled() -> CheckOutcome {
         pulses.is_empty(),
         "beat_clock was not enabled, but {} timing clock pulses were transmitted",
         pulses.len()
+    );
+
+    server.check_clean_log(&[])?;
+    Ok(())
+}
+
+/// Pulses per second across a run of timing clocks, or `None` if there are too
+/// few to measure.
+fn hz_of(pulses: &[midi::TimedMessage]) -> Option<f32> {
+    if pulses.len() < 2 {
+        return None;
+    }
+    let span = pulses.last()?.micros.checked_sub(pulses.first()?.micros)?;
+    if span == 0 {
+        return None;
+    }
+    Some((pulses.len() - 1) as f32 * 1_000_000.0 / span as f32)
+}
+
+/// The clock rate a tempo implies at 24 pulses per quarter note.
+fn expected_hz(tempo_bpm: f32) -> f32 {
+    MidiSpec::scale("song.mid", tempo_bpm, 8).expected_clock_hz()
+}
+
+/// With `persist_tempo` on, the clock keeps running at the song's tempo after
+/// the song stops.
+///
+/// This is the whole point of the option: downstream gear that syncs to the
+/// clock -- tempo-synced delays, LFOs, arpeggiators, tempo displays -- holds the
+/// tempo through the gap instead of drifting or resetting. Verifying it needs
+/// the wire, because mtrack's own reporting says nothing about what happens
+/// after playback ends.
+pub async fn beat_clock_holds_tempo_after_a_song_stops() -> CheckOutcome {
+    let path = midi_path()?;
+    let listen = path.listen.clone();
+    crate::outcome::record(path.describe());
+
+    let song = covered_song("Midi Song", "midi-song", TEMPO_BPM, 12.0);
+    let project = midi_project_with(
+        vec![song],
+        BeatClock::persisting(crate::sabotage::pick(true, false)),
+    )?;
+    let server = Server::start(&project).await?;
+    let mut client = Client::connect(&server).await?;
+
+    let capture = MidiCapture::open(&listen)?;
+    capture.clear();
+
+    client.grpc().play(PlayRequest {}).await?;
+    client.wait_until_playing(Duration::from_secs(10)).await?;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    // The premise: a clock was running at all. Without this, a build that never
+    // started one would reach the held-tempo assertion with nothing to hold and
+    // fail there, blaming persistence for a plain beat clock failure.
+    let during = capture.clock_pulses();
+    check!(
+        during.len() > 24,
+        "beat_clock was enabled but only {} pulses arrived during playback, so there was no \
+         tempo to hold.\n--- log ---\n{}",
+        during.len(),
+        server.log()
+    );
+
+    client.grpc().stop(StopRequest {}).await?;
+
+    // Let the Stop and the handover into free-run settle, so trailing in-song
+    // ticks are not measured as held ones.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let saw_stop = capture
+        .messages()
+        .iter()
+        .any(|m| m.status() == Some(midi::STOP));
+    capture.clear();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let held = capture.clock_pulses();
+    let held_hz = hz_of(&held);
+
+    check!(
+        saw_stop,
+        "no MIDI Stop (0xFC) was transmitted when the song stopped; downstream gear would still \
+         think the transport is running"
+    );
+
+    check!(
+        !held.is_empty(),
+        "persist_tempo was on, but the beat clock went silent after the song stopped: no timing \
+         clocks in the 3s following the Stop.\n--- log ---\n{}",
+        server.log()
+    );
+
+    let expected = expected_hz(TEMPO_BPM);
+    let Some(held_hz) = held_hz else {
+        inconclusive!(
+            "{} clocks were held after the stop but carried no usable timestamps, so the held \
+             tempo could not be measured",
+            held.len()
+        );
+    };
+    let error_pct = ((held_hz - expected) / expected).abs() * 100.0;
+    crate::outcome::record(format!(
+        "held tempo: {held_hz:.2} Hz over {} pulses in 3s after Stop, {expected:.2} Hz expected \
+         ({error_pct:.1}% off)",
+        held.len()
+    ));
+
+    check!(
+        error_pct < 5.0,
+        "the clock kept running after the stop but at {held_hz:.2} Hz, not the song's \
+         {expected:.2} Hz ({error_pct:.1}% off); the tempo was not held, it was replaced"
+    );
+
+    server.check_clean_log(&[])?;
+    Ok(())
+}
+
+/// With `persist_tempo` off, the clock goes silent once the song stops.
+///
+/// The default must not change. Without this, a build that persisted
+/// unconditionally would pass every other beat clock check while flooding a rig
+/// that never asked for it.
+pub async fn beat_clock_is_silent_after_stop_without_persist() -> CheckOutcome {
+    let path = midi_path()?;
+    let listen = path.listen.clone();
+    crate::outcome::record(path.describe());
+
+    let song = covered_song("Midi Song", "midi-song", TEMPO_BPM, 12.0);
+    let project = midi_project_with(
+        vec![song],
+        BeatClock::persisting(crate::sabotage::pick(false, true)),
+    )?;
+    let server = Server::start(&project).await?;
+    let mut client = Client::connect(&server).await?;
+
+    let capture = MidiCapture::open(&listen)?;
+    capture.clear();
+
+    client.grpc().play(PlayRequest {}).await?;
+    client.wait_until_playing(Duration::from_secs(10)).await?;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    // Same premise as above: silence afterwards only means anything if the
+    // clock was running beforehand.
+    let during = capture.clock_pulses();
+    check!(
+        during.len() > 24,
+        "beat_clock was enabled but only {} pulses arrived during playback, so the silence \
+         afterwards proves nothing.\n--- log ---\n{}",
+        during.len(),
+        server.log()
+    );
+
+    client.grpc().stop(StopRequest {}).await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    capture.clear();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let after = capture.clock_pulses();
+    check!(
+        after.is_empty(),
+        "persist_tempo was off, but {} timing clocks were transmitted after the song stopped",
+        after.len()
+    );
+    crate::outcome::record("clock went silent after Stop, as configured".to_string());
+
+    server.check_clean_log(&[])?;
+    Ok(())
+}
+
+/// The clock survives a song change without a silent gap, and the next song
+/// retunes it.
+///
+/// The two checks above cover the two ends -- a song playing, and the idle after
+/// it. This covers the handover between them, which is the moment persistence
+/// exists for and the only one where a per-song clock and an always-on engine
+/// visibly differ. It also confirms the engine is genuinely retuned rather than
+/// stuck at the first song's tempo, which a check that only looked for
+/// *continuity* would happily accept.
+pub async fn beat_clock_bridges_the_gap_between_songs() -> CheckOutcome {
+    let path = midi_path()?;
+    let listen = path.listen.clone();
+    crate::outcome::record(path.describe());
+
+    let songs = vec![
+        covered_song("Midi One", "midi-one", TEMPO_BPM, 12.0),
+        covered_song("Midi Two", "midi-two", SECOND_TEMPO_BPM, 12.0),
+    ];
+    let project = midi_project_with(
+        songs,
+        BeatClock::persisting(crate::sabotage::pick(true, false)),
+    )?;
+    let server = Server::start(&project).await?;
+    let mut client = Client::connect(&server).await?;
+
+    let capture = MidiCapture::open(&listen)?;
+    capture.clear();
+
+    // Song one.
+    client.grpc().play(PlayRequest {}).await?;
+    client.wait_until_playing(Duration::from_secs(10)).await?;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    client.grpc().stop(StopRequest {}).await?;
+    client.wait_until_stopped(Duration::from_secs(10)).await?;
+
+    // The boundary an operator actually drives: a pause between songs, then
+    // advance and start the next one. Everything between the Stop above and the
+    // first pulse of song two is the gap persistence is supposed to cover.
+    tokio::time::sleep(BETWEEN_SONGS_PAUSE).await;
+    client.grpc().next(NextRequest {}).await?;
+    client.grpc().play(PlayRequest {}).await?;
+    client.wait_until_playing(Duration::from_secs(10)).await?;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let messages = capture.messages();
+    client.grpc().stop(StopRequest {}).await?;
+
+    let song = client.status().await?.current_song.map(|s| s.name);
+    check!(
+        song.as_deref() == Some("Midi Two"),
+        "expected to be on 'Midi Two' after next, but the player reports {song:?}"
+    );
+
+    let pulses: Vec<midi::TimedMessage> = messages
+        .iter()
+        .filter(|m| m.status() == Some(midi::TIMING_CLOCK))
+        .cloned()
+        .collect();
+    check!(
+        pulses.len() > 24,
+        "only {} timing clocks arrived across the whole run.\n--- log ---\n{}",
+        pulses.len(),
+        server.log()
+    );
+
+    // Song two's pulses are the ones after its Start. Using the last Start
+    // rather than a wall-clock split keeps the segmentation tied to what mtrack
+    // actually sent.
+    let last_start = messages
+        .iter()
+        .rfind(|m| m.status() == Some(midi::START))
+        .map(|m| m.micros);
+    let Some(last_start) = last_start else {
+        return Err(crate::outcome::CheckError::assertion(
+            "no MIDI Start (0xFA) was transmitted for the second song; the transport was never \
+             re-run"
+                .to_string(),
+        ));
+    };
+
+    let second: Vec<midi::TimedMessage> = pulses
+        .iter()
+        .filter(|m| m.micros > last_start)
+        .cloned()
+        .collect();
+
+    // Retuning: the second song must drive the clock at *its* tempo.
+    let expected_second = expected_hz(SECOND_TEMPO_BPM);
+    match hz_of(&second) {
+        Some(measured) => {
+            let error_pct = ((measured - expected_second) / expected_second).abs() * 100.0;
+            crate::outcome::record(format!(
+                "second song: {measured:.2} Hz measured, {expected_second:.2} Hz expected \
+                 ({error_pct:.1}% off, {} pulses)",
+                second.len()
+            ));
+            check!(
+                error_pct < 5.0,
+                "after the song change the clock ran at {measured:.2} Hz, but 'Midi Two' at \
+                 {SECOND_TEMPO_BPM} BPM requires {expected_second:.2} Hz ({error_pct:.1}% off); \
+                 the engine was not retuned"
+            );
+        }
+        None => inconclusive!(
+            "{} clocks arrived for the second song but carried no usable timestamps",
+            second.len()
+        ),
+    }
+
+    // Continuity: the reason persistence exists.
+    let Some((gap, at)) = longest_clock_gap(&pulses) else {
+        inconclusive!("too few clocks to measure a gap");
+    };
+    crate::outcome::record(format!(
+        "longest silence in the clock stream: {:.0} ms, beginning {:.1}s into the run",
+        gap.as_secs_f64() * 1000.0,
+        at.as_secs_f64()
+    ));
+
+    check!(
+        gap <= MAX_BOUNDARY_SILENCE,
+        "persist_tempo was on, but the clock went silent for {:.0} ms across the song change \
+         (budget {:.0} ms). Downstream gear does not distinguish 'between songs' from 'the clock \
+         stopped'; a gap this long is the drift persistence is meant to prevent.\n--- log ---\n{}",
+        gap.as_secs_f64() * 1000.0,
+        MAX_BOUNDARY_SILENCE.as_secs_f64() * 1000.0,
+        server.log()
     );
 
     server.check_clean_log(&[])?;

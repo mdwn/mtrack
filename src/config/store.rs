@@ -21,6 +21,7 @@
 use std::path::PathBuf;
 
 use tokio::sync::{broadcast, RwLock};
+use tracing::warn;
 
 use super::audio::Audio;
 use super::controller::Controller;
@@ -63,6 +64,55 @@ pub struct ConfigStore {
     inner: RwLock<Player>,
     path: PathBuf,
     change_tx: broadcast::Sender<()>,
+}
+
+/// A change to one hardware subsystem, applied wherever that subsystem is
+/// actually configured.
+///
+/// The two destinations serialize differently -- a profile holds an
+/// `AudioConfig` (device settings plus this machine's routing and gains), the
+/// legacy top level holds a bare `Audio` -- so the update is carried as a value
+/// and applied by the destination rather than by the caller.
+enum SubsystemUpdate {
+    Audio(Option<Audio>),
+    Midi(Option<Midi>),
+    Dmx(Option<Dmx>),
+}
+
+impl SubsystemUpdate {
+    /// Applies to a hardware profile, the source of truth once `profiles:` is
+    /// present.
+    fn apply_to_profile(self, profile: &mut Profile) {
+        match self {
+            SubsystemUpdate::Audio(audio) => profile.set_audio(audio),
+            SubsystemUpdate::Midi(midi) => profile.set_midi(midi),
+            SubsystemUpdate::Dmx(dmx) => profile.set_dmx(dmx),
+        }
+    }
+
+    /// Applies to the legacy top-level blocks, which are read only when the
+    /// config declares no profiles.
+    fn apply_to_legacy(self, config: &mut Player) {
+        match self {
+            SubsystemUpdate::Audio(audio) => config.set_audio(audio),
+            SubsystemUpdate::Midi(midi) => config.set_midi(midi),
+            SubsystemUpdate::Dmx(dmx) => config.set_dmx(dmx),
+        }
+    }
+}
+
+/// Each profile serialized on its own, in declaration order.
+///
+/// Used both to detect which profiles an edit touched and as the exact bytes
+/// written back to their files, so the comparison and the write can never
+/// disagree about what changed.
+fn serialized_profiles(config: &Player) -> Result<Vec<String>, ConfigError> {
+    config
+        .profile_list()
+        .unwrap_or_default()
+        .iter()
+        .map(|p| to_yaml_string(p).map_err(|e| ConfigError::StoreSerialization(e.to_string())))
+        .collect()
 }
 
 /// Computes a deterministic hex-encoded SHA-256 hash of a YAML string.
@@ -184,15 +234,35 @@ impl ConfigStore {
             });
         }
 
-        // Apply the mutation.
-        mutate_fn(&mut guard)?;
+        // Snapshot the profiles before mutating, so persistence can tell which
+        // profile files (if any) actually need rewriting.
+        let profiles_before = serialized_profiles(&guard)?;
 
-        // Serialize and persist.
+        // The whole config, kept so a mutation that cannot be written is undone
+        // in memory too. Persistence rejects some edits (adding a profile to a
+        // `profiles_dir` layout, for one), and a rejected edit that survived in
+        // memory would be served to every reader and silently lost on the next
+        // restart -- the same class of bug this change exists to fix.
+        let rollback = guard.clone();
+
+        // Apply the mutation.
+        if let Err(e) = mutate_fn(&mut guard) {
+            *guard = rollback;
+            return Err(e);
+        }
+
+        // The checksum covers the whole in-memory config, including profiles
+        // loaded from a directory. That is deliberate and independent of how
+        // the config is split across files: it is what `read` hashes, so
+        // optimistic concurrency stays consistent.
         let new_yaml =
             to_yaml_string(&*guard).map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
         let new_checksum = compute_checksum(&new_yaml);
 
-        atomic_write(&self.path, &new_yaml).map_err(ConfigError::StoreIo)?;
+        if let Err(e) = self.persist(&guard, &profiles_before) {
+            *guard = rollback;
+            return Err(e);
+        }
 
         // Broadcast change (ignore error if no receivers).
         let _ = self.change_tx.send(());
@@ -204,16 +274,126 @@ impl ConfigStore {
         })
     }
 
+    /// Writes the config to disk, respecting how it is split across files.
+    ///
+    /// With `profiles_dir`, the in-memory `profiles` list is a load-time copy
+    /// of the files in that directory, and those files -- not the main config
+    /// -- are what the loader reads. Serializing the whole `Player` back to
+    /// `mtrack.yaml` therefore inlined a duplicate of every profile into the
+    /// one file the layout exists to avoid, while the edit itself still had no
+    /// effect. So the main config is written without the inline copy, and each
+    /// profile that actually changed is written to the file it came from.
+    ///
+    /// Only changed profiles are rewritten. Rewriting all of them would drop
+    /// the comments from files that had nothing to do with the edit.
+    fn persist(&self, config: &Player, profiles_before: &[String]) -> Result<(), ConfigError> {
+        let Some(dir) = self.directory_profiles(config) else {
+            let yaml = to_yaml_string(config)
+                .map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
+            return atomic_write(&self.path, &yaml).map_err(ConfigError::StoreIo);
+        };
+
+        let profiles_after = serialized_profiles(config)?;
+        if profiles_after.len() != profiles_before.len() {
+            // Position in the list is what identifies a profile's file, so
+            // adding or removing one has no unambiguous mapping. Refused rather
+            // than guessed: the alternative is writing a profile into the file
+            // that belongs to a different machine.
+            return Err(ConfigError::Validation(format!(
+                "cannot add or remove profiles while they are loaded from '{}'; edit the profile \
+                 files in that directory instead",
+                dir.display()
+            )));
+        }
+
+        // The indices come from load time; this listing is from now. A file
+        // added, removed or renamed in between shifts every index after it --
+        // `00-new.yaml` sorts first and displaces the whole list -- so a
+        // mismatched count means the mapping cannot be trusted and the write
+        // would land in some other machine's profile.
+        let files = super::player::list_profile_files(&dir)?;
+        if files.len() != profiles_after.len() {
+            return Err(ConfigError::Validation(format!(
+                "'{}' now holds {} profile file(s) but {} were loaded; the directory changed \
+                 underneath the running player, so profiles can no longer be matched to their \
+                 files. Restart to pick up the new layout.",
+                dir.display(),
+                files.len(),
+                profiles_after.len()
+            )));
+        }
+
+        // The main config first. It is usually unchanged (a subsystem edit
+        // lives entirely in a profile file), and doing it first means a failure
+        // here leaves every profile file untouched rather than half-applied.
+        // A failure *between* profile files can still split the write; that
+        // needs a real two-phase commit, which this store does not have.
+        let mut main = config.clone();
+        if main.profile_list().is_some() {
+            self.warn_if_dropping_inline_profiles();
+        }
+        *main.profiles_mut() = None;
+        let yaml =
+            to_yaml_string(&main).map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
+        if std::fs::read_to_string(&self.path).ok().as_deref() != Some(yaml.as_str()) {
+            atomic_write(&self.path, &yaml).map_err(ConfigError::StoreIo)?;
+        }
+
+        for (index, (before, after)) in profiles_before.iter().zip(&profiles_after).enumerate() {
+            if before == after {
+                continue;
+            }
+            atomic_write(&files[index], after).map_err(ConfigError::StoreIo)?;
+        }
+
+        Ok(())
+    }
+
+    /// Warns when the main config still carries an inline `profiles:` block
+    /// that is about to be dropped.
+    ///
+    /// With `profiles_dir` populated the loader replaces inline profiles with
+    /// the directory's and warns that it ignored them, so by the time the store
+    /// holds the config the inline block exists only in the file. Writing the
+    /// config back therefore deletes it, and it cannot be reconstructed. That is
+    /// the right content to write -- keeping a stale duplicate would be worse --
+    /// but it removes something the operator wrote, so it is not done silently.
+    fn warn_if_dropping_inline_profiles(&self) {
+        let Ok(current) = std::fs::read_to_string(&self.path) else {
+            return;
+        };
+        if current.lines().any(|l| l.trim_start() == "profiles:") {
+            warn!(
+                path = %self.path.display(),
+                "removing the inline 'profiles:' block from the config: it was already ignored in \
+                 favour of 'profiles_dir', and is not preserved across a config write"
+            );
+        }
+    }
+
+    /// The profiles directory, but only when it is actually supplying the
+    /// profiles.
+    ///
+    /// `load_profiles_dir` keeps inline profiles as a fallback when the
+    /// directory holds no YAML files, so a configured-but-empty directory must
+    /// still persist inline -- otherwise the profiles would be stripped from
+    /// the main config and nothing would be left to load.
+    fn directory_profiles(&self, config: &Player) -> Option<PathBuf> {
+        let dir = config.resolved_profiles_dir(&self.path)?;
+        match super::player::list_profile_files(&dir) {
+            Ok(files) if !files.is_empty() => Some(dir),
+            _ => None,
+        }
+    }
+
     /// Updates the audio configuration.
     pub async fn update_audio(
         &self,
         audio: Option<Audio>,
         checksum: &str,
     ) -> Result<ConfigSnapshot, ConfigError> {
-        self.mutate(checksum, |config| {
-            config.set_audio(audio);
-        })
-        .await
+        self.update_subsystem(SubsystemUpdate::Audio(audio), checksum)
+            .await
     }
 
     /// Updates the MIDI configuration.
@@ -222,10 +402,8 @@ impl ConfigStore {
         midi: Option<Midi>,
         checksum: &str,
     ) -> Result<ConfigSnapshot, ConfigError> {
-        self.mutate(checksum, |config| {
-            config.set_midi(midi);
-        })
-        .await
+        self.update_subsystem(SubsystemUpdate::Midi(midi), checksum)
+            .await
     }
 
     /// Updates the DMX configuration.
@@ -234,8 +412,38 @@ impl ConfigStore {
         dmx: Option<Dmx>,
         checksum: &str,
     ) -> Result<ConfigSnapshot, ConfigError> {
-        self.mutate(checksum, |config| {
-            config.set_dmx(dmx);
+        self.update_subsystem(SubsystemUpdate::Dmx(dmx), checksum)
+            .await
+    }
+
+    /// Applies a subsystem update to wherever the loader will actually read it.
+    ///
+    /// `Player::normalize` makes `profiles` the source of truth and *discards*
+    /// the top-level `audio`/`midi`/`dmx` blocks the moment `profiles:` is
+    /// present, warning as it goes. Writing to the top level therefore produced
+    /// a value that the served config showed, the checksum covered, and the
+    /// next restart threw away -- silently, unless someone was reading logs.
+    /// So the update goes to the active profile whenever there is one, and to
+    /// the legacy top-level block only on a config that has no profiles at all.
+    async fn update_subsystem(
+        &self,
+        update: SubsystemUpdate,
+        checksum: &str,
+    ) -> Result<ConfigSnapshot, ConfigError> {
+        let hostname = super::hostname::resolve_hostname();
+        self.try_mutate(checksum, |config| {
+            if config.profile_list().is_some() {
+                let profile = config.active_profile_mut(&hostname).ok_or_else(|| {
+                    ConfigError::Validation(format!(
+                        "no profile matches hostname '{hostname}', so there is nowhere to apply \
+                         this update"
+                    ))
+                })?;
+                update.apply_to_profile(profile);
+            } else {
+                update.apply_to_legacy(config);
+            }
+            Ok(())
         })
         .await
     }
@@ -356,7 +564,11 @@ impl ConfigStore {
         })?;
         audio.set_track_gains(gains.clone());
 
-        if let Some(dir) = guard.resolved_profiles_dir(&self.path) {
+        // `directory_profiles` rather than `resolved_profiles_dir`: a
+        // configured-but-empty directory falls back to inline profiles at load
+        // time, and looking for an owning file in it would fail with "no
+        // profile file matches" on a config that loaded perfectly well.
+        if let Some(dir) = self.directory_profiles(&guard) {
             persist_gains_to_profile_file(&dir, hostname, &gains)?;
         } else {
             let new_yaml = to_yaml_string(&*guard)
@@ -371,12 +583,18 @@ impl ConfigStore {
     /// Sets the active playlist name without requiring a checksum.
     /// This is called internally when switching playlists, not from the
     /// config editor UI, so optimistic concurrency isn't needed.
+    ///
+    /// Goes through [`ConfigStore::persist`] like every other write. Writing
+    /// the whole `Player` directly would inline a copy of every directory-loaded
+    /// profile into the main config -- the same corruption this store was fixed
+    /// to stop, on a path an operator hits every time they change playlist.
     pub async fn set_active_playlist(&self, name: String) -> Result<(), ConfigError> {
         let mut guard = self.inner.write().await;
+        // The profiles are untouched here, so this is only ever "nothing
+        // changed" and no profile file is rewritten.
+        let profiles_before = serialized_profiles(&guard)?;
         guard.set_active_playlist(name);
-        let new_yaml =
-            to_yaml_string(&*guard).map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
-        atomic_write(&self.path, &new_yaml).map_err(ConfigError::StoreIo)?;
+        self.persist(&guard, &profiles_before)?;
         let _ = self.change_tx.send(());
         Ok(())
     }
@@ -451,6 +669,221 @@ profiles:
       track_mappings:
         click: [1]
 "#
+    }
+
+    /// A `Midi` with `beat_clock` and `persist_tempo` set, which `Midi::new`
+    /// cannot express.
+    fn midi_with_persist(device: &str) -> Midi {
+        config::Config::builder()
+            .add_source(config::File::from_str(
+                &format!("device: {device}\nbeat_clock: true\npersist_tempo: true\n"),
+                config::FileFormat::Yaml,
+            ))
+            .build()
+            .and_then(|c| c.try_deserialize())
+            .unwrap()
+    }
+
+    /// A subsystem update must reach the profile that owns the setting, not the
+    /// top-level block the loader discards once `profiles:` is present.
+    #[tokio::test]
+    async fn update_midi_inline_profiles_reaches_the_active_profile() {
+        let yaml = "songs: songs\nprofiles:\n  - audio:\n      device: a\n      track_mappings:\n        click: [1]\n    midi:\n      device: old-midi\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        let player = Player::deserialize(&path).unwrap();
+
+        let store = ConfigStore::new(player, path.clone());
+        let snap = store.read().await.unwrap();
+        store
+            .update_midi(Some(midi_with_persist("new-midi")), &snap.checksum)
+            .await
+            .unwrap();
+
+        // The value has to survive a full reload, which is what the player does
+        // on restart.
+        let mut reloaded = Player::deserialize(&path).unwrap();
+        let profile = reloaded
+            .active_profile_mut(&super::super::hostname::resolve_hostname())
+            .expect("a hostname-less profile matches every host");
+        let midi = profile.midi().expect("the update must land on the profile");
+        assert_eq!(midi.device(), "new-midi");
+        assert!(midi.persist_tempo(), "persist_tempo was discarded");
+    }
+
+    /// The same, on a `profiles_dir` layout: the owning file is rewritten and
+    /// the main config is not turned into an inline copy of the directory.
+    #[tokio::test]
+    async fn update_midi_profiles_dir_writes_the_owning_profile_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+
+        let main_yaml = "songs: songs\nprofiles_dir: profiles\n";
+        let main_path = dir.path().join("config.yaml");
+        std::fs::write(&main_path, main_yaml).unwrap();
+        std::fs::write(
+            profiles_dir.join("01-only.yaml"),
+            "kind: hardware_profile\naudio:\n  device: a\n  track_mappings:\n    click: [1]\nmidi:\n  device: old-midi\n",
+        )
+        .unwrap();
+
+        let player = Player::deserialize(&main_path).unwrap();
+        let store = ConfigStore::new(player, main_path.clone());
+        let snap = store.read().await.unwrap();
+        store
+            .update_midi(Some(midi_with_persist("new-midi")), &snap.checksum)
+            .await
+            .unwrap();
+
+        let profile_after = std::fs::read_to_string(profiles_dir.join("01-only.yaml")).unwrap();
+        assert!(
+            profile_after.contains("persist_tempo: true"),
+            "the profile file that owns this setting was not updated: {profile_after}"
+        );
+
+        // The directory is the source of truth, so the main config must not be
+        // rewritten with the profiles inlined -- that collapses a multi-file
+        // layout into one file and silently changes which profiles load.
+        let main_after = std::fs::read_to_string(&main_path).unwrap();
+        assert!(
+            main_after.contains("profiles_dir:"),
+            "profiles_dir was dropped from the main config: {main_after}"
+        );
+        assert!(
+            !main_after.contains("old-midi") && !main_after.contains("new-midi"),
+            "the profiles were inlined into the main config: {main_after}"
+        );
+
+        let mut reloaded = Player::deserialize(&main_path).unwrap();
+        let profile = reloaded
+            .active_profile_mut(&super::super::hostname::resolve_hostname())
+            .unwrap();
+        assert!(profile.midi().unwrap().persist_tempo());
+    }
+
+    /// Position in the profile list is what identifies a profile's file, so
+    /// adding one through this API has no unambiguous destination. It must be
+    /// refused outright rather than half-applied.
+    #[tokio::test]
+    async fn add_profile_is_refused_on_a_profiles_dir_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+        let main_yaml = "songs: songs\nprofiles_dir: profiles\n";
+        let main_path = dir.path().join("config.yaml");
+        std::fs::write(&main_path, main_yaml).unwrap();
+        std::fs::write(
+            profiles_dir.join("01-only.yaml"),
+            "kind: hardware_profile\naudio:\n  device: a\n  track_mappings:\n    click: [1]\n",
+        )
+        .unwrap();
+
+        let player = Player::deserialize(&main_path).unwrap();
+        let store = ConfigStore::new(player, main_path.clone());
+        let snap = store.read().await.unwrap();
+
+        let added = Profile::new(Some("new-host".to_string()), None, None, None);
+        let err = store.add_profile(added, &snap.checksum).await.unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Validation(_)),
+            "expected a validation error, got {err:?}"
+        );
+
+        // Refused means refused: the in-memory config must not keep the profile
+        // that could not be written, or readers would see an edit that vanishes
+        // on restart.
+        let after = store.read_config().await;
+        assert_eq!(
+            after.profile_list().map(|p| p.len()),
+            Some(1),
+            "the rejected profile was left in memory"
+        );
+        let main_after = std::fs::read_to_string(&main_path).unwrap();
+        assert_eq!(main_after, main_yaml, "the main config was rewritten");
+    }
+
+    /// Builds a `profiles_dir` project with one profile file, returning the
+    /// temp dir, the main config path, and the profiles directory.
+    fn profiles_dir_project(
+        profile_yaml: &str,
+    ) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+        let main_path = dir.path().join("config.yaml");
+        std::fs::write(&main_path, "songs: songs\nprofiles_dir: profiles\n").unwrap();
+        std::fs::write(profiles_dir.join("01-only.yaml"), profile_yaml).unwrap();
+        (dir, main_path, profiles_dir)
+    }
+
+    /// Switching playlist happens constantly during a show and goes through a
+    /// checksum-free path of its own, so it has to respect the split layout
+    /// like every other write.
+    #[tokio::test]
+    async fn set_active_playlist_does_not_inline_directory_profiles() {
+        let (_dir, main_path, _profiles_dir) = profiles_dir_project(
+            "kind: hardware_profile\naudio:\n  device: a\n  track_mappings:\n    click: [1]\nmidi:\n  device: some-midi\n",
+        );
+        let player = Player::deserialize(&main_path).unwrap();
+        let store = ConfigStore::new(player, main_path.clone());
+
+        store
+            .set_active_playlist("alternate".to_string())
+            .await
+            .unwrap();
+
+        let main_after = std::fs::read_to_string(&main_path).unwrap();
+        assert!(
+            main_after.contains("active_playlist: alternate"),
+            "the playlist change was not written: {main_after}"
+        );
+        assert!(
+            main_after.contains("profiles_dir:"),
+            "profiles_dir was dropped: {main_after}"
+        );
+        assert!(
+            !main_after.contains("some-midi"),
+            "the directory's profiles were inlined into the main config: {main_after}"
+        );
+    }
+
+    /// Profile indices are fixed at load time but the file list is read at
+    /// write time. A file appearing since load shifts every index after it, so
+    /// the write must be refused rather than landing in the wrong file.
+    #[tokio::test]
+    async fn a_profile_file_added_since_load_blocks_the_write() {
+        let (_dir, main_path, profiles_dir) = profiles_dir_project(
+            "kind: hardware_profile\naudio:\n  device: a\n  track_mappings:\n    click: [1]\nmidi:\n  device: old-midi\n",
+        );
+        let player = Player::deserialize(&main_path).unwrap();
+        let store = ConfigStore::new(player, main_path.clone());
+        let snap = store.read().await.unwrap();
+
+        // Sorts before the loaded one, so it would take index 0.
+        let intruder = profiles_dir.join("00-new.yaml");
+        std::fs::write(
+            &intruder,
+            "kind: hardware_profile\nhostname: someone-else\naudio:\n  device: z\n",
+        )
+        .unwrap();
+
+        let err = store
+            .update_midi(Some(midi_with_persist("new-midi")), &snap.checksum)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Validation(_)),
+            "expected a validation error, got {err:?}"
+        );
+
+        // The other machine's profile must be exactly as it was written.
+        let intruder_after = std::fs::read_to_string(&intruder).unwrap();
+        assert!(
+            !intruder_after.contains("new-midi"),
+            "the edit landed in another machine's profile file: {intruder_after}"
+        );
     }
 
     #[tokio::test]
@@ -675,15 +1108,27 @@ profiles:
             .await
             .unwrap();
 
-        // Verify via serialized YAML (setters modify top-level fields).
+        // This config declares profiles, so the update belongs to the active
+        // profile -- the top-level block would be discarded on the next load.
         let (yaml, _) = store.read_yaml().await.unwrap();
         assert!(yaml.contains("new-audio-device"));
+
+        // An audio update carries device settings only, so the profile's track
+        // mappings must survive it. Losing them turns a working rig silent.
+        let profile_mappings = store
+            .read_config()
+            .await
+            .active_profile_mut(&super::super::hostname::resolve_hostname())
+            .and_then(|p| p.audio_config().map(|a| a.track_mappings().clone()))
+            .unwrap();
+        assert!(
+            profile_mappings.contains_key("click"),
+            "update_audio wiped the profile's track mappings: {profile_mappings:?}"
+        );
 
         // Clear audio.
         let snap = store.update_audio(None, &snap.checksum).await.unwrap();
         let (yaml, _) = store.read_yaml().await.unwrap();
-        // After clearing, the top-level audio key should be gone,
-        // but the profile's audio should still be there.
         assert!(!yaml.contains("new-audio-device"));
         drop(snap);
     }
