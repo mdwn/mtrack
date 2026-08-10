@@ -166,7 +166,7 @@ pub(super) async fn put_lighting_file(
     let vp = verified_path;
     let body_owned = body;
     match super::helpers::spawn_blocking_io("write lighting file", move || {
-        config_io::atomic_write(&vp, &body_owned)
+        config_io::staged_write(&vp, &body_owned)
     })
     .await
     {
@@ -431,7 +431,7 @@ pub(super) async fn put_fixture_type(
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write fixture type", move || {
         ensure_lighting_dir_sync(&dir_owned)?;
-        config_io::atomic_write(&fp, &dsl_owned)
+        config_io::staged_write(&fp, &dsl_owned)
     })
     .await?;
 
@@ -594,7 +594,7 @@ pub(super) async fn put_venue(
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write venue", move || {
         ensure_lighting_dir_sync(&dir_owned)?;
-        config_io::atomic_write(&fp, &dsl_owned)
+        config_io::staged_write(&fp, &dsl_owned)
     })
     .await?;
 

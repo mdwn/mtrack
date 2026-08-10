@@ -12,38 +12,18 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::io::Write;
 use std::path::Path;
 
 use crate::config;
 use crate::lighting::parser::parse_light_shows;
 use crate::util;
 
-/// Atomically writes content to a file by writing to a temporary file first,
-/// then renaming it into place.
-///
-/// The rename swaps in a new inode, so the temp file first adopts the ownership
-/// and mode of whatever it is replacing — otherwise a single run under `sudo`
-/// would leave every config file `root:root` and mode 0600. See
-/// [`crate::util::preserve_ownership`].
-pub fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("Cannot determine parent directory of {}", path.display()))?;
-
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|e| format!("Failed to create temp file in {}: {}", parent.display(), e))?;
-
-    tmp.write_all(content.as_bytes())
-        .map_err(|e| format!("Failed to write temp file: {}", e))?;
-
-    util::preserve_ownership(tmp.as_file(), path)
-        .map_err(|e| format!("Failed to set ownership of {}: {}", path.display(), e))?;
-
-    tmp.persist(path)
-        .map_err(|e| format!("Failed to rename temp file to {}: {}", path.display(), e))?;
-
-    Ok(())
+/// Writes content to a config file, preserving its ownership and leaving a
+/// recoverable copy if the write is interrupted. See [`crate::util::write_file`],
+/// which this wraps for callers that report errors as strings.
+pub fn staged_write(path: &Path, content: &str) -> Result<(), String> {
+    util::write_file(path, content.as_bytes())
+        .map_err(|e| format!("Failed to write {}: {}", path.display(), e))
 }
 
 /// Validates a player config YAML string by attempting to deserialize it.
@@ -65,19 +45,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_atomic_write() {
+    fn test_staged_write() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.txt");
-        atomic_write(&path, "hello world").unwrap();
+        staged_write(&path, "hello world").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello world");
     }
 
     #[test]
-    fn test_atomic_write_overwrites() {
+    fn test_staged_write_overwrites() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.txt");
-        atomic_write(&path, "first").unwrap();
-        atomic_write(&path, "second").unwrap();
+        staged_write(&path, "first").unwrap();
+        staged_write(&path, "second").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
     }
 

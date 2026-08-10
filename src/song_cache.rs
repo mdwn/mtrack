@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::webui::config_io::atomic_write;
+use crate::webui::config_io::staged_write;
 use serde::{Deserialize, Serialize};
 
 const CACHE_VERSION: u32 = 2;
@@ -207,7 +207,7 @@ pub fn save_peaks(
         .map_err(|e| format!("Failed to serialize song cache: {}", e))?;
 
     let cache_path = song_dir.join(CACHE_FILENAME);
-    atomic_write(&cache_path, &json)
+    staged_write(&cache_path, &json)
 }
 
 /// Load a cached click tempo map for a specific file and channel.
@@ -293,7 +293,7 @@ pub fn save_beat_grid(
         .map_err(|e| format!("Failed to serialize song cache: {}", e))?;
 
     let cache_path = song_dir.join(CACHE_FILENAME);
-    atomic_write(&cache_path, &json)
+    staged_write(&cache_path, &json)
 }
 
 #[cfg(test)]

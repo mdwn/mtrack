@@ -204,7 +204,7 @@ pub(super) async fn put_profile(
     let yaml_owned = yaml;
     spawn_blocking_io("write profile", move || {
         crate::util::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        config_io::atomic_write(&fp, &yaml_owned)
+        config_io::staged_write(&fp, &yaml_owned)
     })
     .await?;
 

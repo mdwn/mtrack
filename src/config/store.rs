@@ -31,7 +31,7 @@ use super::midi::Midi;
 use super::player::Player;
 use super::profile::Profile;
 use crate::util::to_yaml_string;
-use crate::webui::config_io::atomic_write;
+use crate::webui::config_io::staged_write;
 
 /// A snapshot of the current configuration with its checksum.
 ///
@@ -209,7 +209,7 @@ impl ConfigStore {
     /// Core mutation implementation. Validates checksum, applies closure,
     /// persists to disk, and broadcasts.
     ///
-    /// Note: blocking I/O (atomic_write) is performed under the write lock.
+    /// Note: blocking I/O (write_file) is performed under the write lock.
     /// This is acceptable because config mutations are rare, user-initiated
     /// operations — not on any hot path.
     async fn mutate_inner<F>(
@@ -290,7 +290,7 @@ impl ConfigStore {
         let Some(dir) = self.directory_profiles(config) else {
             let yaml = to_yaml_string(config)
                 .map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
-            return atomic_write(&self.path, &yaml).map_err(ConfigError::StoreIo);
+            return staged_write(&self.path, &yaml).map_err(ConfigError::StoreIo);
         };
 
         let profiles_after = serialized_profiles(config)?;
@@ -336,14 +336,14 @@ impl ConfigStore {
         let yaml =
             to_yaml_string(&main).map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
         if std::fs::read_to_string(&self.path).ok().as_deref() != Some(yaml.as_str()) {
-            atomic_write(&self.path, &yaml).map_err(ConfigError::StoreIo)?;
+            staged_write(&self.path, &yaml).map_err(ConfigError::StoreIo)?;
         }
 
         for (index, (before, after)) in profiles_before.iter().zip(&profiles_after).enumerate() {
             if before == after {
                 continue;
             }
-            atomic_write(&files[index], after).map_err(ConfigError::StoreIo)?;
+            staged_write(&files[index], after).map_err(ConfigError::StoreIo)?;
         }
 
         Ok(())
@@ -573,7 +573,7 @@ impl ConfigStore {
         } else {
             let new_yaml = to_yaml_string(&*guard)
                 .map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
-            atomic_write(&self.path, &new_yaml).map_err(ConfigError::StoreIo)?;
+            staged_write(&self.path, &new_yaml).map_err(ConfigError::StoreIo)?;
         }
 
         let _ = self.change_tx.send(());
@@ -638,7 +638,7 @@ fn persist_gains_to_profile_file(
 
         let yaml =
             to_yaml_string(&profile).map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
-        atomic_write(path, &yaml).map_err(ConfigError::StoreIo)?;
+        staged_write(path, &yaml).map_err(ConfigError::StoreIo)?;
         return Ok(());
     }
 

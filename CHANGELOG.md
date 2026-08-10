@@ -59,16 +59,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Unset optional fields are also no longer expanded to explicit `~` on every write.
 
 - **Saving a config file no longer changes who owns it**: mtrack rewrites its own configuration —
-  profiles, playlists, song YAML, light shows, the song cache — by writing a temp file and renaming
-  it over the original. A rename swaps in a new inode, so the file that landed on disk carried the
-  temp file's ownership and mode (whoever ran mtrack, mode 0600) rather than the ones it had a
-  moment earlier. One `sudo mtrack` to debug something was enough to leave the selected profile
-  `root:root` and mode 0600 — after which running mtrack normally could no longer read or write it,
-  with no way back short of a manual `chown`. Replacement files now adopt the ownership and mode of
-  the file they replace, and files and directories mtrack creates adopt them from the directory
-  they land in, so a privileged run leaves the config exactly as it found it. Handing a file to
-  another user needs privilege, so when an unprivileged process edits a file owned by someone else
-  the write still succeeds and the mismatch is logged.
+  profiles, playlists, song YAML, light shows, the song cache — and used to do so by writing a temp
+  file and renaming it over the original. A rename swaps in a new inode, so the file that landed on
+  disk carried the temp file's ownership and mode (whoever ran mtrack, mode 0600) rather than the
+  ones it had a moment earlier. One `sudo mtrack` to debug something was enough to leave the
+  selected profile `root:root` and mode 0600 — after which running mtrack normally could no longer
+  read or write it, with no way back short of a manual `chown`.
+
+  Config files are now rewritten through their existing inode instead, which cannot change the
+  file's identity: ownership, mode, ACLs and extended attributes all survive a save by any user.
+  Directories and files mtrack creates from scratch inherit ownership from the directory they land
+  in, so a privileged run leaves the config tree exactly as it found it.
+
+  An in-place rewrite is not atomic the way a rename was, so each save first stages the complete
+  new content in a `<name>.mtrack-new` sidecar and flushes it to disk, removing it only once the
+  destination is durable. **A leftover `.mtrack-new` file means the last write to that file may not
+  have completed, and holds the content it was trying to write** — copy it over the destination to
+  recover. Saves also take an advisory lock on the file, so two mtrack processes writing the same
+  config serialise rather than interleave.
 
 - **`static` no longer discards its level on fixtures without a dimmer channel**: the level was
   passed through only when its name matched a real DMX channel, so on an RGB-only fixture (an
