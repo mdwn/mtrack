@@ -43,10 +43,23 @@ const SECOND_TEMPO_BPM: f32 = 152.0;
 /// tempo it is meant to be holding has, from downstream gear's point of view,
 /// been dropped.
 ///
-/// Not a jitter allowance: it is roughly ten ticks at [`TEMPO_BPM`]. A
-/// tempo-synced delay reads the clock continuously, so a gap of this order is
-/// already a stumble. The point of persistence is that no such gap exists.
-const MAX_BOUNDARY_SILENCE: Duration = Duration::from_millis(250);
+/// Four ticks at [`TEMPO_BPM`] (~96 ms), not a round number of milliseconds,
+/// because the quantity that matters downstream is missing *pulses*.
+///
+/// Two of those four are structural and cannot be removed: a song's ticks sit on
+/// its own beat grid, so the last held tick and the new song's first tick are up
+/// to an interval apart at each end of the handover. The measured gap on the
+/// test rig is a stable 48 ms, so this catches a doubling while leaving room for
+/// a loaded machine.
+///
+/// What this does *not* cover is the startup window -- the stretch between the
+/// play request and every subsystem reporting ready. On a fast rig that is ~40
+/// ms whether or not the engine holds tempo through it, so an absolute budget
+/// cannot tell the two apart. That case is pinned by the unit test
+/// `holds_tempo_while_waiting_for_the_go_signal`, which drives a non-zero wait
+/// directly.
+const MAX_BOUNDARY_SILENCE: Duration =
+    Duration::from_micros((4.0 * 60.0 / (TEMPO_BPM as f64 * 24.0) * 1_000_000.0) as u64);
 
 /// How long the player sits stopped between the two songs.
 ///

@@ -21,6 +21,7 @@
 use std::path::PathBuf;
 
 use tokio::sync::{broadcast, RwLock};
+use tracing::warn;
 
 use super::audio::Audio;
 use super::controller::Controller;
@@ -305,26 +306,69 @@ impl ConfigStore {
             )));
         }
 
+        // The indices come from load time; this listing is from now. A file
+        // added, removed or renamed in between shifts every index after it --
+        // `00-new.yaml` sorts first and displaces the whole list -- so a
+        // mismatched count means the mapping cannot be trusted and the write
+        // would land in some other machine's profile.
         let files = super::player::list_profile_files(&dir)?;
+        if files.len() != profiles_after.len() {
+            return Err(ConfigError::Validation(format!(
+                "'{}' now holds {} profile file(s) but {} were loaded; the directory changed \
+                 underneath the running player, so profiles can no longer be matched to their \
+                 files. Restart to pick up the new layout.",
+                dir.display(),
+                files.len(),
+                profiles_after.len()
+            )));
+        }
+
+        // The main config first. It is usually unchanged (a subsystem edit
+        // lives entirely in a profile file), and doing it first means a failure
+        // here leaves every profile file untouched rather than half-applied.
+        // A failure *between* profile files can still split the write; that
+        // needs a real two-phase commit, which this store does not have.
+        let mut main = config.clone();
+        if main.profile_list().is_some() {
+            self.warn_if_dropping_inline_profiles();
+        }
+        *main.profiles_mut() = None;
+        let yaml =
+            to_yaml_string(&main).map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
+        if std::fs::read_to_string(&self.path).ok().as_deref() != Some(yaml.as_str()) {
+            atomic_write(&self.path, &yaml).map_err(ConfigError::StoreIo)?;
+        }
+
         for (index, (before, after)) in profiles_before.iter().zip(&profiles_after).enumerate() {
             if before == after {
                 continue;
             }
-            let path = files.get(index).ok_or_else(|| {
-                ConfigError::Validation(format!(
-                    "profile {index} has no file in '{}'; the directory changed underneath the \
-                     running player",
-                    dir.display()
-                ))
-            })?;
-            atomic_write(path, after).map_err(ConfigError::StoreIo)?;
+            atomic_write(&files[index], after).map_err(ConfigError::StoreIo)?;
         }
 
-        let mut main = config.clone();
-        *main.profiles_mut() = None;
-        let yaml =
-            to_yaml_string(&main).map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
-        atomic_write(&self.path, &yaml).map_err(ConfigError::StoreIo)
+        Ok(())
+    }
+
+    /// Warns when the main config still carries an inline `profiles:` block
+    /// that is about to be dropped.
+    ///
+    /// With `profiles_dir` populated the loader replaces inline profiles with
+    /// the directory's and warns that it ignored them, so by the time the store
+    /// holds the config the inline block exists only in the file. Writing the
+    /// config back therefore deletes it, and it cannot be reconstructed. That is
+    /// the right content to write -- keeping a stale duplicate would be worse --
+    /// but it removes something the operator wrote, so it is not done silently.
+    fn warn_if_dropping_inline_profiles(&self) {
+        let Ok(current) = std::fs::read_to_string(&self.path) else {
+            return;
+        };
+        if current.lines().any(|l| l.trim_start() == "profiles:") {
+            warn!(
+                path = %self.path.display(),
+                "removing the inline 'profiles:' block from the config: it was already ignored in \
+                 favour of 'profiles_dir', and is not preserved across a config write"
+            );
+        }
     }
 
     /// The profiles directory, but only when it is actually supplying the
@@ -520,7 +564,11 @@ impl ConfigStore {
         })?;
         audio.set_track_gains(gains.clone());
 
-        if let Some(dir) = guard.resolved_profiles_dir(&self.path) {
+        // `directory_profiles` rather than `resolved_profiles_dir`: a
+        // configured-but-empty directory falls back to inline profiles at load
+        // time, and looking for an owning file in it would fail with "no
+        // profile file matches" on a config that loaded perfectly well.
+        if let Some(dir) = self.directory_profiles(&guard) {
             persist_gains_to_profile_file(&dir, hostname, &gains)?;
         } else {
             let new_yaml = to_yaml_string(&*guard)
@@ -535,12 +583,18 @@ impl ConfigStore {
     /// Sets the active playlist name without requiring a checksum.
     /// This is called internally when switching playlists, not from the
     /// config editor UI, so optimistic concurrency isn't needed.
+    ///
+    /// Goes through [`ConfigStore::persist`] like every other write. Writing
+    /// the whole `Player` directly would inline a copy of every directory-loaded
+    /// profile into the main config -- the same corruption this store was fixed
+    /// to stop, on a path an operator hits every time they change playlist.
     pub async fn set_active_playlist(&self, name: String) -> Result<(), ConfigError> {
         let mut guard = self.inner.write().await;
+        // The profiles are untouched here, so this is only ever "nothing
+        // changed" and no profile file is rewritten.
+        let profiles_before = serialized_profiles(&guard)?;
         guard.set_active_playlist(name);
-        let new_yaml =
-            to_yaml_string(&*guard).map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
-        atomic_write(&self.path, &new_yaml).map_err(ConfigError::StoreIo)?;
+        self.persist(&guard, &profiles_before)?;
         let _ = self.change_tx.send(());
         Ok(())
     }
@@ -748,6 +802,88 @@ profiles:
         );
         let main_after = std::fs::read_to_string(&main_path).unwrap();
         assert_eq!(main_after, main_yaml, "the main config was rewritten");
+    }
+
+    /// Builds a `profiles_dir` project with one profile file, returning the
+    /// temp dir, the main config path, and the profiles directory.
+    fn profiles_dir_project(
+        profile_yaml: &str,
+    ) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+        let main_path = dir.path().join("config.yaml");
+        std::fs::write(&main_path, "songs: songs\nprofiles_dir: profiles\n").unwrap();
+        std::fs::write(profiles_dir.join("01-only.yaml"), profile_yaml).unwrap();
+        (dir, main_path, profiles_dir)
+    }
+
+    /// Switching playlist happens constantly during a show and goes through a
+    /// checksum-free path of its own, so it has to respect the split layout
+    /// like every other write.
+    #[tokio::test]
+    async fn set_active_playlist_does_not_inline_directory_profiles() {
+        let (_dir, main_path, _profiles_dir) = profiles_dir_project(
+            "kind: hardware_profile\naudio:\n  device: a\n  track_mappings:\n    click: [1]\nmidi:\n  device: some-midi\n",
+        );
+        let player = Player::deserialize(&main_path).unwrap();
+        let store = ConfigStore::new(player, main_path.clone());
+
+        store
+            .set_active_playlist("alternate".to_string())
+            .await
+            .unwrap();
+
+        let main_after = std::fs::read_to_string(&main_path).unwrap();
+        assert!(
+            main_after.contains("active_playlist: alternate"),
+            "the playlist change was not written: {main_after}"
+        );
+        assert!(
+            main_after.contains("profiles_dir:"),
+            "profiles_dir was dropped: {main_after}"
+        );
+        assert!(
+            !main_after.contains("some-midi"),
+            "the directory's profiles were inlined into the main config: {main_after}"
+        );
+    }
+
+    /// Profile indices are fixed at load time but the file list is read at
+    /// write time. A file appearing since load shifts every index after it, so
+    /// the write must be refused rather than landing in the wrong file.
+    #[tokio::test]
+    async fn a_profile_file_added_since_load_blocks_the_write() {
+        let (_dir, main_path, profiles_dir) = profiles_dir_project(
+            "kind: hardware_profile\naudio:\n  device: a\n  track_mappings:\n    click: [1]\nmidi:\n  device: old-midi\n",
+        );
+        let player = Player::deserialize(&main_path).unwrap();
+        let store = ConfigStore::new(player, main_path.clone());
+        let snap = store.read().await.unwrap();
+
+        // Sorts before the loaded one, so it would take index 0.
+        let intruder = profiles_dir.join("00-new.yaml");
+        std::fs::write(
+            &intruder,
+            "kind: hardware_profile\nhostname: someone-else\naudio:\n  device: z\n",
+        )
+        .unwrap();
+
+        let err = store
+            .update_midi(Some(midi_with_persist("new-midi")), &snap.checksum)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Validation(_)),
+            "expected a validation error, got {err:?}"
+        );
+
+        // The other machine's profile must be exactly as it was written.
+        let intruder_after = std::fs::read_to_string(&intruder).unwrap();
+        assert!(
+            !intruder_after.contains("new-midi"),
+            "the edit landed in another machine's profile file: {intruder_after}"
+        );
     }
 
     #[tokio::test]

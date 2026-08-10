@@ -790,7 +790,8 @@ fn run_beat_clock(
     start_time: Duration,
     cancel_handle: &CancelHandle,
     clock: &PlaybackClock,
-) -> Option<Duration> {
+    rx: &mpsc::Receiver<BeatClockCommand>,
+) -> ScheduleOutcome {
     use midly::live::SystemRealtime;
 
     // Send START or CONTINUE
@@ -818,7 +819,26 @@ fn run_beat_clock(
     for tick_time in remaining_ticks {
         if cancel_handle.is_cancelled() {
             let _ = sender.send(&stop_bytes);
-            return last_interval;
+            return ScheduleOutcome::Finished(last_interval);
+        }
+
+        // A newer command supersedes this schedule. Nothing cancels the handle
+        // when a song ends naturally -- the cleanup path only clears the join
+        // and advances the playlist -- so a schedule that outlasts its audio
+        // (a MIDI file longer than the song) would otherwise keep running,
+        // dequeue the next song late, and shift its Start and every tick by the
+        // residual. This is also how Shutdown gets observed mid-schedule, so
+        // dropping the device does not block for the rest of the song.
+        match rx.try_recv() {
+            Ok(command) => {
+                let _ = sender.send(&stop_bytes);
+                return ScheduleOutcome::Preempted(command, last_interval);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                let _ = sender.send(&stop_bytes);
+                return ScheduleOutcome::Finished(last_interval);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
 
         let target_wall = *tick_time - start_time;
@@ -829,7 +849,7 @@ fn run_beat_clock(
 
         if cancel_handle.is_cancelled() {
             let _ = sender.send(&stop_bytes);
-            return last_interval;
+            return ScheduleOutcome::Finished(last_interval);
         }
 
         if let Err(e) = sender.send(&clock_bytes) {
@@ -844,7 +864,27 @@ fn run_beat_clock(
 
     // Send STOP when finished
     let _ = sender.send(&stop_bytes);
-    last_interval
+    ScheduleOutcome::Finished(last_interval)
+}
+
+/// How a schedule ended, and the tempo it established.
+enum ScheduleOutcome {
+    /// Played to its end, or stopped by cancellation.
+    Finished(Option<Duration>),
+    /// Superseded by a command that arrived mid-schedule. The command has been
+    /// taken off the channel and must be acted on by the caller.
+    Preempted(BeatClockCommand, Option<Duration>),
+}
+
+impl ScheduleOutcome {
+    /// The tempo this schedule established, if it delivered enough ticks to
+    /// determine one.
+    fn interval(&self) -> Option<Duration> {
+        match self {
+            ScheduleOutcome::Finished(interval) => *interval,
+            ScheduleOutcome::Preempted(_, interval) => *interval,
+        }
+    }
 }
 
 /// A song's beat clock schedule, submitted to the [`BeatClockEngine`].
@@ -943,12 +983,22 @@ fn beat_clock_engine_loop(
 ) {
     // The inter-tick interval of the last schedule we played, used to hold tempo.
     let mut last_interval: Option<Duration> = None;
+    // The live free-run. Kept across the whole idle-to-startup stretch so its
+    // tick phase is continuous: rebuilding it at each handover throws away the
+    // part of the interval already elapsed and delays the next tick.
+    let mut hold: Option<TempoHold> = None;
+    // A command taken off the channel by a schedule it interrupted, waiting to
+    // be acted on in place of the next receive.
+    let mut pending: Option<BeatClockCommand> = None;
 
     loop {
-        let command = match next_command(sender, persist_tempo, last_interval, rx) {
+        let command = match pending.take() {
             Some(command) => command,
-            // Sender dropped: the device is going away.
-            None => return,
+            None => match next_command(sender, persist_tempo, last_interval, &mut hold, rx) {
+                Some(command) => command,
+                // Sender dropped: the device is going away.
+                None => return,
+            },
         };
 
         let play = match command {
@@ -956,20 +1006,47 @@ fn beat_clock_engine_loop(
             BeatClockCommand::Shutdown => return,
         };
 
-        // Wait for the shared "go" signal so our Start lands with the first note.
-        // This is cancel-aware, so an early stop can't wedge the engine.
-        play.clock.wait_for_start_or_cancel(&play.cancel);
+        // The tempo to hold through this song's startup, if there is one.
+        let held = last_interval.filter(|_| persist_tempo);
+
+        // Wait for the shared "go" signal so our Start lands with the first
+        // note, holding the tempo across the wait rather than going silent for
+        // however long the rest of the player takes to get ready. Cancel-aware,
+        // so an early stop can't wedge the engine.
+        wait_for_start_holding_tempo(
+            sender,
+            &play,
+            held.map(|interval| hold_at(&mut hold, interval)),
+        );
         if play.cancel.is_cancelled() {
             continue;
         }
 
-        // Sleep the playback delay, matching the note thread.
+        // Sleep the playback delay, matching the note thread -- still holding
+        // the tempo, for the same reason as above.
         if !play.playback_delay.is_zero() {
-            spin_sleep::sleep(play.playback_delay);
+            match held {
+                Some(interval) => {
+                    let hold = hold_at(&mut hold, interval);
+                    let delay = PlaybackClock::wall();
+                    delay.start();
+                    while delay.elapsed() < play.playback_delay && !play.cancel.is_cancelled() {
+                        spin_sleep::sleep(
+                            hold.until_next().min(play.playback_delay - delay.elapsed()),
+                        );
+                        hold.tick_if_due(sender);
+                    }
+                }
+                None => spin_sleep::sleep(play.playback_delay),
+            }
         }
         if play.cancel.is_cancelled() {
             continue;
         }
+
+        // The schedule owns the clock from here; the next idle stretch starts a
+        // fresh hold from whatever tempo this song establishes.
+        hold = None;
 
         // Use a dedicated wall clock for tick timing instead of the audio-derived
         // playback clock: the audio clock only updates once per buffer callback
@@ -977,7 +1054,28 @@ fn beat_clock_engine_loop(
         // overshoot by variable amounts. A wall clock is smooth and sub-ms.
         let wall = PlaybackClock::wall();
         wall.start();
-        last_interval = run_beat_clock(sender, &play.ticks, play.start_time, &play.cancel, &wall);
+
+        let outcome = run_beat_clock(
+            sender,
+            &play.ticks,
+            play.start_time,
+            &play.cancel,
+            &wall,
+            rx,
+        );
+
+        // Only replace the held tempo when this schedule actually established
+        // one. `run_beat_clock` reports `None` when it delivered fewer than two
+        // ticks -- a stop within ~42ms at 120 BPM, or a seek leaving one tick to
+        // play -- and overwriting with that dropped a tempo the engine was
+        // successfully holding, silencing gear mid-set for no reason. Keep the
+        // last tempo we actually know.
+        if let Some(interval) = outcome.interval() {
+            last_interval = Some(interval);
+        }
+        if let ScheduleOutcome::Preempted(command, _) = outcome {
+            pending = Some(command);
+        }
     }
 }
 
@@ -988,6 +1086,7 @@ fn next_command(
     sender: &mut dyn MidiSender,
     persist_tempo: bool,
     last_interval: Option<Duration>,
+    hold: &mut Option<TempoHold>,
     rx: &mpsc::Receiver<BeatClockCommand>,
 ) -> Option<BeatClockCommand> {
     // A schedule may already be queued (e.g. a rapid stop→play); take it now so we
@@ -999,40 +1098,146 @@ fn next_command(
     }
 
     match (persist_tempo, last_interval) {
-        (true, Some(interval)) => run_idle_until_command(sender, interval, rx),
+        (true, Some(interval)) => run_idle_until_command(sender, hold_at(hold, interval), rx),
         // Not persisting (or no tempo yet): wait silently for the next schedule.
-        _ => rx.recv().ok(),
+        _ => {
+            *hold = None;
+            rx.recv().ok()
+        }
     }
 }
 
-/// Free-runs the clock at `interval`, emitting timing clocks until a command
-/// arrives (returned) or the sender is dropped (`None`). Timing is anchored to a
-/// wall clock so the tempo does not drift.
+/// Paces free-running timing clocks at a fixed interval against a wall clock,
+/// so a held tempo neither drifts nor bursts.
+struct TempoHold {
+    clock: PlaybackClock,
+    interval: Duration,
+    /// When the next tick is due, measured from `clock`'s start.
+    next_tick: Duration,
+}
+
+impl TempoHold {
+    fn new(interval: Duration) -> TempoHold {
+        let clock = PlaybackClock::wall();
+        clock.start();
+        TempoHold {
+            clock,
+            interval,
+            next_tick: interval,
+        }
+    }
+
+    /// How long until the next tick is due, for use as a wait timeout.
+    fn until_next(&self) -> Duration {
+        self.until_next_at(self.clock.elapsed())
+    }
+
+    /// [`TempoHold::until_next`] against a supplied elapsed time.
+    ///
+    /// The pacing decisions are split from the clock that feeds them so they can
+    /// be tested by handing over the times to reason about, with no threads and
+    /// no sleeping. Timing-derived tests of this logic were flaky on a loaded
+    /// runner and proved nothing a table of elapsed values does not.
+    fn until_next_at(&self, elapsed: Duration) -> Duration {
+        self.next_tick.saturating_sub(elapsed)
+    }
+
+    /// Emits a tick if one is due.
+    ///
+    /// When more than a full interval late, the schedule is re-anchored to now
+    /// instead of the backlog being replayed. A thread that loses the CPU (or a
+    /// host that suspends) can come back seconds behind, and repaying that debt
+    /// means firing every missed tick back to back with no spacing -- ten
+    /// seconds at 120 BPM is ~480 clocks in a burst, which downstream gear
+    /// reads as an enormous tempo spike. A held tempo is a tempo, not a debt.
+    fn tick_if_due(&mut self, sender: &mut dyn MidiSender) {
+        self.tick_if_due_at(sender, self.clock.elapsed());
+    }
+
+    /// [`TempoHold::tick_if_due`] against a supplied elapsed time. Returns
+    /// whether a tick was emitted.
+    fn tick_if_due_at(&mut self, sender: &mut dyn MidiSender, elapsed: Duration) -> bool {
+        use midly::live::SystemRealtime;
+
+        if elapsed < self.next_tick {
+            return false;
+        }
+        if let Err(e) = sender.send(&realtime_bytes(SystemRealtime::TimingClock)) {
+            debug!("MIDI idle beat clock send failed: {:?}", e);
+        }
+        self.next_tick = if elapsed.saturating_sub(self.next_tick) > self.interval {
+            elapsed + self.interval
+        } else {
+            self.next_tick + self.interval
+        };
+        true
+    }
+}
+
+/// Returns a hold running at `interval`, reusing `hold` if it already is.
+///
+/// Reused rather than rebuilt so the tick phase survives the handover from
+/// waiting-for-a-command to waiting-for-the-go-signal. A fresh hold restarts the
+/// count from now, which discards however much of the current interval had
+/// already elapsed and pushes the next tick up to a full interval late -- worth
+/// two missing pulses at the song boundary, measured, for no reason.
+fn hold_at(hold: &mut Option<TempoHold>, interval: Duration) -> &mut TempoHold {
+    match hold {
+        Some(existing) if existing.interval == interval => {}
+        _ => *hold = Some(TempoHold::new(interval)),
+    }
+    hold.as_mut().expect("just populated")
+}
+
+/// Free-runs the clock, emitting timing clocks until a command arrives
+/// (returned) or the sender is dropped (`None`). Timing is anchored to a wall
+/// clock so the tempo does not drift.
 fn run_idle_until_command(
     sender: &mut dyn MidiSender,
-    interval: Duration,
+    hold: &mut TempoHold,
     rx: &mpsc::Receiver<BeatClockCommand>,
 ) -> Option<BeatClockCommand> {
-    use midly::live::SystemRealtime;
     use std::sync::mpsc::RecvTimeoutError;
 
-    let clock_bytes = realtime_bytes(SystemRealtime::TimingClock);
-    let clock = PlaybackClock::wall();
-    clock.start();
-    let mut next_tick = interval;
-
     loop {
-        let wait = next_tick.saturating_sub(clock.elapsed());
-        match rx.recv_timeout(wait) {
+        match rx.recv_timeout(hold.until_next()) {
             Ok(command) => return Some(command),
-            Err(RecvTimeoutError::Timeout) => {
-                if let Err(e) = sender.send(&clock_bytes) {
-                    debug!("MIDI idle beat clock send failed: {:?}", e);
-                }
-                next_tick += interval;
-            }
+            Err(RecvTimeoutError::Timeout) => hold.tick_if_due(sender),
             Err(RecvTimeoutError::Disconnected) => return None,
         }
+    }
+}
+
+/// Waits for the shared playback clock's go signal, holding the tempo while it
+/// waits.
+///
+/// The engine takes a queued `Play` as soon as it arrives, which ends the idle
+/// free-run, and then has to wait for every subsystem -- audio device, sample
+/// loading, DMX validation -- to report ready. Blocking silently through that
+/// window drops the clock for exactly as long as startup takes, at the one
+/// boundary `persist_tempo` is supposed to cover. So the wait is done in
+/// tick-sized slices with the tempo still running underneath it.
+///
+/// Without a tempo to hold (persistence off, or no song has established one
+/// yet) this is a plain blocking wait, matching the original behavior.
+fn wait_for_start_holding_tempo(
+    sender: &mut dyn MidiSender,
+    play: &BeatClockPlay,
+    hold: Option<&mut TempoHold>,
+) {
+    let Some(hold) = hold else {
+        play.clock.wait_for_start_or_cancel(&play.cancel);
+        return;
+    };
+
+    while !play
+        .clock
+        .wait_for_start_or_cancel_until(&play.cancel, hold.until_next())
+    {
+        if play.cancel.is_cancelled() {
+            return;
+        }
+        hold.tick_if_due(sender);
     }
 }
 
@@ -2399,7 +2604,8 @@ mod test {
             let mut sender = MockSender::new();
             let clock = PlaybackClock::wall();
 
-            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock);
+            let (_tx, rx) = mpsc::channel();
+            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock, &rx);
 
             let sent = sender.sent.lock();
             // START + 24 clock ticks + STOP
@@ -2418,12 +2624,14 @@ mod test {
             let mut sender = MockSender::new();
             let clock = PlaybackClock::wall();
 
+            let (_tx, rx) = mpsc::channel();
             run_beat_clock(
                 &mut sender,
                 &ticks,
                 Duration::from_millis(100),
                 &cancel,
                 &clock,
+                &rx,
             );
 
             let sent = sender.sent.lock();
@@ -2439,7 +2647,8 @@ mod test {
             let mut sender = MockSender::new();
             let clock = PlaybackClock::wall();
 
-            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock);
+            let (_tx, rx) = mpsc::channel();
+            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock, &rx);
 
             let sent = sender.sent.lock();
             assert_eq!(sent.len(), 2);
@@ -2455,7 +2664,8 @@ mod test {
             let mut sender = MockSender::new();
             let clock = PlaybackClock::wall();
 
-            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock);
+            let (_tx, rx) = mpsc::channel();
+            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock, &rx);
 
             let sent = sender.sent.lock();
             // START + STOP (cancelled before any ticks)
@@ -2477,7 +2687,10 @@ mod test {
             let mut sender = MockSender::new();
             let clock = PlaybackClock::wall();
 
-            let interval = run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock);
+            let (_tx, rx) = mpsc::channel();
+            let interval =
+                run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock, &rx)
+                    .interval();
 
             // Last two ticks: 6ms - 3ms = 3ms.
             assert_eq!(interval, Some(Duration::from_millis(3)));
@@ -2491,7 +2704,10 @@ mod test {
             let mut sender = MockSender::new();
             let clock = PlaybackClock::wall();
 
-            let interval = run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock);
+            let (_tx, rx) = mpsc::channel();
+            let interval =
+                run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock, &rx)
+                    .interval();
 
             assert_eq!(interval, None);
         }
@@ -2553,6 +2769,312 @@ mod test {
             }
         }
 
+        /// Pacing, decided from a table of elapsed times rather than a clock.
+        ///
+        /// Nothing here sleeps, spawns, or reads the time, so these assertions
+        /// mean the same thing on an idle laptop and a saturated CI runner.
+        mod pacing {
+            use super::*;
+
+            /// Ticks come one per interval and do not drift.
+            #[test]
+            fn one_tick_per_interval() {
+                let mut hold = TempoHold::new(Duration::from_millis(10));
+                let mut sender = SharedSender::new();
+
+                assert!(!hold.tick_if_due_at(&mut sender, Duration::from_millis(9)));
+                assert!(hold.tick_if_due_at(&mut sender, Duration::from_millis(10)));
+                assert!(!hold.tick_if_due_at(&mut sender, Duration::from_millis(19)));
+                assert!(hold.tick_if_due_at(&mut sender, Duration::from_millis(20)));
+
+                assert_eq!(sender.sent.lock().len(), 2);
+                assert!(sender.sent.lock().iter().all(|m| *m == clock_bytes()));
+            }
+
+            /// A tick delivered late still schedules the next one on the
+            /// original grid, so small jitter does not accumulate into drift.
+            #[test]
+            fn a_slightly_late_tick_keeps_the_grid() {
+                let mut hold = TempoHold::new(Duration::from_millis(10));
+                let mut sender = SharedSender::new();
+
+                // Due at 10ms, delivered at 15ms: within one interval late.
+                assert!(hold.tick_if_due_at(&mut sender, Duration::from_millis(15)));
+                // The next is still due at 20ms, not 25ms.
+                assert_eq!(
+                    hold.until_next_at(Duration::from_millis(15)),
+                    Duration::from_millis(5)
+                );
+            }
+
+            /// Falling more than an interval behind re-anchors instead of
+            /// replaying the backlog. This is the case that matters: a 10s stall
+            /// at a 10ms interval is a thousand ticks owed, and firing them back
+            /// to back reads downstream as an enormous tempo spike.
+            #[test]
+            fn a_long_stall_re_anchors_instead_of_bursting() {
+                let mut hold = TempoHold::new(Duration::from_millis(10));
+                let mut sender = SharedSender::new();
+
+                // Gone for ten seconds.
+                assert!(hold.tick_if_due_at(&mut sender, Duration::from_secs(10)));
+
+                // Exactly one tick, and the next is a normal interval away --
+                // not a thousand ticks owed at zero spacing.
+                assert_eq!(sender.sent.lock().len(), 1);
+                assert_eq!(
+                    hold.until_next_at(Duration::from_secs(10)),
+                    Duration::from_millis(10)
+                );
+
+                // And it keeps pacing normally from the new anchor.
+                assert!(!hold.tick_if_due_at(&mut sender, Duration::from_millis(10_005)));
+                assert!(hold.tick_if_due_at(&mut sender, Duration::from_millis(10_010)));
+                assert_eq!(sender.sent.lock().len(), 2);
+            }
+
+            /// The wait timeout never goes negative or saturates oddly when the
+            /// tick is already overdue.
+            #[test]
+            fn an_overdue_tick_asks_for_no_wait() {
+                let hold = TempoHold::new(Duration::from_millis(10));
+                assert_eq!(
+                    hold.until_next_at(Duration::from_millis(50)),
+                    Duration::ZERO
+                );
+            }
+        }
+
+        /// Polls until `cond` holds or the deadline passes.
+        ///
+        /// These tests assert that a free-running clock keeps running at all,
+        /// not that it hits a precise count in a precise window. A shared CI
+        /// runner can starve this thread for tens of milliseconds at a time, so
+        /// a fixed sleep plus an exact count is a flake waiting to happen --
+        /// which is exactly how both of these first landed. Polling makes a slow
+        /// machine slower rather than red.
+        fn wait_for(timeout: Duration, mut cond: impl FnMut() -> bool) -> bool {
+            let deadline = std::time::Instant::now() + timeout;
+            while std::time::Instant::now() < deadline {
+                if cond() {
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            cond()
+        }
+
+        /// Held ticks required before believing the clock is really running.
+        ///
+        /// At most one tick can slip out between sampling the baseline and the
+        /// engine picking the queued command up, so anything above that
+        /// separates "held the tempo" from "went silent and emitted a straggler".
+        const HELD_TICKS: usize = 5;
+
+        /// The gap between "user pressed play" and "every subsystem is ready"
+        /// is the boundary persistence exists for, and the engine spends it
+        /// waiting on the shared clock. It must keep the tempo running there.
+        #[test]
+        fn holds_tempo_while_waiting_for_the_go_signal() {
+            let (tx, rx) = mpsc::channel();
+            let sender = SharedSender::new();
+            let loop_sender = sender.clone();
+            let handle = thread::spawn(move || {
+                let mut sender = loop_sender;
+                beat_clock_engine_loop(&mut sender, true, &rx);
+            });
+
+            // First song establishes a 20ms tempo and ends: START + 3 clocks +
+            // STOP, then held ticks.
+            tx.send(BeatClockCommand::Play(ready_play(
+                vec![
+                    Duration::from_millis(20),
+                    Duration::from_millis(40),
+                    Duration::from_millis(60),
+                ],
+                CancelHandle::new(),
+            )))
+            .unwrap();
+            assert!(
+                wait_for(Duration::from_secs(10), || sender.len() > 5),
+                "the first song never established a held tempo"
+            );
+            let before = sender.len();
+
+            // Second song arrives but its clock has NOT started: the player is
+            // still opening devices and loading samples.
+            let slow_clock = PlaybackClock::wall();
+            tx.send(BeatClockCommand::Play(BeatClockPlay {
+                ticks: Arc::new(vec![Duration::from_millis(20), Duration::from_millis(40)]),
+                start_time: Duration::ZERO,
+                playback_delay: Duration::ZERO,
+                cancel: CancelHandle::new(),
+                clock: slow_clock.clone(),
+            }))
+            .unwrap();
+
+            // The go signal is withheld for this whole window, so everything
+            // arriving is the held tempo. Blocking silently on the clock -- the
+            // behaviour this guards against -- emits nothing here at all.
+            let held = wait_for(Duration::from_secs(10), || {
+                sender.len() >= before + HELD_TICKS
+            });
+            let during = sender.len();
+            assert!(
+                held,
+                "clock went silent while waiting for the go signal: {} messages in 10s",
+                during - before
+            );
+
+            // Releasing the go signal must still let the schedule play.
+            slow_clock.start();
+            assert!(
+                wait_for(Duration::from_secs(10), || sender.len() > during),
+                "the schedule never ran once the clock started"
+            );
+            tx.send(BeatClockCommand::Shutdown).unwrap();
+            handle.join().unwrap();
+
+            // The Start belongs with the first note, not with the wait.
+            let sent = sender.sent.lock();
+            for msg in &sent[before..during] {
+                assert_eq!(*msg, clock_bytes(), "only timing clocks may be held");
+            }
+        }
+
+        /// A schedule too short to establish a tempo must not erase the one
+        /// already being held.
+        #[test]
+        fn a_schedule_with_too_few_ticks_keeps_the_previous_tempo() {
+            let (tx, rx) = mpsc::channel();
+            let sender = SharedSender::new();
+            let loop_sender = sender.clone();
+            let handle = thread::spawn(move || {
+                let mut sender = loop_sender;
+                beat_clock_engine_loop(&mut sender, true, &rx);
+            });
+
+            // Establish a tempo.
+            tx.send(BeatClockCommand::Play(ready_play(
+                vec![
+                    Duration::from_millis(20),
+                    Duration::from_millis(40),
+                    Duration::from_millis(60),
+                ],
+                CancelHandle::new(),
+            )))
+            .unwrap();
+            assert!(
+                wait_for(Duration::from_secs(10), || sender.len() > 5),
+                "the first song never established a held tempo"
+            );
+
+            // A one-tick schedule: `run_beat_clock` cannot derive an interval
+            // from it and reports None. Its own output is START + 1 clock + STOP.
+            let before = sender.len();
+            tx.send(BeatClockCommand::Play(ready_play(
+                vec![Duration::from_millis(5)],
+                CancelHandle::new(),
+            )))
+            .unwrap();
+            assert!(
+                wait_for(Duration::from_secs(10), || sender.len() >= before + 3),
+                "the short schedule never played"
+            );
+            let after_short = sender.len();
+
+            let still_running = wait_for(Duration::from_secs(10), || {
+                sender.len() >= after_short + HELD_TICKS
+            });
+            tx.send(BeatClockCommand::Shutdown).unwrap();
+            handle.join().unwrap();
+
+            assert!(
+                still_running,
+                "the short schedule wiped the held tempo: {} messages in the 10s after it",
+                sender.len() - after_short
+            );
+        }
+
+        /// Nothing cancels a song's schedule when it ends naturally -- the
+        /// cleanup path only clears the join and advances the playlist -- so a
+        /// MIDI file longer than its audio leaves the engine still running the
+        /// old grid. The next song must take over at once rather than queue
+        /// behind it.
+        #[test]
+        fn a_new_schedule_preempts_a_running_one() {
+            let (tx, rx) = mpsc::channel();
+            let sender = SharedSender::new();
+            let loop_sender = sender.clone();
+            let handle = thread::spawn(move || {
+                let mut sender = loop_sender;
+                beat_clock_engine_loop(&mut sender, false, &rx);
+            });
+
+            // Two seconds of schedule, far longer than this test waits.
+            let long: Vec<Duration> = (1..=200).map(|i| Duration::from_millis(i * 10)).collect();
+            tx.send(BeatClockCommand::Play(ready_play(
+                long,
+                CancelHandle::new(),
+            )))
+            .unwrap();
+            thread::sleep(Duration::from_millis(40));
+
+            // The next song, arriving while the first schedule is still going.
+            tx.send(BeatClockCommand::Play(ready_play(
+                vec![Duration::from_millis(5), Duration::from_millis(10)],
+                CancelHandle::new(),
+            )))
+            .unwrap();
+            thread::sleep(Duration::from_millis(80));
+
+            tx.send(BeatClockCommand::Shutdown).unwrap();
+            handle.join().unwrap();
+
+            // Two Starts within ~120ms. Queued behind the first schedule, the
+            // second would not have started for another two seconds.
+            let sent = sender.sent.lock();
+            let starts = sent.iter().filter(|m| **m == start_bytes()).count();
+            assert_eq!(
+                starts,
+                2,
+                "the second song did not preempt the first: {starts} Start(s) in {} messages",
+                sent.len()
+            );
+        }
+
+        /// Shutdown must be observed mid-schedule. Device teardown runs on a
+        /// tokio worker and joins this thread, so waiting out a whole song there
+        /// blocks a runtime thread for the length of the song.
+        #[test]
+        fn shutdown_is_observed_during_a_schedule() {
+            let (tx, rx) = mpsc::channel();
+            let sender = SharedSender::new();
+            let loop_sender = sender.clone();
+            let handle = thread::spawn(move || {
+                let mut sender = loop_sender;
+                beat_clock_engine_loop(&mut sender, false, &rx);
+            });
+
+            let long: Vec<Duration> = (1..=200).map(|i| Duration::from_millis(i * 10)).collect();
+            tx.send(BeatClockCommand::Play(ready_play(
+                long,
+                CancelHandle::new(),
+            )))
+            .unwrap();
+            thread::sleep(Duration::from_millis(30));
+
+            let sent_shutdown = std::time::Instant::now();
+            tx.send(BeatClockCommand::Shutdown).unwrap();
+            handle.join().unwrap();
+            let waited = sent_shutdown.elapsed();
+
+            assert!(
+                waited < Duration::from_millis(500),
+                "shutdown waited {waited:?} for the schedule to finish"
+            );
+        }
+
         #[test]
         fn shutdown_before_any_schedule_sends_nothing() {
             let (tx, rx) = mpsc::channel();
@@ -2588,11 +3110,12 @@ mod test {
             .unwrap();
 
             // Wait for the schedule (START + 3 clocks + STOP = 5) plus some held
-            // ticks to accumulate.
-            thread::sleep(Duration::from_millis(120));
+            // ticks to accumulate. Polled rather than slept: a starved thread
+            // makes this slower, not wrong.
+            let held_ticks = wait_for(Duration::from_secs(10), || sender.len() > 5);
             let held = sender.len();
             assert!(
-                held > 5,
+                held_ticks,
                 "expected schedule (5 msgs) plus held ticks, got {held}"
             );
 
@@ -2629,8 +3152,16 @@ mod test {
             )))
             .unwrap();
 
-            // Give it time to play and then sit idle.
-            thread::sleep(Duration::from_millis(80));
+            // Wait for the schedule to finish, then hold still and confirm
+            // nothing follows it. The negative half stays a fixed window on
+            // purpose: load can only make a silent engine emit *less*, so it
+            // cannot turn this green when it should be red.
+            assert!(
+                wait_for(Duration::from_secs(10), || sender.len() >= 4),
+                "the schedule never played, got {}",
+                sender.len()
+            );
+            thread::sleep(Duration::from_millis(200));
             let count = sender.len();
             // START + 2 clocks + STOP = 4, and nothing more without persistence.
             assert_eq!(count, 4, "expected exactly the schedule, got {count}");
@@ -2657,7 +3188,14 @@ mod test {
             )))
             .unwrap();
 
-            let command = next_command(&mut sender, true, Some(Duration::from_millis(10)), &rx);
+            let mut hold = None;
+            let command = next_command(
+                &mut sender,
+                true,
+                Some(Duration::from_millis(10)),
+                &mut hold,
+                &rx,
+            );
             assert!(matches!(command, Some(BeatClockCommand::Play(_))));
             // No idle tick was emitted while a command was already waiting.
             assert!(sender.sent.lock().is_empty());
@@ -2728,9 +3266,8 @@ mod test {
 
             // Releasing the go signal lets the schedule play.
             clock.start();
-            thread::sleep(Duration::from_millis(60));
             assert!(
-                sender.len() >= 4,
+                wait_for(Duration::from_secs(10), || sender.len() >= 4),
                 "schedule should play once the clock starts, got {}",
                 sender.len()
             );
@@ -2760,16 +3297,17 @@ mod test {
             let loop_sender = sender.clone();
             let handle = thread::spawn(move || {
                 let mut sender = loop_sender;
-                let cmd = run_idle_until_command(&mut sender, Duration::from_millis(10), &rx);
+                let mut hold = TempoHold::new(Duration::from_millis(10));
+                let cmd = run_idle_until_command(&mut sender, &mut hold, &rx);
                 assert!(matches!(cmd, Some(BeatClockCommand::Shutdown)));
             });
 
-            thread::sleep(Duration::from_millis(65));
+            let ticked = wait_for(Duration::from_secs(10), || !sender.sent.lock().is_empty());
             tx.send(BeatClockCommand::Shutdown).unwrap();
             handle.join().unwrap();
 
             let sent = sender.sent.lock();
-            assert!(!sent.is_empty(), "idle free-run should emit timing clocks");
+            assert!(ticked, "idle free-run should emit timing clocks");
             for msg in sent.iter() {
                 assert_eq!(*msg, clock_bytes());
             }

@@ -434,17 +434,22 @@ fn probe_all_devices() -> bool {
 /// cannot be mistaken for a real device's message.
 const PROBE_SYSEX_ID: u8 = 0x7D;
 
+/// Whether a MIDI port is the OS's software through-port rather than an
+/// interface.
+///
+/// ALSA's is `Midi Through Port-0`; it loops back with no cable present. Matched
+/// on the full `midi through` rather than bare `through`, which would also claim
+/// any interface with the word in its name -- a "Passthrough 4x4" is real
+/// hardware and must not be demoted to a software port.
+pub fn is_through_port(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("midi through")
+}
+
 /// Probes every MIDI output port to see which input ports receive its traffic.
 ///
 /// SysEx rather than a note: it carries an identifying payload, and no
 /// synthesiser will make a sound in response, which matters when the port
 /// under test is connected to real gear.
-/// Whether a MIDI port is the OS's software through-port rather than an
-/// interface. ALSA calls it `Midi Through`; it loops with no cable present.
-pub fn is_through_port(name: &str) -> bool {
-    name.to_ascii_lowercase().contains("through")
-}
-
 fn measure_midi(caps: &Capabilities) -> Vec<MidiLoopback> {
     use midir::{Ignore, MidiInput, MidiOutput};
 
