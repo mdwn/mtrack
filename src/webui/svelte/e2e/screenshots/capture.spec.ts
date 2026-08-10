@@ -273,13 +273,13 @@ const STE_WAVEFORM = {
   ],
 };
 
-async function steInstallRoutes(page: Page) {
+async function steInstallRoutes(page: Page, yaml: string = STE_YAML) {
   // The song's raw YAML (the editor parses tempo/pilot/sections from it).
   await page.route(`**/api/songs/${STE_ENC}`, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "text/yaml",
-      body: STE_YAML,
+      body: yaml,
     });
   });
   // A fuller waveform so the lanes look like a real song.
@@ -301,8 +301,8 @@ async function steInstallRoutes(page: Page) {
   });
 }
 
-async function steOpen(page: Page) {
-  await steInstallRoutes(page);
+async function steOpen(page: Page, yaml: string = STE_YAML) {
+  await steInstallRoutes(page, yaml);
   await page.goto(`/#/songs/${STE_ENC}/sections`);
   await expect(page.locator(".section-timeline-editor")).toBeVisible();
   await expect(
@@ -337,5 +337,105 @@ test("section-timeline-pilot-dialog", async ({ page }) => {
   await page.waitForTimeout(200);
   await page.screenshot({
     path: path.join(DOCS_IMAGES, "section-timeline-pilot-dialog.png"),
+  });
+});
+
+// --- Metronome feel (accents, subdivisions, claves, feel changes) ---------
+// The same song with a `metronome:` block, so the tempo markers carry feel
+// and the dialog shows the accent pads / subdivision picker.
+
+const MET_YAML = `${STE_YAML}metronome:
+  track: click
+  accents: [3, 1, 2, 1]
+  subdivision: 2
+  changes:
+    - measure: 5
+      accents: [3, 0, 2, 0]
+    - measure: 9
+      subdivision: 3
+    - measure: 13
+      subdivision: son
+`;
+
+test("metronome-feel-timeline", async ({ page }) => {
+  await steOpen(page, MET_YAML);
+  await page.locator(".section-timeline-editor").screenshot({
+    path: path.join(DOCS_IMAGES, "metronome-feel-timeline.png"),
+  });
+});
+
+test("metronome-feel-dialog", async ({ page }) => {
+  // Taller than DESKTOP so the whole sheet fits — the subdivision picker
+  // runs to a second row with the claves.
+  await page.setViewportSize({ width: 1280, height: 1100 });
+  await steOpen(page, MET_YAML);
+  // The base tempo marker: song-level accents and subdivision.
+  await page.locator(".marker-lane").first().locator(".marker").first().click();
+  await expect(page.locator(".marker-dialog").first()).toBeVisible();
+  const dialog = page.locator(".marker-dialog").first();
+  await expect(dialog.locator(".accent-pads")).toBeVisible();
+  await expect(dialog.locator(".subdiv-options")).toBeVisible();
+  await page.waitForTimeout(200);
+  await page.screenshot({
+    path: path.join(DOCS_IMAGES, "metronome-feel-dialog.png"),
+  });
+});
+
+test("metronome-feel-change-dialog", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1100 });
+  await steOpen(page, MET_YAML);
+  // The measure-13 marker: a tempo change (with an 8-beat transition) that
+  // also carries a feel change, so the per-aspect toggles are all visible.
+  await page.locator(".marker-lane").first().locator(".marker").nth(3).click();
+  const changeDialog = page.locator(".marker-dialog").first();
+  await expect(changeDialog).toBeVisible();
+  await expect(changeDialog.locator(".subdiv-options")).toBeVisible();
+  await page.waitForTimeout(200);
+  await page.screenshot({
+    path: path.join(DOCS_IMAGES, "metronome-feel-change-dialog.png"),
+  });
+});
+
+// The beat dots are ~8px; capture them at 3x so the accent / half / silent
+// styling is legible in the docs.
+test.describe(() => {
+  test.use({ deviceScaleFactor: 3 });
+
+  test("metronome-visual-click", async ({ page }) => {
+    const wsId = freshWsId("visual-click");
+    await page.goto(`/?wsId=${wsId}#/`);
+    await page.waitForTimeout(300);
+    // 4/4 at 120 BPM, one measure of dots: accent / silent / half / normal.
+    // Elapsed sits on beat 3, the half accent, so the flash shows its style.
+    await pushWs(page, wsId, {
+      ...DEFAULT_PLAYBACK,
+      is_playing: true,
+      elapsed_ms: 1000,
+      song_name: "Death is a Fine Companion",
+      song_duration_ms: 254000,
+      beat_grid: {
+        beats: [0, 0.5, 1.0, 1.5],
+        measure_starts: [0],
+        accent_levels: [3, 0, 2, 1],
+      },
+    });
+    await expect(page.locator(".beat-dot")).toHaveCount(4);
+    await expect(page.locator(".beat-dot").nth(2)).toHaveClass(
+      /beat-dot--half/,
+    );
+    await page.waitForTimeout(200);
+    // The meta row spans the whole card; clip to its left end, where the
+    // text and the dots are, so the docs image isn't mostly whitespace.
+    const box = await page.locator(".playback-card__meta").boundingBox();
+    if (!box) throw new Error("playback-card__meta has no bounding box");
+    await page.screenshot({
+      path: path.join(DOCS_IMAGES, "metronome-visual-click.png"),
+      clip: {
+        x: box.x - 10,
+        y: box.y - 10,
+        width: Math.min(box.width, 330),
+        height: box.height + 20,
+      },
+    });
   });
 });

@@ -74,9 +74,11 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   to its start, and the small loop button next to it arms a section loop. An active loop shows
   the section name and a "Stop Loop" button. Beat/measure position is displayed when beat grid
   data is available, along with a visual metronome: one dot per beat of the current meter with
-  the active beat highlighted, and a pulse that flashes on every beat (accented on downbeats)
-  while playing. Pilot hints appear as markers on the progress bar, and upcoming hint labels
-  are shown a few seconds ahead of their position. Hints that follow each other closely
+  the active beat highlighted, and a pulse that flashes on every beat while playing. When the
+  song's metronome defines [accent levels](#metronome-feel), the dots and the pulse follow
+  them — accents emphasized, half accents in amber, silent beats hollow and unflashed —
+  otherwise the downbeat is accented. Pilot hints appear as markers on the progress bar, and
+  upcoming hint labels are shown a few seconds ahead of their position. Hints that follow each other closely
   (e.g. a "bridge" label and its "3..2..1" countdown) stay visible together, with only the
   live one highlighted — while its sample plays, or briefly at the anchor for label-only
   hints.
@@ -190,6 +192,34 @@ and pilot voice-hints can be authored against the same beat grid:
 ![Tempo change dialog](../images/section-timeline-tempo-dialog.png)
 
 ![Pilot hint dialog](../images/section-timeline-pilot-dialog.png)
+
+#### Metronome feel
+
+Tempo markers also carry the metronome's *feel* — the accent pattern and the subdivision in
+effect from that measure on. The base marker edits the song-level values; any later marker can
+change either one, on its own or alongside a tempo change. Each marker's chip labels what it
+changes, with the accent pattern drawn as a per-beat glyph and the subdivision as its note value
+(`1/8`, `1/8t`, `son`, …).
+
+![Tempo markers carrying accent patterns and subdivisions](../images/metronome-feel-timeline.png)
+
+The dialog's accents and subdivision sections are individually toggleable. **Accents** are tapped
+per beat, each tap cycling that beat one step — silent, normal, half accent, accent. **Subdivision**
+is picked from note values relative to the meter's beat (in 4/4: quarter, eighths, triplets,
+sixteenths, sextuplets), plus the son and rumba claves, which play their hit pattern over a
+two-measure cycle.
+
+![Base tempo marker with accent pads and the subdivision picker](../images/metronome-feel-dialog.png)
+
+A change marker shows only the aspects it overrides; here a tempo change with an 8-beat transition
+that also switches the feel to a son clave.
+
+![Tempo change marker carrying a feel change](../images/metronome-feel-change-dialog.png)
+
+While playing, the visual metronome on the [dashboard](#dashboard) mirrors the resolved
+levels, so what you see matches what the click plays.
+
+![Visual metronome showing accent, silent, half and normal beats](../images/metronome-visual-click.png)
 
 ### Lighting Tab
 
