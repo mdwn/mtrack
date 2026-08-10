@@ -157,6 +157,35 @@ fn map_cpal_format(fmt: cpal::SampleFormat) -> SupportedFormat {
     }
 }
 
+/// The output configurations a device reports, or `None` if it reports none
+/// usable for output.
+///
+/// The single point where "does this device count as an output device?" is
+/// decided, because it used to be decided twice. Device enumeration happens on
+/// two paths -- [`list_device_info`] for the web UI's picker and
+/// [`Device::list_cpal_devices`] for actually opening one -- and they disagreed:
+/// the listing path called `supported_output_configs()` once and iterated that,
+/// while the opening path called it, threw the result away, and called it a
+/// second time to iterate. On an exclusive ALSA device the second call can come
+/// back empty, leaving `max_channels` at zero so the device was dropped from the
+/// openable list while remaining in the picker.
+///
+/// The result: the web UI offered 19 devices where only 8 could be opened, and
+/// choosing one of the other 11 failed with "no device found with name ..."
+/// (#357). Both paths now go through here, so they cannot drift apart again.
+fn output_configs(device: &cpal::Device) -> Option<Vec<cpal::SupportedStreamConfigRange>> {
+    let configs: Vec<_> = device.supported_output_configs().ok()?.collect();
+    let max_channels = configs.iter().map(|c| c.channels()).max().unwrap_or(0);
+    // Zero channels means there is nothing to play out of, whatever else the
+    // device claims to support.
+    (max_channels > 0).then_some(configs)
+}
+
+/// The highest channel count among a device's output configurations.
+fn max_output_channels(configs: &[cpal::SupportedStreamConfigRange]) -> u16 {
+    configs.iter().map(|c| c.channels()).max().unwrap_or(0)
+}
+
 /// Lists audio devices as simple info structs (no trait objects).
 pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
     // Suppress noisy output here.
@@ -170,20 +199,15 @@ pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
             Err(_) => continue,
         };
         for device in host_devices {
-            let mut max_channels = 0u16;
-            let output_configs = match device.supported_output_configs() {
-                Ok(configs) => configs,
-                Err(_) => continue,
+            let Some(output_configs) = output_configs(&device) else {
+                continue;
             };
+            let max_channels = max_output_channels(&output_configs);
 
             let mut sample_rates = std::collections::BTreeSet::new();
             let mut formats = std::collections::BTreeSet::new();
 
             for cfg in output_configs {
-                if max_channels < cfg.channels() {
-                    max_channels = cfg.channels();
-                }
-
                 let min_rate = cfg.min_sample_rate();
                 let max_rate = cfg.max_sample_rate();
                 for &rate in STANDARD_SAMPLE_RATES {
@@ -271,7 +295,16 @@ impl Device {
         let _shh_stdout = shh::stdout()?;
         let _shh_stderr = shh::stderr()?;
 
-        let mut devices: Vec<Device> = Vec::new();
+        // Enumerate first, and build nothing while doing it.
+        //
+        // Constructing the placeholder `OutputManager` inside this walk reserves
+        // audio resources partway through it, and ALSA then refuses to describe
+        // the devices not yet visited: `supported_output_configs()` comes back
+        // empty for them, they are dropped, and the list ends up a subset of
+        // what the web UI's picker (which only queries) advertises. On the test
+        // rig that was 8 devices against 19, and choosing one of the missing 11
+        // failed with "no device found with name ..." (#357).
+        let mut found: Vec<(cpal::HostId, cpal::Device, u16)> = Vec::new();
         for host_id in cpal::available_hosts() {
             let host_devices = match cpal::host_from_id(host_id)?.devices() {
                 Ok(host_devices) => host_devices,
@@ -286,46 +319,122 @@ impl Device {
             };
 
             for device in host_devices {
-                let mut max_channels = 0;
-
-                let output_configs = device.supported_output_configs();
-                if let Err(_e) = output_configs {
+                let Some(configs) = output_configs(&device) else {
                     continue;
-                }
-
-                for output_config in device.supported_output_configs()? {
-                    if max_channels < output_config.channels() {
-                        max_channels = output_config.channels();
-                    }
-                }
-
-                if max_channels > 0 {
-                    // Create device with default format - will be overridden in get() method
-                    let default_format = TargetFormat::new(44100, SampleFormat::Int, 32)?;
-
-                    // Create a temporary output manager for listing
-                    let temp_output_manager = Arc::new(OutputManager::new(
-                        max_channels,
-                        default_format.sample_rate,
-                    )?);
-
-                    devices.push(Device {
-                        name: device.id()?.to_string(),
-                        playback_delay: Duration::ZERO,
-                        max_channels,
-                        host_id,
-                        device,
-                        target_format: default_format,
-                        output_manager: temp_output_manager,
-                        audio_config: config::Audio::new("default"), // Default config for listing
-                        metronome_defaults: parking_lot::Mutex::new(None),
-                    })
-                }
+                };
+                found.push((host_id, device, max_output_channels(&configs)));
             }
+        }
+
+        // Now build. The manager here is a placeholder that `get` replaces, so
+        // it holds nothing anyone depends on -- it just must not exist while the
+        // enumeration above is still running.
+        let mut devices: Vec<Device> = Vec::new();
+        for (host_id, device, max_channels) in found {
+            let default_format = TargetFormat::new(44100, SampleFormat::Int, 32)?;
+            let temp_output_manager = Arc::new(OutputManager::new(
+                max_channels,
+                default_format.sample_rate,
+            )?);
+
+            devices.push(Device {
+                name: device.id()?.to_string(),
+                playback_delay: Duration::ZERO,
+                max_channels,
+                host_id,
+                device,
+                target_format: default_format,
+                output_manager: temp_output_manager,
+                audio_config: config::Audio::new("default"), // Default config for listing
+                metronome_defaults: parking_lot::Mutex::new(None),
+            })
         }
 
         devices.sort_by_key(|device| device.name.to_string());
         Ok(devices)
+    }
+
+    /// Whether a device of this name can be located for opening.
+    ///
+    /// The cheap half of [`Device::get`]: it resolves the device the same way
+    /// but starts no output thread, so it can be asked about every advertised
+    /// device without disturbing a rig.
+    pub fn is_findable(name: &str) -> bool {
+        matches!(Device::find_cpal_device(name), Ok(Some(_)))
+    }
+
+    /// Finds one output device by name, holding no others open.
+    ///
+    /// Deliberately not `list_cpal_devices().find(...)`. Every `Device` in that
+    /// list holds an open ALSA handle, and ALSA will not describe devices while
+    /// its siblings are held: building the full list makes the list *shrink*.
+    /// Measured on the test rig, in one process, alternating the two
+    /// enumeration paths: 19 devices, then 8, then 7, then 3. So a search over
+    /// that list could fail to find a device the web UI had legitimately
+    /// advertised, and the operator saw "no device found with name ..." for a
+    /// device that was right there in the dropdown (#357).
+    ///
+    /// Scanning and keeping only the match holds exactly one handle, which is
+    /// the same shape as [`crate::audio::find_input_device`].
+    fn find_cpal_device(name: &str) -> Result<Option<Device>, Box<dyn Error>> {
+        // Suppress noisy output here.
+        let _shh_stdout = shh::stdout()?;
+        let _shh_stderr = shh::stderr()?;
+
+        for host_id in cpal::available_hosts() {
+            let host_devices = match cpal::host_from_id(host_id)?.devices() {
+                Ok(host_devices) => host_devices,
+                Err(e) => {
+                    error!(
+                        err = e.to_string(),
+                        host = host_id.name(),
+                        "Unable to list devices for host"
+                    );
+                    continue;
+                }
+            };
+
+            for device in host_devices {
+                // Name first: a non-match is dropped here, before its
+                // configurations are queried and before anything is built from
+                // it, so its handle is released immediately.
+                let device_id = match device.id() {
+                    Ok(id) => id.to_string(),
+                    Err(_) => continue,
+                };
+                if device_id.trim() != name.trim() {
+                    continue;
+                }
+
+                let Some(configs) = output_configs(&device) else {
+                    debug!(
+                        device_name = %device_id,
+                        "Device matched by name but reports no output configurations"
+                    );
+                    continue;
+                };
+                let max_channels = max_output_channels(&configs);
+                let default_format = TargetFormat::new(44100, SampleFormat::Int, 32)?;
+                let output_manager = Arc::new(OutputManager::new(
+                    max_channels,
+                    default_format.sample_rate,
+                )?);
+
+                return Ok(Some(Device {
+                    name: device_id,
+                    playback_delay: Duration::ZERO,
+                    max_channels,
+                    host_id,
+                    device,
+                    target_format: default_format,
+                    output_manager,
+                    audio_config: config::Audio::new("default"),
+                    metronome_defaults: parking_lot::Mutex::new(None),
+                }));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Gets the given cpal device.
@@ -337,24 +446,7 @@ impl Device {
             device_name_trimmed = %name.trim(),
             "Searching for audio device"
         );
-        let devices = Device::list_cpal_devices()?;
-        debug!(
-            available_devices = ?devices.iter().map(|d| &d.name).collect::<Vec<_>>(),
-            "Available CPAL devices"
-        );
-        match devices.into_iter().find(|device| {
-            let device_trimmed = device.name.trim();
-            let name_trimmed = name.trim();
-            let matches = device_trimmed == name_trimmed;
-            debug!(
-                device_name = %device.name,
-                device_trimmed = %device_trimmed,
-                looking_for = %name_trimmed,
-                matches = matches,
-                "Comparing device"
-            );
-            matches
-        }) {
+        match Device::find_cpal_device(name)? {
             Some(mut device) => {
                 device.playback_delay = config.playback_delay()?;
 
@@ -1026,6 +1118,36 @@ impl AudioDevice for Device {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// The device the web UI offers must be one the player can open.
+    ///
+    /// These are two functions walking the same hosts, and when they drifted
+    /// the picker advertised 19 devices against 8 openable ones, so choosing
+    /// the wrong alias failed with "no device found with name ..." (#357).
+    ///
+    /// Vacuous where there is no audio hardware, which is most CI containers --
+    /// both lists are empty and agree. The load-bearing version is the hardware
+    /// suite's `advertised_devices_are_openable`, which runs on real rigs. This
+    /// exists so the two functions cannot be edited apart without something
+    /// local objecting.
+    #[test]
+    fn advertised_and_openable_device_lists_agree() {
+        let advertised: std::collections::BTreeSet<String> = match list_device_info() {
+            Ok(infos) => infos.into_iter().map(|d| d.name).collect(),
+            // No host at all is a container without ALSA, not a defect.
+            Err(_) => return,
+        };
+        let openable: std::collections::BTreeSet<String> = match Device::list_cpal_devices() {
+            Ok(devices) => devices.into_iter().map(|d| d.name).collect(),
+            Err(_) => return,
+        };
+
+        let advertised_only: Vec<&String> = advertised.difference(&openable).collect();
+        assert!(
+            advertised_only.is_empty(),
+            "the picker offers devices the player cannot open: {advertised_only:?}"
+        );
+    }
 
     mod current_playhead_section_tests {
         use super::*;

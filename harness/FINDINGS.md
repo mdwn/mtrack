@@ -15,43 +15,56 @@ both against `3a92ceb`):
 
 ---
 
-## 1. `/api/devices/audio` advertises devices the player cannot open
+## 1. `/api/devices/audio` advertises devices the player cannot open — FIXED
 
-**Tracked as [#357](https://github.com/mdwn/mtrack/issues/357).**
+**Tracked as [#357](https://github.com/mdwn/mtrack/issues/357). Fixed in
+[#344](https://github.com/mdwn/mtrack/pull/344)**; `advertised_devices_are_openable`
+passes on the test rig, with all 19 advertised devices resolvable.
 
 **Check:** `advertised_devices_are_openable` (area `devices`)
 
-mtrack enumerates audio devices through two paths that do not agree:
+mtrack enumerated audio devices through two paths that did not agree:
+`list_device_info()` (the web UI picker) found 19 devices, `list_devices()` (used
+when opening) found 8, and the 11 in the gap failed at playback with
+`no device found with name ...`.
 
-| Path | Used by | Devices found |
-|---|---|---|
-| `audio::list_device_info()` | `GET /api/devices/audio`, i.e. the web UI picker | 19 |
-| `audio::list_devices()` | `mtrack devices`, and `Device::get` when opening | 8 |
+**The recorded suspicion was wrong, and worth recording as such.** The theory
+was that `list_cpal_devices()` calling `supported_output_configs()` twice left
+`max_channels == 0` for exclusive devices. Making both paths share a single call
+changed nothing: the rig still reported 19 against 8.
 
-The 11 in the gap fail at playback with `no device found with name ...`:
+**Actual cause: enumerating is destructive.** Every `Device` in the list holds an
+open ALSA handle, and ALSA will not describe a device while its siblings are
+held. Building the list therefore truncates it — and the damage accumulates
+across calls. Alternating the two enumerations in one process on the test rig:
 
 ```
-alsa:default:CARD=MAT          alsa:plughw:CARD=3,DEV=0
-alsa:dmix:CARD=Headphones,DEV=0  alsa:plughw:CARD=MAT,DEV=0
-alsa:dmix:CARD=MAT,DEV=0       alsa:surround40:CARD=MAT,DEV=0
-alsa:front:CARD=MAT,DEV=0      alsa:surround71:CARD=MAT,DEV=0
-alsa:hw:CARD=3,DEV=0           alsa:sysdefault:CARD=MAT
-alsa:iec958:CARD=MAT,DEV=0
+info-first:    19 devices   fds=7
+devs-second:    8 devices   fds=15   <- 8 handles now held
+info-third:     7 devices   fds=15
+devs-fourth:    3 devices   fds=18
 ```
 
-**Impact.** Every alias of the USB interface *except* `alsa:hw:CARD=MAT,DEV=0`
-is unopenable, so a user selecting their interface from the web UI dropdown has
-a good chance of selecting one that cannot be opened. Note `alsa:hw:CARD=3,DEV=0`
-is in the broken set while `alsa:hw:CARD=MAT,DEV=0` — the same device by index
-rather than name — works.
+`list_device_info` holds nothing (fd count flat) and so always saw the true 19.
+`list_devices` held one handle per device it returned, and every later
+enumeration in that process saw fewer. Whichever path ran *first* looked
+correct; the second looked broken. The two functions were never really in
+disagreement.
 
-**Suspected cause (unconfirmed).** The two functions are near-identical, except
-`Device::list_cpal_devices()` calls `device.supported_output_configs()` *twice*
-(once to test for `Err`, then again to iterate) while `list_device_info()` calls
-it once. For an exclusive ALSA device the second call can yield an empty
-iterator, leaving `max_channels == 0` so the device is silently dropped. This
-would also explain why only one alias per card survives. Not isolated — worth
-confirming before fixing.
+**Impact.** `Device::get` searched a list built that way, so it could fail to
+find a device the picker had legitimately advertised — the operator saw
+"no device found" for a device visible in the dropdown. The more a session
+enumerated, the worse it got.
+
+**Fix.** `Device::get` now resolves through `find_cpal_device`, which scans and
+keeps only the match, holding exactly one handle — the same shape as the
+existing `find_input_device`. `audio::can_open_device` exposes that resolution
+without starting an output thread, and the check now asks it about each
+advertised device one at a time instead of comparing two list snapshots, since
+building the second snapshot was itself the thing under test.
+
+`list_devices()` still holds a handle per device and so still under-reports; it
+is now documented as display-only.
 
 ---
 

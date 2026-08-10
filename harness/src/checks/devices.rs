@@ -46,42 +46,40 @@ pub async fn advertised_devices_are_openable() -> CheckOutcome {
     // behaviour, so it propagates rather than being reported as a defect.
     let advertised: Vec<String> = advertised_raw.into_iter().map(|d| d.name).collect();
 
-    let openable: Vec<String> = mtrack::audio::list_devices()
-        .map_err(|e| CheckError::Harness(format!("could not list devices: {e}")))?
-        .into_iter()
-        .map(|d| d.to_string())
-        .collect();
-
-    // `list_devices` renders as "name (Channels=N) (Host)", so compare on the
-    // leading name rather than the whole display string.
-    let openable_names: Vec<&str> = openable
+    // Each device is resolved on its own, the way playback resolves the one the
+    // operator chose.
+    //
+    // The original form of this check compared the picker's list against
+    // `list_devices()`, and that comparison was measuring the wrong thing:
+    // every device in that list holds an open ALSA handle, and ALSA will not
+    // describe a device while its siblings are held, so *building* the list
+    // truncates it. Alternating the two enumerations in one process on the test
+    // rig gave 19 devices, then 8, then 7, then 3 -- the "openable" side of the
+    // comparison was an artifact of having enumerated at all.
+    //
+    // What an operator actually needs is that picking any advertised device
+    // works, so that is what is asked, one device at a time.
+    let unresolvable: Vec<&String> = advertised
         .iter()
-        .map(|d| d.split(" (Channels=").next().unwrap_or(d))
-        .collect();
-
-    // Emptied only under sabotage; the clone would otherwise run every time.
-    let openable_names: Vec<&str> = if crate::sabotage::active() {
-        Vec::new()
-    } else {
-        openable_names
-    };
-    let phantom: Vec<&String> = advertised
-        .iter()
-        .filter(|name| !openable_names.contains(&name.as_str()))
+        .filter(|name| {
+            if crate::sabotage::active() {
+                return true;
+            }
+            !mtrack::audio::can_open_device(name)
+        })
         .collect();
 
     check!(
-        phantom.is_empty(),
-        "GET /api/devices/audio offers {} device(s) that the player cannot open, so selecting one \
-         in the web UI fails with \"no device found\":\n  {}\n\nadvertised: {:?}\nopenable:   {:?}",
-        phantom.len(),
-        phantom
+        unresolvable.is_empty(),
+        "GET /api/devices/audio offers {} device(s) that the player cannot resolve, so selecting \
+         one in the web UI fails with \"no device found\":\n  {}\n\nadvertised: {:?}",
+        unresolvable.len(),
+        unresolvable
             .iter()
             .map(|s| s.as_str())
             .collect::<Vec<_>>()
             .join("\n  "),
         advertised,
-        openable_names,
     );
 
     crate::outcome::record(format!(
