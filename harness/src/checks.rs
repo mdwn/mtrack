@@ -75,6 +75,9 @@ const WORLD_LEVEL: &[&str] = &[
     "playlist_navigation_moves_between_songs",
     "tracks_route_to_their_mapped_channels",
     "beat_clock_is_silent_when_disabled",
+    "beat_clock_holds_tempo_after_a_song_stops",
+    "beat_clock_is_silent_after_stop_without_persist",
+    "beat_clock_bridges_the_gap_between_songs",
     "stale_checksum_is_rejected",
     "active_playlist_persists_across_restart",
     "absent_midi_is_skipped_not_fatal",
@@ -186,6 +189,27 @@ pub fn all() -> Vec<Check> {
             "beat_clock_is_silent_when_disabled",
             "No timing clock may be transmitted when beat clock is off.",
             midi_output::beat_clock_is_silent_when_disabled
+        ),
+        entry!(
+            "midi-transmit",
+            "beat_clock_holds_tempo_after_a_song_stops",
+            "With persist_tempo on, the clock must keep running at the song's tempo once\n  \
+             the song stops, so downstream gear holds tempo between songs.",
+            midi_output::beat_clock_holds_tempo_after_a_song_stops
+        ),
+        entry!(
+            "midi-transmit",
+            "beat_clock_is_silent_after_stop_without_persist",
+            "With persist_tempo off, the clock must go silent once the song stops. The\n  \
+             default must not change.",
+            midi_output::beat_clock_is_silent_after_stop_without_persist
+        ),
+        entry!(
+            "midi-transmit",
+            "beat_clock_bridges_the_gap_between_songs",
+            "Across a song change the clock must neither go silent nor stay at the old\n  \
+             song's tempo.",
+            midi_output::beat_clock_bridges_the_gap_between_songs
         ),
         entry!(
             "midi-config",
