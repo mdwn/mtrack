@@ -2694,6 +2694,66 @@ mod test {
         }
 
         #[test]
+        fn withholds_start_until_the_clock_go_signal() {
+            // Every other test uses `ready_play`, whose clock is already
+            // started, so the engine's `wait_for_start_or_cancel` returns
+            // immediately and the wait window is zero. This exercises a
+            // non-zero window: the engine must take the Play command, then emit
+            // nothing until the shared clock is started, so its Start lands with
+            // the first note rather than ahead of it.
+            let (tx, rx) = mpsc::channel();
+            let sender = SharedSender::new();
+            let loop_sender = sender.clone();
+            let handle = thread::spawn(move || {
+                let mut sender = loop_sender;
+                beat_clock_engine_loop(&mut sender, false, &rx);
+            });
+
+            // A schedule whose clock has NOT been started yet.
+            let cancel = CancelHandle::new();
+            let clock = PlaybackClock::wall();
+            tx.send(BeatClockCommand::Play(BeatClockPlay {
+                ticks: Arc::new(vec![Duration::from_millis(5), Duration::from_millis(10)]),
+                start_time: Duration::ZERO,
+                playback_delay: Duration::ZERO,
+                cancel,
+                clock: clock.clone(),
+            }))
+            .unwrap();
+
+            // While the clock is unstarted the engine blocks in
+            // `wait_for_start_or_cancel` and must emit nothing — not even Start.
+            thread::sleep(Duration::from_millis(40));
+            assert_eq!(sender.len(), 0, "engine emitted before the go signal");
+
+            // Releasing the go signal lets the schedule play.
+            clock.start();
+            thread::sleep(Duration::from_millis(60));
+            assert!(
+                sender.len() >= 4,
+                "schedule should play once the clock starts, got {}",
+                sender.len()
+            );
+
+            tx.send(BeatClockCommand::Shutdown).unwrap();
+            handle.join().unwrap();
+
+            // START + 2 clocks + STOP, framed correctly, and (no persist) nothing
+            // after.
+            let sent = sender.sent.lock();
+            assert_eq!(
+                sent.len(),
+                4,
+                "expected exactly the schedule, got {}",
+                sent.len()
+            );
+            assert_eq!(sent[0], start_bytes());
+            assert_eq!(sent[1], clock_bytes());
+            assert_eq!(sent[2], clock_bytes());
+            assert_eq!(sent[3], stop_bytes());
+        }
+
+        #[test]
         fn run_idle_until_command_returns_command_and_emits_ticks() {
             let (tx, rx) = mpsc::channel();
             let sender = SharedSender::new();
