@@ -130,6 +130,11 @@ pub async fn absent_dmx_is_skipped_not_fatal() -> CheckOutcome {
 pub async fn bogus_midi_device_degrades_gracefully() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
+    // Same no-op as its sibling above: where no MIDI device exists, render_midi
+    // returns early and the sabotaged profile is byte-identical.
+    if crate::sabotage::active() && Capabilities::get().midi_out.is_none() {
+        skip!("this machine has no MIDI device, so making the profile declare one is a no-op");
+    }
     profile.midi = crate::sabotage::pick(
         Subsystem::Bogus("e2e-nonexistent-midi-device".to_string()),
         Subsystem::Detected,
@@ -219,13 +224,19 @@ pub async fn first_profile_wins() -> CheckOutcome {
     // assertion could run.
     let mut second = ProfileSpec::detected(crate::sabotage::pick("02-decoy", "00-decoy"));
     second.audio = if crate::sabotage::active() {
-        match caps
-            .all_audio_out
-            .iter()
-            .find(|d| Some(&d.name) != caps.audio_out.as_ref().map(|s| &s.name))
-        {
+        // Must have at least as many channels as the real one: render_audio
+        // derives track mappings and the pinned rate from the *selected*
+        // device, so a narrower decoy maps tracks to channels that do not
+        // exist and the player fails to boot -- the control would then die
+        // before this check's assertion.
+        let wanted = caps.audio_out.as_ref().map(|d| d.max_channels).unwrap_or(0);
+        match caps.all_audio_out.iter().find(|d| {
+            Some(&d.name) != caps.audio_out.as_ref().map(|s| &s.name) && d.max_channels >= wanted
+        }) {
             Some(other) => Subsystem::Named(other.name.clone()),
-            None => skip!("only one openable output device, so no decoy is possible"),
+            None => skip!(
+                "no alternative output with at least {wanted} channels, so no usable decoy exists"
+            ),
         }
     } else {
         Subsystem::Bogus("e2e-decoy-device".to_string())

@@ -44,12 +44,16 @@ const MEASURE_TAKE: Duration = Duration::from_millis(1500);
 /// assertion alone would miss.
 pub async fn plays_a_song_to_completion() -> CheckOutcome {
     crate::runner::require_area("playback")?;
+    // 0.8s: comfortably seen as playing by the 100ms readiness poll, but over
+    // before the third 400ms status reading, so readings.len() >= 3 fails.
+    // 1.6s was wrong in the other direction -- it yielded four readings and the
+    // assertion passed.
     let project = ProjectBuilder::new()
         .songs(vec![SongSpec::tones(
             "Short Tone",
             "short-tone",
             2,
-            crate::sabotage::pick(4.0, 1.0),
+            crate::sabotage::pick(4.0, 0.8),
         )])
         .build()?;
     let server = Server::start(&project).await?;
@@ -111,8 +115,11 @@ pub async fn stop_halts_playback() -> CheckOutcome {
     }
 
     // Five seconds against a two-minute song: natural completion cannot
-    // masquerade as a successful stop.
-    client.wait_until_stopped(Duration::from_secs(5)).await?;
+    // masquerade as a successful stop. This wait *is* the assertion, hence the
+    // asserting variant.
+    client
+        .wait_until_stopped_asserting(Duration::from_secs(5))
+        .await?;
     crate::outcome::record("stopped a 120s song within 5s of the stop request");
 
     server.check_clean_log(&[])?;
@@ -220,12 +227,23 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
 
     // One tone track per verifiable output, mapped one-to-one so a tone's
     // identity determines which channel it should have come out of.
+    // Rotating a mapping needs at least two links; with one, the sabotaged
+    // mapping equals the real one and the control is a no-op.
+    if crate::sabotage::active() && outputs.len() < 2 {
+        skip!("only one loopback link, so the routing mapping cannot be permuted");
+    }
+
     let song = SongSpec::tones("Routing", "routing", outputs.len(), 12.0);
     let mut mappings = BTreeMap::new();
-    for (track, output) in song.tracks.iter().zip(outputs.iter()) {
+    for (index, (track, output)) in song.tracks.iter().zip(outputs.iter()).enumerate() {
+        // Under sabotage every track is shifted one link along, so each tone
+        // arrives on a neighbour's input rather than its own.
         mappings.insert(
             track.name.clone(),
-            vec![crate::sabotage::pick(*output, outputs[outputs.len() - 1])],
+            vec![crate::sabotage::pick(
+                *output,
+                outputs[(index + 1) % outputs.len()],
+            )],
         );
     }
 

@@ -206,12 +206,18 @@ pub async fn stale_checksum_is_rejected() -> CheckOutcome {
 
     // Under sabotage, use a *current* checksum, which the store should accept --
     // proving the rejection above is really about staleness.
-    let second_checksum = client
-        .grpc()
-        .get_config(GetConfigRequest {})
-        .await?
-        .into_inner()
-        .checksum;
+    // Fetched only when it will be used: an extra RPC on every normal run to
+    // serve the sabotage path is waste.
+    let second_checksum = if crate::sabotage::active() {
+        client
+            .grpc()
+            .get_config(GetConfigRequest {})
+            .await?
+            .into_inner()
+            .checksum
+    } else {
+        String::new()
+    };
 
     // Replaying the original checksum must now fail.
     let stale = client

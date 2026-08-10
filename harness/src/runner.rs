@@ -248,6 +248,7 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
     let mut cannot_fail = Vec::new();
     let mut proved = 0;
     let mut not_runnable = Vec::new();
+    let mut predicate_level = 0;
     let mut unproven: Vec<(&str, &str)> = Vec::new();
 
     for check in checks::all() {
@@ -286,7 +287,15 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
             // Some checks' strongest verdict is "I cannot trust this", so an
             // inconclusive raised by the check itself is its assertion firing.
             Outcome::Failed | Outcome::Inconclusive if from_assertion => {
-                println!("  ok           {:<46} assertion fired", check.name);
+                let kind = if checks::is_predicate_level(check.name) {
+                    "assertion fired (predicate-level control)"
+                } else {
+                    "assertion fired"
+                };
+                println!("  ok           {:<46} {kind}", check.name);
+                if checks::is_predicate_level(check.name) {
+                    predicate_level += 1;
+                }
                 proved += 1;
             }
             // Failed, but before the assertion was reached.
@@ -328,6 +337,14 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
 
     println!("\n{}", "=".repeat(72));
     println!("  {proved} proved capable of failing (the assertion fired)");
+    if predicate_level > 0 {
+        println!(
+            "  of which {predicate_level} rest on predicate-level controls: they substitute the\n             \x20 value the assertion reads, so they prove it is reachable but would not catch a\n             \x20 check made vacuous by reading something insensitive to mtrack's behaviour."
+        );
+    }
+    for stale in checks::stale_predicate_entries() {
+        println!("  WARNING: PREDICATE_LEVEL lists '{stale}', which is not a registered check.");
+    }
     if !not_runnable.is_empty() {
         println!(
             "  {} not runnable on this machine: {}",
@@ -356,12 +373,23 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
         }
         println!("  Give each a sabotage point (see harness/src/sabotage.rs).");
     }
-    if cannot_fail.is_empty() && unproven.is_empty() {
+    // Proving nothing is not success. `--self-test --only <typo>` selects no
+    // checks, and hardware trouble can push every area into Skipped -- both
+    // would otherwise print a clean verdict and exit 0, so CI wired to this
+    // would go green having verified nothing.
+    if proved == 0 {
+        println!("\n  NOTHING PROVED — no check's assertion fired.");
+        if not_runnable.is_empty() && cannot_fail.is_empty() && unproven.is_empty() {
+            println!("  No checks were selected. Check the --only filter.");
+        } else {
+            println!("  Every selected check was unrunnable here or had a broken control.");
+        }
+    } else if cannot_fail.is_empty() && unproven.is_empty() {
         println!("\n  Every check runnable here proved capable of failing.");
     }
     println!("{}", "=".repeat(72));
 
-    if cannot_fail.is_empty() && unproven.is_empty() {
+    if proved > 0 && cannot_fail.is_empty() && unproven.is_empty() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

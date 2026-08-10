@@ -102,7 +102,6 @@ was closed as invalid. What misled the original report was
 `config/player.rs`'s comment, which promised persistence without mentioning
 the exception; that comment has been corrected.
 
-
 ## Verifying the checks themselves
 
 A check that cannot fail is worse than no check, and three have shipped here:
@@ -121,6 +120,17 @@ break it. `--self-test` runs them all with the flag set and requires each to
 report a defect **from its own assertion**. **26/26 on the MAT rig; 25/26 on
 the WING**, where routing is not exercised because that console has no
 loopback.
+
+**What the score cannot tell you.** The self-test proves a check's assertion
+fires; it cannot prove the assertion is *positioned* correctly. Where a control
+substitutes the value the assertion reads (a "predicate-level" control, listed
+in `checks.rs`) rather than breaking the world the assertion observes, it would
+still score a pass if the check were later made vacuous the way
+`bogus_*_device_degrades_gracefully` was -- reading something insensitive to
+what mtrack does. Those controls are deliberate trade-offs, usually because the
+world-level version killed startup before the assertion ran, and `--self-test`
+prints how many of its passes rest on them. Read that number alongside the
+total.
 
 Only an assertion counts. Failures carry a `from_assertion` flag, because a
 control that dies inside `Server::start` reports `Failed` and would otherwise
@@ -149,7 +159,6 @@ Three lessons from building it, all bugs in the controls rather than the checks:
 - A control must not depend on the rig supplying the failure condition. The
   plug-device check could not fail on the WING, where no raw device exists at
   all -- the very case it was written to tolerate.
-
 
 ## Non-defects worth knowing
 

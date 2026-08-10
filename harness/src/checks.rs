@@ -46,6 +46,53 @@ macro_rules! entry {
     };
 }
 
+/// Checks whose sabotage substitutes the value the assertion *reads*, rather
+/// than changing the world the assertion observes.
+///
+/// The distinction matters and is easy to lose. A world-level control breaks an
+/// input and requires the check to notice; a predicate-level one swaps the
+/// string or number the assertion compares. The second proves the assertion is
+/// wired up and reachable, but **cannot detect the class of vacuity that
+/// motivated the self-test**: if such a check were later made vacuous the way
+/// `bogus_*_device_degrades_gracefully` was -- reading a value that is the same
+/// whatever mtrack does -- a predicate-level control would still score
+/// "assertion fired", because it replaces the value after the read.
+///
+/// These are deliberate trade-offs, not oversights. `configured_midi_device_transmits`
+/// was moved here precisely because its world-level control pointed the profile
+/// at a bogus device and timed out during startup, never reaching the assertion.
+/// They are listed so the self-test can say how much of its score rests on the
+/// weaker evidence rather than burying it in a single number.
+const PREDICATE_LEVEL: &[&str] = &[
+    "advertised_devices_are_openable",
+    "selected_output_is_real_hardware",
+    "player_starts_against_detected_hardware",
+    "generated_project_loads_all_songs",
+    "song_midi_notes_are_transmitted",
+    "beat_clock_runs_at_the_song_tempo",
+    "configured_midi_device_transmits",
+    "midi_beat_clock_persists",
+    "show_written_via_api_is_readable",
+];
+
+/// Whether this check's negative control only substitutes the asserted value.
+pub fn is_predicate_level(name: &str) -> bool {
+    PREDICATE_LEVEL.contains(&name)
+}
+
+/// Names in [`PREDICATE_LEVEL`] that no longer match a registered check.
+///
+/// A stale entry would quietly overstate the self-test's strength, so it is
+/// reported rather than ignored.
+pub fn stale_predicate_entries() -> Vec<&'static str> {
+    let names: Vec<&str> = all().into_iter().map(|c| c.name).collect();
+    PREDICATE_LEVEL
+        .iter()
+        .filter(|p| !names.contains(p))
+        .copied()
+        .collect()
+}
+
 /// Every check, in execution order.
 ///
 /// Ordering is deliberate: cheap structural checks first, so a broken project

@@ -59,7 +59,12 @@ pub async fn advertised_devices_are_openable() -> CheckOutcome {
         .map(|d| d.split(" (Channels=").next().unwrap_or(d))
         .collect();
 
-    let openable_names: Vec<&str> = crate::sabotage::pick(openable_names.clone(), Vec::new());
+    // Emptied only under sabotage; the clone would otherwise run every time.
+    let openable_names: Vec<&str> = if crate::sabotage::active() {
+        Vec::new()
+    } else {
+        openable_names
+    };
     let phantom: Vec<&String> = advertised
         .iter()
         .filter(|name| !openable_names.contains(&name.as_str()))

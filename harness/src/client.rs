@@ -202,7 +202,21 @@ impl Client {
         &mut self,
         timeout: Duration,
     ) -> Result<StatusResponse, crate::outcome::CheckError> {
-        self.wait_for_status(timeout, "playing", |s| s.playing)
+        self.wait_for_status(timeout, "playing", false, |s| s.playing)
+            .await
+    }
+
+    /// Waits until the player reports it has stopped, treating a timeout as
+    /// *this check's* assertion.
+    ///
+    /// For checks whose whole point is that something stops. Separate from
+    /// [`Self::wait_until_stopped`] so the self-test can tell a control that
+    /// drove the assertion from one that merely failed during setup.
+    pub async fn wait_until_stopped_asserting(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<StatusResponse, crate::outcome::CheckError> {
+        self.wait_for_status(timeout, "stopped", true, |s| !s.playing)
             .await
     }
 
@@ -211,7 +225,7 @@ impl Client {
         &mut self,
         timeout: Duration,
     ) -> Result<StatusResponse, crate::outcome::CheckError> {
-        self.wait_for_status(timeout, "stopped", |s| !s.playing)
+        self.wait_for_status(timeout, "stopped", false, |s| !s.playing)
             .await
     }
 
@@ -219,6 +233,7 @@ impl Client {
         &mut self,
         timeout: Duration,
         what: &str,
+        assertion: bool,
         predicate: impl Fn(&StatusResponse) -> bool,
     ) -> Result<StatusResponse, crate::outcome::CheckError> {
         let deadline = Instant::now() + timeout;
@@ -231,13 +246,18 @@ impl Client {
             last = Some(status);
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        // Explicitly Failed, not `.into()`. `From<String>` maps to Harness, so
-        // a player that accepts Play and never plays was reported as "our bug,
-        // not mtrack's". Round five raised this; the signature was changed and
-        // the body was not.
-        Err(crate::outcome::CheckError::assertion(format!(
-            "player never reported {what} within {timeout:?} (last status: {last:?})"
-        )))
+        // A real defect in a normal run -- a player that accepts Play and never
+        // plays is broken -- but by default *not* this check's assertion: most
+        // call sites wait as setup before asserting something else. Call sites
+        // where the wait is itself the assertion use the `_asserting` variants,
+        // so the flag is chosen where the meaning is known rather than here.
+        let message =
+            format!("player never reported {what} within {timeout:?} (last status: {last:?})");
+        Err(if assertion {
+            crate::outcome::CheckError::assertion(message)
+        } else {
+            crate::outcome::CheckError::before_assertion(message)
+        })
     }
 }
 

@@ -114,7 +114,9 @@ impl From<tonic::Status> for CheckError {
             tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Unknown => {
                 CheckError::Harness(e.to_string())
             }
-            _ => CheckError::assertion(format!("the player rejected a request: {e}")),
+            // A real defect, but not *this check's assertion*: the rejection
+            // came from a helper, and most call sites reach it from setup.
+            _ => CheckError::before_assertion(format!("the player rejected a request: {e}")),
         }
     }
 }
