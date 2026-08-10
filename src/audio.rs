@@ -159,8 +159,30 @@ pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, AudioError> {
 }
 
 /// Lists devices known to cpal.
+///
+/// Each returned device holds an open handle, and ALSA will not describe a
+/// device while its siblings are held, so this list is a *subset* of what
+/// actually exists and shrinks the more of it you build. It is fine for a
+/// display, and wrong as a way to answer "does this device exist?" -- use
+/// [`can_open_device`] for that.
 pub fn list_devices() -> Result<Vec<Box<dyn Device>>, AudioError> {
     cpal::Device::list().map_err(|e| AudioError::Playback(e.to_string()))
+}
+
+/// Whether a device of this name can be resolved for opening.
+///
+/// Resolves it exactly as playback does but without starting an output thread,
+/// so it answers the question the web UI's device picker implicitly asks --
+/// "will choosing this work?" -- for one device at a time and without holding
+/// any others open.
+pub fn can_open_device(name: &str) -> bool {
+    if name.trim().is_empty() {
+        return false;
+    }
+    if name.starts_with("mock") {
+        return true;
+    }
+    cpal::Device::is_findable(name)
 }
 
 /// Gets a device with the given name.

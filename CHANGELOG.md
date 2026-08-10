@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Selecting an audio device from the web UI no longer fails with "no device found"**
+  ([#357](https://github.com/mdwn/mtrack/issues/357)): opening a device searched a list built by
+  enumerating every device at once, and each entry in that list holds an open ALSA handle. ALSA
+  will not describe a device while its siblings are held, so building the list truncated it — 19
+  devices on the first enumeration in a process, then 8, then 7, then 3 — and a device the picker
+  had legitimately advertised could be missing from it. The operator saw "no device found" for a
+  device sitting in the dropdown, and a long-running session got worse the more it enumerated.
+  Opening now resolves the one device by name and holds only that handle.
+
 - **Subsystem config edits now reach the profile that owns them** ([#358](https://github.com/mdwn/mtrack/issues/358)):
   `update_audio`, `update_midi` and `update_dmx` — the gRPC `UpdateMidi` family, the MCP tools, and
   `PUT /api/config/{audio,midi,dmx}` — wrote to the top-level `audio:`/`midi:`/`dmx:` blocks, which
