@@ -85,12 +85,13 @@ The same write is destructive in two further ways:
 profile file), so `update_midi` appears not to route through it. Likely also
 affects `update_audio` and `update_dmx`, which were not exercised.
 
-**`persist_tempo` inherits this.** It is a `midi:` setting with a web UI
-checkbox, so setting it from the UI on a `profiles_dir` project lands in the
-same discarded top-level block and is silently ignored after a restart. Nothing
-about the beat clock engine causes this and fixing #358 fixes it too, but the
-option cannot be relied on from the UI until that happens. Setting it directly
-in the profile file works, which is what the `beat_clock_*` checks do.
+**Scope: the programmatic path only, not the web UI.** `MidiSection.svelte` is
+rendered inside `ProfileEditor.svelte`, and `ConfigEditor.svelte` branches on
+`profiles_dir` -- `saveProfileFile()` for a directory layout, `updateProfile()`
+otherwise. Nothing in the Svelte API layer calls `PUT /config/midi`. So MIDI
+settings edited in the UI, `persist_tempo` included, reach the profile that owns
+them. What is broken is `update_midi` itself: gRPC `UpdateMidi`, the MCP tool,
+and `PUT /api/config/midi`.
 
 ---
 
