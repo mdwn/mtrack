@@ -27,24 +27,46 @@ use std::fmt;
 use std::sync::Mutex;
 use std::time::Duration;
 
+/// A defect report, and whether the check's own assertion produced it.
+///
+/// The flag is private and settable only through the constructors below, so the
+/// invariant is held by the compiler rather than by a comment. Three review
+/// rounds running found shared helpers minting proof for controls that never
+/// reached the check's assertion; each was fixed instance by instance while the
+/// rule stayed advisory. Now a helper cannot claim a control worked, because it
+/// has no way to say so.
+#[derive(Debug)]
+pub struct Defect {
+    message: String,
+    from_assertion: bool,
+}
+
+impl Defect {
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn is_assertion(&self) -> bool {
+        self.from_assertion
+    }
+
+    pub fn into_message(self) -> String {
+        self.message
+    }
+}
+
 /// Why a check did not simply pass.
 #[derive(Debug)]
 pub enum CheckError {
     /// The behaviour under test is wrong. This is a defect in mtrack.
-    ///
-    /// `from_assertion` records whether the check's own assertion produced
-    /// this, as opposed to a helper failing before the assertion was reached.
-    /// Both are real defect reports in a normal run; only the former proves
-    /// anything in `--self-test`, where a control that dies inside
-    /// `Server::start` would otherwise look identical to one that drove its
-    /// assertion to failure.
-    Failed {
-        message: String,
-        from_assertion: bool,
-    },
+    Failed(Defect),
     /// The check cannot run on this machine, typically for missing hardware.
     /// This will never pass here no matter how often it is run.
     Skipped(String),
+    /// The check runs here, but this machine cannot supply the failure
+    /// condition its negative control needs. Distinct from `Skipped`: the check
+    /// itself passes normally, only its verification is missing.
+    NoControlHere(String),
     /// The check could have run, but an earlier failure made it moot. Unlike a
     /// skip this says nothing about the machine -- fix the earlier failure and
     /// it becomes runnable.
@@ -52,13 +74,10 @@ pub enum CheckError {
     /// The check ran but its measurement cannot be trusted, e.g. the audio
     /// interface underran mid-capture. Not a defect, but not evidence either.
     ///
-    /// Carries the same origin flag as `Failed`: for a check whose strongest
-    /// verdict is "I cannot trust this", an inconclusive raised by its own
-    /// logic *is* its assertion firing.
-    Inconclusive {
-        message: String,
-        from_assertion: bool,
-    },
+    /// Carries the same origin as `Failed`: for a check whose strongest verdict
+    /// is "I cannot trust this", an inconclusive raised by its own logic *is*
+    /// its assertion firing.
+    Inconclusive(Defect),
     /// The harness itself broke: a connection failed, a temp dir could not be
     /// written. This says nothing about mtrack.
     Harness(String),
@@ -67,11 +86,13 @@ pub enum CheckError {
 impl fmt::Display for CheckError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CheckError::Failed { message: m, .. } => write!(f, "{m}"),
-            CheckError::Skipped(m) | CheckError::Blocked(m) | CheckError::Harness(m) => {
+            CheckError::Failed(d) | CheckError::Inconclusive(d) => write!(f, "{}", d.message()),
+            CheckError::Skipped(m)
+            | CheckError::NoControlHere(m)
+            | CheckError::Blocked(m)
+            | CheckError::Harness(m) => {
                 write!(f, "{m}")
             }
-            CheckError::Inconclusive { message: m, .. } => write!(f, "{m}"),
         }
     }
 }
@@ -124,42 +145,50 @@ impl From<tonic::Status> for CheckError {
 impl CheckError {
     /// A defect reported by a check's own assertion.
     pub fn assertion(message: impl Into<String>) -> CheckError {
-        CheckError::Failed {
+        CheckError::Failed(Defect {
             message: message.into(),
             from_assertion: true,
-        }
+        })
     }
 
     /// A defect detected before the check's assertion was reached, e.g. the
     /// player never becoming ready. Real in a normal run; proves nothing as a
     /// negative control.
     pub fn before_assertion(message: impl Into<String>) -> CheckError {
-        CheckError::Failed {
+        CheckError::Failed(Defect {
             message: message.into(),
             from_assertion: false,
-        }
+        })
     }
 
     /// A verdict of "this measurement cannot be trusted", from the check itself.
     pub fn inconclusive_assertion(message: impl Into<String>) -> CheckError {
-        CheckError::Inconclusive {
+        CheckError::Inconclusive(Defect {
             message: message.into(),
             from_assertion: true,
-        }
+        })
+    }
+
+    /// An inconclusive result from a helper, which proves nothing about the
+    /// check. The only constructor available to `inconclusive!`.
+    pub fn inconclusive_before_assertion(message: impl Into<String>) -> CheckError {
+        CheckError::Inconclusive(Defect {
+            message: message.into(),
+            from_assertion: false,
+        })
+    }
+
+    /// This machine cannot supply the control's failure condition.
+    pub fn no_control_here(message: impl Into<String>) -> CheckError {
+        CheckError::NoControlHere(message.into())
     }
 
     /// Whether this came from a check's own assertion.
     pub fn is_assertion(&self) -> bool {
-        matches!(
-            self,
-            CheckError::Failed {
-                from_assertion: true,
-                ..
-            } | CheckError::Inconclusive {
-                from_assertion: true,
-                ..
-            }
-        )
+        match self {
+            CheckError::Failed(d) | CheckError::Inconclusive(d) => d.is_assertion(),
+            _ => false,
+        }
     }
 }
 
@@ -204,6 +233,8 @@ pub enum Outcome {
     Failed,
     /// Cannot be verified on this machine.
     Skipped,
+    /// Runs here, but this machine cannot supply its control's premise.
+    NoControlHere,
     /// Runnable in principle, but an earlier failure made it moot.
     Blocked,
     Inconclusive,
@@ -226,6 +257,7 @@ impl Outcome {
             Outcome::Passed => "PASS",
             Outcome::Failed => "FAIL",
             Outcome::Skipped => "SKIP",
+            Outcome::NoControlHere => "NO CONTROL",
             Outcome::Blocked => "BLOCKED",
             Outcome::Inconclusive => "INCONCLUSIVE",
             Outcome::HarnessError => "HARNESS-ERROR",
@@ -259,10 +291,11 @@ impl CheckResult {
         let evidence = take_evidence();
         let (outcome, detail) = match result {
             Ok(()) => (Outcome::Passed, None),
-            Err(CheckError::Failed { message, .. }) => (Outcome::Failed, Some(message)),
+            Err(CheckError::Failed(d)) => (Outcome::Failed, Some(d.into_message())),
             Err(CheckError::Skipped(m)) => (Outcome::Skipped, Some(m)),
+            Err(CheckError::NoControlHere(m)) => (Outcome::NoControlHere, Some(m)),
             Err(CheckError::Blocked(m)) => (Outcome::Blocked, Some(m)),
-            Err(CheckError::Inconclusive { message, .. }) => (Outcome::Inconclusive, Some(message)),
+            Err(CheckError::Inconclusive(d)) => (Outcome::Inconclusive, Some(d.into_message())),
             Err(CheckError::Harness(m)) => (Outcome::HarnessError, Some(m)),
         };
 
@@ -277,18 +310,6 @@ impl CheckResult {
         }
     }
 }
-
-// INVARIANT: only the assertion macros below (`check!`, `check_eq!`, `fail!`)
-// and constructors named `*_assertion` may set `from_assertion`. Every shared
-// helper -- log checks, readiness waits, RPC conversions, `inconclusive!` --
-// must produce a `before_assertion` value.
-//
-// The reason is empirical. Three review rounds in a row found helpers minting
-// proof for controls that never reached the check's own assertion, and each
-// time the fix addressed the instances named rather than the class. Making
-// proof opt-in, and stating it here, turns a recurring finding into a rule: a
-// helper cannot accidentally claim a control worked, because it has no way to
-// say so.
 
 /// Reports a defect when `cond` is false.
 ///
@@ -358,10 +379,9 @@ macro_rules! skip {
 #[macro_export]
 macro_rules! inconclusive {
     ($($arg:tt)+) => {
-        return Err($crate::outcome::CheckError::Inconclusive {
-            message: format!($($arg)+),
-            from_assertion: false,
-        })
+        return Err($crate::outcome::CheckError::inconclusive_before_assertion(format!(
+            $($arg)+
+        )))
     };
 }
 

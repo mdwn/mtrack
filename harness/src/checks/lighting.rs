@@ -33,12 +33,16 @@ use crate::songs::{LightingSpec, SongSpec};
 use crate::{check, check_eq};
 
 /// A project whose profile has lighting wired up and whose first song has a show.
-fn lighting_project() -> Result<crate::project::Project, Box<dyn std::error::Error>> {
+fn lighting_project(
+    strip_show_under_sabotage: bool,
+) -> Result<crate::project::Project, Box<dyn std::error::Error>> {
     // The break point for the checks that read cues and live effects: a song
-    // with no show at all should leave both empty. The validation checks post
-    // their own DSL and so have their own break points.
+    // with no show at all should leave both empty. The other three lighting
+    // checks pass `false`, because they have their own break points and would
+    // otherwise run two sabotages at once -- a fired assertion could then not
+    // be attributed to the intended one.
     let song = SongSpec::tones("Lit Song", "lit-song", 2, 8.0);
-    let song = if crate::sabotage::perform() {
+    let song = if !strip_show_under_sabotage || crate::sabotage::perform() {
         song.with_lighting(LightingSpec::simple(
             "E2E Show",
             "lighting/show.light",
@@ -60,7 +64,7 @@ fn lighting_project() -> Result<crate::project::Project, Box<dyn std::error::Err
 /// as a validation failure rather than as an empty cue list later on.
 pub async fn generated_show_passes_validation() -> CheckOutcome {
     crate::runner::require_area("lighting")?;
-    let project = lighting_project()?;
+    let project = lighting_project(false)?;
     let server = Server::start(&project).await?;
     let client = Client::connect(&server).await?;
 
@@ -89,7 +93,7 @@ pub async fn generated_show_passes_validation() -> CheckOutcome {
 /// approves everything.
 pub async fn malformed_show_is_rejected() -> CheckOutcome {
     crate::runner::require_area("lighting")?;
-    let project = lighting_project()?;
+    let project = lighting_project(false)?;
     let server = Server::start(&project).await?;
     let client = Client::connect(&server).await?;
 
@@ -113,7 +117,7 @@ pub async fn malformed_show_is_rejected() -> CheckOutcome {
 /// A show attached to a song turns into cues the player can report.
 pub async fn song_lighting_produces_cues() -> CheckOutcome {
     crate::runner::require_area("lighting")?;
-    let project = lighting_project()?;
+    let project = lighting_project(true)?;
     let server = Server::start(&project).await?;
     let mut client = Client::connect(&server).await?;
 
@@ -157,7 +161,7 @@ pub async fn song_lighting_produces_cues() -> CheckOutcome {
 pub async fn lighting_effects_activate_during_playback() -> CheckOutcome {
     crate::runner::require_area("lighting")?;
     let caps = Capabilities::get();
-    let project = lighting_project()?;
+    let project = lighting_project(true)?;
     let server = Server::start(&project).await?;
     let mut client = Client::connect(&server).await?;
 
@@ -213,7 +217,7 @@ pub async fn lighting_effects_activate_during_playback() -> CheckOutcome {
 /// A show written through the API can be read back.
 pub async fn show_written_via_api_is_readable() -> CheckOutcome {
     crate::runner::require_area("lighting")?;
-    let project = lighting_project()?;
+    let project = lighting_project(false)?;
     let server = Server::start(&project).await?;
     let client = Client::connect(&server).await?;
 

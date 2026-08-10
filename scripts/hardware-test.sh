@@ -18,6 +18,7 @@
 # runs the areas it can, and reports the ones it cannot. A machine with only
 # audio, or only MIDI, is a normal run rather than a failure.
 #
+# USAGE-BEGIN
 # Usage:
 #   ./scripts/hardware-test.sh                  # everything available
 #   ./scripts/hardware-test.sh --only lighting  # one area or case-name filter
@@ -28,6 +29,7 @@
 #   ./scripts/hardware-test.sh --probe-all      # probe every device pair, not just the selected one
 #   ./scripts/hardware-test.sh --json out.json  # also write machine-readable results
 #   ./scripts/hardware-test.sh --no-build       # skip the build step
+# USAGE-END
 
 set -uo pipefail
 
@@ -40,8 +42,11 @@ LIST_ONLY=false
 SELF_TEST=false
 SKIP_BUILD=false
 
+# Printed from a marked block rather than a line range: the range silently
+# dropped --no-build the moment a usage line was inserted above it.
 usage() {
-    sed -n '17,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '/^# USAGE-BEGIN$/,/^# USAGE-END$/p' "${BASH_SOURCE[0]}" \
+        | grep -v 'USAGE-\(BEGIN\|END\)' | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 

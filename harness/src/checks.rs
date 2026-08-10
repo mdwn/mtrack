@@ -64,7 +64,6 @@ macro_rules! entry {
 /// They are listed so the self-test can say how much of its score rests on the
 /// weaker evidence rather than burying it in a single number.
 const WORLD_LEVEL: &[&str] = &[
-    "plays_a_song_to_completion",
     "stop_halts_playback",
     "playlist_navigation_moves_between_songs",
     "tracks_route_to_their_mapped_channels",
@@ -98,7 +97,7 @@ pub fn is_predicate_level(name: &str) -> bool {
 /// A stale entry credits a check that no longer exists, so it is reported.
 /// The opposite direction needs no check: an unlisted name is already treated
 /// as the weaker class.
-pub fn stale_predicate_entries() -> Vec<&'static str> {
+pub fn stale_world_level_entries() -> Vec<&'static str> {
     let names: Vec<&str> = all().into_iter().map(|c| c.name).collect();
     WORLD_LEVEL
         .iter()

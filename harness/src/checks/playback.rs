@@ -54,17 +54,23 @@ pub async fn plays_a_song_to_completion() -> CheckOutcome {
     client.wait_until_playing(Duration::from_secs(10)).await?;
 
     let mut readings = Vec::new();
-    // Sampling fewer times than the assertion requires is deterministic. Tuning
-    // the song duration instead was a coin flip -- 0.3s could end before the
-    // readiness poll saw it and 1.6s yielded enough readings to pass, so the
-    // control was wrong in both directions before this.
-    for _ in 0..crate::sabotage::pick(6, 2) {
+    for _ in 0..6 {
         tokio::time::sleep(Duration::from_millis(400)).await;
         let status = client.status().await?;
         if !status.playing {
             break;
         }
         readings.push(elapsed_of(&status));
+    }
+
+    // Reversed under sabotage, so the monotonicity and advancement assertions
+    // below are the ones that fire. Sampling fewer times instead only
+    // manufactured a `len() >= 3` failure and never reached them -- a control
+    // weaker than the predicate-level ones, in the strong-evidence bucket.
+    // This is predicate-level: it substitutes what the assertion reads, because
+    // making the transport clock misbehave needs a broken player.
+    if crate::sabotage::active() {
+        readings.reverse();
     }
 
     check!(

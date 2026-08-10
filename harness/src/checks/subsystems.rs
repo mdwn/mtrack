@@ -25,7 +25,7 @@ use crate::client::Client;
 use crate::outcome::CheckOutcome;
 use crate::project::{ProfileSpec, ProjectBuilder, Subsystem};
 use crate::server::Server;
-use crate::{check, check_eq, fail};
+use crate::{check, check_eq, fail, skip};
 
 /// How long to watch a deliberately-broken subsystem before concluding it
 /// degraded rather than misbehaved.
@@ -219,7 +219,11 @@ pub async fn first_profile_wins() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let caps = Capabilities::get();
     let Some(expected) = caps.audio_out.as_ref().map(|d| d.name.clone()) else {
-        return Ok(());
+        // Not a pass: with no audio device there is nothing to claim, and
+        // returning Ok here would report success having verified nothing --
+        // and then make --self-test call the check CANNOT FAIL for what is
+        // really "this should have skipped".
+        skip!("no audio output device, so there is no claimed device to compare");
     };
 
     // Sorts first under sabotage, and names a *valid* other device: a bogus one
@@ -290,7 +294,7 @@ pub async fn controllers_restart_while_idle() -> CheckOutcome {
     // The previous control started playback and bet that restart-while-playing
     // is rejected -- which worked only because a live player defect made it so.
     // A control that breaks when the subject is fixed points the wrong way.
-    let endpoint = crate::sabotage::pick("controllers/restart", "controllers/restart-nonexistent");
+    let endpoint = "controllers/restart";
     let (status, body) = client
         .send_text(reqwest::Method::POST, endpoint, String::new())
         .await?;
@@ -303,7 +307,16 @@ pub async fn controllers_restart_while_idle() -> CheckOutcome {
     // surface without saying so. Reconnecting *is* this check's assertion, so a
     // failure here is a defect in the player -- not, as it was previously
     // reported, an error in the harness.
-    let mut reconnected = match Client::connect(&server).await {
+    // Sabotage the *reconnect*, which is the assertion this check exists for --
+    // "controllers must come back, or control is silently lost". Breaking the
+    // restart request instead only proved the status check above, leaving the
+    // interesting assertion unexercised.
+    let reconnect = if crate::sabotage::active() {
+        Err("sabotage: reconnect not attempted".into())
+    } else {
+        Client::connect(&server).await
+    };
+    let mut reconnected = match reconnect {
         Ok(client) => client,
         Err(e) => fail!(
             "the gRPC controller did not come back after a restart, so the player has \

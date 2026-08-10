@@ -88,9 +88,6 @@ pub fn perform() -> bool {
 #[macro_export]
 macro_rules! no_control_here {
     ($($arg:tt)+) => {
-        return Err($crate::outcome::CheckError::Skipped(format!(
-            "[no usable control on this machine] {}",
-            format!($($arg)+)
-        )))
+        return Err($crate::outcome::CheckError::no_control_here(format!($($arg)+)))
     };
 }

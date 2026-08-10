@@ -313,18 +313,24 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
             }
             // The machine cannot run this check at all, so the control says
             // nothing either way.
+            // The check itself runs here; only its control is impossible. A
+            // distinct variant rather than a string prefix, so the two cannot
+            // drift apart in spelling.
+            Outcome::NoControlHere => {
+                println!(
+                    "  NO CONTROL   {:<46} {}",
+                    check.name,
+                    result.detail.as_deref().unwrap_or("")
+                );
+                no_control.push(check.name);
+            }
             Outcome::Skipped | Outcome::Blocked => {
-                let detail = result.detail.as_deref().unwrap_or("");
-                // The check itself runs here; only its control is impossible.
-                // Filing that under "not runnable" would read as missing
-                // hardware rather than missing verification.
-                if detail.starts_with("[no usable control") {
-                    println!("  NO CONTROL   {:<46} {}", check.name, detail);
-                    no_control.push(check.name);
-                } else {
-                    println!("  not run here {:<46} {detail}", check.name);
-                    not_runnable.push(check.name);
-                }
+                println!(
+                    "  not run here {:<46} {}",
+                    check.name,
+                    result.detail.as_deref().unwrap_or("")
+                );
+                not_runnable.push(check.name);
             }
             // The control broke the run before the assertion could be reached.
             // A check that crashes under sabotage has been shown to crash, not
@@ -348,8 +354,11 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
             "  of which {predicate_level} rest on predicate-level controls: they substitute the\n             \x20 value the assertion reads, so they prove it is reachable but would not catch a\n             \x20 check made vacuous by reading something insensitive to mtrack's behaviour."
         );
     }
-    for stale in checks::stale_predicate_entries() {
-        println!("  WARNING: PREDICATE_LEVEL lists '{stale}', which is not a registered check.");
+    for stale in checks::stale_world_level_entries() {
+        println!(
+            "  WARNING: WORLD_LEVEL lists '{stale}', which is not a registered check. \
+             Remove it -- while it is listed, nothing is credited, but the name is misleading."
+        );
     }
     if !not_runnable.is_empty() {
         println!(
@@ -395,12 +404,16 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
     // would go green having verified nothing.
     if proved == 0 {
         println!("\n  NOTHING PROVED — no check's assertion fired.");
-        if not_runnable.is_empty() && cannot_fail.is_empty() && unproven.is_empty() {
+        if not_runnable.is_empty()
+            && cannot_fail.is_empty()
+            && unproven.is_empty()
+            && no_control.is_empty()
+        {
             println!("  No checks were selected. Check the --only filter.");
         } else {
             println!("  Every selected check was unrunnable here or had a broken control.");
         }
-    } else if cannot_fail.is_empty() && unproven.is_empty() {
+    } else if cannot_fail.is_empty() && unproven.is_empty() && no_control.is_empty() {
         println!("\n  Every check runnable here proved capable of failing.");
     }
     println!("{}", "=".repeat(72));
