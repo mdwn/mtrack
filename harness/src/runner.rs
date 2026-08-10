@@ -232,3 +232,195 @@ pub fn list_checks(filter: &Option<String>) {
     }
     println!("=======================\n");
 }
+
+/// Runs every check with its premise deliberately broken and requires each to
+/// stop passing.
+///
+/// A check that still passes here cannot fail, which means it has been
+/// reporting success unconditionally. That is a defect in the harness and is
+/// reported as one, with a non-zero exit.
+pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
+    println!("\n{}", "=".repeat(72));
+    println!("  SELF-TEST — breaking each check's premise; none may pass");
+    println!("{}", "=".repeat(72));
+    println!("  A check that passes here reports success unconditionally.\n");
+
+    let mut cannot_fail = Vec::new();
+    let mut proved = 0;
+    let mut not_runnable = Vec::new();
+    let mut no_control = Vec::new();
+    let mut predicate_level = 0;
+    let mut unproven: Vec<(&str, &str)> = Vec::new();
+
+    for check in checks::all() {
+        if let Some(needle) = filter {
+            if !check.name.contains(needle.as_str()) && !check.area.contains(needle.as_str()) {
+                continue;
+            }
+        }
+
+        // Each control is independent. Several sabotages deliberately stop the
+        // player reaching readiness, and without this the first one would latch
+        // and block every control after it -- which is exactly what happened on
+        // the first run, suppressing twelve of twenty-six.
+        crate::server::reset_init_latch();
+
+        crate::sabotage::enable();
+        let outcome = execute(&check).await;
+        crate::sabotage::disable();
+
+        // Whether the check's own assertion produced this, as opposed to a
+        // helper failing first. A control that dies inside `Server::start`
+        // reports Failed and would otherwise be indistinguishable from one
+        // that drove its assertion to failure.
+        let from_assertion = matches!(&outcome, Err(e) if e.is_assertion());
+
+        let result = CheckResult::from_outcome(
+            check.area,
+            check.name,
+            check.description,
+            outcome,
+            std::time::Duration::ZERO,
+        );
+        match result.outcome {
+            // The only outcome that proves anything: the assertion fired and
+            // reported a defect.
+            // Some checks' strongest verdict is "I cannot trust this", so an
+            // inconclusive raised by the check itself is its assertion firing.
+            Outcome::Failed | Outcome::Inconclusive if from_assertion => {
+                let kind = if checks::is_predicate_level(check.name) {
+                    "assertion fired (predicate-level control)"
+                } else {
+                    "assertion fired"
+                };
+                println!("  ok           {:<46} {kind}", check.name);
+                if checks::is_predicate_level(check.name) {
+                    predicate_level += 1;
+                }
+                proved += 1;
+            }
+            // Failed, but before the assertion was reached.
+            Outcome::Failed => {
+                println!(
+                    "  NO ASSERTION {:<46} failed before the assertion ran",
+                    check.name
+                );
+                unproven.push((check.name, "pre-assertion failure"));
+            }
+            Outcome::Passed => {
+                println!("  CANNOT FAIL  {:<46}", check.name);
+                cannot_fail.push(check.name);
+            }
+            // The machine cannot run this check at all, so the control says
+            // nothing either way.
+            // The check itself runs here; only its control is impossible. A
+            // distinct variant rather than a string prefix, so the two cannot
+            // drift apart in spelling.
+            Outcome::NoControlHere => {
+                println!(
+                    "  NO CONTROL   {:<46} {}",
+                    check.name,
+                    result.detail.as_deref().unwrap_or("")
+                );
+                no_control.push(check.name);
+            }
+            Outcome::Skipped | Outcome::Blocked => {
+                println!(
+                    "  not run here {:<46} {}",
+                    check.name,
+                    result.detail.as_deref().unwrap_or("")
+                );
+                not_runnable.push(check.name);
+            }
+            // The control broke the run before the assertion could be reached.
+            // A check that crashes under sabotage has been shown to crash, not
+            // to detect anything -- counting this as proof is what let several
+            // useless controls report "ok".
+            other => {
+                println!(
+                    "  NO ASSERTION {:<46} control ended in {}",
+                    check.name,
+                    other.label()
+                );
+                unproven.push((check.name, other.label()));
+            }
+        }
+    }
+
+    println!("\n{}", "=".repeat(72));
+    println!("  {proved} proved capable of failing (the assertion fired)");
+    if predicate_level > 0 {
+        println!(
+            "  of which {predicate_level} rest on predicate-level controls: they substitute the\n             \x20 value the assertion reads, so they prove it is reachable but would not catch a\n             \x20 check made vacuous by reading something insensitive to mtrack's behaviour."
+        );
+    }
+    for stale in checks::stale_world_level_entries() {
+        println!(
+            "  WARNING: WORLD_LEVEL lists '{stale}', which is not a registered check. \
+             Remove it -- while it is listed, nothing is credited, but the name is misleading."
+        );
+    }
+    if !not_runnable.is_empty() {
+        println!(
+            "  {} not runnable on this machine: {}",
+            not_runnable.len(),
+            not_runnable.join(", ")
+        );
+    }
+    if !no_control.is_empty() {
+        println!(
+            "\n  {} check(s) run here but have no usable control on this hardware:",
+            no_control.len()
+        );
+        for name in &no_control {
+            println!("    {name}");
+        }
+        println!("  They pass in a normal run; nothing here proves they could fail.");
+    }
+    if !unproven.is_empty() {
+        println!(
+            "\n  {} control(s) never reached their assertion:",
+            unproven.len()
+        );
+        for (name, how) in &unproven {
+            println!("    {name} (ended in {how})");
+        }
+        println!("  These prove the check can break, not that it can detect anything.");
+        println!("  Move the sabotage closer to what the assertion reads.");
+    }
+    if !cannot_fail.is_empty() {
+        println!(
+            "\n  {} CANNOT FAIL — these report success unconditionally:",
+            cannot_fail.len()
+        );
+        for name in &cannot_fail {
+            println!("    {name}");
+        }
+        println!("  Give each a sabotage point (see harness/src/sabotage.rs).");
+    }
+    // Proving nothing is not success. `--self-test --only <typo>` selects no
+    // checks, and hardware trouble can push every area into Skipped -- both
+    // would otherwise print a clean verdict and exit 0, so CI wired to this
+    // would go green having verified nothing.
+    if proved == 0 {
+        println!("\n  NOTHING PROVED — no check's assertion fired.");
+        if not_runnable.is_empty()
+            && cannot_fail.is_empty()
+            && unproven.is_empty()
+            && no_control.is_empty()
+        {
+            println!("  No checks were selected. Check the --only filter.");
+        } else {
+            println!("  Every selected check was unrunnable here or had a broken control.");
+        }
+    } else if cannot_fail.is_empty() && unproven.is_empty() && no_control.is_empty() {
+        println!("\n  Every check runnable here proved capable of failing.");
+    }
+    println!("{}", "=".repeat(72));
+
+    if proved > 0 && cannot_fail.is_empty() && unproven.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}

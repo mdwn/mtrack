@@ -59,6 +59,12 @@ pub async fn advertised_devices_are_openable() -> CheckOutcome {
         .map(|d| d.split(" (Channels=").next().unwrap_or(d))
         .collect();
 
+    // Emptied only under sabotage; the clone would otherwise run every time.
+    let openable_names: Vec<&str> = if crate::sabotage::active() {
+        Vec::new()
+    } else {
+        openable_names
+    };
     let phantom: Vec<&String> = advertised
         .iter()
         .filter(|name| !openable_names.contains(&name.as_str()))
@@ -107,7 +113,9 @@ pub async fn selected_output_is_real_hardware() -> CheckOutcome {
         ));
     }
 
-    let is_raw_hw = device.name.contains("hw:CARD=") && !device.name.contains("plughw:");
+    let is_raw_hw = crate::sabotage::perform()
+        && device.name.contains("hw:CARD=")
+        && !device.name.contains("plughw:");
     if is_raw_hw {
         return Ok(());
     }
@@ -118,23 +126,32 @@ pub async fn selected_output_is_real_hardware() -> CheckOutcome {
     // its ALSA format table -- so their raw device never appears here and the
     // plug layer is the only way in. That is a legitimate configuration, not a
     // defect, but it does mean the channel count is the plug layer's.
-    let raw_alternatives: Vec<&str> = caps
-        .all_audio_out
-        .iter()
-        .filter(|d| d.name.contains("hw:CARD=") && !d.name.contains("plughw:"))
-        .map(|d| d.name.as_str())
-        .collect();
+    // Under sabotage, pretend a raw device was available. Relying on the rig to
+    // supply one made this control rig-dependent: on a console whose only
+    // openable device is a plug node -- the case this check exists to tolerate
+    // -- the failure condition is unreachable and the check could not fail.
+    let raw_alternatives: Vec<&str> = if crate::sabotage::active() {
+        vec!["e2e-pretend-raw:hw:CARD=X,DEV=0"]
+    } else {
+        caps.all_audio_out
+            .iter()
+            .filter(|d| d.name.contains("hw:CARD=") && !d.name.contains("plughw:"))
+            .map(|d| d.name.as_str())
+            .collect()
+    };
 
     if !raw_alternatives.is_empty() {
         // Reachable only by an operator override; device_rank already prefers
         // raw hardware. Blaming mtrack (and exiting non-zero) for the harness's
         // own device choice would be wrong.
-        return Err(crate::outcome::CheckError::Inconclusive(format!(
+        crate::inconclusive_verdict!(
             "selected the plug device '{}' even though raw hardware was available: {:?}. Its \
              {}-channel count is the plug layer's, not the interface's, so routing measured \
              through it would not mean what it appears to. Check MTRACK_E2E_AUDIO_DEVICE.",
-            device.name, raw_alternatives, device.max_channels
-        )));
+            device.name,
+            raw_alternatives,
+            device.max_channels
+        );
     }
 
     crate::outcome::record(format!(

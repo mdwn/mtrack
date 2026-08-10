@@ -154,7 +154,7 @@ pub async fn midi_beat_clock_persists() -> CheckOutcome {
         client,
         "midi beat_clock",
         "01-e2e",
-        "beat_clock: true",
+        crate::sabotage::pick("beat_clock: true", "beat_clock: false"),
         move |mut client, checksum| async move {
             let midi_json = serde_json::json!({
                 "device": device,
@@ -204,12 +204,27 @@ pub async fn stale_checksum_is_rejected() -> CheckOutcome {
         })
         .await?;
 
+    // Under sabotage, use a *current* checksum, which the store should accept --
+    // proving the rejection above is really about staleness.
+    // Fetched only when it will be used: an extra RPC on every normal run to
+    // serve the sabotage path is waste.
+    let second_checksum = if crate::sabotage::active() {
+        client
+            .grpc()
+            .get_config(GetConfigRequest {})
+            .await?
+            .into_inner()
+            .checksum
+    } else {
+        String::new()
+    };
+
     // Replaying the original checksum must now fail.
     let stale = client
         .grpc()
         .update_midi(UpdateMidiRequest {
             midi_json: serde_json::json!({"device": midi.name, "beat_clock": false}).to_string(),
-            expected_checksum: first.checksum,
+            expected_checksum: crate::sabotage::pick(first.checksum.clone(), second_checksum),
         })
         .await;
 
@@ -255,7 +270,11 @@ pub async fn active_playlist_persists_across_restart() -> CheckOutcome {
     client
         .grpc()
         .switch_to_playlist(SwitchToPlaylistRequest {
-            playlist_name: crate::project::ProjectBuilder::ALTERNATE_PLAYLIST.to_string(),
+            playlist_name: crate::sabotage::pick(
+                crate::project::ProjectBuilder::ALTERNATE_PLAYLIST,
+                "playlist",
+            )
+            .to_string(),
         })
         .await?;
 

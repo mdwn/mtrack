@@ -27,21 +27,60 @@ use std::fmt;
 use std::sync::Mutex;
 use std::time::Duration;
 
+/// A defect report, and whether the check's own assertion produced it.
+///
+/// The flag is private, so it cannot be set by writing a struct literal -- which
+/// is how `inconclusive!` set it wrongly for three rounds. That stops the
+/// accidental case, and only that: [`CheckError::assertion`] is public and the
+/// assertion macros are exported, so a helper that deliberately calls one can
+/// still mint proof. `Client::wait_for_status` does exactly that, on purpose,
+/// via its `assertion` parameter.
+///
+/// So the rule is enforced against accidents, not against intent. A helper that
+/// claims proof must now say so in its own source, where a reader will see it.
+#[derive(Debug)]
+pub struct Defect {
+    message: String,
+    from_assertion: bool,
+}
+
+impl Defect {
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn is_assertion(&self) -> bool {
+        self.from_assertion
+    }
+
+    pub fn into_message(self) -> String {
+        self.message
+    }
+}
+
 /// Why a check did not simply pass.
 #[derive(Debug)]
 pub enum CheckError {
     /// The behaviour under test is wrong. This is a defect in mtrack.
-    Failed(String),
+    Failed(Defect),
     /// The check cannot run on this machine, typically for missing hardware.
     /// This will never pass here no matter how often it is run.
     Skipped(String),
+    /// The check runs here, but this machine cannot supply the failure
+    /// condition its negative control needs. Distinct from `Skipped`: the check
+    /// itself passes normally, only its verification is missing.
+    NoControlHere(String),
     /// The check could have run, but an earlier failure made it moot. Unlike a
     /// skip this says nothing about the machine -- fix the earlier failure and
     /// it becomes runnable.
     Blocked(String),
     /// The check ran but its measurement cannot be trusted, e.g. the audio
     /// interface underran mid-capture. Not a defect, but not evidence either.
-    Inconclusive(String),
+    ///
+    /// Carries the same origin as `Failed`: for a check whose strongest verdict
+    /// is "I cannot trust this", an inconclusive raised by its own logic *is*
+    /// its assertion firing.
+    Inconclusive(Defect),
     /// The harness itself broke: a connection failed, a temp dir could not be
     /// written. This says nothing about mtrack.
     Harness(String),
@@ -50,11 +89,13 @@ pub enum CheckError {
 impl fmt::Display for CheckError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CheckError::Failed(m)
-            | CheckError::Skipped(m)
+            CheckError::Failed(d) | CheckError::Inconclusive(d) => write!(f, "{}", d.message()),
+            CheckError::Skipped(m)
+            | CheckError::NoControlHere(m)
             | CheckError::Blocked(m)
-            | CheckError::Inconclusive(m)
-            | CheckError::Harness(m) => write!(f, "{m}"),
+            | CheckError::Harness(m) => {
+                write!(f, "{m}")
+            }
         }
     }
 }
@@ -97,7 +138,59 @@ impl From<tonic::Status> for CheckError {
             tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Unknown => {
                 CheckError::Harness(e.to_string())
             }
-            _ => CheckError::Failed(format!("the player rejected a request: {e}")),
+            // A real defect, but not *this check's assertion*: the rejection
+            // came from a helper, and most call sites reach it from setup.
+            _ => CheckError::before_assertion(format!("the player rejected a request: {e}")),
+        }
+    }
+}
+
+impl CheckError {
+    /// A defect reported by a check's own assertion.
+    pub fn assertion(message: impl Into<String>) -> CheckError {
+        CheckError::Failed(Defect {
+            message: message.into(),
+            from_assertion: true,
+        })
+    }
+
+    /// A defect detected before the check's assertion was reached, e.g. the
+    /// player never becoming ready. Real in a normal run; proves nothing as a
+    /// negative control.
+    pub fn before_assertion(message: impl Into<String>) -> CheckError {
+        CheckError::Failed(Defect {
+            message: message.into(),
+            from_assertion: false,
+        })
+    }
+
+    /// A verdict of "this measurement cannot be trusted", from the check itself.
+    pub fn inconclusive_assertion(message: impl Into<String>) -> CheckError {
+        CheckError::Inconclusive(Defect {
+            message: message.into(),
+            from_assertion: true,
+        })
+    }
+
+    /// An inconclusive result from a helper, which proves nothing about the
+    /// check. The only constructor available to `inconclusive!`.
+    pub fn inconclusive_before_assertion(message: impl Into<String>) -> CheckError {
+        CheckError::Inconclusive(Defect {
+            message: message.into(),
+            from_assertion: false,
+        })
+    }
+
+    /// This machine cannot supply the control's failure condition.
+    pub fn no_control_here(message: impl Into<String>) -> CheckError {
+        CheckError::NoControlHere(message.into())
+    }
+
+    /// Whether this came from a check's own assertion.
+    pub fn is_assertion(&self) -> bool {
+        match self {
+            CheckError::Failed(d) | CheckError::Inconclusive(d) => d.is_assertion(),
+            _ => false,
         }
     }
 }
@@ -143,6 +236,8 @@ pub enum Outcome {
     Failed,
     /// Cannot be verified on this machine.
     Skipped,
+    /// Runs here, but this machine cannot supply its control's premise.
+    NoControlHere,
     /// Runnable in principle, but an earlier failure made it moot.
     Blocked,
     Inconclusive,
@@ -165,6 +260,7 @@ impl Outcome {
             Outcome::Passed => "PASS",
             Outcome::Failed => "FAIL",
             Outcome::Skipped => "SKIP",
+            Outcome::NoControlHere => "NO CONTROL",
             Outcome::Blocked => "BLOCKED",
             Outcome::Inconclusive => "INCONCLUSIVE",
             Outcome::HarnessError => "HARNESS-ERROR",
@@ -198,10 +294,11 @@ impl CheckResult {
         let evidence = take_evidence();
         let (outcome, detail) = match result {
             Ok(()) => (Outcome::Passed, None),
-            Err(CheckError::Failed(m)) => (Outcome::Failed, Some(m)),
+            Err(CheckError::Failed(d)) => (Outcome::Failed, Some(d.into_message())),
             Err(CheckError::Skipped(m)) => (Outcome::Skipped, Some(m)),
+            Err(CheckError::NoControlHere(m)) => (Outcome::NoControlHere, Some(m)),
             Err(CheckError::Blocked(m)) => (Outcome::Blocked, Some(m)),
-            Err(CheckError::Inconclusive(m)) => (Outcome::Inconclusive, Some(m)),
+            Err(CheckError::Inconclusive(d)) => (Outcome::Inconclusive, Some(d.into_message())),
             Err(CheckError::Harness(m)) => (Outcome::HarnessError, Some(m)),
         };
 
@@ -230,7 +327,7 @@ macro_rules! check {
         match $cond {
             true => {}
             false => {
-                return Err($crate::outcome::CheckError::Failed(format!($($arg)+)));
+                return Err($crate::outcome::CheckError::assertion(format!($($arg)+)));
             }
         }
     };
@@ -243,7 +340,7 @@ macro_rules! check_eq {
         let left = &$left;
         let right = &$right;
         if left != right {
-            return Err($crate::outcome::CheckError::Failed(format!(
+            return Err($crate::outcome::CheckError::assertion(format!(
                 "{}\n  expected: {:?}\n  actual:   {:?}",
                 format!($($arg)+), right, left
             )));
@@ -255,7 +352,7 @@ macro_rules! check_eq {
 #[macro_export]
 macro_rules! fail {
     ($($arg:tt)+) => {
-        return Err($crate::outcome::CheckError::Failed(format!($($arg)+)))
+        return Err($crate::outcome::CheckError::assertion(format!($($arg)+)))
     };
 }
 
@@ -276,9 +373,28 @@ macro_rules! skip {
 }
 
 /// Ran, but the measurement cannot be trusted.
+///
+/// Does *not* count as proof in `--self-test`: most uses report that something
+/// went wrong before the assertion could be evaluated (an interface underrun,
+/// an unmet precondition), which says nothing about whether the check works.
+/// Where an inconclusive verdict genuinely *is* the check's conclusion, use
+/// [`inconclusive_verdict!`].
 #[macro_export]
 macro_rules! inconclusive {
     ($($arg:tt)+) => {
-        return Err($crate::outcome::CheckError::Inconclusive(format!($($arg)+)))
+        return Err($crate::outcome::CheckError::inconclusive_before_assertion(format!(
+            $($arg)+
+        )))
+    };
+}
+
+/// The check's own conclusion is that the measurement cannot be trusted.
+///
+/// For checks whose strongest possible verdict is "I cannot trust this" rather
+/// than "this is broken". Counts as proof in `--self-test`.
+#[macro_export]
+macro_rules! inconclusive_verdict {
+    ($($arg:tt)+) => {
+        return Err($crate::outcome::CheckError::inconclusive_assertion(format!($($arg)+)))
     };
 }

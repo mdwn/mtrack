@@ -102,47 +102,73 @@ was closed as invalid. What misled the original report was
 `config/player.rs`'s comment, which promised persistence without mentioning
 the exception; that comment has been corrected.
 
-
 ## Verifying the checks themselves
 
-A check that cannot fail is worse than no check, and two have shipped here:
+A check that cannot fail is worse than no check, and three have shipped here:
 `bogus_*_device_degrades_gracefully` read a status that was `initializing`
-whatever mtrack did, and `active_playlist_persists_across_restart` asserted the
-opposite of documented behaviour. Both survived several reviews.
+whatever mtrack did; `active_playlist_persists_across_restart` asserted the
+opposite of documented behaviour; and `stop_halts_playback` used a four-second
+song that ended on its own inside the ten-second stop deadline, so it passed
+whether or not Stop did anything. All three survived several reviews.
 
-A one-off sweep was run against every check on 2026-08-09: break the check's
-premise, run it alone, require it to stop passing. **20 of 26 checks were
-demonstrated capable of failing.** The remaining six need a deliberately broken
-mtrack rather than a broken input, and are unproven:
-`selected_output_is_real_hardware`, `plays_a_song_to_completion`,
-`stop_halts_playback`, `active_playlist_persists_across_restart`,
-`controllers_restart_while_idle`, `lighting_effects_activate_during_playback`.
+```
+./scripts/hardware-test.sh --self-test      # or: mtrack-harness --self-test
+```
 
-The tooling was **not** retained. It was a table of mutations pinned to exact
-source strings, nothing ran it, and it had no idea the registry contained
-checks it did not cover -- so it would have reported a perfect score against
-its own table while silently ignoring a third of the suite. Rebuilding it
-properly means having it read `checks::all()` and fail when a registered check
-has neither a mutation nor an explicit exemption.
+Every check names one thing it depends on and asks `sabotage::` whether to
+break it. `--self-test` runs them all with the flag set and requires each to
+report a defect **from its own assertion**. **26/26 on the MAT rig; 25/26 on
+the WING**, where routing is not exercised because that console has no
+loopback.
 
-Two strengths of evidence are worth keeping distinct when it is rebuilt:
+**What the score cannot tell you.** The self-test proves a check's assertion
+fires; it cannot prove the assertion is *positioned* correctly. Where a control
+substitutes the value the assertion reads (a "predicate-level" control, listed
+in `checks.rs`) rather than breaking the world the assertion observes, it would
+still score a pass if the check were later made vacuous the way
+`bogus_*_device_degrades_gracefully` was -- reading something insensitive to
+what mtrack does. Those controls are deliberate trade-offs, usually because the
+world-level version killed startup before the assertion ran, and `--self-test`
+prints how many of its passes rest on them. Read that number alongside the
+total.
 
-- **world** — the input the check reads is broken. Strong: it proves the check
-  notices a changed reality.
-- **predicate** — the assertion is inverted. Proves only that it is reached and
-  its message renders. *A vacuous check passes this*, which is why the two
-  defects above needed world mutations to catch.
+**Proof is opt-in.** Only the assertion macros (`check!`, `check_eq!`, `fail!`)
+and constructors named `*_assertion` mark a failure as coming from a check's
+own assertion; shared helpers -- log checks, readiness waits, RPC conversions,
+`inconclusive!` -- produce pre-assertion values. The flag is private to
+`outcome`, so it cannot be set by struct literal, which is how `inconclusive!`
+set it wrongly for three rounds. That closes the accidental case. It does not
+close the deliberate one: the constructors are public, and
+`Client::wait_for_status` takes an `assertion` parameter by design. A helper
+claiming proof must now say so in its own source.
 
-Three lessons from that run, all bugs in the sweep rather than in the checks:
+Only an assertion counts. Failures carry a `from_assertion` flag, because a
+control that dies inside `Server::start` reports `Failed` and would otherwise
+be indistinguishable from one that drove its assertion to failure -- the same
+"reading it cannot tell you" problem, one level up. Counting any non-pass as
+proof initially hid four broken controls behind a green 26/26.
+
+The control lives beside the assertion it guards, so refactoring cannot orphan
+it, and completeness enforces itself: a check with no break point, or an
+ineffective one, simply passes the self-test and is reported as a defect. That
+is how the two lighting checks and a rig-dependent control were caught — the
+self-test found them, not review.
+
+An external source-mutating version was tried first and removed. Its mutations
+were pinned to exact source strings, so it rotted whenever a check was edited,
+and it did not know the registry held checks it never covered: it scored itself
+16/16 while ignoring ten.
+
+Three lessons from building it, all bugs in the controls rather than the checks:
 
 - Profiles load in **filename** order (`config/player.rs`), so reordering the
   vec passed to `.profiles()` is a no-op sabotage.
 - A *bogus* device stops the player booting, so the check fails at startup
-  without ever reaching the assertion under test. A valid-but-different device
-  is the correct control.
-- Scoping a mutation to a function needs **string-aware** brace matching: one
-  check body contains `"show \"Broken\" { ..."`, and naive matching never
-  rebalances.
+  without reaching the assertion under test. A valid-but-different device is
+  the correct control.
+- A control must not depend on the rig supplying the failure condition. The
+  plug-device check could not fail on the WING, where no raw device exists at
+  all -- the very case it was written to tolerate.
 
 ## Non-defects worth knowing
 

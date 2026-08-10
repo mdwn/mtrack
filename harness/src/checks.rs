@@ -46,6 +46,72 @@ macro_rules! entry {
     };
 }
 
+/// Checks whose sabotage breaks the *world* the assertion observes, rather than
+/// substituting the value it reads.
+///
+/// The distinction matters and is easy to lose. A world-level control breaks an
+/// input and requires the check to notice; a predicate-level one swaps the
+/// string or number the assertion compares. The second proves the assertion is
+/// wired up and reachable, but **cannot detect the class of vacuity that
+/// motivated the self-test**: if such a check were later made vacuous the way
+/// `bogus_*_device_degrades_gracefully` was -- reading a value that is the same
+/// whatever mtrack does -- a predicate-level control would still score
+/// "assertion fired", because it replaces the value after the read.
+///
+/// The weaker class is the *default*: anything absent from this list counts as
+/// predicate-level, so a new check, or one whose control is later weakened, is
+/// treated as weak evidence until someone deliberately promotes it. Listing the
+/// weak ones instead would let an omission overstate the score.
+///
+/// Absences are usually deliberate trade-offs.
+/// `configured_midi_device_transmits` is predicate-level because its
+/// world-level control pointed the profile at a bogus device and timed out
+/// during startup, never reaching the assertion;
+/// `plays_a_song_to_completion` because making a transport clock misbehave
+/// needs a broken player. The self-test prints how many of its passes rest on
+/// this class rather than burying it in one number.
+const WORLD_LEVEL: &[&str] = &[
+    "stop_halts_playback",
+    "playlist_navigation_moves_between_songs",
+    "tracks_route_to_their_mapped_channels",
+    "beat_clock_is_silent_when_disabled",
+    "stale_checksum_is_rejected",
+    "active_playlist_persists_across_restart",
+    "absent_midi_is_skipped_not_fatal",
+    "absent_dmx_is_skipped_not_fatal",
+    "bogus_midi_device_degrades_gracefully",
+    "bogus_audio_device_degrades_gracefully",
+    "first_profile_wins",
+    "generated_show_passes_validation",
+    "malformed_show_is_rejected",
+    "song_lighting_produces_cues",
+    "lighting_effects_activate_during_playback",
+];
+
+/// Whether this check's negative control only substitutes the asserted value.
+///
+/// Unlisted means predicate-level, so a new check -- or one whose control is
+/// later weakened -- is counted as weak evidence until someone says otherwise.
+/// Listing the weak ones instead would let an omission silently overstate the
+/// score, which is the exact failure this accounting exists to prevent.
+pub fn is_predicate_level(name: &str) -> bool {
+    !WORLD_LEVEL.contains(&name)
+}
+
+/// Names in [`WORLD_LEVEL`] that no longer match a registered check.
+///
+/// A stale entry credits a check that no longer exists, so it is reported.
+/// The opposite direction needs no check: an unlisted name is already treated
+/// as the weaker class.
+pub fn stale_world_level_entries() -> Vec<&'static str> {
+    let names: Vec<&str> = all().into_iter().map(|c| c.name).collect();
+    WORLD_LEVEL
+        .iter()
+        .filter(|p| !names.contains(p))
+        .copied()
+        .collect()
+}
+
 /// Every check, in execution order.
 ///
 /// Ordering is deliberate: cheap structural checks first, so a broken project

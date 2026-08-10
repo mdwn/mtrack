@@ -25,7 +25,7 @@ use crate::client::Client;
 use crate::outcome::CheckOutcome;
 use crate::project::{ProfileSpec, ProjectBuilder, Subsystem};
 use crate::server::Server;
-use crate::{check, check_eq};
+use crate::{check, check_eq, fail, skip};
 
 /// How long to watch a deliberately-broken subsystem before concluding it
 /// degraded rather than misbehaved.
@@ -65,7 +65,12 @@ async fn watch_subsystem(
 pub async fn absent_midi_is_skipped_not_fatal() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
-    profile.midi = Subsystem::Absent;
+    if crate::sabotage::active() && Capabilities::get().midi_out.is_none() {
+        crate::no_control_here!(
+            "this machine has no MIDI device, so making the profile declare one is a no-op"
+        );
+    }
+    profile.midi = crate::sabotage::pick(Subsystem::Absent, Subsystem::Detected);
 
     let project = ProjectBuilder::new()
         .profiles(vec![profile])
@@ -94,7 +99,7 @@ pub async fn absent_midi_is_skipped_not_fatal() -> CheckOutcome {
 pub async fn absent_dmx_is_skipped_not_fatal() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
-    profile.dmx = Subsystem::Absent;
+    profile.dmx = crate::sabotage::pick(Subsystem::Absent, Subsystem::Detected);
 
     let project = ProjectBuilder::new()
         .profiles(vec![profile])
@@ -126,7 +131,17 @@ pub async fn absent_dmx_is_skipped_not_fatal() -> CheckOutcome {
 pub async fn bogus_midi_device_degrades_gracefully() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
-    profile.midi = Subsystem::Bogus("e2e-nonexistent-midi-device".to_string());
+    // Same no-op as its sibling above: where no MIDI device exists, render_midi
+    // returns early and the sabotaged profile is byte-identical.
+    if crate::sabotage::active() && Capabilities::get().midi_out.is_none() {
+        crate::no_control_here!(
+            "this machine has no MIDI device, so making the profile declare one is a no-op"
+        );
+    }
+    profile.midi = crate::sabotage::pick(
+        Subsystem::Bogus("e2e-nonexistent-midi-device".to_string()),
+        Subsystem::Detected,
+    );
 
     let project = ProjectBuilder::new()
         .profiles(vec![profile])
@@ -163,7 +178,10 @@ pub async fn bogus_midi_device_degrades_gracefully() -> CheckOutcome {
 pub async fn bogus_audio_device_degrades_gracefully() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
-    profile.audio = Subsystem::Bogus("e2e-nonexistent-audio-device".to_string());
+    profile.audio = crate::sabotage::pick(
+        Subsystem::Bogus("e2e-nonexistent-audio-device".to_string()),
+        Subsystem::Detected,
+    );
 
     let project = ProjectBuilder::new()
         .profiles(vec![profile])
@@ -201,11 +219,61 @@ pub async fn first_profile_wins() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let caps = Capabilities::get();
     let Some(expected) = caps.audio_out.as_ref().map(|d| d.name.clone()) else {
-        return Ok(());
+        // Not a pass: with no audio device there is nothing to claim, and
+        // returning Ok here would report success having verified nothing --
+        // and then make --self-test call the check CANNOT FAIL for what is
+        // really "this should have skipped".
+        skip!("no audio output device, so there is no claimed device to compare");
     };
 
-    let mut second = ProfileSpec::detected("02-decoy");
-    second.audio = Subsystem::Bogus("e2e-decoy-device".to_string());
+    // Sorts first under sabotage, and names a *valid* other device: a bogus one
+    // stops the player booting, so the control died before this check's
+    // assertion could run.
+    let mut second = ProfileSpec::detected(crate::sabotage::pick("02-decoy", "00-decoy"));
+    second.audio = if crate::sabotage::active() {
+        // Must have at least as many channels as the real one: render_audio
+        // derives track mappings and the pinned rate from the *selected*
+        // device, so a narrower decoy maps tracks to channels that do not
+        // exist and the player fails to boot -- the control would then die
+        // before this check's assertion.
+        // Mirrors render_audio: it clamps the channel count to a minimum of two
+        // and pins a rate only for a *raw* device, so screening on anything else
+        // rejects usable decoys and admits unusable ones.
+        let wanted = caps
+            .audio_out
+            .as_ref()
+            .map(|d| d.max_channels)
+            .unwrap_or(2)
+            .max(2);
+        // render_audio also pins the *selected* device's rate into every
+        // profile, so a decoy that cannot play it dies at startup for a reason
+        // unrelated to which profile won.
+        let pinned: Option<u32> = caps
+            .audio_out
+            .as_ref()
+            .filter(|d| d.name.contains("hw:CARD=") && !d.name.contains("plughw:"))
+            .filter(|d| !d.sample_rates.is_empty() && !d.sample_rates.contains(&44_100))
+            .and_then(|d| {
+                if d.sample_rates.contains(&48_000) {
+                    Some(48_000)
+                } else {
+                    d.sample_rates.iter().copied().max()
+                }
+            });
+        match caps.all_audio_out.iter().find(|d| {
+            Some(&d.name) != caps.audio_out.as_ref().map(|s| &s.name)
+                && d.max_channels >= wanted
+                && pinned.is_none_or(|rate| d.sample_rates.contains(&rate))
+        }) {
+            Some(other) => Subsystem::Named(other.name.clone()),
+            None => crate::no_control_here!(
+                "no alternative output matching {wanted} channels and the pinned rate, so no \
+                 usable decoy exists"
+            ),
+        }
+    } else {
+        Subsystem::Bogus("e2e-decoy-device".to_string())
+    };
 
     let project = ProjectBuilder::new()
         .profiles(vec![ProfileSpec::detected("01-e2e"), second])
@@ -231,8 +299,9 @@ pub async fn controllers_restart_while_idle() -> CheckOutcome {
     let server = Server::start(&project).await?;
     let client = Client::connect(&server).await?;
 
+    let endpoint = "controllers/restart";
     let (status, body) = client
-        .send_text(reqwest::Method::POST, "controllers/restart", String::new())
+        .send_text(reqwest::Method::POST, endpoint, String::new())
         .await?;
     check!(
         status.is_success(),
@@ -240,9 +309,35 @@ pub async fn controllers_restart_while_idle() -> CheckOutcome {
     );
 
     // The gRPC controller must come back, or the player has lost its control
-    // surface without saying so.
-    let mut reconnected = Client::connect(&server).await?;
-    reconnected.status().await?;
+    // surface without saying so. Reconnecting *is* this check's assertion, so a
+    // failure here is a defect in the player -- not, as it was previously
+    // reported, an error in the harness.
+    // Sabotage the *reconnect*, which is the assertion this check exists for --
+    // "controllers must come back, or control is silently lost".
+    //
+    // Weaker than a predicate-level substitution: the error is injected without
+    // calling `Client::connect` at all, so it proves the match arm and `fail!`
+    // render, not that a real failed reconnect is detected. Making a genuine
+    // reconnect fail needs a second server or a wrong address, which is the
+    // improvement to make here. Listed as predicate-level in the meantime, so
+    // the score does not credit it as strong evidence.
+    let reconnect = if crate::sabotage::active() {
+        Err("sabotage: reconnect not attempted".into())
+    } else {
+        Client::connect(&server).await
+    };
+    let mut reconnected = match reconnect {
+        Ok(client) => client,
+        Err(e) => fail!(
+            "the gRPC controller did not come back after a restart, so the player has \
+             silently lost its control surface: {e}\n--- log ---\n{}",
+            server.log()
+        ),
+    };
+    if let Err(e) = reconnected.status().await {
+        fail!("the restarted gRPC controller accepted a connection but not a request: {e}");
+    }
+    crate::outcome::record("gRPC controller answered again after restart");
 
     server.check_clean_log(&[])?;
     Ok(())

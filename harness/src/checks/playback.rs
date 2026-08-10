@@ -63,6 +63,16 @@ pub async fn plays_a_song_to_completion() -> CheckOutcome {
         readings.push(elapsed_of(&status));
     }
 
+    // Reversed under sabotage, so the monotonicity and advancement assertions
+    // below are the ones that fire. Sampling fewer times instead only
+    // manufactured a `len() >= 3` failure and never reached them -- a control
+    // weaker than the predicate-level ones, in the strong-evidence bucket.
+    // This is predicate-level: it substitutes what the assertion reads, because
+    // making the transport clock misbehave needs a broken player.
+    if crate::sabotage::active() {
+        readings.reverse();
+    }
+
     check!(
         readings.len() >= 3,
         "playback ended too quickly to observe the clock: {readings:?}"
@@ -88,14 +98,30 @@ pub async fn plays_a_song_to_completion() -> CheckOutcome {
 /// Stop takes effect while a song is mid-flight.
 pub async fn stop_halts_playback() -> CheckOutcome {
     crate::runner::require_area("playback")?;
-    let project = crate::checks::standard_project()?;
+
+    // A song far longer than the stop deadline. With the standard 4-6 second
+    // songs this check was vacuous: the song ended on its own well inside the
+    // timeout, so it passed whether or not Stop did anything. Verified by
+    // deleting the stop call, which changed nothing.
+    let project = ProjectBuilder::new()
+        .songs(vec![SongSpec::tones("Long Tone", "long-tone", 1, 120.0)])
+        .build()?;
     let server = Server::start(&project).await?;
     let mut client = Client::connect(&server).await?;
 
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
-    client.grpc().stop(StopRequest {}).await?;
-    client.wait_until_stopped(Duration::from_secs(10)).await?;
+    if crate::sabotage::perform() {
+        client.grpc().stop(StopRequest {}).await?;
+    }
+
+    // Five seconds against a two-minute song: natural completion cannot
+    // masquerade as a successful stop. This wait *is* the assertion, hence the
+    // asserting variant.
+    client
+        .wait_until_stopped_asserting(Duration::from_secs(5))
+        .await?;
+    crate::outcome::record("stopped a 120s song within 5s of the stop request");
 
     server.check_clean_log(&[])?;
     Ok(())
@@ -109,7 +135,9 @@ pub async fn playlist_navigation_moves_between_songs() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let first = client.status().await?.current_song.map(|s| s.name);
-    client.grpc().next(NextRequest {}).await?;
+    if crate::sabotage::perform() {
+        client.grpc().next(NextRequest {}).await?;
+    }
     let second = client.status().await?.current_song.map(|s| s.name);
     check!(
         first != second,
@@ -200,10 +228,26 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
 
     // One tone track per verifiable output, mapped one-to-one so a tone's
     // identity determines which channel it should have come out of.
+    // Rotating a mapping needs at least two links; with one, the sabotaged
+    // mapping equals the real one and the control is a no-op.
+    if crate::sabotage::active() && outputs.len() < 2 {
+        crate::no_control_here!(
+            "only one loopback link, so the routing mapping cannot be permuted"
+        );
+    }
+
     let song = SongSpec::tones("Routing", "routing", outputs.len(), 12.0);
     let mut mappings = BTreeMap::new();
-    for (track, output) in song.tracks.iter().zip(outputs.iter()) {
-        mappings.insert(track.name.clone(), vec![*output]);
+    for (index, (track, output)) in song.tracks.iter().zip(outputs.iter()).enumerate() {
+        // Under sabotage every track is shifted one link along, so each tone
+        // arrives on a neighbour's input rather than its own.
+        mappings.insert(
+            track.name.clone(),
+            vec![crate::sabotage::pick(
+                *output,
+                outputs[(index + 1) % outputs.len()],
+            )],
+        );
     }
 
     let mut profile = ProfileSpec::detected("01-e2e");

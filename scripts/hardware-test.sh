@@ -18,15 +18,18 @@
 # runs the areas it can, and reports the ones it cannot. A machine with only
 # audio, or only MIDI, is a normal run rather than a failure.
 #
+# USAGE-BEGIN
 # Usage:
 #   ./scripts/hardware-test.sh                  # everything available
 #   ./scripts/hardware-test.sh --only lighting  # one area or case-name filter
 #   ./scripts/hardware-test.sh --list           # what would run, then exit
+#   ./scripts/hardware-test.sh --self-test      # prove every check can fail
 #   ./scripts/hardware-test.sh --repeat 20      # repeat, to hunt intermittents
 #   ./scripts/hardware-test.sh --rediscover     # re-measure cabling, ignore cache
 #   ./scripts/hardware-test.sh --probe-all      # probe every device pair, not just the selected one
 #   ./scripts/hardware-test.sh --json out.json  # also write machine-readable results
 #   ./scripts/hardware-test.sh --no-build       # skip the build step
+# USAGE-END
 
 set -uo pipefail
 
@@ -36,10 +39,14 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FILTER=""
 REPEAT=1
 LIST_ONLY=false
+SELF_TEST=false
 SKIP_BUILD=false
 
+# Printed from a marked block rather than a line range: the range silently
+# dropped --no-build the moment a usage line was inserted above it.
 usage() {
-    sed -n '17,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '/^# USAGE-BEGIN$/,/^# USAGE-END$/p' "${BASH_SOURCE[0]}" \
+        | grep -v 'USAGE-\(BEGIN\|END\)' | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
@@ -74,6 +81,7 @@ while [[ $# -gt 0 ]]; do
             REPEAT="$2"; shift; shift ;;
         --json)       need_value "$@"; JSON_OUT="$2"; shift; shift ;;
         --list)       LIST_ONLY=true; shift ;;
+        --self-test)  SELF_TEST=true; shift ;;
         --rediscover) export MTRACK_E2E_REDISCOVER=1; shift ;;
         --probe-all)  export MTRACK_E2E_PROBE_ALL=1; shift ;;
         --no-build)   SKIP_BUILD=true; shift ;;
@@ -119,6 +127,10 @@ ARGS=()
 
 if [[ "$LIST_ONLY" == "true" ]]; then
     exec "$HARNESS" --list "${ARGS[@]}"
+fi
+
+if [[ "$SELF_TEST" == "true" ]]; then
+    exec "$HARNESS" --self-test "${ARGS[@]}"
 fi
 
 exec "$HARNESS" "${ARGS[@]}"
