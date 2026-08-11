@@ -150,11 +150,11 @@ pub async fn start(
             default_config.set_songs(".");
             if let Some(parent) = player_path.parent() {
                 if !parent.exists() {
-                    std::fs::create_dir_all(parent)?;
+                    crate::util::create_dir_all(parent)?;
                 }
             }
             let yaml = crate::util::to_yaml_string(&default_config)?;
-            std::fs::write(player_path, &yaml)?;
+            crate::util::write_file(player_path, yaml.as_bytes())?;
             default_config
         }
     };
@@ -168,7 +168,7 @@ pub async fn start(
     let songs_path = player_config.songs(player_path);
     if !songs_path.exists() {
         info!("Creating songs directory at {:?}", songs_path);
-        std::fs::create_dir_all(&songs_path)?;
+        crate::util::create_dir_all(&songs_path)?;
     }
 
     let songs = songs::get_all_songs(&songs_path)?;

@@ -75,7 +75,7 @@ impl SafePath {
         }
         let target = parent.path.join(name);
         if !target.exists() {
-            std::fs::create_dir(&target).map_err(SafePathError::Io)?;
+            crate::util::create_dir_all(&target).map_err(SafePathError::Io)?;
         }
         let canonical = target.canonicalize().map_err(|_| SafePathError::NotFound)?;
         if !canonical.starts_with(root.as_path()) {

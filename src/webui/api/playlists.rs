@@ -125,8 +125,8 @@ pub(super) async fn put_playlist_by_name(
     let fp = file_path.clone();
     let yaml_owned = yaml;
     super::helpers::spawn_blocking_io("write playlist", move || {
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        config_io::atomic_write(&fp, &yaml_owned)
+        crate::util::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        config_io::staged_write(&fp, &yaml_owned)
     })
     .await?;
 

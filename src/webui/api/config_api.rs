@@ -72,7 +72,7 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
 
     let path = state.config_path.clone();
     match super::helpers::spawn_blocking_io("write config", move || {
-        config_io::atomic_write(&path, &body)
+        config_io::staged_write(&path, &body)
     })
     .await
     {

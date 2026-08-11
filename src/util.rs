@@ -110,6 +110,387 @@ fn json_to_yaml(value: &serde_json::Value) -> Yaml {
     }
 }
 
+/// The suffix mtrack stages a pending write under, alongside its destination.
+///
+/// Deliberately appended rather than substituted for the extension, so a staged
+/// `01-main.yaml.mtrack-new` is not picked up by the directory scans that look
+/// for `.yaml` and `.light` files.
+const STAGED_SUFFIX: &str = ".mtrack-new";
+
+/// The path a pending write to `path` is staged under.
+pub fn staged_path(path: &Path) -> std::path::PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(STAGED_SUFFIX);
+    path.with_file_name(name)
+}
+
+/// Writes `contents` to `path`, preserving who owns the file and leaving a
+/// recoverable copy if the write is interrupted.
+///
+/// The destination is rewritten **through its existing inode** rather than by
+/// renaming a replacement over it. That is what preserves ownership: a rename
+/// installs a new inode, which carries the ownership and mode of the file the
+/// writing process created (itself, mode 0600) rather than the destination's.
+/// Run mtrack once under `sudo` to debug something and a rename-based save
+/// leaves every config file `root:root` and mode 0600, locking the normal user
+/// out of their own configuration. Writing in place cannot do that, and it
+/// keeps the file's ACLs and extended attributes into the bargain.
+///
+/// The cost is that an in-place rewrite is not atomic — it truncates and then
+/// writes, so losing power midway leaves a short file. To bound that, the
+/// complete new content is first staged in a sidecar (see [`staged_path`]) and
+/// flushed to disk, and only removed once the destination is durable. A sidecar
+/// left behind therefore means the last write to that file may not have
+/// completed, and holds the content it was trying to write. Recovery is
+/// currently manual: copy the sidecar over the destination.
+///
+/// The destination is locked for the duration, so two mtrack processes writing
+/// the same file serialise rather than interleave. The lock is advisory and
+/// only binds cooperating processes, which is all we need — the racing writer
+/// this guards against is another mtrack.
+pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    // Read the ownership we are aiming for before creating anything, since
+    // creating the destination would otherwise answer the question with the
+    // freshly created file's own ownership.
+    let intended = intended_ownership(path)?;
+
+    // Stage the complete new content beside the destination and get it on disk,
+    // so the rewrite below always has something to recover from.
+    let staged = staged_path(path);
+    {
+        let mut file = std::fs::File::create(&staged)?;
+        if let Some(ownership) = intended {
+            ownership.apply(&file, &staged)?;
+        }
+        file.write_all(contents)?;
+        file.sync_all()?;
+    }
+    // Flushing the file is not enough on its own: without syncing the directory
+    // too, the sidecar's *name* may not survive a crash, and an unnamed file is
+    // no use to recover from.
+    if let Some(parent) = parent_of(path) {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(path)?;
+        // Lock before truncating, not as part of the open: opening with
+        // truncation would discard a competing writer's content before we had
+        // any claim to the file.
+        file.lock()?;
+        if let Some(ownership) = intended {
+            ownership.apply(&file, path)?;
+        }
+        file.set_len(0)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+    }
+
+    // The destination is durable, so the staged copy has served its purpose.
+    // Leaving it behind would falsely advertise an interrupted write.
+    std::fs::remove_file(&staged)
+}
+
+/// [`write_file`] for callers on a Tokio runtime, which keeps the filesystem
+/// work off the async worker.
+pub async fn write_file_async(path: &Path, contents: Vec<u8>) -> std::io::Result<()> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || write_file(&path, &contents))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+/// The ownership a write to `path` should land with: that of the file already
+/// there, or — when it is about to be created — that implied by its directory.
+/// `None` when there is neither, leaving the process defaults to stand.
+fn intended_ownership(path: &Path) -> std::io::Result<Option<Ownership>> {
+    match Ownership::of(path) {
+        Ok(existing) => Ok(Some(existing)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match parent_of(path) {
+            Some(parent) => Ok(Some(Ownership::of(parent)?.for_file_in_dir())),
+            None => Ok(None),
+        },
+        Err(e) => Err(e),
+    }
+}
+
+/// Like [`std::fs::create_dir_all`], but every directory it creates adopts the
+/// ownership and mode of the nearest ancestor that already existed, rather than
+/// of the invoking user — for the same reason as [`write_file`]. A path that
+/// already exists is left untouched.
+pub fn create_dir_all(path: &Path) -> std::io::Result<()> {
+    // Walk up to the nearest existing ancestor, remembering what we pass.
+    let mut created = Vec::new();
+    let mut cursor = path;
+    let existing = loop {
+        if cursor.try_exists()? {
+            break Some(cursor);
+        }
+        created.push(cursor);
+        match parent_of(cursor) {
+            Some(parent) => cursor = parent,
+            None => break None,
+        }
+    };
+
+    std::fs::create_dir_all(path)?;
+
+    let Some(existing) = existing else {
+        return Ok(());
+    };
+    let ownership = Ownership::of(existing)?;
+
+    // Outermost first, so a failure part way down still leaves the shallower
+    // directories — the ones most likely to be shared — correctly owned.
+    for dir in created.iter().rev() {
+        // A directory opens read-only on Unix, which is enough for fchmod/fchown.
+        ownership.apply(&std::fs::File::open(dir)?, dir)?;
+    }
+    Ok(())
+}
+
+/// [`create_dir_all`] for callers on a Tokio runtime, which keeps the
+/// filesystem work off the async worker.
+pub async fn create_dir_all_async(path: &Path) -> std::io::Result<()> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || create_dir_all(&path))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+/// The parent directory of `path`, treating the empty parent of a bare relative
+/// name as absent rather than as the root.
+fn parent_of(path: &Path) -> Option<&Path> {
+    path.parent().filter(|p| !p.as_os_str().is_empty())
+}
+
+/// The ownership and mode of an existing file or directory. Changing ownership
+/// is best effort — an unprivileged process cannot hand a file to another user,
+/// and there is nothing useful to do about that beyond logging it — while the
+/// mode is always applied.
+#[derive(Clone, Copy)]
+struct Ownership {
+    #[cfg(unix)]
+    uid: u32,
+    #[cfg(unix)]
+    gid: u32,
+    #[cfg(unix)]
+    mode: u32,
+}
+
+#[cfg(unix)]
+impl Ownership {
+    /// Reads the ownership of `path`, following symlinks: renaming over a
+    /// symlink replaces the link, and the file it pointed at describes what the
+    /// user actually wants far better than the link's own `lrwxrwxrwx`.
+    fn of(path: &Path) -> std::io::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+
+        let meta = std::fs::metadata(path)?;
+        Ok(Self {
+            uid: meta.uid(),
+            gid: meta.gid(),
+            mode: meta.mode() & 0o7777,
+        })
+    }
+
+    /// The ownership a file created inside this directory should have: the same
+    /// owner, and the directory's mode without its execute bits — a 0755
+    /// directory yields a 0644 file, a 0700 one yields 0600. That tracks the
+    /// umask the directory itself was created under, without having to read the
+    /// current umask, which cannot be queried without also setting it.
+    fn for_file_in_dir(self) -> Self {
+        Self {
+            mode: self.mode & 0o666,
+            ..self
+        }
+    }
+
+    /// Applies this ownership and mode to an open file or directory. `path`
+    /// names it for diagnostics only.
+    fn apply(&self, file: &std::fs::File, path: &Path) -> std::io::Result<()> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        // Skip the syscall in the overwhelmingly common case of writing a file
+        // we already own — chown only matters when the ids actually differ.
+        let current = file.metadata()?;
+        if current.uid() != self.uid || current.gid() != self.gid {
+            // Only a privileged process can give a file away, so failure here
+            // is expected whenever a user edits a file owned by someone else,
+            // and is not something they can act on. Log it and keep the write.
+            if let Err(e) = std::os::unix::fs::fchown(file, Some(self.uid), Some(self.gid)) {
+                tracing::warn!(
+                    "Unable to set ownership of {} to {}:{} ({}). It will be owned by {}:{} instead.",
+                    path.display(),
+                    self.uid,
+                    self.gid,
+                    e,
+                    current.uid(),
+                    current.gid(),
+                );
+            }
+        }
+
+        // Mode last: chown clears the setuid and setgid bits on a file, so
+        // setting the mode first would let the chown strip bits we just set.
+        file.set_permissions(std::fs::Permissions::from_mode(self.mode))
+    }
+}
+
+#[cfg(not(unix))]
+impl Ownership {
+    fn of(path: &Path) -> std::io::Result<Self> {
+        // Confirm the path exists so callers can still distinguish replacing a
+        // file from creating one, then carry no ownership to apply.
+        std::fs::metadata(path)?;
+        Ok(Self {})
+    }
+
+    fn for_file_in_dir(self) -> Self {
+        self
+    }
+
+    fn apply(&self, _file: &std::fs::File, _path: &Path) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod ownership_test {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    fn mode_of(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    fn set_mode(path: &Path, mode: u32) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn write_file_keeps_the_inode_of_the_destination() {
+        // The whole point of writing in place: the file that ends up on disk is
+        // the same file, so everything hanging off the inode survives.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("config.yaml");
+        std::fs::write(&dest, "old").unwrap();
+        let before = std::fs::metadata(&dest).unwrap();
+
+        write_file(&dest, b"new").unwrap();
+
+        let after = std::fs::metadata(&dest).unwrap();
+        assert_eq!(after.ino(), before.ino());
+        assert_eq!((after.uid(), after.gid()), (before.uid(), before.gid()));
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "new");
+    }
+
+    #[test]
+    fn write_file_keeps_the_mode_of_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("config.yaml");
+        std::fs::write(&dest, "old").unwrap();
+        set_mode(&dest, 0o640);
+
+        write_file(&dest, b"new").unwrap();
+
+        assert_eq!(mode_of(&dest), 0o640);
+    }
+
+    #[test]
+    fn write_file_derives_a_new_files_mode_from_its_directory() {
+        for (dir_mode, want) in [(0o755, 0o644), (0o700, 0o600), (0o775, 0o664)] {
+            let dir = tempfile::tempdir().unwrap();
+            set_mode(dir.path(), dir_mode);
+            let dest = dir.path().join("new.yaml");
+
+            write_file(&dest, b"contents").unwrap();
+
+            assert_eq!(
+                mode_of(&dest),
+                want,
+                "directory mode {:o} should yield file mode {:o}",
+                dir_mode,
+                want
+            );
+            // Restore a writable mode so the temp dir can clean itself up.
+            set_mode(dir.path(), 0o755);
+        }
+    }
+
+    #[test]
+    fn write_file_removes_the_staged_copy_once_the_write_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("config.yaml");
+
+        write_file(&dest, b"contents").unwrap();
+
+        // A leftover sidecar means "the last write may not have completed", so
+        // a successful write must not leave one lying about.
+        assert!(!staged_path(&dest).exists());
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "contents");
+    }
+
+    #[test]
+    fn staged_path_does_not_masquerade_as_a_config_file() {
+        // Directory scans pick files by extension, so the sidecar must not keep
+        // the one it was staged from.
+        let staged = staged_path(Path::new("/cfg/profiles/01-main.yaml"));
+        assert_eq!(staged.file_name().unwrap(), "01-main.yaml.mtrack-new");
+        assert_ne!(staged.extension().unwrap(), "yaml");
+        assert_ne!(
+            staged_path(Path::new("/cfg/show.light"))
+                .extension()
+                .unwrap(),
+            "light"
+        );
+    }
+
+    #[test]
+    fn create_dir_all_gives_new_directories_the_ancestors_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("base");
+        std::fs::create_dir(&base).unwrap();
+        set_mode(&base, 0o750);
+
+        create_dir_all(&base.join("a/b")).unwrap();
+
+        assert_eq!(mode_of(&base.join("a")), 0o750);
+        assert_eq!(mode_of(&base.join("a/b")), 0o750);
+    }
+
+    #[test]
+    fn create_dir_all_leaves_existing_directories_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let existing = root.path().join("existing");
+        std::fs::create_dir(&existing).unwrap();
+        set_mode(&existing, 0o700);
+
+        create_dir_all(&existing).unwrap();
+
+        assert_eq!(mode_of(&existing), 0o700);
+    }
+
+    #[test]
+    fn write_file_leaves_an_existing_files_mode_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.yaml");
+        std::fs::write(&path, "old").unwrap();
+        set_mode(&path, 0o604);
+
+        write_file(&path, b"new").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        assert_eq!(mode_of(&path), 0o604);
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::time::Duration;

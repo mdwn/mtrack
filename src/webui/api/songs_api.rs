@@ -653,7 +653,7 @@ pub(super) async fn post_song(
     let cp = config_path;
     let body_owned = body;
     if let Err(e) = super::helpers::spawn_blocking_io("write song config", move || {
-        config_io::atomic_write(&cp, &body_owned)
+        config_io::staged_write(&cp, &body_owned)
     })
     .await
     {
@@ -696,7 +696,7 @@ pub(super) async fn put_song(
     let cp = config_path;
     let body_owned = body;
     if let Err(e) = super::helpers::spawn_blocking_io("write song config", move || {
-        config_io::atomic_write(&cp, &body_owned)
+        config_io::staged_write(&cp, &body_owned)
     })
     .await
     {

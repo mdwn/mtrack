@@ -863,7 +863,7 @@ impl McpServer {
                 song_dir.join_filename("song.yaml")
             }
         };
-        atomic_write_string(&yaml_path, &args.yaml).await?;
+        staged_write_string(&yaml_path, &args.yaml).await?;
         // Rescan the songs directory so list_songs / read_song see the new or
         // updated song without requiring an mtrack restart.
         self.reload_songs_from_config().await?;
@@ -903,14 +903,16 @@ impl McpServer {
         let _: crate::config::Playlist = serde_yaml_from_str(&args.yaml)?;
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                McpError::internal_error(
-                    format!("failed to create {}: {e}", parent.display()),
-                    None,
-                )
-            })?;
+            crate::util::create_dir_all_async(parent)
+                .await
+                .map_err(|e| {
+                    McpError::internal_error(
+                        format!("failed to create {}: {e}", parent.display()),
+                        None,
+                    )
+                })?;
         }
-        atomic_write_string(&path, &args.yaml).await?;
+        staged_write_string(&path, &args.yaml).await?;
         // Rebuild the player's playlist set so `list_playlists` /
         // `switch_playlist` see the new file without requiring a restart.
         self.reload_songs_from_config().await?;
@@ -1166,7 +1168,7 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::Venues, &args.file)
             .await?;
-        atomic_write_string(&path, &args.source).await?;
+        staged_write_string(&path, &args.source).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "bytes": args.source.len(),
@@ -1215,7 +1217,7 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
             .await?;
-        atomic_write_string(&path, &args.source).await?;
+        staged_write_string(&path, &args.source).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "bytes": args.source.len(),
@@ -1277,7 +1279,7 @@ impl McpServer {
                     ));
                 }
                 let lighting_dir = song.base_path().join("lighting");
-                tokio::fs::create_dir_all(&lighting_dir)
+                crate::util::create_dir_all_async(&lighting_dir)
                     .await
                     .map_err(|e| {
                         McpError::internal_error(
@@ -1288,7 +1290,7 @@ impl McpServer {
                 lighting_dir.join(&args.file)
             }
         };
-        atomic_write_string(&path, &args.source).await?;
+        staged_write_string(&path, &args.source).await?;
         self.reload_songs_from_config().await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
@@ -1318,7 +1320,7 @@ impl McpServer {
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
         let _: crate::config::Song = serde_yaml_from_str(&updated)?;
-        atomic_write_string(&path, &updated).await?;
+        staged_write_string(&path, &updated).await?;
         self.reload_songs_from_config().await?;
         Ok(patch_response(&path, &original, &updated))
     }
@@ -1334,7 +1336,7 @@ impl McpServer {
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
         let _: crate::config::Playlist = serde_yaml_from_str(&updated)?;
-        atomic_write_string(&path, &updated).await?;
+        staged_write_string(&path, &updated).await?;
         self.reload_songs_from_config().await?;
         Ok(patch_response(&path, &original, &updated))
     }
@@ -1370,7 +1372,7 @@ impl McpServer {
         crate::lighting::parser::parse_light_shows(&updated).map_err(|e| {
             McpError::invalid_params(format!("patched .light is invalid: {e}"), None)
         })?;
-        atomic_write_string(&path, &updated).await?;
+        staged_write_string(&path, &updated).await?;
         self.reload_songs_from_config().await?;
         Ok(patch_response(&path, &original, &updated))
     }
@@ -1391,7 +1393,7 @@ impl McpServer {
         crate::lighting::parser::parse_venues(&updated).map_err(|e| {
             McpError::invalid_params(format!("patched venue is invalid: {e}"), None)
         })?;
-        atomic_write_string(&path, &updated).await?;
+        staged_write_string(&path, &updated).await?;
         Ok(patch_response(&path, &original, &updated))
     }
 
@@ -1410,7 +1412,7 @@ impl McpServer {
         crate::lighting::parser::parse_fixture_types(&updated).map_err(|e| {
             McpError::invalid_params(format!("patched fixture type is invalid: {e}"), None)
         })?;
-        atomic_write_string(&path, &updated).await?;
+        staged_write_string(&path, &updated).await?;
         Ok(patch_response(&path, &original, &updated))
     }
 }
@@ -1953,12 +1955,14 @@ impl McpServer {
         let cfg = store.read_config().await;
         let songs = cfg.songs(&path);
         if !songs.exists() {
-            tokio::fs::create_dir_all(&songs).await.map_err(|e| {
-                McpError::internal_error(
-                    format!("failed to create songs dir {}: {e}", songs.display()),
-                    None,
-                )
-            })?;
+            crate::util::create_dir_all_async(&songs)
+                .await
+                .map_err(|e| {
+                    McpError::internal_error(
+                        format!("failed to create songs dir {}: {e}", songs.display()),
+                        None,
+                    )
+                })?;
         }
         crate::webui::safe_path::VerifiedRoot::new(&songs).map_err(safepath_err)
     }
@@ -2006,7 +2010,7 @@ impl McpServer {
             parent.join(rel_path)
         };
         if !dir.exists() {
-            tokio::fs::create_dir_all(&dir).await.map_err(|e| {
+            crate::util::create_dir_all_async(&dir).await.map_err(|e| {
                 McpError::internal_error(
                     format!("failed to create lighting dir {}: {e}", dir.display()),
                     None,
@@ -2312,25 +2316,21 @@ pub(crate) async fn list_light_files(dir: &std::path::Path) -> Result<Vec<String
     Ok(out)
 }
 
-/// Writes a string atomically to `path` via tempfile-then-rename. Reuses the
-/// existing pattern used by the config store.
-pub(crate) async fn atomic_write_string(
+/// Writes a string to `path` the same way the config store does, preserving the
+/// file's ownership and staging the content so an interrupted write stays
+/// recoverable (see [`crate::util::write_file`]).
+pub(crate) async fn staged_write_string(
     path: &std::path::Path,
     content: &str,
 ) -> Result<(), McpError> {
-    let path = path.to_path_buf();
+    let owned = path.to_path_buf();
     let content = content.to_string();
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-        let parent = path
+        let parent = owned
             .parent()
             .ok_or_else(|| std::io::Error::other("path has no parent"))?;
-        std::fs::create_dir_all(parent)?;
-        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-        use std::io::Write;
-        tmp.write_all(content.as_bytes())?;
-        tmp.flush()?;
-        tmp.persist(&path).map_err(|e| e.error)?;
-        Ok(())
+        crate::util::create_dir_all(parent)?;
+        crate::util::write_file(&owned, content.as_bytes())
     })
     .await
     .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
