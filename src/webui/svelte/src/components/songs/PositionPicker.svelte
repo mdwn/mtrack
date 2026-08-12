@@ -213,6 +213,8 @@
   function laneDown(e: PointerEvent) {
     const p = posFromX(e.clientX);
     if (!p) return;
+    // Swallow the browser's own drag/select gesture before it starts.
+    e.preventDefault();
     scrubbing = true;
     laneEl?.setPointerCapture(e.pointerId);
     emit(p.measure, p.beat);
@@ -526,6 +528,9 @@
     touch-action: pan-y;
     cursor: pointer;
     border-radius: 8px;
+    /* A drag across the ruler is a scrub, never a text selection. */
+    user-select: none;
+    -webkit-user-select: none;
   }
   .pp-measure {
     position: relative;
