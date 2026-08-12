@@ -437,6 +437,69 @@ test("virtual-track-waveforms", async ({ page }) => {
   });
 });
 
+// --- Metronome: player-wide defaults, and the per-song panel --------------
+
+/** The config store with a `metronome:` defaults block, so the Config page's
+ * metronome editor has something to show. */
+const CONFIG_WITH_METRONOME = `songs: songs
+profiles:
+  - hostname: test-host
+    audio:
+      device: default
+samples: {}
+metronome:
+  enabled: true
+  volume: 0.8
+  sounds:
+    accent:
+      freq: 1600
+      volume: 0.9
+    normal:
+      freq: 1200
+      volume: 0.7
+    half:
+      freq: 1400
+      volume: 0.8
+    sub:
+      freq: 1000
+      volume: 0.45
+`;
+
+test("config-metronome", async ({ page }) => {
+  await page.route("**/api/config/store", async (route) => {
+    const resp = await route.fetch();
+    const data = await resp.json();
+    await route.fulfill({
+      response: resp,
+      json: { ...data, yaml: CONFIG_WITH_METRONOME },
+    });
+  });
+  await page.goto("/#/config");
+  await expect(page.locator(".list-view")).toBeVisible();
+  await expect(page.locator(".metronome-defaults")).toBeVisible();
+  await page.locator(".metronome-defaults").scrollIntoViewIfNeeded();
+  // The topnav is sticky and would paint across an element screenshot.
+  await page.addStyleTag({ content: ".topnav { display: none !important; }" });
+  await page.waitForTimeout(200);
+  // The section plus its header, which carries the save state.
+  await page
+    .locator(".samples-top-section", {
+      has: page.locator(".metronome-defaults"),
+    })
+    .screenshot({ path: path.join(DOCS_IMAGES, "config-metronome.png") });
+});
+
+test("song-metronome-panel", async ({ page }) => {
+  await steOpen(page, MET_YAML);
+  const panel = page.locator(".metronome-editor");
+  await panel.scrollIntoViewIfNeeded();
+  await expect(panel).toBeVisible();
+  await page.waitForTimeout(200);
+  await panel.screenshot({
+    path: path.join(DOCS_IMAGES, "song-metronome-panel.png"),
+  });
+});
+
 test("section-timeline-tempo-dialog", async ({ page }) => {
   await steOpen(page);
   await page.locator(".marker-lane").first().locator(".marker").last().click();

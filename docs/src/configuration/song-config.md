@@ -57,23 +57,23 @@ midi_playback:
 
   # MIDI channels from the MIDI file to exclude.
   exclude_midi_channels:
-  - 15
+    - 15
 
 # The tracks associated with this song.
 tracks:
-- name: click
-  file: click.wav
-- name: cue
-  file: /mnt/song-storage/cue.wav
-- name: backing-track-l
-  file: Backing Tracks.wav
-  file_channel: 1
-- name: backing-track-r
-  file: Backing Tracks.wav
-  file_channel: 2
-- name: keys
-  file: Keys.wav
-  file_channel: 1
+  - name: click
+    file: click.wav
+  - name: cue
+    file: /mnt/song-storage/cue.wav
+  - name: backing-track-l
+    file: Backing Tracks.wav
+    file_channel: 1
+  - name: backing-track-r
+    file: Backing Tracks.wav
+    file_channel: 2
+  - name: keys
+    file: Keys.wav
+    file_channel: 1
 
 # (Optional) Loop the song indefinitely. Audio crossfades seamlessly at loop
 # boundaries. Press Play or Next to break out and advance the playlist.
@@ -101,9 +101,9 @@ tempo:
 # (tempo map or click analysis). It appears as a virtual output track —
 # route it via track_mappings in the profile like any other track.
 metronome:
-  track: metronome          # output track name (default "metronome")
-  accent: [3, 2, 2]         # optional accent grouping within a measure
-  sounds:                   # optional; synthesized clicks by default
+  track: metronome # output track name (default "metronome")
+  accent: [3, 2, 2] # optional accent grouping within a measure
+  sounds: # optional; synthesized clicks by default
     accent: { freq: 1600, volume: 1.0 }
     normal: { file: clicks/lo.wav }
 
@@ -192,13 +192,13 @@ analysis.
 
 ```yaml
 tempo:
-  bpm: 152            # quarter notes per minute
+  bpm: 152 # quarter notes per minute
   time_signature: 7/8 # odd meters welcome; the grid gets one beat per eighth
-  start: 0.2          # optional lead-in seconds before measure 1 beat 1
-  changes:            # optional tempo/time-signature changes
+  start: 0.2 # optional lead-in seconds before measure 1 beat 1
+  changes: # optional tempo/time-signature changes
     - measure: 33
       bpm: 126
-      transition: { measures: 2 }  # linear ramp; or { beats: 4 }; omit to snap
+      transition: { measures: 2 } # linear ramp; or { beats: 4 }; omit to snap
     - measure: 65
       time_signature: 6/8
 ```
@@ -214,7 +214,7 @@ tempo:
 The generated beat grid emits one beat per denominator note — a 7/8 song gets seven beats per
 measure, matching how a metronome would click it.
 
-A tempo map can be added in the web UI's Sections tab, including a one-click "detect" that
+A tempo map can be added in the web UI's Timeline tab, including a one-click "detect" that
 prefills it from the song's MIDI file or an analyzed click track.
 
 Songs with a DSL light show but no `tempo {}` block in the `.light` file automatically use
@@ -229,11 +229,11 @@ map, and route anywhere.
 
 ```yaml
 metronome:
-  track: metronome    # the output track name (default "metronome")
-  accent: [3, 2, 2]   # optional accent grouping (7/8: accents on beats 1, 4, 6)
+  track: metronome # the output track name (default "metronome")
+  accent: [3, 2, 2] # optional accent grouping (7/8: accents on beats 1, 4, 6)
   sounds:
-    accent: { freq: 1600, volume: 1.0 }   # synthesized click, or:
-    normal: { file: clicks/lo.wav }       # a sample file (relative to the song dir)
+    accent: { freq: 1600, volume: 1.0 } # synthesized click, or:
+    normal: { file: clicks/lo.wav } # a sample file (relative to the song dir)
 ```
 
 - The metronome is a **virtual track**: add its track name to the profile's `track_mappings`
@@ -259,13 +259,14 @@ no re-recording of a full-length pilot track.
 
 ```yaml
 pilot:
-  track: pilot                # the output track name (default "pilot")
+  track: pilot # the output track name (default "pilot")
   hints:
-    - at: { measure: 25 }     # or { measure: 25, beat: 3 }, or { time: 84.2 }
+    - at: { measure: 25 } # or { measure: 25, beat: 3 }, or { time: 84.2 }
       label: "bridge in 3..2..1"
-      file: hints/bridge.wav  # optional — label-only hints are purely visual
-      align: end              # default: the sample ENDS at the position (countdowns);
-                              # "start" begins it there
+      file: hints/bridge.wav # optional — label-only hints are purely visual
+      align:
+        end # default: the sample ENDS at the position (countdowns);
+        # "start" begins it there
       # offset: -0.5          # optional fine shift of the anchor, in seconds
 ```
 
@@ -282,7 +283,7 @@ pilot:
 short files (any audio editor), drop the full-length track from `tracks:`, and reference the
 clips from `pilot.hints` at the right measures. From then on, moving a cue is a config edit.
 
-Hints are edited in the web UI's Sections tab and shown during playback as markers on the
+Hints are edited in the web UI's Timeline tab and shown during playback as markers on the
 progress bar plus the current hint's label.
 
 ## Sections
@@ -308,7 +309,7 @@ sections:
 - `start_measure` — Start measure, 1-indexed, inclusive
 - `end_measure` — End measure, 1-indexed, exclusive (must be greater than `start_measure`)
 
-Sections can also be created visually in the web UI's Sections tab with a canvas-based
+Sections can also be created visually in the web UI's Timeline tab with a canvas-based
 timeline editor that supports drag-to-create, resize, move, rename, and delete.
 
 ## Beat Grid and Song Analysis Cache

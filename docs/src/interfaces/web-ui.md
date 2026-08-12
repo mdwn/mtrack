@@ -156,9 +156,10 @@ while the band plays everything else.
 
 Supported audio formats: WAV, FLAC, MP3, OGG, AAC, M4A, AIFF.
 
-### Sections Tab
+### Timeline Tab
 
-A canvas-based visual editor for defining named song sections (e.g., verse, chorus, bridge).
+Named "Sections" until it grew tempo and pilot lanes, this is a canvas-based visual editor
+for the song's timeline: sections (e.g., verse, chorus, bridge).
 The timeline displays all track waveforms and beat grid measure lines. Sections can be:
 
 - **Created** by dragging on empty space (snaps to measure boundaries)
@@ -205,6 +206,20 @@ musical position, time, BPM and meter under it. Drag the line to seek, or use th
 for five-second jumps. Auditioning a boundary no longer means switching to the player and back.
 
 ![Preview transport and playhead](../images/section-preview-transport.png)
+
+#### Metronome
+
+Under the timeline, the song's metronome panel routes and shapes its click. The tri-state at
+the top — **Default / On / Off** — decides whether the song follows the player-wide default
+(see [the config editor](#configuration-editor)) or overrides it, which is `enabled` in the
+song's `metronome:` block: absent to follow, `true` or `false` to override.
+
+Below it: the track name the click is routed to, a click volume that trims this song against
+the rest, presets, and the four click sounds. A sound left unchecked is _inherited from player
+defaults_ rather than silenced — so a song only carries what it actually changes. Accents and
+subdivisions are not here; they live on the tempo markers, since they change mid-song.
+
+![The song's metronome panel](../images/song-metronome-panel.png)
 
 #### Tempo and pilot layers
 
@@ -420,6 +435,8 @@ The config editor provides a profile-based hardware configuration UI with tabs f
   hardware LED feedback
 - **Notifications** — Custom audio files for loop armed, break requested, loop exited, and
   section entering events, plus per-section-name overrides
+- **Metronome defaults** — the click sounds every song starts from, and whether the click is
+  on by default
 
 ![Configuration editor](../images/config-editor.png)
 
@@ -429,6 +446,20 @@ Click a profile to open its settings with tabs for each subsystem:
 
 Changes are saved with optimistic concurrency (checksums) and trigger automatic hardware
 reinitialization.
+
+### Metronome defaults
+
+With a dozen songs, click sounds are a player decision rather than a per-song one. The
+Metronome section edits the `metronome:` block of `mtrack.yaml`: the four click roles
+(accent, half, normal, sub) with volume, frequency and an optional sample file each, four
+presets to start from, and a checkbox that turns the click on by default for every song with
+a tempo map. Each sound previews in the browser — the speaker button synthesizes the same
+envelope the player uses, so you can audition without routing audio.
+
+Songs inherit all of it and override only what they set; see
+[the song's metronome panel](#metronome).
+
+![Player-wide metronome defaults](../images/config-metronome.png)
 
 ## Song Looping
 
@@ -443,7 +474,7 @@ of the loop, advances the playlist, and auto-plays the next song.
 
 ### Section Looping
 
-Named sections (defined by measure ranges in the Sections tab or `song.yaml`) can be looped
+Named sections (defined by measure ranges in the Timeline tab or `song.yaml`) can be looped
 during playback. Activate a section loop from the dashboard's section buttons, or via gRPC
 (`LoopSection`/`StopSectionLoop`) or MIDI controller events (`section_ack`, `stop_section_loop`).
 
