@@ -16,6 +16,7 @@
   import { t } from "svelte-i18n";
   import { SECTION_COLORS, sectionColor } from "../../lib/sectionColors";
   import { beatsInMeasure, sigAtMeasure } from "../../lib/util/tempo";
+  import type { BeatGrid } from "../../lib/util/beatGrid";
   import type { TempoConfig } from "../../lib/api/songs";
   import MarkerDialog from "./MarkerDialog.svelte";
   import PositionPicker, { type Position } from "./PositionPicker.svelte";
@@ -38,6 +39,8 @@
     maxMeasure?: number;
     /** The song's tempo map, for the meter of each measure. */
     tempo?: TempoConfig | null;
+    /** Beat times, so a boundary can also be read and typed as a time. */
+    beatGrid?: BeatGrid | null;
     /** Resolves a boundary to milliseconds — the same function the edge
      * drags order positions with. */
     posToMs?: ((measure: number, beat: number) => number) | null;
@@ -54,6 +57,7 @@
     index,
     maxMeasure = 9999,
     tempo = null,
+    beatGrid = null,
     posToMs = null,
     playheadPos = null,
     onchange,
@@ -147,28 +151,30 @@
       <span class="mini-label">{$t("sections.dialog.startPos")}</span>
       <PositionPicker
         label={$t("sections.dialog.startPos")}
-        measure={startPos.measure}
-        beat={startPos.beat}
+        value={{ kind: "beat", ...startPos }}
         step={0.5}
+        stores="beat"
         {maxMeasure}
+        {beatGrid}
         beatsIn={(m) => beatsInMeasure(tempo, m)}
         sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
         ghost={playheadPos}
-        onchange={(pos) => setBoundary("start", pos)}
+        onchange={(v) => v.kind === "beat" && setBoundary("start", v)}
       />
     </div>
     <div class="labeled-picker">
       <span class="mini-label">{$t("sections.dialog.endPos")}</span>
       <PositionPicker
         label={$t("sections.dialog.endPos")}
-        measure={endPos.measure}
-        beat={endPos.beat}
+        value={{ kind: "beat", ...endPos }}
         step={0.5}
+        stores="beat"
         {maxMeasure}
+        {beatGrid}
         beatsIn={(m) => beatsInMeasure(tempo, m)}
         sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
         ghost={playheadPos}
-        onchange={(pos) => setBoundary("end", pos)}
+        onchange={(v) => v.kind === "beat" && setBoundary("end", v)}
       />
     </div>
     <span class="beat-note">{$t("sections.dialog.beatNote")}</span>

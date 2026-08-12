@@ -944,6 +944,7 @@
     index={sectionDialogIndex}
     maxMeasure={measureTimesMs.length || 9999}
     {tempo}
+    beatGrid={song.beat_grid}
     posToMs={measureBeatToMs}
     {playheadPos}
     onchange={(patch) => patchSection(sectionDialogIndex!, patch)}

@@ -674,12 +674,13 @@
       <span class="section-label">{$t("tempo.marker.position")}</span>
       <PositionPicker
         label={$t("position.marker")}
-        measure={target.measure}
-        beat={target.beat}
+        value={{ kind: "beat", measure: target.measure, beat: target.beat }}
+        stores="beat"
         {maxMeasure}
+        {beatGrid}
         beatsIn={(m) => beatsInMeasure(tempo, m)}
         sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
-        onchange={(pos) => moveTo(pos.measure, pos.beat)}
+        onchange={(v) => v.kind === "beat" && moveTo(v.measure, v.beat)}
       />
     </div>
 

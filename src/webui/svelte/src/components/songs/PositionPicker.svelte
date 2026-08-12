@@ -15,6 +15,14 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { t } from "svelte-i18n";
+  import {
+    type BeatGrid,
+    formatSeconds,
+    formatSecondsShort,
+    parseSeconds,
+    positionAtTime,
+    timeAtPosition,
+  } from "../../lib/util/beatGrid";
 
   export interface Position {
     measure: number;
@@ -22,31 +30,42 @@
     beat: number;
   }
 
+  /** What the owner keeps: a musical position, or a time in seconds. */
+  export type PositionValue =
+    | ({ kind: "beat" } & Position)
+    | { kind: "time"; time: number };
+
   interface Props {
     /** Names every control, e.g. "Start" → "Start: next beat". */
     label: string;
-    measure: number;
-    beat: number;
+    value: PositionValue;
     /** Beat granularity: whole beats, or halves for section boundaries. */
     step?: 1 | 0.5;
+    /** "beat" can only keep a musical position, so time entry snaps to the
+     * grid; "either" lets the value come off the grid entirely. */
+    stores?: "beat" | "either";
     maxMeasure?: number;
     /** Beats per measure — the meter in effect there. */
     beatsIn?: (measure: number) => number;
     /** Time signature shown on a measure, e.g. "7/4". */
     sigOf?: (measure: number) => string | undefined;
+    /** Beat times, for the time readout and for converting between the two.
+     * Without it the time mode is unavailable. */
+    beatGrid?: BeatGrid | null;
     /** A second, dimmed marker: the preview playhead. */
     ghost?: Position | null;
-    onchange: (pos: Position) => void;
+    onchange: (value: PositionValue) => void;
   }
 
   let {
     label,
-    measure,
-    beat,
+    value,
     step = 1,
+    stores = "beat",
     maxMeasure = 9999,
     beatsIn = () => 4,
     sigOf,
+    beatGrid = null,
     ghost = null,
     onchange,
   }: Props = $props();
@@ -56,8 +75,37 @@
   /** How close to an end a held drag starts walking the window along. */
   const EDGE_PX = 24;
 
+  /** Seconds the ◀ ▶ keys move by in a decoupled time value. */
+  const TIME_STEPS = [0.01, 0.1, 1];
+
   /** Half-beat mode only: whether ◀ ▶ move by ½ or a whole beat. */
   let halfSteps = $state(true);
+  /** Units the readout is driven in when the value is a musical position. */
+  let unitMode = $state<"beat" | "time">("beat");
+  let timeStep = $state(0.1);
+
+  /** A value that keeps a time is always shown in time. */
+  let mode = $derived(
+    value.kind === "time" ? "time" : beatGrid ? unitMode : "beat",
+  );
+  /** Where the value is a time, nothing snaps: the cursor leaves the grid. */
+  let decoupled = $derived(value.kind === "time");
+
+  /** The musical position, snapped, whatever the value's kind. */
+  let position = $derived.by((): Position => {
+    if (value.kind === "beat")
+      return { measure: value.measure, beat: value.beat };
+    const at = positionAtTime(beatGrid, value.time);
+    return at ?? { measure: 1, beat: 1 };
+  });
+  let measure = $derived(position.measure);
+  let beat = $derived(position.beat);
+  /** Song time of the value, when the grid can say. */
+  let seconds = $derived(
+    value.kind === "time"
+      ? value.time
+      : (timeAtPosition(beatGrid, value.measure, value.beat) ?? null),
+  );
   let beatStep = $derived(step === 1 || !halfSteps ? 1 : 0.5);
   let first = $state(1);
   let laneEl = $state<HTMLDivElement>();
@@ -85,17 +133,45 @@
   });
 
   function fmtBeat(b: number): string {
-    return b % 1 ? `${Math.floor(b)}½` : `${b}`;
+    if (b % 1 === 0) return `${b}`;
+    return b % 1 === 0.5 ? `${Math.floor(b)}½` : b.toFixed(2);
   }
-  let readout = $derived(`m${measure} · b${fmtBeat(beat)}`);
+  let musical = $derived(`m${measure} · b${fmtBeat(beat)}`);
+  let clock = $derived(seconds === null ? "" : formatSeconds(seconds));
+  let readout = $derived(mode === "time" ? clock : musical);
+  /** The line under the readout: the other unit, and how exact it is. */
+  let readoutSub = $derived(
+    mode === "time" ? (decoupled ? `≈ ${musical}` : `= ${musical}`) : clock,
+  );
   let typedValue = $derived(
-    beat % 1 ? `${measure}.${Math.floor(beat)}.5` : `${measure}.${beat}`,
+    mode === "time"
+      ? clock
+      : beat % 1
+        ? `${measure}.${Math.floor(beat)}.5`
+        : `${measure}.${beat}`,
   );
   let spoken = $derived(
-    $t("position.value", {
-      values: { measure, beat: fmtBeat(beat) },
-    }),
+    mode === "time" && seconds !== null
+      ? $t("position.valueTime", {
+          values: { time: formatSeconds(seconds), position: musical },
+        })
+      : $t("position.value", { values: { measure, beat: fmtBeat(beat) } }),
   );
+
+  /** Whole seconds inside a measure, placed where they fall in the music —
+   * under a tempo change they bunch up, which is the point. */
+  function secondsIn(m: number): { time: number; pct: number }[] {
+    const from = timeAtPosition(beatGrid, m, 1);
+    const to = timeAtPosition(beatGrid, m + 1, 1);
+    if (from === null || to === null || to <= from) return [];
+    const out: { time: number; pct: number }[] = [];
+    for (let s = Math.ceil(from); s < to; s += 1) {
+      const at = positionAtTime(beatGrid, s);
+      if (!at || at.measure !== m) continue;
+      out.push({ time: s, pct: ((at.beat - 1) / beatsIn(m)) * 100 });
+    }
+    return out;
+  }
 
   function clampBeat(m: number, b: number): number {
     const highest = beatsIn(m) + 1 - step;
@@ -105,12 +181,49 @@
   function emit(m: number, b: number) {
     const mm = Math.max(1, Math.min(lastMeasure, Math.round(m)));
     const bb = clampBeat(mm, b);
-    if (mm === measure && bb === beat) return;
-    onchange({ measure: mm, beat: bb });
+    if (decoupled) {
+      const t = timeAtPosition(beatGrid, mm, bb);
+      if (t !== null) emitTime(t);
+      return;
+    }
+    if (value.kind === "beat" && mm === measure && bb === beat) return;
+    onchange({ kind: "beat", measure: mm, beat: bb });
+  }
+
+  /** Emits a decoupled time, clamped to the grid. */
+  function emitTime(t: number) {
+    const last = beatGrid?.beats[beatGrid.beats.length - 1] ?? t;
+    const clamped = Math.max(0, Math.min(last, Math.round(t * 1000) / 1000));
+    if (value.kind === "time" && clamped === value.time) return;
+    onchange({ kind: "time", time: clamped });
+  }
+
+  function stepTime(delta: number) {
+    if (seconds === null) return;
+    emitTime(seconds + delta * timeStep);
+  }
+
+  /** Switches units, converting so the value on screen does not move. */
+  function setMode(next: "beat" | "time") {
+    if (mode === next) return;
+    if (stores === "beat") {
+      unitMode = next;
+      return;
+    }
+    if (next === "time") {
+      const t = timeAtPosition(beatGrid, measure, beat);
+      if (t !== null) onchange({ kind: "time", time: t });
+    } else {
+      onchange({ kind: "beat", measure, beat: clampBeat(measure, beat) });
+    }
   }
 
   /** Steps `delta` beat-steps, rolling over measure lines. */
   function stepBeats(delta: number) {
+    if (decoupled) {
+      stepTime(delta);
+      return;
+    }
     let m = measure;
     let b = beat + delta * beatStep;
     while (b >= beatsIn(m) + 1 && m < lastMeasure) {
@@ -125,6 +238,11 @@
   }
 
   function stepMeasures(delta: number) {
+    if (decoupled) {
+      const t = timeAtPosition(beatGrid, measure + delta, beat);
+      if (t !== null) emitTime(t);
+      return;
+    }
     emit(measure + delta, beat);
   }
 
@@ -176,7 +294,13 @@
       if (clientX >= r.left && clientX <= r.right) {
         const n = beatsIn(m);
         const rel = Math.max(0, Math.min(0.9999, (clientX - r.left) / r.width));
-        return { measure: m, beat: 1 + Math.round((rel * n) / step) * step };
+        // Snapped values land on a tick; a decoupled one lands where the
+        // finger is, between them.
+        const raw = 1 + rel * n;
+        return {
+          measure: m,
+          beat: decoupled ? raw : Math.round(raw / step) * step,
+        };
       }
     }
     return null;
@@ -187,9 +311,9 @@
   let edgeDepth = 0;
 
   function edgeTick() {
-    const before = `${measure}:${beat}`;
+    const before = decoupled ? `${seconds}` : `${measure}:${beat}`;
     stepBeats(edgeDir);
-    if (`${measure}:${beat}` === before) {
+    if ((decoupled ? `${seconds}` : `${measure}:${beat}`) === before) {
       stopEdge();
       return;
     }
@@ -210,6 +334,15 @@
     edgeDir = 0;
   }
 
+  function applyPointer(p: Position) {
+    if (decoupled) {
+      const t = timeAtPosition(beatGrid, p.measure, p.beat);
+      if (t !== null) emitTime(t);
+    } else {
+      emit(p.measure, p.beat);
+    }
+  }
+
   function laneDown(e: PointerEvent) {
     const p = posFromX(e.clientX);
     if (!p) return;
@@ -217,7 +350,7 @@
     e.preventDefault();
     scrubbing = true;
     laneEl?.setPointerCapture(e.pointerId);
-    emit(p.measure, p.beat);
+    applyPointer(p);
   }
 
   function laneMove(e: PointerEvent) {
@@ -230,7 +363,7 @@
     } else {
       stopEdge();
       const p = posFromX(e.clientX);
-      if (p) emit(p.measure, p.beat);
+      if (p) applyPointer(p);
     }
   }
 
@@ -249,6 +382,9 @@
       PageDown: () => stepMeasures(-1),
       Home: () => emit(measure, 1),
       End: () => emit(measure, beatsIn(measure)),
+      // "b"/"t" flip units without leaving the ruler.
+      b: () => setMode("beat"),
+      t: () => setMode("time"),
     };
     const fn = keys[e.key];
     if (!fn) return;
@@ -271,8 +407,22 @@
 
   function commitTyped(raw: string) {
     typing = false;
-    const parts = raw
-      .split(/[.,:\s]+/)
+    const text = raw.trim();
+    // A colon is unambiguously a time; without one, the mode decides.
+    if (text.includes(":") || mode === "time") {
+      const t = parseSeconds(text);
+      if (t !== null) {
+        if (decoupled) emitTime(t);
+        else {
+          const at = positionAtTime(beatGrid, t);
+          if (at) emit(at.measure, at.beat);
+        }
+        return;
+      }
+      if (text.includes(":")) return;
+    }
+    const parts = text
+      .split(/[.,\s]+/)
       .map(Number)
       .filter((n) => !isNaN(n));
     if (!parts.length) return;
@@ -281,6 +431,24 @@
 </script>
 
 <div class="position-picker">
+  {#if beatGrid}
+    <div class="pp-modes">
+      <button
+        type="button"
+        class="pp-mode"
+        class:pp-mode--on={mode === "beat"}
+        aria-pressed={mode === "beat"}
+        onclick={() => setMode("beat")}>{$t("position.modeBeat")}</button
+      >
+      <button
+        type="button"
+        class="pp-mode"
+        class:pp-mode--on={mode === "time"}
+        aria-pressed={mode === "time"}
+        onclick={() => setMode("time")}>{$t("position.modeTime")}</button
+      >
+    </div>
+  {/if}
   <div class="pp-transport">
     <button
       type="button"
@@ -327,7 +495,8 @@
           }}
         />
       {:else}
-        {readout}
+        <span class="pp-value">{readout}</span>
+        {#if readoutSub}<span class="pp-sub">{readoutSub}</span>{/if}
       {/if}
     </div>
     <button
@@ -381,15 +550,23 @@
           <!-- Labels ride above the ticks: on a phone the tick row is under
                your fingertip. -->
           <div class="pp-nums">
-            {#each Array.from({ length: beats }, (_, i) => i + 1) as b (b)}
-              {@const selected = measure === m && Math.floor(beat) === b}
-              <span
-                class="pp-num"
-                class:pp-num--selected={selected}
-                style:left="{((b - 1) / beats) * 100}%"
-                >{selected ? fmtBeat(beat) : b}</span
-              >
-            {/each}
+            {#if mode === "time"}
+              {#each secondsIn(m) as s (s.time)}
+                <span class="pp-secnum" style:left="{s.pct}%"
+                  >{formatSecondsShort(s.time)}</span
+                >
+              {/each}
+            {:else}
+              {#each Array.from({ length: beats }, (_, i) => i + 1) as b (b)}
+                {@const selected = measure === m && Math.floor(beat) === b}
+                <span
+                  class="pp-num"
+                  class:pp-num--selected={selected}
+                  style:left="{((b - 1) / beats) * 100}%"
+                  >{selected ? fmtBeat(beat) : b}</span
+                >
+              {/each}
+            {/if}
           </div>
           <div class="pp-ticks">
             {#each Array.from({ length: step === 1 ? beats : beats * 2 - 1 }, (_, i) => 1 + i * step) as b (b)}
@@ -400,6 +577,11 @@
                 style:left="{((b - 1) / beats) * 100}%"
               ></span>
             {/each}
+            {#if mode === "time"}
+              {#each secondsIn(m) as s (s.time)}
+                <span class="pp-secline" style:left="{s.pct}%"></span>
+              {/each}
+            {/if}
             {#if ghost && ghost.measure === m}
               <span
                 class="pp-ghost"
@@ -423,7 +605,19 @@
     >
   </div>
 
-  {#if step !== 1}
+  {#if decoupled}
+    <div class="pp-chips">
+      <span class="pp-chips-label">{$t("position.timeStep")}</span>
+      {#each TIME_STEPS as s (s)}
+        <button
+          type="button"
+          class="pp-chip"
+          class:pp-chip--on={timeStep === s}
+          onclick={() => (timeStep = s)}>{s}s</button
+        >
+      {/each}
+    </div>
+  {:else if step !== 1}
     <div class="pp-chips">
       <span class="pp-chips-label">{$t("position.beatStep")}</span>
       <button
@@ -447,6 +641,27 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .pp-modes {
+    display: flex;
+    align-self: flex-start;
+    border: 1px solid var(--border);
+    border-radius: 99px;
+    overflow: hidden;
+  }
+  .pp-mode {
+    padding: 4px 14px;
+    font-size: 12px;
+    color: var(--text-dim);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+  }
+  .pp-mode--on {
+    color: var(--bg);
+    background: var(--accent);
+    font-weight: 600;
   }
 
   /* The ruler is the touch surface, so it sits below everything readable. */
@@ -475,6 +690,8 @@
   .pp-readout {
     flex: 1;
     display: flex;
+    flex-direction: column;
+    gap: 1px;
     align-items: center;
     justify-content: center;
     min-height: 44px;
@@ -486,6 +703,13 @@
     font-variant-numeric: tabular-nums;
     font-size: 15px;
     cursor: text;
+  }
+  .pp-value {
+    line-height: 1.1;
+  }
+  .pp-sub {
+    font-size: 10px;
+    color: var(--text-dim);
   }
   .pp-readout input {
     width: 100%;
@@ -577,6 +801,25 @@
     font-size: 10.5px;
     font-weight: 600;
     color: var(--accent);
+  }
+  .pp-secnum {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+    opacity: 0.85;
+    white-space: nowrap;
+  }
+  .pp-secline {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    margin-left: -0.5px;
+    background: var(--accent);
+    opacity: 0.35;
   }
   .pp-ticks {
     position: relative;

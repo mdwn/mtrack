@@ -63,3 +63,87 @@ export function maxBeatInMeasure(
     nextStart === undefined || nextStart >= (grid?.beats.length ?? 0);
   return Math.max(1, isLastMeasure ? beats : beats + 1 - step);
 }
+
+/**
+ * Seconds at a (possibly fractional) beat of a measure, mirroring the
+ * backend's `BeatGrid::beat_time`: measures and beats are 1-based, and a
+ * fractional beat interpolates between grid beats.
+ */
+export function timeAtPosition(
+  grid: BeatGrid | null | undefined,
+  measure: number,
+  beat: number,
+): number | null {
+  if (!grid || beat < 1) return null;
+  const offset = beat - 1;
+  const base = grid.measure_starts[measure - 1];
+  if (base === undefined) return null;
+  const t0 = grid.beats[base + Math.floor(offset)];
+  if (t0 === undefined) return null;
+  const frac = offset - Math.floor(offset);
+  if (frac === 0) return t0;
+  const t1 = grid.beats[base + Math.floor(offset) + 1];
+  return t1 === undefined ? t0 : t0 + (t1 - t0) * frac;
+}
+
+/**
+ * The measure and (fractional) beat at a time in seconds. Times before the
+ * grid clamp to its first beat, times past it to the last measure.
+ */
+export function positionAtTime(
+  grid: BeatGrid | null | undefined,
+  seconds: number,
+): { measure: number; beat: number } | null {
+  if (!grid || grid.beats.length === 0) return null;
+  // The beat at or before this time.
+  let index = 0;
+  while (index + 1 < grid.beats.length && grid.beats[index + 1] <= seconds) {
+    index++;
+  }
+  let measure = 0;
+  while (
+    measure + 1 < grid.measure_starts.length &&
+    grid.measure_starts[measure + 1] <= index
+  ) {
+    measure++;
+  }
+  const start = grid.beats[index];
+  const next = grid.beats[index + 1];
+  const span = next === undefined ? 0 : next - start;
+  const frac =
+    span > 0 ? Math.max(0, Math.min(1, (seconds - start) / span)) : 0;
+  return {
+    measure: measure + 1,
+    beat: index - grid.measure_starts[measure] + 1 + frac,
+  };
+}
+
+/** The song time of a measure's downbeat, or null when it is off the grid. */
+export function measureTime(
+  grid: BeatGrid | null | undefined,
+  measure: number,
+): number | null {
+  return timeAtPosition(grid, measure, 1);
+}
+
+/** "1:23.456" — the format the position readout shows and accepts. */
+export function formatSeconds(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds - minutes * 60;
+  return `${minutes}:${rest.toFixed(3).padStart(6, "0")}`;
+}
+
+/** "1:23", for tick labels where milliseconds would be noise. */
+export function formatSecondsShort(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds - minutes * 60);
+  return `${minutes}:${rest.toString().padStart(2, "0")}`;
+}
+
+/** Parses "1:23.456", "83.456" or "83"; null when it is not a time. */
+export function parseSeconds(raw: string): number | null {
+  const match = /^(?:(\d+):)?(\d+(?:[.,]\d+)?)$/.exec(raw.trim());
+  if (!match) return null;
+  const minutes = match[1] ? parseInt(match[1]) * 60 : 0;
+  return minutes + parseFloat(match[2].replace(",", "."));
+}

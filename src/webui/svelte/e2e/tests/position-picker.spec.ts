@@ -103,7 +103,7 @@ test.describe("Position picker", () => {
     await open(page);
     const dialog = await openSectionDialog(page);
     const start = picker(dialog, "Start");
-    await expect(start.locator(".pp-readout")).toHaveText("m5 · b1");
+    await expect(start.locator(".pp-value")).toHaveText("m5 · b1");
 
     // The window shows m4–m6; tap three quarters into the middle measure,
     // which in 4/4 is beat 4.
@@ -111,7 +111,7 @@ test.describe("Position picker", () => {
     const box = (await measure.boundingBox())!;
     await page.mouse.click(box.x + box.width * 0.78, box.y + box.height - 8);
 
-    await expect(start.locator(".pp-readout")).toHaveText("m5 · b4");
+    await expect(start.locator(".pp-value")).toHaveText("m5 · b4");
     await expect(page.locator(".range-note")).toHaveText("m5.4–8");
   });
 
@@ -119,15 +119,15 @@ test.describe("Position picker", () => {
     await open(page);
     const dialog = await openSectionDialog(page);
     const start = picker(dialog, "Start");
-    await expect(start.locator(".pp-readout")).toHaveText("m5 · b1");
+    await expect(start.locator(".pp-value")).toHaveText("m5 · b1");
 
     // Back one half-beat from the downbeat lands on the last half of the
     // previous measure, not on beat 0.
     await start.getByRole("button", { name: "Start: previous beat" }).click();
-    await expect(start.locator(".pp-readout")).toHaveText("m4 · b4½");
+    await expect(start.locator(".pp-value")).toHaveText("m4 · b4½");
 
     await start.getByRole("button", { name: "Start: next beat" }).click();
-    await expect(start.locator(".pp-readout")).toHaveText("m5 · b1");
+    await expect(start.locator(".pp-value")).toHaveText("m5 · b1");
   });
 
   test("the ruler follows the meter in effect", async ({ page }) => {
@@ -158,23 +158,55 @@ test.describe("Position picker", () => {
     await open(page);
     const dialog = await openPilotDialog(page);
     const hint = picker(dialog, "Hint");
-    await expect(hint.locator(".pp-readout")).toHaveText("m6 · b1");
+    await expect(hint.locator(".pp-value")).toHaveText("m6 · b1");
+    // m6 downbeat of a 120 BPM 4/4 grid: 5 measures in, 2s each.
+    await expect(hint.locator(".pp-sub")).toHaveText("0:10.000");
 
-    // Whole beats only — a hint has no half-beat anchoring.
-    await expect(hint.locator(".pp-chip")).toHaveCount(0);
     await hint.getByRole("button", { name: "Hint: next beat" }).click();
-    await expect(hint.locator(".pp-readout")).toHaveText("m6 · b2");
+    await expect(hint.locator(".pp-value")).toHaveText("m6 · b2");
+  });
 
-    // Absolute-time anchoring still gets the seconds stepper, and switching
-    // back converts the position through the beat grid.
-    await dialog.getByRole("button", { name: "Time" }).click();
-    await expect(hint).toHaveCount(0);
-    await expect(
-      dialog.getByRole("textbox", { name: "Time in seconds" }),
-    ).toBeVisible();
-    await dialog.getByRole("button", { name: "Measure" }).click();
-    await expect(picker(dialog, "Hint").locator(".pp-readout")).toHaveText(
-      "m6 · b2",
-    );
+  test("a hint in time mode comes off the grid", async ({ page }) => {
+    await open(page);
+    const dialog = await openPilotDialog(page);
+    const hint = picker(dialog, "Hint");
+
+    // A hint can store a time, so the toggle decouples it: seconds steps
+    // appear and the position becomes an approximation.
+    await hint.getByRole("button", { name: "time", exact: true }).click();
+    await expect(hint.locator(".pp-value")).toHaveText("0:10.000");
+    await expect(hint.locator(".pp-chip")).toHaveCount(3);
+
+    await hint.getByRole("button", { name: "Hint: next beat" }).click();
+    await expect(hint.locator(".pp-value")).toHaveText("0:10.100");
+    await expect(hint.locator(".pp-sub")).toContainText("≈ m6");
+
+    // Back to beats and it snaps to the nearest one it can store.
+    await hint.getByRole("button", { name: "beat", exact: true }).click();
+    await expect(hint.locator(".pp-value")).toHaveText("m6 · b1");
+  });
+
+  test("a boundary in time mode still snaps to the grid", async ({ page }) => {
+    await open(page);
+    const dialog = await openSectionDialog(page);
+    const start = picker(dialog, "Start");
+
+    // A section can only store a beat, so time is a unit, not a freer
+    // position: the sub-line reads "=" and the beat steps stay.
+    await start.getByRole("button", { name: "time", exact: true }).click();
+    await expect(start.locator(".pp-value")).toHaveText("0:08.000");
+    await expect(start.locator(".pp-sub")).toHaveText("= m5 · b1");
+    await expect(start.locator(".pp-chip")).toHaveCount(2);
+
+    // Typing a time lands on the nearest beat, and the section takes it.
+    await start.getByRole("button", { name: "Start: type a position" }).click();
+    const field = start.getByRole("textbox", {
+      name: "Start: type a position",
+    });
+    await field.fill("0:08.400");
+    await field.press("Enter");
+    await expect(start.locator(".pp-value")).toHaveText("0:08.500");
+    await expect(start.locator(".pp-sub")).toHaveText("= m5 · b2");
+    await expect(page.locator(".range-note")).toHaveText("m5.2–8");
   });
 });

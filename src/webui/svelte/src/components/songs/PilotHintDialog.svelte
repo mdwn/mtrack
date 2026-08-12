@@ -22,7 +22,7 @@
   import { beatsInMeasure, sigAtMeasure } from "../../lib/util/tempo";
   import NumberStepper from "../NumberStepper.svelte";
   import MarkerDialog from "./MarkerDialog.svelte";
-  import PositionPicker from "./PositionPicker.svelte";
+  import PositionPicker, { type PositionValue } from "./PositionPicker.svelte";
   import SongFileField from "./SongFileField.svelte";
 
   interface Props {
@@ -56,58 +56,29 @@
     onclose,
   }: Props = $props();
 
-  let kind = $derived("measure" in hint.at ? "measure" : "time");
-
-  /** Time (seconds) of measure/beat on the grid, or null when off-grid. */
-  function measureBeatToTime(measure: number, beat: number): number | null {
-    if (!beatGrid) return null;
-    const startIdx = beatGrid.measure_starts[measure - 1];
-    if (startIdx === undefined) return null;
-    const time = beatGrid.beats[startIdx + (beat - 1)];
-    return time === undefined ? null : time;
-  }
-
-  /** Nearest measure/beat for a time (seconds), or null without a grid. */
-  function timeToMeasureBeat(
-    time: number,
-  ): { measure: number; beat?: number } | null {
-    if (!beatGrid || beatGrid.beats.length === 0) return null;
-    let nearest = 0;
-    for (let i = 1; i < beatGrid.beats.length; i++) {
-      if (
-        Math.abs(beatGrid.beats[i] - time) <
-        Math.abs(beatGrid.beats[nearest] - time)
-      ) {
-        nearest = i;
-      }
+  /** The picker's value, mirroring however the hint is anchored. Conversion
+   * between the two anchorings is the picker's own beat/time toggle. */
+  let pickerValue = $derived.by((): PositionValue => {
+    if ("measure" in hint.at) {
+      return {
+        kind: "beat",
+        measure: hint.at.measure,
+        beat: hint.at.beat ?? 1,
+      };
     }
-    let measure = 0;
-    while (
-      measure + 1 < beatGrid.measure_starts.length &&
-      beatGrid.measure_starts[measure + 1] <= nearest
-    ) {
-      measure++;
-    }
-    const beat = nearest - beatGrid.measure_starts[measure] + 1;
-    const at: { measure: number; beat?: number } = { measure: measure + 1 };
-    if (beat > 1) at.beat = beat;
-    return at;
-  }
+    return { kind: "time", time: hint.at.time };
+  });
 
-  function switchKind(next: "measure" | "time") {
-    if (kind === next) return;
-    // Convert the position instead of resetting it, so switching
-    // representation keeps the hint where it is.
-    if (next === "time") {
-      const at = hint.at as { measure: number; beat?: number };
-      const time = measureBeatToTime(at.measure, at.beat ?? 1);
-      onchange({
-        at: { time: time !== null ? Math.round(time * 1000) / 1000 : 0 },
-      });
-    } else {
-      const at = hint.at as { time: number };
-      onchange({ at: timeToMeasureBeat(at.time) ?? { measure: 1 } });
+  /** Writes the anchoring the picker reports; beat 1 stays implicit and a
+   * time keeps millisecond precision. */
+  function writePosition(value: PositionValue) {
+    if (value.kind === "time") {
+      onchange({ at: { time: Math.round(value.time * 1000) / 1000 } });
+      return;
     }
+    const at: { measure: number; beat?: number } = { measure: value.measure };
+    if (value.beat > 1) at.beat = value.beat;
+    onchange({ at });
   }
 </script>
 
@@ -129,42 +100,21 @@
   <div class="field-block">
     <span class="field-label">{$t("tempo.marker.position")}</span>
     {#if hasBeatGrid}
-      <div class="segmented">
-        <button
-          type="button"
-          class="seg-btn"
-          class:active={kind === "measure"}
-          onclick={() => switchKind("measure")}>{$t("pilot.atMeasure")}</button
-        >
-        <button
-          type="button"
-          class="seg-btn"
-          class:active={kind === "time"}
-          onclick={() => switchKind("time")}>{$t("pilot.atTime")}</button
-        >
-      </div>
-    {/if}
-    {#if "measure" in hint.at}
-      {@const at = hint.at}
       <PositionPicker
         label={$t("position.hint")}
-        measure={at.measure}
-        beat={at.beat ?? 1}
+        value={pickerValue}
+        stores="either"
         {maxMeasure}
+        {beatGrid}
         beatsIn={(m) => beatsInMeasure(tempo, m)}
         sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
-        onchange={(pos) => {
-          const next: { measure: number; beat?: number } = {
-            measure: pos.measure,
-          };
-          if (pos.beat > 1) next.beat = pos.beat;
-          onchange({ at: next });
-        }}
+        onchange={writePosition}
       />
     {:else}
+      <!-- No grid, no beats to pick: seconds are all there is. -->
       <div class="stepper-row">
         <NumberStepper
-          value={hint.at.time}
+          value={"time" in hint.at ? hint.at.time : 0}
           min={0}
           max={36000}
           step={0.1}
