@@ -202,6 +202,36 @@ pub struct SubsystemStatus {
     pub name: Option<String>,
 }
 
+/// What the audio output callback is actually doing, as distinct from whether the
+/// device opened.
+///
+/// `connected` on the audio subsystem only ever meant "we constructed a device
+/// object at startup". These are the runtime facts on top of that.
+///
+/// Note what this cannot tell you: a device can accept every buffer and produce no
+/// sound, and nothing here will notice. `writing_signal` true with a silent room
+/// means the fault is downstream of mtrack — which is the question worth answering
+/// quickly when a rig goes quiet.
+///
+/// Not a meter. There is no level here on purpose: a level sampled by a status
+/// poller sees one callback in several hundred, which makes a poor meter and adds
+/// nothing to the health question that the two booleans don't already answer.
+#[derive(Clone, serde::Serialize)]
+pub struct AudioOutputHealth {
+    /// The callback has run recently. False means the stream is open but stalled.
+    pub callback_alive: bool,
+    /// Non-silent audio was handed to the device recently. False is normal and
+    /// expected whenever nothing is playing, and can also go false during a
+    /// genuinely quiet passage or with output gains at zero.
+    pub writing_signal: bool,
+    /// Milliseconds since the callback last ran, absent if it never has.
+    pub since_last_callback_ms: Option<u64>,
+    /// Milliseconds since non-silent audio was last written, absent if it never was.
+    pub since_last_signal_ms: Option<u64>,
+    /// Total callbacks served since the device was opened.
+    pub callbacks: u64,
+}
+
 /// Snapshot of all hardware subsystem statuses.
 #[derive(Clone, serde::Serialize)]
 pub struct HardwareStatusSnapshot {
@@ -209,6 +239,8 @@ pub struct HardwareStatusSnapshot {
     pub hostname: Option<String>,
     pub profile: Option<String>,
     pub audio: SubsystemStatus,
+    /// Runtime output health, when the audio device can report it.
+    pub audio_output: Option<AudioOutputHealth>,
     pub midi: SubsystemStatus,
     pub dmx: SubsystemStatus,
     pub trigger: SubsystemStatus,

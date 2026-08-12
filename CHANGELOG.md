@@ -142,7 +142,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sitting right there refusing to open will still be refusing in an hour, and needs a person:
   usually a sample rate, format or buffer size the interface won't accept, or another process
   holding it exclusively. Deciding to stop retrying a failure that can never succeed is a broader
-  change — it applies equally to MIDI and DMX — and is left for its own.
+  change than this — it applies equally to MIDI and DMX — and is left for its own.
+
+- **Audio status reports whether audio is actually flowing, not just whether the device opened**:
+  the audio subsystem reported `connected` purely on having constructed a device object at
+  startup, and nothing was recorded about the output callback afterwards. A rig could sit there
+  with an open stream, a stalled callback or a silent mix, and every observable said healthy. The
+  output callback now records liveness — lock-free, no allocation, one clock read per callback —
+  and `hardware_status` gains an `audio_output` section reporting whether the callback is running,
+  whether non-silent audio is being written, and how long since each was last true.
+
+  The snapshot reports facts rather than a verdict, because silence is correct whenever nothing is
+  playing. Where playback *is* running, the monitor loop turns a stalled callback into a distinct
+  `ERROR` in the journal, and logs again when it comes back — that is the one place that knows
+  audio is supposed to be coming out.
+
+  This deliberately carries no output level. A level sampled by a status poller sees roughly one
+  callback in several hundred, which makes a poor meter and adds nothing to the health question;
+  metering is a separate feature with a reader of its own.
+
+  None of it can detect a device that accepts every buffer and produces no sound — nothing
+  host-side can. What it gives you is the other half of the diagnosis: if mtrack says it is
+  writing signal and the room is quiet, the fault is downstream.
 
 - **Concurrent device enumeration can no longer destroy mtrack's stdout**: enumeration silences
   ALSA's chatter by redirecting the process's file descriptors and restoring them afterwards. Two

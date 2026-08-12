@@ -24,6 +24,8 @@ const REBUILD_BACKOFF_MAX: Duration = Duration::from_secs(5);
 
 use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
 
+use crate::audio::health::{OutputHealth, OutputHealthSnapshot};
+
 use super::stream::OutputStreamFactory;
 use super::CondvarNotify;
 
@@ -39,6 +41,9 @@ pub(super) struct OutputManager {
     output_thread: Option<thread::JoinHandle<()>>,
     /// Shared shutdown signal: set to true and notify condvar to stop the output thread.
     shutdown_notify: CondvarNotify,
+    /// Liveness and signal-level facts recorded by the output callback. Shared with
+    /// each stream, and outliving any individual stream so a rebuild doesn't reset it.
+    health: Arc<OutputHealth>,
 }
 
 impl fmt::Display for OutputManager {
@@ -98,6 +103,7 @@ impl OutputManager {
             source_rx,
             output_thread: None,
             shutdown_notify: Arc::new((Mutex::new(false), Condvar::new())),
+            health: Arc::new(OutputHealth::new()),
         };
 
         Ok(manager)
@@ -139,6 +145,7 @@ impl OutputManager {
 
         // Shared shutdown signal so drop can wake the output thread.
         let shutdown = self.shutdown_notify.clone();
+        let health = self.health.clone();
 
         // Carries the first build's outcome back to the caller. A channel rather than
         // a barrier, so "the thread got as far as returning to us" and "the thread has
@@ -159,6 +166,7 @@ impl OutputManager {
                     source_rx.clone(),
                     num_channels,
                     stream_error_notify.clone(),
+                    health.clone(),
                 );
 
                 match stream_result {
@@ -238,6 +246,11 @@ impl OutputManager {
                 Err("audio output thread exited before creating a stream".into())
             }
         }
+    }
+
+    /// Current output health facts.
+    pub(super) fn health(&self) -> OutputHealthSnapshot {
+        self.health.snapshot()
     }
 
     /// Sleeps for `duration`, waking early if shutdown is signalled.
