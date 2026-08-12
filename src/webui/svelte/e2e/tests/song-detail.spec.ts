@@ -13,6 +13,7 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { parse } from "yaml";
 
 test.describe("Song Detail", () => {
   test.beforeEach(async ({ page }) => {
@@ -392,6 +393,20 @@ test.describe("Song Detail - Section Editor", () => {
 
     await expect(page.locator(".section-block")).toHaveCount(3);
     await expect(page.locator(".section-chip")).toHaveCount(3);
+
+    // The palette slot is taken as a real choice, not just a display
+    // fallback, so it survives sections being added or reordered later.
+    const request = page.waitForRequest(
+      (req) =>
+        req.url().includes("/api/songs/Test%20Song%20Beta") &&
+        req.method() === "PUT",
+    );
+    await page.getByRole("button", { name: "Save" }).first().click();
+    const saved = parse((await request).postData() ?? "") as {
+      sections: { name: string; color?: string }[];
+    };
+    expect(saved.sections).toHaveLength(3);
+    expect(saved.sections[2].color).toMatch(/^#[0-9a-f]{6}$/i);
   });
 
   test("deleting a section from its dialog removes it", async ({ page }) => {

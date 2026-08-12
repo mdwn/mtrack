@@ -13,6 +13,8 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { fromBinary } from "@bufbuild/protobuf";
+import { SeekRequestSchema } from "../../src/gen/player/v1/player_pb";
 
 let testCounter = 0;
 
@@ -144,6 +146,27 @@ test.describe("Section editor preview transport", () => {
     );
     await stopBtn.click();
     await seekPromise;
+  });
+
+  test("arrow keys near the start clamp instead of seeking negative", async ({
+    page,
+  }) => {
+    // Two seconds in, so ArrowLeft's five-second step would land at -3s. A
+    // negative Duration is rejected by the backend and only logged, which
+    // would make the key a silent no-op.
+    await sendWsMessage(page, wsId, playbackState({ elapsed_ms: 2000 }));
+
+    const playhead = page.locator(".playhead");
+    await playhead.focus();
+
+    const request = page.waitForRequest((req) => req.url().includes("/Seek"));
+    await page.keyboard.press("ArrowLeft");
+    const body = (await request).postDataBuffer();
+    if (!body) throw new Error("seek had no body");
+    // grpc-web frames the message after a 5-byte header.
+    const seek = fromBinary(SeekRequestSchema, body.subarray(5));
+    expect(Number(seek.position?.seconds ?? 0n)).toBe(0);
+    expect(seek.position?.nanos ?? 0).toBe(0);
   });
 
   test("arrow keys on the focused playhead seek the preview", async ({

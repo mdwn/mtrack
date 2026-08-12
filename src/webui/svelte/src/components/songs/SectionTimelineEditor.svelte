@@ -355,7 +355,10 @@
 
   /** Ruler click: seek the preview (starting the song here if needed). */
   async function previewSeek(ms: number) {
-    const clamped = Math.min(ms, songDurationMs);
+    // Both ends: ArrowLeft near the top would otherwise send a negative
+    // duration, which the backend rejects — a silent no-op instead of a
+    // seek to the start.
+    const clamped = Math.max(0, Math.min(ms, songDurationMs));
     try {
       if (isCurrentSong) {
         await playerClient.seek({ position: msToProtoDuration(clamped) });

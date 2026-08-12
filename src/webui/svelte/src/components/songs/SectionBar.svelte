@@ -14,7 +14,7 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
-  import { sectionColor } from "../../lib/sectionColors";
+  import { SECTION_COLORS, sectionColor } from "../../lib/sectionColors";
 
   interface SectionEntry {
     name: string;
@@ -234,6 +234,9 @@
           name: `section_${sections.length + 1}`,
           start_measure: start,
           end_measure: end,
+          // Take the rotation slot as an actual choice, so the color keeps
+          // still when sections are added, removed or reordered later.
+          color: SECTION_COLORS[sections.length % SECTION_COLORS.length],
         };
         onsectionschange([...sections, newSection]);
         // Straight into the editor to name it.
