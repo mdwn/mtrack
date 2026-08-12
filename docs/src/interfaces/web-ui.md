@@ -162,9 +162,10 @@ Named "Sections" until it grew tempo and pilot lanes, this is a canvas-based vis
 for the song's timeline: sections (e.g., verse, chorus, bridge).
 The timeline displays all track waveforms and beat grid measure lines. Sections can be:
 
-- **Created** by dragging on empty space (snaps to measure boundaries)
-- **Resized** by dragging edges
-- **Moved** by dragging the body
+- **Created** by dragging on empty space
+- **Resized** by dragging edges — snapping to measure lines, or to individual beats once the
+  zoom makes them distinct
+- **Moved** by dragging the body, which keeps both boundaries' beat offsets
 - **Edited** by tapping a section, which opens its dialog
 - **Deleted** from that dialog, or with the Delete key
 
@@ -183,11 +184,28 @@ Sections are used for [section looping](#section-looping) during playback.
 
 ![Section editor](../images/song-sections.png)
 
+#### Boundaries off the measure line
+
+Real songs change parts mid-measure, so a section's bounds are not limited to measure lines.
+`start_beat` / `end_beat` — 1-based within the boundary measure, fractional allowed, omitted
+meaning the measure line — offset either end to any position on the beat grid (see
+[song configuration](../configuration/song-config.md)). Seeking to a section and looping it
+both follow the offsets; a section may even begin and end inside one measure.
+
+![A section starting and ending off the measure line](../images/section-beat-boundaries.png)
+
+There are three ways to set one, none of which involve counting beats in your head: the
+dialog's start/end beat steppers, an edge drag once the zoom makes beats distinct, and — when
+the song is the one loaded in the player — capturing the playhead. Play up to the transition,
+pause, and press **Start here** or **End here**; the capture snaps to the nearest half beat,
+and the buttons disable when they would invert the section.
+
 #### The section dialog
 
 Tapping a section opens a bottom sheet with everything drag editing cannot do precisely on a
 phone: its name, its position (a start-measure stepper that slides the whole section keeping
-its length, and a length stepper clamped to the song), and its color. Colors come from a
+its length, a length stepper clamped to the song, and a beat offset for either end), and its
+color. Colors come from a
 palette — new sections rotate through it automatically — and are stored as `sections[].color`
 in `song.yaml`.
 
@@ -515,7 +533,8 @@ of the loop, advances the playlist, and auto-plays the next song.
 
 ### Section Looping
 
-Named sections (defined by measure ranges in the Timeline tab or `song.yaml`) can be looped
+Named sections (defined by measure — and optionally beat — ranges in the Timeline tab or
+`song.yaml`) can be looped
 during playback. Activate a section loop from the dashboard's section buttons, or via gRPC
 (`LoopSection`/`StopSectionLoop`) or MIDI controller events (`section_ack`, `stop_section_loop`).
 
