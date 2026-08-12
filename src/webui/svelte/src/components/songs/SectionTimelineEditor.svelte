@@ -957,6 +957,8 @@
     hint={pilot.hints[pilotDialogIndex]}
     hasBeatGrid={!!song.beat_grid}
     beatGrid={song.beat_grid}
+    {tempo}
+    maxMeasure={measureTimesMs.length || 9999}
     songName={songName ?? song.name}
     {songFiles}
     onchange={(patch) => patchPilotHint(pilotDialogIndex!, patch)}

@@ -763,6 +763,7 @@
   "position.value": "measure {measure}, beat {beat}",
   "position.beatStep": "beat step",
   "position.marker": "Marker",
+  "position.hint": "Hint",
   "tempo.marker.tap": "Tap",
   "tempo.marker.transitionSnap": "Snap",
   "tempo.marker.transitionBeats": "Beats",

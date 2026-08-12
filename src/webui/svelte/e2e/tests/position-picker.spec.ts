@@ -37,6 +37,11 @@ tempo:
   changes:
     - measure: 9
       time_signature: 3/4
+pilot:
+  track: pilot
+  hints:
+    - at: { measure: 6 }
+      label: verse
 `;
 
 async function open(page: Page) {
@@ -81,6 +86,14 @@ function picker(dialog: Locator, label: string): Locator {
   return dialog
     .locator(".position-picker")
     .filter({ has: dialog.page().getByLabel(`${label}: beat ruler`) });
+}
+
+/** Opens the pilot hint dialog from its marker in the second lane. */
+async function openPilotDialog(page: Page): Promise<Locator> {
+  await page.locator(".marker-lane").nth(1).locator(".marker").first().click();
+  const dialog = page.locator(".marker-dialog");
+  await expect(dialog).toBeVisible();
+  return dialog;
 }
 
 test.describe("Position picker", () => {
@@ -139,5 +152,29 @@ test.describe("Position picker", () => {
     await expect(
       end.locator('.pp-measure[data-measure="9"] .pp-sig'),
     ).toHaveText("3/4");
+  });
+
+  test("pilot hints anchor through the same picker", async ({ page }) => {
+    await open(page);
+    const dialog = await openPilotDialog(page);
+    const hint = picker(dialog, "Hint");
+    await expect(hint.locator(".pp-readout")).toHaveText("m6 · b1");
+
+    // Whole beats only — a hint has no half-beat anchoring.
+    await expect(hint.locator(".pp-chip")).toHaveCount(0);
+    await hint.getByRole("button", { name: "Hint: next beat" }).click();
+    await expect(hint.locator(".pp-readout")).toHaveText("m6 · b2");
+
+    // Absolute-time anchoring still gets the seconds stepper, and switching
+    // back converts the position through the beat grid.
+    await dialog.getByRole("button", { name: "Time" }).click();
+    await expect(hint).toHaveCount(0);
+    await expect(
+      dialog.getByRole("textbox", { name: "Time in seconds" }),
+    ).toBeVisible();
+    await dialog.getByRole("button", { name: "Measure" }).click();
+    await expect(picker(dialog, "Hint").locator(".pp-readout")).toHaveText(
+      "m6 · b2",
+    );
   });
 });

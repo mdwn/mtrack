@@ -14,9 +14,15 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
-  import type { PilotHintConfig, SongFile } from "../../lib/api/songs";
+  import type {
+    PilotHintConfig,
+    SongFile,
+    TempoConfig,
+  } from "../../lib/api/songs";
+  import { beatsInMeasure, sigAtMeasure } from "../../lib/util/tempo";
   import NumberStepper from "../NumberStepper.svelte";
   import MarkerDialog from "./MarkerDialog.svelte";
+  import PositionPicker from "./PositionPicker.svelte";
   import SongFileField from "./SongFileField.svelte";
 
   interface Props {
@@ -25,6 +31,10 @@
     /** Beat times (seconds) + measure start indices, for converting the
      * position when switching between measure and time anchoring. */
     beatGrid?: { beats: number[]; measure_starts: number[] } | null;
+    /** The song's tempo map, for the meter of each measure. */
+    tempo?: TempoConfig | null;
+    /** The song's measure count, bounding the position picker. */
+    maxMeasure?: number;
     songName?: string;
     /** The song directory listing, for the clip picker. */
     songFiles?: SongFile[];
@@ -37,6 +47,8 @@
     hint,
     hasBeatGrid = false,
     beatGrid = null,
+    tempo = null,
+    maxMeasure = 9999,
     songName = "",
     songFiles = [],
     onchange,
@@ -134,38 +146,21 @@
     {/if}
     {#if "measure" in hint.at}
       {@const at = hint.at}
-      <div class="stepper-row">
-        <div class="labeled-stepper">
-          <span class="mini-label">{$t("pilot.measure")}</span>
-          <NumberStepper
-            value={at.measure}
-            min={1}
-            max={9999}
-            ariaLabel={$t("pilot.measure")}
-            onchange={(v) => {
-              const next: { measure: number; beat?: number } = { measure: v };
-              if (at.beat && at.beat > 1) next.beat = at.beat;
-              onchange({ at: next });
-            }}
-          />
-        </div>
-        <div class="labeled-stepper">
-          <span class="mini-label">{$t("pilot.beat")}</span>
-          <NumberStepper
-            value={at.beat ?? 1}
-            min={1}
-            max={32}
-            ariaLabel={$t("pilot.beat")}
-            onchange={(v) => {
-              const next: { measure: number; beat?: number } = {
-                measure: at.measure,
-              };
-              if (v > 1) next.beat = v;
-              onchange({ at: next });
-            }}
-          />
-        </div>
-      </div>
+      <PositionPicker
+        label={$t("position.hint")}
+        measure={at.measure}
+        beat={at.beat ?? 1}
+        {maxMeasure}
+        beatsIn={(m) => beatsInMeasure(tempo, m)}
+        sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
+        onchange={(pos) => {
+          const next: { measure: number; beat?: number } = {
+            measure: pos.measure,
+          };
+          if (pos.beat > 1) next.beat = pos.beat;
+          onchange({ at: next });
+        }}
+      />
     {:else}
       <div class="stepper-row">
         <NumberStepper
@@ -232,17 +227,6 @@
     text-transform: uppercase;
     letter-spacing: 0.5px;
     font-weight: 600;
-  }
-  .mini-label {
-    font-size: 10px;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-  .labeled-stepper {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
   }
   .stepper-row {
     display: flex;
