@@ -15,6 +15,7 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import type { MetronomeConfig, ClickSoundConfig } from "../../lib/api/songs";
+  import AccentPads from "./AccentPads.svelte";
 
   interface Props {
     /** The song.yaml `metronome:` block, or null when not configured. */
@@ -22,9 +23,17 @@
     onchange: (metronome: MetronomeConfig | null) => void;
     /** Whether the song has a beat grid (tempo map or analyzed click). */
     hasBeatGrid?: boolean;
+    /** Beats per measure of the song's (base) time signature; sizes the
+     * accent pads. */
+    beatsPerMeasure?: number;
   }
 
-  let { metronome, onchange, hasBeatGrid = false }: Props = $props();
+  let {
+    metronome,
+    onchange,
+    hasBeatGrid = false,
+    beatsPerMeasure = 4,
+  }: Props = $props();
 
   let expanded = $state(true);
 
@@ -46,8 +55,14 @@
     if (updated.accent && updated.accent.length === 0) {
       delete updated.accent;
     }
+    if (updated.accents && updated.accents.length === 0) {
+      delete updated.accents;
+    }
+    if (updated.subdivision === 1 || updated.subdivision === undefined) {
+      delete updated.subdivision;
+    }
     if (updated.sounds) {
-      for (const key of ["accent", "normal"] as const) {
+      for (const key of ["accent", "half", "normal", "sub"] as const) {
         const sound = updated.sounds[key];
         if (sound && Object.keys(sound).length === 0) {
           delete updated.sounds[key];
@@ -60,8 +75,40 @@
     onchange(updated);
   }
 
+  // --- Accent pads (Soundbrenner-style) ---
+
+  let padCount = $derived(Math.max(1, Math.min(16, beatsPerMeasure)));
+
+  /** The pattern the pads display: explicit `accents` (padded with baseline
+   * / truncated to the meter, matching the renderer), otherwise levels
+   * derived from the accent grouping (or the plain downbeat accent). */
+  let padLevels = $derived.by(() => {
+    if (metronome?.accents?.length) {
+      return Array.from(
+        { length: padCount },
+        (_, i) => metronome.accents![i] ?? 1,
+      );
+    }
+    const groupStarts = [0];
+    let acc = 0;
+    for (const group of metronome?.accent ?? []) {
+      acc += group;
+      groupStarts.push(acc);
+    }
+    return Array.from({ length: padCount }, (_, i) =>
+      groupStarts.includes(i) ? 3 : 1,
+    );
+  });
+
+  /** Whether the pads show an explicit per-beat pattern from the config. */
+  let padsCustomized = $derived((metronome?.accents?.length ?? 0) > 0);
+
+  function resetPads() {
+    update({ accents: [] });
+  }
+
   function updateSound(
-    role: "accent" | "normal",
+    role: "accent" | "half" | "normal" | "sub",
     patch: Partial<ClickSoundConfig>,
   ) {
     if (!metronome) return;
@@ -85,10 +132,12 @@
 
   const DEFAULTS = {
     accent: { freq: 1600, volume: 1.0 },
+    half: { freq: 1400, volume: 0.9 },
     normal: { freq: 1200, volume: 0.8 },
+    sub: { freq: 1000, volume: 0.45 },
   };
 
-  /** Typical click sounds; applying a preset overwrites both sounds. */
+  /** Typical click sounds; applying a preset overwrites all sounds. */
   const PRESETS: {
     key: string;
     sounds: NonNullable<MetronomeConfig["sounds"]>;
@@ -97,28 +146,36 @@
       key: "ui24",
       sounds: {
         accent: { freq: 1125, volume: 1.0 },
+        half: { freq: 1125, volume: 1.0 },
         normal: { freq: 1125, volume: 1.0 },
+        sub: { freq: 1125, volume: 0.5 },
       },
     },
     {
       key: "hilo",
       sounds: {
         accent: { freq: 1600, volume: 1.0 },
+        half: { freq: 1400, volume: 0.9 },
         normal: { freq: 1200, volume: 0.8 },
+        sub: { freq: 1000, volume: 0.45 },
       },
     },
     {
       key: "sharp",
       sounds: {
         accent: { freq: 2000, volume: 1.0 },
+        half: { freq: 1750, volume: 0.85 },
         normal: { freq: 1500, volume: 0.75 },
+        sub: { freq: 1200, volume: 0.4 },
       },
     },
     {
       key: "low",
       sounds: {
         accent: { freq: 880, volume: 1.0 },
+        half: { freq: 770, volume: 0.9 },
         normal: { freq: 660, volume: 0.8 },
+        sub: { freq: 550, volume: 0.45 },
       },
     },
   ];
@@ -156,6 +213,20 @@
 
   {#if metronome && expanded}
     <div class="metronome-body">
+      <div class="accent-block">
+        <div class="accent-pads-header">
+          <span class="field-label">{$t("metronome.accents")}</span>
+          {#if padsCustomized}
+            <button class="btn-link" onclick={resetPads}
+              >{$t("metronome.accentsReset")}</button
+            >
+          {/if}
+        </div>
+        <AccentPads
+          levels={padLevels}
+          onchange={(levels) => update({ accents: levels })}
+        />
+      </div>
       <div class="presets">
         <span class="field-label">{$t("metronome.presets")}</span>
         {#each PRESETS as preset (preset.key)}
@@ -195,7 +266,7 @@
         </label>
       </div>
       <div class="sounds">
-        {#each ["accent", "normal"] as const as role (role)}
+        {#each ["accent", "half", "normal", "sub"] as const as role (role)}
           {@const sound = metronome.sounds?.[role] ?? {}}
           <div class="sound-row">
             <span class="field-label sound-label"
@@ -297,6 +368,24 @@
     align-items: center;
     gap: 6px;
     flex-wrap: wrap;
+  }
+  .accent-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .accent-pads-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .btn-link {
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
   }
   .metronome-fields {
     display: flex;

@@ -107,9 +107,13 @@ test.describe("Pilot hints", () => {
   test("adjacent hints surface together; only the live one highlights", async ({
     page,
   }) => {
-    // Before the group's lead window — no hint labels.
+    // Before the group's lead window — the row is reserved (no card
+    // resizing) but idle, with no labels.
     await sendWsMessage(page, wsId, playbackState({ elapsed_ms: 40000 }));
-    await expect(page.locator(".playback-card__hint")).toHaveCount(0);
+    await expect(page.locator(".playback-card__hint")).toHaveClass(
+      /playback-card__hint--idle/,
+    );
+    await expect(page.locator(".playback-card__hint-label")).toHaveCount(0);
 
     // In the lead window — both labels of the group show, none live.
     await sendWsMessage(page, wsId, playbackState({ elapsed_ms: 52000 }));
@@ -137,9 +141,10 @@ test.describe("Pilot hints", () => {
     );
     await expect(labels.nth(1)).toHaveClass(/playback-card__hint-label--live/);
 
-    // After the group has passed — gone.
+    // After the group has passed — labels gone, row still reserved.
     await sendWsMessage(page, wsId, playbackState({ elapsed_ms: 70000 }));
-    await expect(page.locator(".playback-card__hint")).toHaveCount(0);
+    await expect(page.locator(".playback-card__hint-label")).toHaveCount(0);
+    await expect(page.locator(".playback-card__hint")).toHaveCount(1);
   });
 
   test("label-only hint highlights briefly at its anchor", async ({ page }) => {
@@ -156,17 +161,21 @@ test.describe("Pilot hints", () => {
     await sendWsMessage(page, wsId, playbackState({ elapsed_ms: 120300 }));
     await expect(labels.first()).toHaveClass(/playback-card__hint-label--live/);
 
-    // After the brief highlight window — gone.
+    // After the brief highlight window — the label goes, the row stays.
     await sendWsMessage(page, wsId, playbackState({ elapsed_ms: 121500 }));
-    await expect(page.locator(".playback-card__hint")).toHaveCount(0);
+    await expect(page.locator(".playback-card__hint-label")).toHaveCount(0);
+    await expect(page.locator(".playback-card__hint")).toHaveCount(1);
   });
 
-  test("hint label hidden while stopped", async ({ page }) => {
+  test("hint labels hidden while stopped, row reserved", async ({ page }) => {
     await sendWsMessage(
       page,
       wsId,
       playbackState({ is_playing: false, elapsed_ms: 58000 }),
     );
-    await expect(page.locator(".playback-card__hint")).toHaveCount(0);
+    await expect(page.locator(".playback-card__hint")).toHaveClass(
+      /playback-card__hint--idle/,
+    );
+    await expect(page.locator(".playback-card__hint-label")).toHaveCount(0);
   });
 });

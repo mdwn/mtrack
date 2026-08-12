@@ -21,6 +21,14 @@ pub const DEFAULT_NORMAL_FREQ: f64 = 1200.0;
 pub const DEFAULT_ACCENT_VOLUME: f64 = 1.0;
 /// Default volume for normal clicks.
 pub const DEFAULT_NORMAL_VOLUME: f64 = 0.8;
+/// Default synthesized click frequency for half-accent clicks, Hz.
+pub const DEFAULT_HALF_FREQ: f64 = 1400.0;
+/// Default volume for half-accent clicks.
+pub const DEFAULT_HALF_VOLUME: f64 = 0.9;
+/// Default synthesized click frequency for subdivision ticks, Hz.
+pub const DEFAULT_SUB_FREQ: f64 = 1000.0;
+/// Default volume for subdivision ticks.
+pub const DEFAULT_SUB_VOLUME: f64 = 0.45;
 
 /// A YAML representation of a song's metronome: a virtual click track
 /// generated from the song's beat grid, routable like any other track.
@@ -38,9 +46,67 @@ pub struct MetronomeConfig {
     /// and 6 of a 7/8 measure. Without it only beat 1 is accented.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accent: Vec<u32>,
+    /// Optional per-beat accent levels, one entry per beat of the measure:
+    /// 0 = silent, 1 = normal (baseline), 2 = half accent, 3 = accent.
+    /// Takes precedence over `accent` grouping; measures with more beats
+    /// than the pattern pad the tail with the baseline level, measures with
+    /// fewer truncate it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accents: Vec<u8>,
+    /// Subdivision: even clicks per beat (1 = none, 2 = eighths,
+    /// 3 = triplets, ...) or a clave pattern (`son` / `rumba`, a two-measure
+    /// cycle). Subdivision ticks use the sub sound.
+    #[serde(
+        default = "default_subdivision",
+        skip_serializing_if = "is_default_subdivision"
+    )]
+    pub subdivision: Subdivision,
+    /// Positional changes to the accent pattern and/or subdivision, anchored
+    /// at measures; each stays in effect until the next change.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<MetronomeChange>,
     /// Click sounds. Defaults to synthesized clicks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sounds: Option<MetronomeSounds>,
+}
+
+/// The metronome subdivision: even ticks per beat or a clave pattern.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum Subdivision {
+    /// Even ticks per beat: 1 = none, 2 = eighths, 3 = triplets, ...
+    Even(u32),
+    /// A named clave pattern spanning a two-measure cycle.
+    Clave(ClaveKind),
+}
+
+/// The supported clave patterns (3-2 direction).
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ClaveKind {
+    /// Son clave 3-2.
+    Son,
+    /// Rumba clave 3-2.
+    Rumba,
+}
+
+impl Default for Subdivision {
+    fn default() -> Self {
+        Subdivision::Even(1)
+    }
+}
+
+/// A positional change to the metronome feel, anchored at a measure.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+pub struct MetronomeChange {
+    /// The 1-indexed measure the change takes effect at.
+    pub measure: u32,
+    /// New per-beat accent levels (same encoding as the top-level `accents`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accents: Option<Vec<u8>>,
+    /// New subdivision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subdivision: Option<Subdivision>,
 }
 
 /// The pair of click sounds used by the metronome.
@@ -52,6 +118,12 @@ pub struct MetronomeSounds {
     /// The sound for normal clicks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub normal: Option<ClickSound>,
+    /// The sound for half-accent clicks (accent level 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub half: Option<ClickSound>,
+    /// The sound for subdivision ticks (even subdivisions and claves).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub: Option<ClickSound>,
 }
 
 /// A single click sound: synthesized (freq/volume) or a sample file.
@@ -77,14 +149,34 @@ fn is_default_track(track: &String) -> bool {
     track == "metronome"
 }
 
+fn default_subdivision() -> Subdivision {
+    Subdivision::default()
+}
+
+fn is_default_subdivision(subdivision: &Subdivision) -> bool {
+    *subdivision == Subdivision::Even(1)
+}
+
 impl Default for MetronomeConfig {
     fn default() -> Self {
         MetronomeConfig {
             track: default_metronome_track(),
             accent: Vec::new(),
+            accents: Vec::new(),
+            subdivision: Subdivision::default(),
+            changes: Vec::new(),
             sounds: None,
         }
     }
+}
+
+fn validate_subdivision(subdivision: &Subdivision) -> Result<(), String> {
+    if let Subdivision::Even(n) = subdivision {
+        if !(1..=12).contains(n) {
+            return Err(format!("metronome subdivision must be 1-12, got {n}"));
+        }
+    }
+    Ok(())
 }
 
 impl MetronomeConfig {
@@ -96,6 +188,23 @@ impl MetronomeConfig {
         if self.accent.contains(&0) {
             return Err("metronome accent groups must be at least 1 beat".to_string());
         }
+        if self.accents.iter().any(|&level| level > 3) {
+            return Err("metronome accent levels must be 0-3".to_string());
+        }
+        validate_subdivision(&self.subdivision)?;
+        for change in &self.changes {
+            if change.measure < 1 {
+                return Err("metronome change measures are 1-indexed".to_string());
+            }
+            if let Some(accents) = &change.accents {
+                if accents.iter().any(|&level| level > 3) {
+                    return Err("metronome accent levels must be 0-3".to_string());
+                }
+            }
+            if let Some(subdivision) = &change.subdivision {
+                validate_subdivision(subdivision)?;
+            }
+        }
         for (label, sound) in [
             (
                 "accent",
@@ -105,6 +214,8 @@ impl MetronomeConfig {
                 "normal",
                 self.sounds.as_ref().and_then(|s| s.normal.as_ref()),
             ),
+            ("half", self.sounds.as_ref().and_then(|s| s.half.as_ref())),
+            ("sub", self.sounds.as_ref().and_then(|s| s.sub.as_ref())),
         ] {
             if let Some(sound) = sound {
                 if let Some(freq) = sound.freq {
@@ -181,10 +292,72 @@ sounds:
     fn rejects_invalid_configs() {
         assert!(deserialize("track: \" \"").validate().is_err());
         assert!(deserialize("accent: [3, 0]").validate().is_err());
+        assert!(deserialize("accents: [4]").validate().is_err());
+        assert!(deserialize("subdivision: 0").validate().is_err());
+        assert!(deserialize("subdivision: 13").validate().is_err());
         assert!(deserialize("sounds:\n  accent: { freq: 5 }")
             .validate()
             .is_err());
         assert!(deserialize("sounds:\n  normal: { volume: 3.0 }")
+            .validate()
+            .is_err());
+        assert!(deserialize("sounds:\n  half: { volume: 3.0 }")
+            .validate()
+            .is_err());
+    }
+
+    #[test]
+    fn accent_levels_and_subdivision_roundtrip() {
+        let config = deserialize(
+            "accents: [3, 0, 1, 2]\nsubdivision: 3\nsounds:\n  half: { freq: 900, volume: 0.5 }\n",
+        );
+        assert_eq!(config.accents, vec![3, 0, 1, 2]);
+        assert_eq!(config.subdivision, Subdivision::Even(3));
+        assert_eq!(
+            config.sounds.as_ref().unwrap().half.as_ref().unwrap().freq,
+            Some(900.0)
+        );
+        assert!(config.validate().is_ok());
+        let serialized = crate::util::to_yaml_string(&config).unwrap();
+        assert_eq!(deserialize(&serialized), config);
+        // Defaults stay out of the YAML.
+        assert!(!serialized.contains("subdivision: 1"));
+    }
+
+    #[test]
+    fn clave_subdivision_and_changes_roundtrip() {
+        let config = deserialize(
+            r#"
+subdivision: son
+changes:
+  - measure: 9
+    accents: [3, 1, 2, 1]
+  - measure: 17
+    subdivision: rumba
+  - measure: 25
+    subdivision: 2
+"#,
+        );
+        assert_eq!(config.subdivision, Subdivision::Clave(ClaveKind::Son));
+        assert_eq!(config.changes.len(), 3);
+        assert_eq!(
+            config.changes[0].accents.as_deref(),
+            Some(&[3, 1, 2, 1][..])
+        );
+        assert_eq!(
+            config.changes[1].subdivision,
+            Some(Subdivision::Clave(ClaveKind::Rumba))
+        );
+        assert_eq!(config.changes[2].subdivision, Some(Subdivision::Even(2)));
+        assert!(config.validate().is_ok());
+        let serialized = crate::util::to_yaml_string(&config).unwrap();
+        assert_eq!(deserialize(&serialized), config);
+
+        // Invalid nested values are rejected.
+        assert!(deserialize("changes:\n  - measure: 2\n    accents: [5]")
+            .validate()
+            .is_err());
+        assert!(deserialize("changes:\n  - measure: 2\n    subdivision: 0")
             .validate()
             .is_err());
     }

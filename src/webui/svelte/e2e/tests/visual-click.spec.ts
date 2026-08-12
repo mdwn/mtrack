@@ -131,4 +131,66 @@ test.describe("Visual click", () => {
 
     await expect(page.locator(".beat-indicator")).toHaveCount(0);
   });
+
+  test("resolved accent levels style the dots", async ({ page }) => {
+    // 4/4 grid with per-beat levels: accent, silent, normal, half.
+    const beats = [0, 0.5, 1.0, 1.5];
+    await sendWsMessage(
+      page,
+      wsId,
+      playbackState({
+        beat_grid: {
+          beats,
+          measure_starts: [0],
+          accent_levels: [3, 0, 1, 2],
+        },
+      }),
+    );
+
+    const dots = page.locator(".beat-dot");
+    await expect(dots).toHaveCount(4);
+    await expect(dots.nth(0)).toHaveClass(/beat-dot--accent/);
+    await expect(dots.nth(1)).toHaveClass(/beat-dot--silent/);
+    await expect(dots.nth(1)).not.toHaveClass(/beat-dot--accent/);
+    await expect(dots.nth(2)).not.toHaveClass(
+      /beat-dot--accent|beat-dot--half|beat-dot--silent/,
+    );
+    await expect(dots.nth(3)).toHaveClass(/beat-dot--half/);
+  });
+
+  test("half-accent beat flashes with the half style", async ({ page }) => {
+    await sendWsMessage(
+      page,
+      wsId,
+      playbackState({
+        is_playing: true,
+        elapsed_ms: 1500,
+        beat_grid: {
+          beats: [0, 0.5, 1.0, 1.5],
+          measure_starts: [0],
+          accent_levels: [3, 0, 1, 2],
+        },
+      }),
+    );
+
+    await expect(page.locator(".beat-flash")).toHaveClass(/beat-flash--half/);
+  });
+
+  test("silent beat does not flash", async ({ page }) => {
+    await sendWsMessage(
+      page,
+      wsId,
+      playbackState({
+        is_playing: true,
+        elapsed_ms: 500,
+        beat_grid: {
+          beats: [0, 0.5, 1.0, 1.5],
+          measure_starts: [0],
+          accent_levels: [3, 0, 1, 2],
+        },
+      }),
+    );
+
+    await expect(page.locator(".beat-flash")).toHaveClass(/beat-flash--off/);
+  });
 });

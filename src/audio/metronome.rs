@@ -29,8 +29,9 @@ use super::click_analysis::BeatGrid;
 use super::sample_source::error::SampleSourceError;
 use super::sample_source::traits::SampleSource;
 use crate::config::metronome::{
-    ClickSound, MetronomeConfig, DEFAULT_ACCENT_FREQ, DEFAULT_ACCENT_VOLUME, DEFAULT_NORMAL_FREQ,
-    DEFAULT_NORMAL_VOLUME,
+    ClaveKind, ClickSound, MetronomeConfig, Subdivision, DEFAULT_ACCENT_FREQ,
+    DEFAULT_ACCENT_VOLUME, DEFAULT_HALF_FREQ, DEFAULT_HALF_VOLUME, DEFAULT_NORMAL_FREQ,
+    DEFAULT_NORMAL_VOLUME, DEFAULT_SUB_FREQ, DEFAULT_SUB_VOLUME,
 };
 
 /// Length of a synthesized click in seconds.
@@ -43,10 +44,14 @@ const SYNTH_DECAY_TAU_SECS: f64 = 0.012;
 /// The kind of click at a beat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClickKind {
-    /// Downbeat / accent-group start.
+    /// Downbeat / accent-group start (accent level 3).
     Accent,
-    /// Any other beat.
+    /// Half accent (accent level 2).
+    Half,
+    /// Baseline beat (accent level 1).
     Normal,
+    /// Subdivision tick (even subdivisions and clave patterns).
+    Sub,
 }
 
 /// A scheduled click, positioned in samples relative to the source start.
@@ -57,56 +62,209 @@ pub struct ClickEvent {
     pub kind: ClickKind,
 }
 
+/// Clave patterns as half-beat offsets (eighths when the beat is a quarter)
+/// within the first and second measure of a two-measure cycle, 3-2 direction.
+fn clave_pattern(kind: ClaveKind) -> (&'static [usize], &'static [usize]) {
+    match kind {
+        ClaveKind::Son => (&[0, 3, 6], &[2, 4]),
+        ClaveKind::Rumba => (&[0, 3, 7], &[2, 4]),
+    }
+}
+
+/// Beat offsets within a measure that get a grouping accent.
+fn accent_group_starts(config: &MetronomeConfig) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    let mut acc = 0usize;
+    for group in &config.accent {
+        acc += *group as usize;
+        starts.push(acc);
+    }
+    starts
+}
+
+/// Measure boundaries as beat-index ranges; without measure starts the
+/// whole grid is one measure.
+fn measure_bounds(grid: &BeatGrid) -> Vec<(usize, usize)> {
+    if grid.measure_starts.is_empty() {
+        vec![(0, grid.beats.len())]
+    } else {
+        grid.measure_starts
+            .iter()
+            .enumerate()
+            .map(|(m, &start)| {
+                let end = grid
+                    .measure_starts
+                    .get(m + 1)
+                    .copied()
+                    .unwrap_or(grid.beats.len());
+                (start, end)
+            })
+            .collect()
+    }
+}
+
+/// Resolves the accent level (0 silent, 1 normal, 2 half, 3 accent) of every
+/// beat in the grid: the per-beat pattern in effect (base `accents` swapped
+/// by positional `changes`), applied per measure — padded with the baseline
+/// level when a measure has more beats than the pattern, truncated when it
+/// has fewer. Without a pattern the `accent` grouping applies, and without
+/// either the downbeat gets a plain accent. This is the source of truth
+/// shared by the audio renderer and the web UI's visual metronome.
+pub fn accent_levels(grid: &BeatGrid, config: &MetronomeConfig) -> Vec<u8> {
+    let group_starts = accent_group_starts(config);
+    let mut sorted_changes = config.changes.clone();
+    sorted_changes.sort_by_key(|c| c.measure);
+
+    let mut levels = vec![1u8; grid.beats.len()];
+    let mut active_accents: &[u8] = &config.accents;
+    for (measure_idx, &(measure_start, measure_end)) in measure_bounds(grid).iter().enumerate() {
+        for change in &sorted_changes {
+            if change.measure as usize == measure_idx + 1 {
+                if let Some(accents) = &change.accents {
+                    active_accents = accents;
+                }
+            }
+        }
+        let measure_len = measure_end - measure_start;
+        for beat_in_measure in 0..measure_len {
+            levels[measure_start + beat_in_measure] = if !active_accents.is_empty() {
+                active_accents
+                    .get(beat_in_measure)
+                    .copied()
+                    .unwrap_or(1)
+                    .min(3)
+            } else if group_starts.contains(&beat_in_measure) {
+                3
+            } else {
+                1
+            };
+        }
+    }
+    levels
+}
+
 /// Derives click events from a beat grid.
 ///
-/// Accents fall on measure starts and, when `accent_groups` is non-empty, on
-/// each group start within the measure (e.g. `[3, 2, 2]` accents beats 1, 4
-/// and 6). `start_time` shifts events so positions are relative to playback
-/// start rather than song start.
+/// Beat accents come from `config.accents` (per-beat levels: 0 silent,
+/// 1 normal, 2 half accent, 3 accent), padded/truncated per measure; without
+/// a pattern the `config.accent` grouping applies (e.g. `[3, 2, 2]` accents
+/// beats 1, 4 and 6), and without either the downbeat gets a plain accent.
+/// `config.changes` swaps the accent pattern and/or the
+/// subdivision from their anchor measures onward. Subdivisions add sub-sound
+/// ticks: evenly spaced between beats, or at clave positions over a
+/// two-measure cycle (anchored where the subdivision last changed).
+/// `start_time` shifts events so positions are relative to playback start
+/// rather than song start.
 pub fn click_events_from_beat_grid(
     grid: &BeatGrid,
-    accent_groups: &[u32],
+    config: &MetronomeConfig,
     sample_rate: u32,
     start_time: Duration,
 ) -> Vec<ClickEvent> {
-    // Beat offsets within a measure that get an accent.
-    let group_starts: Vec<usize> = {
-        let mut starts = vec![0usize];
-        let mut acc = 0usize;
-        for group in accent_groups {
-            acc += *group as usize;
-            starts.push(acc);
-        }
-        starts
-    };
-
     let start_secs = start_time.as_secs_f64();
     let rate = sample_rate as f64;
+    let to_pos = |secs: f64| ((secs - start_secs) * rate).round() as i64;
 
-    grid.beats
-        .iter()
-        .enumerate()
-        .map(|(i, beat_secs)| {
-            // The measure this beat belongs to: the last measure start at or
-            // before the beat index.
-            let measure_start = grid
-                .measure_starts
-                .partition_point(|&start| start <= i)
-                .checked_sub(1)
-                .map(|m| grid.measure_starts[m])
-                .unwrap_or(0);
-            let beat_in_measure = i - measure_start;
-            let kind = if group_starts.contains(&beat_in_measure) {
-                ClickKind::Accent
-            } else {
-                ClickKind::Normal
-            };
-            ClickEvent {
-                sample_pos: ((beat_secs - start_secs) * rate).round() as i64,
+    let mut sorted_changes = config.changes.clone();
+    sorted_changes.sort_by_key(|c| c.measure);
+
+    // Half-beat time: even indices are the beats themselves, odd ones the
+    // midpoint to the next beat (the last interval extrapolates).
+    let half_beat_secs = |beat_idx: usize, half: bool| -> Option<f64> {
+        let beat = *grid.beats.get(beat_idx)?;
+        if !half {
+            return Some(beat);
+        }
+        let interval = grid
+            .beats
+            .get(beat_idx + 1)
+            .map(|next| next - beat)
+            .or_else(|| (beat_idx > 0).then(|| beat - grid.beats[beat_idx - 1]))?;
+        Some(beat + interval / 2.0)
+    };
+
+    // Beat clicks from resolved accent levels.
+    let mut events = Vec::new();
+    for (i, &level) in accent_levels(grid, config).iter().enumerate() {
+        let kind = match level {
+            0 => None,
+            1 => Some(ClickKind::Normal),
+            2 => Some(ClickKind::Half),
+            _ => Some(ClickKind::Accent),
+        };
+        if let Some(kind) = kind {
+            events.push(ClickEvent {
+                sample_pos: to_pos(grid.beats[i]),
                 kind,
+            });
+        }
+    }
+
+    // The subdivision in effect and the measure it was anchored at (clave
+    // cycles restart at their anchor).
+    let mut active_sub: &Subdivision = &config.subdivision;
+    let mut sub_anchor = 0usize;
+
+    for (measure_idx, &(measure_start, measure_end)) in measure_bounds(grid).iter().enumerate() {
+        for change in &sorted_changes {
+            if change.measure as usize == measure_idx + 1 {
+                if let Some(subdivision) = &change.subdivision {
+                    active_sub = subdivision;
+                    sub_anchor = measure_idx;
+                }
             }
-        })
-        .collect()
+        }
+
+        let measure_len = measure_end - measure_start;
+
+        // Subdivision ticks.
+        match active_sub {
+            Subdivision::Even(n) if *n > 1 => {
+                for beat_in_measure in 0..measure_len {
+                    let i = measure_start + beat_in_measure;
+                    let beat_secs = grid.beats[i];
+                    let interval = grid
+                        .beats
+                        .get(i + 1)
+                        .map(|next| next - beat_secs)
+                        .or_else(|| (i > 0).then(|| beat_secs - grid.beats[i - 1]));
+                    if let Some(interval) = interval {
+                        let tick = interval / *n as f64;
+                        for k in 1..*n {
+                            events.push(ClickEvent {
+                                sample_pos: to_pos(beat_secs + tick * k as f64),
+                                kind: ClickKind::Sub,
+                            });
+                        }
+                    }
+                }
+            }
+            Subdivision::Clave(clave) => {
+                let (first, second) = clave_pattern(*clave);
+                let pattern = if (measure_idx - sub_anchor).is_multiple_of(2) {
+                    first
+                } else {
+                    second
+                };
+                for &half_beat in pattern {
+                    let beat_in_measure = half_beat / 2;
+                    if beat_in_measure >= measure_len {
+                        continue;
+                    }
+                    if let Some(secs) =
+                        half_beat_secs(measure_start + beat_in_measure, half_beat % 2 == 1)
+                    {
+                        events.push(ClickEvent {
+                            sample_pos: to_pos(secs),
+                            kind: ClickKind::Sub,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    events
 }
 
 /// Synthesizes a click: a sine burst with a short attack and exponential decay.
@@ -173,6 +331,8 @@ pub struct MetronomeSource {
     events: Vec<ClickEvent>,
     accent: Vec<f32>,
     normal: Vec<f32>,
+    half: Vec<f32>,
+    sub: Vec<f32>,
     /// Current playback position in samples.
     position: i64,
     /// The source is exhausted at this position (song end).
@@ -216,13 +376,33 @@ impl MetronomeSource {
             base_path,
             sample_rate,
         )?;
+        let half = render_click_sound(
+            sounds.and_then(|s| s.half.as_ref()),
+            defaults.and_then(|s| s.half.as_ref()),
+            DEFAULT_HALF_FREQ,
+            DEFAULT_HALF_VOLUME,
+            base_path,
+            sample_rate,
+        )?;
+        let sub = render_click_sound(
+            sounds.and_then(|s| s.sub.as_ref()),
+            defaults.and_then(|s| s.sub.as_ref()),
+            DEFAULT_SUB_FREQ,
+            DEFAULT_SUB_VOLUME,
+            base_path,
+            sample_rate,
+        )?;
 
         let end_position = ((song_duration.saturating_sub(start_time)).as_secs_f64()
             * sample_rate as f64)
             .round() as i64;
-        let max_click_len = accent.len().max(normal.len()) as i64;
+        let max_click_len = accent
+            .len()
+            .max(normal.len())
+            .max(half.len())
+            .max(sub.len()) as i64;
 
-        let mut events = click_events_from_beat_grid(grid, &config.accent, sample_rate, start_time);
+        let mut events = click_events_from_beat_grid(grid, config, sample_rate, start_time);
         // Keep only clicks that are at least partially audible in
         // [0, end_position).
         events.retain(|e| e.sample_pos + max_click_len > 0 && e.sample_pos < end_position);
@@ -232,6 +412,8 @@ impl MetronomeSource {
             events,
             accent,
             normal,
+            half,
+            sub,
             position: 0,
             end_position,
             next_event: 0,
@@ -262,10 +444,14 @@ impl SampleSource for MetronomeSource {
         let mut sample = 0.0f32;
         let accent = &self.accent;
         let normal = &self.normal;
+        let half = &self.half;
+        let sub = &self.sub;
         self.active.retain(|(start, kind)| {
             let waveform: &[f32] = match kind {
                 ClickKind::Accent => accent,
                 ClickKind::Normal => normal,
+                ClickKind::Half => half,
+                ClickKind::Sub => sub,
             };
             let idx = position - start;
             if idx < 0 {
@@ -328,11 +514,25 @@ mod tests {
         }
     }
 
+    fn config_with(
+        accent: Vec<u32>,
+        accents: Vec<u8>,
+        subdivision: Subdivision,
+    ) -> MetronomeConfig {
+        MetronomeConfig {
+            accent,
+            accents,
+            subdivision,
+            ..MetronomeConfig::default()
+        }
+    }
+
     #[test]
     fn events_default_accents_on_downbeats() {
         // 7 beats per measure (7/8), eighth = 0.25s.
         let grid = simple_grid(7, 0.25, 2);
-        let events = click_events_from_beat_grid(&grid, &[], RATE, Duration::ZERO);
+        let events =
+            click_events_from_beat_grid(&grid, &MetronomeConfig::default(), RATE, Duration::ZERO);
         assert_eq!(events.len(), 14);
         for (i, event) in events.iter().enumerate() {
             let expected_kind = if i % 7 == 0 {
@@ -349,7 +549,12 @@ mod tests {
     fn events_accent_groups_7_8() {
         // Grouping [3, 2, 2] accents beats 1, 4 and 6 of each 7-beat measure.
         let grid = simple_grid(7, 0.25, 1);
-        let events = click_events_from_beat_grid(&grid, &[3, 2, 2], RATE, Duration::ZERO);
+        let events = click_events_from_beat_grid(
+            &grid,
+            &config_with(vec![3, 2, 2], vec![], Subdivision::Even(1)),
+            RATE,
+            Duration::ZERO,
+        );
         let kinds: Vec<ClickKind> = events.iter().map(|e| e.kind).collect();
         assert_eq!(
             kinds,
@@ -366,9 +571,191 @@ mod tests {
     }
 
     #[test]
+    fn events_per_beat_accent_levels() {
+        // Per-beat levels: accent, silent, normal, half.
+        let grid = simple_grid(4, 0.5, 2);
+        let events = click_events_from_beat_grid(
+            &grid,
+            &config_with(vec![], vec![3, 0, 1, 2], Subdivision::Even(1)),
+            RATE,
+            Duration::ZERO,
+        );
+        // Level 0 emits no event: 3 clicks per measure.
+        assert_eq!(events.len(), 6);
+        let kinds: Vec<ClickKind> = events.iter().take(3).map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![ClickKind::Accent, ClickKind::Normal, ClickKind::Half]
+        );
+        // The silent beat (index 1, at 0.5s) has no event.
+        let silent_pos = (0.5 * RATE as f64) as i64;
+        assert!(events.iter().all(|e| e.sample_pos != silent_pos));
+    }
+
+    #[test]
+    fn accent_pattern_pads_and_truncates_on_length_mismatch() {
+        // A short pattern pads with the baseline level instead of being
+        // silently ignored (e.g. a hand-edited 3-entry pattern in 4/4).
+        let grid = simple_grid(4, 0.5, 1);
+        let config = config_with(vec![], vec![3, 0, 2], Subdivision::Even(1));
+        assert_eq!(accent_levels(&grid, &config), vec![3, 0, 2, 1]);
+
+        // A long pattern truncates to the measure.
+        let grid = simple_grid(2, 0.5, 1);
+        let config = config_with(vec![], vec![3, 2, 0, 0], Subdivision::Even(1));
+        assert_eq!(accent_levels(&grid, &config), vec![3, 2]);
+    }
+
+    #[test]
+    fn events_subdivision_triplets() {
+        let grid = simple_grid(2, 0.6, 1);
+        let events = click_events_from_beat_grid(
+            &grid,
+            &config_with(vec![], vec![], Subdivision::Even(3)),
+            RATE,
+            Duration::ZERO,
+        );
+        // 2 beats + 2 triplet ticks after each (last beat extrapolates its
+        // interval from the previous one).
+        assert_eq!(events.len(), 6);
+        let mut positions: Vec<i64> = events.iter().map(|e| e.sample_pos).collect();
+        positions.sort();
+        let expected: Vec<i64> = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+            .iter()
+            .map(|s| (s * RATE as f64).round() as i64)
+            .collect();
+        assert_eq!(positions, expected);
+        // Sub-ticks use the sub sound.
+        let sub_count = events.iter().filter(|e| e.kind == ClickKind::Sub).count();
+        assert_eq!(sub_count, 4);
+    }
+
+    #[test]
+    fn accent_levels_resolve_patterns_and_changes() {
+        use crate::config::metronome::MetronomeChange;
+
+        // 3 measures of 2/4; measure 2 switches the pattern.
+        let grid = simple_grid(2, 0.5, 3);
+        let mut config = config_with(vec![], vec![3, 1], Subdivision::Even(1));
+        config.changes = vec![MetronomeChange {
+            measure: 2,
+            accents: Some(vec![0, 2]),
+            subdivision: None,
+        }];
+        assert_eq!(accent_levels(&grid, &config), vec![3, 1, 0, 2, 0, 2]);
+
+        // Grouping fallback: [2, 1] on 3-beat measures accents beats 1 and 3.
+        let grid = simple_grid(3, 0.5, 1);
+        let config = config_with(vec![2, 1], vec![], Subdivision::Even(1));
+        assert_eq!(accent_levels(&grid, &config), vec![3, 1, 3]);
+    }
+
+    #[test]
+    fn events_son_clave() {
+        // Two 4/4 measures at 0.5s per beat: son clave 3-2 hits at eighth
+        // positions 0, 3, 6 (bar 1) and 2, 4 (bar 2). Eighth = 0.25s.
+        let grid = simple_grid(4, 0.5, 2);
+        let events = click_events_from_beat_grid(
+            &grid,
+            &config_with(vec![], vec![], Subdivision::Clave(ClaveKind::Son)),
+            RATE,
+            Duration::ZERO,
+        );
+        let mut clave_pos: Vec<i64> = events
+            .iter()
+            .filter(|e| e.kind == ClickKind::Sub)
+            .map(|e| e.sample_pos)
+            .collect();
+        clave_pos.sort();
+        let expected: Vec<i64> = [0.0, 0.75, 1.5, 2.5, 3.0]
+            .iter()
+            .map(|s| (s * RATE as f64).round() as i64)
+            .collect();
+        assert_eq!(clave_pos, expected);
+    }
+
+    #[test]
+    fn events_rumba_clave() {
+        // Rumba shifts the third hit of the 3-side to eighth position 7.
+        let grid = simple_grid(4, 0.5, 2);
+        let events = click_events_from_beat_grid(
+            &grid,
+            &config_with(vec![], vec![], Subdivision::Clave(ClaveKind::Rumba)),
+            RATE,
+            Duration::ZERO,
+        );
+        let mut clave_pos: Vec<i64> = events
+            .iter()
+            .filter(|e| e.kind == ClickKind::Sub)
+            .map(|e| e.sample_pos)
+            .collect();
+        clave_pos.sort();
+        let expected: Vec<i64> = [0.0, 0.75, 1.75, 2.5, 3.0]
+            .iter()
+            .map(|s| (s * RATE as f64).round() as i64)
+            .collect();
+        assert_eq!(clave_pos, expected);
+    }
+
+    #[test]
+    fn events_metronome_changes_swap_feel() {
+        use crate::config::metronome::MetronomeChange;
+
+        // 4 measures of 2/4; measure 3 switches accents and adds eighths.
+        let grid = simple_grid(2, 0.5, 4);
+        let mut config = config_with(vec![], vec![3, 1], Subdivision::Even(1));
+        config.changes = vec![MetronomeChange {
+            measure: 3,
+            accents: Some(vec![0, 2]),
+            subdivision: Some(Subdivision::Even(2)),
+        }];
+        let events = click_events_from_beat_grid(&grid, &config, RATE, Duration::ZERO);
+
+        // Measures 1-2: accent + normal per measure, no sub-ticks.
+        let first_half: Vec<ClickKind> = events
+            .iter()
+            .filter(|e| e.sample_pos < (2.0 * RATE as f64) as i64)
+            .map(|e| e.kind)
+            .collect();
+        assert_eq!(
+            first_half,
+            vec![
+                ClickKind::Accent,
+                ClickKind::Normal,
+                ClickKind::Accent,
+                ClickKind::Normal,
+            ]
+        );
+        // Measures 3-4: silent downbeat, half-accent on 2, eighth sub-ticks.
+        let second_half: Vec<ClickKind> = events
+            .iter()
+            .filter(|e| e.sample_pos >= (2.0 * RATE as f64) as i64)
+            .map(|e| e.kind)
+            .collect();
+        assert_eq!(second_half.len(), 6); // 2 beats + 4 ticks over 2 measures
+        assert_eq!(
+            second_half
+                .iter()
+                .filter(|k| **k == ClickKind::Half)
+                .count(),
+            2
+        );
+        assert_eq!(
+            second_half.iter().filter(|k| **k == ClickKind::Sub).count(),
+            4
+        );
+        assert!(!second_half.contains(&ClickKind::Accent));
+    }
+
+    #[test]
     fn events_shift_with_start_time() {
         let grid = simple_grid(4, 0.5, 2);
-        let events = click_events_from_beat_grid(&grid, &[], RATE, Duration::from_secs_f64(1.0));
+        let events = click_events_from_beat_grid(
+            &grid,
+            &MetronomeConfig::default(),
+            RATE,
+            Duration::from_secs_f64(1.0),
+        );
         // Beat at 1.0s lands exactly at position 0 after the shift.
         assert!(events.iter().any(|e| e.sample_pos == 0));
         // Beats before the offset have negative positions.
@@ -494,6 +881,8 @@ mod tests {
                 freq: Some(1125.0),
                 volume: Some(0.25),
             }),
+            half: None,
+            sub: None,
         };
         let default_peak = render(Some(&defaults));
         assert!(

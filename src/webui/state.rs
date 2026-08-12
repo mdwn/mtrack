@@ -103,10 +103,17 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 })
                 .collect();
             let beat_grid = current_song.beat_grid().map(|g| {
-                json!({
+                let mut grid = json!({
                     "beats": g.beats,
                     "measure_starts": g.measure_starts,
-                })
+                });
+                // Resolved per-beat accent levels for the visual metronome,
+                // matching what the audio metronome plays.
+                if let Some(metronome) = current_song.metronome() {
+                    grid["accent_levels"] =
+                        json!(crate::audio::metronome::accent_levels(g, metronome));
+                }
+                grid
             });
 
             let available_sections: Vec<serde_json::Value> = current_song

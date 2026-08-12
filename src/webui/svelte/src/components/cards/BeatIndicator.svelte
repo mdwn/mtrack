@@ -59,7 +59,8 @@
         beatIdx: -1,
         beatInMeasure: -1,
         beatsInMeasure: countBeats(grid, 0),
-        accent: false,
+        measureStart: 0,
+        level: 1,
       };
     }
     while (lo < hi) {
@@ -77,13 +78,23 @@
         break;
       }
     }
+    const measureStart = grid.measure_starts[measure];
     return {
       beatIdx,
-      beatInMeasure: beatIdx - grid.measure_starts[measure],
+      beatInMeasure: beatIdx - measureStart,
       beatsInMeasure: countBeats(grid, measure),
-      accent: beatIdx === grid.measure_starts[measure],
+      measureStart,
+      level: levelOf(beatIdx, measureStart),
     };
   });
+
+  /** Accent level of a beat: resolved levels from the backend when the song
+   * has a metronome, plain downbeat accent otherwise. */
+  function levelOf(beatIdx: number, measureStart: number): number {
+    const levels = $playbackStore.beat_grid?.accent_levels;
+    if (levels && beatIdx < levels.length) return levels[beatIdx];
+    return beatIdx === measureStart ? 3 : 1;
+  }
 
   function countBeats(
     grid: { beats: number[]; measure_starts: number[] },
@@ -103,16 +114,24 @@
     {#key beatState.beatIdx}
       <span
         class="beat-flash"
-        class:beat-flash--accent={beatState.accent}
+        class:beat-flash--accent={beatState.level === 3}
+        class:beat-flash--half={beatState.level === 2}
         class:beat-flash--off={!$playbackStore.is_playing ||
-          beatState.beatIdx < 0}
+          beatState.beatIdx < 0 ||
+          beatState.level === 0}
       ></span>
     {/key}
     <span class="beat-dots">
       {#each { length: Math.min(beatState.beatsInMeasure, 16) }, i (i)}
+        {@const dotLevel = levelOf(
+          beatState.measureStart + i,
+          beatState.measureStart,
+        )}
         <span
           class="beat-dot"
-          class:beat-dot--accent={i === 0}
+          class:beat-dot--accent={dotLevel === 3}
+          class:beat-dot--half={dotLevel === 2}
+          class:beat-dot--silent={dotLevel === 0}
           class:beat-dot--active={i === beatState.beatInMeasure}
         ></span>
       {/each}
@@ -136,6 +155,9 @@
   }
   .beat-flash--accent {
     background: var(--nc-pink-400);
+  }
+  .beat-flash--half {
+    background: var(--nc-amber-400, #f2b544);
   }
   .beat-flash--off {
     animation: none;
@@ -167,10 +189,25 @@
     width: 8px;
     height: 8px;
   }
+  .beat-dot--half {
+    width: 7px;
+    height: 7px;
+  }
+  .beat-dot--silent {
+    background: transparent;
+    border: 1px solid var(--nc-bg-3);
+  }
   .beat-dot--active {
     background: var(--nc-cyan-400);
   }
   .beat-dot--accent.beat-dot--active {
     background: var(--nc-pink-400);
+  }
+  .beat-dot--half.beat-dot--active {
+    background: var(--nc-amber-400, #f2b544);
+  }
+  .beat-dot--silent.beat-dot--active {
+    background: transparent;
+    border-color: var(--nc-cyan-400);
   }
 </style>
