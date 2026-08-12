@@ -170,7 +170,8 @@ The timeline displays all track waveforms and beat grid measure lines. Sections 
 - **Deleted** from that dialog, or with the Delete key
 
 Zoom controls include +/-, Fit, and Ctrl+scroll wheel with anchor-point zooming. Measure label
-density and snap granularity adapt to zoom level.
+density and snap granularity adapt to zoom level. The ruler carries two bands: measure numbers
+along the top, the clock underneath.
 
 The lanes below the timeline are the song's tracks. Generated ones are drawn too: the
 metronome's click and the pilot cues are rendered from the same config the player synthesizes
@@ -190,25 +191,24 @@ Real songs change parts mid-measure, so a section's bounds are not limited to me
 `start_beat` / `end_beat` — 1-based within the boundary measure, fractional allowed, omitted
 meaning the measure line — offset either end to any position on the beat grid (see
 [song configuration](../configuration/song-config.md)). Seeking to a section and looping it
-both follow the offsets; a section may even begin and end inside one measure. The beat
-steppers stop at the end of their own measure — the next downbeat is the measure after, not
-a fifth beat of a 4/4 bar — and both the drags and the capture buttons order the two bounds
-by the time they resolve to rather than by their measure and beat numbers.
+both follow the offsets; a section may even begin and end inside one measure. A beat stays
+inside the measure that names it — the position after a 4/4 measure's last beat is the next
+measure's downbeat, not a fifth beat — and both the drags and the capture buttons order the
+two bounds by the time they resolve to rather than by their measure and beat numbers.
 
 ![A section starting and ending off the measure line](../images/section-beat-boundaries.png)
 
 There are three ways to set one, none of which involve counting beats in your head: the
-dialog's start/end beat steppers, an edge drag once the zoom makes beats distinct, and — when
-the song is the one loaded in the player — capturing the playhead. Play up to the transition,
-pause, and press **Start here** or **End here**; the capture snaps to the nearest half beat,
-and the buttons disable when they would invert the section.
+dialog's [position pickers](#positions-one-picker-everywhere), an edge drag once the zoom makes
+beats distinct, and — when the song is the one loaded in the player — capturing the playhead.
+Play up to the transition, pause, and press **Start here** or **End here**; the capture snaps
+to the nearest half beat, and the buttons disable when they would invert the section.
 
 #### The section dialog
 
 Tapping a section opens a bottom sheet with everything drag editing cannot do precisely on a
-phone: its name, its position (a start-measure stepper that slides the whole section keeping
-its length, a length stepper clamped to the song, and a beat offset for either end), and its
-color. Colors come from a
+phone: its name, its start and end — each on its own
+[position picker](#positions-one-picker-everywhere) — and its color. Colors come from a
 palette — new sections rotate through it automatically — and are stored as `sections[].color`
 in `song.yaml`.
 
@@ -243,6 +243,32 @@ subdivisions are not here; they live on the tempo markers, since they change mid
 
 ![The song's metronome panel](../images/song-metronome-panel.png)
 
+#### Positions: one picker everywhere
+
+Every position in these dialogs — a section's start and end, a tempo marker, a pilot hint — is
+edited with the same control:
+
+- A **three-measure ruler** you tap or drag along, one tick per beat and a shorter one per half.
+  It follows the meter in effect, so a 3/4 measure draws three beats and is labelled with its
+  signature. Holding a drag at either end walks the window along, beat by beat.
+- A **transport row** above it: `◀◀ ◀` and `▶ ▶▶` step by measure and by beat, rolling over
+  measure lines, and repeat when held. The readout between them can be tapped to type a position
+  (`13.4.5`) or a time (`1:23.4`).
+- A **beat / time toggle**. What it does depends on what the dialog can store. A pilot hint can
+  keep an absolute time, so time mode decouples it: the cursor leaves the grid and the steps
+  become 0.01/0.1/1 second. A section boundary or tempo change can only keep a beat, so there
+  time is a unit — the ruler still snaps and the clock reads the time of the beat you are on.
+- A **playhead capture** row, when the song is in the player: play up to the spot, pause, and
+  take it. A hint takes the exact time when it is time-anchored, everything else takes the beat
+  it lands on. A tempo change refuses a capture onto a beat another change already holds.
+
+Everything readable sits above the ruler, which is the touch surface: on a phone your hand
+covers the ticks and nothing else.
+
+![A position picker in time mode, with the playhead marked](../images/position-picker-time.png)
+
+The [section dialog](#the-section-dialog) above shows two of them, with the capture row.
+
 #### Tempo and pilot layers
 
 Above the section lane the timeline shows two DAW-style marker layers, so the song's tempo map
@@ -253,8 +279,9 @@ and pilot voice-hints can be authored against the same beat grid:
   position, BPM (with a Tap helper), time signature, and an optional transition (snap, or ramp
   over a number of beats/measures). Clicking empty space adds a change at that measure.
 - **Pilot layer** — one marker per voice hint. Clicking a marker opens the **pilot hint** dialog
-  to edit the label, the measure/beat (or absolute time) position, and an optional audio clip;
-  a hint with no clip is a visual cue only. Adjacent hints group together when their display
+  to edit the label, the position — anchored to a beat or to an absolute time, converted through
+  the beat grid when you switch — and an optional audio clip; a hint with no clip is a visual cue
+  only. Adjacent hints group together when their display
   windows overlap.
 
 ![Section timeline with tempo and pilot layers](../images/section-timeline-editor.png)

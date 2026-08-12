@@ -383,6 +383,30 @@ test("section-dialog", async ({ page }) => {
   });
 });
 
+// The picker in time mode, with the playhead marked on its ruler: the one
+// shot that shows the toggle, the clock labels and the capture row at once.
+test("position-picker-time", async ({ page }) => {
+  const wsId = freshWsId("picker-time");
+  await steOpen(page, STE_YAML, wsId);
+  await pushWs(page, wsId, {
+    ...DEFAULT_PLAYBACK,
+    song_name: STE_SONG,
+    song_duration_ms: 34000,
+    playlist_position: 1,
+    elapsed_ms: 5000,
+  });
+  await expect(page.locator(".playhead")).toBeVisible();
+  const block = page.locator(".section-block").first();
+  const box = (await block.boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(page.locator(".marker-dialog")).toBeVisible();
+  await page.getByRole("button", { name: "time", exact: true }).click();
+  await page.waitForTimeout(250);
+  await page.locator(".marker-dialog").screenshot({
+    path: path.join(DOCS_IMAGES, "position-picker-time.png"),
+  });
+});
+
 test("section-preview-transport", async ({ page }) => {
   const wsId = freshWsId("preview");
   await steOpen(page, STE_YAML, wsId);
