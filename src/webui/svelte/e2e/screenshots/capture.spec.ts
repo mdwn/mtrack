@@ -437,6 +437,87 @@ test("virtual-track-waveforms", async ({ page }) => {
   });
 });
 
+// --- Tempo import between the timeline and a light show -------------------
+
+// A show whose tempo map (128 BPM, a change at m5) differs from the song's,
+// so the import is visible in both directions.
+const SHOW_WITH_TEMPO = `tempo {
+    start: 0s
+    bpm: 128
+    time_signature: 4/4
+    changes: [
+        @5/1 { bpm: 90 }
+    ]
+}
+
+show "Main" {
+    @00:00.000
+    front: static, color: "blue", duration: 5s
+}
+`;
+
+/** Test Song Beta with its own tempo map and a light show that has another. */
+async function tempoImportRoutes(page: Page) {
+  await page.route("**/api/songs", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const res = await route.fetch();
+    const data = await res.json();
+    for (const song of data.songs ?? []) {
+      if (song.name === STE_SONG) {
+        song.has_lighting = true;
+        song.lighting_files = ["show.light"];
+        song.has_tempo_map = true;
+        song.duration_ms = 34000;
+        song.duration_display = "0:34";
+      }
+    }
+    await route.fulfill({ response: res, json: data });
+  });
+  await page.route(`**/api/songs/${STE_ENC}`, async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "text/yaml",
+      body: `${STE_YAML}lighting:\n  - file: show.light\n`,
+    });
+  });
+  await page.route("**/api/lighting/show.light", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "text/plain",
+      body: SHOW_WITH_TEMPO,
+    });
+  });
+}
+
+test("tempo-import-dialog", async ({ page }) => {
+  await tempoImportRoutes(page);
+  await page.goto(`/#/songs/${STE_ENC}/sections`);
+  await expect(page.locator(".section-timeline-editor")).toBeVisible();
+  // The base marker: its dialog is where a show's map is imported from.
+  await page.locator(".marker-lane").first().locator(".marker").first().click();
+  await expect(page.locator(".marker-dialog")).toBeVisible();
+  await page.waitForTimeout(250);
+  await page.locator(".marker-dialog").screenshot({
+    path: path.join(DOCS_IMAGES, "tempo-import-dialog.png"),
+  });
+});
+
+test("tempo-import-lighting", async ({ page }) => {
+  await tempoImportRoutes(page);
+  await page.goto(`/#/songs/${STE_ENC}/lighting`);
+  await page.getByTitle("Tempo - click to edit").click();
+  await expect(page.locator(".tempo-info")).toBeVisible();
+  await page.waitForTimeout(250);
+  await page
+    .locator(".tempo-editor, .tempo-modal, .modal")
+    .first()
+    .screenshot({
+      path: path.join(DOCS_IMAGES, "tempo-import-lighting.png"),
+    });
+});
+
 // --- Metronome: player-wide defaults, and the per-song panel --------------
 
 /** The config store with a `metronome:` defaults block, so the Config page's
