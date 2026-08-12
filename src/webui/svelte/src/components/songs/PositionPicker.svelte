@@ -173,6 +173,15 @@
       : $t("position.value", { values: { measure, beat: fmtBeat(beat) } }),
   );
 
+  /** Whole seconds inside each visible measure, computed once per render:
+   * both the labels and the lines read the same list. */
+  let secondsByMeasure = $derived.by(() => {
+    const out: Record<number, { time: number; pct: number }[]> = {};
+    if (mode !== "time") return out;
+    for (const m of windowMeasures) out[m] = secondsIn(m);
+    return out;
+  });
+
   /** Whole seconds inside a measure, placed where they fall in the music —
    * under a tempo change they bunch up, which is the point. */
   function secondsIn(m: number): { time: number; pct: number }[] {
@@ -549,7 +558,7 @@
                your fingertip. -->
           <div class="pp-nums">
             {#if mode === "time"}
-              {#each secondsIn(m) as s (s.time)}
+              {#each secondsByMeasure[m] ?? [] as s (s.time)}
                 <span class="pp-secnum" style:left="{s.pct}%"
                   >{formatSecondsShort(s.time)}</span
                 >
@@ -584,7 +593,7 @@
               ></span>
             {/each}
             {#if mode === "time"}
-              {#each secondsIn(m) as s (s.time)}
+              {#each secondsByMeasure[m] ?? [] as s (s.time)}
                 <span class="pp-secline" style:left="{s.pct}%"></span>
               {/each}
             {/if}
@@ -713,7 +722,8 @@
   }
   .pp-nav {
     flex: 0 0 auto;
-    width: 28px;
+    /* A thumb is about 9mm; 28px was a mouse-sized target. */
+    width: 36px;
     padding: 0;
     font-size: 11px;
     color: var(--text-dim);
