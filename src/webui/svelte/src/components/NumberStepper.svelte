@@ -101,12 +101,10 @@
   function onInputChange(e: Event) {
     const raw = (e.target as HTMLInputElement).value.replace(",", ".");
     const parsed = parseFloat(raw);
-    if (!isNaN(parsed)) {
-      onchange(clamp(parsed));
-    } else {
-      // Reset the field to the current value on unparsable input.
-      (e.target as HTMLInputElement).value = display;
-    }
+    if (!isNaN(parsed)) onchange(clamp(parsed));
+    // Show what the owner actually took: unparsable, clamped and rejected
+    // edits all snap the field back to the value in effect.
+    (e.target as HTMLInputElement).value = display;
   }
 
   let display = $derived(

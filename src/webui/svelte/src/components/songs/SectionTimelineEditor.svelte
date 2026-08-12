@@ -21,6 +21,7 @@
     PilotConfig,
     PilotHintConfig,
   } from "../../lib/api/songs";
+  import { sortTempoChanges } from "../../lib/util/tempo";
   import SectionBar from "./SectionBar.svelte";
   import SectionRuler from "./SectionRuler.svelte";
   import SectionWaveformLane from "./SectionWaveformLane.svelte";
@@ -224,10 +225,7 @@
   function effectiveBpmAt(measure: number): number {
     if (!tempo) return 120;
     let bpm = tempo.bpm;
-    const sorted = [...(tempo.changes ?? [])].sort(
-      (a, b) => a.measure - b.measure,
-    );
-    for (const c of sorted) {
+    for (const c of sortTempoChanges(tempo.changes ?? [])) {
       if (c.measure <= measure && c.bpm !== undefined) bpm = c.bpm;
     }
     return bpm;
@@ -260,12 +258,13 @@
       tempoDialogTarget = existing;
       return;
     }
-    const changes = [
-      ...(tempo.changes ?? []),
-      { measure, bpm: effectiveBpmAt(measure) },
-    ];
+    // Tapping a spot before an existing change must not append out of order —
+    // the backend rejects a non-ascending map. Sort, then follow the entry to
+    // its new index so the dialog keeps editing the marker that was tapped.
+    const entry = { measure, bpm: effectiveBpmAt(measure) };
+    const changes = sortTempoChanges([...(tempo.changes ?? []), entry]);
     ontempochange?.({ ...tempo, changes });
-    tempoDialogTarget = changes.length - 1;
+    tempoDialogTarget = changes.indexOf(entry);
   }
 
   /** Nearest beat as measure/beat for a position (ms), or null off-grid. */
@@ -455,6 +454,7 @@
     {hasMidi}
     canGuess={!!song.beat_grid}
     onchange={(updated) => ontempochange?.(updated)}
+    onretarget={(index) => (tempoDialogTarget = index)}
     onclose={() => (tempoDialogTarget = null)}
   />
 {/if}

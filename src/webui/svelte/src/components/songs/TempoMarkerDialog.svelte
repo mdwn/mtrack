@@ -16,6 +16,7 @@
   import { t } from "svelte-i18n";
   import type { TempoConfig, TempoChangeConfig } from "../../lib/api/songs";
   import { fetchTempoGuess, type GuessedTempo } from "../../lib/api/songs";
+  import { positionTaken, sortTempoChanges } from "../../lib/util/tempo";
   import NumberStepper from "../NumberStepper.svelte";
   import MarkerDialog from "./MarkerDialog.svelte";
 
@@ -27,6 +28,8 @@
     hasMidi?: boolean;
     canGuess?: boolean;
     onchange: (tempo: TempoConfig | null) => void;
+    /** Sorting moved the edited change; the new index to keep editing. */
+    onretarget?: (index: number) => void;
     onclose: () => void;
   }
 
@@ -37,6 +40,7 @@
     hasMidi = false,
     canGuess = false,
     onchange,
+    onretarget,
     onclose,
   }: Props = $props();
 
@@ -72,8 +76,17 @@
     if (merged.bpm === undefined) delete merged.bpm;
     if (!merged.time_signature) delete merged.time_signature;
     if (!merged.transition) delete merged.transition;
+    // Two changes on the same beat are as unsavable as reversed ones, so a
+    // move onto an occupied position is refused rather than written.
+    if (positionTaken(changes, merged.measure, merged.beat ?? 1, target))
+      return;
     changes[target] = merged;
-    onchange({ ...tempo, changes });
+    // Moving a change can reorder the map; keep it ascending for the backend
+    // and retarget the dialog, which addresses entries by array index.
+    const sorted = sortTempoChanges(changes);
+    onchange({ ...tempo, changes: sorted });
+    const moved = sorted.indexOf(merged);
+    if (moved !== target) onretarget?.(moved);
   }
 
   function deleteChange() {
@@ -150,7 +163,7 @@
       if (c.transition_beats) entry.transition = { beats: c.transition_beats };
       return entry;
     });
-    if (changes.length > 0) config.changes = changes;
+    if (changes.length > 0) config.changes = sortTempoChanges(changes);
     return config;
   }
 
