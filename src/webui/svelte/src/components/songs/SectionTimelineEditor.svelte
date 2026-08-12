@@ -430,6 +430,8 @@
   let playheadPos = $derived(
     isCurrentSong ? msToMeasureBeat(playheadMs) : null,
   );
+  /** The same playhead in seconds: what the dialogs mark and capture. */
+  let playheadTime = $derived(isCurrentSong ? playheadMs / 1000 : null);
 
   /** Beat-snapping for edge drags: only when zoomed in far enough that
    * individual beats are visually distinct; zoomed out, edges keep
@@ -929,6 +931,7 @@
     {hasMidi}
     canGuess={!!song.beat_grid}
     maxMeasure={measureTimesMs.length || 9999}
+    {playheadTime}
     beatGrid={song.beat_grid}
     {lightShowTempos}
     ontempochange={(updated) => ontempochange?.(updated)}
@@ -947,6 +950,7 @@
     beatGrid={song.beat_grid}
     posToMs={measureBeatToMs}
     {playheadPos}
+    {playheadTime}
     onchange={(patch) => patchSection(sectionDialogIndex!, patch)}
     ondelete={() => deleteSection(sectionDialogIndex!)}
     onclose={() => (sectionDialogIndex = null)}
@@ -960,6 +964,7 @@
     beatGrid={song.beat_grid}
     {tempo}
     maxMeasure={measureTimesMs.length || 9999}
+    {playheadTime}
     songName={songName ?? song.name}
     {songFiles}
     onchange={(patch) => patchPilotHint(pilotDialogIndex!, patch)}

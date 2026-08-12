@@ -36,6 +36,8 @@
   import AccentPads from "./AccentPads.svelte";
   import MarkerDialog from "./MarkerDialog.svelte";
   import PositionPicker from "./PositionPicker.svelte";
+  import PlayheadCapture from "./PlayheadCapture.svelte";
+  import { positionAtTime } from "../../lib/util/beatGrid";
 
   /** A change marker position: measure/beat on the tempo map. */
   export interface MarkerPosition {
@@ -57,6 +59,8 @@
     canGuess?: boolean;
     /** The song's measure count, bounding the position picker. */
     maxMeasure?: number;
+    /** The preview playhead in seconds, when this song is in the player. */
+    playheadTime?: number | null;
     /** The song's beat grid, for snapping time-anchored imports. */
     beatGrid?: { beats: number[]; measure_starts: number[] } | null;
     /** Light shows with their own tempo maps (import sources). */
@@ -77,6 +81,7 @@
     hasMidi = false,
     canGuess = false,
     maxMeasure = 9999,
+    playheadTime = null,
     beatGrid = null,
     lightShowTempos = [],
     ontempochange,
@@ -304,6 +309,27 @@
   }
 
   // --- Position / meter edits ---
+
+  /** The playhead's beat — a tempo change can only sit on one. */
+  let playheadBeat = $derived(
+    playheadTime === null ? null : positionAtTime(beatGrid, playheadTime),
+  );
+  let playheadTarget = $derived(
+    playheadBeat === null
+      ? null
+      : { measure: playheadBeat.measure, beat: Math.round(playheadBeat.beat) },
+  );
+  /** Refused for the same reason a manual move would be: something is there. */
+  let canCapture = $derived(
+    playheadTarget !== null &&
+      target !== "start" &&
+      !positionTaken(
+        tempo.changes ?? [],
+        playheadTarget.measure,
+        playheadTarget.beat,
+        tChangeIndex,
+      ),
+  );
 
   function moveTo(measure: number, beat: number) {
     if (target === "start") return;
@@ -680,8 +706,27 @@
         {beatGrid}
         beatsIn={(m) => beatsInMeasure(tempo, m)}
         sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
+        ghostTime={playheadTime}
         onchange={(v) => v.kind === "beat" && moveTo(v.measure, v.beat)}
       />
+      {#if playheadTime !== null && playheadTarget}
+        <PlayheadCapture
+          time={playheadTime}
+          position="m{playheadTarget.measure} · b{playheadTarget.beat}"
+        >
+          {#snippet actions()}
+            <button
+              type="button"
+              class="btn btn-sm"
+              disabled={!canCapture}
+              onclick={() =>
+                playheadTarget &&
+                moveTo(playheadTarget.measure, playheadTarget.beat)}
+              >{$t("position.usePlayhead")}</button
+            >
+          {/snippet}
+        </PlayheadCapture>
+      {/if}
     </div>
 
     <div class="dialog-section" class:section-off={!bpmOn}>

@@ -767,6 +767,7 @@
   "position.modeBeat": "beat",
   "position.modeTime": "time",
   "position.timeStep": "time step",
+  "position.usePlayhead": "Use playhead",
   "position.valueTime": "{time}, {position}",
   "tempo.marker.tap": "Tap",
   "tempo.marker.transitionSnap": "Snap",

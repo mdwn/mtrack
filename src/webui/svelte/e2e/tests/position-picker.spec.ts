@@ -44,7 +44,38 @@ pilot:
       label: verse
 `;
 
-async function open(page: Page) {
+let wsCounter = 0;
+
+/** Puts this song under the playhead: stopped at 5.0s, which on the 120 BPM
+ * 4/4 fixture grid is measure 3, beat 3. */
+async function openWithPlayhead(page: Page, yaml = SONG_YAML): Promise<void> {
+  const wsId = `picker-${test.info().parallelIndex}-${++wsCounter}-${Date.now()}`;
+  await routes(page, yaml);
+  await page.goto(`/?wsId=${wsId}#/songs/${ENC}/sections`);
+  await expect(page.locator(".section-timeline-editor")).toBeVisible();
+  const res = await page.request.post("http://127.0.0.1:3111/test/send-ws", {
+    data: {
+      type: "playback",
+      is_playing: false,
+      elapsed_ms: 5000,
+      song_name: SONG,
+      song_duration_ms: 34000,
+      playlist_name: "setlist",
+      playlist_position: 1,
+      playlist_songs: [SONG],
+      tracks: [],
+      available_playlists: ["setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      available_sections: [],
+      _wsId: wsId,
+    },
+  });
+  expect((await res.json()).sent).toBe(1);
+  await expect(page.locator(".playhead-info__pos")).toHaveText("m3.3");
+}
+
+async function routes(page: Page, yaml = SONG_YAML) {
   await page.route(`**/api/songs/${ENC}`, async (route) => {
     if (route.request().method() !== "GET") {
       await route.fulfill({ status: 200, body: "{}" });
@@ -53,7 +84,7 @@ async function open(page: Page) {
     await route.fulfill({
       status: 200,
       contentType: "text/yaml",
-      body: SONG_YAML,
+      body: yaml,
     });
   });
   await page.route("**/api/songs", async (route) => {
@@ -67,6 +98,10 @@ async function open(page: Page) {
     }
     await route.fulfill({ json: data });
   });
+}
+
+async function open(page: Page) {
+  await routes(page);
   await page.goto(`/#/songs/${ENC}/sections`);
   await expect(page.locator(".section-timeline-editor")).toBeVisible();
 }
@@ -215,5 +250,75 @@ test.describe("Position picker", () => {
     await expect(start.locator(".pp-value")).toHaveText("0:08.500");
     await expect(start.locator(".pp-sub")).toHaveText("= m5 · b2");
     await expect(page.locator(".range-note")).toHaveText("m5.2–8");
+  });
+
+  test("the playhead can be captured into a hint", async ({ page }) => {
+    await openWithPlayhead(page);
+    const dialog = await openPilotDialog(page);
+    const hint = picker(dialog, "Hint");
+    // The row reads the playhead out in both units before you take it.
+    await expect(dialog.locator(".playhead-capture")).toContainText("0:05.000");
+    await expect(dialog.locator(".playhead-capture")).toContainText("m3 · b3");
+
+    await dialog.getByRole("button", { name: "Use playhead" }).click();
+    await expect(hint.locator(".pp-value")).toHaveText("m3 · b3");
+
+    // Time-anchored, the same button takes the exact time instead.
+    await hint.getByRole("button", { name: "time", exact: true }).click();
+    await hint.getByRole("button", { name: "Hint: next beat" }).click();
+    await expect(hint.locator(".pp-value")).toHaveText("0:05.100");
+    await dialog.getByRole("button", { name: "Use playhead" }).click();
+    await expect(hint.locator(".pp-value")).toHaveText("0:05.000");
+  });
+
+  test("the playhead can be captured into a tempo marker", async ({ page }) => {
+    await openWithPlayhead(page);
+    await page
+      .locator(".marker-lane")
+      .first()
+      .locator(".marker")
+      .last()
+      .click();
+    const dialog = page.locator(".marker-dialog");
+    await expect(dialog).toBeVisible();
+    await page.waitForTimeout(200);
+    const marker = picker(dialog, "Marker");
+    await expect(marker.locator(".pp-value")).toHaveText("m9 · b1");
+
+    // A tempo change can only sit on a beat, so the capture snaps to one.
+    await dialog.getByRole("button", { name: "Use playhead" }).click();
+    await expect(marker.locator(".pp-value")).toHaveText("m3 · b3");
+
+    // Capturing again is a harmless no-op: the marker is already there.
+    await expect(
+      dialog.getByRole("button", { name: "Use playhead" }),
+    ).toBeEnabled();
+  });
+
+  test("capture is refused when a change already holds that beat", async ({
+    page,
+  }) => {
+    // A change already sits on m3 b3, where the playhead is.
+    await openWithPlayhead(
+      page,
+      SONG_YAML.replace(
+        "    - measure: 9",
+        "    - measure: 3\n      beat: 3\n      bpm: 132\n    - measure: 9",
+      ),
+    );
+    await page
+      .locator(".marker-lane")
+      .first()
+      .locator(".marker")
+      .last()
+      .click();
+    const dialog = page.locator(".marker-dialog");
+    await expect(dialog).toBeVisible();
+    await expect(picker(dialog, "Marker").locator(".pp-value")).toHaveText(
+      "m9 · b1",
+    );
+    await expect(
+      dialog.getByRole("button", { name: "Use playhead" }),
+    ).toBeDisabled();
   });
 });

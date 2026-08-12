@@ -23,6 +23,8 @@
   import NumberStepper from "../NumberStepper.svelte";
   import MarkerDialog from "./MarkerDialog.svelte";
   import PositionPicker, { type PositionValue } from "./PositionPicker.svelte";
+  import PlayheadCapture from "./PlayheadCapture.svelte";
+  import { positionAtTime } from "../../lib/util/beatGrid";
   import SongFileField from "./SongFileField.svelte";
 
   interface Props {
@@ -35,6 +37,8 @@
     tempo?: TempoConfig | null;
     /** The song's measure count, bounding the position picker. */
     maxMeasure?: number;
+    /** The preview playhead in seconds, when this song is in the player. */
+    playheadTime?: number | null;
     songName?: string;
     /** The song directory listing, for the clip picker. */
     songFiles?: SongFile[];
@@ -49,6 +53,7 @@
     beatGrid = null,
     tempo = null,
     maxMeasure = 9999,
+    playheadTime = null,
     songName = "",
     songFiles = [],
     onchange,
@@ -68,6 +73,23 @@
     }
     return { kind: "time", time: hint.at.time };
   });
+
+  /** The playhead as this hint would store it: exact while the hint is
+   * time-anchored, the beat it lands on while it is not. */
+  function capturePlayhead() {
+    if (playheadTime === null) return;
+    if (!("measure" in hint.at)) {
+      writePosition({ kind: "time", time: playheadTime });
+      return;
+    }
+    const at = positionAtTime(beatGrid, playheadTime);
+    if (at)
+      writePosition({
+        kind: "beat",
+        measure: at.measure,
+        beat: Math.round(at.beat),
+      });
+  }
 
   /** Writes the anchoring the picker reports; beat 1 stays implicit and a
    * time keeps millisecond precision. */
@@ -108,8 +130,22 @@
         {beatGrid}
         beatsIn={(m) => beatsInMeasure(tempo, m)}
         sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
+        ghostTime={playheadTime}
         onchange={writePosition}
       />
+      {#if playheadTime !== null}
+        {@const at = positionAtTime(beatGrid, playheadTime)}
+        <PlayheadCapture
+          time={playheadTime}
+          position={at ? `m${at.measure} · b${Math.round(at.beat)}` : undefined}
+        >
+          {#snippet actions()}
+            <button type="button" class="btn btn-sm" onclick={capturePlayhead}
+              >{$t("position.usePlayhead")}</button
+            >
+          {/snippet}
+        </PlayheadCapture>
+      {/if}
     {:else}
       <!-- No grid, no beats to pick: seconds are all there is. -->
       <div class="stepper-row">

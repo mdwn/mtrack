@@ -21,6 +21,7 @@
   import MarkerDialog from "./MarkerDialog.svelte";
   import PositionPicker, { type Position } from "./PositionPicker.svelte";
   import UnitToggle from "./UnitToggle.svelte";
+  import PlayheadCapture from "./PlayheadCapture.svelte";
 
   interface SectionEntry {
     name: string;
@@ -48,6 +49,8 @@
     /** The preview playhead as a boundary position (half-beat snapped),
      * when this song is loaded in the player. Enables "set here". */
     playheadPos?: { measure: number; beat: number } | null;
+    /** The same playhead in seconds, for the marker and the readout. */
+    playheadTime?: number | null;
     onchange: (patch: Partial<SectionEntry>) => void;
     ondelete: () => void;
     onclose: () => void;
@@ -61,6 +64,7 @@
     beatGrid = null,
     posToMs = null,
     playheadPos = null,
+    playheadTime = null,
     onchange,
     ondelete,
     onclose,
@@ -168,7 +172,7 @@
         {beatGrid}
         beatsIn={(m) => beatsInMeasure(tempo, m)}
         sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
-        ghost={playheadPos}
+        ghostTime={playheadTime}
         onchange={(v) => v.kind === "beat" && setBoundary("start", v)}
       />
     </div>
@@ -185,35 +189,33 @@
         {beatGrid}
         beatsIn={(m) => beatsInMeasure(tempo, m)}
         sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
-        ghost={playheadPos}
+        ghostTime={playheadTime}
         onchange={(v) => v.kind === "beat" && setBoundary("end", v)}
       />
     </div>
     <span class="beat-note">{$t("sections.dialog.beatNote")}</span>
-    {#if playheadPos}
-      <div class="stepper-row playhead-capture">
-        <span class="mini-label"
-          >{$t("sections.dialog.playheadAt", {
-            values: {
-              pos: `m${posLabel(playheadPos.measure, playheadPos.beat)}`,
-            },
-          })}</span
-        >
-        <button
-          type="button"
-          class="btn btn-sm"
-          disabled={!canCaptureStart}
-          onclick={() => captureBoundary("start")}
-          >{$t("sections.dialog.setStartHere")}</button
-        >
-        <button
-          type="button"
-          class="btn btn-sm"
-          disabled={!canCaptureEnd}
-          onclick={() => captureBoundary("end")}
-          >{$t("sections.dialog.setEndHere")}</button
-        >
-      </div>
+    {#if playheadPos && playheadTime !== null}
+      <PlayheadCapture
+        time={playheadTime}
+        position="m{posLabel(playheadPos.measure, playheadPos.beat)}"
+      >
+        {#snippet actions()}
+          <button
+            type="button"
+            class="btn btn-sm"
+            disabled={!canCaptureStart}
+            onclick={() => captureBoundary("start")}
+            >{$t("sections.dialog.setStartHere")}</button
+          >
+          <button
+            type="button"
+            class="btn btn-sm"
+            disabled={!canCaptureEnd}
+            onclick={() => captureBoundary("end")}
+            >{$t("sections.dialog.setEndHere")}</button
+          >
+        {/snippet}
+      </PlayheadCapture>
     {/if}
   </div>
 
@@ -280,23 +282,9 @@
     color: var(--text-dim);
   }
 
-  .playhead-capture {
-    margin-top: 10px;
-    align-items: center;
-  }
-
-  .playhead-capture .mini-label {
-    font-family: var(--mono);
-  }
   .name-input {
     font-size: 16px;
     min-height: 44px;
-  }
-  .stepper-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
   }
   .position-head {
     display: flex;

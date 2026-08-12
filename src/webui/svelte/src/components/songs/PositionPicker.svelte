@@ -53,8 +53,9 @@
     /** Beat times, for the time readout and for converting between the two.
      * Without it the time mode is unavailable. */
     beatGrid?: BeatGrid | null;
-    /** A second, dimmed marker: the preview playhead. */
-    ghost?: Position | null;
+    /** A second, dimmed marker: the preview playhead, in seconds. Drawn at
+     * its true position, between beats when that is where it is. */
+    ghostTime?: number | null;
     /** Units the readout is driven in. Bindable so sibling pickers in one
      * dialog stay in the same unit rather than drifting apart. */
     unit?: "beat" | "time";
@@ -72,7 +73,7 @@
     beatsIn = () => 4,
     sigOf,
     beatGrid = null,
-    ghost = null,
+    ghostTime = null,
     unit = $bindable("beat"),
     showToggle = true,
     onchange,
@@ -137,6 +138,10 @@
     if (m < f) first = m;
     else if (m > f + WINDOW - 1) first = m - WINDOW + 1;
   });
+
+  let ghost = $derived(
+    ghostTime === null ? null : positionAtTime(beatGrid, ghostTime),
+  );
 
   function fmtBeat(b: number): string {
     if (b % 1 === 0) return `${b}`;
