@@ -928,6 +928,7 @@
     {songName}
     {hasMidi}
     canGuess={!!song.beat_grid}
+    maxMeasure={measureTimesMs.length || 9999}
     beatGrid={song.beat_grid}
     {lightShowTempos}
     ontempochange={(updated) => ontempochange?.(updated)}
@@ -942,7 +943,7 @@
     section={sections[sectionDialogIndex]}
     index={sectionDialogIndex}
     maxMeasure={measureTimesMs.length || 9999}
-    beatGrid={song.beat_grid}
+    {tempo}
     posToMs={measureBeatToMs}
     {playheadPos}
     onchange={(patch) => patchSection(sectionDialogIndex!, patch)}

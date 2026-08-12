@@ -12,11 +12,39 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import type { TempoChangeConfig } from "../api/songs";
+import type { TempoChangeConfig, TempoConfig } from "../api/songs";
 
 /** The beat a tempo change sits on; absent means the downbeat. */
 export function changeBeat(change: TempoChangeConfig): number {
   return change.beat ?? 1;
+}
+
+/** `[numerator, denominator]` of a `4/4`-style string, 4/4 when unparsable. */
+export function parseSig(raw: string | undefined): [number, number] {
+  const match = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(raw ?? "");
+  return match ? [parseInt(match[1]), parseInt(match[2])] : [4, 4];
+}
+
+/** The time signature in effect at a measure: the base plus every change
+ * at or before it. */
+export function sigAtMeasure(
+  tempo: TempoConfig | null | undefined,
+  measure: number,
+): [number, number] {
+  let sig = parseSig(tempo?.time_signature);
+  for (const c of sortTempoChanges(tempo?.changes ?? [])) {
+    if (c.measure > measure) break;
+    if (c.time_signature) sig = parseSig(c.time_signature);
+  }
+  return sig;
+}
+
+/** Beats in a measure — its meter's numerator. */
+export function beatsInMeasure(
+  tempo: TempoConfig | null | undefined,
+  measure: number,
+): number {
+  return sigAtMeasure(tempo, measure)[0];
 }
 
 /**
