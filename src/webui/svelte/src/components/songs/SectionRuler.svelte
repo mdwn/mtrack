@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { effectiveTheme } from "../../lib/theme";
   interface Props {
     songDurationMs: number;
     pixelsPerMs: number;
@@ -43,7 +44,14 @@
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
 
-  const RULER_HEIGHT = 28;
+  const RULER_HEIGHT = 34;
+  // Two bands: measures on top, clock underneath. Sharing one row put a
+  // measure number and a timestamp within 5px of each other, which read as
+  // one jumbled line at any useful zoom.
+  const MEASURE_BASELINE = 10;
+  const MEASURE_TICK_TOP = 12;
+  const TIME_BASELINE = 26;
+  const TIME_TICK_TOP = 28;
   const LABEL_WIDTH = 80;
 
   function formatTime(ms: number): string {
@@ -61,6 +69,13 @@
       if (c * pxPerMs >= 40) return c;
     }
     return 60000;
+  }
+
+  /** A CSS custom property as a concrete colour the canvas can paint with. */
+  function token(name: string, fallback: string): string {
+    if (!canvasEl) return fallback;
+    const value = getComputedStyle(canvasEl).getPropertyValue(name).trim();
+    return value || fallback;
   }
 
   function draw() {
@@ -83,8 +98,11 @@
     const tickInterval = chooseTickInterval(pixelsPerMs);
     const firstTick = Math.floor(viewStartMs / tickInterval) * tickInterval;
 
-    ctx.strokeStyle = "rgba(255,255,255,0.3)";
-    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    // Themed, not hardcoded white: the clock band was invisible in light mode.
+    const dim = token("--text-dim", "rgba(255,255,255,0.5)");
+    const accent = token("--accent", "rgb(94, 202, 234)");
+    ctx.strokeStyle = dim;
+    ctx.fillStyle = dim;
     ctx.font = "10px var(--mono, monospace)";
     ctx.textAlign = "center";
     ctx.lineWidth = 1;
@@ -93,14 +111,12 @@
       if (t < 0) continue;
       const x = t * pixelsPerMs - scrollLeft;
 
-      // Major tick.
       ctx.beginPath();
-      ctx.moveTo(x, h - 10);
+      ctx.moveTo(x, TIME_TICK_TOP);
       ctx.lineTo(x, h);
       ctx.stroke();
 
-      // Label.
-      ctx.fillText(formatTime(t), x, h - 13);
+      ctx.fillText(formatTime(t), x, TIME_BASELINE);
     }
 
     // Measure markers from beat grid with density-based thinning.
@@ -130,24 +146,25 @@
         const isLabeled = i % stride === 0;
 
         // Tick line — labeled measures get full height, others get a shorter tick.
-        ctx.strokeStyle = isLabeled
-          ? "rgba(94, 202, 234, 0.5)"
-          : "rgba(94, 202, 234, 0.2)";
+        ctx.strokeStyle = accent;
+        ctx.globalAlpha = isLabeled ? 0.55 : 0.25;
         ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, isLabeled ? 12 : 6);
+        ctx.moveTo(x, MEASURE_TICK_TOP);
+        ctx.lineTo(x, isLabeled ? MEASURE_TICK_TOP + 9 : MEASURE_TICK_TOP + 4);
         ctx.stroke();
 
         // Label only at stride intervals.
         if (isLabeled) {
-          ctx.fillStyle = "rgba(94, 202, 234, 0.9)";
-          ctx.fillText(`${i + 1}`, x, 10);
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = accent;
+          ctx.fillText(`${i + 1}`, x, MEASURE_BASELINE);
         }
+        ctx.globalAlpha = 1;
       }
     }
 
     // Bottom border.
-    ctx.strokeStyle = "var(--border)";
+    ctx.strokeStyle = token("--border", "rgba(255,255,255,0.15)");
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, h - 0.5);
@@ -156,6 +173,7 @@
   }
 
   $effect(() => {
+    void $effectiveTheme;
     void pixelsPerMs;
     void scrollLeft;
     void viewportWidth;

@@ -78,6 +78,8 @@ async function openSectionDialog(page: Page): Promise<Locator> {
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   const dialog = page.locator(".marker-dialog");
   await expect(dialog).toBeVisible();
+  // The sheet slides in; measuring a ruler mid-animation gives a stale box.
+  await page.waitForTimeout(200);
   return dialog;
 }
 
@@ -93,6 +95,7 @@ async function openPilotDialog(page: Page): Promise<Locator> {
   await page.locator(".marker-lane").nth(1).locator(".marker").first().click();
   const dialog = page.locator(".marker-dialog");
   await expect(dialog).toBeVisible();
+  await page.waitForTimeout(200);
   return dialog;
 }
 
@@ -191,10 +194,14 @@ test.describe("Position picker", () => {
     const dialog = await openSectionDialog(page);
     const start = picker(dialog, "Start");
 
-    // A section can only store a beat, so time is a unit, not a freer
-    // position: the sub-line reads "=" and the beat steps stay.
-    await start.getByRole("button", { name: "time", exact: true }).click();
+    // One toggle drives both boundaries — mixed units in one dialog would be
+    // unreadable. A section can only store a beat, so time is a unit, not a
+    // freer position: the sub-line reads "=" and the beat steps stay.
+    await dialog.getByRole("button", { name: "time", exact: true }).click();
     await expect(start.locator(".pp-value")).toHaveText("0:08.000");
+    await expect(picker(dialog, "End").locator(".pp-value")).toHaveText(
+      "0:14.000",
+    );
     await expect(start.locator(".pp-sub")).toHaveText("= m5 · b1");
     await expect(start.locator(".pp-chip")).toHaveCount(2);
 

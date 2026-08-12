@@ -20,6 +20,7 @@
   import type { TempoConfig } from "../../lib/api/songs";
   import MarkerDialog from "./MarkerDialog.svelte";
   import PositionPicker, { type Position } from "./PositionPicker.svelte";
+  import UnitToggle from "./UnitToggle.svelte";
 
   interface SectionEntry {
     name: string;
@@ -66,6 +67,8 @@
   }: Props = $props();
 
   let autoColor = $derived(sectionColor(undefined, index));
+  /** Both boundaries read out in the same unit — one toggle, not two. */
+  let unit = $state<"beat" | "time">("beat");
 
   /** "13" for a measure-line boundary, "13.4" with a beat offset. */
   function posLabel(measure: number, beat?: number): string {
@@ -146,7 +149,12 @@
   </div>
 
   <div class="dialog-section">
-    <span class="section-label">{$t("tempo.marker.position")}</span>
+    <div class="position-head">
+      <span class="section-label">{$t("tempo.marker.position")}</span>
+      {#if beatGrid}
+        <UnitToggle {unit} onchange={(u) => (unit = u)} />
+      {/if}
+    </div>
     <div class="labeled-picker">
       <span class="mini-label">{$t("sections.dialog.startPos")}</span>
       <PositionPicker
@@ -154,6 +162,8 @@
         value={{ kind: "beat", ...startPos }}
         step={0.5}
         stores="beat"
+        bind:unit
+        showToggle={false}
         {maxMeasure}
         {beatGrid}
         beatsIn={(m) => beatsInMeasure(tempo, m)}
@@ -169,6 +179,8 @@
         value={{ kind: "beat", ...endPos }}
         step={0.5}
         stores="beat"
+        bind:unit
+        showToggle={false}
         {maxMeasure}
         {beatGrid}
         beatsIn={(m) => beatsInMeasure(tempo, m)}
@@ -285,6 +297,12 @@
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
+  }
+  .position-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
   }
   .labeled-picker {
     display: flex;

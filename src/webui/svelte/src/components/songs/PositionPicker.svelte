@@ -23,6 +23,7 @@
     positionAtTime,
     timeAtPosition,
   } from "../../lib/util/beatGrid";
+  import UnitToggle from "./UnitToggle.svelte";
 
   export interface Position {
     measure: number;
@@ -54,6 +55,11 @@
     beatGrid?: BeatGrid | null;
     /** A second, dimmed marker: the preview playhead. */
     ghost?: Position | null;
+    /** Units the readout is driven in. Bindable so sibling pickers in one
+     * dialog stay in the same unit rather than drifting apart. */
+    unit?: "beat" | "time";
+    /** False when the owner renders the toggle itself, for several pickers. */
+    showToggle?: boolean;
     onchange: (value: PositionValue) => void;
   }
 
@@ -67,6 +73,8 @@
     sigOf,
     beatGrid = null,
     ghost = null,
+    unit = $bindable("beat"),
+    showToggle = true,
     onchange,
   }: Props = $props();
 
@@ -80,13 +88,11 @@
 
   /** Half-beat mode only: whether ◀ ▶ move by ½ or a whole beat. */
   let halfSteps = $state(true);
-  /** Units the readout is driven in when the value is a musical position. */
-  let unitMode = $state<"beat" | "time">("beat");
   let timeStep = $state(0.1);
 
   /** A value that keeps a time is always shown in time. */
   let mode = $derived(
-    value.kind === "time" ? "time" : beatGrid ? unitMode : "beat",
+    value.kind === "time" ? "time" : beatGrid ? unit : "beat",
   );
   /** Where the value is a time, nothing snaps: the cursor leaves the grid. */
   let decoupled = $derived(value.kind === "time");
@@ -136,7 +142,11 @@
     if (b % 1 === 0) return `${b}`;
     return b % 1 === 0.5 ? `${Math.floor(b)}½` : b.toFixed(2);
   }
-  let musical = $derived(`m${measure} · b${fmtBeat(beat)}`);
+  // An approximate position is stated to the half beat: "b1.20" is precision
+  // no one asked for.
+  let musical = $derived(
+    `m${measure} · b${fmtBeat(decoupled ? Math.round(beat * 2) / 2 : beat)}`,
+  );
   let clock = $derived(seconds === null ? "" : formatSeconds(seconds));
   let readout = $derived(mode === "time" ? clock : musical);
   /** The line under the readout: the other unit, and how exact it is. */
@@ -206,10 +216,8 @@
   /** Switches units, converting so the value on screen does not move. */
   function setMode(next: "beat" | "time") {
     if (mode === next) return;
-    if (stores === "beat") {
-      unitMode = next;
-      return;
-    }
+    unit = next;
+    if (stores === "beat") return;
     if (next === "time") {
       const t = timeAtPosition(beatGrid, measure, beat);
       if (t !== null) onchange({ kind: "time", time: t });
@@ -431,23 +439,8 @@
 </script>
 
 <div class="position-picker">
-  {#if beatGrid}
-    <div class="pp-modes">
-      <button
-        type="button"
-        class="pp-mode"
-        class:pp-mode--on={mode === "beat"}
-        aria-pressed={mode === "beat"}
-        onclick={() => setMode("beat")}>{$t("position.modeBeat")}</button
-      >
-      <button
-        type="button"
-        class="pp-mode"
-        class:pp-mode--on={mode === "time"}
-        aria-pressed={mode === "time"}
-        onclick={() => setMode("time")}>{$t("position.modeTime")}</button
-      >
-    </div>
+  {#if beatGrid && showToggle}
+    <UnitToggle unit={mode} onchange={setMode} />
   {/if}
   <div class="pp-transport">
     <button
@@ -556,6 +549,14 @@
                   >{formatSecondsShort(s.time)}</span
                 >
               {/each}
+              <!-- The value itself, above the fingertip, as in beat mode. -->
+              {#if measure === m && seconds !== null}
+                <span
+                  class="pp-num pp-num--selected"
+                  style:left="{((beat - 1) / beats) * 100}%"
+                  >{formatSeconds(seconds)}</span
+                >
+              {/if}
             {:else}
               {#each Array.from({ length: beats }, (_, i) => i + 1) as b (b)}
                 {@const selected = measure === m && Math.floor(beat) === b}
@@ -641,27 +642,6 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-  }
-
-  .pp-modes {
-    display: flex;
-    align-self: flex-start;
-    border: 1px solid var(--border);
-    border-radius: 99px;
-    overflow: hidden;
-  }
-  .pp-mode {
-    padding: 4px 14px;
-    font-size: 12px;
-    color: var(--text-dim);
-    background: transparent;
-    border: none;
-    cursor: pointer;
-  }
-  .pp-mode--on {
-    color: var(--bg);
-    background: var(--accent);
-    font-weight: 600;
   }
 
   /* The ruler is the touch surface, so it sits below everything readable. */
@@ -801,6 +781,12 @@
     font-size: 10.5px;
     font-weight: 600;
     color: var(--accent);
+    /* Sits over the second labels in time mode. */
+    background: var(--bg-input);
+    padding: 0 3px;
+    border-radius: 3px;
+    white-space: nowrap;
+    z-index: 1;
   }
   .pp-secnum {
     position: absolute;
@@ -808,8 +794,7 @@
     transform: translateX(-50%);
     font-size: 9px;
     font-variant-numeric: tabular-nums;
-    color: var(--accent);
-    opacity: 0.85;
+    color: var(--text-dim);
     white-space: nowrap;
   }
   .pp-secline {
@@ -818,8 +803,8 @@
     bottom: 0;
     width: 1px;
     margin-left: -0.5px;
-    background: var(--accent);
-    opacity: 0.35;
+    background: var(--text-dim);
+    opacity: 0.3;
   }
   .pp-ticks {
     position: relative;
