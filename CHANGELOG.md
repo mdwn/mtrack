@@ -153,9 +153,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whether non-silent audio is being written, and how long since each was last true.
 
   The snapshot reports facts rather than a verdict, because silence is correct whenever nothing is
-  playing. Where playback *is* running, the monitor loop turns a stalled callback into a distinct
-  `ERROR` in the journal, and logs again when it comes back — that is the one place that knows
-  audio is supposed to be coming out.
+  playing. Where playback *is* running, the monitor loop is the one place that knows audio is
+  supposed to be coming out — and there, a callback that stops now **ends the song**, with a
+  distinct `ERROR` naming it.
+
+  Ending it is the point. The transport is driven by the callback's sample counter, so an outage
+  freezes it rather than advancing it: audio, MIDI and cues stop together and would resume from the
+  bar they froze on. On stage that is worse than stopping — the band has just played through the
+  gap with no click and no tracks, so they are not where the frozen transport thinks they are, and
+  audio reappearing mid-song hands them a second, confidently wrong reference. Nothing host-side
+  can recover the state that actually matters, which is where the *band* is, so resuming cannot be
+  made correct. (Fast-forwarding to a wall clock fails the same way: it assumes the band held tempo
+  through the one moment they had nothing to hold it to.) The device layer keeps rebuilding so the
+  next song can start the instant the interface returns; the song that was playing does not come
+  back on its own. The `ERROR` is for working out afterwards what happened — in the moment there is
+  nothing to read and nothing to do.
 
   This deliberately carries no output level. A level sampled by a status poller sees roughly one
   callback in several hundred, which makes a poor meter and adds nothing to the health question;

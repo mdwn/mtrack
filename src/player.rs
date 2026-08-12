@@ -914,19 +914,32 @@ fn decide_cleanup_action(
     if loop_broken {
         return CleanupAction::LoopBreakAndPlay;
     }
+    // A failure is checked before cancellation because playback can cancel
+    // *itself*: when the audio callback stops mid-song, the audio thread cancels
+    // the handle so MIDI and DMX don't sit on a frozen clock, then reports the
+    // failure. `StopCancelled` would be wrong there — it skips the cleanup on
+    // the grounds that `stop()` already did it, and nothing called `stop()`, so
+    // `join` and `play_start_time` would stay set and the player would believe
+    // a song was still playing forever.
+    //
+    // A stop() cancellation does not reach here as a failure: play_from returns
+    // Ok once it sees the handle cancelled, so the two cases stay distinct.
+    if let PlaybackResult::Failed(e) = &result {
+        warn!(
+            err = %e,
+            "Advancing playlist despite playback failure so user is not stuck"
+        );
+        return CleanupAction::AdvancePlaylist;
+    }
     if cancelled {
         return CleanupAction::StopCancelled;
     }
     match &result {
-        PlaybackResult::Failed(e) => {
-            warn!(
-                err = %e,
-                "Advancing playlist despite playback failure so user is not stuck"
-            );
-        }
         PlaybackResult::SenderDropped => {
             error!("Error receiving playback signal (receiver dropped)");
         }
+        // Handled above, before the cancellation check.
+        PlaybackResult::Failed(_) => unreachable!("failures return early"),
         PlaybackResult::Success => {}
     }
     CleanupAction::AdvancePlaylist
@@ -2047,11 +2060,30 @@ mod test {
         );
     }
 
+    /// Playback that cancelled *itself* still needs the full cleanup.
+    ///
+    /// When the audio callback stops mid-song, the audio thread cancels the
+    /// shared handle so MIDI and DMX don't sit waiting on a frozen clock, then
+    /// reports the failure. Both flags are therefore set at once, which used to
+    /// read as `StopCancelled` — a path that skips clearing `join` and
+    /// `play_start_time` because it assumes `stop()` already did. Nothing called
+    /// `stop()` here, so taking it left the player believing a song was still
+    /// playing, with no way back short of a restart.
     #[test]
-    fn cleanup_failed_cancelled() {
+    fn cleanup_failed_and_self_cancelled_still_advances() {
         assert_eq!(
             decide_cleanup_action(PlaybackResult::Failed("err".into()), true, false),
-            CleanupAction::StopCancelled
+            CleanupAction::AdvancePlaylist
+        );
+    }
+
+    /// A loop break still wins over a failure: it cancels deliberately in order
+    /// to advance and keep playing, and that intent outranks the error.
+    #[test]
+    fn cleanup_loop_break_wins_over_failure() {
+        assert_eq!(
+            decide_cleanup_action(PlaybackResult::Failed("err".into()), true, true),
+            CleanupAction::LoopBreakAndPlay
         );
     }
 

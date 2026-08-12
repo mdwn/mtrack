@@ -826,47 +826,62 @@ impl AudioDevice for Device {
         // DIAGNOSTIC: per-swap counter to compare the first loop against later ones.
         let mut loop_iteration: u64 = 0;
 
-        // Whether the stall below has already been reported for the current
-        // outage, so a wedged device logs once rather than at the 100Hz poll rate.
-        let mut stall_reported = false;
-
         'monitor: loop {
             if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
                 break;
             }
 
-            // Audio is supposed to be coming out of the interface right now. The
-            // health snapshot itself reports facts and no verdict, because silence
-            // is correct whenever nothing is playing — this loop is the one place
-            // that knows something *is* playing, so it is where a stalled callback
-            // becomes a fault worth saying out loud. Without this the operator's
-            // only signal is a quiet room.
+            // The callback has stopped while a song is playing. End the song.
+            //
+            // Not a recoverable condition, and deliberately not treated as one.
+            // The transport is driven by the callback's sample counter, so an
+            // outage freezes it rather than advancing it: audio, MIDI and cues
+            // all stop together and, when the device returns, would resume from
+            // the bar they froze on rather than from where the room now is.
+            //
+            // On stage that is worse than stopping. The band has just played
+            // through the outage with no click and no tracks, so they are not
+            // where the frozen transport thinks they are, and audio reappearing
+            // mid-song gives them a second, confidently wrong reference to
+            // follow. Nothing host-side can recover the one piece of state that
+            // matters, which is where the *band* is, so resuming cannot be made
+            // correct — only quieter or louder about being wrong.
+            //
+            // Fast-forwarding to a wall clock has the same flaw: it assumes the
+            // band held tempo through the moment they had nothing to hold it to.
+            //
+            // So the device layer keeps rebuilding, and this ends the song. The
+            // ERROR is for the operator afterwards; in the moment there is
+            // nothing to read and nothing to do.
             //
             // Note the limit: a device that accepts every buffer and produces no
-            // sound still looks alive from here, and nothing host-side can tell the
-            // difference. What this catches is the callback going away.
+            // sound still looks alive from here, and nothing host-side can tell
+            // the difference. What this catches is the callback going away.
             let health = self.output_manager.health();
-            if health.callback_alive(crate::audio::health::LIVENESS_WINDOW) {
-                if stall_reported {
-                    stall_reported = false;
-                    warn!(
-                        callbacks = health.callbacks,
-                        "Audio output callback resumed"
-                    );
-                }
-            } else if !stall_reported {
-                stall_reported = true;
+            if !health.callback_alive(crate::audio::health::LIVENESS_WINDOW) {
                 error!(
-                    // 0 means the callback has never run at all; `callbacks`
+                    song = song.name(),
+                    // 0 means the callback never ran at all; `callbacks`
                     // separates that from a callback that ran and then stopped.
                     since_last_callback_ms = health
                         .since_last_callback
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0),
                     callbacks = health.callbacks,
-                    "Audio output callback stalled during playback: the stream is \
-                     open but no samples are being produced"
+                    "Audio output callback stopped during playback; ending the song. \
+                     The transport is frozen, so resuming would re-enter the song at \
+                     the point it stopped rather than where the performance now is"
                 );
+                // Cancel before returning: the sources, MIDI and DMX for this
+                // song all share this handle, and without it they would sit on a
+                // frozen clock waiting to be joined, then resume together when
+                // the device came back.
+                cancel_handle.cancel();
+                return Err(crate::audio::AudioError::Stream(format!(
+                    "audio output callback stopped after {} callbacks; song '{}' ended",
+                    health.callbacks,
+                    song.name()
+                )));
             }
 
             // Apply any deferred loop_time_consumed bumps whose sample has
