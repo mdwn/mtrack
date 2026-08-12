@@ -171,6 +171,26 @@ Sections are used for [section looping](#section-looping) during playback.
 
 ![Section editor](../images/song-sections.png)
 
+#### Tempo and pilot layers
+
+Above the section lane the timeline shows two DAW-style marker layers, so the song's tempo map
+and pilot voice-hints can be authored against the same beat grid:
+
+- **Tempo layer** — one marker per tempo event (the starting `bpm`/`time_signature` plus each
+  `change`). Clicking a marker opens the **tempo change** dialog to edit the measure/beat
+  position, BPM (with a Tap helper), time signature, and an optional transition (snap, or ramp
+  over a number of beats/measures). Clicking empty space adds a change at that measure.
+- **Pilot layer** — one marker per voice hint. Clicking a marker opens the **pilot hint** dialog
+  to edit the label, the measure/beat (or absolute time) position, and an optional audio clip;
+  a hint with no clip is a visual cue only. Adjacent hints group together when their display
+  windows overlap.
+
+![Section timeline with tempo and pilot layers](../images/section-timeline-editor.png)
+
+![Tempo change dialog](../images/section-timeline-tempo-dialog.png)
+
+![Pilot hint dialog](../images/section-timeline-pilot-dialog.png)
+
 ### Lighting Tab
 
 The lighting tab contains the **timeline editor** — a DAW-style visual editor for authoring

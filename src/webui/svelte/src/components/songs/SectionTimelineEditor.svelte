@@ -14,10 +14,20 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
-  import type { SongSummary, WaveformTrack } from "../../lib/api/songs";
+  import type {
+    SongSummary,
+    WaveformTrack,
+    TempoConfig,
+    PilotConfig,
+    PilotHintConfig,
+  } from "../../lib/api/songs";
+  import { sortTempoChanges } from "../../lib/util/tempo";
   import SectionBar from "./SectionBar.svelte";
   import SectionRuler from "./SectionRuler.svelte";
   import SectionWaveformLane from "./SectionWaveformLane.svelte";
+  import TimelineMarkerLane from "./TimelineMarkerLane.svelte";
+  import TempoMarkerDialog from "./TempoMarkerDialog.svelte";
+  import PilotHintDialog from "./PilotHintDialog.svelte";
 
   interface SectionEntry {
     name: string;
@@ -30,6 +40,14 @@
     waveformTracks: WaveformTrack[];
     sections: SectionEntry[];
     dirty?: boolean;
+    /** The song's `tempo:` block; edited via the tempo layer. */
+    tempo?: TempoConfig | null;
+    /** The song's `pilot:` block; edited via the pilot layer. */
+    pilot?: PilotConfig | null;
+    songName?: string;
+    hasMidi?: boolean;
+    ontempochange?: (tempo: TempoConfig | null) => void;
+    onpilotchange?: (pilot: PilotConfig | null) => void;
   }
 
   let {
@@ -37,6 +55,12 @@
     waveformTracks,
     sections = $bindable([]),
     dirty = $bindable(false), // eslint-disable-line no-useless-assignment -- consumed by parent via bind:dirty
+    tempo = null,
+    pilot = null,
+    songName,
+    hasMidi = false,
+    ontempochange,
+    onpilotchange,
   }: Props = $props();
 
   // Timeline state.
@@ -135,6 +159,170 @@
     dirty = true;
   }
 
+  // --- Tempo / pilot marker layers ---
+
+  let tempoDialogTarget = $state<"start" | number | null>(null);
+  let pilotDialogIndex = $state<number | null>(null);
+
+  /** Time (ms) of a measure/beat position on the beat grid. */
+  function measureBeatToMs(measure: number, beat: number): number {
+    const grid = song.beat_grid;
+    if (!grid) return 0;
+    const startIdx = grid.measure_starts[measure - 1];
+    if (startIdx === undefined) return songDurationMs;
+    const time = grid.beats[startIdx + (beat - 1)];
+    return time === undefined ? songDurationMs : time * 1000;
+  }
+
+  let tempoMarkers = $derived.by(() => {
+    if (!tempo) return [];
+    const markers = [
+      {
+        id: "start",
+        ms: (tempo.start ?? 0) * 1000,
+        label: `${tempo.bpm} · ${tempo.time_signature ?? "4/4"}`,
+      },
+    ];
+    (tempo.changes ?? []).forEach((c, i) => {
+      const parts: string[] = [];
+      if (c.bpm !== undefined) parts.push(`${c.bpm}`);
+      if (c.time_signature) parts.push(c.time_signature);
+      markers.push({
+        id: `c${i}`,
+        ms: measureBeatToMs(c.measure, c.beat ?? 1),
+        label: (c.transition ? "↗ " : "") + (parts.join(" · ") || "—"),
+      });
+    });
+    return markers;
+  });
+
+  let pilotMarkers = $derived(
+    (pilot?.hints ?? []).map((h, i) => ({
+      id: `h${i}`,
+      ms:
+        "measure" in h.at
+          ? measureBeatToMs(h.at.measure, h.at.beat ?? 1)
+          : h.at.time * 1000,
+      label: h.label || "…",
+      icon: h.file ? "🔊" : undefined,
+    })),
+  );
+
+  function nearestMeasureAt(ms: number): number {
+    let best = 1;
+    let bestDist = Infinity;
+    for (let i = 0; i < measureTimesMs.length; i++) {
+      const dist = Math.abs(measureTimesMs[i] - ms);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = i + 1;
+      }
+    }
+    return best;
+  }
+
+  /** The BPM in effect at a measure (base tempo + preceding changes). */
+  function effectiveBpmAt(measure: number): number {
+    if (!tempo) return 120;
+    let bpm = tempo.bpm;
+    for (const c of sortTempoChanges(tempo.changes ?? [])) {
+      if (c.measure <= measure && c.bpm !== undefined) bpm = c.bpm;
+    }
+    return bpm;
+  }
+
+  function handleTempoMarkerClick(id: string) {
+    tempoDialogTarget = id === "start" ? "start" : parseInt(id.slice(1));
+  }
+
+  function handleTempoEmptyClick(ms: number) {
+    if (!tempo) {
+      // No tempo map yet — create one and open its editor right away.
+      ontempochange?.({ bpm: 120, time_signature: "4/4" });
+      tempoDialogTarget = "start";
+      return;
+    }
+    if (measureTimesMs.length === 0) {
+      tempoDialogTarget = "start";
+      return;
+    }
+    const measure = nearestMeasureAt(ms);
+    if (measure <= 1) {
+      tempoDialogTarget = "start";
+      return;
+    }
+    const existing = (tempo.changes ?? []).findIndex(
+      (c) => c.measure === measure,
+    );
+    if (existing >= 0) {
+      tempoDialogTarget = existing;
+      return;
+    }
+    // Tapping a spot before an existing change must not append out of order —
+    // the backend rejects a non-ascending map. Sort, then follow the entry to
+    // its new index so the dialog keeps editing the marker that was tapped.
+    const entry = { measure, bpm: effectiveBpmAt(measure) };
+    const changes = sortTempoChanges([...(tempo.changes ?? []), entry]);
+    ontempochange?.({ ...tempo, changes });
+    tempoDialogTarget = changes.indexOf(entry);
+  }
+
+  /** Nearest beat as measure/beat for a position (ms), or null off-grid. */
+  function nearestBeatAt(
+    ms: number,
+  ): { measure: number; beat?: number } | null {
+    const grid = song.beat_grid;
+    if (!grid || grid.beats.length === 0) return null;
+    const secs = ms / 1000;
+    let nearest = 0;
+    for (let i = 1; i < grid.beats.length; i++) {
+      if (
+        Math.abs(grid.beats[i] - secs) < Math.abs(grid.beats[nearest] - secs)
+      ) {
+        nearest = i;
+      }
+    }
+    let measure = 0;
+    while (
+      measure + 1 < grid.measure_starts.length &&
+      grid.measure_starts[measure + 1] <= nearest
+    ) {
+      measure++;
+    }
+    const beat = nearest - grid.measure_starts[measure] + 1;
+    const at: { measure: number; beat?: number } = { measure: measure + 1 };
+    if (beat > 1) at.beat = beat;
+    return at;
+  }
+
+  function handlePilotMarkerClick(id: string) {
+    pilotDialogIndex = parseInt(id.slice(1));
+  }
+
+  function handlePilotEmptyClick(ms: number) {
+    const at = nearestBeatAt(ms) ?? { time: Math.round(ms / 100) / 10 };
+    const hints = [...(pilot?.hints ?? []), { at, label: "" }];
+    onpilotchange?.({ ...(pilot ?? {}), hints });
+    pilotDialogIndex = hints.length - 1;
+  }
+
+  function patchPilotHint(index: number, patch: Partial<PilotHintConfig>) {
+    const hints = [...(pilot?.hints ?? [])];
+    const merged = { ...hints[index], ...patch };
+    if (merged.align === "end") delete merged.align;
+    if (merged.offset === 0 || merged.offset === undefined)
+      delete merged.offset;
+    if (!merged.file) delete merged.file;
+    hints[index] = merged;
+    onpilotchange?.({ ...(pilot ?? {}), hints });
+  }
+
+  function deletePilotHint(index: number) {
+    const hints = (pilot?.hints ?? []).filter((_, i) => i !== index);
+    onpilotchange?.({ ...(pilot ?? {}), hints });
+    pilotDialogIndex = null;
+  }
+
   // Auto fit on mount: wait for the scroll container to be measured.
   let hasFitted = false;
   $effect(() => {
@@ -174,6 +362,17 @@
     onscroll={handleScroll}
     onwheel={handleWheel}
   >
+    <TimelineMarkerLane
+      laneLabel={$t("timelineLayers.tempo")}
+      markers={tempoMarkers}
+      {pixelsPerMs}
+      {scrollLeft}
+      accent="#f97316"
+      emptyHint={$t("timelineLayers.tempoEmptyHint")}
+      onmarkerclick={handleTempoMarkerClick}
+      onemptyclick={handleTempoEmptyClick}
+    />
+
     <SectionBar
       {sections}
       {pixelsPerMs}
@@ -182,6 +381,17 @@
       {measureTimesMs}
       {songDurationMs}
       onsectionschange={handleSectionsChange}
+    />
+
+    <TimelineMarkerLane
+      laneLabel={$t("timelineLayers.pilot")}
+      markers={pilotMarkers}
+      {pixelsPerMs}
+      {scrollLeft}
+      accent="#8b5cf6"
+      emptyHint={$t("timelineLayers.pilotEmptyHint")}
+      onmarkerclick={handlePilotMarkerClick}
+      onemptyclick={handlePilotEmptyClick}
     />
 
     <SectionRuler
@@ -235,6 +445,30 @@
     </div>
   {/if}
 </div>
+
+{#if tempoDialogTarget !== null && tempo}
+  <TempoMarkerDialog
+    {tempo}
+    target={tempoDialogTarget}
+    {songName}
+    {hasMidi}
+    canGuess={!!song.beat_grid}
+    onchange={(updated) => ontempochange?.(updated)}
+    onretarget={(index) => (tempoDialogTarget = index)}
+    onclose={() => (tempoDialogTarget = null)}
+  />
+{/if}
+
+{#if pilotDialogIndex !== null && pilot?.hints?.[pilotDialogIndex]}
+  <PilotHintDialog
+    hint={pilot.hints[pilotDialogIndex]}
+    hasBeatGrid={!!song.beat_grid}
+    beatGrid={song.beat_grid}
+    onchange={(patch) => patchPilotHint(pilotDialogIndex!, patch)}
+    ondelete={() => deletePilotHint(pilotDialogIndex!)}
+    onclose={() => (pilotDialogIndex = null)}
+  />
+{/if}
 
 <style>
   .section-timeline-editor {

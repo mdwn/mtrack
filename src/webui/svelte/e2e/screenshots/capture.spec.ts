@@ -190,3 +190,152 @@ test("status-page", async ({ page }) => {
   await page.waitForTimeout(200);
   await page.screenshot({ path: path.join(DOCS_IMAGES, "status-page.png") });
 });
+
+// --- Section-timeline editor (tempo + pilot layers) -----------------------
+// Route-mocks a single richly-authored song on top of the shared mock server
+// so the tempo/pilot/section layers are populated and deterministic.
+
+const STE_SONG = "Test Song Beta";
+const STE_ENC = encodeURIComponent(STE_SONG);
+
+const STE_YAML = `name: ${STE_SONG}
+tracks:
+  - name: guitar
+    file: guitar.wav
+  - name: vocals
+    file: vocals.wav
+  - name: bass
+    file: bass.wav
+loop_playback: true
+sections:
+  - name: verse
+    start_measure: 1
+    end_measure: 4
+  - name: chorus
+    start_measure: 5
+    end_measure: 8
+  - name: bridge
+    start_measure: 9
+    end_measure: 12
+  - name: outro
+    start_measure: 13
+    end_measure: 16
+tempo:
+  bpm: 120
+  time_signature: 4/4
+  start: 0
+  changes:
+    - measure: 5
+      bpm: 132
+    - measure: 9
+      time_signature: 3/4
+    - measure: 13
+      bpm: 120
+      transition:
+        beats: 8
+pilot:
+  track: pilot
+  hints:
+    - at: { measure: 3 }
+      label: verse
+    - at: { measure: 7, beat: 1 }
+      label: big chorus
+      file: chorus_cue.wav
+      align: end
+      offset: -1500
+    - at: { measure: 11 }
+      label: solo
+`;
+
+// Deterministic pseudo-waveform (no RNG so PNGs stay byte-stable).
+function stePeaks(seed: number, n = 96): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / n;
+    const env =
+      0.25 +
+      0.7 *
+        Math.abs(
+          Math.sin(t * Math.PI * (2 + seed)) *
+            Math.cos(t * Math.PI * (1 + seed * 0.5)),
+        );
+    out.push(Math.min(1, env));
+  }
+  return out;
+}
+
+const STE_WAVEFORM = {
+  song_name: STE_SONG,
+  tracks: [
+    { name: "guitar", peaks: stePeaks(1) },
+    { name: "vocals", peaks: stePeaks(2) },
+    { name: "bass", peaks: stePeaks(3) },
+  ],
+};
+
+async function steInstallRoutes(page: Page) {
+  // The song's raw YAML (the editor parses tempo/pilot/sections from it).
+  await page.route(`**/api/songs/${STE_ENC}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/yaml",
+      body: STE_YAML,
+    });
+  });
+  // A fuller waveform so the lanes look like a real song.
+  await page.route(`**/api/songs/${STE_ENC}/waveform`, async (route) => {
+    await route.fulfill({ json: STE_WAVEFORM });
+  });
+  // Trim the reported duration to the authored region so "Fit" fills the width.
+  await page.route("**/api/songs", async (route) => {
+    const resp = await route.fetch();
+    const data = await resp.json();
+    for (const s of data.songs ?? []) {
+      if (s.name === STE_SONG) {
+        s.has_tempo_map = true;
+        s.duration_ms = 34000;
+        s.duration_display = "0:34";
+      }
+    }
+    await route.fulfill({ response: resp, json: data });
+  });
+}
+
+async function steOpen(page: Page) {
+  await steInstallRoutes(page);
+  await page.goto(`/#/songs/${STE_ENC}/sections`);
+  await expect(page.locator(".section-timeline-editor")).toBeVisible();
+  await expect(
+    page.locator(".marker-lane").first().locator(".marker").first(),
+  ).toBeVisible();
+  const fit = page.locator('button[title="Fit to view"]');
+  if (await fit.count()) await fit.click();
+  await page.waitForTimeout(300);
+}
+
+test("section-timeline-editor", async ({ page }) => {
+  await steOpen(page);
+  await page.locator(".section-timeline-editor").screenshot({
+    path: path.join(DOCS_IMAGES, "section-timeline-editor.png"),
+  });
+});
+
+test("section-timeline-tempo-dialog", async ({ page }) => {
+  await steOpen(page);
+  await page.locator(".marker-lane").first().locator(".marker").last().click();
+  await expect(page.locator(".marker-dialog").first()).toBeVisible();
+  await page.waitForTimeout(200);
+  await page.screenshot({
+    path: path.join(DOCS_IMAGES, "section-timeline-tempo-dialog.png"),
+  });
+});
+
+test("section-timeline-pilot-dialog", async ({ page }) => {
+  await steOpen(page);
+  await page.locator(".marker-lane").nth(1).locator(".marker").first().click();
+  await expect(page.locator(".marker-dialog").first()).toBeVisible();
+  await page.waitForTimeout(200);
+  await page.screenshot({
+    path: path.join(DOCS_IMAGES, "section-timeline-pilot-dialog.png"),
+  });
+});
