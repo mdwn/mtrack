@@ -138,7 +138,12 @@
 
   // Section editor state
   let sections = $state<
-    { name: string; start_measure: number; end_measure: number }[]
+    {
+      name: string;
+      start_measure: number;
+      end_measure: number;
+      color?: string;
+    }[]
   >([]);
   let sectionsDirty = $state(false);
 
@@ -248,13 +253,20 @@
         }));
         midiEvent = (parsed.midi_event as MidiEvent) ?? null;
         loopPlayback = parsed.loop_playback === true;
-        sections = (parsed.sections ?? []).map(
-          (s: Record<string, unknown>) => ({
+        sections = (parsed.sections ?? []).map((s: Record<string, unknown>) => {
+          const entry: {
+            name: string;
+            start_measure: number;
+            end_measure: number;
+            color?: string;
+          } = {
             name: (s.name as string) ?? "",
             start_measure: (s.start_measure as number) ?? 1,
             end_measure: (s.end_measure as number) ?? 2,
-          }),
-        );
+          };
+          if (typeof s.color === "string") entry.color = s.color;
+          return entry;
+        });
         const s = parsed.samples;
         songSamples =
           s && typeof s === "object" ? (s as Record<string, any>) : {};

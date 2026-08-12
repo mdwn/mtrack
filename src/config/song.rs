@@ -87,6 +87,10 @@ pub struct Section {
     pub start_measure: usize,
     /// End measure (1-indexed, exclusive).
     pub end_measure: usize,
+    /// Optional display color for the web UI timeline (hex "#rrggbb").
+    /// Without one the UI rotates through its palette.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 impl Song {
@@ -194,6 +198,17 @@ impl Song {
                     "{}: start_measure must be 1 or greater (measures are 1-indexed)",
                     label
                 ));
+            }
+            if let Some(color) = &section.color {
+                let valid = color.len() == 7
+                    && color.starts_with('#')
+                    && color[1..].chars().all(|c| c.is_ascii_hexdigit());
+                if !valid {
+                    errors.push(format!(
+                        "{}: color must be a hex color like \"#5ecaea\", got {:?}",
+                        label, color
+                    ));
+                }
             }
             if section.end_measure <= section.start_measure {
                 errors.push(format!(
@@ -828,6 +843,7 @@ mod tests {
             name: "bad".to_string(),
             start_measure: 0,
             end_measure: 4,
+            color: None,
         }];
         let errors = song.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("start_measure must be 1")));
@@ -840,6 +856,7 @@ mod tests {
             name: "bad".to_string(),
             start_measure: 5,
             end_measure: 5,
+            color: None,
         }];
         let errors = song.validate().unwrap_err();
         assert!(errors
@@ -854,6 +871,7 @@ mod tests {
             name: "bad".to_string(),
             start_measure: 8,
             end_measure: 4,
+            color: None,
         }];
         let errors = song.validate().unwrap_err();
         assert!(errors
@@ -868,6 +886,7 @@ mod tests {
             name: "".to_string(),
             start_measure: 1,
             end_measure: 4,
+            color: None,
         }];
         let errors = song.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("name must not be empty")));
@@ -881,11 +900,13 @@ mod tests {
                 name: "verse".to_string(),
                 start_measure: 1,
                 end_measure: 8,
+                color: None,
             },
             Section {
                 name: "chorus".to_string(),
                 start_measure: 9,
                 end_measure: 16,
+                color: None,
             },
         ];
         assert!(song.validate().is_ok());

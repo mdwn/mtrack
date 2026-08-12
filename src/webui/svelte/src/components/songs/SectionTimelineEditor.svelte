@@ -27,14 +27,19 @@
   import SectionBar from "./SectionBar.svelte";
   import SectionRuler from "./SectionRuler.svelte";
   import SectionWaveformLane from "./SectionWaveformLane.svelte";
+  import { playbackStore } from "../../lib/ws/stores";
+  import { playerClient } from "../../lib/grpc/client";
+  import { sectionColor } from "../../lib/sectionColors";
   import TimelineMarkerLane from "./TimelineMarkerLane.svelte";
   import TempoMarkerDialog from "./TempoMarkerDialog.svelte";
   import PilotHintDialog from "./PilotHintDialog.svelte";
+  import SectionEditDialog from "./SectionEditDialog.svelte";
 
   interface SectionEntry {
     name: string;
     start_measure: number;
     end_measure: number;
+    color?: string;
   }
 
   interface Props {
@@ -164,6 +169,227 @@
   function handleSectionsChange(updated: SectionEntry[]) {
     sections = updated;
     dirty = true;
+  }
+
+  // --- Preview playback / playhead ---
+
+  let isCurrentSong = $derived($playbackStore.song_name === song.name);
+
+  // Smoothly-extrapolated elapsed, resynced on every 5Hz frame (matches
+  // the BeatIndicator's approach). Never extrapolates past 600ms so a
+  // dropped connection freezes the playhead instead of running away.
+  const MAX_EXTRAPOLATION_MS = 600;
+  let smoothElapsedMs = $state(0);
+  $effect(() => {
+    if (!isCurrentSong || !$playbackStore.is_playing) {
+      smoothElapsedMs = $playbackStore.elapsed_ms;
+      return;
+    }
+    let raf = 0;
+    const tick = () => {
+      const state = $playbackStore;
+      const since = Math.min(
+        performance.now() - state.received_at,
+        MAX_EXTRAPOLATION_MS,
+      );
+      smoothElapsedMs = Math.min(
+        state.elapsed_ms + since,
+        state.song_duration_ms || Infinity,
+      );
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  });
+
+  // Dragging the playhead scrubs: the line follows the pointer locally and
+  // a single seek fires on release (seeks restart sources, so continuous
+  // seeking while dragging would thrash).
+  let playheadDragMs = $state<number | null>(null);
+  let timelineWrapEl: HTMLDivElement | undefined = $state();
+
+  let playheadMs = $derived(
+    playheadDragMs ??
+      (!$playbackStore.is_playing && isCurrentSong
+        ? ($playbackStore.pending_start_ms ?? smoothElapsedMs)
+        : smoothElapsedMs),
+  );
+  let playheadX = $derived(LABEL_WIDTH + playheadMs * pixelsPerMs - scrollLeft);
+
+  function playheadMsFromPointer(clientX: number): number {
+    if (!timelineWrapEl) return playheadMs;
+    const rect = timelineWrapEl.getBoundingClientRect();
+    const ms = (clientX - rect.left - LABEL_WIDTH + scrollLeft) / pixelsPerMs;
+    return Math.max(0, Math.min(ms, songDurationMs));
+  }
+
+  function handlePlayheadDown(e: PointerEvent) {
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    playheadDragMs = playheadMsFromPointer(e.clientX);
+    e.preventDefault();
+  }
+
+  function handlePlayheadMove(e: PointerEvent) {
+    if (playheadDragMs === null) return;
+    playheadDragMs = playheadMsFromPointer(e.clientX);
+  }
+
+  function handlePlayheadUp() {
+    if (playheadDragMs === null) return;
+    const target = playheadDragMs;
+    // Hold the line at the drop position until the seek's state comes back.
+    previewSeek(target).finally(() => {
+      if (playheadDragMs === target) playheadDragMs = null;
+    });
+  }
+
+  function handlePlayheadKeydown(e: KeyboardEvent) {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    previewSeek(playheadMs + (e.key === "ArrowLeft" ? -5000 : 5000));
+  }
+
+  function formatPlayheadMs(ms: number): string {
+    const totalSec = Math.floor(ms / 1000);
+    return `${Math.floor(totalSec / 60)}:${(totalSec % 60).toString().padStart(2, "0")}`;
+  }
+
+  /** Musical position + tempo/meter at the playhead, from the beat grid and
+   * the tempo config — live while playing and while dragging. */
+  let playheadInfo = $derived.by(() => {
+    const grid = song.beat_grid;
+    if (!grid || grid.beats.length === 0 || grid.measure_starts.length === 0) {
+      return null;
+    }
+    const secs = playheadMs / 1000;
+
+    // The last beat at or before the playhead (binary search).
+    let beatIdx = 0;
+    if (secs >= grid.beats[0]) {
+      let lo = 0;
+      let hi = grid.beats.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (grid.beats[mid] <= secs) lo = mid;
+        else hi = mid - 1;
+      }
+      beatIdx = lo;
+    }
+    let measure = 0;
+    for (let i = grid.measure_starts.length - 1; i >= 0; i--) {
+      if (grid.measure_starts[i] <= beatIdx) {
+        measure = i;
+        break;
+      }
+    }
+    const beat = beatIdx - grid.measure_starts[measure] + 1;
+
+    // Tempo/meter in effect at this measure/beat, from the config (snap
+    // semantics — gradual transitions show their target once passed).
+    let bpm: number | null = null;
+    let sig: string | null = null;
+    if (tempo) {
+      bpm = tempo.bpm;
+      sig = tempo.time_signature ?? "4/4";
+      const sorted = [...(tempo.changes ?? [])].sort(
+        (a, b) => a.measure - b.measure || (a.beat ?? 1) - (b.beat ?? 1),
+      );
+      for (const c of sorted) {
+        const atOrBefore =
+          c.measure < measure + 1 ||
+          (c.measure === measure + 1 && (c.beat ?? 1) <= beat);
+        if (!atOrBefore) break;
+        if (c.bpm !== undefined) bpm = c.bpm;
+        if (c.time_signature) sig = c.time_signature;
+      }
+    } else if (beatIdx + 1 < grid.beats.length) {
+      // No tempo map: estimate from the local beat spacing.
+      const interval = grid.beats[beatIdx + 1] - grid.beats[beatIdx];
+      if (interval > 0) bpm = Math.round(600 / interval) / 10;
+    }
+
+    return { measure: measure + 1, beat, bpm, sig };
+  });
+
+  function msToProtoDuration(ms: number) {
+    return {
+      seconds: BigInt(Math.floor(ms / 1000)),
+      nanos: Math.round((ms % 1000) * 1e6),
+    };
+  }
+
+  /** Play/pause. The player has no native pause, so pausing stops playback
+   * and stores the position as the pending seek; play resumes from it. */
+  async function previewPlayPause() {
+    try {
+      if (isCurrentSong && $playbackStore.is_playing) {
+        const at = smoothElapsedMs;
+        await playerClient.stop({});
+        await playerClient.seek({ position: msToProtoDuration(at) });
+      } else if (isCurrentSong) {
+        await playerClient.play({});
+      } else {
+        await playerClient.playSongFrom({
+          songName: song.name,
+          startTime: msToProtoDuration(0),
+        });
+      }
+    } catch (e) {
+      console.error("preview play/pause failed:", e);
+    }
+  }
+
+  /** Full stop: also rewinds the resume point to the top. */
+  async function previewStop() {
+    try {
+      if (isCurrentSong && $playbackStore.is_playing) {
+        await playerClient.stop({});
+      }
+      if (isCurrentSong) {
+        await playerClient.seek({ position: msToProtoDuration(0) });
+      }
+    } catch (e) {
+      console.error("preview stop failed:", e);
+    }
+  }
+
+  /** Ruler click: seek the preview (starting the song here if needed). */
+  async function previewSeek(ms: number) {
+    // Both ends: ArrowLeft near the top would otherwise send a negative
+    // duration, which the backend rejects — a silent no-op instead of a
+    // seek to the start.
+    const clamped = Math.max(0, Math.min(ms, songDurationMs));
+    try {
+      if (isCurrentSong) {
+        await playerClient.seek({ position: msToProtoDuration(clamped) });
+      } else {
+        await playerClient.playSongFrom({
+          songName: song.name,
+          startTime: msToProtoDuration(clamped),
+        });
+      }
+    } catch (e) {
+      console.error("preview seek failed:", e);
+    }
+  }
+
+  // --- Section edit dialog ---
+
+  let sectionDialogIndex = $state<number | null>(null);
+
+  function patchSection(index: number, patch: Partial<SectionEntry>) {
+    const updated = [...sections];
+    const merged = { ...updated[index], ...patch };
+    // An empty name keeps the previous one; "auto" color drops the key.
+    if (!merged.name) merged.name = updated[index].name;
+    if (!merged.color) delete merged.color;
+    updated[index] = merged;
+    handleSectionsChange(updated);
+  }
+
+  function deleteSection(index: number) {
+    handleSectionsChange(sections.filter((_, i) => i !== index));
+    sectionDialogIndex = null;
   }
 
   // --- Tempo / pilot marker layers ---
@@ -439,6 +665,21 @@
 <div class="section-timeline-editor">
   <div class="toolbar">
     <span class="toolbar-title">{$t("songs.detail.sections")}</span>
+    {#if isCurrentSong && playheadInfo}
+      <span class="playhead-info mono">
+        <span class="playhead-info__pos"
+          >m{playheadInfo.measure}.{playheadInfo.beat}</span
+        >
+        · {formatPlayheadMs(playheadMs)}
+        {#if playheadInfo.bpm !== null}
+          · {playheadInfo.bpm}
+          {$t("tempo.bpm")}
+        {/if}
+        {#if playheadInfo.sig}
+          · {playheadInfo.sig}
+        {/if}
+      </span>
+    {/if}
     <div class="toolbar-controls">
       {#if !song.beat_grid}
         <span class="no-grid-warning"
@@ -446,6 +687,24 @@
           sections</span
         >
       {/if}
+      <button
+        class="btn btn-sm preview-btn"
+        class:preview-btn--live={isCurrentSong && $playbackStore.is_playing}
+        onclick={previewPlayPause}
+        title={isCurrentSong && $playbackStore.is_playing
+          ? $t("sections.preview.pause")
+          : $t("sections.preview.play")}
+      >
+        {isCurrentSong && $playbackStore.is_playing ? "⏸" : "▶"}
+      </button>
+      <button
+        class="btn btn-sm preview-btn"
+        onclick={previewStop}
+        disabled={!isCurrentSong}
+        title={$t("sections.preview.stop")}
+      >
+        ⏹
+      </button>
       <button class="btn btn-sm" onclick={zoomOut} title="Zoom out">−</button>
       <button class="btn btn-sm" onclick={fitView} title="Fit to view"
         >Fit</button
@@ -454,92 +713,122 @@
     </div>
   </div>
 
-  <div
-    class="timeline-scroll"
-    bind:this={scrollContainer}
-    onscroll={handleScroll}
-    onwheel={handleWheel}
-  >
-    <TimelineMarkerLane
-      laneLabel={$t("timelineLayers.tempo")}
-      markers={tempoMarkers}
-      {pixelsPerMs}
-      {scrollLeft}
-      accent="#f97316"
-      emptyHint={$t("timelineLayers.tempoEmptyHint")}
-      onmarkerclick={handleTempoMarkerClick}
-      onemptyclick={handleTempoEmptyClick}
-    />
+  <div class="timeline-wrap" bind:this={timelineWrapEl}>
+    {#if isCurrentSong && playheadX >= LABEL_WIDTH}
+      <div
+        class="playhead"
+        class:playhead--dragging={playheadDragMs !== null}
+        style:left="{playheadX}px"
+        role="slider"
+        tabindex="0"
+        aria-label={$t("sections.preview.playhead")}
+        aria-valuemin={0}
+        aria-valuemax={Math.floor(songDurationMs / 1000)}
+        aria-valuenow={Math.floor(playheadMs / 1000)}
+        aria-valuetext={formatPlayheadMs(playheadMs)}
+        onpointerdown={handlePlayheadDown}
+        onpointermove={handlePlayheadMove}
+        onpointerup={handlePlayheadUp}
+        onpointercancel={() => (playheadDragMs = null)}
+        onkeydown={handlePlayheadKeydown}
+      >
+        {#if playheadDragMs !== null}
+          <span class="playhead__time mono">{formatPlayheadMs(playheadMs)}</span
+          >
+        {/if}
+      </div>
+    {/if}
+    <div
+      class="timeline-scroll"
+      bind:this={scrollContainer}
+      onscroll={handleScroll}
+      onwheel={handleWheel}
+    >
+      <TimelineMarkerLane
+        laneLabel={$t("timelineLayers.tempo")}
+        markers={tempoMarkers}
+        {pixelsPerMs}
+        {scrollLeft}
+        accent="#f97316"
+        emptyHint={$t("timelineLayers.tempoEmptyHint")}
+        onmarkerclick={handleTempoMarkerClick}
+        onemptyclick={handleTempoEmptyClick}
+      />
 
-    <SectionBar
-      {sections}
-      {pixelsPerMs}
-      {scrollLeft}
-      {viewportWidth}
-      {measureTimesMs}
-      {songDurationMs}
-      onsectionschange={handleSectionsChange}
-    />
+      <SectionBar
+        {sections}
+        {pixelsPerMs}
+        {scrollLeft}
+        {viewportWidth}
+        {measureTimesMs}
+        {songDurationMs}
+        emptyHint={song.beat_grid ? $t("sections.emptyHint") : ""}
+        onsectionschange={handleSectionsChange}
+        onsectionedit={(index) => (sectionDialogIndex = index)}
+      />
 
-    <TimelineMarkerLane
-      laneLabel={$t("timelineLayers.pilot")}
-      markers={pilotMarkers}
-      {pixelsPerMs}
-      {scrollLeft}
-      accent="#8b5cf6"
-      emptyHint={$t("timelineLayers.pilotEmptyHint")}
-      onmarkerclick={handlePilotMarkerClick}
-      onemptyclick={handlePilotEmptyClick}
-    />
+      <TimelineMarkerLane
+        laneLabel={$t("timelineLayers.pilot")}
+        markers={pilotMarkers}
+        {pixelsPerMs}
+        {scrollLeft}
+        accent="#8b5cf6"
+        emptyHint={$t("timelineLayers.pilotEmptyHint")}
+        onmarkerclick={handlePilotMarkerClick}
+        onemptyclick={handlePilotEmptyClick}
+      />
 
-    <SectionRuler
-      {songDurationMs}
-      {pixelsPerMs}
-      {scrollLeft}
-      {viewportWidth}
-      {measureTimesMs}
-    />
-
-    {#each waveformTracks as track (track.name)}
-      <SectionWaveformLane
-        name={track.name}
-        peaks={track.peaks}
+      <SectionRuler
         {songDurationMs}
         {pixelsPerMs}
         {scrollLeft}
         {viewportWidth}
         {measureTimesMs}
+        onseek={previewSeek}
       />
-    {/each}
 
-    {#if waveformTracks.length === 0}
-      <div class="empty-waveform">
-        <span class="muted">No waveform data available</span>
-      </div>
-    {/if}
+      {#each waveformTracks as track (track.name)}
+        <SectionWaveformLane
+          name={track.name}
+          peaks={track.peaks}
+          {songDurationMs}
+          {pixelsPerMs}
+          {scrollLeft}
+          {viewportWidth}
+          {measureTimesMs}
+        />
+      {/each}
 
-    <div
-      class="scroll-spacer"
-      style:width="{totalWidthPx + LABEL_WIDTH}px"
-      style:height="1px"
-    ></div>
+      {#if waveformTracks.length === 0}
+        <div class="empty-waveform">
+          <span class="muted">No waveform data available</span>
+        </div>
+      {/if}
+
+      <div
+        class="scroll-spacer"
+        style:width="{totalWidthPx + LABEL_WIDTH}px"
+        style:height="1px"
+      ></div>
+    </div>
   </div>
 
   {#if sections.length > 0}
     <div class="section-list-summary">
-      {#each sections as section (section.name)}
-        <span class="section-chip">
+      {#each sections as section, i (section.name)}
+        <span
+          class="section-chip"
+          style:border-color="color-mix(in srgb, {sectionColor(
+            section.color,
+            i,
+          )} 60%, transparent)"
+        >
           {section.name}
           <span class="chip-range"
             >m{section.start_measure}–{section.end_measure}</span
           >
         </span>
       {/each}
-    </div>
-  {:else if song.beat_grid}
-    <div class="hint">
-      Drag on the sections bar above to define a section. Sections snap to
-      measure boundaries.
     </div>
   {/if}
 </div>
@@ -558,6 +847,17 @@
     onmetronomechange={(updated) => onmetronomechange?.(updated)}
     onmove={(position) => (tempoDialogTarget = position)}
     onclose={() => (tempoDialogTarget = null)}
+  />
+{/if}
+
+{#if sectionDialogIndex !== null && sections[sectionDialogIndex]}
+  <SectionEditDialog
+    section={sections[sectionDialogIndex]}
+    index={sectionDialogIndex}
+    maxMeasure={measureTimesMs.length || 9999}
+    onchange={(patch) => patchSection(sectionDialogIndex!, patch)}
+    ondelete={() => deleteSection(sectionDialogIndex!)}
+    onclose={() => (sectionDialogIndex = null)}
   />
 {/if}
 
@@ -594,6 +894,18 @@
     font-weight: 600;
     font-size: 13px;
   }
+  .playhead-info {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-left: 12px;
+    margin-right: auto;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .playhead-info__pos {
+    color: var(--nc-amber-400, #f2b544);
+    font-weight: 600;
+  }
   .toolbar-controls {
     display: flex;
     gap: 6px;
@@ -604,11 +916,60 @@
     color: var(--yellow);
     margin-right: 8px;
   }
+  .timeline-wrap {
+    position: relative;
+  }
   .timeline-scroll {
     overflow-x: auto;
     overflow-y: hidden;
     position: relative;
     max-height: 400px;
+  }
+  .playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    /* Wide invisible grab zone around the 2px visible line. */
+    width: 14px;
+    margin-left: -7px;
+    background: transparent;
+    z-index: 20;
+    cursor: ew-resize;
+    touch-action: none;
+  }
+  .playhead::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 6px;
+    width: 2px;
+    background: var(--nc-amber-400, #f2b544);
+    box-shadow: 0 0 6px rgba(242, 181, 68, 0.5);
+  }
+  .playhead--dragging::before,
+  .playhead:focus-visible::before {
+    width: 3px;
+    left: 5.5px;
+    box-shadow: 0 0 10px rgba(242, 181, 68, 0.8);
+  }
+  .playhead:focus-visible {
+    outline: none;
+  }
+  .playhead__time {
+    position: absolute;
+    top: 2px;
+    left: 12px;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 6px;
+    background: var(--nc-amber-400, #f2b544);
+    color: var(--nc-ink, #111);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .preview-btn--live {
+    color: var(--nc-amber-400, #f2b544);
   }
   .scroll-spacer {
     height: 0;
@@ -638,11 +999,5 @@
     color: var(--text-dim);
     margin-left: 4px;
     font-family: var(--mono);
-  }
-  .hint {
-    padding: 8px 12px;
-    font-size: 12px;
-    color: var(--text-dim);
-    border-top: 1px solid var(--border);
   }
 </style>

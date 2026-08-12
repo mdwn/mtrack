@@ -13,6 +13,7 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { parse } from "yaml";
 
 test.describe("Song Detail", () => {
   test.beforeEach(async ({ page }) => {
@@ -392,69 +393,101 @@ test.describe("Song Detail - Section Editor", () => {
 
     await expect(page.locator(".section-block")).toHaveCount(3);
     await expect(page.locator(".section-chip")).toHaveCount(3);
+
+    // The palette slot is taken as a real choice, not just a display
+    // fallback, so it survives sections being added or reordered later.
+    const request = page.waitForRequest(
+      (req) =>
+        req.url().includes("/api/songs/Test%20Song%20Beta") &&
+        req.method() === "PUT",
+    );
+    await page.getByRole("button", { name: "Save" }).first().click();
+    const saved = parse((await request).postData() ?? "") as {
+      sections: { name: string; color?: string }[];
+    };
+    expect(saved.sections).toHaveLength(3);
+    expect(saved.sections[2].color).toMatch(/^#[0-9a-f]{6}$/i);
   });
 
-  test("selecting a section and pressing Delete removes it", async ({
-    page,
-  }) => {
+  test("deleting a section from its dialog removes it", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Beta");
     await page.locator(".tab", { hasText: "Sections" }).click();
     await expect(page.locator(".section-block")).toHaveCount(2);
 
-    // Click on the first section block to select it.
+    // Tap the first section block to open its editor.
     const firstBlock = page.locator(".section-block").first();
     const blockBox = await firstBlock.boundingBox();
     if (!blockBox) throw new Error("section block not found");
-
-    // Click the bar-content at the block's center (blocks have pointer-events: none).
-    const barContent = page.locator(".bar-content");
-    const barBox = await barContent.boundingBox();
-    if (!barBox) throw new Error("bar-content not found");
     await page.mouse.click(
       blockBox.x + blockBox.width / 2,
       blockBox.y + blockBox.height / 2,
     );
 
-    await expect(page.locator(".section-block.selected")).toHaveCount(1);
-    await page.keyboard.press("Delete");
+    await expect(page.locator(".marker-dialog")).toBeVisible();
+    await page.getByRole("button", { name: "Delete" }).click();
 
     await expect(page.locator(".section-block")).toHaveCount(1);
     await expect(page.locator(".section-chip")).toHaveCount(1);
   });
 
-  test("double-clicking a section allows renaming", async ({ page }) => {
+  test("tapping a section opens its editor for renaming", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Beta");
     await page.locator(".tab", { hasText: "Sections" }).click();
     await expect(page.locator(".section-block")).toHaveCount(2);
 
-    // Double-click on the first section block to edit its name.
+    // Tap the first section block to open its editor.
     const firstBlock = page.locator(".section-block").first();
     const blockBox = await firstBlock.boundingBox();
     if (!blockBox) throw new Error("section block not found");
-
-    await page.mouse.dblclick(
+    await page.mouse.click(
       blockBox.x + blockBox.width / 2,
       blockBox.y + blockBox.height / 2,
     );
 
-    // An inline input should appear.
-    const input = page.locator(".section-name-input");
+    const input = page.locator(".marker-dialog .name-input");
     await expect(input).toBeVisible();
-
-    // Clear and type a new name.
     await input.fill("intro");
     await input.press("Enter");
+    await page.getByRole("button", { name: "Done" }).click();
 
-    // The input should disappear and the name should be updated.
-    await expect(input).not.toBeVisible();
+    await expect(page.locator(".marker-dialog")).not.toBeVisible();
     await expect(page.locator(".section-chip").first()).toContainText("intro");
+  });
+
+  test("section color can be picked in the editor", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    await page.locator(".tab", { hasText: "Sections" }).click();
+
+    const firstBlock = page.locator(".section-block").first();
+    const blockBox = await firstBlock.boundingBox();
+    if (!blockBox) throw new Error("section block not found");
+    await page.mouse.click(
+      blockBox.x + blockBox.width / 2,
+      blockBox.y + blockBox.height / 2,
+    );
+
+    // Auto is active by default; picking a swatch overrides the rotation.
+    await expect(page.locator(".swatch--auto")).toHaveClass(/active/);
+    await page.locator(".swatch:not(.swatch--auto)").nth(3).click();
+    await expect(page.locator(".swatch:not(.swatch--auto)").nth(3)).toHaveClass(
+      /active/,
+    );
+    await page.getByRole("button", { name: "Done" }).click();
+
+    // The block picks up the chosen color (#ef60a3 is palette slot 4; the
+    // style attribute may carry it as hex or as rgb()).
+    await expect(page.locator(".section-block").first()).toHaveAttribute(
+      "style",
+      /ef60a3|239, 96, 163/,
+    );
+    await expect(page.locator(".unsaved")).toBeVisible();
   });
 
   test("section editing marks config as dirty", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Beta");
     await page.locator(".tab", { hasText: "Sections" }).click();
 
-    // Delete a section to trigger a change.
+    // Delete a section (via its dialog) to trigger a change.
     const firstBlock = page.locator(".section-block").first();
     const blockBox = await firstBlock.boundingBox();
     if (!blockBox) throw new Error("section block not found");
@@ -462,7 +495,7 @@ test.describe("Song Detail - Section Editor", () => {
       blockBox.x + blockBox.width / 2,
       blockBox.y + blockBox.height / 2,
     );
-    await page.keyboard.press("Delete");
+    await page.getByRole("button", { name: "Delete" }).click();
 
     await expect(page.locator(".unsaved")).toBeVisible();
   });

@@ -124,6 +124,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                         "name": s.name,
                         "start_measure": s.start_measure,
                         "end_measure": s.end_measure,
+                        "color": s.color,
                     })
                 })
                 .collect();
