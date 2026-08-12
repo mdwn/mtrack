@@ -70,7 +70,8 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   Displays the currently playing song name. The progress bar is clickable: click anywhere to
   seek — while playing everything (audio, MIDI, lighting) restarts in sync at that position;
   while stopped the position is remembered and used by the next Play (shown as a marker on the
-  bar). When a song has defined sections, section chips appear: clicking a section name seeks
+  bar). When a song has defined sections, section chips appear — tinted with the section's
+  color from the editor: clicking a section name seeks
   to its start, and the small loop button next to it arms a section loop. An active loop shows
   the section name and a "Stop Loop" button. Beat/measure position is displayed when beat grid
   data is available, along with a visual metronome: one dot per beat of the current meter with
@@ -163,8 +164,8 @@ The timeline displays all track waveforms and beat grid measure lines. Sections 
 - **Created** by dragging on empty space (snaps to measure boundaries)
 - **Resized** by dragging edges
 - **Moved** by dragging the body
-- **Renamed** by double-clicking
-- **Deleted** with the Delete key
+- **Edited** by tapping a section, which opens its dialog
+- **Deleted** from that dialog, or with the Delete key
 
 Zoom controls include +/-, Fit, and Ctrl+scroll wheel with anchor-point zooming. Measure label
 density and snap granularity adapt to zoom level.
@@ -172,6 +173,30 @@ density and snap granularity adapt to zoom level.
 Sections are used for [section looping](#section-looping) during playback.
 
 ![Section editor](../images/song-sections.png)
+
+#### The section dialog
+
+Tapping a section opens a bottom sheet with everything drag editing cannot do precisely on a
+phone: its name, its position (a start-measure stepper that slides the whole section keeping
+its length, and a length stepper clamped to the song), and its color. Colors come from a
+palette — new sections rotate through it automatically — and are stored as `sections[].color`
+in `song.yaml`.
+
+![Section dialog](../images/section-dialog.png)
+
+The color follows the section out of the editor: the player's section chips are tinted to
+match, so the part you are in is recognisable at a glance from across a stage.
+
+![Section chips in the player](../images/player-section-chips.png)
+
+#### Preview transport and the playhead
+
+When the song being edited is the one loaded in the player, the editor grows a playhead — a
+draggable line across every lane — plus play/pause and stop buttons and a readout of the
+musical position, time, BPM and meter under it. Drag the line to seek, or use the arrow keys
+for five-second jumps. Auditioning a boundary no longer means switching to the player and back.
+
+![Preview transport and playhead](../images/section-preview-transport.png)
 
 #### Tempo and pilot layers
 
@@ -195,7 +220,7 @@ and pilot voice-hints can be authored against the same beat grid:
 
 #### Metronome feel
 
-Tempo markers also carry the metronome's *feel* — the accent pattern and the subdivision in
+Tempo markers also carry the metronome's _feel_ — the accent pattern and the subdivision in
 effect from that measure on. The base marker edits the song-level values; any later marker can
 change either one, on its own or alongside a tempo change. Each marker's chip labels what it
 changes, with the accent pattern drawn as a per-beat glyph and the subdivision as its note value
@@ -266,14 +291,15 @@ with integrated playback preview.
 
 The toolbar includes a full transport:
 
-| Button | Action |
-|--------|--------|
-| ⏮ | Skip to start of timeline |
-| ■ | Stop playback and reset cursor to start |
-| ▶ / ⏸ | Play from cursor / Pause (remembers position) |
-| ⏭ | Skip to end of timeline |
+| Button | Action                                        |
+| ------ | --------------------------------------------- |
+| ⏮     | Skip to start of timeline                     |
+| ■      | Stop playback and reset cursor to start       |
+| ▶ / ⏸  | Play from cursor / Pause (remembers position) |
+| ⏭     | Skip to end of timeline                       |
 
 **Keyboard shortcuts:**
+
 - **Space** — Toggle play/pause
 - **Home** — Skip to start
 - **End** — Skip to end
@@ -414,6 +440,7 @@ during playback. Activate a section loop from the dashboard's section buttons, o
 (`LoopSection`/`StopSectionLoop`) or MIDI controller events (`section_ack`, `stop_section_loop`).
 
 When a section loop is active:
+
 - Audio crossfades at section boundaries (100ms linear fade)
 - MIDI restarts from the section start with hard cut
 - DMX/lighting timelines reset to the section's start time

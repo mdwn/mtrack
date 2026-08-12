@@ -62,6 +62,7 @@ interface PlaybackState {
     name: string;
     start_measure: number;
     end_measure: number;
+    color?: string;
   }[];
   active_section?: { name: string; start_ms: number; end_ms: number } | null;
 }
@@ -301,9 +302,13 @@ async function steInstallRoutes(page: Page, yaml: string = STE_YAML) {
   });
 }
 
-async function steOpen(page: Page, yaml: string = STE_YAML) {
+async function steOpen(page: Page, yaml: string = STE_YAML, wsId?: string) {
   await steInstallRoutes(page, yaml);
-  await page.goto(`/#/songs/${STE_ENC}/sections`);
+  await page.goto(
+    wsId
+      ? `/?wsId=${wsId}#/songs/${STE_ENC}/sections`
+      : `/#/songs/${STE_ENC}/sections`,
+  );
   await expect(page.locator(".section-timeline-editor")).toBeVisible();
   await expect(
     page.locator(".marker-lane").first().locator(".marker").first(),
@@ -317,6 +322,68 @@ test("section-timeline-editor", async ({ page }) => {
   await steOpen(page);
   await page.locator(".section-timeline-editor").screenshot({
     path: path.join(DOCS_IMAGES, "section-timeline-editor.png"),
+  });
+});
+
+// --- Section editing UX (dialog, colors, preview transport) --------------
+
+test("section-dialog", async ({ page }) => {
+  await steOpen(page);
+  const block = page.locator(".section-block").first();
+  const box = (await block.boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(page.locator(".marker-dialog")).toBeVisible();
+  await page.waitForTimeout(250);
+  await page.locator(".marker-dialog").screenshot({
+    path: path.join(DOCS_IMAGES, "section-dialog.png"),
+  });
+});
+
+test("section-preview-transport", async ({ page }) => {
+  const wsId = freshWsId("preview");
+  await steOpen(page, STE_YAML, wsId);
+  // Make this song the one in the player, stopped 12s in, so the editor
+  // grows its playhead and musical readout.
+  await pushWs(page, wsId, {
+    ...DEFAULT_PLAYBACK,
+    song_name: STE_SONG,
+    song_duration_ms: 34000,
+    playlist_position: 1,
+    elapsed_ms: 12000,
+  });
+  await expect(page.locator(".playhead")).toBeVisible();
+  await expect(page.locator(".playhead-info")).toBeVisible();
+  await page.waitForTimeout(200);
+  await page.locator(".section-timeline-editor").screenshot({
+    path: path.join(DOCS_IMAGES, "section-preview-transport.png"),
+  });
+});
+
+test("player-section-chips", async ({ page }) => {
+  const wsId = freshWsId("chips");
+  await page.goto(`/?wsId=${wsId}#/`);
+  await page.waitForTimeout(300);
+  // Colors ride along on the WS frame, so the player's chips match the
+  // timeline rather than being uniformly grey.
+  await pushWs(page, wsId, {
+    ...DEFAULT_PLAYBACK,
+    is_playing: true,
+    song_name: STE_SONG,
+    song_duration_ms: 34000,
+    elapsed_ms: 12000,
+    playlist_position: 1,
+    available_sections: [
+      { name: "verse", start_measure: 1, end_measure: 4, color: "#5ecaea" },
+      { name: "chorus", start_measure: 5, end_measure: 8, color: "#f0a45c" },
+      { name: "bridge", start_measure: 9, end_measure: 12, color: "#9d8cf0" },
+      { name: "outro", start_measure: 13, end_measure: 16, color: "#6fcf97" },
+    ],
+    active_section: { name: "chorus", start_ms: 8000, end_ms: 16000 },
+  });
+  await expect(page.locator(".section-chip").first()).toBeVisible();
+  await page.waitForTimeout(200);
+  await page.locator(".playback-card").screenshot({
+    path: path.join(DOCS_IMAGES, "player-section-chips.png"),
   });
 });
 
