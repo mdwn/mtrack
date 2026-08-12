@@ -136,8 +136,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the retry loop hammering a handle that can never work again.
 
   Because that retry runs twice a second forever, it now says which situation it is in: opening a
-  device that was located but would not open reports `audio device 'X' was found but could not be
-  opened`, distinct from `no device found with name X`. An absent device may still be enumerating
+  device that was located but would not open reports `'X' was found but could not be opened`,
+  distinct from `no device found with name X`. An absent device may still be enumerating
   and the retry will pick it up on its own — that is what the perpetual retry is for. A device
   sitting right there refusing to open will still be refusing in an hour, and needs a person:
   usually a sample rate, format or buffer size the interface won't accept, or another process

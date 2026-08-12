@@ -508,8 +508,10 @@ impl Device {
                 // format or buffer size the interface won't accept, or another
                 // process holding it exclusively; either way it needs a person.
                 Device::open(device, config).map_err(|e| -> Box<dyn Error> {
-                    format!("audio device '{resolved}' was found but could not be opened: {e}")
-                        .into()
+                    // No "audio device" prefix: the retry loop and the AudioError
+                    // wrapper both add one already, and a line that says it three
+                    // times before saying anything is harder to read at 2Hz.
+                    format!("'{resolved}' was found but could not be opened: {e}").into()
                 })
             }
             None => Err(format!("no device found with name {}", name).into()),

@@ -68,6 +68,15 @@ pub(super) struct CpalOutputStreamFactory {
     device: parking_lot::Mutex<cpal::Device>,
     /// The name the device was resolved by, so a rebuild can re-resolve it.
     device_name: String,
+    /// Whether this handle has ever produced a stream.
+    ///
+    /// Gates re-resolution: a handle that has worked and then stopped may have
+    /// gone stale, but one that has never worked is simply wrong, and
+    /// re-resolving it would just find the same device again. Without this, a
+    /// config the device rejects makes every attempt of the perpetual 500ms
+    /// retry enumerate twice — once in `Device::get` and once here — holding the
+    /// enumeration lock for a good fraction of every second.
+    has_built: std::sync::atomic::AtomicBool,
     target_format: TargetFormat,
     config: cpal::StreamConfig,
     max_samples: usize,
@@ -97,6 +106,7 @@ impl CpalOutputStreamFactory {
         Self {
             device: parking_lot::Mutex::new(device),
             device_name,
+            has_built: std::sync::atomic::AtomicBool::new(false),
             target_format,
             config,
             max_samples,
@@ -115,8 +125,10 @@ impl OutputStreamFactory for CpalOutputStreamFactory {
     /// the handle is dead for good, and the recovery loop in `OutputManager`
     /// would retry it forever without this.
     ///
-    /// Re-resolution only happens after a build has already failed, so the
-    /// working path costs nothing and never enumerates.
+    /// Re-resolution only happens after a build has already failed *and* the
+    /// handle has worked at least once before, so the working path costs nothing
+    /// and a device that simply rejects the configuration is not enumerated for
+    /// twice a second forever.
     fn build_stream(
         &self,
         mixer: AudioMixer,
@@ -125,6 +137,8 @@ impl OutputStreamFactory for CpalOutputStreamFactory {
         error_notify: CondvarNotify,
         health: Arc<OutputHealth>,
     ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
+        use std::sync::atomic::Ordering;
+
         let device = self.device.lock().clone();
         let first_err = match self.build_on(
             &device,
@@ -134,9 +148,18 @@ impl OutputStreamFactory for CpalOutputStreamFactory {
             error_notify.clone(),
             health.clone(),
         ) {
-            Ok(stream) => return Ok(stream),
+            Ok(stream) => {
+                self.has_built.store(true, Ordering::Relaxed);
+                return Ok(stream);
+            }
             Err(e) => e,
         };
+
+        // A handle that has never worked is wrong, not stale — re-resolving it
+        // would find the same device and fail the same way.
+        if !self.has_built.load(Ordering::Relaxed) {
+            return Err(first_err);
+        }
 
         let resolved = match resolve_output_device(&self.device_name) {
             Ok(Some(resolved)) => resolved,
@@ -165,6 +188,7 @@ impl OutputStreamFactory for CpalOutputStreamFactory {
             device = %self.device_name,
             "Audio device came back under a new handle; stream rebuilt"
         );
+        self.has_built.store(true, Ordering::Relaxed);
         *self.device.lock() = resolved.device;
         Ok(stream)
     }

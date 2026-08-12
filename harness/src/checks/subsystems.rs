@@ -211,6 +211,89 @@ pub async fn bogus_audio_device_degrades_gracefully() -> CheckOutcome {
     Ok(())
 }
 
+/// A device that is present but will not open says so, distinctly from one that
+/// is not there.
+///
+/// `retry_until_ready` re-runs device discovery twice a second, forever, and
+/// logs each attempt. The two failures behind those lines want opposite
+/// responses from an operator: a device that is still enumerating gets picked up
+/// by the next retry, which is the whole reason the retry is perpetual, while
+/// one that is sitting right there refusing to open will still be refusing in an
+/// hour. Reporting both the same way leaves the person on the receiving end
+/// waiting out a retry that can never succeed.
+///
+/// This also covers the #350 regression from the other side: an audio device
+/// that could not be opened used to be reported as `connected`, because the
+/// output thread swallowed the first build failure and `get_device` returned
+/// `Ok`. The status assertion below fails against that build.
+///
+/// The lever is `bits_per_sample: 24` with the default integer format, which
+/// `stream.rs` rejects outright rather than handing to the backend. That makes
+/// the failure deterministic and independent of what the interface supports --
+/// an unsupported *sample rate* would not do, because ALSA's plug layer
+/// converts silently and the stream would open. If 24-bit integer output is
+/// ever implemented, this check starts failing, which is the correct way to
+/// find out that its lever needs replacing.
+pub async fn unopenable_audio_device_is_distinguished_from_a_missing_one() -> CheckOutcome {
+    crate::runner::require_area("subsystems")?;
+
+    if Capabilities::get().audio_out.is_none() {
+        skip!("no audio output device was detected, so there is nothing present to fail to open");
+    }
+
+    // Sabotage removes the device rather than the assertion: with a name that
+    // resolves to nothing, mtrack correctly reports it missing, and a check that
+    // cannot tell "missing" from "unopenable" passes anyway.
+    //
+    // Note the argument order against the neighbouring bogus-device check, which
+    // is the reverse of this one: there the *real* case is the missing device
+    // and sabotage restores a working one. `pick` takes (real, broken).
+    let mut profile = ProfileSpec::detected("01-e2e").with_audio_key("bits_per_sample", "24");
+    profile.audio = crate::sabotage::pick(
+        Subsystem::Detected,
+        Subsystem::Bogus("e2e-nonexistent-audio-device".to_string()),
+    );
+
+    let project = ProjectBuilder::new()
+        .profiles(vec![profile])
+        .songs(crate::checks::standard_songs())
+        .build()?;
+    let server = Server::start_degraded(&project).await?;
+    let client = Client::connect_http_only(&server).await?;
+
+    let seen = watch_subsystem(&client, "audio").await?;
+    check!(
+        !seen.iter().any(|s| s == "connected"),
+        "an audio device that cannot be opened was reported as connected \
+         (statuses seen: {seen:?})"
+    );
+
+    // Read after the settle window: the retry logs on every attempt, so waiting
+    // guarantees at least one line rather than racing the first one.
+    let log = server.log();
+    check!(
+        log.contains("was found but could not be opened"),
+        "a device that was located but would not open did not say so.\n--- log ---\n{log}"
+    );
+    check!(
+        !log.contains("no device found with name"),
+        "a device that is present was reported as missing, which sends an operator \
+         looking for the wrong fault.\n--- log ---\n{log}"
+    );
+    check!(
+        !log.contains("panicked at"),
+        "an unopenable audio device panicked the player.\n--- log ---\n{log}"
+    );
+
+    crate::outcome::record(format!(
+        "unopenable audio device: statuses over {}s were {seen:?}, never connected, \
+         reported as found-but-unopenable rather than missing",
+        SETTLE.as_secs()
+    ));
+
+    Ok(())
+}
+
 /// Only the first matching profile is active, and it is the one applied.
 ///
 /// Profiles are sorted by filename, so a second profile pointing at a
