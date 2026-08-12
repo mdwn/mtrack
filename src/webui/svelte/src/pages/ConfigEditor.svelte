@@ -667,6 +667,41 @@
   });
 </script>
 
+{#snippet metronomeDefaults()}
+  <!-- Player-wide metronome defaults -->
+  <div class="samples-top-section">
+    <div class="list-header">
+      <h2>{$t("config.metronome")}</h2>
+      <div class="toolbar-actions">
+        {#if metronomeSaveOk}
+          <span class="save-msg">{$t("common.saved")}</span>
+        {:else if metronomeSaveMsg}
+          <span class="save-msg save-error">{metronomeSaveMsg}</span>
+        {/if}
+        {#if metronomeDirty && !metronomeSaving}
+          <span class="dirty-flag">{$t("common.unsaved")}</span>
+        {/if}
+        <button
+          class="btn"
+          class:btn-primary={metronomeDirty && !$playbackStore.locked}
+          onclick={saveMetronome}
+          disabled={metronomeSaving || !metronomeDirty || $playbackStore.locked}
+          title={$playbackStore.locked ? $t("common.locked") : null}
+        >
+          {metronomeSaving ? $t("common.saving") : $t("config.saveMetronome")}
+        </button>
+      </div>
+    </div>
+    <MetronomeSection
+      bind:this={metronomeRef}
+      bind:sounds={metronomeSounds}
+      bind:enabled={metronomeEnabled}
+      onchange={onMetronomeChange}
+      onbrowse={(role) => (metronomeBrowseRole = role)}
+    />
+  </div>
+{/snippet}
+
 {#if loading}
   <div class="page-placeholder">
     <p><span class="spinner"></span> {$t("config.loadingConfig")}</p>
@@ -864,42 +899,7 @@
         />
       </div>
 
-      <!-- Player-wide metronome defaults -->
-      <div class="samples-top-section">
-        <div class="list-header">
-          <h2>{$t("config.metronome")}</h2>
-          <div class="toolbar-actions">
-            {#if metronomeSaveOk}
-              <span class="save-msg">{$t("common.saved")}</span>
-            {:else if metronomeSaveMsg}
-              <span class="save-msg save-error">{metronomeSaveMsg}</span>
-            {/if}
-            {#if metronomeDirty && !metronomeSaving}
-              <span class="dirty-flag">{$t("common.unsaved")}</span>
-            {/if}
-            <button
-              class="btn"
-              class:btn-primary={metronomeDirty && !$playbackStore.locked}
-              onclick={saveMetronome}
-              disabled={metronomeSaving ||
-                !metronomeDirty ||
-                $playbackStore.locked}
-              title={$playbackStore.locked ? $t("common.locked") : null}
-            >
-              {metronomeSaving
-                ? $t("common.saving")
-                : $t("config.saveMetronome")}
-            </button>
-          </div>
-        </div>
-        <MetronomeSection
-          bind:this={metronomeRef}
-          bind:sounds={metronomeSounds}
-          bind:enabled={metronomeEnabled}
-          onchange={onMetronomeChange}
-          onbrowse={(role) => (metronomeBrowseRole = role)}
-        />
-      </div>
+      {@render metronomeDefaults()}
     </div>
   {/if}
 {:else if selectedIndex !== null && profiles[selectedIndex]}
@@ -1056,6 +1056,8 @@
         onbrowse={onSampleBrowse}
       />
     </div>
+
+    {@render metronomeDefaults()}
   </div>
 {/if}
 
