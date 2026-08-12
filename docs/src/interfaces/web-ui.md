@@ -170,6 +170,14 @@ The timeline displays all track waveforms and beat grid measure lines. Sections 
 Zoom controls include +/-, Fit, and Ctrl+scroll wheel with anchor-point zooming. Measure label
 density and snap granularity adapt to zoom level.
 
+The lanes below the timeline are the song's tracks. Generated ones are drawn too: the
+metronome's click and the pilot cues are rendered from the same config the player synthesizes
+them from, so a glance says whether a cue lands where you meant it to, without playing
+anything. They are computed per request rather than cached, and the editor refetches after a
+save, so they follow tempo and feel edits immediately.
+
+![The click and pilot lanes rendered alongside the file tracks](../images/virtual-track-waveforms.png)
+
 Sections are used for [section looping](#section-looping) during playback.
 
 ![Section editor](../images/song-sections.png)
