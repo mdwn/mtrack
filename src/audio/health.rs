@@ -417,6 +417,33 @@ mod test {
         assert_eq!(health.snapshot().recoveries, 0);
     }
 
+    /// The status page switches on these strings, and its TypeScript declares
+    /// them as a union. Renaming a variant here would compile fine, serialise
+    /// something the UI has never heard of, and silently fall through to
+    /// treating a stalled device as healthy.
+    #[test]
+    fn the_wire_names_are_what_the_ui_expects() {
+        let names: Vec<String> = [
+            OutputStatus::Healthy,
+            OutputStatus::Recovering,
+            OutputStatus::Stalled,
+            OutputStatus::NeverStarted,
+        ]
+        .iter()
+        .map(|s| serde_json::to_string(s).expect("status serialises"))
+        .collect();
+
+        assert_eq!(
+            names,
+            vec![
+                "\"healthy\"",
+                "\"recovering\"",
+                "\"stalled\"",
+                "\"never_started\""
+            ]
+        );
+    }
+
     #[test]
     fn only_healthy_is_not_a_fault() {
         assert!(!OutputStatus::Healthy.is_fault());
