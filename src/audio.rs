@@ -128,6 +128,16 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
         None
     }
 
+    /// How long the output callback may be silent before it counts as stopped.
+    ///
+    /// Devices that know their callback period size this from it; everything
+    /// else gets the floor. Exposed on the trait so the status snapshot judges
+    /// liveness by the same window the playback monitor does, rather than the
+    /// two disagreeing about whether a device is alive.
+    fn liveness_window(&self) -> std::time::Duration {
+        health::LIVENESS_WINDOW
+    }
+
     #[cfg(test)]
     fn to_mock(&self) -> Result<Arc<mock::Device>, AudioError>;
 }

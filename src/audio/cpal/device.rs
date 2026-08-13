@@ -353,6 +353,10 @@ pub struct Device {
     output_manager: Arc<OutputManager>,
     /// Audio configuration for buffering and performance tuning.
     audio_config: config::Audio,
+    /// The output buffer size actually resolved for the stream, in frames.
+    /// `None` when the backend was left to choose and did not say, which is what
+    /// `BufferSize::Default` gives. Used only to size the liveness window.
+    output_buffer_size: Option<u32>,
     /// Player-level default metronome sounds, set at hardware init.
     metronome_defaults: parking_lot::Mutex<Option<config::metronome::MetronomeSounds>>,
 }
@@ -441,6 +445,7 @@ impl Device {
                 output_manager: temp_output_manager,
                 audio_config: config::Audio::new("default"), // Default config for listing
                 metronome_defaults: parking_lot::Mutex::new(None),
+                output_buffer_size: None,
             })
         }
 
@@ -483,6 +488,7 @@ impl Device {
             output_manager,
             audio_config: config::Audio::new("default"),
             metronome_defaults: parking_lot::Mutex::new(None),
+            output_buffer_size: None,
         }))
     }
 
@@ -565,6 +571,7 @@ impl Device {
 
         device.output_manager = Arc::new(output_manager);
         device.audio_config = config;
+        device.output_buffer_size = output_buffer_size;
 
         Ok(device)
     }
@@ -630,6 +637,15 @@ fn build_active_source(
 impl AudioDevice for Device {
     fn output_health(&self) -> Option<crate::audio::health::OutputHealthSnapshot> {
         Some(self.output_manager.health())
+    }
+
+    /// Sized from the resolved buffer, so a rig configured with an enormous one
+    /// isn't judged against a window shorter than a single callback.
+    fn liveness_window(&self) -> Duration {
+        crate::audio::health::liveness_window(crate::audio::health::callback_period(
+            self.output_buffer_size,
+            self.target_format.sample_rate,
+        ))
     }
 
     fn set_metronome_defaults(&self, defaults: Option<config::metronome::MetronomeSounds>) {
@@ -858,7 +874,7 @@ impl AudioDevice for Device {
             // sound still looks alive from here, and nothing host-side can tell
             // the difference. What this catches is the callback going away.
             let health = self.output_manager.health();
-            if !health.callback_alive(crate::audio::health::LIVENESS_WINDOW) {
+            if !health.callback_alive(self.liveness_window()) {
                 error!(
                     song = song.name(),
                     // 0 means the callback never ran at all; `callbacks`

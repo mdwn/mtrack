@@ -48,14 +48,61 @@ use std::time::{Duration, Instant};
 /// does.
 const SILENCE_FLOOR: f32 = 1.0e-4;
 
-/// How recently the callback must have run to count as alive.
+/// How long the callback may be silent before it counts as stopped.
 ///
-/// Generous next to a typical few-millisecond callback period, so a large buffer
-/// size or a scheduling hiccup doesn't read as a stall. It does assume a callback
-/// period well under a second: at 44.1kHz that holds until roughly a 32k-frame
-/// buffer, far past anything mtrack's buffer sizing produces. A rig configured
-/// past that would need this derived from the negotiated buffer instead.
+/// Not a jitter margin — a consequence threshold. Once a full second has passed
+/// with nothing handed to the device, the moment is gone whether or not the
+/// device was really dead, so a "false positive" here is not meaningfully false:
+/// the song it ends was already ruined by the second of silence that triggered
+/// it. That is what makes one second a principled number rather than an
+/// arbitrary one, and also why it should not be much larger — past this point
+/// waiting only extends the silence without learning anything.
+///
+/// The error bars are deliberately lopsided. Concluding too late costs a little
+/// more of an already-silent moment; concluding too early kills a healthy song
+/// in front of an audience. Given that asymmetry, this sits at the generous end.
 pub const LIVENESS_WINDOW: Duration = Duration::from_secs(1);
+
+/// How many consecutive callback periods must be missed before the floor is
+/// overridden. Only reachable when a single period approaches a second on its
+/// own — see [`liveness_window`].
+const MISSED_CALLBACKS: u32 = 4;
+
+/// The liveness window for a device whose callback period is known.
+///
+/// [`LIVENESS_WINDOW`] on every configuration anyone actually runs: at the
+/// default 1024 frames / 44.1kHz a period is 23ms, so four of them is 92ms and
+/// the floor wins by an order of magnitude.
+///
+/// The derived term exists only for absurd buffers. `buffer_size` has no upper
+/// bound, and at 65536 frames a period is ~1.5s — longer than the floor, so a
+/// perfectly healthy callback would look stopped between every buffer and every
+/// song would be ended a second after it started. Scaling to "four consecutive
+/// missed buffers" keeps the check meaningful there instead of making playback
+/// impossible.
+///
+/// `None` means the period is unknown, which is what `BufferSize::Default`
+/// leaves us with — the backend picked, and did not say. The floor is the only
+/// safe answer.
+pub fn liveness_window(callback_period: Option<Duration>) -> Duration {
+    match callback_period {
+        Some(period) => LIVENESS_WINDOW.max(period * MISSED_CALLBACKS),
+        None => LIVENESS_WINDOW,
+    }
+}
+
+/// The time one callback covers, for a buffer size in frames and a sample rate.
+///
+/// `None` when either is unknown or zero, rather than guessing.
+pub fn callback_period(buffer_frames: Option<u32>, sample_rate: u32) -> Option<Duration> {
+    let frames = buffer_frames?;
+    if frames == 0 || sample_rate == 0 {
+        return None;
+    }
+    Some(Duration::from_secs_f64(
+        f64::from(frames) / f64::from(sample_rate),
+    ))
+}
 
 /// How recently non-silent audio must have been written to count as signalling.
 ///
@@ -176,6 +223,39 @@ pub fn has_output_signal(data: &[f32]) -> bool {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn default_buffer_uses_the_floor() {
+        // 1024 frames at 44.1kHz is a 23ms period; four of those is 92ms, so the
+        // floor wins. A 92ms window would read an ordinary scheduling hiccup on a
+        // loaded machine as a dead device and end the song for it.
+        let period = callback_period(Some(1024), 44_100).unwrap();
+        assert!(period < Duration::from_millis(25));
+        assert_eq!(liveness_window(Some(period)), LIVENESS_WINDOW);
+    }
+
+    #[test]
+    fn an_absurd_buffer_scales_past_the_floor() {
+        // 65536 frames at 44.1kHz is ~1.49s — longer than the floor on its own,
+        // so without scaling a healthy callback would look stopped between every
+        // buffer and no song could ever play.
+        let period = callback_period(Some(65_536), 44_100).unwrap();
+        assert!(period > LIVENESS_WINDOW);
+        assert!(liveness_window(Some(period)) > period * 2);
+    }
+
+    #[test]
+    fn unknown_period_uses_the_floor() {
+        // BufferSize::Default: the backend chose and didn't say.
+        assert_eq!(callback_period(None, 44_100), None);
+        assert_eq!(liveness_window(None), LIVENESS_WINDOW);
+    }
+
+    #[test]
+    fn nonsense_inputs_do_not_produce_a_period() {
+        assert_eq!(callback_period(Some(0), 44_100), None);
+        assert_eq!(callback_period(Some(1024), 0), None);
+    }
 
     #[test]
     fn empty_buffer_has_no_signal() {
