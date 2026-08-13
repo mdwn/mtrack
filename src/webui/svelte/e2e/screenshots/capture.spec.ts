@@ -274,6 +274,38 @@ const STE_WAVEFORM = {
   ],
 };
 
+/** A click track's peaks: a spike per beat, taller on the downbeat. */
+function steClickPeaks(n = 96): number[] {
+  return Array.from({ length: n }, (_, i) =>
+    i % 6 === 0 ? 1 : i % 6 === 3 ? 0.55 : 0.02,
+  );
+}
+
+/** A pilot track's peaks: a few spoken cues, silence between them. */
+function stePilotPeaks(n = 96): number[] {
+  const cues = [
+    [6, 12],
+    [34, 40],
+    [62, 66],
+  ];
+  return Array.from({ length: n }, (_, i) => {
+    const cue = cues.find(([a, b]) => i >= a && i < b);
+    if (!cue) return 0.01;
+    const t = (i - cue[0]) / (cue[1] - cue[0]);
+    return 0.25 + 0.6 * Math.sin(t * Math.PI);
+  });
+}
+
+/** The same song with its generated tracks rendered alongside the files. */
+const STE_WAVEFORM_VIRTUAL = {
+  song_name: STE_SONG,
+  tracks: [
+    ...STE_WAVEFORM.tracks,
+    { name: "click", peaks: steClickPeaks() },
+    { name: "pilot", peaks: stePilotPeaks() },
+  ],
+};
+
 async function steInstallRoutes(page: Page, yaml: string = STE_YAML) {
   // The song's raw YAML (the editor parses tempo/pilot/sections from it).
   await page.route(`**/api/songs/${STE_ENC}`, async (route) => {
@@ -384,6 +416,24 @@ test("player-section-chips", async ({ page }) => {
   await page.waitForTimeout(200);
   await page.locator(".playback-card").screenshot({
     path: path.join(DOCS_IMAGES, "player-section-chips.png"),
+  });
+});
+
+test("virtual-track-waveforms", async ({ page }) => {
+  await steInstallRoutes(page, MET_YAML);
+  // The click and pilot lanes come from the same waveform payload as the
+  // file tracks; they are synthesized rather than read off disk.
+  await page.route(`**/api/songs/${STE_ENC}/waveform`, async (route) => {
+    await route.fulfill({ json: STE_WAVEFORM_VIRTUAL });
+  });
+  await page.goto(`/#/songs/${STE_ENC}/sections`);
+  await expect(page.locator(".section-timeline-editor")).toBeVisible();
+  await expect(page.locator(".waveform-lane")).toHaveCount(5);
+  const fit = page.locator('button[title="Fit to view"]');
+  if (await fit.count()) await fit.click();
+  await page.waitForTimeout(300);
+  await page.locator(".section-timeline-editor").screenshot({
+    path: path.join(DOCS_IMAGES, "virtual-track-waveforms.png"),
   });
 });
 

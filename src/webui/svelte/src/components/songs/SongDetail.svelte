@@ -551,6 +551,10 @@
         (f: SongFailure) => f.name === songName,
       );
       failureError = stillFailed ? stillFailed.error : null;
+      // Virtual-track lanes (click/pilot) follow the config — refresh them.
+      fetchWaveform(songName)
+        .then((w) => (waveformTracks = w.tracks))
+        .catch(() => {});
     } catch (e) {
       saveMsg = e instanceof Error ? e.message : "Save failed";
     } finally {

@@ -399,23 +399,7 @@ pub(super) async fn get_song_waveform(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    // Check cache first
-    {
-        let cache = state.waveform_cache.lock();
-        if let Some(cached) = cache.get(&name) {
-            let tracks: Vec<serde_json::Value> = cached
-                .iter()
-                .map(|(track_name, peaks)| json!({ "name": track_name, "peaks": peaks }))
-                .collect();
-            return (
-                StatusCode::OK,
-                Json(json!({ "song_name": name, "tracks": tracks })),
-            )
-                .into_response();
-        }
-    }
-
-    // Cache miss — look up song from the player's registry
+    // Look up the song from the player's registry.
     let all_songs = state.player.songs();
     let song = match all_songs.get(&name) {
         Ok(s) => s,
@@ -427,6 +411,29 @@ pub(super) async fn get_song_waveform(
                 .into_response();
         }
     };
+
+    // Check cache first. Virtual tracks (metronome, pilot) render fresh in
+    // both paths — they follow the current config and are cheap.
+    let cached = state.waveform_cache.lock().get(&name).cloned();
+    if let Some(cached) = cached {
+        let song_for_virtual = song.clone();
+        let virtual_peaks = tokio::task::spawn_blocking(move || {
+            ws_state::virtual_track_peaks(&song_for_virtual, 500)
+        })
+        .await
+        .unwrap_or_default();
+        let tracks: Vec<serde_json::Value> = cached
+            .iter()
+            .cloned()
+            .chain(virtual_peaks)
+            .map(|(track_name, peaks)| json!({ "name": track_name, "peaks": peaks }))
+            .collect();
+        return (
+            StatusCode::OK,
+            Json(json!({ "song_name": name, "tracks": tracks })),
+        )
+            .into_response();
+    }
 
     let track_infos: Vec<ws_state::TrackInfo> = song
         .tracks()
@@ -443,10 +450,13 @@ pub(super) async fn get_song_waveform(
 
     let cache = state.waveform_cache.clone();
     let song_name = name.clone();
+    let song_for_virtual = song.clone();
     let peaks_result = tokio::task::spawn_blocking(move || {
         let peaks = ws_state::compute_waveform_peaks(&song_dir, &track_infos);
         cache.lock().insert(song_name, peaks.clone());
-        peaks
+        let mut with_virtual = peaks;
+        with_virtual.extend(ws_state::virtual_track_peaks(&song_for_virtual, 500));
+        with_virtual
     })
     .await;
 
