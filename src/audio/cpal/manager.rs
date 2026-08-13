@@ -178,8 +178,10 @@ impl OutputManager {
                             );
                             let _ = first_result_tx.send(None);
                             first_run = false;
+                            health.record_stream_started(false);
                         } else {
                             info!("Audio output stream recovered after backend error");
+                            health.record_stream_started(true);
                         }
 
                         // Keep the stream alive; block until either:
@@ -220,6 +222,10 @@ impl OutputManager {
                             "Failed to recreate audio stream: {} (retrying in {:?})",
                             e, backoff
                         );
+                        // Keeps the status reporting `recovering` across the whole
+                        // outage rather than only between the backend error and the
+                        // first failed attempt.
+                        health.record_rebuild_failed(&e.to_string());
                         if Self::sleep_unless_shutdown(&shutdown, backoff) {
                             return;
                         }

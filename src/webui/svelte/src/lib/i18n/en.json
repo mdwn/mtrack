@@ -114,6 +114,8 @@
   "status.connected": "Connected",
   "status.initializing": "Initializing",
   "status.notConnected": "Not Connected",
+  "status.audioStalled": "Open, but not playing out",
+  "status.audioRecovering": "Reconnecting to the interface",
   "status.notConfigured": "Not Configured",
   "status.lastUpdated": "Updated {seconds}s ago",
   "status.audio": "Audio",

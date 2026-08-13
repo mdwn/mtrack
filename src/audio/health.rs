@@ -38,7 +38,8 @@
 //! than inside the cpal implementation so a second backend — or a second
 //! interface, once multi-interface output lands — reports health the same way.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use parking_lot::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Absolute sample value at or below which a buffer counts as silence.
@@ -111,7 +112,12 @@ pub fn callback_period(buffer_frames: Option<u32>, sample_rate: u32) -> Option<D
 /// below the floor.
 pub const SIGNAL_WINDOW: Duration = Duration::from_secs(2);
 
-/// Lock-free liveness signals written by the output callback.
+/// Liveness signals from the output callback, plus the stream lifecycle around it.
+///
+/// The callback path — [`OutputHealth::record_callback`] — is lock-free, allocates
+/// nothing, and reads the clock once. The stream-lifecycle methods below are
+/// called from the output thread and cpal's error callback, never from the
+/// realtime callback, so the mutex they use cannot reach it.
 pub struct OutputHealth {
     /// Reference point for the nanosecond timestamps below.
     base: Instant,
@@ -122,6 +128,15 @@ pub struct OutputHealth {
     last_signal_nanos: AtomicU64,
     /// Total callbacks served, for diagnostics.
     callbacks: AtomicU64,
+    /// Streams rebuilt after a backend error. A rig quietly recovering from a
+    /// flaky cable several times a set looks healthy at any single instant; this
+    /// is the only thing that would show it.
+    recoveries: AtomicU64,
+    /// Whether the output thread is currently trying to rebuild the stream.
+    /// Distinguishes a device being worked on from one nobody is coming for.
+    rebuilding: AtomicBool,
+    /// The most recent error the backend reported, kept for after the fact.
+    last_error: Mutex<Option<String>>,
 }
 
 impl Default for OutputHealth {
@@ -137,7 +152,35 @@ impl OutputHealth {
             last_callback_nanos: AtomicU64::new(0),
             last_signal_nanos: AtomicU64::new(0),
             callbacks: AtomicU64::new(0),
+            recoveries: AtomicU64::new(0),
+            rebuilding: AtomicBool::new(false),
+            last_error: Mutex::new(None),
         }
+    }
+
+    /// Record a backend error against the stream. Called from cpal's error
+    /// callback, which is not the realtime callback.
+    ///
+    /// Implies a rebuild is coming: the error callback's whole purpose is to wake
+    /// the output thread to do one.
+    pub fn record_stream_error(&self, error: &str) {
+        *self.last_error.lock() = Some(error.to_string());
+        self.rebuilding.store(true, Ordering::Relaxed);
+    }
+
+    /// Record that a rebuild attempt failed and another will follow.
+    pub fn record_rebuild_failed(&self, error: &str) {
+        *self.last_error.lock() = Some(error.to_string());
+        self.rebuilding.store(true, Ordering::Relaxed);
+    }
+
+    /// Record that a stream is live. `recovered` distinguishes a rebuild after a
+    /// backend error from the first build at startup.
+    pub fn record_stream_started(&self, recovered: bool) {
+        if recovered {
+            self.recoveries.fetch_add(1, Ordering::Relaxed);
+        }
+        self.rebuilding.store(false, Ordering::Relaxed);
     }
 
     /// Record that the callback ran, and whether it handed the device anything
@@ -171,6 +214,9 @@ impl OutputHealth {
             since_last_callback: age(self.last_callback_nanos.load(Ordering::Relaxed)),
             since_last_signal: age(self.last_signal_nanos.load(Ordering::Relaxed)),
             callbacks: self.callbacks.load(Ordering::Relaxed),
+            recoveries: self.recoveries.load(Ordering::Relaxed),
+            rebuilding: self.rebuilding.load(Ordering::Relaxed),
+            last_error: self.last_error.lock().clone(),
         }
     }
 }
@@ -181,7 +227,7 @@ impl OutputHealth {
 /// nothing is playing, so whether silence is a problem can only be decided where
 /// playback state is known — see the stall check in the playback monitor loop,
 /// which is the one place that knows audio is supposed to be coming out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputHealthSnapshot {
     /// Time since the callback last ran, or `None` if it never has.
     pub since_last_callback: Option<Duration>,
@@ -189,9 +235,65 @@ pub struct OutputHealthSnapshot {
     pub since_last_signal: Option<Duration>,
     /// Total callbacks served since the device was opened.
     pub callbacks: u64,
+    /// Streams rebuilt after a backend error since the device was opened.
+    pub recoveries: u64,
+    /// Whether a rebuild is in progress right now.
+    pub rebuilding: bool,
+    /// The most recent backend error, if there has been one.
+    pub last_error: Option<String>,
+}
+
+/// What the output is doing, as one word.
+///
+/// The individual facts are still there for anyone who wants them; this exists
+/// because "is the audio all right?" is the question actually being asked, and
+/// answering it by reading four fields is how an operator ends up looking at
+/// `connected` and believing it.
+///
+/// Deliberately says nothing about whether audio reached the room. `Healthy`
+/// means the callback is running and being handed buffers — a device can still
+/// accept every one and produce nothing, which is not observable from here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputStatus {
+    /// The callback is running.
+    Healthy,
+    /// The callback has stopped, and the output thread is rebuilding the stream.
+    /// Someone is coming for it.
+    Recovering,
+    /// The callback has stopped and no rebuild is in progress. The wedge case:
+    /// the stream still looks open and nothing is going to fix it.
+    Stalled,
+    /// The device is open but the callback has never run once.
+    NeverStarted,
+}
+
+impl OutputStatus {
+    /// Whether this state means audio is not currently reaching the device.
+    pub fn is_fault(&self) -> bool {
+        !matches!(self, OutputStatus::Healthy)
+    }
 }
 
 impl OutputHealthSnapshot {
+    /// The one-word verdict, judged against `threshold`.
+    ///
+    /// Order matters: a live callback is healthy whatever happened earlier, so a
+    /// device that recovered from a backend error two songs ago does not keep
+    /// reporting the error. `last_error` and `recoveries` carry that history
+    /// instead, which is where history belongs.
+    pub fn status(&self, threshold: Duration) -> OutputStatus {
+        if self.callback_alive(threshold) {
+            OutputStatus::Healthy
+        } else if self.since_last_callback.is_none() {
+            OutputStatus::NeverStarted
+        } else if self.rebuilding {
+            OutputStatus::Recovering
+        } else {
+            OutputStatus::Stalled
+        }
+    }
+
     /// Whether the callback has run within `threshold`.
     pub fn callback_alive(&self, threshold: Duration) -> bool {
         matches!(self.since_last_callback, Some(age) if age <= threshold)
@@ -223,6 +325,93 @@ pub fn has_output_signal(data: &[f32]) -> bool {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn a_live_callback_is_healthy() {
+        let health = OutputHealth::new();
+        health.record_callback(true);
+        assert_eq!(
+            health.snapshot().status(LIVENESS_WINDOW),
+            OutputStatus::Healthy
+        );
+    }
+
+    #[test]
+    fn an_open_device_that_never_ran_is_not_stalled() {
+        // Nothing has gone wrong yet — the stream is up and the first callback
+        // has not landed. Reporting that as a fault would make every start look
+        // broken for its first few milliseconds.
+        assert_eq!(
+            OutputHealth::new().snapshot().status(LIVENESS_WINDOW),
+            OutputStatus::NeverStarted
+        );
+    }
+
+    #[test]
+    fn a_dead_callback_with_a_rebuild_running_is_recovering() {
+        let health = OutputHealth::new();
+        health.record_callback(true);
+        health.record_stream_error("ALSA said no");
+        std::thread::sleep(Duration::from_millis(5));
+
+        let snap = health.snapshot();
+        assert_eq!(
+            snap.status(Duration::from_millis(1)),
+            OutputStatus::Recovering
+        );
+        assert_eq!(snap.last_error.as_deref(), Some("ALSA said no"));
+    }
+
+    #[test]
+    fn a_dead_callback_with_nobody_rebuilding_is_stalled() {
+        // The wedge: the stream still looks open, no error was raised, and
+        // nothing is going to fix it. The case #347 was opened for.
+        let health = OutputHealth::new();
+        health.record_callback(true);
+        std::thread::sleep(Duration::from_millis(5));
+
+        assert_eq!(
+            health.snapshot().status(Duration::from_millis(1)),
+            OutputStatus::Stalled
+        );
+    }
+
+    #[test]
+    fn recovery_clears_the_fault_but_keeps_the_history() {
+        let health = OutputHealth::new();
+        health.record_stream_error("cable wobble");
+        health.record_stream_started(true);
+        health.record_callback(true);
+
+        let snap = health.snapshot();
+        assert_eq!(snap.status(LIVENESS_WINDOW), OutputStatus::Healthy);
+        assert!(!snap.rebuilding);
+        assert_eq!(snap.recoveries, 1, "the recovery is still counted");
+        assert_eq!(
+            snap.last_error.as_deref(),
+            Some("cable wobble"),
+            "and the reason is still readable after the fact"
+        );
+    }
+
+    #[test]
+    fn the_first_stream_is_not_a_recovery() {
+        let health = OutputHealth::new();
+        health.record_stream_started(false);
+        assert_eq!(health.snapshot().recoveries, 0);
+    }
+
+    #[test]
+    fn only_healthy_is_not_a_fault() {
+        assert!(!OutputStatus::Healthy.is_fault());
+        for status in [
+            OutputStatus::Recovering,
+            OutputStatus::Stalled,
+            OutputStatus::NeverStarted,
+        ] {
+            assert!(status.is_fault(), "{status:?} should read as a fault");
+        }
+    }
 
     #[test]
     fn default_buffer_uses_the_floor() {
