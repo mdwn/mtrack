@@ -123,6 +123,47 @@ message StatusResponse {
 
     // Elapsed is the amount of time that has elapsed while playing the song.
     google.protobuf.Duration elapsed = 4;
+
+    // AudioHealth is what the audio output is actually doing. Absent when no
+    // audio device is open, or when the device cannot report.
+    //
+    // Carried alongside playback state rather than in its own RPC because the
+    // two are only interpretable together: silence is correct when nothing is
+    // playing, so "playing = true, writing_signal = false" is the diagnostic,
+    // and splitting them would make a remote monitor correlate two calls.
+    optional AudioHealth audio_health = 5;
+}
+
+// AudioHealth reports what the audio output callback is doing, as distinct from
+// whether a device was opened. A device handle exists from the moment one is
+// found, and keeps existing while the interface is physically unplugged.
+message AudioHealth {
+    // Status is one of "healthy", "recovering", "stalled" or "never_started".
+    //
+    // A string rather than an enum so there is one vocabulary across gRPC, the
+    // JSON status endpoint and the web UI, which switches on these exact names.
+    string status = 1;
+
+    // CallbackAlive is true when the output callback has run recently. False
+    // means the stream is open but not producing.
+    bool callback_alive = 2;
+
+    // WritingSignal is true when non-silent audio was handed to the device
+    // recently. False is normal and expected whenever nothing is playing.
+    bool writing_signal = 3;
+
+    // Recoveries counts output streams rebuilt after a backend error. A rig
+    // recovering from a flaky cable several times a set looks healthy at any
+    // single instant; this is the only thing that shows it.
+    uint64 recoveries = 4;
+
+    // Underruns counts buffer underruns reported by the backend. Routine and
+    // self-healing; a rising count means the buffer is too small for the
+    // machine, not that anything has failed.
+    uint64 underruns = 5;
+
+    // LastError is the most recent backend error, retained after recovery.
+    optional string last_error = 6;
 }
 
 // PlayFromRequest is the message for requesting the player to play from a specific time.

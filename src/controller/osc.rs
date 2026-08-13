@@ -108,6 +108,8 @@ pub(super) struct OscEvents {
     track_gain_pattern: String,
     /// The OSC address to use to broadcast the player status.
     status: String,
+    /// The OSC address to use to broadcast the audio output's health verdict.
+    audio_health: String,
     /// The OSC address to use to broadcast the current playlist.
     playlist_current: String,
     /// The OSC address to use to broadcast the currently playing song.
@@ -149,6 +151,7 @@ impl Driver {
                 track_gain: Matcher::new(config.track_gain())?,
                 track_gain_pattern: config.track_gain().to_string(),
                 status: config.status().to_string(),
+                audio_health: config.audio_health().to_string(),
                 playlist_current: config.playlist_current().to_string(),
                 playlist_current_song: config.playlist_current_song().to_string(),
                 playlist_current_song_elapsed: config.playlist_current_song_elapsed().to_string(),
@@ -321,12 +324,21 @@ impl Driver {
         );
         let playlist_songs: Vec<String> = playlist.songs().to_vec();
 
+        // The player's status says what the transport is doing; this says
+        // whether audio is actually leaving the machine. A surface wants both —
+        // "playing" next to "stalled" is the combination worth a red light.
+        let audio_health = player
+            .hardware_status()
+            .audio_output
+            .map(|h| h.status.as_str());
+
         let mut packets = build_broadcast_packets(
             osc_events,
             song.name(),
             status_string,
             &duration_string,
             &playlist_songs,
+            audio_health,
         );
 
         // Per-track gain feedback (motorized faders / TouchOSC). Tracks whose
@@ -581,8 +593,9 @@ fn build_broadcast_packets(
     status: &str,
     duration_string: &str,
     playlist_songs: &[String],
+    audio_health: Option<&str>,
 ) -> Vec<OscPacket> {
-    vec![
+    let mut packets = vec![
         OscPacket::Message(OscMessage {
             addr: osc_events.playlist_current_song.clone(),
             args: vec![OscType::String(song_name.to_string())],
@@ -599,7 +612,18 @@ fn build_broadcast_packets(
             addr: osc_events.playlist_current.clone(),
             args: vec![OscType::String(format_playlist_content(playlist_songs))],
         }),
-    ]
+    ];
+
+    // Only when a device can report. A surface that shows nothing is clearer
+    // than one showing a health verdict invented for a rig with no audio.
+    if let Some(health) = audio_health {
+        packets.push(OscPacket::Message(OscMessage {
+            addr: osc_events.audio_health.clone(),
+            args: vec![OscType::String(health.to_string())],
+        }));
+    }
+
+    packets
 }
 
 #[cfg(test)]
@@ -1085,6 +1109,7 @@ mod test {
             track_gain: Matcher::new(config.track_gain()).unwrap(),
             track_gain_pattern: config.track_gain().to_string(),
             status: config.status().to_string(),
+            audio_health: config.audio_health().to_string(),
             playlist_current: config.playlist_current().to_string(),
             playlist_current_song: config.playlist_current_song().to_string(),
             playlist_current_song_elapsed: config.playlist_current_song_elapsed().to_string(),
@@ -1618,8 +1643,14 @@ mod test {
         fn returns_four_packets() {
             let events = make_default_osc_events();
             let songs = vec!["Song 1".to_string(), "Song 2".to_string()];
-            let packets =
-                build_broadcast_packets(&events, "Song 1", STATUS_STOPPED, "0:00/3:30", &songs);
+            let packets = build_broadcast_packets(
+                &events,
+                "Song 1",
+                STATUS_STOPPED,
+                "0:00/3:30",
+                &songs,
+                None,
+            );
             assert_eq!(packets.len(), 4);
         }
 
@@ -1627,7 +1658,7 @@ mod test {
         fn first_packet_is_current_song() {
             let events = make_default_osc_events();
             let packets =
-                build_broadcast_packets(&events, "My Song", STATUS_PLAYING, "1:00/3:00", &[]);
+                build_broadcast_packets(&events, "My Song", STATUS_PLAYING, "1:00/3:00", &[], None);
             assert_eq!(
                 packets[0],
                 OscPacket::Message(OscMessage {
@@ -1641,7 +1672,7 @@ mod test {
         fn second_packet_is_status() {
             let events = make_default_osc_events();
             let packets =
-                build_broadcast_packets(&events, "Song", STATUS_PLAYING, "0:00/0:00", &[]);
+                build_broadcast_packets(&events, "Song", STATUS_PLAYING, "0:00/0:00", &[], None);
             assert_eq!(
                 packets[1],
                 OscPacket::Message(OscMessage {
@@ -1651,11 +1682,50 @@ mod test {
             );
         }
 
+        /// A control surface needs the audio verdict next to the transport
+        /// state, because "playing" and "stalled" together is the combination
+        /// worth a red light — and `/mtrack/status` alone will happily say
+        /// "playing" while nothing is leaving the interface.
+        #[test]
+        fn audio_health_is_broadcast_when_the_device_can_report() {
+            let events = make_default_osc_events();
+            let packets = build_broadcast_packets(
+                &events,
+                "Song",
+                STATUS_PLAYING,
+                "0:10/3:00",
+                &[],
+                Some("stalled"),
+            );
+            assert!(
+                packets.contains(&OscPacket::Message(OscMessage {
+                    addr: events.audio_health.clone(),
+                    args: vec![OscType::String("stalled".to_string())],
+                })),
+                "the health verdict should be broadcast, got {packets:?}"
+            );
+        }
+
+        /// No device, no verdict. A surface showing nothing is clearer than one
+        /// showing a health state invented for a rig with no audio configured.
+        #[test]
+        fn audio_health_is_omitted_when_there_is_no_device() {
+            let events = make_default_osc_events();
+            let packets =
+                build_broadcast_packets(&events, "Song", STATUS_STOPPED, "0:00/1:00", &[], None);
+            assert!(
+                !packets
+                    .iter()
+                    .any(|p| matches!(p, OscPacket::Message(m) if m.addr == events.audio_health)),
+                "no audio device means no health packet"
+            );
+        }
+
         #[test]
         fn third_packet_is_elapsed() {
             let events = make_default_osc_events();
             let packets =
-                build_broadcast_packets(&events, "Song", STATUS_STOPPED, "1:23/4:56", &[]);
+                build_broadcast_packets(&events, "Song", STATUS_STOPPED, "1:23/4:56", &[], None);
             assert_eq!(
                 packets[2],
                 OscPacket::Message(OscMessage {
@@ -1670,7 +1740,7 @@ mod test {
             let events = make_default_osc_events();
             let songs = vec!["A".to_string(), "B".to_string()];
             let packets =
-                build_broadcast_packets(&events, "A", STATUS_STOPPED, "0:00/1:00", &songs);
+                build_broadcast_packets(&events, "A", STATUS_STOPPED, "0:00/1:00", &songs, None);
             assert_eq!(
                 packets[3],
                 OscPacket::Message(OscMessage {
@@ -1684,7 +1754,7 @@ mod test {
         fn stopped_status() {
             let events = make_default_osc_events();
             let packets =
-                build_broadcast_packets(&events, "Song", STATUS_STOPPED, "0:00/0:00", &[]);
+                build_broadcast_packets(&events, "Song", STATUS_STOPPED, "0:00/0:00", &[], None);
             if let OscPacket::Message(msg) = &packets[1] {
                 assert_eq!(msg.args[0], OscType::String(STATUS_STOPPED.to_string()));
             } else {

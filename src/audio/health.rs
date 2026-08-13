@@ -266,6 +266,12 @@ impl OutputHealth {
     }
 }
 
+impl serde::Serialize for OutputStatus {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 /// A point-in-time read of [`OutputHealth`].
 ///
 /// Deliberately facts rather than a verdict. "Silent" is correct and expected when
@@ -303,8 +309,7 @@ pub struct OutputHealthSnapshot {
 /// Deliberately says nothing about whether audio reached the room. `Healthy`
 /// means the callback is running and being handed buffers — a device can still
 /// accept every one and produce nothing, which is not observable from here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputStatus {
     /// The callback is running.
     Healthy,
@@ -319,6 +324,21 @@ pub enum OutputStatus {
 }
 
 impl OutputStatus {
+    /// The canonical name for this state.
+    ///
+    /// One vocabulary for every surface — the JSON status endpoint, the gRPC
+    /// status response, the OSC broadcast and the web UI all use these exact
+    /// strings, and the UI switches on them. Serialization goes through here so
+    /// they cannot drift apart.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OutputStatus::Healthy => "healthy",
+            OutputStatus::Recovering => "recovering",
+            OutputStatus::Stalled => "stalled",
+            OutputStatus::NeverStarted => "never_started",
+        }
+    }
+
     /// Whether this state should be shown to an operator as something wrong.
     ///
     /// `NeverStarted` is not a fault: it only survives for one liveness window
@@ -543,6 +563,22 @@ mod test {
                 "\"never_started\""
             ]
         );
+
+        // gRPC and OSC send `as_str` directly rather than serializing, so the
+        // two must agree — otherwise a remote monitor and the web UI would
+        // disagree about what the same device is doing.
+        for status in [
+            OutputStatus::Healthy,
+            OutputStatus::Recovering,
+            OutputStatus::Stalled,
+            OutputStatus::NeverStarted,
+        ] {
+            assert_eq!(
+                serde_json::to_string(&status).unwrap(),
+                format!("\"{}\"", status.as_str()),
+                "{status:?} serializes differently from as_str"
+            );
+        }
     }
 
     /// `is_fault` must agree with what the status page paints red.
