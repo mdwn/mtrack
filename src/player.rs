@@ -218,6 +218,12 @@ pub struct SubsystemStatus {
 /// nothing to the health question that the two booleans don't already answer.
 #[derive(Clone, serde::Serialize)]
 pub struct AudioOutputHealth {
+    /// One-word verdict: `healthy`, `recovering`, `stalled`, or `never_started`.
+    ///
+    /// The fields below are the evidence behind it. This exists because "is the
+    /// audio all right?" is the question being asked, and making a reader derive
+    /// it from four fields is how an operator ends up trusting `connected`.
+    pub status: crate::audio::health::OutputStatus,
     /// The callback has run recently. False means the stream is open but stalled.
     pub callback_alive: bool,
     /// Non-silent audio was handed to the device recently. False is normal and
@@ -230,6 +236,17 @@ pub struct AudioOutputHealth {
     pub since_last_signal_ms: Option<u64>,
     /// Total callbacks served since the device was opened.
     pub callbacks: u64,
+    /// Streams rebuilt after a backend error since the device was opened. A rig
+    /// recovering from a flaky cable several times a set looks fine at any single
+    /// instant; this is the only thing that would show it.
+    pub recoveries: u64,
+    /// Buffer underruns since the device was opened. Counted apart from errors
+    /// because they are routine and self-healing — a rising count means the
+    /// buffer is too small for the machine, not that anything has failed.
+    pub underruns: u64,
+    /// The most recent backend error, if there has been one. Retained after
+    /// recovery on purpose — it is the thing worth reading afterwards.
+    pub last_error: Option<String>,
 }
 
 /// Snapshot of all hardware subsystem statuses.

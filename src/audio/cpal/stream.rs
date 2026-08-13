@@ -214,6 +214,7 @@ impl CpalOutputStreamFactory {
         let max_samples = self.max_samples.max(num_channels as usize * 4096);
 
         let stream = if self.target_format.sample_format == SampleFormat::Float {
+            let health_for_errors = health.clone();
             let mut callback = create_direct_f32_callback(mixer, source_rx, num_channels, health);
             let notify = error_notify;
             device.build_output_stream(
@@ -221,21 +222,13 @@ impl CpalOutputStreamFactory {
                 move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
                     callback(data, info);
                 },
-                move |err: cpal::StreamError| {
-                    error!(
-                        "CPAL output stream error: {} (will attempt to recover)",
-                        err
-                    );
-                    let (mutex, condvar) = &*notify;
-                    let mut guard = mutex.lock();
-                    *guard = true;
-                    condvar.notify_one();
-                },
+                error_handler(notify, health_for_errors),
                 None,
             )?
         } else {
             match self.target_format.bits_per_sample {
                 16 => {
+                    let health_for_errors = health.clone();
                     let mut callback = create_direct_int_callback::<i16>(
                         mixer,
                         source_rx,
@@ -249,20 +242,12 @@ impl CpalOutputStreamFactory {
                         move |data: &mut [i16], info: &cpal::OutputCallbackInfo| {
                             callback(data, info);
                         },
-                        move |err: cpal::StreamError| {
-                            error!(
-                                "CPAL output stream error: {} (will attempt to recover)",
-                                err
-                            );
-                            let (mutex, condvar) = &*notify;
-                            let mut guard = mutex.lock();
-                            *guard = true;
-                            condvar.notify_one();
-                        },
+                        error_handler(notify, health_for_errors),
                         None,
                     )?
                 }
                 32 => {
+                    let health_for_errors = health.clone();
                     let mut callback = create_direct_int_callback::<i32>(
                         mixer,
                         source_rx,
@@ -276,16 +261,7 @@ impl CpalOutputStreamFactory {
                         move |data: &mut [i32], info: &cpal::OutputCallbackInfo| {
                             callback(data, info);
                         },
-                        move |err: cpal::StreamError| {
-                            error!(
-                                "CPAL output stream error: {} (will attempt to recover)",
-                                err
-                            );
-                            let (mutex, condvar) = &*notify;
-                            let mut guard = mutex.lock();
-                            *guard = true;
-                            condvar.notify_one();
-                        },
+                        error_handler(notify, health_for_errors),
                         None,
                     )?
                 }
@@ -297,6 +273,50 @@ impl CpalOutputStreamFactory {
 
         stream.play()?;
         Ok(Box::new(CpalOutputStream { _stream: stream }))
+    }
+}
+
+/// The stream error handler, shared by all three sample-format arms.
+///
+/// Was written out three times, identically, which is how the health recording
+/// below would have ended up on two of the three paths.
+///
+/// Records the error before waking the output thread, so a status read that
+/// races the rebuild sees the reason rather than an unexplained stall.
+fn error_handler(
+    notify: CondvarNotify,
+    health: Arc<OutputHealth>,
+) -> impl FnMut(cpal::StreamError) + Send + 'static {
+    move |err: cpal::StreamError| {
+        // Runs on cpal's audio worker, which ALSA has already promoted to
+        // realtime priority (`boost_current_thread_priority` sits at the top of
+        // the loop that calls this), so the common path has to stay cheap.
+        //
+        // An underrun is not a stream failure. cpal reports every XRUN through
+        // this same callback and then calls `prepare()` and carries on, so they
+        // arrive routinely — and precisely when the machine is already
+        // struggling. Recording one as an error would bury the reason a device
+        // actually failed under a pile of glitches, overwrite its message, and
+        // cost an allocation and a lock on the audio thread each time.
+        //
+        // Note it still falls through to the notify below, so an underrun
+        // continues to trigger a full stream rebuild. That is almost certainly
+        // wrong — cpal has already called `prepare()` and the stream restarts on
+        // its own — but it is a playback behaviour change rather than a
+        // reporting one, and predates this. See #369.
+        if matches!(err, cpal::StreamError::BufferUnderrun) {
+            health.record_underrun();
+        } else {
+            error!(
+                "CPAL output stream error: {} (will attempt to recover)",
+                err
+            );
+            health.record_stream_error(&err.to_string());
+        }
+        let (mutex, condvar) = &*notify;
+        let mut guard = mutex.lock();
+        *guard = true;
+        condvar.notify_one();
     }
 }
 

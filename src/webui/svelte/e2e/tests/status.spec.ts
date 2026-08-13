@@ -149,4 +149,86 @@ test.describe("Status Page", () => {
       "Failed to load status",
     );
   });
+
+  /** The failure this whole surface exists for.
+   *
+   * `audio.status` stays `connected` while the interface is physically gone —
+   * it only means a device handle exists. On the rig, unplugging the interface
+   * mid-song left it reporting `connected` for the entire outage. If the page
+   * takes that at face value it shows a green dot to someone standing in a
+   * silent room. */
+  test("audio row reports a stalled callback, not a green Connected", async ({
+    page,
+  }) => {
+    await page.goto("/#/");
+    await page.route("**/api/status", async (route) => {
+      const res = await route.fetch();
+      const body = await res.json();
+      body.hardware.audio_output = {
+        status: "stalled",
+        callback_alive: false,
+        writing_signal: false,
+        since_last_callback_ms: 4200,
+        since_last_signal_ms: 4200,
+        callbacks: 1477,
+        recoveries: 0,
+        underruns: 0,
+        last_error: null,
+      };
+      await route.fulfill({ json: body });
+    });
+
+    await page.goto("/#/status");
+    const audioRow = page
+      .locator(".subsystem-row")
+      .filter({ hasText: "Audio" });
+    await expect(audioRow).toContainText("Open, but not playing out");
+    await expect(audioRow).not.toContainText("Connected");
+
+    // The page polls every 5s and this handler awaits route.fetch(), so a poll
+    // landing as the test ends raises "Target page ... has been closed while
+    // running route callback".
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  });
+
+  test("audio row distinguishes recovering from stalled", async ({ page }) => {
+    await page.goto("/#/");
+    await page.route("**/api/status", async (route) => {
+      const res = await route.fetch();
+      const body = await res.json();
+      body.hardware.audio_output = {
+        status: "recovering",
+        callback_alive: false,
+        writing_signal: false,
+        since_last_callback_ms: 900,
+        since_last_signal_ms: 900,
+        callbacks: 1477,
+        recoveries: 2,
+        underruns: 0,
+        last_error: "ALSA function 'snd_pcm_open' failed",
+      };
+      await route.fulfill({ json: body });
+    });
+
+    await page.goto("/#/status");
+    const audioRow = page
+      .locator(".subsystem-row")
+      .filter({ hasText: "Audio" });
+    await expect(audioRow).toContainText("Reconnecting to the interface");
+    // The after-the-fact half: a rig that rebuilt its stream mid-set reads as
+    // healthy again the moment it succeeds, so the count and the reason are the
+    // only trace left.
+    await expect(audioRow).toContainText("2 stream recoveries");
+    await expect(audioRow).toContainText("snd_pcm_open");
+
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  });
+
+  /** A healthy device must look ordinary: the fault styling is worthless if it
+   * fires during the few milliseconds before the first callback lands, or on a
+   * device that is simply idle between songs. */
+  test("healthy audio still reads as Connected", async () => {
+    const audioRow = status.subsystemRows.filter({ hasText: "Audio" });
+    await expect(audioRow).toContainText("Connected");
+  });
 });

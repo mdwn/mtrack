@@ -407,11 +407,15 @@ impl Player {
         let audio_output = hw.device.as_ref().and_then(|d| d.output_health()).map(|h| {
             let as_ms = |d: Option<Duration>| d.map(|d| d.as_millis() as u64);
             AudioOutputHealth {
+                status: h.status(liveness_window),
                 callback_alive: h.callback_alive(liveness_window),
                 writing_signal: h.writing_signal(audio::health::SIGNAL_WINDOW),
                 since_last_callback_ms: as_ms(h.since_last_callback),
                 since_last_signal_ms: as_ms(h.since_last_signal),
                 callbacks: h.callbacks,
+                recoveries: h.recoveries,
+                underruns: h.underruns,
+                last_error: h.last_error.clone(),
             }
         });
 

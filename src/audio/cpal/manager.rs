@@ -139,10 +139,6 @@ impl OutputManager {
         let source_rx = self.source_rx.clone();
         let num_channels = mixer.num_channels();
 
-        // Notify the output thread when the error callback runs (e.g. ALSA POLLERR).
-        // The output thread blocks on the condvar and recreates the stream on notification.
-        let stream_error_notify = Arc::new((Mutex::new(false), Condvar::new()));
-
         // Shared shutdown signal so drop can wake the output thread.
         let shutdown = self.shutdown_notify.clone();
         let health = self.health.clone();
@@ -161,6 +157,24 @@ impl OutputManager {
                     return;
                 }
 
+                // A notify handle per stream, so no stream can report a fault
+                // against its own replacement.
+                //
+                // Sharing one handle meant an error latched by a dead stream was
+                // still set when the new one came up, and the keep-alive loop
+                // below tore the new one straight back down. cpal can raise the
+                // same fault twice — one USB unplug on the test rig produced two
+                // POLLERR callbacks 0.2ms apart — so the second outlived the
+                // rebuild it triggered and cost a further audio gap 39ms after
+                // recovery, counting one unplug as two recoveries. Clearing the
+                // flag before each build fixed that instance and not the class:
+                // `build_stream` can construct a stream, have `play()` fail, drop
+                // it, and rebuild on a re-resolved handle, and the discarded one
+                // still held the shared handle. A fresh handle has nobody to
+                // inherit from.
+                let stream_error_notify: CondvarNotify =
+                    Arc::new((Mutex::new(false), Condvar::new()));
+
                 let stream_result = factory.build_stream(
                     mixer.clone(),
                     source_rx.clone(),
@@ -178,8 +192,10 @@ impl OutputManager {
                             );
                             let _ = first_result_tx.send(None);
                             first_run = false;
+                            health.record_stream_started(false);
                         } else {
                             info!("Audio output stream recovered after backend error");
+                            health.record_stream_started(true);
                         }
 
                         // Keep the stream alive; block until either:
@@ -220,6 +236,10 @@ impl OutputManager {
                             "Failed to recreate audio stream: {} (retrying in {:?})",
                             e, backoff
                         );
+                        // Keeps the status reporting `recovering` across the whole
+                        // outage rather than only between the backend error and the
+                        // first failed attempt.
+                        health.record_rebuild_failed(&e.to_string());
                         if Self::sleep_unless_shutdown(&shutdown, backoff) {
                             return;
                         }
@@ -251,6 +271,12 @@ impl OutputManager {
     /// Current output health facts.
     pub(super) fn health(&self) -> OutputHealthSnapshot {
         self.health.snapshot()
+    }
+
+    /// Whether the callback has run within `threshold`, without the allocation a
+    /// full snapshot costs. For the playback monitor's 100Hz stall check.
+    pub(super) fn is_callback_alive(&self, threshold: Duration) -> bool {
+        self.health.is_callback_alive(threshold)
     }
 
     /// Sleeps for `duration`, waking early if shutdown is signalled.

@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The status page says when audio is open but not playing out**: the audio subsystem reports
+  `connected` from the moment a device handle exists, and keeps reporting it while the interface
+  is physically unplugged — verified on the test rig, where pulling a USB interface mid-song left
+  it green for the entire outage. `audio_output` now carries a one-word verdict — `healthy`,
+  `recovering`, `stalled` or `never_started` — alongside the facts behind it, and the status page
+  colours the audio row from that rather than from handle presence. A stalled callback reads
+  "Open, but not playing out" in red; a stream being rebuilt reads "Reconnecting to the interface"
+  in amber, because something is wrong but it is being worked on.
+
+  Three pieces of history come with it, shown under the audio row, since none is visible at any
+  single instant: a count of streams rebuilt after a backend error — the only way to notice a rig
+  quietly recovering from a flaky cable several times a set — a count of buffer underruns, and the
+  last error the backend reported, retained after recovery because that is the thing worth reading
+  afterwards. Underruns are counted apart from errors on purpose: cpal reports every XRUN through
+  the same callback and then recovers on its own, so folding them together would bury a cable fault
+  under routine glitches and overwrite its message.
+
+  `never_started` is deliberately not shown as a fault: it is the ordinary state between opening a
+  device and its first callback, and flagging it would make every start look broken.
+
 - **MIDI beat clock tempo persistence**: a new `persist_tempo` option under the MIDI player
   config keeps the beat clock free-running at the last known tempo once a song stops, until the
   next song starts. When a song ends (or is stopped), mtrack sends `Stop` and then keeps

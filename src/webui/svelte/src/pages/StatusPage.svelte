@@ -28,6 +28,20 @@
     error: string | null;
   }
 
+  /** Runtime state of the audio output callback, as distinct from whether the
+   * device opened. `status` is the verdict; the rest is the evidence. */
+  interface AudioOutputHealth {
+    status: "healthy" | "recovering" | "stalled" | "never_started";
+    callback_alive: boolean;
+    writing_signal: boolean;
+    since_last_callback_ms: number | null;
+    since_last_signal_ms: number | null;
+    callbacks: number;
+    recoveries: number;
+    underruns: number;
+    last_error: string | null;
+  }
+
   interface StatusResponse {
     build: {
       version: string;
@@ -39,6 +53,8 @@
       hostname: string | null;
       profile: string | null;
       audio: SubsystemStatus;
+      /** Present once an audio device is open and able to report. */
+      audio_output: AudioOutputHealth | null;
       midi: SubsystemStatus;
       dmx: SubsystemStatus;
       trigger: SubsystemStatus;
@@ -84,6 +100,65 @@
     if (status === "connected") return "var(--green)";
     if (status === "initializing") return "var(--yellow)";
     return "var(--text-dim)";
+  }
+
+  /** Audio health, but only once it is worth saying something about.
+   *
+   * `connected` on the audio subsystem means "a device handle exists", which
+   * stays true while the interface is physically unplugged. Without this the
+   * page shows a green dot at the exact moment someone is standing in a silent
+   * room wondering what went wrong.
+   *
+   * `never_started` is deliberately not surfaced: it is the ordinary state for
+   * the few milliseconds between opening a device and its first callback, and
+   * flagging it would make every start look broken. */
+  function audioFault(): AudioOutputHealth | null {
+    const health = data?.hardware.audio_output;
+    if (!health) return null;
+    if (health.status === "healthy" || health.status === "never_started")
+      return null;
+    return health;
+  }
+
+  function audioDotColor(s: SubsystemStatus): string {
+    const fault = audioFault();
+    if (!fault) return statusColor(s.status);
+    // Recovering is amber: something is wrong but it is being worked on.
+    return fault.status === "recovering" ? "var(--yellow)" : "var(--red)";
+  }
+
+  /** The history worth showing under the audio row, or null if there is none.
+   *
+   * Neither of these is visible at any single instant, which is the whole point:
+   * a rig that rebuilt its stream three times during the last set reads as
+   * perfectly healthy right now, and the reason it did is the thing someone
+   * wants after the show rather than during it. */
+  function audioHistory(): string | null {
+    const health = data?.hardware.audio_output;
+    if (!health) return null;
+    const parts: string[] = [];
+    if (health.recoveries > 0)
+      parts.push(
+        get(t)("status.audioRecoveries", {
+          values: { count: health.recoveries },
+        }),
+      );
+    if (health.underruns > 0)
+      parts.push(
+        get(t)("status.audioUnderruns", {
+          values: { count: health.underruns },
+        }),
+      );
+    if (health.last_error) parts.push(health.last_error);
+    return parts.length ? parts.join(" · ") : null;
+  }
+
+  function audioStatusLabel(s: SubsystemStatus): string {
+    const fault = audioFault();
+    if (!fault) return statusLabel(s);
+    return fault.status === "recovering"
+      ? get(t)("status.audioRecovering")
+      : get(t)("status.audioStalled");
   }
 
   function statusLabel(s: SubsystemStatus): string {
@@ -178,17 +253,30 @@
           {#each subsystems as sub (sub.key)}
             {@const s = data.hardware[sub.key] as SubsystemStatus}
             {@const needsConfig = s.status !== "connected"}
+            {@const isAudio = sub.key === "audio"}
+            {@const dotColor = isAudio
+              ? audioDotColor(s)
+              : statusColor(s.status)}
+            {@const label = isAudio ? audioStatusLabel(s) : statusLabel(s)}
             <div class="subsystem-row">
               <div
                 class="status-dot"
-                style="background: {statusColor(s.status)}"
+                style="background: {dotColor}"
                 role="img"
-                aria-label={statusLabel(s)}
+                aria-label={label}
               ></div>
               <span class="subsystem-label">{$t(sub.labelKey)}</span>
-              <span class="subsystem-status">{statusLabel(s)}</span>
+              <span class="subsystem-status">{label}</span>
               {#if s.name}
                 <span class="subsystem-name">{s.name}</span>
+              {/if}
+              {#if isAudio}
+                {@const history = audioHistory()}
+                {#if history}
+                  <span class="subsystem-history" title={history}
+                    >{history}</span
+                  >
+                {/if}
               {/if}
               {#if needsConfig}
                 <a
@@ -341,6 +429,14 @@
   :global(.nc--dark) .init-banner {
     color: var(--nc-warn);
   }
+  .subsystem-history {
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .subsystem-list {
     display: flex;
     flex-direction: column;
