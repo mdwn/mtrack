@@ -135,7 +135,15 @@ pub struct OutputHealth {
     /// Whether the output thread is currently trying to rebuild the stream.
     /// Distinguishes a device being worked on from one nobody is coming for.
     rebuilding: AtomicBool,
+    /// Buffer underruns reported by the backend. Counted separately from
+    /// errors: cpal reports every XRUN through the same error callback and then
+    /// recovers internally, so folding them in would bury a cable fault under
+    /// routine glitches and overwrite its message.
+    underruns: AtomicU64,
     /// The most recent error the backend reported, kept for after the fact.
+    ///
+    /// Only ever written for genuine stream failures, never for underruns, and
+    /// only with `try_lock` — see [`OutputHealth::record_stream_error`].
     last_error: Mutex<Option<String>>,
 }
 
@@ -154,18 +162,37 @@ impl OutputHealth {
             callbacks: AtomicU64::new(0),
             recoveries: AtomicU64::new(0),
             rebuilding: AtomicBool::new(false),
+            underruns: AtomicU64::new(0),
             last_error: Mutex::new(None),
         }
     }
 
-    /// Record a backend error against the stream. Called from cpal's error
-    /// callback, which is not the realtime callback.
+    /// Record a buffer underrun. One relaxed increment, nothing else.
     ///
-    /// Implies a rebuild is coming: the error callback's whole purpose is to wake
-    /// the output thread to do one.
+    /// Deliberately cheap and deliberately separate from [`Self::record_stream_error`].
+    /// cpal delivers XRUNs through the same error callback as real failures and
+    /// then recovers on its own, so they arrive routinely, on the audio thread,
+    /// at exactly the moments the machine is already struggling.
+    pub fn record_underrun(&self) {
+        self.underruns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a stream failure and that a rebuild is coming.
+    ///
+    /// **Runs on the audio thread.** cpal's ALSA backend calls the error callback
+    /// from the same worker it has already promoted to realtime priority
+    /// (`host/alsa/mod.rs`: `boost_current_thread_priority` sits at the top of the
+    /// loop that invokes it), so this must not block. The message slot is taken
+    /// with `try_lock` and the record simply skipped if a status reader holds it:
+    /// `parking_lot::Mutex` has no priority inheritance, and a diagnostic string
+    /// is not worth stalling audio behind an HTTP handler for.
+    ///
+    /// The flag that actually matters is an atomic and is always set.
     pub fn record_stream_error(&self, error: &str) {
-        *self.last_error.lock() = Some(error.to_string());
         self.rebuilding.store(true, Ordering::Relaxed);
+        if let Some(mut slot) = self.last_error.try_lock() {
+            *slot = Some(error.to_string());
+        }
     }
 
     /// Record that a rebuild attempt failed and another will follow.
@@ -232,6 +259,8 @@ impl OutputHealth {
             callbacks: self.callbacks.load(Ordering::Relaxed),
             recoveries: self.recoveries.load(Ordering::Relaxed),
             rebuilding: self.rebuilding.load(Ordering::Relaxed),
+            underruns: self.underruns.load(Ordering::Relaxed),
+            since_open: Duration::from_nanos(now),
             last_error: self.last_error.lock().clone(),
         }
     }
@@ -255,6 +284,11 @@ pub struct OutputHealthSnapshot {
     pub recoveries: u64,
     /// Whether a rebuild is in progress right now.
     pub rebuilding: bool,
+    /// Buffer underruns reported since the device was opened.
+    pub underruns: u64,
+    /// How long the device has been open. Used to tell "no callback yet" from
+    /// "no callback ever".
+    pub since_open: Duration,
     /// The most recent backend error, if there has been one.
     pub last_error: Option<String>,
 }
@@ -285,29 +319,48 @@ pub enum OutputStatus {
 }
 
 impl OutputStatus {
-    /// Whether this state means audio is not currently reaching the device.
+    /// Whether this state should be shown to an operator as something wrong.
+    ///
+    /// `NeverStarted` is not a fault: it only survives for one liveness window
+    /// after the device opens, and flagging it would make every start look
+    /// broken for its first moments. A device that never calls back is reported
+    /// as `Stalled` once that window passes, which is a fault.
+    ///
+    /// Kept in step with `StatusPage.audioFault()` deliberately — the two used to
+    /// disagree about `NeverStarted`, so the first caller to reach for this
+    /// helper would have contradicted the UI sitting next to it.
     pub fn is_fault(&self) -> bool {
-        !matches!(self, OutputStatus::Healthy)
+        matches!(self, OutputStatus::Recovering | OutputStatus::Stalled)
     }
 }
 
 impl OutputHealthSnapshot {
     /// The one-word verdict, judged against `threshold`.
     ///
-    /// Order matters: a live callback is healthy whatever happened earlier, so a
-    /// device that recovered from a backend error two songs ago does not keep
-    /// reporting the error. `last_error` and `recoveries` carry that history
-    /// instead, which is where history belongs.
+    /// Order matters, and got this wrong once. A live callback is healthy
+    /// whatever happened earlier, so a device that recovered two songs ago stops
+    /// reporting the error — `last_error` and `recoveries` carry that history
+    /// instead. But `rebuilding` must be checked *before* "never ran", because a
+    /// stream can die before its first buffer is served: unplug the interface
+    /// immediately after start and `since_last_callback` is still `None` while an
+    /// outage is plainly under way.
+    ///
+    /// "Never ran" then ages out. It is the ordinary state for the moments
+    /// between opening a device and its first callback, and a fault after that —
+    /// a device that opens, reports `play()` fine, and never calls back is the
+    /// wedge this whole surface exists to catch, and it would otherwise sit on
+    /// `NeverStarted` forever while the UI painted it green.
     pub fn status(&self, threshold: Duration) -> OutputStatus {
         if self.callback_alive(threshold) {
-            OutputStatus::Healthy
-        } else if self.since_last_callback.is_none() {
-            OutputStatus::NeverStarted
-        } else if self.rebuilding {
-            OutputStatus::Recovering
-        } else {
-            OutputStatus::Stalled
+            return OutputStatus::Healthy;
         }
+        if self.rebuilding {
+            return OutputStatus::Recovering;
+        }
+        if self.since_last_callback.is_none() && self.since_open <= threshold {
+            return OutputStatus::NeverStarted;
+        }
+        OutputStatus::Stalled
     }
 
     /// Whether the callback has run within `threshold`.
@@ -361,6 +414,54 @@ mod test {
             OutputHealth::new().snapshot().status(LIVENESS_WINDOW),
             OutputStatus::NeverStarted
         );
+    }
+
+    /// The wedge case, and the one this surface exists for: a device that opens,
+    /// accepts `play()`, and never calls back. It stays on `NeverStarted` only
+    /// while it is plausibly still starting; after that it is stalled, because
+    /// otherwise it reads as "nothing wrong yet" forever and the UI paints it
+    /// green while every song is killed the second it starts.
+    #[test]
+    fn a_callback_that_never_arrives_ages_into_stalled() {
+        let health = OutputHealth::new();
+        std::thread::sleep(Duration::from_millis(10));
+
+        let snap = health.snapshot();
+        assert_eq!(
+            snap.status(Duration::from_millis(100)),
+            OutputStatus::NeverStarted
+        );
+        assert_eq!(snap.status(Duration::from_millis(1)), OutputStatus::Stalled);
+    }
+
+    /// A stream can die before it ever serves a buffer — unplug the interface
+    /// right after start. `since_last_callback` is still `None`, so checking
+    /// "never ran" first reported an active outage as `never_started`, which the
+    /// UI treats as no fault at all.
+    #[test]
+    fn an_outage_before_the_first_callback_is_recovering_not_never_started() {
+        let health = OutputHealth::new();
+        health.record_stream_error("device disappeared during startup");
+
+        assert_eq!(
+            health.snapshot().status(LIVENESS_WINDOW),
+            OutputStatus::Recovering
+        );
+    }
+
+    #[test]
+    fn underruns_are_counted_apart_from_errors() {
+        let health = OutputHealth::new();
+        health.record_underrun();
+        health.record_underrun();
+
+        let snap = health.snapshot();
+        assert_eq!(snap.underruns, 2);
+        assert_eq!(
+            snap.last_error, None,
+            "an underrun must not overwrite the reason a device actually failed"
+        );
+        assert!(!snap.rebuilding, "and must not look like an outage");
     }
 
     #[test]
@@ -444,15 +545,24 @@ mod test {
         );
     }
 
+    /// `is_fault` must agree with what the status page paints red.
+    ///
+    /// It originally returned true for everything but `Healthy`, which
+    /// contradicted the UI, the enum's own doc, and the changelog — all of which
+    /// say a device that has not called back *yet* is not a fault. Nothing
+    /// consumed the helper, so the disagreement was invisible until the first
+    /// caller reached for the obvious-looking method and flagged every ordinary
+    /// device start as broken.
     #[test]
-    fn only_healthy_is_not_a_fault() {
-        assert!(!OutputStatus::Healthy.is_fault());
-        for status in [
-            OutputStatus::Recovering,
-            OutputStatus::Stalled,
-            OutputStatus::NeverStarted,
-        ] {
+    fn is_fault_matches_what_the_ui_shows_as_a_fault() {
+        for status in [OutputStatus::Recovering, OutputStatus::Stalled] {
             assert!(status.is_fault(), "{status:?} should read as a fault");
+        }
+        for status in [OutputStatus::Healthy, OutputStatus::NeverStarted] {
+            assert!(
+                !status.is_fault(),
+                "{status:?} must not read as a fault — the UI does not show it as one"
+            );
         }
     }
 

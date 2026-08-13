@@ -116,6 +116,8 @@
   "status.notConnected": "Not Connected",
   "status.audioStalled": "Open, but not playing out",
   "status.audioRecovering": "Reconnecting to the interface",
+  "status.audioRecoveries": "{count} stream {count, plural, one {recovery} other {recoveries}}",
+  "status.audioUnderruns": "{count} {count, plural, one {underrun} other {underruns}}",
   "status.notConfigured": "Not Configured",
   "status.lastUpdated": "Updated {seconds}s ago",
   "status.audio": "Audio",

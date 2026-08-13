@@ -240,6 +240,10 @@ pub struct AudioOutputHealth {
     /// recovering from a flaky cable several times a set looks fine at any single
     /// instant; this is the only thing that would show it.
     pub recoveries: u64,
+    /// Buffer underruns since the device was opened. Counted apart from errors
+    /// because they are routine and self-healing — a rising count means the
+    /// buffer is too small for the machine, not that anything has failed.
+    pub underruns: u64,
     /// The most recent backend error, if there has been one. Retained after
     /// recovery on purpose — it is the thing worth reading afterwards.
     pub last_error: Option<String>,

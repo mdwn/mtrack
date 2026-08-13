@@ -172,6 +172,7 @@ test.describe("Status Page", () => {
         since_last_signal_ms: 4200,
         callbacks: 1477,
         recoveries: 0,
+        underruns: 0,
         last_error: null,
       };
       await route.fulfill({ json: body });
@@ -183,6 +184,11 @@ test.describe("Status Page", () => {
       .filter({ hasText: "Audio" });
     await expect(audioRow).toContainText("Open, but not playing out");
     await expect(audioRow).not.toContainText("Connected");
+
+    // The page polls every 5s and this handler awaits route.fetch(), so a poll
+    // landing as the test ends raises "Target page ... has been closed while
+    // running route callback".
+    await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
   test("audio row distinguishes recovering from stalled", async ({ page }) => {
@@ -198,6 +204,7 @@ test.describe("Status Page", () => {
         since_last_signal_ms: 900,
         callbacks: 1477,
         recoveries: 2,
+        underruns: 0,
         last_error: "ALSA function 'snd_pcm_open' failed",
       };
       await route.fulfill({ json: body });
@@ -208,6 +215,13 @@ test.describe("Status Page", () => {
       .locator(".subsystem-row")
       .filter({ hasText: "Audio" });
     await expect(audioRow).toContainText("Reconnecting to the interface");
+    // The after-the-fact half: a rig that rebuilt its stream mid-set reads as
+    // healthy again the moment it succeeds, so the count and the reason are the
+    // only trace left.
+    await expect(audioRow).toContainText("2 stream recoveries");
+    await expect(audioRow).toContainText("snd_pcm_open");
+
+    await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
   /** A healthy device must look ordinary: the fault styling is worthless if it

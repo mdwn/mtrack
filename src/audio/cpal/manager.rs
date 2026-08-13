@@ -139,10 +139,6 @@ impl OutputManager {
         let source_rx = self.source_rx.clone();
         let num_channels = mixer.num_channels();
 
-        // Notify the output thread when the error callback runs (e.g. ALSA POLLERR).
-        // The output thread blocks on the condvar and recreates the stream on notification.
-        let stream_error_notify = Arc::new((Mutex::new(false), Condvar::new()));
-
         // Shared shutdown signal so drop can wake the output thread.
         let shutdown = self.shutdown_notify.clone();
         let health = self.health.clone();
@@ -161,16 +157,23 @@ impl OutputManager {
                     return;
                 }
 
-                // Discard error notifications raised against the stream we are
-                // replacing. Nothing exists to error right now, so anything still
-                // latched refers to the dead stream — and cpal can raise the same
-                // fault more than once: one USB unplug on the test rig produced
-                // two POLLERR callbacks 0.2ms apart. The first drove this rebuild;
-                // the second stayed set, so the loop below saw it the instant the
-                // stream came back and immediately tore the new one down to
-                // rebuild it again. That cost a second audio gap 39ms after
-                // recovery, and counted one unplug as two recoveries.
-                *stream_error_notify.0.lock() = false;
+                // A notify handle per stream, so no stream can report a fault
+                // against its own replacement.
+                //
+                // Sharing one handle meant an error latched by a dead stream was
+                // still set when the new one came up, and the keep-alive loop
+                // below tore the new one straight back down. cpal can raise the
+                // same fault twice — one USB unplug on the test rig produced two
+                // POLLERR callbacks 0.2ms apart — so the second outlived the
+                // rebuild it triggered and cost a further audio gap 39ms after
+                // recovery, counting one unplug as two recoveries. Clearing the
+                // flag before each build fixed that instance and not the class:
+                // `build_stream` can construct a stream, have `play()` fail, drop
+                // it, and rebuild on a re-resolved handle, and the discarded one
+                // still held the shared handle. A fresh handle has nobody to
+                // inherit from.
+                let stream_error_notify: CondvarNotify =
+                    Arc::new((Mutex::new(false), Condvar::new()));
 
                 let stream_result = factory.build_stream(
                     mixer.clone(),

@@ -38,6 +38,7 @@
     since_last_signal_ms: number | null;
     callbacks: number;
     recoveries: number;
+    underruns: number;
     last_error: string | null;
   }
 
@@ -124,6 +125,32 @@
     if (!fault) return statusColor(s.status);
     // Recovering is amber: something is wrong but it is being worked on.
     return fault.status === "recovering" ? "var(--yellow)" : "var(--red)";
+  }
+
+  /** The history worth showing under the audio row, or null if there is none.
+   *
+   * Neither of these is visible at any single instant, which is the whole point:
+   * a rig that rebuilt its stream three times during the last set reads as
+   * perfectly healthy right now, and the reason it did is the thing someone
+   * wants after the show rather than during it. */
+  function audioHistory(): string | null {
+    const health = data?.hardware.audio_output;
+    if (!health) return null;
+    const parts: string[] = [];
+    if (health.recoveries > 0)
+      parts.push(
+        get(t)("status.audioRecoveries", {
+          values: { count: health.recoveries },
+        }),
+      );
+    if (health.underruns > 0)
+      parts.push(
+        get(t)("status.audioUnderruns", {
+          values: { count: health.underruns },
+        }),
+      );
+    if (health.last_error) parts.push(health.last_error);
+    return parts.length ? parts.join(" · ") : null;
   }
 
   function audioStatusLabel(s: SubsystemStatus): string {
@@ -242,6 +269,14 @@
               <span class="subsystem-status">{label}</span>
               {#if s.name}
                 <span class="subsystem-name">{s.name}</span>
+              {/if}
+              {#if isAudio}
+                {@const history = audioHistory()}
+                {#if history}
+                  <span class="subsystem-history" title={history}
+                    >{history}</span
+                  >
+                {/if}
               {/if}
               {#if needsConfig}
                 <a
@@ -394,6 +429,14 @@
   :global(.nc--dark) .init-banner {
     color: var(--nc-warn);
   }
+  .subsystem-history {
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .subsystem-list {
     display: flex;
     flex-direction: column;

@@ -288,11 +288,31 @@ fn error_handler(
     health: Arc<OutputHealth>,
 ) -> impl FnMut(cpal::StreamError) + Send + 'static {
     move |err: cpal::StreamError| {
-        error!(
-            "CPAL output stream error: {} (will attempt to recover)",
-            err
-        );
-        health.record_stream_error(&err.to_string());
+        // Runs on cpal's audio worker, which ALSA has already promoted to
+        // realtime priority (`boost_current_thread_priority` sits at the top of
+        // the loop that calls this), so the common path has to stay cheap.
+        //
+        // An underrun is not a stream failure. cpal reports every XRUN through
+        // this same callback and then calls `prepare()` and carries on, so they
+        // arrive routinely — and precisely when the machine is already
+        // struggling. Recording one as an error would bury the reason a device
+        // actually failed under a pile of glitches, overwrite its message, and
+        // cost an allocation and a lock on the audio thread each time.
+        //
+        // Note it still falls through to the notify below, so an underrun
+        // continues to trigger a full stream rebuild. That is almost certainly
+        // wrong — cpal has already called `prepare()` and the stream restarts on
+        // its own — but it is a playback behaviour change rather than a
+        // reporting one, and predates this. See #369.
+        if matches!(err, cpal::StreamError::BufferUnderrun) {
+            health.record_underrun();
+        } else {
+            error!(
+                "CPAL output stream error: {} (will attempt to recover)",
+                err
+            );
+            health.record_stream_error(&err.to_string());
+        }
         let (mutex, condvar) = &*notify;
         let mut guard = mutex.lock();
         *guard = true;

@@ -136,6 +136,7 @@ export const STATUS = {
       since_last_signal_ms: null,
       callbacks: 4821,
       recoveries: 0,
+      underruns: 0,
       last_error: null,
     },
     midi: { status: "not_connected", name: null },

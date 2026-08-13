@@ -414,6 +414,7 @@ impl Player {
                 since_last_signal_ms: as_ms(h.since_last_signal),
                 callbacks: h.callbacks,
                 recoveries: h.recoveries,
+                underruns: h.underruns,
                 last_error: h.last_error.clone(),
             }
         });

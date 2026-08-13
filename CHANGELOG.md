@@ -18,10 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Open, but not playing out" in red; a stream being rebuilt reads "Reconnecting to the interface"
   in amber, because something is wrong but it is being worked on.
 
-  Two pieces of history come with it, since neither is visible at any single instant: a count of
-  streams rebuilt after a backend error, which is the only way to notice a rig quietly recovering
-  from a flaky cable several times a set, and the last error the backend reported, retained after
-  recovery because that is the thing worth reading afterwards.
+  Three pieces of history come with it, shown under the audio row, since none is visible at any
+  single instant: a count of streams rebuilt after a backend error — the only way to notice a rig
+  quietly recovering from a flaky cable several times a set — a count of buffer underruns, and the
+  last error the backend reported, retained after recovery because that is the thing worth reading
+  afterwards. Underruns are counted apart from errors on purpose: cpal reports every XRUN through
+  the same callback and then recovers on its own, so folding them together would bury a cable fault
+  under routine glitches and overwrite its message.
 
   `never_started` is deliberately not shown as a fault: it is the ordinary state between opening a
   device and its first callback, and flagging it would make every start look broken.
