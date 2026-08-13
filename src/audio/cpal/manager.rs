@@ -14,13 +14,24 @@
 use parking_lot::{Condvar, Mutex};
 use std::{error::Error, fmt, sync::Arc, thread, time::Duration};
 
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// First delay before retrying a stream rebuild after a backend error.
 const REBUILD_BACKOFF_START: Duration = Duration::from_millis(250);
 /// Ceiling for the rebuild retry backoff. Bounded so a device that comes back
 /// after a long absence is picked up promptly rather than after a doubling gap.
 const REBUILD_BACKOFF_MAX: Duration = Duration::from_secs(5);
+
+/// How long a stream must last before it counts as having run at all.
+///
+/// Shorter than this and it died about as fast as it started, which on the test
+/// rig means a buffer the machine cannot service: a 64-frame period under load
+/// gave stream lifetimes of 7ms to 184ms, over and over.
+const STREAM_FLAPPING_UNDER: Duration = Duration::from_secs(1);
+
+/// Minimum gap between flap warnings. A flapping stream rebuilds tens of times a
+/// second, and the point is to tell the operator once, not to fill the journal.
+const FLAP_WARN_INTERVAL: Duration = Duration::from_secs(10);
 
 use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
 
@@ -151,6 +162,10 @@ impl OutputManager {
         let output_thread = thread::spawn(move || {
             let mut first_run = true;
             let mut backoff = REBUILD_BACKOFF_START;
+            // Flap accounting. Diagnosis only — see the warning below for why
+            // this does not also slow the rebuild down.
+            let mut flaps: u64 = 0;
+            let mut last_flap_warn: Option<std::time::Instant> = None;
 
             loop {
                 if *shutdown.0.lock() {
@@ -186,6 +201,7 @@ impl OutputManager {
                 match stream_result {
                     Ok(stream) => {
                         backoff = REBUILD_BACKOFF_START;
+                        let built_at = std::time::Instant::now();
                         if first_run {
                             info!(
                                 "Audio output stream started successfully (direct callback mode)"
@@ -221,7 +237,37 @@ impl OutputManager {
                         }
 
                         // Drop the stream so we can create a new one.
+                        let lifetime = built_at.elapsed();
                         drop(stream);
+
+                        // A stream that dies as fast as it starts says the buffer
+                        // is too small for what this machine can schedule. Worth
+                        // saying, because nothing else in the logs does — and an
+                        // operator staring at broken audio has no other way to
+                        // learn it.
+                        //
+                        // Deliberately does not throttle the rebuild. Measured on
+                        // the rig: cpal reports POLLERR without ever calling
+                        // `prepare()`, so the PCM stays in XRUN and rebuilding is
+                        // the *only* thing that recovers it. Audio delivered is
+                        // then a duty cycle of stream lifetime over rebuild
+                        // interval — backing off traded 77% choppy audio for 2%
+                        // silence. The storm is ugly, and it is also the recovery.
+                        if lifetime < STREAM_FLAPPING_UNDER {
+                            flaps += 1;
+                            let due =
+                                last_flap_warn.is_none_or(|at| at.elapsed() >= FLAP_WARN_INTERVAL);
+                            if due {
+                                warn!(
+                                    lifetime_ms = lifetime.as_millis() as u64,
+                                    flaps,
+                                    "Audio output stream is failing as fast as it starts; \
+                                     the buffer is likely too small for this machine to \
+                                     service reliably"
+                                );
+                                last_flap_warn = Some(std::time::Instant::now());
+                            }
+                        }
                     }
                     Err(e) => {
                         if first_run {
@@ -429,6 +475,40 @@ mod test {
             assert!(
                 handle.build_count() >= 4,
                 "expected the initial build plus retries, got {}",
+                handle.build_count()
+            );
+
+            drop(manager);
+        }
+
+        /// A flapping stream must still be rebuilt at full speed.
+        ///
+        /// This is the behaviour guarantee behind the warning: the rebuild is
+        /// the only thing that clears an XRUN once cpal has reported it as
+        /// POLLERR, so audio delivered is a duty cycle of stream lifetime over
+        /// rebuild interval. Throttling was tried and measured — it turned 77%
+        /// choppy audio into 2% silence.
+        #[test]
+        fn a_flapping_stream_is_still_rebuilt_promptly() {
+            let (factory, handle) = ErrorCapturingFactory::new();
+            let mut manager = OutputManager::new(2, 44100).unwrap();
+            manager
+                .start_output_thread(Box::new(factory))
+                .expect("should start");
+            assert_eq!(handle.build_count(), 1);
+
+            for _ in 0..5 {
+                handle.trigger_error();
+                let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                let want = handle.build_count() + 1;
+                while std::time::Instant::now() < deadline && handle.build_count() < want {
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+
+            assert!(
+                handle.build_count() >= 6,
+                "each fault should still produce a rebuild, got {}",
                 handle.build_count()
             );
 
