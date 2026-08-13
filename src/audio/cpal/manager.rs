@@ -270,6 +270,12 @@ impl OutputManager {
         self.health.snapshot()
     }
 
+    /// Whether the callback has run within `threshold`, without the allocation a
+    /// full snapshot costs. For the playback monitor's 100Hz stall check.
+    pub(super) fn is_callback_alive(&self, threshold: Duration) -> bool {
+        self.health.is_callback_alive(threshold)
+    }
+
     /// Sleeps for `duration`, waking early if shutdown is signalled.
     /// Returns true if shutdown was requested.
     fn sleep_unless_shutdown(shutdown: &CondvarNotify, duration: Duration) -> bool {

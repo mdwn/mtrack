@@ -873,8 +873,14 @@ impl AudioDevice for Device {
             // Note the limit: a device that accepts every buffer and produces no
             // sound still looks alive from here, and nothing host-side can tell
             // the difference. What this catches is the callback going away.
-            let health = self.output_manager.health();
-            if !health.callback_alive(self.liveness_window()) {
+            // Two atomic loads, not a snapshot: this runs at 100Hz for the whole
+            // song, and a snapshot clones the last error string.
+            if !self
+                .output_manager
+                .is_callback_alive(self.liveness_window())
+            {
+                // Only now is the full picture worth assembling.
+                let health = self.output_manager.health();
                 error!(
                     song = song.name(),
                     // 0 means the callback never ran at all; `callbacks`

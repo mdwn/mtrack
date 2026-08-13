@@ -199,6 +199,22 @@ impl OutputHealth {
         }
     }
 
+    /// Whether the callback has run within `threshold`, without building a
+    /// snapshot.
+    ///
+    /// For the playback monitor, which asks this at 100Hz and needs nothing
+    /// else. [`OutputHealth::snapshot`] clones the last error string, so polling
+    /// it that fast would allocate every 10ms for the whole of any playback that
+    /// followed a backend error — to answer a question two atomic loads settle.
+    pub fn is_callback_alive(&self, threshold: Duration) -> bool {
+        let stamp = self.last_callback_nanos.load(Ordering::Relaxed);
+        if stamp == 0 {
+            return false;
+        }
+        let now = self.base.elapsed().as_nanos() as u64;
+        Duration::from_nanos(now.saturating_sub(stamp)) <= threshold
+    }
+
     /// Read the current facts.
     pub fn snapshot(&self) -> OutputHealthSnapshot {
         let now = self.base.elapsed().as_nanos() as u64;
