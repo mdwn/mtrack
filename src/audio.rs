@@ -26,6 +26,7 @@ pub mod context;
 pub mod cpal;
 pub mod crossfade;
 pub mod format;
+pub mod health;
 pub mod metronome;
 pub mod midi_tempo;
 pub mod mixer;
@@ -115,6 +116,27 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Sets player-level default metronome sounds, applied to songs that
     /// don't override them. Devices that don't play the metronome ignore it.
     fn set_metronome_defaults(&self, _defaults: Option<config::metronome::MetronomeSounds>) {}
+
+    /// Liveness facts from the output callback, for devices that have one.
+    /// `None` means the device cannot report — not that it is unhealthy.
+    ///
+    /// A device reporting a live callback and recent signal means mtrack is handing
+    /// non-silent audio to the driver. It does not mean sound reached the room: a
+    /// device can accept every buffer and produce nothing, and that is not
+    /// detectable from here. The value of this is ruling mtrack out.
+    fn output_health(&self) -> Option<health::OutputHealthSnapshot> {
+        None
+    }
+
+    /// How long the output callback may be silent before it counts as stopped.
+    ///
+    /// Devices that know their callback period size this from it; everything
+    /// else gets the floor. Exposed on the trait so the status snapshot judges
+    /// liveness by the same window the playback monitor does, rather than the
+    /// two disagreeing about whether a device is alive.
+    fn liveness_window(&self) -> std::time::Duration {
+        health::LIVENESS_WINDOW
+    }
 
     #[cfg(test)]
     fn to_mock(&self) -> Result<Arc<mock::Device>, AudioError>;

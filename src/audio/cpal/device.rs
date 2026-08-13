@@ -186,9 +186,101 @@ fn max_output_channels(configs: &[cpal::SupportedStreamConfigRange]) -> u16 {
     configs.iter().map(|c| c.channels()).max().unwrap_or(0)
 }
 
+/// Serialises the stdout/stderr redirection that silences ALSA's enumeration
+/// chatter.
+///
+/// `shh` swaps the process's file descriptors and restores them on drop. Two
+/// threads doing that at once interleave the save and restore, and the process
+/// loses its real stdout permanently — a failure that, by construction, prints
+/// nothing at all. Enumeration used to happen only during init and from the web
+/// UI's device picker, which made a collision unlikely but never impossible; the
+/// output thread now re-resolves a device during stream recovery, so this is a
+/// lock rather than a hope.
+///
+/// Held for as long as the guards are, so callers take it first and drop it last.
+static ENUMERATION_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// One output device, resolved by name.
+pub(super) struct ResolvedOutputDevice {
+    /// The device id it was matched on, untrimmed.
+    pub(super) name: String,
+    pub(super) host_id: cpal::HostId,
+    pub(super) device: cpal::Device,
+    pub(super) configs: Vec<cpal::SupportedStreamConfigRange>,
+}
+
+/// Scans every host for one output device by name, holding no others open.
+///
+/// Deliberately not `list_cpal_devices().find(...)`. Every `Device` in that list
+/// holds an open ALSA handle, and ALSA will not describe devices while its
+/// siblings are held: building the full list makes the list *shrink*. Measured on
+/// the test rig, in one process, alternating the two enumeration paths: 19
+/// devices, then 8, then 7, then 3. So a search over that list could fail to find
+/// a device the web UI had legitimately advertised, and the operator saw "no
+/// device found with name ..." for a device that was right there in the dropdown
+/// (#357).
+///
+/// Scanning and keeping only the match holds exactly one handle, which is the
+/// same shape as [`crate::audio::find_input_device`].
+pub(super) fn resolve_output_device(
+    name: &str,
+) -> Result<Option<ResolvedOutputDevice>, Box<dyn Error>> {
+    // Suppress noisy output here. Declared before the guards so the lock outlives
+    // them — see ENUMERATION_LOCK.
+    let _enumerating = ENUMERATION_LOCK.lock();
+    let _shh_stdout = shh::stdout()?;
+    let _shh_stderr = shh::stderr()?;
+
+    for host_id in cpal::available_hosts() {
+        let host_devices = match cpal::host_from_id(host_id)?.devices() {
+            Ok(host_devices) => host_devices,
+            Err(e) => {
+                error!(
+                    err = e.to_string(),
+                    host = host_id.name(),
+                    "Unable to list devices for host"
+                );
+                continue;
+            }
+        };
+
+        for device in host_devices {
+            // Name first: a non-match is dropped here, before its configurations
+            // are queried and before anything is built from it, so its handle is
+            // released immediately.
+            let device_id = match device.id() {
+                Ok(id) => id.to_string(),
+                Err(_) => continue,
+            };
+            if device_id.trim() != name.trim() {
+                continue;
+            }
+
+            let Some(configs) = output_configs(&device) else {
+                debug!(
+                    device_name = %device_id,
+                    "Device matched by name but reports no output configurations"
+                );
+                continue;
+            };
+
+            return Ok(Some(ResolvedOutputDevice {
+                name: device_id,
+                host_id,
+                device,
+                configs,
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
 /// Lists audio devices as simple info structs (no trait objects).
 pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
-    // Suppress noisy output here.
+    // Suppress noisy output here. Declared before the guards so the lock outlives
+    // them — see ENUMERATION_LOCK.
+    let _enumerating = ENUMERATION_LOCK.lock();
     let _shh_stdout = shh::stdout()?;
     let _shh_stderr = shh::stderr()?;
 
@@ -261,6 +353,10 @@ pub struct Device {
     output_manager: Arc<OutputManager>,
     /// Audio configuration for buffering and performance tuning.
     audio_config: config::Audio,
+    /// The output buffer size actually resolved for the stream, in frames.
+    /// `None` when the backend was left to choose and did not say, which is what
+    /// `BufferSize::Default` gives. Used only to size the liveness window.
+    output_buffer_size: Option<u32>,
     /// Player-level default metronome sounds, set at hardware init.
     metronome_defaults: parking_lot::Mutex<Option<config::metronome::MetronomeSounds>>,
 }
@@ -291,7 +387,9 @@ impl Device {
 
     /// Lists cpal devices.
     fn list_cpal_devices() -> Result<Vec<Device>, Box<dyn Error>> {
-        // Suppress noisy output here.
+        // Suppress noisy output here. Declared before the guards so the lock
+        // outlives them — see ENUMERATION_LOCK.
+        let _enumerating = ENUMERATION_LOCK.lock();
         let _shh_stdout = shh::stdout()?;
         let _shh_stderr = shh::stderr()?;
 
@@ -347,6 +445,7 @@ impl Device {
                 output_manager: temp_output_manager,
                 audio_config: config::Audio::new("default"), // Default config for listing
                 metronome_defaults: parking_lot::Mutex::new(None),
+                output_buffer_size: None,
             })
         }
 
@@ -363,140 +462,118 @@ impl Device {
         matches!(Device::find_cpal_device(name), Ok(Some(_)))
     }
 
-    /// Finds one output device by name, holding no others open.
+    /// Finds one output device by name and wraps it in a `Device`.
     ///
-    /// Deliberately not `list_cpal_devices().find(...)`. Every `Device` in that
-    /// list holds an open ALSA handle, and ALSA will not describe devices while
-    /// its siblings are held: building the full list makes the list *shrink*.
-    /// Measured on the test rig, in one process, alternating the two
-    /// enumeration paths: 19 devices, then 8, then 7, then 3. So a search over
-    /// that list could fail to find a device the web UI had legitimately
-    /// advertised, and the operator saw "no device found with name ..." for a
-    /// device that was right there in the dropdown (#357).
-    ///
-    /// Scanning and keeping only the match holds exactly one handle, which is
-    /// the same shape as [`crate::audio::find_input_device`].
+    /// See [`resolve_output_device`] for why this scans rather than searching
+    /// `list_cpal_devices()`.
     fn find_cpal_device(name: &str) -> Result<Option<Device>, Box<dyn Error>> {
-        // Suppress noisy output here.
-        let _shh_stdout = shh::stdout()?;
-        let _shh_stderr = shh::stderr()?;
+        let Some(resolved) = resolve_output_device(name)? else {
+            return Ok(None);
+        };
 
-        for host_id in cpal::available_hosts() {
-            let host_devices = match cpal::host_from_id(host_id)?.devices() {
-                Ok(host_devices) => host_devices,
-                Err(e) => {
-                    error!(
-                        err = e.to_string(),
-                        host = host_id.name(),
-                        "Unable to list devices for host"
-                    );
-                    continue;
-                }
-            };
+        let max_channels = max_output_channels(&resolved.configs);
+        let default_format = TargetFormat::new(44100, SampleFormat::Int, 32)?;
+        let output_manager = Arc::new(OutputManager::new(
+            max_channels,
+            default_format.sample_rate,
+        )?);
 
-            for device in host_devices {
-                // Name first: a non-match is dropped here, before its
-                // configurations are queried and before anything is built from
-                // it, so its handle is released immediately.
-                let device_id = match device.id() {
-                    Ok(id) => id.to_string(),
-                    Err(_) => continue,
-                };
-                if device_id.trim() != name.trim() {
-                    continue;
-                }
-
-                let Some(configs) = output_configs(&device) else {
-                    debug!(
-                        device_name = %device_id,
-                        "Device matched by name but reports no output configurations"
-                    );
-                    continue;
-                };
-                let max_channels = max_output_channels(&configs);
-                let default_format = TargetFormat::new(44100, SampleFormat::Int, 32)?;
-                let output_manager = Arc::new(OutputManager::new(
-                    max_channels,
-                    default_format.sample_rate,
-                )?);
-
-                return Ok(Some(Device {
-                    name: device_id,
-                    playback_delay: Duration::ZERO,
-                    max_channels,
-                    host_id,
-                    device,
-                    target_format: default_format,
-                    output_manager,
-                    audio_config: config::Audio::new("default"),
-                    metronome_defaults: parking_lot::Mutex::new(None),
-                }));
-            }
-        }
-
-        Ok(None)
+        Ok(Some(Device {
+            name: resolved.name,
+            playback_delay: Duration::ZERO,
+            max_channels,
+            host_id: resolved.host_id,
+            device: resolved.device,
+            target_format: default_format,
+            output_manager,
+            audio_config: config::Audio::new("default"),
+            metronome_defaults: parking_lot::Mutex::new(None),
+            output_buffer_size: None,
+        }))
     }
 
     /// Gets the given cpal device.
     pub fn get(config: config::Audio) -> Result<Device, Box<dyn Error>> {
-        let name = config.device();
+        let name = config.device().to_string();
         debug!(
             device_name = %name,
             device_name_len = name.len(),
             device_name_trimmed = %name.trim(),
             "Searching for audio device"
         );
-        match Device::find_cpal_device(name)? {
-            Some(mut device) => {
-                device.playback_delay = config.playback_delay()?;
-
-                device.target_format = TargetFormat::new(
-                    config.sample_rate(),
-                    config.sample_format()?,
-                    config.bits_per_sample(),
-                )?;
-
-                // Initialize the output manager
-                let mut output_manager =
-                    OutputManager::new(device.max_channels, device.target_format.sample_rate)?;
-
-                // Resolve stream buffer size for CPAL (default / min / fixed)
-                let min_size = min_supported_buffer_size(
-                    &device.device,
-                    &device.target_format,
-                    device.max_channels,
-                );
-                let output_buffer_size = resolve_buffer_size(
-                    config.stream_buffer_size(),
-                    config.buffer_size() as u32,
-                    min_size,
-                );
-                if let (Some(StreamBufferSize::Min), Some(s)) =
-                    (config.stream_buffer_size(), output_buffer_size)
-                {
-                    if min_size.is_some() {
-                        info!(
-                            stream_buffer_size = s,
-                            "Using minimum supported stream buffer size (low latency)"
-                        );
-                    }
-                }
-
-                // Start the output thread with resolved buffer size
-                let factory = Box::new(CpalOutputStreamFactory::new(
-                    device.device.clone(),
-                    device.target_format.clone(),
-                    output_buffer_size,
-                ));
-                output_manager.start_output_thread(factory)?;
-
-                device.output_manager = Arc::new(output_manager);
-                device.audio_config = config;
-
-                Ok(device)
+        match Device::find_cpal_device(&name)? {
+            Some(device) => {
+                let resolved = device.name.clone();
+                // Say which of the two situations this is. `retry_until_ready`
+                // re-runs this twice a second forever and logs the same line each
+                // time, so without the distinction an operator cannot tell a
+                // device that is still enumerating — which the retry picks up on
+                // its own, and which is why the retry is perpetual — from one
+                // that is sitting right there refusing to open, and will still be
+                // refusing in an hour. The latter is usually a sample rate,
+                // format or buffer size the interface won't accept, or another
+                // process holding it exclusively; either way it needs a person.
+                Device::open(device, config).map_err(|e| -> Box<dyn Error> {
+                    // No "audio device" prefix: the retry loop and the AudioError
+                    // wrapper both add one already, and a line that says it three
+                    // times before saying anything is harder to read at 2Hz.
+                    format!("'{resolved}' was found but could not be opened: {e}").into()
+                })
             }
             None => Err(format!("no device found with name {}", name).into()),
         }
+    }
+
+    /// Configures a resolved device and starts its output stream.
+    ///
+    /// Split from [`Device::get`] so every failure past the point where the
+    /// device was located shares one "found it, couldn't open it" message.
+    fn open(mut device: Device, config: config::Audio) -> Result<Device, Box<dyn Error>> {
+        device.playback_delay = config.playback_delay()?;
+
+        device.target_format = TargetFormat::new(
+            config.sample_rate(),
+            config.sample_format()?,
+            config.bits_per_sample(),
+        )?;
+
+        // Initialize the output manager
+        let mut output_manager =
+            OutputManager::new(device.max_channels, device.target_format.sample_rate)?;
+
+        // Resolve stream buffer size for CPAL (default / min / fixed)
+        let min_size =
+            min_supported_buffer_size(&device.device, &device.target_format, device.max_channels);
+        let output_buffer_size = resolve_buffer_size(
+            config.stream_buffer_size(),
+            config.buffer_size() as u32,
+            min_size,
+        );
+        if let (Some(StreamBufferSize::Min), Some(s)) =
+            (config.stream_buffer_size(), output_buffer_size)
+        {
+            if min_size.is_some() {
+                info!(
+                    stream_buffer_size = s,
+                    "Using minimum supported stream buffer size (low latency)"
+                );
+            }
+        }
+
+        // Start the output thread with resolved buffer size
+        let factory = Box::new(CpalOutputStreamFactory::new(
+            device.device.clone(),
+            device.name.clone(),
+            device.target_format.clone(),
+            output_buffer_size,
+        ));
+        output_manager.start_output_thread(factory)?;
+
+        device.output_manager = Arc::new(output_manager);
+        device.audio_config = config;
+        device.output_buffer_size = output_buffer_size;
+
+        Ok(device)
     }
 }
 
@@ -558,6 +635,19 @@ fn build_active_source(
 }
 
 impl AudioDevice for Device {
+    fn output_health(&self) -> Option<crate::audio::health::OutputHealthSnapshot> {
+        Some(self.output_manager.health())
+    }
+
+    /// Sized from the resolved buffer, so a rig configured with an enormous one
+    /// isn't judged against a window shorter than a single callback.
+    fn liveness_window(&self) -> Duration {
+        crate::audio::health::liveness_window(crate::audio::health::callback_period(
+            self.output_buffer_size,
+            self.target_format.sample_rate,
+        ))
+    }
+
     fn set_metronome_defaults(&self, defaults: Option<config::metronome::MetronomeSounds>) {
         *self.metronome_defaults.lock() = defaults;
     }
@@ -755,6 +845,65 @@ impl AudioDevice for Device {
         'monitor: loop {
             if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
                 break;
+            }
+
+            // The callback has stopped while a song is playing. End the song.
+            //
+            // Not a recoverable condition, and deliberately not treated as one.
+            // The transport is driven by the callback's sample counter, so an
+            // outage freezes it rather than advancing it: audio, MIDI and cues
+            // all stop together and, when the device returns, would resume from
+            // the bar they froze on rather than from where the room now is.
+            //
+            // On stage that is worse than stopping. The band has just played
+            // through the outage with no click and no tracks, so they are not
+            // where the frozen transport thinks they are, and audio reappearing
+            // mid-song gives them a second, confidently wrong reference to
+            // follow. Nothing host-side can recover the one piece of state that
+            // matters, which is where the *band* is, so resuming cannot be made
+            // correct — only quieter or louder about being wrong.
+            //
+            // Fast-forwarding to a wall clock has the same flaw: it assumes the
+            // band held tempo through the moment they had nothing to hold it to.
+            //
+            // So the device layer keeps rebuilding, and this ends the song. The
+            // ERROR is for the operator afterwards; in the moment there is
+            // nothing to read and nothing to do.
+            //
+            // Note the limit: a device that accepts every buffer and produces no
+            // sound still looks alive from here, and nothing host-side can tell
+            // the difference. What this catches is the callback going away.
+            let health = self.output_manager.health();
+            if !health.callback_alive(self.liveness_window()) {
+                error!(
+                    song = song.name(),
+                    // 0 means the callback never ran at all; `callbacks`
+                    // separates that from a callback that ran and then stopped.
+                    since_last_callback_ms = health
+                        .since_last_callback
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
+                    callbacks = health.callbacks,
+                    "Audio output callback stopped during playback; ending the song. \
+                     The transport is frozen, so resuming would re-enter the song at \
+                     the point it stopped rather than where the performance now is"
+                );
+                // Cancel before returning: the sources, MIDI and DMX for this
+                // song all share this handle, and without it they would sit on a
+                // frozen clock waiting to be joined, then resume together when
+                // the device came back.
+                //
+                // Marked as a *failure* cancellation, not a deliberate one. The
+                // player's cleanup skips its work when a playback was cancelled
+                // on the grounds that whoever asked for it — stop(), a seek —
+                // has already done that work and may have started a new playback
+                // to protect. Nothing asked for this one.
+                cancel_handle.cancel_due_to_failure();
+                return Err(crate::audio::AudioError::Stream(format!(
+                    "audio output callback stopped after {} callbacks; song '{}' ended",
+                    health.callbacks,
+                    song.name()
+                )));
             }
 
             // Apply any deferred loop_time_consumed bumps whose sample has

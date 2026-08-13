@@ -12,17 +12,20 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use std::error::Error;
+use std::sync::Arc;
 use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
-use tracing::error;
+use tracing::{error, info};
 
 use crate::audio::format::{SampleFormat, TargetFormat};
+use crate::audio::health::{has_output_signal, OutputHealth};
 use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
 use crate::thread_priority::{
     callback_thread_priority, env_flag, promote_to_realtime, rt_audio_enabled,
 };
 
+use super::device::resolve_output_device;
 use super::profiler::CallbackProfiler;
 use super::CondvarNotify;
 
@@ -47,6 +50,7 @@ pub(crate) trait OutputStreamFactory: Send + 'static {
         source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
         num_channels: u16,
         error_notify: CondvarNotify,
+        health: Arc<OutputHealth>,
     ) -> Result<Box<dyn OutputStream>, Box<dyn Error>>;
 }
 
@@ -59,7 +63,20 @@ impl OutputStream for CpalOutputStream {}
 
 /// Builds CPAL output streams for a given device, format, and buffer config.
 pub(super) struct CpalOutputStreamFactory {
-    device: cpal::Device,
+    /// The handle streams are built from. Replaced when it goes stale — see
+    /// [`CpalOutputStreamFactory::build_stream`].
+    device: parking_lot::Mutex<cpal::Device>,
+    /// The name the device was resolved by, so a rebuild can re-resolve it.
+    device_name: String,
+    /// Whether this handle has ever produced a stream.
+    ///
+    /// Gates re-resolution: a handle that has worked and then stopped may have
+    /// gone stale, but one that has never worked is simply wrong, and
+    /// re-resolving it would just find the same device again. Without this, a
+    /// config the device rejects makes every attempt of the perpetual 500ms
+    /// retry enumerate twice — once in `Device::get` and once here — holding the
+    /// enumeration lock for a good fraction of every second.
+    has_built: std::sync::atomic::AtomicBool,
     target_format: TargetFormat,
     config: cpal::StreamConfig,
     max_samples: usize,
@@ -68,6 +85,7 @@ pub(super) struct CpalOutputStreamFactory {
 impl CpalOutputStreamFactory {
     pub(super) fn new(
         device: cpal::Device,
+        device_name: String,
         target_format: TargetFormat,
         output_buffer_size: Option<u32>,
     ) -> Self {
@@ -86,7 +104,9 @@ impl CpalOutputStreamFactory {
             .unwrap_or(4096 * 64);
 
         Self {
-            device,
+            device: parking_lot::Mutex::new(device),
+            device_name,
+            has_built: std::sync::atomic::AtomicBool::new(false),
             target_format,
             config,
             max_samples,
@@ -95,12 +115,95 @@ impl CpalOutputStreamFactory {
 }
 
 impl OutputStreamFactory for CpalOutputStreamFactory {
+    /// Builds a stream, re-resolving the device by name if the handle we hold
+    /// turns out to be dead.
+    ///
+    /// A handle that worked once is not guaranteed to work again. ALSA keys a
+    /// device by name, so the original handle reopens the interface fine after a
+    /// power cycle — but CoreAudio keys it by `AudioDeviceID` and WASAPI by
+    /// endpoint, and a re-plugged interface comes back under a *new* one. There
+    /// the handle is dead for good, and the recovery loop in `OutputManager`
+    /// would retry it forever without this.
+    ///
+    /// Re-resolution only happens after a build has already failed *and* the
+    /// handle has worked at least once before, so the working path costs nothing
+    /// and a device that simply rejects the configuration is not enumerated for
+    /// twice a second forever.
     fn build_stream(
         &self,
         mixer: AudioMixer,
         source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
         num_channels: u16,
         error_notify: CondvarNotify,
+        health: Arc<OutputHealth>,
+    ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
+        use std::sync::atomic::Ordering;
+
+        let device = self.device.lock().clone();
+        let first_err = match self.build_on(
+            &device,
+            mixer.clone(),
+            source_rx.clone(),
+            num_channels,
+            error_notify.clone(),
+            health.clone(),
+        ) {
+            Ok(stream) => {
+                self.has_built.store(true, Ordering::Relaxed);
+                return Ok(stream);
+            }
+            Err(e) => e,
+        };
+
+        // A handle that has never worked is wrong, not stale — re-resolving it
+        // would find the same device and fail the same way.
+        if !self.has_built.load(Ordering::Relaxed) {
+            return Err(first_err);
+        }
+
+        let resolved = match resolve_output_device(&self.device_name) {
+            Ok(Some(resolved)) => resolved,
+            // Genuinely absent, or we cannot tell. Either way the original error
+            // is the more useful one to report.
+            Ok(None) => return Err(first_err),
+            Err(e) => {
+                error!(
+                    device = %self.device_name,
+                    err = %e,
+                    "Failed to re-resolve audio device after a failed stream build"
+                );
+                return Err(first_err);
+            }
+        };
+
+        let stream = self.build_on(
+            &resolved.device,
+            mixer,
+            source_rx,
+            num_channels,
+            error_notify,
+            health,
+        )?;
+        info!(
+            device = %self.device_name,
+            "Audio device came back under a new handle; stream rebuilt"
+        );
+        self.has_built.store(true, Ordering::Relaxed);
+        *self.device.lock() = resolved.device;
+        Ok(stream)
+    }
+}
+
+impl CpalOutputStreamFactory {
+    /// Builds a stream on one specific device handle.
+    fn build_on(
+        &self,
+        device: &cpal::Device,
+        mixer: AudioMixer,
+        source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+        num_channels: u16,
+        error_notify: CondvarNotify,
+        health: Arc<OutputHealth>,
     ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
         // Finalize config with actual channel count / sample rate from mixer.
         let config = cpal::StreamConfig {
@@ -111,9 +214,9 @@ impl OutputStreamFactory for CpalOutputStreamFactory {
         let max_samples = self.max_samples.max(num_channels as usize * 4096);
 
         let stream = if self.target_format.sample_format == SampleFormat::Float {
-            let mut callback = create_direct_f32_callback(mixer, source_rx, num_channels);
+            let mut callback = create_direct_f32_callback(mixer, source_rx, num_channels, health);
             let notify = error_notify;
-            self.device.build_output_stream(
+            device.build_output_stream(
                 &config,
                 move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
                     callback(data, info);
@@ -138,9 +241,10 @@ impl OutputStreamFactory for CpalOutputStreamFactory {
                         source_rx,
                         num_channels,
                         max_samples,
+                        health,
                     );
                     let notify = error_notify;
-                    self.device.build_output_stream(
+                    device.build_output_stream(
                         &config,
                         move |data: &mut [i16], info: &cpal::OutputCallbackInfo| {
                             callback(data, info);
@@ -164,9 +268,10 @@ impl OutputStreamFactory for CpalOutputStreamFactory {
                         source_rx,
                         num_channels,
                         max_samples,
+                        health,
                     );
                     let notify = error_notify;
-                    self.device.build_output_stream(
+                    device.build_output_stream(
                         &config,
                         move |data: &mut [i32], info: &cpal::OutputCallbackInfo| {
                             callback(data, info);
@@ -205,33 +310,49 @@ pub(super) fn drain_pending_sources(
     }
 }
 
-/// Core f32 mixing logic: drains pending sources, mixes into the output buffer, and profiles.
+/// What observes one callback: timing, which is opt-in and env-gated, and
+/// liveness, which is always on.
+///
+/// Bundled rather than passed separately so the mixing functions don't take
+/// another argument every time something wants to watch the callback.
+pub(super) struct CallbackInstruments<'a> {
+    pub(super) profiler: &'a mut CallbackProfiler,
+    pub(super) health: &'a OutputHealth,
+}
+
+/// Core f32 mixing logic: drains pending sources, mixes into the output buffer,
+/// profiles, and records liveness.
 pub(super) fn process_f32_callback(
     data: &mut [f32],
     mixer: &AudioMixer,
     source_rx: &crossbeam_channel::Receiver<MixerActiveSource>,
     num_channels: u16,
-    profiler: &mut CallbackProfiler,
+    instruments: CallbackInstruments<'_>,
 ) {
+    let CallbackInstruments { profiler, health } = instruments;
     drain_pending_sources(mixer, source_rx);
     let num_frames = data.len() / num_channels as usize;
     let start = profiler.on_cb_start();
     mixer.process_into_output(data, num_frames);
     profiler.on_mix_done(start);
     profiler.maybe_log_float();
+    // Checked after mixing, so it reflects what the device is actually handed.
+    health.record_callback(has_output_signal(data));
 }
 
 /// Core integer mixing logic: drains pending sources, mixes into a temp f32 buffer,
-/// converts to the target integer type, and profiles. `temp_buffer` must be pre-allocated
-/// to the max expected sample count to avoid allocations in the callback.
+/// converts to the target integer type, profiles, and records liveness.
+/// `temp_buffer` must be pre-allocated to the max expected sample count to avoid
+/// allocations in the callback.
 pub(super) fn process_int_callback<T: cpal::Sample + cpal::FromSample<f32>>(
     data: &mut [T],
     mixer: &AudioMixer,
     source_rx: &crossbeam_channel::Receiver<MixerActiveSource>,
     num_channels: u16,
     temp_buffer: &mut [f32],
-    profiler: &mut CallbackProfiler,
+    instruments: CallbackInstruments<'_>,
 ) {
+    let CallbackInstruments { profiler, health } = instruments;
     drain_pending_sources(mixer, source_rx);
     // Never allocate in the callback: clamp to pre-allocated size. If the backend
     // ever sends a larger buffer, we mix only the first max_samples and zero the rest.
@@ -251,6 +372,10 @@ pub(super) fn process_int_callback<T: cpal::Sample + cpal::FromSample<f32>>(
     }
     profiler.on_convert_done(start_convert);
     profiler.maybe_log_int();
+    // Taken from the f32 buffer rather than the converted integers: the silence
+    // floor is expressed in float terms, so it needs no per-format scaling and
+    // means the same thing at every bit depth.
+    health.record_callback(has_output_signal(temp_slice));
 }
 
 /// f32 callback: read directly into CPAL buffer (true zero-copy)
@@ -259,6 +384,7 @@ fn create_direct_f32_callback(
     mixer: AudioMixer,
     source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
     num_channels: u16,
+    health: Arc<OutputHealth>,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
     let callback_priority = callback_thread_priority();
     let rt_audio = rt_audio_enabled();
@@ -268,7 +394,16 @@ fn create_direct_f32_callback(
 
     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
         promote_to_realtime(callback_priority, rt_audio, &mut priority_set);
-        process_f32_callback(data, &mixer, &source_rx, num_channels, &mut profiler);
+        process_f32_callback(
+            data,
+            &mixer,
+            &source_rx,
+            num_channels,
+            CallbackInstruments {
+                profiler: &mut profiler,
+                health: &health,
+            },
+        );
     }
 }
 
@@ -280,6 +415,7 @@ fn create_direct_int_callback<T: cpal::Sample + cpal::FromSample<f32> + std::fmt
     source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
     num_channels: u16,
     max_samples: usize,
+    health: Arc<OutputHealth>,
 ) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo) + Send + 'static
 where
     f32: cpal::FromSample<T>,
@@ -299,13 +435,18 @@ where
             &source_rx,
             num_channels,
             &mut temp_buffer,
-            &mut profiler,
+            CallbackInstruments {
+                profiler: &mut profiler,
+                health: &health,
+            },
         );
     }
 }
 
 #[cfg(test)]
 pub(super) mod test {
+    use crate::audio::health::{LIVENESS_WINDOW, SIGNAL_WINDOW};
+
     use super::super::CondvarNotify;
     use super::*;
     use crate::audio::mixer::AudioMixer;
@@ -384,6 +525,7 @@ pub(super) mod test {
             _source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
             _num_channels: u16,
             _error_notify: CondvarNotify,
+            _health: Arc<OutputHealth>,
         ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
             self.alive.store(true, Ordering::Relaxed);
             Ok(Box::new(MockOutputStream {
@@ -402,6 +544,7 @@ pub(super) mod test {
             _source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
             _num_channels: u16,
             _error_notify: CondvarNotify,
+            _health: Arc<OutputHealth>,
         ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
             Err("mock build failure".into())
         }
@@ -413,6 +556,9 @@ pub(super) mod test {
         alive: Arc<AtomicBool>,
         build_count: std::sync::atomic::AtomicU32,
         captured_error_notify: parking_lot::Mutex<Option<CondvarNotify>>,
+        /// Number of upcoming builds that should fail, simulating a device that is
+        /// mid-re-enumeration and not yet openable.
+        fail_next: std::sync::atomic::AtomicU32,
     }
 
     /// A factory that captures the error_notify so tests can trigger stream error recovery.
@@ -442,6 +588,12 @@ pub(super) mod test {
         pub(in crate::audio::cpal) fn is_alive(&self) -> bool {
             self.state.alive.load(Ordering::Relaxed)
         }
+
+        /// Make the next `n` build attempts fail, as a USB device would while it is
+        /// re-enumerating after a power cycle.
+        pub(in crate::audio::cpal) fn fail_next_builds(&self, n: u32) {
+            self.state.fail_next.store(n, Ordering::Relaxed);
+        }
     }
 
     impl ErrorCapturingFactory {
@@ -450,6 +602,7 @@ pub(super) mod test {
                 alive: Arc::new(AtomicBool::new(false)),
                 build_count: std::sync::atomic::AtomicU32::new(0),
                 captured_error_notify: parking_lot::Mutex::new(None),
+                fail_next: std::sync::atomic::AtomicU32::new(0),
             });
             let handle = ErrorCapturingHandle {
                 state: state.clone(),
@@ -465,8 +618,17 @@ pub(super) mod test {
             _source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
             _num_channels: u16,
             error_notify: CondvarNotify,
+            _health: Arc<OutputHealth>,
         ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
             self.state.build_count.fetch_add(1, Ordering::Relaxed);
+            if self
+                .state
+                .fail_next
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                return Err("device is not available".into());
+            }
             *self.state.captured_error_notify.lock() = Some(error_notify);
             self.state.alive.store(true, Ordering::Relaxed);
             Ok(Box::new(MockOutputStream {
@@ -502,13 +664,27 @@ pub(super) mod test {
             (mixer, rx)
         }
 
+        /// Bundles a throwaway profiler and health recorder for a test callback.
+        fn instruments<'a>(
+            profiler: &'a mut CallbackProfiler,
+            health: &'a OutputHealth,
+        ) -> CallbackInstruments<'a> {
+            CallbackInstruments { profiler, health }
+        }
+
         #[test]
         fn f32_callback_mixes_into_buffer() {
             let (mixer, rx) = setup(2);
-            let mut profiler = CallbackProfiler::new(false);
+            let (mut profiler, health) = (CallbackProfiler::new(false), OutputHealth::new());
             let mut output = vec![0.0f32; 8]; // 4 frames * 2 channels
 
-            process_f32_callback(&mut output, &mixer, &rx, 2, &mut profiler);
+            process_f32_callback(
+                &mut output,
+                &mixer,
+                &rx,
+                2,
+                instruments(&mut profiler, &health),
+            );
 
             // Source should have been drained from channel and mixed in.
             assert!(rx.try_recv().is_err(), "channel should be empty");
@@ -519,14 +695,92 @@ pub(super) mod test {
             );
         }
 
+        /// Through the real mixing path: playing audio must register as signal, and
+        /// an idle device must not. This is the distinction that lets "mtrack is
+        /// silent" be told apart from "the device is silent".
+        #[test]
+        fn f32_callback_records_signal_in_health() {
+            let (mixer, rx) = setup(2);
+            let (mut profiler, health) = (CallbackProfiler::new(false), OutputHealth::new());
+            let mut output = vec![0.0f32; 8];
+
+            process_f32_callback(
+                &mut output,
+                &mixer,
+                &rx,
+                2,
+                instruments(&mut profiler, &health),
+            );
+
+            let snap = health.snapshot();
+            assert_eq!(snap.callbacks, 1);
+            assert!(snap.callback_alive(LIVENESS_WINDOW));
+            assert!(snap.writing_signal(SIGNAL_WINDOW));
+        }
+
+        /// An open device with nothing playing is alive but not signalling. Silence
+        /// here is correct, not a fault — which is why the health snapshot reports
+        /// facts and leaves the verdict to a caller that knows the playback state.
+        #[test]
+        fn f32_callback_idle_is_alive_but_silent() {
+            let (_tx, rx) = crossbeam_channel::bounded::<MixerActiveSource>(64);
+            let mixer = AudioMixer::new(2, 44100);
+            let (mut profiler, health) = (CallbackProfiler::new(false), OutputHealth::new());
+            let mut output = vec![1.0f32; 8];
+
+            process_f32_callback(
+                &mut output,
+                &mixer,
+                &rx,
+                2,
+                instruments(&mut profiler, &health),
+            );
+
+            let snap = health.snapshot();
+            assert!(snap.callback_alive(LIVENESS_WINDOW));
+            assert!(
+                !snap.writing_signal(SIGNAL_WINDOW),
+                "an idle device writes silence and must not report signal"
+            );
+        }
+
+        /// The integer path tests the f32 buffer before conversion, so the silence
+        /// floor means the same thing regardless of bit depth.
+        #[test]
+        fn int_callback_records_signal_in_health() {
+            let (mixer, rx) = setup(2);
+            let (mut profiler, health) = (CallbackProfiler::new(false), OutputHealth::new());
+            let mut temp = vec![0.0f32; 4096];
+            let mut output = vec![0i16; 8];
+
+            process_int_callback(
+                &mut output,
+                &mixer,
+                &rx,
+                2,
+                &mut temp,
+                instruments(&mut profiler, &health),
+            );
+
+            let snap = health.snapshot();
+            assert_eq!(snap.callbacks, 1);
+            assert!(snap.writing_signal(SIGNAL_WINDOW));
+        }
+
         #[test]
         fn f32_callback_produces_silence_with_no_sources() {
             let (_tx, rx) = crossbeam_channel::bounded::<MixerActiveSource>(64);
             let mixer = AudioMixer::new(2, 44100);
-            let mut profiler = CallbackProfiler::new(false);
+            let (mut profiler, health) = (CallbackProfiler::new(false), OutputHealth::new());
             let mut output = vec![1.0f32; 8];
 
-            process_f32_callback(&mut output, &mixer, &rx, 2, &mut profiler);
+            process_f32_callback(
+                &mut output,
+                &mixer,
+                &rx,
+                2,
+                instruments(&mut profiler, &health),
+            );
 
             assert!(output.iter().all(|&s| s == 0.0), "output should be silence");
         }
@@ -534,11 +788,18 @@ pub(super) mod test {
         #[test]
         fn int_callback_converts_to_i16() {
             let (mixer, rx) = setup(1);
-            let mut profiler = CallbackProfiler::new(false);
+            let (mut profiler, health) = (CallbackProfiler::new(false), OutputHealth::new());
             let mut temp_buffer = vec![0.0f32; 4];
             let mut output = vec![0i16; 4];
 
-            process_int_callback(&mut output, &mixer, &rx, 1, &mut temp_buffer, &mut profiler);
+            process_int_callback(
+                &mut output,
+                &mixer,
+                &rx,
+                1,
+                &mut temp_buffer,
+                instruments(&mut profiler, &health),
+            );
 
             assert!(rx.try_recv().is_err(), "channel should be empty");
             assert!(
@@ -550,11 +811,18 @@ pub(super) mod test {
         #[test]
         fn int_callback_converts_to_i32() {
             let (mixer, rx) = setup(1);
-            let mut profiler = CallbackProfiler::new(false);
+            let (mut profiler, health) = (CallbackProfiler::new(false), OutputHealth::new());
             let mut temp_buffer = vec![0.0f32; 4];
             let mut output = vec![0i32; 4];
 
-            process_int_callback(&mut output, &mixer, &rx, 1, &mut temp_buffer, &mut profiler);
+            process_int_callback(
+                &mut output,
+                &mixer,
+                &rx,
+                1,
+                &mut temp_buffer,
+                instruments(&mut profiler, &health),
+            );
 
             assert!(rx.try_recv().is_err(), "channel should be empty");
             assert!(
@@ -566,12 +834,19 @@ pub(super) mod test {
         #[test]
         fn int_callback_clamps_to_temp_buffer_size() {
             let (mixer, rx) = setup(1);
-            let mut profiler = CallbackProfiler::new(false);
+            let (mut profiler, health) = (CallbackProfiler::new(false), OutputHealth::new());
             // temp_buffer smaller than output — extra samples should be zeroed.
             let mut temp_buffer = vec![0.0f32; 2];
             let mut output = vec![99i16; 4];
 
-            process_int_callback(&mut output, &mixer, &rx, 1, &mut temp_buffer, &mut profiler);
+            process_int_callback(
+                &mut output,
+                &mixer,
+                &rx,
+                1,
+                &mut temp_buffer,
+                instruments(&mut profiler, &health),
+            );
 
             // The last 2 samples should be zeroed since they exceed the temp buffer.
             assert_eq!(output[2], 0);
@@ -594,10 +869,16 @@ pub(super) mod test {
                 tx.send(source).unwrap();
             }
 
-            let mut profiler = CallbackProfiler::new(false);
+            let (mut profiler, health) = (CallbackProfiler::new(false), OutputHealth::new());
             let mut output = vec![0.0f32; 4];
 
-            process_f32_callback(&mut output, &mixer, &rx, 1, &mut profiler);
+            process_f32_callback(
+                &mut output,
+                &mixer,
+                &rx,
+                1,
+                instruments(&mut profiler, &health),
+            );
 
             assert!(rx.try_recv().is_err(), "both sources should be drained");
             // Two sources each contributing 0.5 should sum to ~1.0.

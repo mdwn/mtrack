@@ -202,6 +202,36 @@ pub struct SubsystemStatus {
     pub name: Option<String>,
 }
 
+/// What the audio output callback is actually doing, as distinct from whether the
+/// device opened.
+///
+/// `connected` on the audio subsystem only ever meant "we constructed a device
+/// object at startup". These are the runtime facts on top of that.
+///
+/// Note what this cannot tell you: a device can accept every buffer and produce no
+/// sound, and nothing here will notice. `writing_signal` true with a silent room
+/// means the fault is downstream of mtrack — which is the question worth answering
+/// quickly when a rig goes quiet.
+///
+/// Not a meter. There is no level here on purpose: a level sampled by a status
+/// poller sees one callback in several hundred, which makes a poor meter and adds
+/// nothing to the health question that the two booleans don't already answer.
+#[derive(Clone, serde::Serialize)]
+pub struct AudioOutputHealth {
+    /// The callback has run recently. False means the stream is open but stalled.
+    pub callback_alive: bool,
+    /// Non-silent audio was handed to the device recently. False is normal and
+    /// expected whenever nothing is playing, and can also go false during a
+    /// genuinely quiet passage or with output gains at zero.
+    pub writing_signal: bool,
+    /// Milliseconds since the callback last ran, absent if it never has.
+    pub since_last_callback_ms: Option<u64>,
+    /// Milliseconds since non-silent audio was last written, absent if it never was.
+    pub since_last_signal_ms: Option<u64>,
+    /// Total callbacks served since the device was opened.
+    pub callbacks: u64,
+}
+
 /// Snapshot of all hardware subsystem statuses.
 #[derive(Clone, serde::Serialize)]
 pub struct HardwareStatusSnapshot {
@@ -209,6 +239,8 @@ pub struct HardwareStatusSnapshot {
     pub hostname: Option<String>,
     pub profile: Option<String>,
     pub audio: SubsystemStatus,
+    /// Runtime output health, when the audio device can report it.
+    pub audio_output: Option<AudioOutputHealth>,
     pub midi: SubsystemStatus,
     pub dmx: SubsystemStatus,
     pub trigger: SubsystemStatus,
@@ -875,12 +907,30 @@ fn decide_cleanup_action(
     result: PlaybackResult,
     cancelled: bool,
     loop_broken: bool,
+    self_cancelled: bool,
 ) -> CleanupAction {
     // Loop break takes priority over cancel — we intentionally cancel
     // playback to break out of a loop immediately, but the intent is
     // to advance and play, not to stop.
     if loop_broken {
         return CleanupAction::LoopBreakAndPlay;
+    }
+    // Playback that cancelled *itself* — the audio callback stopped mid-song, so
+    // the audio thread cancelled the handle to bring MIDI and DMX down off a
+    // frozen clock. `StopCancelled` would be wrong: it skips the cleanup on the
+    // grounds that `stop()` already did it, and nothing called `stop()`, so
+    // `join` and `play_start_time` would stay set and the player would believe a
+    // song was playing forever.
+    //
+    // Deliberately keyed on *who cancelled*, not on whether there was also an
+    // error. A seek or a stop cancels an in-flight playback that can report an
+    // error on its way out, and treating that as a self-cancellation lets this
+    // cleanup clear state belonging to the playback the seek has already
+    // started — which is precisely what the `StopCancelled` early return exists
+    // to prevent.
+    if self_cancelled {
+        warn!("Playback ended itself; advancing playlist so the player is not left wedged");
+        return CleanupAction::AdvancePlaylist;
     }
     if cancelled {
         return CleanupAction::StopCancelled;
@@ -1994,7 +2044,7 @@ mod test {
     #[test]
     fn cleanup_success_not_cancelled() {
         assert_eq!(
-            decide_cleanup_action(PlaybackResult::Success, false, false),
+            decide_cleanup_action(PlaybackResult::Success, false, false, false),
             CleanupAction::AdvancePlaylist
         );
     }
@@ -2002,7 +2052,7 @@ mod test {
     #[test]
     fn cleanup_success_cancelled() {
         assert_eq!(
-            decide_cleanup_action(PlaybackResult::Success, true, false),
+            decide_cleanup_action(PlaybackResult::Success, true, false, false),
             CleanupAction::StopCancelled
         );
     }
@@ -2010,23 +2060,59 @@ mod test {
     #[test]
     fn cleanup_failed_not_cancelled() {
         assert_eq!(
-            decide_cleanup_action(PlaybackResult::Failed("err".into()), false, false),
+            decide_cleanup_action(PlaybackResult::Failed("err".into()), false, false, false),
             CleanupAction::AdvancePlaylist
         );
     }
 
+    /// Playback that cancelled *itself* still needs the full cleanup.
+    ///
+    /// When the audio callback stops mid-song, the audio thread cancels the
+    /// shared handle so MIDI and DMX don't sit waiting on a frozen clock, then
+    /// reports the failure. `StopCancelled` would be wrong: it skips clearing
+    /// `join` and `play_start_time` because it assumes `stop()` already did.
+    /// Nothing called `stop()` here, so taking it left the player believing a
+    /// song was still playing, with no way back short of a restart.
     #[test]
-    fn cleanup_failed_cancelled() {
+    fn cleanup_self_cancelled_advances() {
         assert_eq!(
-            decide_cleanup_action(PlaybackResult::Failed("err".into()), true, false),
+            decide_cleanup_action(PlaybackResult::Failed("err".into()), true, false, true),
+            CleanupAction::AdvancePlaylist
+        );
+    }
+
+    /// The mirror of the case above, and the reason it is keyed on *who*
+    /// cancelled rather than on whether an error came with it.
+    ///
+    /// A seek cancels the in-flight playback and immediately starts a new one.
+    /// That cancelled playback can report an error on its way out, so "failed
+    /// and cancelled" is not enough to identify a self-cancellation — reading it
+    /// that way let this cleanup run and clear `join` and `play_start_time`
+    /// belonging to the playback the seek had already started, leaving
+    /// `is_playing()` false in the middle of a seek. Caught by
+    /// `test_seek_spam_stays_consistent` under CI load, not locally.
+    #[test]
+    fn cleanup_deliberate_cancel_with_an_error_still_stops() {
+        assert_eq!(
+            decide_cleanup_action(PlaybackResult::Failed("err".into()), true, false, false),
             CleanupAction::StopCancelled
+        );
+    }
+
+    /// A loop break outranks everything: it cancels deliberately in order to
+    /// advance and keep playing.
+    #[test]
+    fn cleanup_loop_break_wins_over_failure() {
+        assert_eq!(
+            decide_cleanup_action(PlaybackResult::Failed("err".into()), true, true, true),
+            CleanupAction::LoopBreakAndPlay
         );
     }
 
     #[test]
     fn cleanup_sender_dropped_not_cancelled() {
         assert_eq!(
-            decide_cleanup_action(PlaybackResult::SenderDropped, false, false),
+            decide_cleanup_action(PlaybackResult::SenderDropped, false, false, false),
             CleanupAction::AdvancePlaylist
         );
     }
@@ -2034,7 +2120,7 @@ mod test {
     #[test]
     fn cleanup_loop_broken() {
         assert_eq!(
-            decide_cleanup_action(PlaybackResult::Success, false, true),
+            decide_cleanup_action(PlaybackResult::Success, false, true, false),
             CleanupAction::LoopBreakAndPlay
         );
     }
@@ -2044,7 +2130,7 @@ mod test {
         // If both cancelled and loop_broken, loop_broken wins — we intentionally
         // cancel to break out of the loop immediately, but the intent is to advance.
         assert_eq!(
-            decide_cleanup_action(PlaybackResult::Success, true, true),
+            decide_cleanup_action(PlaybackResult::Success, true, true, false),
             CleanupAction::LoopBreakAndPlay
         );
     }

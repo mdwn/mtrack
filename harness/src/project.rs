@@ -68,6 +68,8 @@ pub struct ProfileSpec {
     pub dmx: Subsystem,
     /// Track name to output channel list. Empty means "derive from the songs".
     pub track_mappings: BTreeMap<String, Vec<u16>>,
+    /// Extra `audio:` keys, e.g. `bits_per_sample: 24`.
+    pub audio_extra: BTreeMap<String, String>,
     /// Extra `midi:` keys, e.g. `beat_clock: true`.
     pub midi_extra: BTreeMap<String, String>,
     /// Whether to emit a `dmx.lighting` block referencing the generated venue.
@@ -84,9 +86,16 @@ impl ProfileSpec {
             midi: Subsystem::Detected,
             dmx: Subsystem::Detected,
             track_mappings: BTreeMap::new(),
+            audio_extra: BTreeMap::new(),
             midi_extra: BTreeMap::new(),
             lighting: false,
         }
+    }
+
+    /// Sets an `audio:` key such as `bits_per_sample`.
+    pub fn with_audio_key(mut self, key: &str, value: &str) -> ProfileSpec {
+        self.audio_extra.insert(key.to_string(), value.to_string());
+        self
     }
 
     /// Sets a `midi:` key such as `beat_clock`.
@@ -172,6 +181,12 @@ impl ProfileSpec {
                 };
                 let _ = writeln!(out, "  sample_rate: {chosen}");
             }
+        }
+
+        // After the pinned rate, so a case that deliberately overrides one of
+        // these wins over the value chosen for openability above.
+        for (key, value) in &self.audio_extra {
+            let _ = writeln!(out, "  {key}: {value}");
         }
 
         out.push_str("  track_mappings:\n");

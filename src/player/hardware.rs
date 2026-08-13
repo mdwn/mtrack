@@ -28,8 +28,8 @@ use crate::trigger::TriggerEngine;
 use crate::{audio, config, dmx, midi, samples};
 
 use super::{
-    ClockSource, HardwareState, HardwareStatusSnapshot, Player, SongChangeNotifier, StatusEvents,
-    SubsystemStatus,
+    AudioOutputHealth, ClockSource, HardwareState, HardwareStatusSnapshot, Player,
+    SongChangeNotifier, StatusEvents, SubsystemStatus,
 };
 
 impl Player {
@@ -399,6 +399,22 @@ impl Player {
             }
         };
 
+        let liveness_window = hw
+            .device
+            .as_ref()
+            .map(|d| d.liveness_window())
+            .unwrap_or(audio::health::LIVENESS_WINDOW);
+        let audio_output = hw.device.as_ref().and_then(|d| d.output_health()).map(|h| {
+            let as_ms = |d: Option<Duration>| d.map(|d| d.as_millis() as u64);
+            AudioOutputHealth {
+                callback_alive: h.callback_alive(liveness_window),
+                writing_signal: h.writing_signal(audio::health::SIGNAL_WINDOW),
+                since_last_callback_ms: as_ms(h.since_last_callback),
+                since_last_signal_ms: as_ms(h.since_last_signal),
+                callbacks: h.callbacks,
+            }
+        });
+
         HardwareStatusSnapshot {
             init_done,
             hostname: hw.hostname.clone(),
@@ -407,6 +423,7 @@ impl Player {
                 hw.device.is_some(),
                 hw.device.as_ref().map(|d| d.to_string()),
             ),
+            audio_output,
             midi: status_for(
                 hw.midi_device.is_some(),
                 hw.midi_device.as_ref().map(|d| d.to_string()),

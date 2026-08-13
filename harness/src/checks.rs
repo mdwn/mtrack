@@ -84,6 +84,7 @@ const WORLD_LEVEL: &[&str] = &[
     "absent_dmx_is_skipped_not_fatal",
     "bogus_midi_device_degrades_gracefully",
     "bogus_audio_device_degrades_gracefully",
+    "unopenable_audio_device_is_distinguished_from_a_missing_one",
     "first_profile_wins",
     "generated_show_passes_validation",
     "malformed_show_is_rejected",
@@ -260,6 +261,14 @@ pub fn all() -> Vec<Check> {
             "bogus_audio_device_degrades_gracefully",
             "An unresolvable audio device must degrade, not panic.",
             subsystems::bogus_audio_device_degrades_gracefully
+        ),
+        entry!(
+            "subsystems",
+            "unopenable_audio_device_is_distinguished_from_a_missing_one",
+            "A device that is present but will not open must say so, and must never\n  \
+             report connected. Reporting it as missing sends an operator waiting out a\n  \
+             retry that can never succeed.",
+            subsystems::unopenable_audio_device_is_distinguished_from_a_missing_one
         ),
         entry!(
             "subsystems",

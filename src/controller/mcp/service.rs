@@ -325,7 +325,11 @@ impl McpServer {
         live state (`connected`/`not_connected`/...) and device name of each \
         subsystem (audio, MIDI, DMX, trigger). Use this to confirm which host \
         a configuration's `profiles` list selected and what hardware is \
-        actually wired up.")]
+        actually wired up. `audio_output` additionally reports whether the \
+        output callback is still running and whether non-silent audio is being \
+        written — check it when diagnosing 'no sound', since the audio \
+        subsystem reads `connected` from the moment the device opens, \
+        regardless of whether anything is flowing.")]
     async fn host_info(&self) -> Result<CallToolResult, McpError> {
         let snapshot = self.player.hardware_status();
         let json = serde_json::to_value(&snapshot).map_err(|e| {

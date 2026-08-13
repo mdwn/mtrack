@@ -95,7 +95,13 @@ impl Default for LoopControl {
 #[derive(PartialEq)]
 enum CancelState {
     Untouched,
+    /// Cancelled deliberately, by `stop()`, a seek, or a loop break. Whoever
+    /// asked for it is responsible for the player-side cleanup.
     Cancelled,
+    /// Cancelled by playback itself because it could not continue — the audio
+    /// device disappearing mid-song. Nobody is waiting to clean up after this
+    /// one, so the cleanup task has to do it.
+    CancelledByFailure,
 }
 
 /// A cancel handle is passed to the device during a play operation. It's the player's responsibility
@@ -125,9 +131,13 @@ impl Default for CancelHandle {
 }
 
 impl CancelHandle {
-    /// Returns true if the device process has been cancelled.
+    /// Returns true if the device process has been cancelled, for either reason.
+    ///
+    /// Every subsystem loop polls this to know it should wind up, and that is
+    /// true whichever way the cancellation came about — only the player-side
+    /// cleanup cares about the difference.
     pub fn is_cancelled(&self) -> bool {
-        *self.cancelled.lock() == CancelState::Cancelled
+        *self.cancelled.lock() != CancelState::Untouched
     }
 
     /// Waits for the cancel handle to be cancelled or for finished to be set to true.
@@ -172,6 +182,34 @@ impl CancelHandle {
             // Signal directly — we already hold the mutex.
             self.condvar.notify_all();
         }
+    }
+
+    /// Cancels because playback cannot continue, rather than because anyone
+    /// asked it to.
+    ///
+    /// Distinct from [`CancelHandle::cancel`] because the two want opposite
+    /// cleanup. A deliberate cancel is issued by `stop()`, which clears the
+    /// player's `join` and `play_start_time` itself and may already have started
+    /// a *new* playback — so the cleanup task must not touch that state. A
+    /// failure cancel has nobody behind it, so the cleanup task is the only
+    /// thing that will ever clear it.
+    ///
+    /// Telling them apart by "was there also an error?" is not enough: a
+    /// deliberately cancelled playback can report an error on its way out, and
+    /// treating that as a failure lets the cleanup clobber the playback a seek
+    /// has just started.
+    pub fn cancel_due_to_failure(&self) {
+        let mut cancel_state = self.cancelled.lock();
+        if *cancel_state == CancelState::Untouched {
+            *cancel_state = CancelState::CancelledByFailure;
+            self.condvar.notify_all();
+        }
+    }
+
+    /// Whether cancellation came from playback failing rather than from a
+    /// deliberate stop, seek, or loop break.
+    pub fn cancelled_due_to_failure(&self) -> bool {
+        *self.cancelled.lock() == CancelState::CancelledByFailure
     }
 }
 

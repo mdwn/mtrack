@@ -116,6 +116,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DMX paths now share one compensation knob, applied to cue dispatch, to the tempo base that
   tempo-aware effects resolve against, and to the state reconstructed when seeking.
 
+- **The audio output thread survives a device that goes away and comes back**: any failure to
+  build the output stream killed the output thread outright. Two distinct consequences. On the
+  *first* build the failure was swallowed — `start_output_thread` returned `Ok`, so the device
+  reported as `connected` with no live stream behind it and the perpetual retry in
+  `player::hardware` never re-ran, because it only retries on an `Err`. On a *later* build, after
+  a backend error, the single immediate retry was the only one: power-cycling a USB interface
+  mid-set raises the error at once but re-enumeration takes seconds, so that one attempt lands
+  while the card is still absent, and audio was then gone until mtrack itself was restarted.
+  A first-build failure is now reported to the caller so the existing retry loop covers it
+  (re-running device discovery, which is what a not-yet-present device needs), and later
+  failures retry in-thread with backoff until the device returns or shutdown is requested. After
+  a successful start the thread can no longer exit on its own, so "connected" can no longer mean
+  "connected to nothing".
+
+  A rebuild that fails also re-resolves the device by name before giving up. ALSA keys a device by
+  name, so the original handle reopens a power-cycled interface fine — but CoreAudio keys it by
+  device id and WASAPI by endpoint, and a re-plugged interface comes back under a new one, leaving
+  the retry loop hammering a handle that can never work again.
+
+  Because that retry runs twice a second forever, it now says which situation it is in: opening a
+  device that was located but would not open reports `'X' was found but could not be opened`,
+  distinct from `no device found with name X`. An absent device may still be enumerating
+  and the retry will pick it up on its own — that is what the perpetual retry is for. A device
+  sitting right there refusing to open will still be refusing in an hour, and needs a person:
+  usually a sample rate, format or buffer size the interface won't accept, or another process
+  holding it exclusively. Deciding to stop retrying a failure that can never succeed is a broader
+  change than this — it applies equally to MIDI and DMX — and is left for its own.
+
+- **Audio status reports whether audio is actually flowing, not just whether the device opened**:
+  the audio subsystem reported `connected` purely on having constructed a device object at
+  startup, and nothing was recorded about the output callback afterwards. A rig could sit there
+  with an open stream, a stalled callback or a silent mix, and every observable said healthy. The
+  output callback now records liveness — lock-free, no allocation, one clock read per callback —
+  and `hardware_status` gains an `audio_output` section reporting whether the callback is running,
+  whether non-silent audio is being written, and how long since each was last true.
+
+  The snapshot reports facts rather than a verdict, because silence is correct whenever nothing is
+  playing. Where playback *is* running, the monitor loop is the one place that knows audio is
+  supposed to be coming out — and there, a callback that stops now **ends the song**, with a
+  distinct `ERROR` naming it.
+
+  Ending it is the point. The transport is driven by the callback's sample counter, so an outage
+  freezes it rather than advancing it: audio, MIDI and cues stop together and would resume from the
+  bar they froze on. On stage that is worse than stopping — the band has just played through the
+  gap with no click and no tracks, so they are not where the frozen transport thinks they are, and
+  audio reappearing mid-song hands them a second, confidently wrong reference. Nothing host-side
+  can recover the state that actually matters, which is where the *band* is, so resuming cannot be
+  made correct. (Fast-forwarding to a wall clock fails the same way: it assumes the band held tempo
+  through the one moment they had nothing to hold it to.) The device layer keeps rebuilding so the
+  next song can start the instant the interface returns; the song that was playing does not come
+  back on its own. The `ERROR` is for working out afterwards what happened — in the moment there is
+  nothing to read and nothing to do.
+
+  This deliberately carries no output level. A level sampled by a status poller sees roughly one
+  callback in several hundred, which makes a poor meter and adds nothing to the health question;
+  metering is a separate feature with a reader of its own.
+
+  None of it can detect a device that accepts every buffer and produces no sound — nothing
+  host-side can. What it gives you is the other half of the diagnosis: if mtrack says it is
+  writing signal and the room is quiet, the fault is downstream.
+
+- **Concurrent device enumeration can no longer destroy mtrack's stdout**: enumeration silences
+  ALSA's chatter by redirecting the process's file descriptors and restoring them afterwards. Two
+  threads doing that at once interleave the save and restore and the real stdout is lost for the
+  life of the process — a failure that, by construction, prints nothing at all. Enumeration paths
+  now serialise on a single lock.
+
 ## [0.15.0] - 2026-07-20
 
 ### Added
