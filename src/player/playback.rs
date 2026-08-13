@@ -197,6 +197,10 @@ impl Player {
                 };
 
                 let cancelled = cancel_handle_for_cleanup.is_cancelled();
+                // Playback that ended itself, as distinct from one that stop()
+                // or a seek ended: only the former has nobody to clean up after
+                // it. See decide_cleanup_action.
+                let self_cancelled = cancel_handle_for_cleanup.cancelled_due_to_failure();
                 let loop_broken = player.loop_break.swap(false, Ordering::Relaxed);
 
                 info!(
@@ -206,7 +210,7 @@ impl Player {
                     "Song finished playing."
                 );
 
-                let action = decide_cleanup_action(result, cancelled, loop_broken);
+                let action = decide_cleanup_action(result, cancelled, loop_broken, self_cancelled);
                 if action == CleanupAction::StopCancelled {
                     // stop() already cleared join and play_start_time.
                     // Touching them here would clobber state from a new play() that

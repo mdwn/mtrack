@@ -876,7 +876,13 @@ impl AudioDevice for Device {
                 // song all share this handle, and without it they would sit on a
                 // frozen clock waiting to be joined, then resume together when
                 // the device came back.
-                cancel_handle.cancel();
+                //
+                // Marked as a *failure* cancellation, not a deliberate one. The
+                // player's cleanup skips its work when a playback was cancelled
+                // on the grounds that whoever asked for it — stop(), a seek —
+                // has already done that work and may have started a new playback
+                // to protect. Nothing asked for this one.
+                cancel_handle.cancel_due_to_failure();
                 return Err(crate::audio::AudioError::Stream(format!(
                     "audio output callback stopped after {} callbacks; song '{}' ended",
                     health.callbacks,
