@@ -553,9 +553,23 @@ impl Device {
             (config.stream_buffer_size(), output_buffer_size)
         {
             if min_size.is_some() {
+                // Report the period in milliseconds as well as frames. "12
+                // frames" is what the MAT's minimum resolves to on the test rig
+                // and it means nothing on its own; "0.2ms" is immediately legible
+                // as the callback deadline it actually is. `min` reads as a
+                // recommendation, so the number behind it should not need
+                // arithmetic to interpret.
+                let period_ms = crate::audio::health::callback_period(
+                    Some(s),
+                    device.target_format.sample_rate,
+                )
+                .map(|p| p.as_secs_f64() * 1000.0)
+                .unwrap_or(0.0);
                 info!(
                     stream_buffer_size = s,
-                    "Using minimum supported stream buffer size (low latency)"
+                    period_ms = format!("{period_ms:.2}"),
+                    "Using minimum supported stream buffer size — lowest latency, \
+                     and the least tolerance for scheduling jitter"
                 );
             }
         }

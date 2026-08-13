@@ -799,7 +799,7 @@
   "tooltips.statusEvents.playingEvents": "MIDI events sent when the player is actively playing a song. Can drive a different LED color or blinking state.",
   "tooltips.profile.hostname": "System hostname this profile applies to. When mtrack starts, it matches the machine's hostname to select the correct profile. Leave empty for a default profile that matches any host.",
   "tooltips.audio.bufferSize": "Number of audio frames per hardware callback. Lower values reduce latency but increase CPU load. Leave empty to use the device default.",
-  "tooltips.audio.streamBufferSize": "Size of the internal stream buffer between the decoder and audio callback. Enter a number of frames, 'min' for minimum size, or leave empty for the default.",
+  "tooltips.audio.streamBufferSize": "Period size handed to the audio backend. Enter a number of frames, 'min' for the smallest period the device supports (lowest latency, most sensitive to jitter), or 'default' to let the backend choose. Leave empty to use the decode buffer size.",
   "tooltips.audio.bufferThreads": "Number of threads used to decode and buffer audio tracks in parallel. Default is 2.",
   "tooltips.audio.resampler": "Algorithm used when the source sample rate differs from the device. Sinc is higher quality; FFT may be faster for some configurations.",
   "tooltips.audio.playbackDelay": "Delay before audio playback starts, e.g. '500ms'. Used to synchronize audio with other subsystems like DMX or MIDI.",
