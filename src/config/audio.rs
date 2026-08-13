@@ -34,17 +34,72 @@ pub enum ResamplerType {
 }
 
 /// How to choose the CPAL stream buffer size (period size). Affects latency vs underrun tolerance.
-#[derive(Deserialize, Serialize, Clone, Debug)]
-#[serde(untagged)]
+///
+/// Accepts `min`, `default`, or a frame count:
+///
+/// ```yaml
+/// stream_buffer_size: min       # smallest period the device supports
+/// stream_buffer_size: default   # let the backend choose
+/// stream_buffer_size: 1024      # a fixed number of frames
+/// ```
+///
+/// Deserialized by hand rather than with `#[serde(untagged)]`. Untagged matches
+/// by shape and ignores variant renames, so `#[serde(rename = "min")]` on a unit
+/// variant did nothing — a unit variant matches only `null` — and both keywords
+/// failed to parse at all, while the web UI's own tooltip told people to type
+/// them. It also round-tripped `Min` through `null` back to `Default`.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StreamBufferSize {
     /// Use the backend's default (may be high latency on some systems).
-    #[serde(rename = "default")]
     Default,
     /// Use the device's minimum supported period size (lowest latency, most jitter-sensitive).
-    #[serde(rename = "min")]
     Min,
     /// Use a fixed size in frames (same as buffer_size when not set).
     Fixed(usize),
+}
+
+impl StreamBufferSize {
+    /// The keyword accepted for this variant, if it has one.
+    fn keyword(&self) -> Option<&'static str> {
+        match self {
+            StreamBufferSize::Default => Some("default"),
+            StreamBufferSize::Min => Some("min"),
+            StreamBufferSize::Fixed(_) => None,
+        }
+    }
+}
+
+impl Serialize for StreamBufferSize {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            StreamBufferSize::Fixed(frames) => serializer.serialize_u64(*frames as u64),
+            other => serializer.serialize_str(other.keyword().expect("non-Fixed has a keyword")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StreamBufferSize {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// What a config file is allowed to contain here.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Keyword(String),
+            Frames(usize),
+        }
+
+        match Repr::deserialize(deserializer)? {
+            Repr::Frames(frames) => Ok(StreamBufferSize::Fixed(frames)),
+            Repr::Keyword(word) if word.eq_ignore_ascii_case("min") => Ok(StreamBufferSize::Min),
+            Repr::Keyword(word) if word.eq_ignore_ascii_case("default") => {
+                Ok(StreamBufferSize::Default)
+            }
+            Repr::Keyword(word) => Err(serde::de::Error::custom(format!(
+                "unknown stream_buffer_size {word:?}: expected \"min\", \"default\", \
+                 or a number of frames"
+            ))),
+        }
+    }
 }
 
 /// A YAML representation of the audio configuration.
@@ -332,6 +387,85 @@ mod test {
     fn builder_resampler_fft() {
         let audio = Audio::new("dev").with_resampler(ResamplerType::Fft);
         assert_eq!(audio.resampler(), ResamplerType::Fft);
+    }
+
+    /// Every form the tooltip and the doc comments promise must actually load.
+    ///
+    /// The enum was `#[serde(untagged)]` with renames on unit variants, which
+    /// serde ignores — untagged matches by shape, and a unit variant matches only
+    /// `null`. So `min` and `default` failed to parse at all while the web UI's
+    /// tooltip told people to type them, and the existing tests missed it by only
+    /// ever constructing the enum in Rust.
+    #[test]
+    fn stream_buffer_size_accepts_every_documented_form() {
+        let cases = [
+            ("min", StreamBufferSize::Min),
+            ("default", StreamBufferSize::Default),
+            ("1024", StreamBufferSize::Fixed(1024)),
+        ];
+        for (form, want) in cases {
+            let audio = from_yaml(&format!("device: dev\nstream_buffer_size: {form}\n"));
+            assert_eq!(
+                audio.stream_buffer_size(),
+                Some(want.clone()),
+                "stream_buffer_size: {form} should parse as {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_buffer_size_keywords_are_case_insensitive() {
+        for form in ["MIN", "Min", "Default", "DEFAULT"] {
+            let audio = from_yaml(&format!("device: dev\nstream_buffer_size: {form}\n"));
+            assert!(
+                audio.stream_buffer_size().is_some(),
+                "hand-edited YAML should not care about case: {form}"
+            );
+        }
+    }
+
+    /// A typo must say what was expected rather than "did not match any variant".
+    #[test]
+    fn stream_buffer_size_rejects_unknown_keywords_helpfully() {
+        let err = config::Config::builder()
+            .add_source(config::File::from_str(
+                "device: dev\nstream_buffer_size: smallest\n",
+                config::FileFormat::Yaml,
+            ))
+            .build()
+            .expect("build config")
+            .try_deserialize::<Audio>()
+            .err()
+            .expect("smallest is not a valid setting");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("min"),
+            "error should name the valid forms: {msg}"
+        );
+        assert!(msg.contains("number of frames"), "{msg}");
+    }
+
+    /// Round-trip, because saving a config rewrites it.
+    ///
+    /// Under `untagged`, `Min` serialized as `null` and read back as `Default` —
+    /// so editing any audio setting in the web UI silently downgraded a `min`
+    /// buffer to the backend default.
+    #[test]
+    fn stream_buffer_size_survives_a_save() {
+        for want in [
+            StreamBufferSize::Min,
+            StreamBufferSize::Default,
+            StreamBufferSize::Fixed(256),
+        ] {
+            let audio = Audio::new("dev").with_stream_buffer_size(want.clone());
+            let yaml = crate::util::to_yaml_string(&audio).expect("serialize");
+            let back = from_yaml(&yaml);
+            assert_eq!(
+                back.stream_buffer_size(),
+                Some(want.clone()),
+                "{want:?} did not survive a save; wrote:\n{yaml}"
+            );
+        }
     }
 
     #[test]

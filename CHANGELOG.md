@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`stream_buffer_size: min` and `default` can now actually be set**: both were documented in the
+  config, described in the web UI's own tooltip, and impossible to load — the profile failed to
+  parse with `data did not match any variant of untagged enum StreamBufferSize`. The enum was
+  `#[serde(untagged)]`, which matches by shape and ignores variant renames, so the two keyword
+  forms matched nothing and only a bare frame count was reachable. `Min`, the device-minimum
+  buffer lookup behind it, and its log line were all dead code from a config file's point of view.
+  Saving was affected too: `Min` serialized as `null` and read back as `Default`, so editing any
+  audio setting in the web UI silently downgraded a minimum-latency buffer to the backend default.
+
+  All three forms now parse (case-insensitively), survive a save, and an unrecognised value names
+  what was expected instead of reporting an untagged-enum mismatch. The web UI can reach `default`
+  as well as `min`, and its tooltip no longer says that leaving the field empty gives you the
+  backend default — an empty field uses the decode buffer size, which is a different thing.
+
 ### Added
 
 - **The status page says when audio is open but not playing out**: the audio subsystem reports

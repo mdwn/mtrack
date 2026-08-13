@@ -282,16 +282,18 @@
         id="audio-stream-buffer"
         type="text"
         class="input"
-        placeholder="default"
+        placeholder="auto"
         value={typeof audio.stream_buffer_size === "number"
           ? audio.stream_buffer_size
           : (audio.stream_buffer_size ?? "")}
         onchange={(e) => {
-          const v = (e.target as HTMLInputElement).value.trim();
-          if (!v || v === "default") {
+          const v = (e.target as HTMLInputElement).value.trim().toLowerCase();
+          // Empty and "default" are not the same thing. Unset falls back to the
+          // decode buffer size; "default" hands the choice to the backend.
+          if (!v) {
             setOrDelete("stream_buffer_size", undefined, undefined);
-          } else if (v === "min") {
-            set("stream_buffer_size", "min");
+          } else if (v === "min" || v === "default") {
+            set("stream_buffer_size", v);
           } else {
             const n = parseInt(v);
             setOrDelete(
