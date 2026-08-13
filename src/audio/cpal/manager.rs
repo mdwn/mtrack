@@ -161,6 +161,17 @@ impl OutputManager {
                     return;
                 }
 
+                // Discard error notifications raised against the stream we are
+                // replacing. Nothing exists to error right now, so anything still
+                // latched refers to the dead stream — and cpal can raise the same
+                // fault more than once: one USB unplug on the test rig produced
+                // two POLLERR callbacks 0.2ms apart. The first drove this rebuild;
+                // the second stayed set, so the loop below saw it the instant the
+                // stream came back and immediately tore the new one down to
+                // rebuild it again. That cost a second audio gap 39ms after
+                // recovery, and counted one unplug as two recoveries.
+                *stream_error_notify.0.lock() = false;
+
                 let stream_result = factory.build_stream(
                     mixer.clone(),
                     source_rx.clone(),
