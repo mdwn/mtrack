@@ -299,20 +299,25 @@ fn error_handler(
         // actually failed under a pile of glitches, overwrite its message, and
         // cost an allocation and a lock on the audio thread each time.
         //
-        // Note it still falls through to the notify below, so an underrun
-        // continues to trigger a full stream rebuild. That is almost certainly
-        // wrong — cpal has already called `prepare()` and the stream restarts on
-        // its own — but it is a playback behaviour change rather than a
-        // reporting one, and predates this. See #369.
+        // It also does not wake the rebuild. `prepare()` is cpal's own recovery
+        // and it works, so tearing the stream down and opening the device again
+        // replaces a glitch of about a millisecond with a full reopen — measured
+        // at ~29ms on the test rig. Same outcome, thirty times the interruption.
+        //
+        // POLLERR is different and still rebuilds: cpal returns that as an error
+        // *before* it reaches the `avail()` call whose EPIPE would have taken the
+        // recovery path, so the PCM stays in XRUN and only a new stream clears it.
         if matches!(err, cpal::StreamError::BufferUnderrun) {
             health.record_underrun();
-        } else {
-            error!(
-                "CPAL output stream error: {} (will attempt to recover)",
-                err
-            );
-            health.record_stream_error(&err.to_string());
+            return;
         }
+
+        error!(
+            "CPAL output stream error: {} (will attempt to recover)",
+            err
+        );
+        health.record_stream_error(&err.to_string());
+
         let (mutex, condvar) = &*notify;
         let mut guard = mutex.lock();
         *guard = true;

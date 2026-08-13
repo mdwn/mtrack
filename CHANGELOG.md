@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Buffer underruns no longer rebuild the output stream**: cpal reports every XRUN through the
+  same error callback as a genuine failure, and mtrack tore the stream down for each one —
+  replacing a glitch of about a millisecond with a full device reopen, measured at ~29ms on the
+  test rig. Same outcome, thirty times the interruption. cpal has already recovered by then: an
+  underrun is the one fault it handles itself, calling `prepare()` so the stream restarts once two
+  periods are written. Underruns are still counted and reported. Backend errors other than
+  underruns still rebuild, because cpal reports those *before* reaching its own recovery path, so
+  the stream cannot come back without one.
+
+- **A stream that fails as fast as it starts now says so**: an audio buffer too small for the
+  machine to service produces a stream that dies within milliseconds, is rebuilt, and dies again —
+  on the test rig, lifetimes of 7ms to 184ms, indefinitely. Nothing in the logs said why the audio
+  was broken. mtrack now warns, at most once every ten seconds, with the stream's lifetime and a
+  running count. It deliberately does not slow the rebuilds down: measurement showed the rebuild is
+  the only thing that clears the fault, so audio delivered is a duty cycle of stream lifetime over
+  rebuild interval, and backing off traded 77% choppy audio for 2% silence.
+
 - **`stream_buffer_size: min` and `default` can now actually be set**: both were documented in the
   config, described in the web UI's own tooltip, and impossible to load — the profile failed to
   parse with `data did not match any variant of untagged enum StreamBufferSize`. The enum was
