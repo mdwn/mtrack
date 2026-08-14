@@ -73,6 +73,9 @@ macro_rules! entry {
 const WORLD_LEVEL: &[&str] = &[
     "selected_device_actually_streams",
     "a_tested_device_is_still_usable_afterwards",
+    "testing_another_device_is_not_confused_for_the_one_in_use",
+    "overlapping_device_tests_do_not_fail_each_other",
+    "testing_during_playback_refuses_others_and_answers_for_the_one_in_use",
     "stop_halts_playback",
     "playlist_navigation_moves_between_songs",
     "tracks_route_to_their_mapped_channels",
@@ -161,6 +164,29 @@ pub fn all() -> Vec<Check> {
              it. A second open is refused, so the naive answer calls the working interface\n  \
              broken.",
             devices::probing_the_device_in_use_reports_it_rather_than_failing
+        ),
+        entry!(
+            "devices",
+            "testing_another_device_is_not_confused_for_the_one_in_use",
+            "Testing a device other than the one in use must actually test it. Waving it\n  \
+             through as \"in use\" reports a green result for an interface nobody opened.",
+            devices::testing_another_device_is_not_confused_for_the_one_in_use
+        ),
+        entry!(
+            "devices",
+            "overlapping_device_tests_do_not_fail_each_other",
+            "Two clients testing at once must not make each other report a working device\n  \
+             as broken. ALSA refuses a concurrent second open, so the endpoint must\n  \
+             serialize.",
+            devices::overlapping_device_tests_do_not_fail_each_other
+        ),
+        entry!(
+            "playback",
+            "testing_during_playback_refuses_others_and_answers_for_the_one_in_use",
+            "Mid-song, testing another device must be refused while the device being\n  \
+             played through still answers. The ordering is the point: \"is my output still\n  \
+             alive?\" is the question worth asking during a set.",
+            devices::testing_during_playback_refuses_others_and_answers_for_the_one_in_use
         ),
         entry!(
             "startup",
