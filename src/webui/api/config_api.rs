@@ -420,6 +420,62 @@ pub(super) async fn put_config_samples(
     }
 }
 
+/// PUT /api/config/metronome — replace the player-wide metronome defaults.
+/// `metronome` may be null to remove them entirely.
+pub(super) async fn put_config_metronome(
+    State(state): State<WebUiState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Some(resp) = reject_if_playing(&state).await {
+        return resp;
+    }
+
+    let checksum = match extract_checksum(&body) {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+
+    let metronome: Option<config::MetronomeDefaults> = match body.get("metronome") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(v) => match serde_json::from_value(v.clone()) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("invalid metronome defaults: {}", e)})),
+                )
+                    .into_response()
+            }
+        },
+    };
+
+    if let Some(defaults) = metronome.as_ref() {
+        if let Err(e) = defaults.validate() {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response();
+        }
+    }
+
+    let store = match require_config_store(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let default_enabled = metronome.as_ref().is_some_and(|m| m.enabled);
+    match store.update_metronome(metronome, &checksum).await {
+        Ok(snapshot) => {
+            reload_hardware_after_mutation(&state).await;
+            // The default-on flag is applied at song load; refresh both.
+            state.player.set_default_metronome(default_enabled);
+            state.player.reload_songs(
+                &state.songs_path,
+                state.playlists_dir.as_deref(),
+                state.legacy_playlist_path.as_deref(),
+            );
+            config_snapshot_response(snapshot, StatusCode::OK)
+        }
+        Err(e) => config_store_error_response(e),
+    }
+}
+
 /// POST /api/config/profiles — add a new profile.
 pub(super) async fn post_config_profile(
     State(state): State<WebUiState>,

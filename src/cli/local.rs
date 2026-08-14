@@ -171,7 +171,8 @@ pub async fn start(
         crate::util::create_dir_all(&songs_path)?;
     }
 
-    let songs = songs::get_all_songs(&songs_path)?;
+    let default_metronome = player_config.metronome().is_some_and(|m| m.enabled);
+    let songs = songs::get_all_songs_with_defaults(&songs_path, default_metronome)?;
 
     // Resolve playlists directory from config, defaulting to {config_dir}/playlists/.
     let playlists_dir = player_config
@@ -224,6 +225,7 @@ pub async fn start(
         player_path.parent(),
     )?;
     player.set_config_store(config_store);
+    player.set_default_metronome(default_metronome);
 
     // Create the state watch channel upfront. The sampler will be started
     // by init_hardware_async when the DMX engine becomes available.

@@ -194,6 +194,30 @@ export async function updateSamples(
   return res.json();
 }
 
+export async function updateMetronomeDefaults(
+  sounds: Record<string, unknown> | null,
+  enabled: boolean,
+  volume: number | null,
+  checksum: string,
+): Promise<ConfigSnapshot> {
+  const hasSounds = sounds && Object.keys(sounds).length > 0;
+  const hasVolume = volume !== null && volume !== 1;
+  const body = {
+    expected_checksum: checksum,
+    metronome:
+      hasSounds || enabled || hasVolume
+        ? {
+            ...(enabled ? { enabled } : {}),
+            ...(hasVolume ? { volume } : {}),
+            ...(hasSounds ? { sounds } : {}),
+          }
+        : null,
+  };
+  const res = await put("/config/metronome", JSON.stringify(body));
+  if (!res.ok) throw await apiError(res, "Failed to update metronome defaults");
+  return res.json();
+}
+
 export interface SampleUploadResult {
   status: string;
   file: string;

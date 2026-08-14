@@ -16,9 +16,11 @@ songs: /mnt/song-storage
 playlist: /mnt/playlist.yaml
 
 # (Optional) Player-wide metronome defaults. Songs enable the metronome with
-# a `metronome:` block in song.yaml; sounds not overridden there fall back to
-# these, so `metronome: {}` is enough per song once this is configured.
+# a `metronome:` block in song.yaml; the volume and any sounds not overridden
+# there fall back to these, so `metronome: {}` is enough per song once this is
+# configured.
 metronome:
+  volume: 0.8 # master click level (0.0-2.0) for songs that set none
   sounds:
     accent: { freq: 1600, volume: 1.0 }
     normal: { freq: 1200, volume: 0.8 }

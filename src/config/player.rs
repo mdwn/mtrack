@@ -128,7 +128,8 @@ pub struct Player {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_sample_voices: Option<u32>,
     /// Player-wide metronome defaults. Songs enable the metronome with a
-    /// `metronome:` block; sounds not overridden there fall back to these.
+    /// `metronome:` block; the volume and any sounds not overridden there
+    /// fall back to these.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     metronome: Option<MetronomeDefaults>,
 }
@@ -136,10 +137,32 @@ pub struct Player {
 /// Player-wide metronome defaults.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct MetronomeDefaults {
+    /// When true, every song with a tempo map gets a metronome by default;
+    /// individual songs opt out with `metronome: { enabled: false }`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enabled: bool,
+    /// Master click volume (0.0-2.0) for every song that doesn't set its own
+    /// `metronome.volume`. Absent means 1.0. Click levels are usually a
+    /// property of the rig, not of one song.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<f64>,
     /// Default click sounds used when a song's metronome config doesn't
     /// override them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sounds: Option<super::metronome::MetronomeSounds>,
+}
+
+impl MetronomeDefaults {
+    /// Validates the player-wide defaults, sounds included.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(volume) = self.volume {
+            super::metronome::validate_volume(volume)?;
+        }
+        if let Some(sounds) = &self.sounds {
+            sounds.validate()?;
+        }
+        Ok(())
+    }
 }
 
 impl Default for Player {
@@ -629,6 +652,11 @@ impl Player {
     /// Gets the player-wide metronome defaults.
     pub fn metronome(&self) -> Option<&MetronomeDefaults> {
         self.metronome.as_ref()
+    }
+
+    /// Sets the player-wide metronome defaults.
+    pub fn set_metronome(&mut self, metronome: Option<MetronomeDefaults>) {
+        self.metronome = metronome;
     }
 
     /// Gets the maximum sample voices limit.

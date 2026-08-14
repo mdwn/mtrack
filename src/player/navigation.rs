@@ -226,13 +226,14 @@ impl Player {
         playlists_dir: Option<&std::path::Path>,
         legacy_playlist_path: Option<&std::path::Path>,
     ) {
-        let new_songs = match songs::get_all_songs(songs_path) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Failed to rescan songs: {}", e);
-                return;
-            }
-        };
+        let new_songs =
+            match songs::get_all_songs_with_defaults(songs_path, self.default_metronome()) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to rescan songs: {}", e);
+                    return;
+                }
+            };
 
         let new_playlists =
             match super::load_playlists(playlists_dir, legacy_playlist_path, new_songs.clone()) {

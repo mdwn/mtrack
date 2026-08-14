@@ -156,30 +156,14 @@
   // Pilot hints state (the song.yaml `pilot:` block)
   let pilotConfig = $state<PilotConfig | null>(null);
 
-  // Beats per measure of the base meter, for the metronome accent pads:
-  // the tempo map's time signature when set, else the beat grid's first
-  // measure length.
-  let beatsPerMeasure = $derived.by(() => {
-    const sig = tempoConfig?.time_signature;
-    if (sig) {
-      const match = /^\s*(\d+)/.exec(sig);
-      if (match) return parseInt(match[1]);
-    }
-    if (tempoConfig) return 4;
-    const grid = song?.beat_grid;
-    if (grid && grid.measure_starts.length > 1) {
-      return grid.measure_starts[1] - grid.measure_starts[0];
-    }
-    return 4;
-  });
-
   // File browser state
   type BrowseTarget =
     | { kind: "track"; index: number }
     | { kind: "midi" }
     | { kind: "lighting" }
     | { kind: "sample" }
-    | { kind: "notification" };
+    | { kind: "notification" }
+    | { kind: "metronome-sound"; role: "accent" | "half" | "normal" | "sub" };
   let browseTarget = $state<BrowseTarget | null>(null);
   let notifBrowseTarget = $state<NotifBrowseTarget | null>(null);
   let songNotifRef: NotificationsSection | undefined = $state();
@@ -221,8 +205,20 @@
     } else if (browseTarget.kind === "notification") {
       onNotifBrowseSelect(paths);
       return;
+    } else if (browseTarget.kind === "metronome-sound") {
+      setMetronomeSoundFile(browseTarget.role, paths[0]);
     }
     browseTarget = null;
+  }
+
+  function setMetronomeSoundFile(
+    role: "accent" | "half" | "normal" | "sub",
+    path: string,
+  ) {
+    if (!metronomeConfig) return;
+    const sounds = { ...(metronomeConfig.sounds ?? {}) };
+    sounds[role] = { ...(sounds[role] ?? {}), file: path };
+    onMetronomeChange({ ...metronomeConfig, sounds });
   }
 
   let browseFilter = $derived.by(() => {
@@ -232,6 +228,7 @@
     if (browseTarget.kind === "lighting") return ["lighting"];
     if (browseTarget.kind === "sample") return ["audio"];
     if (browseTarget.kind === "notification") return ["audio"];
+    if (browseTarget.kind === "metronome-sound") return ["audio"];
     return [];
   });
 
@@ -1133,6 +1130,7 @@
             metronome={metronomeConfig}
             {songName}
             hasMidi={song.has_midi}
+            {songFiles}
             ontempochange={onTempoChange}
             onpilotchange={onPilotChange}
             onmetronomechange={onMetronomeChange}
@@ -1141,7 +1139,10 @@
             <SongMetronomeEditor
               metronome={metronomeConfig}
               hasBeatGrid={!!song.beat_grid || !!tempoConfig}
-              {beatsPerMeasure}
+              {songName}
+              {songFiles}
+              onbrowsesound={(role) =>
+                openBrowser({ kind: "metronome-sound", role })}
               onchange={onMetronomeChange}
             />
           </div>

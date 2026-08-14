@@ -14,9 +14,10 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
-  import type { PilotHintConfig } from "../../lib/api/songs";
+  import type { PilotHintConfig, SongFile } from "../../lib/api/songs";
   import NumberStepper from "../NumberStepper.svelte";
   import MarkerDialog from "./MarkerDialog.svelte";
+  import SongFileField from "./SongFileField.svelte";
 
   interface Props {
     hint: PilotHintConfig;
@@ -24,6 +25,9 @@
     /** Beat times (seconds) + measure start indices, for converting the
      * position when switching between measure and time anchoring. */
     beatGrid?: { beats: number[]; measure_starts: number[] } | null;
+    songName?: string;
+    /** The song directory listing, for the clip picker. */
+    songFiles?: SongFile[];
     onchange: (patch: Partial<PilotHintConfig>) => void;
     ondelete: () => void;
     onclose: () => void;
@@ -33,6 +37,8 @@
     hint,
     hasBeatGrid = false,
     beatGrid = null,
+    songName = "",
+    songFiles = [],
     onchange,
     ondelete,
     onclose,
@@ -178,15 +184,12 @@
 
   <div class="field-block">
     <span class="field-label">{$t("pilot.marker.audio")}</span>
-    <input
-      type="text"
-      class="input"
-      placeholder={$t("pilot.filePlaceholder")}
+    <SongFileField
       value={hint.file ?? ""}
-      onchange={(e) => {
-        const v = (e.target as HTMLInputElement).value.trim();
-        onchange({ file: v || undefined });
-      }}
+      placeholder={$t("pilot.filePlaceholder")}
+      {songName}
+      files={songFiles}
+      onchange={(path) => onchange({ file: path })}
     />
     {#if hint.file}
       <div class="segmented">

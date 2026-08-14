@@ -288,6 +288,9 @@ pub struct Player {
     span: Span,
     /// Mutable configuration store for runtime config changes.
     config_store: Arc<parking_lot::Mutex<Option<Arc<config::ConfigStore>>>>,
+    /// Player-wide "metronome on by default" flag, applied when (re)loading
+    /// songs (see `Song::apply_metronome_default`).
+    default_metronome: Arc<std::sync::atomic::AtomicBool>,
     /// Cancellation token for the current hardware init round. On reload,
     /// the old token is cancelled and a new one is created.
     init_cancel: Arc<parking_lot::Mutex<CancellationToken>>,
@@ -537,6 +540,7 @@ impl Player {
             stop_run: Arc::new(AtomicBool::new(false)),
             span: span!(Level::INFO, "player"),
             config_store: Arc::new(parking_lot::Mutex::new(None)),
+            default_metronome: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             init_cancel: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
             broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
             init_done_tx: Arc::new(init_done_tx),
@@ -739,6 +743,19 @@ impl Player {
     /// Returns the config store, if one has been set.
     pub fn config_store(&self) -> Option<Arc<config::ConfigStore>> {
         self.config_store.lock().clone()
+    }
+
+    /// Sets the player-wide "metronome on by default" flag. Takes effect on
+    /// the next song (re)load.
+    pub fn set_default_metronome(&self, enabled: bool) {
+        self.default_metronome
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns the player-wide "metronome on by default" flag.
+    pub fn default_metronome(&self) -> bool {
+        self.default_metronome
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns the track-to-output-channel mappings, if audio is configured.

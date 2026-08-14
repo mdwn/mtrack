@@ -353,16 +353,17 @@ impl MetronomeSource {
     pub fn new(
         grid: &BeatGrid,
         config: &MetronomeConfig,
-        defaults: Option<&crate::config::metronome::MetronomeSounds>,
+        defaults: Option<&crate::config::MetronomeDefaults>,
         base_path: &Path,
         sample_rate: u32,
         start_time: Duration,
         song_duration: Duration,
     ) -> Result<Self, Box<dyn Error>> {
         let sounds = config.sounds.as_ref();
+        let default_sounds = defaults.and_then(|d| d.sounds.as_ref());
         let accent = render_click_sound(
             sounds.and_then(|s| s.accent.as_ref()),
-            defaults.and_then(|s| s.accent.as_ref()),
+            default_sounds.and_then(|s| s.accent.as_ref()),
             DEFAULT_ACCENT_FREQ,
             DEFAULT_ACCENT_VOLUME,
             base_path,
@@ -370,7 +371,7 @@ impl MetronomeSource {
         )?;
         let normal = render_click_sound(
             sounds.and_then(|s| s.normal.as_ref()),
-            defaults.and_then(|s| s.normal.as_ref()),
+            default_sounds.and_then(|s| s.normal.as_ref()),
             DEFAULT_NORMAL_FREQ,
             DEFAULT_NORMAL_VOLUME,
             base_path,
@@ -378,20 +379,39 @@ impl MetronomeSource {
         )?;
         let half = render_click_sound(
             sounds.and_then(|s| s.half.as_ref()),
-            defaults.and_then(|s| s.half.as_ref()),
+            default_sounds.and_then(|s| s.half.as_ref()),
             DEFAULT_HALF_FREQ,
             DEFAULT_HALF_VOLUME,
             base_path,
             sample_rate,
         )?;
-        let sub = render_click_sound(
+        let mut sub = render_click_sound(
             sounds.and_then(|s| s.sub.as_ref()),
-            defaults.and_then(|s| s.sub.as_ref()),
+            default_sounds.and_then(|s| s.sub.as_ref()),
             DEFAULT_SUB_FREQ,
             DEFAULT_SUB_VOLUME,
             base_path,
             sample_rate,
         )?;
+
+        // Master volume scales every click uniformly, preserving the
+        // accent/half/normal/sub ordering. The song overrides the player-wide
+        // level; neither set means 1.0.
+        let volume = config
+            .volume
+            .or_else(|| defaults.and_then(|d| d.volume))
+            .unwrap_or(crate::config::metronome::DEFAULT_MASTER_VOLUME);
+        let mut accent = accent;
+        let mut normal = normal;
+        let mut half = half;
+        if volume != crate::config::metronome::DEFAULT_MASTER_VOLUME {
+            let scale = volume as f32;
+            for waveform in [&mut accent, &mut half, &mut normal, &mut sub] {
+                for sample in waveform.iter_mut() {
+                    *sample *= scale;
+                }
+            }
+        }
 
         let end_position = ((song_duration.saturating_sub(start_time)).as_secs_f64()
             * sample_rate as f64)
@@ -846,16 +866,104 @@ mod tests {
     }
 
     #[test]
-    fn player_defaults_apply_when_song_has_no_sounds() {
-        use crate::config::metronome::{ClickSound, MetronomeSounds};
-
+    fn master_volume_scales_all_clicks() {
         let grid = simple_grid(4, 0.5, 1);
-        let config = MetronomeConfig::default();
-        let render = |defaults: Option<&MetronomeSounds>| {
+        let render = |volume: f64| {
+            let config = MetronomeConfig {
+                volume: Some(volume),
+                ..MetronomeConfig::default()
+            };
             let mut source = MetronomeSource::new(
                 &grid,
                 &config,
-                defaults,
+                None,
+                Path::new("/nonexistent"),
+                RATE,
+                Duration::ZERO,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+            let mut peak = 0.0f32;
+            while let Some(sample) = source.next_sample().unwrap() {
+                peak = peak.max(sample.abs());
+            }
+            peak
+        };
+
+        let full = render(1.0);
+        let half = render(0.5);
+        assert!(
+            (half - full * 0.5).abs() < 0.01,
+            "master volume 0.5 should halve the peak ({half} vs {full})"
+        );
+    }
+
+    #[test]
+    fn player_default_volume_applies_until_the_song_overrides_it() {
+        use crate::config::MetronomeDefaults;
+
+        let grid = simple_grid(4, 0.5, 1);
+        // Click levels are a rig decision, so a song that never mentions
+        // volume plays at the player-wide one; a song that does wins.
+        let render = |song: Option<f64>, player: Option<f64>| {
+            let config = MetronomeConfig {
+                volume: song,
+                ..MetronomeConfig::default()
+            };
+            let defaults = MetronomeDefaults {
+                enabled: false,
+                volume: player,
+                sounds: None,
+            };
+            let mut source = MetronomeSource::new(
+                &grid,
+                &config,
+                Some(&defaults),
+                Path::new("/nonexistent"),
+                RATE,
+                Duration::ZERO,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+            let mut peak = 0.0f32;
+            while let Some(sample) = source.next_sample().unwrap() {
+                peak = peak.max(sample.abs());
+            }
+            peak
+        };
+
+        let full = render(None, None);
+        let inherited = render(None, Some(0.5));
+        assert!(
+            (inherited - full * 0.5).abs() < 0.01,
+            "an unset song volume should follow the player default ({inherited} vs {full})"
+        );
+        // An explicit 1.0 is an override, not "unset": it must ignore the
+        // player's 0.5 rather than be folded into it.
+        let overridden = render(Some(1.0), Some(0.5));
+        assert!(
+            (overridden - full).abs() < 0.01,
+            "the song volume should win over the player default ({overridden} vs {full})"
+        );
+    }
+
+    #[test]
+    fn player_defaults_apply_when_song_has_no_sounds() {
+        use crate::config::metronome::{ClickSound, MetronomeSounds};
+        use crate::config::MetronomeDefaults;
+
+        let grid = simple_grid(4, 0.5, 1);
+        let config = MetronomeConfig::default();
+        let render = |sounds: Option<MetronomeSounds>| {
+            let defaults = sounds.map(|sounds| MetronomeDefaults {
+                enabled: false,
+                volume: None,
+                sounds: Some(sounds),
+            });
+            let mut source = MetronomeSource::new(
+                &grid,
+                &config,
+                defaults.as_ref(),
                 Path::new("/nonexistent"),
                 RATE,
                 Duration::ZERO,
@@ -884,7 +992,7 @@ mod tests {
             half: None,
             sub: None,
         };
-        let default_peak = render(Some(&defaults));
+        let default_peak = render(Some(defaults));
         assert!(
             default_peak < builtin_peak * 0.5,
             "player defaults should scale the click ({default_peak} vs {builtin_peak})"

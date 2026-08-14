@@ -21,6 +21,7 @@
     PilotConfig,
     PilotHintConfig,
     MetronomeConfig,
+    SongFile,
   } from "../../lib/api/songs";
   import { sortTempoChanges } from "../../lib/util/tempo";
   import { accentsGlyph, subdivisionChip } from "../../lib/meter";
@@ -55,6 +56,8 @@
     metronome?: MetronomeConfig | null;
     songName?: string;
     hasMidi?: boolean;
+    /** The song directory listing, for the pilot clip picker. */
+    songFiles?: SongFile[];
     ontempochange?: (tempo: TempoConfig | null) => void;
     onpilotchange?: (pilot: PilotConfig | null) => void;
     onmetronomechange?: (metronome: MetronomeConfig | null) => void;
@@ -70,6 +73,7 @@
     metronome = null,
     songName,
     hasMidi = false,
+    songFiles = [],
     ontempochange,
     onpilotchange,
     onmetronomechange,
@@ -664,7 +668,7 @@
 
 <div class="section-timeline-editor">
   <div class="toolbar">
-    <span class="toolbar-title">{$t("songs.detail.sections")}</span>
+    <span class="toolbar-title">{$t("songs.detail.tabs.sections")}</span>
     {#if isCurrentSong && playheadInfo}
       <span class="playhead-info mono">
         <span class="playhead-info__pos"
@@ -866,6 +870,8 @@
     hint={pilot.hints[pilotDialogIndex]}
     hasBeatGrid={!!song.beat_grid}
     beatGrid={song.beat_grid}
+    songName={songName ?? song.name}
+    {songFiles}
     onchange={(patch) => patchPilotHint(pilotDialogIndex!, patch)}
     ondelete={() => deletePilotHint(pilotDialogIndex!)}
     onclose={() => (pilotDialogIndex = null)}

@@ -141,6 +141,7 @@ pub fn router() -> Router<WebUiState> {
             put(config_api::put_config_controllers),
         )
         .route("/config/samples", put(config_api::put_config_samples))
+        .route("/config/metronome", put(config_api::put_config_metronome))
         .route("/config/profiles", post(config_api::post_config_profile))
         .route(
             "/config/profiles/{index}",

@@ -157,9 +157,9 @@ impl Player {
                     mixer.set_track_gains(track_gains.clone());
                 }
 
-                // Player-wide metronome sound defaults for songs that don't
-                // override them.
-                device.set_metronome_defaults(config.metronome().and_then(|m| m.sounds.clone()));
+                // Player-wide metronome defaults (master volume, click
+                // sounds) for songs that don't override them.
+                device.set_metronome_defaults(config.metronome().cloned());
 
                 let mut hw = self.hardware.write();
                 hw.device = Some(device.clone());

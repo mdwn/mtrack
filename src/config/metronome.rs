@@ -34,6 +34,12 @@ pub const DEFAULT_SUB_VOLUME: f64 = 0.45;
 /// generated from the song's beat grid, routable like any other track.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct MetronomeConfig {
+    /// Tri-state switch: absent = the block enables the metronome (and a
+    /// song without any `metronome:` block follows the player-wide
+    /// default); `false` = explicitly off, keeping the rest of the block's
+    /// settings around.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     /// The output track name the metronome plays on. Route it by adding this
     /// name to `track_mappings` in the player profile. Defaults to
     /// "metronome".
@@ -65,6 +71,11 @@ pub struct MetronomeConfig {
     /// at measures; each stays in effect until the next change.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changes: Vec<MetronomeChange>,
+    /// Master click volume (0.0-2.0): scales every click sound uniformly,
+    /// preserving the accent/half/normal/sub level ordering. Absent follows
+    /// the player-wide `metronome.volume`, which itself defaults to 1.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<f64>,
     /// Click sounds. Defaults to synthesized clicks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sounds: Option<MetronomeSounds>,
@@ -153,6 +164,20 @@ fn default_subdivision() -> Subdivision {
     Subdivision::default()
 }
 
+/// The master click volume used when neither the song nor the player sets one.
+pub const DEFAULT_MASTER_VOLUME: f64 = 1.0;
+
+/// Checks a master click volume, shared by the song config and the
+/// player-wide defaults.
+pub fn validate_volume(volume: f64) -> Result<(), String> {
+    if !volume.is_finite() || !(0.0..=2.0).contains(&volume) {
+        return Err(format!(
+            "metronome volume must be within 0.0-2.0, got {volume}"
+        ));
+    }
+    Ok(())
+}
+
 fn is_default_subdivision(subdivision: &Subdivision) -> bool {
     *subdivision == Subdivision::Even(1)
 }
@@ -160,11 +185,13 @@ fn is_default_subdivision(subdivision: &Subdivision) -> bool {
 impl Default for MetronomeConfig {
     fn default() -> Self {
         MetronomeConfig {
+            enabled: None,
             track: default_metronome_track(),
             accent: Vec::new(),
             accents: Vec::new(),
             subdivision: Subdivision::default(),
             changes: Vec::new(),
+            volume: None,
             sounds: None,
         }
     }
@@ -192,6 +219,9 @@ impl MetronomeConfig {
             return Err("metronome accent levels must be 0-3".to_string());
         }
         validate_subdivision(&self.subdivision)?;
+        if let Some(volume) = self.volume {
+            validate_volume(volume)?;
+        }
         for change in &self.changes {
             if change.measure < 1 {
                 return Err("metronome change measures are 1-indexed".to_string());
@@ -205,17 +235,22 @@ impl MetronomeConfig {
                 validate_subdivision(subdivision)?;
             }
         }
+        if let Some(sounds) = &self.sounds {
+            sounds.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl MetronomeSounds {
+    /// Validates the click sound definitions (shared between song-level
+    /// metronome configs and the player-wide defaults).
+    pub fn validate(&self) -> Result<(), String> {
         for (label, sound) in [
-            (
-                "accent",
-                self.sounds.as_ref().and_then(|s| s.accent.as_ref()),
-            ),
-            (
-                "normal",
-                self.sounds.as_ref().and_then(|s| s.normal.as_ref()),
-            ),
-            ("half", self.sounds.as_ref().and_then(|s| s.half.as_ref())),
-            ("sub", self.sounds.as_ref().and_then(|s| s.sub.as_ref())),
+            ("accent", self.accent.as_ref()),
+            ("normal", self.normal.as_ref()),
+            ("half", self.half.as_ref()),
+            ("sub", self.sub.as_ref()),
         ] {
             if let Some(sound) = sound {
                 if let Some(freq) = sound.freq {
@@ -304,6 +339,39 @@ sounds:
         assert!(deserialize("sounds:\n  half: { volume: 3.0 }")
             .validate()
             .is_err());
+        assert!(deserialize("volume: 3.0").validate().is_err());
+        assert!(deserialize("volume: -0.5").validate().is_err());
+    }
+
+    #[test]
+    fn enabled_tristate_roundtrip() {
+        let config = deserialize("enabled: false\nvolume: 0.7");
+        assert_eq!(config.enabled, Some(false));
+        assert!(config.validate().is_ok());
+        let serialized = crate::util::to_yaml_string(&config).unwrap();
+        assert_eq!(deserialize(&serialized), config);
+        // Absent stays absent.
+        let plain = crate::util::to_yaml_string(&deserialize("{}")).unwrap();
+        assert!(!plain.contains("enabled"));
+    }
+
+    #[test]
+    fn master_volume_roundtrip() {
+        let config = deserialize("volume: 0.7");
+        assert_eq!(config.volume, Some(0.7));
+        assert!(config.validate().is_ok());
+        let serialized = crate::util::to_yaml_string(&config).unwrap();
+        assert_eq!(deserialize(&serialized), config);
+        // Unset stays out of the YAML — and stays distinguishable from an
+        // explicit 1.0, which overrides the player-wide volume.
+        let plain = crate::util::to_yaml_string(&deserialize("{}")).unwrap();
+        assert!(!plain.contains("volume"));
+        assert_eq!(deserialize("{}").volume, None);
+        let explicit = deserialize("volume: 1.0");
+        assert_eq!(explicit.volume, Some(1.0));
+        assert!(crate::util::to_yaml_string(&explicit)
+            .unwrap()
+            .contains("volume"));
     }
 
     #[test]

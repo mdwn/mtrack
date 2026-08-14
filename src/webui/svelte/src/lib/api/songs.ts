@@ -155,6 +155,9 @@ export interface MetronomeChangeConfig {
 }
 
 export interface MetronomeConfig {
+  /** Tri-state: absent = on (block present) / follows the player default
+   * (no block); false = explicitly off, settings preserved. */
+  enabled?: boolean;
   track?: string;
   accent?: number[];
   /** Per-beat accent levels: 0 silent, 1 normal, 2 half accent, 3 accent.
@@ -163,6 +166,8 @@ export interface MetronomeConfig {
   subdivision?: SubdivisionValue;
   /** Feel changes anchored at measures, active until the next change. */
   changes?: MetronomeChangeConfig[];
+  /** Master click volume (0-2), scaling all sounds uniformly. */
+  volume?: number;
   sounds?: {
     accent?: ClickSoundConfig;
     normal?: ClickSoundConfig;

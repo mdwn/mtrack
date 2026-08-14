@@ -14,8 +14,18 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
-  import type { MetronomeConfig, ClickSoundConfig } from "../../lib/api/songs";
-  import AccentPads from "./AccentPads.svelte";
+  import type {
+    MetronomeConfig,
+    ClickSoundConfig,
+    SongFile,
+  } from "../../lib/api/songs";
+  import SliderStepper from "../SliderStepper.svelte";
+  import { previewClick } from "../../lib/clickPreview";
+  import SongFileField from "./SongFileField.svelte";
+  import {
+    METRONOME_PRESETS,
+    SOUND_DEFAULTS,
+  } from "../../lib/metronomePresets";
 
   interface Props {
     /** The song.yaml `metronome:` block, or null when not configured. */
@@ -23,26 +33,47 @@
     onchange: (metronome: MetronomeConfig | null) => void;
     /** Whether the song has a beat grid (tempo map or analyzed click). */
     hasBeatGrid?: boolean;
-    /** Beats per measure of the song's (base) time signature; sizes the
-     * accent pads. */
-    beatsPerMeasure?: number;
+    songName?: string;
+    /** The song directory listing, for the sound-file pickers. */
+    songFiles?: SongFile[];
+    /** Opens the filesystem browser for a sound's file. */
+    onbrowsesound?: (role: "accent" | "half" | "normal" | "sub") => void;
   }
 
   let {
     metronome,
     onchange,
     hasBeatGrid = false,
-    beatsPerMeasure = 4,
+    songName = "",
+    songFiles = [],
+    onbrowsesound,
   }: Props = $props();
 
   let expanded = $state(true);
 
-  function enable() {
-    onchange({});
-  }
+  const ROLES = ["accent", "half", "normal", "sub"] as const;
+  type Role = (typeof ROLES)[number];
 
-  function disable() {
-    onchange(null);
+  const DEFAULTS = SOUND_DEFAULTS;
+  const PRESETS = METRONOME_PRESETS;
+
+  type MetronomeState = "default" | "on" | "off";
+
+  let metronomeState: MetronomeState = $derived(
+    metronome === null ? "default" : metronome.enabled === false ? "off" : "on",
+  );
+
+  function setMetronomeState(next: MetronomeState) {
+    if (next === metronomeState) return;
+    if (next === "default") {
+      onchange(null);
+    } else if (next === "on") {
+      const updated = { ...(metronome ?? {}) };
+      delete updated.enabled;
+      onchange(updated);
+    } else {
+      onchange({ ...(metronome ?? {}), enabled: false });
+    }
   }
 
   function update(patch: Partial<MetronomeConfig>) {
@@ -61,8 +92,16 @@
     if (updated.subdivision === 1 || updated.subdivision === undefined) {
       delete updated.subdivision;
     }
+    // An explicit 1x is a real override of a player-wide volume, so only an
+    // absent one is dropped.
+    if (updated.volume === undefined) {
+      delete updated.volume;
+    }
+    if (updated.enabled === undefined || updated.enabled === true) {
+      delete updated.enabled;
+    }
     if (updated.sounds) {
-      for (const key of ["accent", "half", "normal", "sub"] as const) {
+      for (const key of ROLES) {
         const sound = updated.sounds[key];
         if (sound && Object.keys(sound).length === 0) {
           delete updated.sounds[key];
@@ -75,42 +114,7 @@
     onchange(updated);
   }
 
-  // --- Accent pads (Soundbrenner-style) ---
-
-  let padCount = $derived(Math.max(1, Math.min(16, beatsPerMeasure)));
-
-  /** The pattern the pads display: explicit `accents` (padded with baseline
-   * / truncated to the meter, matching the renderer), otherwise levels
-   * derived from the accent grouping (or the plain downbeat accent). */
-  let padLevels = $derived.by(() => {
-    if (metronome?.accents?.length) {
-      return Array.from(
-        { length: padCount },
-        (_, i) => metronome.accents![i] ?? 1,
-      );
-    }
-    const groupStarts = [0];
-    let acc = 0;
-    for (const group of metronome?.accent ?? []) {
-      acc += group;
-      groupStarts.push(acc);
-    }
-    return Array.from({ length: padCount }, (_, i) =>
-      groupStarts.includes(i) ? 3 : 1,
-    );
-  });
-
-  /** Whether the pads show an explicit per-beat pattern from the config. */
-  let padsCustomized = $derived((metronome?.accents?.length ?? 0) > 0);
-
-  function resetPads() {
-    update({ accents: [] });
-  }
-
-  function updateSound(
-    role: "accent" | "half" | "normal" | "sub",
-    patch: Partial<ClickSoundConfig>,
-  ) {
+  function updateSound(role: Role, patch: Partial<ClickSoundConfig>) {
     if (!metronome) return;
     const sounds = { ...(metronome.sounds ?? {}) };
     const merged: ClickSoundConfig = { ...(sounds[role] ?? {}), ...patch };
@@ -123,62 +127,17 @@
     update({ sounds });
   }
 
-  function parseAccent(raw: string): number[] {
-    return raw
-      .split(/[\s,]+/)
-      .map((part) => parseInt(part))
-      .filter((n) => Number.isFinite(n) && n > 0);
+  /** On = the song overrides this sound; off = player defaults apply. */
+  function toggleSound(role: Role, on: boolean) {
+    if (!metronome) return;
+    if (on) {
+      updateSound(role, DEFAULTS[role]);
+    } else {
+      const sounds = { ...(metronome.sounds ?? {}) };
+      delete sounds[role];
+      update({ sounds });
+    }
   }
-
-  const DEFAULTS = {
-    accent: { freq: 1600, volume: 1.0 },
-    half: { freq: 1400, volume: 0.9 },
-    normal: { freq: 1200, volume: 0.8 },
-    sub: { freq: 1000, volume: 0.45 },
-  };
-
-  /** Typical click sounds; applying a preset overwrites all sounds. */
-  const PRESETS: {
-    key: string;
-    sounds: NonNullable<MetronomeConfig["sounds"]>;
-  }[] = [
-    {
-      key: "ui24",
-      sounds: {
-        accent: { freq: 1125, volume: 1.0 },
-        half: { freq: 1125, volume: 1.0 },
-        normal: { freq: 1125, volume: 1.0 },
-        sub: { freq: 1125, volume: 0.5 },
-      },
-    },
-    {
-      key: "hilo",
-      sounds: {
-        accent: { freq: 1600, volume: 1.0 },
-        half: { freq: 1400, volume: 0.9 },
-        normal: { freq: 1200, volume: 0.8 },
-        sub: { freq: 1000, volume: 0.45 },
-      },
-    },
-    {
-      key: "sharp",
-      sounds: {
-        accent: { freq: 2000, volume: 1.0 },
-        half: { freq: 1750, volume: 0.85 },
-        normal: { freq: 1500, volume: 0.75 },
-        sub: { freq: 1200, volume: 0.4 },
-      },
-    },
-    {
-      key: "low",
-      sounds: {
-        accent: { freq: 880, volume: 1.0 },
-        half: { freq: 770, volume: 0.9 },
-        normal: { freq: 660, volume: 0.8 },
-        sub: { freq: 550, volume: 0.45 },
-      },
-    },
-  ];
 
   function applyPreset(sounds: NonNullable<MetronomeConfig["sounds"]>) {
     update({ sounds: structuredClone(sounds) });
@@ -191,42 +150,77 @@
       {expanded ? "▼" : "▶"}
     </button>
     <span class="section-title">{$t("metronome.title")}</span>
-    {#if metronome}
-      <span class="metronome-info">
-        {metronome.track ?? "metronome"}
-        {#if metronome.accent?.length}
-          · {metronome.accent.join("+")}
+    <span class="metronome-info">
+      {#if metronomeState === "on"}
+        {metronome?.track ?? "metronome"}
+        {#if metronome?.volume !== undefined}
+          · ×{metronome.volume}
         {/if}
-      </span>
-      <button class="btn btn-sm btn-danger" onclick={disable}
-        >{$t("common.remove")}</button
-      >
-    {:else}
-      <button class="btn btn-sm btn-primary" onclick={enable}
-        >{$t("metronome.add")}</button
-      >
-    {/if}
-    {#if metronome && !hasBeatGrid}
+      {/if}
+    </span>
+    <div class="segmented">
+      {#each ["default", "on", "off"] as const as option (option)}
+        <button
+          type="button"
+          class="seg-btn"
+          class:active={metronomeState === option}
+          onclick={() => setMetronomeState(option)}
+          >{$t(`metronome.state.${option}`)}</button
+        >
+      {/each}
+    </div>
+    {#if metronomeState === "on" && !hasBeatGrid}
       <span class="no-grid-warning">{$t("metronome.noBeatGrid")}</span>
     {/if}
   </div>
 
-  {#if metronome && expanded}
+  {#if metronome && metronomeState === "on" && expanded}
     <div class="metronome-body">
-      <div class="accent-block">
-        <div class="accent-pads-header">
-          <span class="field-label">{$t("metronome.accents")}</span>
-          {#if padsCustomized}
-            <button class="btn-link" onclick={resetPads}
-              >{$t("metronome.accentsReset")}</button
-            >
+      <div class="level-row">
+        <div class="field level-field">
+          <label class="toggle-row level-toggle">
+            <input
+              type="checkbox"
+              checked={metronome.volume !== undefined}
+              onchange={(e) =>
+                update({
+                  volume: (e.target as HTMLInputElement).checked
+                    ? 1
+                    : undefined,
+                })}
+            />
+            <span class="field-label">{$t("metronome.level")}</span>
+            {#if metronome.volume === undefined}
+              <span class="inherited-note">{$t("metronome.inherited")}</span>
+            {/if}
+          </label>
+          {#if metronome.volume !== undefined}
+            <SliderStepper
+              value={metronome.volume}
+              min={0}
+              max={2}
+              step={0.05}
+              decimals={2}
+              suffix="×"
+              defaultValue={1}
+              ariaLabel={$t("metronome.level")}
+              onchange={(v) => update({ volume: Math.round(v * 100) / 100 })}
+            />
           {/if}
         </div>
-        <AccentPads
-          levels={padLevels}
-          onchange={(levels) => update({ accents: levels })}
-        />
+        <label class="field track-field">
+          <span class="field-label">{$t("metronome.track")}</span>
+          <input
+            type="text"
+            class="input"
+            placeholder="metronome"
+            value={metronome.track ?? ""}
+            onchange={(e) =>
+              update({ track: (e.target as HTMLInputElement).value.trim() })}
+          />
+        </label>
       </div>
+
       <div class="presets">
         <span class="field-label">{$t("metronome.presets")}</span>
         {#each PRESETS as preset (preset.key)}
@@ -239,83 +233,82 @@
           </button>
         {/each}
       </div>
-      <div class="metronome-fields">
-        <label class="field">
-          <span class="field-label">{$t("metronome.track")}</span>
-          <input
-            type="text"
-            class="input"
-            placeholder="metronome"
-            value={metronome.track ?? ""}
-            onchange={(e) =>
-              update({ track: (e.target as HTMLInputElement).value.trim() })}
-          />
-        </label>
-        <label class="field">
-          <span class="field-label">{$t("metronome.accentPattern")}</span>
-          <input
-            type="text"
-            class="input"
-            placeholder="e.g. 3, 2, 2"
-            value={(metronome.accent ?? []).join(", ")}
-            onchange={(e) =>
-              update({
-                accent: parseAccent((e.target as HTMLInputElement).value),
-              })}
-          />
-        </label>
-      </div>
+
       <div class="sounds">
-        {#each ["accent", "half", "normal", "sub"] as const as role (role)}
-          {@const sound = metronome.sounds?.[role] ?? {}}
-          <div class="sound-row">
-            <span class="field-label sound-label"
-              >{$t(`metronome.sound.${role}`)}</span
-            >
-            <label class="field">
-              <span class="field-label">{$t("metronome.freq")}</span>
+        {#each ROLES as role (role)}
+          {@const sound = metronome.sounds?.[role]}
+          <div class="sound-row" class:sound-row--off={!sound}>
+            <label class="toggle-row">
               <input
-                type="number"
-                class="input sm-input"
-                min="20"
-                max="20000"
-                placeholder={String(DEFAULTS[role].freq)}
-                value={sound.freq ?? ""}
-                onchange={(e) => {
-                  const v = (e.target as HTMLInputElement).value;
-                  updateSound(role, { freq: v ? parseFloat(v) : undefined });
-                }}
+                type="checkbox"
+                checked={!!sound}
+                onchange={(e) =>
+                  toggleSound(role, (e.target as HTMLInputElement).checked)}
               />
+              <span class="sound-label">{$t(`metronome.sound.${role}`)}</span>
+              {#if !sound}
+                <span class="inherited-note">{$t("metronome.inherited")}</span>
+              {/if}
+              {#if sound && !sound.file}
+                <button
+                  type="button"
+                  class="preview-click-btn"
+                  title={$t("metronome.previewClick")}
+                  onclick={(e) => {
+                    e.preventDefault();
+                    previewClick(
+                      sound.freq ?? DEFAULTS[role].freq,
+                      sound.volume ?? DEFAULTS[role].volume,
+                    );
+                  }}>🔊</button
+                >
+              {/if}
             </label>
-            <label class="field">
-              <span class="field-label">{$t("metronome.volume")}</span>
-              <input
-                type="number"
-                class="input sm-input"
-                min="0"
-                max="2"
-                step="0.05"
-                placeholder={String(DEFAULTS[role].volume)}
-                value={sound.volume ?? ""}
-                onchange={(e) => {
-                  const v = (e.target as HTMLInputElement).value;
-                  updateSound(role, { volume: v ? parseFloat(v) : undefined });
-                }}
-              />
-            </label>
-            <label class="field sound-file">
-              <span class="field-label">{$t("metronome.file")}</span>
-              <input
-                type="text"
-                class="input"
-                placeholder={$t("metronome.filePlaceholder")}
-                value={sound.file ?? ""}
-                onchange={(e) => {
-                  const v = (e.target as HTMLInputElement).value.trim();
-                  updateSound(role, { file: v || undefined });
-                }}
-              />
-            </label>
+            {#if sound}
+              <div class="sound-controls">
+                <div class="field">
+                  <span class="field-label">{$t("metronome.volume")}</span>
+                  <SliderStepper
+                    value={sound.volume ?? DEFAULTS[role].volume}
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    decimals={2}
+                    defaultValue={DEFAULTS[role].volume}
+                    ariaLabel={$t("metronome.volume")}
+                    onchange={(v) =>
+                      updateSound(role, { volume: Math.round(v * 100) / 100 })}
+                  />
+                </div>
+                <div class="field">
+                  <span class="field-label">{$t("metronome.freq")}</span>
+                  <SliderStepper
+                    value={sound.freq ?? DEFAULTS[role].freq}
+                    min={20}
+                    max={20000}
+                    step={25}
+                    suffix="Hz"
+                    log
+                    defaultValue={DEFAULTS[role].freq}
+                    ariaLabel={$t("metronome.freq")}
+                    onchange={(v) => updateSound(role, { freq: v })}
+                  />
+                </div>
+                <div class="field sound-file">
+                  <span class="field-label">{$t("metronome.file")}</span>
+                  <SongFileField
+                    value={sound.file ?? ""}
+                    placeholder={$t("metronome.filePlaceholder")}
+                    {songName}
+                    files={songFiles}
+                    onchange={(path) => updateSound(role, { file: path })}
+                    onbrowse={onbrowsesound
+                      ? () => onbrowsesound(role)
+                      : undefined}
+                  />
+                </div>
+              </div>
+            {/if}
           </div>
         {/each}
       </div>
@@ -353,6 +346,29 @@
     font-size: 12px;
     flex: 1;
   }
+  .segmented {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .seg-btn {
+    border: none;
+    background: var(--bg-input);
+    color: var(--text-muted);
+    padding: 0 12px;
+    min-height: 32px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .seg-btn + .seg-btn {
+    border-left: 1px solid var(--border);
+  }
+  .seg-btn.active {
+    background: var(--accent);
+    color: var(--bg);
+    font-weight: 600;
+  }
   .no-grid-warning {
     color: var(--warning, #e8a54b);
     font-size: 12px;
@@ -361,35 +377,41 @@
     padding: 0 12px 12px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
+  }
+  .level-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .level-field {
+    flex: 1;
+    min-width: 260px;
+  }
+  /* Unchecked the song follows the player-wide volume, so the row is just
+     the label and the note — the slider appears with the override. */
+  .level-toggle {
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  /* The row is a <label> inside .field, which the global stylesheet
+     uppercases; the note is prose and reads like the sound rows'. */
+  .level-toggle .inherited-note {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+  }
+  .track-field {
+    min-width: 160px;
+  }
+  .track-field .input {
+    min-height: 44px;
   }
   .presets {
     display: flex;
     align-items: center;
     gap: 6px;
-    flex-wrap: wrap;
-  }
-  .accent-block {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .accent-pads-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .btn-link {
-    background: none;
-    border: none;
-    color: var(--accent);
-    font-size: 11px;
-    cursor: pointer;
-    padding: 0;
-  }
-  .metronome-fields {
-    display: flex;
-    gap: 12px;
     flex-wrap: wrap;
   }
   .field {
@@ -402,23 +424,69 @@
     color: var(--text-muted);
   }
   .sounds {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 8px;
+    align-items: start;
+  }
+  @media (max-width: 720px) {
+    .sounds {
+      grid-template-columns: 1fr;
+    }
   }
   .sound-row {
     display: flex;
-    align-items: flex-end;
-    gap: 12px;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .sound-row--off {
+    padding: 6px 10px;
+  }
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    min-height: 24px;
+  }
+  .preview-click-btn {
+    margin-left: auto;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    min-width: 36px;
+    min-height: 30px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .preview-click-btn:active {
+    background: var(--accent);
+  }
+  .toggle-row input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+    margin: 0;
   }
   .sound-label {
-    min-width: 60px;
-    padding-bottom: 8px;
+    font-size: 12px;
     font-weight: 600;
+    min-width: 60px;
   }
-  .sm-input {
-    width: 90px;
+  .inherited-note {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-style: italic;
+  }
+  .sound-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
   }
   .sound-file {
     flex: 1;
