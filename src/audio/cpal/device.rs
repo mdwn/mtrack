@@ -134,6 +134,125 @@ const STANDARD_SAMPLE_RATES: &[u32] = &[
     8000, 11025, 16000, 22050, 44100, 48000, 88200, 96000, 176400, 192000,
 ];
 
+/// Serialises the device walks that silence ALSA's chatter.
+///
+/// `shh` redirects the process's stdout and stderr by swapping file descriptors
+/// and restores them on drop, so two threads silencing at once each restore what
+/// the other installed and the process loses its real stdout for good. This is
+/// reachable in production -- a web UI device refresh can land while the player
+/// is resolving its configured device -- and it surfaced first in the test
+/// suite, where concurrent enumeration tests silenced the test harness itself
+/// and it reported a failure with no output to explain it.
+///
+/// The window is wider than it looks: the output thread re-resolves a device
+/// during stream recovery, so this is a lock rather than a hope.
+static ENUMERATION_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// Silences ALSA's enumeration chatter for as long as the returned guard lives.
+///
+/// Holds [`ENUMERATION_LOCK`] alongside the redirect guards so the two cannot be
+/// taken apart. The redirects are declared first so they are restored *before*
+/// the lock is released.
+///
+/// Never call this while a guard is already alive on the same thread: the walks
+/// that use it are siblings rather than nested, and `parking_lot::Mutex` is not
+/// reentrant.
+fn silence_enumeration() -> Result<Silenced, Box<dyn Error>> {
+    let lock = ENUMERATION_LOCK.lock();
+    Ok(Silenced {
+        _stdout: shh::stdout()?,
+        _stderr: shh::stderr()?,
+        _lock: lock,
+    })
+}
+
+/// Field order is drop order: redirects first, lock last.
+struct Silenced {
+    _stdout: shh::ShhStdout,
+    _stderr: shh::ShhStderr,
+    _lock: parking_lot::MutexGuard<'static, ()>,
+}
+
+/// The channel count cpal reports for a device whose real maximum it does not
+/// know.
+///
+/// cpal clamps ALSA's reported maximum to this value -- `cmp::min(max_channels,
+/// 32)` in its `host/alsa/mod.rs` -- so a device advertising exactly this many
+/// channels may have this many or any number more. ALSA plug nodes accept an
+/// unbounded channel count and so always land here.
+const CPAL_CHANNEL_CLAMP: u16 = 32;
+
+/// The PCM id inside a device name, with cpal's host prefix removed.
+///
+/// Device names here are `cpal::DeviceId` strings, which are `"{host}:{pcm_id}"`
+/// -- `alsa:hw:CARD=MAT,DEV=0`, not `hw:CARD=MAT,DEV=0`. cpal splits that on the
+/// *first* colon, so the host never contains one and neither does this. Getting
+/// it wrong is quiet rather than loud: `default` stops looking like a plug node
+/// and every card token comes back as `hw:CARD=MAT`, so nothing pairs.
+fn pcm_id(device_name: &str) -> &str {
+    device_name
+        .split_once(':')
+        .map_or(device_name, |(_, pcm_id)| pcm_id)
+}
+
+/// Whether a device name refers to an ALSA plug/virtual node rather than
+/// hardware.
+///
+/// These reach real hardware through ALSA's conversion plugins. That makes them
+/// sometimes the *only* way to reach an interface -- a Behringer WING rack needs
+/// `plughw`, because cpal's ALSA format table has `S24_3LE` commented out and so
+/// finds no usable format on the raw node -- and it also means the capabilities
+/// they advertise describe the plugin rather than the hardware behind it.
+///
+/// The list is the plugin nodes we have actually seen on a rig, and it only
+/// affects wording: a plugin node not named here still reports
+/// [`CPAL_CHANNEL_CLAMP`] channels, so its channel count is still marked
+/// unknown.
+fn is_virtual_node(device_name: &str) -> bool {
+    const VIRTUAL_PREFIXES: &[&str] = &[
+        "plughw",
+        "plug:",
+        "default",
+        "sysdefault",
+        "pulse",
+        "dmix",
+        "dsnoop",
+        "null",
+    ];
+    let pcm_id = pcm_id(device_name);
+    VIRTUAL_PREFIXES
+        .iter()
+        .any(|prefix| pcm_id.starts_with(prefix))
+}
+
+/// The card identity inside a device name, used to pair a plug node with the
+/// hardware node behind it.
+///
+/// `alsa:plughw:CARD=MAT` and `alsa:hw:CARD=MAT,DEV=0` both yield `MAT`;
+/// `alsa:plughw:0,0` and `alsa:hw:0,0` both yield `0`. Nodes naming no card
+/// (`alsa:default`, `alsa:pulse`) yield `None`, which is correct -- there is no
+/// one piece of hardware to ask.
+fn card_token(device_name: &str) -> Option<String> {
+    let (_, rest) = pcm_id(device_name).split_once(':')?;
+    let first_field = rest.split(',').next()?;
+    let token = first_field.strip_prefix("CARD=").unwrap_or(first_field);
+    (!token.is_empty()).then(|| token.to_string())
+}
+
+/// The `DEV=` index inside a device name, or `None` if it names no device.
+///
+/// A plug node without one (`alsa:plughw:CARD=MAT`) routes to device 0, so that
+/// is the subdevice whose channel count describes it.
+fn dev_index(device_name: &str) -> Option<u16> {
+    let (_, rest) = pcm_id(device_name).split_once(':')?;
+    let second_field = rest.split(',').nth(1)?;
+    second_field
+        .strip_prefix("DEV=")
+        .unwrap_or(second_field)
+        .parse()
+        .ok()
+}
+
 /// Serializable info about an audio device for the web UI.
 #[derive(serde::Serialize)]
 pub struct AudioDeviceInfo {
@@ -142,6 +261,38 @@ pub struct AudioDeviceInfo {
     pub host_name: String,
     pub supported_sample_rates: Vec<u32>,
     pub supported_formats: Vec<SupportedFormat>,
+    /// Whether this is an ALSA plug/virtual node. Such a node is a legitimate
+    /// and sometimes mandatory choice, so this labels it rather than hiding it.
+    pub virtual_node: bool,
+    /// Whether `max_channels` is the device's real maximum. False when the
+    /// count is cpal's clamp and no hardware node was available to resolve it,
+    /// in which case the true figure is `max_channels` or more.
+    pub channels_known: bool,
+}
+
+impl AudioDeviceInfo {
+    /// How to describe the channel count without overstating what is known.
+    pub fn channels_display(&self) -> String {
+        if self.channels_known {
+            self.max_channels.to_string()
+        } else if self.virtual_node {
+            "virtual".to_string()
+        } else {
+            format!("{}+", self.max_channels)
+        }
+    }
+}
+
+impl fmt::Display for AudioDeviceInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} (Channels={}) ({})",
+            self.name,
+            self.channels_display(),
+            self.host_name
+        )
+    }
 }
 
 /// Maps a cpal SampleFormat to mtrack's (sample_format, bits_per_sample) representation.
@@ -186,20 +337,6 @@ fn max_output_channels(configs: &[cpal::SupportedStreamConfigRange]) -> u16 {
     configs.iter().map(|c| c.channels()).max().unwrap_or(0)
 }
 
-/// Serialises the stdout/stderr redirection that silences ALSA's enumeration
-/// chatter.
-///
-/// `shh` swaps the process's file descriptors and restores them on drop. Two
-/// threads doing that at once interleave the save and restore, and the process
-/// loses its real stdout permanently — a failure that, by construction, prints
-/// nothing at all. Enumeration used to happen only during init and from the web
-/// UI's device picker, which made a collision unlikely but never impossible; the
-/// output thread now re-resolves a device during stream recovery, so this is a
-/// lock rather than a hope.
-///
-/// Held for as long as the guards are, so callers take it first and drop it last.
-static ENUMERATION_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-
 /// One output device, resolved by name.
 pub(super) struct ResolvedOutputDevice {
     /// The device id it was matched on, untrimmed.
@@ -225,11 +362,8 @@ pub(super) struct ResolvedOutputDevice {
 pub(super) fn resolve_output_device(
     name: &str,
 ) -> Result<Option<ResolvedOutputDevice>, Box<dyn Error>> {
-    // Suppress noisy output here. Declared before the guards so the lock outlives
-    // them — see ENUMERATION_LOCK.
-    let _enumerating = ENUMERATION_LOCK.lock();
-    let _shh_stdout = shh::stdout()?;
-    let _shh_stderr = shh::stderr()?;
+    // Suppress noisy output here.
+    let _silenced = silence_enumeration()?;
 
     for host_id in cpal::available_hosts() {
         let host_devices = match cpal::host_from_id(host_id)?.devices() {
@@ -278,11 +412,8 @@ pub(super) fn resolve_output_device(
 
 /// Lists audio devices as simple info structs (no trait objects).
 pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
-    // Suppress noisy output here. Declared before the guards so the lock outlives
-    // them — see ENUMERATION_LOCK.
-    let _enumerating = ENUMERATION_LOCK.lock();
-    let _shh_stdout = shh::stdout()?;
-    let _shh_stderr = shh::stderr()?;
+    // Suppress noisy output here.
+    let _silenced = silence_enumeration()?;
 
     let mut infos: Vec<AudioDeviceInfo> = Vec::new();
     for host_id in cpal::available_hosts() {
@@ -313,8 +444,10 @@ pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
             }
             if max_channels > 0 {
                 if let Ok(id) = device.id() {
+                    let name = id.to_string();
+                    let virtual_node = is_virtual_node(&name);
                     infos.push(AudioDeviceInfo {
-                        name: id.to_string(),
+                        name,
                         max_channels,
                         host_name: host_id.name().to_string(),
                         supported_sample_rates: sample_rates.into_iter().collect(),
@@ -325,13 +458,140 @@ pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
                                 bits_per_sample,
                             })
                             .collect(),
+                        virtual_node,
+                        channels_known: max_channels < CPAL_CHANNEL_CLAMP,
                     });
                 }
             }
         }
     }
+    resolve_virtual_channel_counts(&mut infos);
     infos.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(infos)
+}
+
+/// Fills in plug nodes' channel counts from the hardware behind them.
+///
+/// Asking a plug node directly only ever yields [`CPAL_CHANNEL_CLAMP`], because
+/// it accepts any channel count -- but `plughw:CARD=MAT` plays out of the same
+/// eight outputs as `hw:CARD=MAT,DEV=0`, which reports honestly. So take the
+/// count from the hardware sibling wherever there is one.
+///
+/// This costs no extra enumeration and holds no extra handles: every count used
+/// here was already collected by the walk in [`list_device_info`]. Where there
+/// is no sibling to consult -- `default` and `pulse` name no card, and a WING's
+/// raw node reports no cpal-known format and so never appears at all -- the
+/// count stays marked unknown rather than being guessed at. cpal exposes channel
+/// counts only inside `SupportedStreamConfigRange`, so a device it cannot
+/// format-match yields no channel information to borrow.
+fn resolve_virtual_channel_counts(infos: &mut [AudioDeviceInfo]) {
+    // (card, subdevice) -> real channel count, because subdevices on one card
+    // are not interchangeable. An Intel HDA card exposes `hw:CARD=PCH,DEV=0`
+    // (analog, 2ch) beside `hw:CARD=PCH,DEV=3` (HDMI, 8ch), and every
+    // `plughw:CARD=PCH,DEV=n` in front of them reports the same clamped 32.
+    let mut by_subdevice: HashMap<(String, u16), u16> = HashMap::new();
+    // Card identity -> (subdevice index, channels) for the lowest subdevice,
+    // which is where a plug node naming no `DEV=` routes.
+    let mut lowest_subdevice: HashMap<String, (u16, u16)> = HashMap::new();
+
+    for info in infos.iter() {
+        if info.virtual_node || !info.channels_known {
+            continue;
+        }
+        let Some(card) = card_token(&info.name) else {
+            continue;
+        };
+        let dev = dev_index(&info.name).unwrap_or(0);
+        by_subdevice.insert((card.clone(), dev), info.max_channels);
+        lowest_subdevice
+            .entry(card)
+            .and_modify(|existing| {
+                if dev < existing.0 {
+                    *existing = (dev, info.max_channels);
+                }
+            })
+            .or_insert((dev, info.max_channels));
+    }
+
+    for info in infos.iter_mut() {
+        if info.channels_known || !info.virtual_node {
+            continue;
+        }
+        let Some(card) = card_token(&info.name) else {
+            continue;
+        };
+        // A plug node that names a subdevice routes to *that* one. Looking up by
+        // card alone handed `plughw:CARD=PCH,DEV=3` the analog node's 2 channels
+        // and marked it known — a confidently wrong number, which is the one
+        // outcome this whole labelling exists to avoid.
+        let resolved = match dev_index(&info.name) {
+            Some(dev) => by_subdevice.get(&(card, dev)).copied(),
+            None => lowest_subdevice.get(&card).map(|(_, channels)| *channels),
+        };
+        // No sibling for that subdevice means no honest answer, so it stays
+        // unknown rather than falling back to a different subdevice's count.
+        if let Some(channels) = resolved {
+            info.max_channels = channels;
+            info.channels_known = true;
+        }
+    }
+}
+
+/// How long a built hint is reused before being rebuilt.
+///
+/// `Player::retry_until_ready` retries a missing device twice a second, forever,
+/// so an uncached hint would walk every ALSA device at that rate -- about 10ms
+/// for the three devices on a dev box, and the test rig has nineteen -- at
+/// exactly the moment a rig is trying to come up. The hint is advisory text and
+/// nothing decides anything from it, so a few seconds stale costs nothing: what
+/// actually resolves a device is [`Device::find_cpal_device`], which is not
+/// cached and still sees a device the instant it appears.
+const AVAILABLE_HINT_TTL: Duration = Duration::from_secs(10);
+
+/// The last built hint and when it was built.
+static AVAILABLE_HINT_CACHE: parking_lot::Mutex<Option<(std::time::Instant, String)>> =
+    parking_lot::Mutex::new(None);
+
+/// The names an operator could have used instead, appended to the error raised
+/// when the configured device is not one of them.
+///
+/// Cached for [`AVAILABLE_HINT_TTL`]; holding the cache lock across the rebuild
+/// also collapses a herd of simultaneous failures into one walk.
+fn available_hint() -> String {
+    let mut cache = AVAILABLE_HINT_CACHE.lock();
+    if let Some((built_at, hint)) = cache.as_ref() {
+        if built_at.elapsed() < AVAILABLE_HINT_TTL {
+            return hint.clone();
+        }
+    }
+
+    let hint = build_available_hint();
+    *cache = Some((std::time::Instant::now(), hint.clone()));
+    hint
+}
+
+/// Builds the hint, unconditionally.
+///
+/// Built from [`list_device_info`], which holds no handles. Listing through
+/// [`Device::list`] here would be self-defeating: building those devices is what
+/// makes the list shrink, so the suggestion could omit a device that is present
+/// and would have worked.
+fn build_available_hint() -> String {
+    match list_device_info() {
+        Ok(infos) if infos.is_empty() => "; no audio output devices were found".to_string(),
+        Ok(infos) => format!(
+            "; available devices: {}",
+            infos
+                .iter()
+                .map(|info| info.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Err(e) => format!(
+            "; additionally, available devices could not be listed: {}",
+            e
+        ),
+    }
 }
 
 /// A small wrapper around a cpal::Device. Used for storing some extra
@@ -387,11 +647,8 @@ impl Device {
 
     /// Lists cpal devices.
     fn list_cpal_devices() -> Result<Vec<Device>, Box<dyn Error>> {
-        // Suppress noisy output here. Declared before the guards so the lock
-        // outlives them — see ENUMERATION_LOCK.
-        let _enumerating = ENUMERATION_LOCK.lock();
-        let _shh_stdout = shh::stdout()?;
-        let _shh_stderr = shh::stderr()?;
+        // Suppress noisy output here.
+        let _silenced = silence_enumeration()?;
 
         // Enumerate first, and build nothing while doing it.
         //
@@ -493,6 +750,10 @@ impl Device {
     }
 
     /// Gets the given cpal device.
+    ///
+    /// Note the `available_hint()` on the failure path: this fires while the
+    /// player is coming up, and a bare "not found" leaves the operator nothing
+    /// to act on at the worst possible moment.
     pub fn get(config: config::Audio) -> Result<Device, Box<dyn Error>> {
         let name = config.device().to_string();
         debug!(
@@ -520,7 +781,7 @@ impl Device {
                     format!("'{resolved}' was found but could not be opened: {e}").into()
                 })
             }
-            None => Err(format!("no device found with name {}", name).into()),
+            None => Err(format!("no device found with name {}{}", name, available_hint()).into()),
         }
     }
 
@@ -1316,6 +1577,353 @@ mod test {
             advertised_only.is_empty(),
             "the picker offers devices the player cannot open: {advertised_only:?}"
         );
+    }
+
+    mod virtual_node_tests {
+        use super::*;
+
+        fn info(name: &str, max_channels: u16) -> AudioDeviceInfo {
+            AudioDeviceInfo {
+                name: name.to_string(),
+                max_channels,
+                host_name: "Alsa".to_string(),
+                supported_sample_rates: vec![48000],
+                supported_formats: vec![],
+                virtual_node: is_virtual_node(name),
+                channels_known: max_channels < CPAL_CHANNEL_CLAMP,
+            }
+        }
+
+        #[test]
+        fn plug_nodes_are_recognized() {
+            for name in &[
+                "alsa:plughw:CARD=WING",
+                "alsa:plug:CARD=MAT",
+                "alsa:default",
+                "alsa:default:CARD=MAT",
+                "alsa:sysdefault:CARD=MAT",
+                "alsa:pulse",
+                "alsa:dmix:CARD=MAT,DEV=0",
+                "alsa:dsnoop:CARD=MAT",
+            ] {
+                assert!(is_virtual_node(name), "{name} should be virtual");
+            }
+        }
+
+        #[test]
+        fn hardware_nodes_are_not_virtual() {
+            for name in &["alsa:hw:CARD=MAT,DEV=0", "alsa:hw:0,0", "alsa:hw:CARD=WING"] {
+                assert!(!is_virtual_node(name), "{name} should not be virtual");
+            }
+        }
+
+        #[test]
+        fn card_token_pairs_plug_node_with_hardware() {
+            assert_eq!(card_token("alsa:plughw:CARD=MAT").as_deref(), Some("MAT"));
+            assert_eq!(card_token("alsa:hw:CARD=MAT,DEV=0").as_deref(), Some("MAT"));
+            assert_eq!(card_token("alsa:plughw:0,0").as_deref(), Some("0"));
+            assert_eq!(card_token("alsa:hw:0,0").as_deref(), Some("0"));
+            assert_eq!(
+                card_token("alsa:sysdefault:CARD=WING").as_deref(),
+                Some("WING")
+            );
+        }
+
+        #[test]
+        fn card_token_absent_for_cardless_nodes() {
+            assert_eq!(card_token("alsa:default"), None);
+            assert_eq!(card_token("alsa:pulse"), None);
+            assert_eq!(card_token("alsa:hw:"), None);
+        }
+
+        #[test]
+        fn dev_index_parses_both_namings() {
+            assert_eq!(dev_index("alsa:hw:CARD=MAT,DEV=2"), Some(2));
+            assert_eq!(dev_index("alsa:hw:0,1"), Some(1));
+            assert_eq!(dev_index("alsa:plughw:CARD=MAT"), None);
+            assert_eq!(dev_index("alsa:default"), None);
+        }
+
+        /// The case that motivated this: `plughw:CARD=MAT` claims cpal's clamped
+        /// 32, while the hardware it routes to reports its real 8.
+        #[test]
+        fn plug_node_inherits_channel_count_from_hardware() {
+            let mut infos = vec![
+                info("alsa:hw:CARD=MAT,DEV=0", 8),
+                info("alsa:plughw:CARD=MAT", CPAL_CHANNEL_CLAMP),
+            ];
+            resolve_virtual_channel_counts(&mut infos);
+
+            let plug = &infos[1];
+            assert_eq!(plug.max_channels, 8);
+            assert!(plug.channels_known);
+            assert_eq!(plug.channels_display(), "8");
+        }
+
+        /// The bug this keying exists to prevent, on the most ordinary hardware
+        /// there is: an Intel HDA card exposes analog on `DEV=0` and HDMI on
+        /// `DEV=3`, with different channel counts, and every plug node in front
+        /// of them reports the same clamped 32.
+        ///
+        /// Looking the sibling up by card alone handed `plughw:CARD=PCH,DEV=3`
+        /// the analog node's 2 channels and marked it `channels_known` — a
+        /// confidently wrong number, which is the single outcome this labelling
+        /// exists to avoid.
+        #[test]
+        fn plug_node_takes_the_subdevice_it_names_not_the_lowest() {
+            let mut infos = vec![
+                info("alsa:hw:CARD=PCH,DEV=0", 2),
+                info("alsa:hw:CARD=PCH,DEV=3", 8),
+                info("alsa:plughw:CARD=PCH,DEV=3", CPAL_CHANNEL_CLAMP),
+                info("alsa:plughw:CARD=PCH,DEV=0", CPAL_CHANNEL_CLAMP),
+            ];
+            resolve_virtual_channel_counts(&mut infos);
+
+            assert_eq!(infos[2].max_channels, 8, "DEV=3 plug node routes to HDMI");
+            assert!(infos[2].channels_known);
+            assert_eq!(infos[3].max_channels, 2, "DEV=0 plug node routes to analog");
+            assert!(infos[3].channels_known);
+        }
+
+        /// A plug node naming a subdevice with no hardware sibling stays
+        /// unknown. Falling back to the lowest subdevice would reintroduce the
+        /// bug above by another route, and "unknown" is the honest answer — the
+        /// same stance taken for `default` and `pulse`.
+        #[test]
+        fn plug_node_for_an_unlisted_subdevice_stays_unknown() {
+            let mut infos = vec![
+                info("alsa:hw:CARD=PCH,DEV=0", 2),
+                info("alsa:plughw:CARD=PCH,DEV=7", CPAL_CHANNEL_CLAMP),
+            ];
+            resolve_virtual_channel_counts(&mut infos);
+
+            assert!(
+                !infos[1].channels_known,
+                "no DEV=7 sibling means no honest count to borrow"
+            );
+        }
+
+        #[test]
+        fn plug_node_prefers_the_lowest_subdevice() {
+            let mut infos = vec![
+                info("alsa:hw:CARD=MAT,DEV=3", 2),
+                info("alsa:hw:CARD=MAT,DEV=0", 8),
+                info("alsa:plughw:CARD=MAT", CPAL_CHANNEL_CLAMP),
+            ];
+            resolve_virtual_channel_counts(&mut infos);
+
+            assert_eq!(infos[2].max_channels, 8);
+        }
+
+        /// The WING: its raw node reports no cpal-known format, so it never
+        /// appears and there is nothing to borrow a count from. The plug node
+        /// must then say "virtual" rather than assert a fictional 32.
+        #[test]
+        fn plug_node_without_hardware_sibling_stays_unknown() {
+            let mut infos = vec![info("alsa:plughw:CARD=WING", CPAL_CHANNEL_CLAMP)];
+            resolve_virtual_channel_counts(&mut infos);
+
+            let plug = &infos[0];
+            assert!(!plug.channels_known);
+            assert_eq!(plug.channels_display(), "virtual");
+            assert!(plug.to_string().contains("Channels=virtual"));
+        }
+
+        #[test]
+        fn cardless_plug_nodes_stay_unknown() {
+            let mut infos = vec![
+                info("alsa:hw:CARD=MAT,DEV=0", 8),
+                info("alsa:default", CPAL_CHANNEL_CLAMP),
+                info("alsa:pulse", CPAL_CHANNEL_CLAMP),
+            ];
+            resolve_virtual_channel_counts(&mut infos);
+
+            assert_eq!(infos[1].channels_display(), "virtual");
+            assert_eq!(infos[2].channels_display(), "virtual");
+        }
+
+        /// A genuine 32-or-more channel interface reports the clamp too, so its
+        /// count is a floor -- but it is hardware, not a plugin, and must not be
+        /// labelled "virtual".
+        #[test]
+        fn clamped_hardware_reports_a_floor_not_virtual() {
+            let device = info("alsa:hw:CARD=BIG,DEV=0", CPAL_CHANNEL_CLAMP);
+            assert!(!device.virtual_node);
+            assert!(!device.channels_known);
+            assert_eq!(device.channels_display(), "32+");
+        }
+
+        #[test]
+        fn hardware_never_borrows_from_a_plug_node() {
+            let mut infos = vec![
+                info("alsa:hw:CARD=WING,DEV=0", CPAL_CHANNEL_CLAMP),
+                info("alsa:plughw:CARD=WING", 8),
+            ];
+            resolve_virtual_channel_counts(&mut infos);
+
+            // The hardware entry is left alone: only plug nodes are resolved.
+            assert_eq!(infos[0].max_channels, CPAL_CHANNEL_CLAMP);
+            assert!(!infos[0].channels_known);
+        }
+
+        #[test]
+        fn known_hardware_count_is_displayed_plainly() {
+            let device = info("alsa:hw:CARD=MAT,DEV=0", 8);
+            assert_eq!(device.channels_display(), "8");
+            assert_eq!(
+                device.to_string(),
+                "alsa:hw:CARD=MAT,DEV=0 (Channels=8) (Alsa)"
+            );
+        }
+
+        /// Device names carry cpal's host prefix, and reading it as part of the
+        /// PCM id fails silently: `alsa:default` stops looking like a plug node
+        /// and every card token comes back as `hw:CARD=MAT`, so nothing pairs.
+        /// The first cut of this code did exactly that, and `mtrack devices`
+        /// reported `alsa:default (Channels=32+)` instead of `virtual`.
+        #[test]
+        fn host_prefix_is_not_read_as_part_of_the_pcm_id() {
+            assert_eq!(pcm_id("alsa:hw:CARD=MAT,DEV=0"), "hw:CARD=MAT,DEV=0");
+            assert_eq!(pcm_id("alsa:default"), "default");
+            // A bare PCM id with no host prefix is left alone.
+            assert_eq!(pcm_id("default"), "default");
+
+            assert!(is_virtual_node("alsa:default"));
+            assert_eq!(card_token("alsa:hw:CARD=MAT,DEV=0").as_deref(), Some("MAT"));
+        }
+    }
+
+    /// Concurrent enumeration must not cost the process its stdout.
+    ///
+    /// Every walk silences ALSA with `shh`, which swaps fd 1 and fd 2 and puts
+    /// them back on drop. Unserialised, two threads restore each other's pipe
+    /// and the process is left writing into a closed descriptor -- which is how
+    /// this was found: the test binary reported a failure and printed nothing at
+    /// all to explain it.
+    ///
+    /// Linux-only because it reads the descriptor through `/proc`; the ALSA path
+    /// under test is Linux-only too.
+    ///
+    /// Observing the descriptors has to take the lock as well, or the baseline
+    /// can be read *during* another test's legitimate silence window and record
+    /// its pipe as the original.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn concurrent_enumeration_preserves_process_stdout() {
+        fn std_stream_targets() -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
+            let _lock = ENUMERATION_LOCK.lock();
+            (
+                std::fs::read_link("/proc/self/fd/1").ok(),
+                std::fs::read_link("/proc/self/fd/2").ok(),
+            )
+        }
+
+        let (stdout_before, stderr_before) = std_stream_targets();
+
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                thread::spawn(move || {
+                    // Mix the paths that silence: two enumerations and a
+                    // resolution that misses and then lists alternatives.
+                    match i % 3 {
+                        0 => drop(list_device_info()),
+                        1 => drop(Device::list_cpal_devices()),
+                        _ => drop(Device::get(config::Audio::new("no-such-device"))),
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("enumeration thread panicked");
+        }
+
+        let (stdout_after, stderr_after) = std_stream_targets();
+        assert_eq!(
+            stdout_after, stdout_before,
+            "stdout was left pointing somewhere else"
+        );
+        assert_eq!(
+            stderr_after, stderr_before,
+            "stderr was left pointing somewhere else"
+        );
+    }
+
+    mod available_hint_tests {
+        use super::*;
+
+        /// The hint must name devices when there are any, and say so plainly
+        /// when there are none -- either way the operator learns something.
+        ///
+        /// Asserts the hint's shape rather than cross-checking its contents
+        /// against a second enumeration. The two calls cannot be made to agree:
+        /// the hint may be up to `AVAILABLE_HINT_TTL` old, and enumeration is
+        /// self-truncating under concurrency -- ALSA will not describe a device
+        /// while its siblings are held, so a listing taken while another test
+        /// holds handles sees fewer devices than one taken alone. Comparing them
+        /// tests the scheduler, not the hint.
+        #[test]
+        fn hint_describes_the_environment_it_runs_in() {
+            let hint = available_hint();
+            assert!(
+                hint.contains("available devices:")
+                    || hint.contains("no audio output devices were found")
+                    || hint.contains("could not be listed"),
+                "the hint should tell the operator something actionable: {hint}"
+            );
+        }
+
+        /// The hint is cached, so a device that fails to resolve twice a second
+        /// does not walk every ALSA device twice a second with it.
+        #[test]
+        fn repeated_hints_are_served_from_cache() {
+            // Observe the cache rather than the clock. Timing the second call
+            // looked like the obvious test and is not one: `available_hint`
+            // holds the cache lock across a rebuild on purpose, to collapse a
+            // herd of simultaneous failures into a single walk, so a "cached"
+            // call racing another test's rebuild blocks behind it. On a rig with
+            // nineteen devices that walk is not fast, and the assertion passed
+            // here only because a dev box has nothing to enumerate.
+            let first = available_hint();
+            let built_at = AVAILABLE_HINT_CACHE
+                .lock()
+                .as_ref()
+                .map(|(at, _)| *at)
+                .expect("the first call populates the cache");
+
+            let second = available_hint();
+            let still = AVAILABLE_HINT_CACHE
+                .lock()
+                .as_ref()
+                .map(|(at, _)| *at)
+                .expect("the cache is still populated");
+
+            assert_eq!(first, second);
+            assert_eq!(
+                built_at, still,
+                "the second call rebuilt the hint instead of serving the cache"
+            );
+        }
+
+        /// The whole point of item 2: the failure names alternatives.
+        #[test]
+        fn missing_device_error_lists_alternatives() {
+            let config = config::Audio::new("definitely-not-a-real-device");
+            let message = match Device::get(config) {
+                Ok(_) => panic!("bogus device must not resolve"),
+                Err(e) => e.to_string(),
+            };
+
+            assert!(
+                message.contains("no device found with name definitely-not-a-real-device"),
+                "{message}"
+            );
+            assert!(
+                message.contains("available devices:")
+                    || message.contains("no audio output devices were found")
+                    || message.contains("could not be listed"),
+                "{message}"
+            );
+        }
     }
 
     mod current_playhead_section_tests {

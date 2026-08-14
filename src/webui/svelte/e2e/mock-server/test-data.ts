@@ -155,6 +155,8 @@ export const AUDIO_DEVICES = [
     host_name: "ALSA",
     supported_sample_rates: [44100, 48000, 96000],
     supported_formats: [{ sample_format: "S24LE", bits_per_sample: 24 }],
+    virtual_node: false,
+    channels_known: true,
   },
   {
     name: "USB Interface",
@@ -165,6 +167,20 @@ export const AUDIO_DEVICES = [
       { sample_format: "S24LE", bits_per_sample: 24 },
       { sample_format: "S16LE", bits_per_sample: 16 },
     ],
+    virtual_node: false,
+    channels_known: true,
+  },
+  // An ALSA plug node whose channel count could not be resolved from hardware:
+  // it reports cpal's clamped 32, which says nothing about the rig behind it.
+  // Kept selectable, because on some interfaces it is the only thing that works.
+  {
+    name: "alsa:plughw:CARD=WING",
+    max_channels: 32,
+    host_name: "ALSA",
+    supported_sample_rates: [44100, 48000],
+    supported_formats: [{ sample_format: "S32LE", bits_per_sample: 32 }],
+    virtual_node: true,
+    channels_known: false,
   },
 ];
 

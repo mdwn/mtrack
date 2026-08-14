@@ -17,6 +17,7 @@
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
   import type { AudioDeviceInfo } from "../../lib/api/config";
+  import { channelsLabel } from "../../lib/api/config";
 
   interface Props {
     audio: any;
@@ -152,7 +153,7 @@
       <datalist id="audio-device-list">
         {#each devices as d (d.name)}
           <option value={d.name}
-            >{d.name} ({d.max_channels}ch, {d.host_name})</option
+            >{d.name} ({channelsLabel(d)}, {d.host_name})</option
           >
         {/each}
       </datalist>
