@@ -254,3 +254,65 @@ pub async fn probing_the_device_in_use_reports_it_rather_than_failing() -> Check
     ));
     Ok(())
 }
+
+/// Testing a device leaves it usable, rather than holding it for the process.
+///
+/// A probe opens a real interface and is expected to hand it back. That was
+/// invisible while the only caller was `mtrack test-audio`, a process that
+/// exits immediately afterwards. The web UI's Test button runs the same probe
+/// inside the long-lived player, where a leaked handle would make the tested
+/// device permanently unopenable — including by the profile save that testing
+/// it was the prelude to. The button would brick exactly the device it just
+/// pronounced healthy.
+///
+/// Only real hardware can show this. ALSA refusing a second open is the whole
+/// mechanism, and a mock device has nothing to refuse.
+pub async fn a_tested_device_is_still_usable_afterwards() -> CheckOutcome {
+    let Some(device) = Capabilities::get().audio_out.as_ref() else {
+        skip!("no audio output device was detected, so there is nothing to reopen");
+    };
+    let config = || mtrack::config::Audio::new(&device.name);
+
+    let first = mtrack::audio::probe_device(config());
+    if !first.is_ok() {
+        skip!("the device does not stream at all ({first}), so reuse cannot be measured");
+    }
+
+    // Break the world, not the assertion: holding the device open across the
+    // second probe is precisely the leak this check exists to catch, so the
+    // check must fail when it is simulated.
+    let held = if crate::sabotage::active() {
+        Some(
+            mtrack::audio::get_device(Some(config()))
+                .map_err(|e| CheckError::Harness(format!("could not hold the device open: {e}")))?,
+        )
+    } else {
+        None
+    };
+
+    let second = mtrack::audio::probe_device(config());
+    check!(
+        second.is_ok(),
+        "the device could not be tested twice in one process: {second}.\n\n\
+         The first probe did not hand the interface back, so testing a device from the \
+         web UI makes it unopenable until mtrack restarts — including by the profile \
+         save that testing it was the prelude to."
+    );
+
+    // What saving the profile does. A probe that released enough for another
+    // probe but not enough for playback would still break the flow.
+    let opened = mtrack::audio::get_device(Some(config()));
+    check!(
+        opened.is_ok(),
+        "the device could not be opened for playback after being tested: {}.\n\n\
+         Testing a device must not stand between it and the profile save that follows.",
+        opened.err().map(|e| e.to_string()).unwrap_or_default()
+    );
+
+    drop(held);
+    crate::outcome::record(format!(
+        "{}: probed twice and then opened for playback in one process",
+        device.name
+    ));
+    Ok(())
+}

@@ -72,6 +72,7 @@ macro_rules! entry {
 /// this class rather than burying it in one number.
 const WORLD_LEVEL: &[&str] = &[
     "selected_device_actually_streams",
+    "a_tested_device_is_still_usable_afterwards",
     "stop_halts_playback",
     "playlist_navigation_moves_between_songs",
     "tracks_route_to_their_mapped_channels",
@@ -144,6 +145,14 @@ pub fn all() -> Vec<Check> {
             "The chosen output must be a real interface, not an ALSA plug node whose\n  \
              advertised channel count is fictional.",
             devices::selected_output_is_real_hardware
+        ),
+        entry!(
+            "devices",
+            "a_tested_device_is_still_usable_afterwards",
+            "Testing a device must hand the interface back. A leaked handle makes the\n  \
+             tested device unopenable until mtrack restarts, so the web UI's Test button\n  \
+             would brick exactly the device it just pronounced healthy.",
+            devices::a_tested_device_is_still_usable_afterwards
         ),
         entry!(
             "devices",
