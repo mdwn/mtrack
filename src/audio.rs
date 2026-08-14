@@ -129,6 +129,20 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
         None
     }
 
+    /// Whether this open device is the one that `name` refers to.
+    ///
+    /// Asked by the web UI before probing: a probe opens the device, and the
+    /// device this player is holding will refuse a second open. Probing it
+    /// would report "could not be opened" for the one device with minutes of
+    /// positive evidence behind it, which is the worst answer available.
+    ///
+    /// The device answers rather than the caller comparing strings, because
+    /// only the backend knows that a configured name and the name it resolved
+    /// to are the same device.
+    fn matches_name(&self, _name: &str) -> bool {
+        false
+    }
+
     /// How long the output callback may be silent before it counts as stopped.
     ///
     /// Devices that know their callback period size this from it; everything
@@ -248,6 +262,20 @@ impl fmt::Display for ProbeOutcome {
 }
 
 impl ProbeOutcome {
+    /// Stable wire name for this outcome.
+    ///
+    /// The single source for the strings the web UI switches on, so a renamed
+    /// variant cannot quietly change the API. `Display` is prose for a human
+    /// and is free to be reworded.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ProbeOutcome::Streaming { .. } => "streaming",
+            ProbeOutcome::OpenedButSilent => "opened_but_silent",
+            ProbeOutcome::CouldNotOpen(_) => "could_not_open",
+            ProbeOutcome::OpenedCannotReport => "opened_cannot_report",
+        }
+    }
+
     /// Whether the device proved it can stream.
     pub fn is_ok(&self) -> bool {
         matches!(

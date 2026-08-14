@@ -146,6 +146,14 @@ pub fn all() -> Vec<Check> {
             devices::selected_output_is_real_hardware
         ),
         entry!(
+            "devices",
+            "probing_the_device_in_use_reports_it_rather_than_failing",
+            "Testing the device the player already holds must report it, not try to reopen\n  \
+             it. A second open is refused, so the naive answer calls the working interface\n  \
+             broken.",
+            devices::probing_the_device_in_use_reports_it_rather_than_failing
+        ),
+        entry!(
             "startup",
             "player_starts_against_detected_hardware",
             "The player must start against a generated config and claim the device.",

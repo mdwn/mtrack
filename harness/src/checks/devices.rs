@@ -27,7 +27,9 @@
 //! happens against real hardware that ALSA reports inconsistently.
 
 use crate::capabilities::Capabilities;
+use crate::client::Client;
 use crate::outcome::{CheckError, CheckOutcome};
+use crate::server::Server;
 use crate::{check, skip};
 
 /// Every device offered to users can actually be opened by the player.
@@ -197,5 +199,58 @@ pub async fn selected_device_actually_streams() -> CheckOutcome {
          is accepted or that the callback ever runs."
     );
     crate::outcome::record(format!("{name}: {outcome}"));
+    Ok(())
+}
+
+/// Testing a device from the web UI does not call the working one broken.
+///
+/// The config editor's Test button probes the device named beside it, and
+/// probing means opening. An ALSA device the player already holds will refuse
+/// the second open — so the naive implementation reports "could not be opened"
+/// for the one device with minutes of positive evidence behind it, which is the
+/// worst answer the endpoint could give. mtrack answers from live health
+/// instead, and this is the only place that can be proven: the unit test's mock
+/// device would never refuse a second open, so it cannot see the regression.
+pub async fn probing_the_device_in_use_reports_it_rather_than_failing() -> CheckOutcome {
+    let Some(device) = Capabilities::get().audio_out.as_ref() else {
+        skip!("no audio output device was detected, so nothing can be held open");
+    };
+
+    let project = crate::checks::standard_project()?;
+    let server = Server::start(&project).await?;
+    let client = Client::connect_http_only(&server).await?;
+
+    // Asking about a device nobody holds must not answer "in use", or this is
+    // reading a constant. Note the weaker class of control: the world is left
+    // intact and the request is changed, so this check stays off WORLD_LEVEL.
+    let asked = crate::sabotage::pick(
+        device.name.clone(),
+        "e2e-nonexistent-audio-device".to_string(),
+    );
+
+    let (status, body) = client
+        .post_json("devices/audio/probe", serde_json::json!({"device": asked}))
+        .await?;
+    check!(
+        status.is_success(),
+        "POST /api/devices/audio/probe returned {status}: {body}"
+    );
+
+    let outcome = body["outcome"].as_str().unwrap_or("<missing>");
+    check!(
+        outcome == "in_use",
+        "testing the device the player is holding reported '{outcome}', not 'in_use'.\n\n\
+         The device is open and streaming; a probe that reopens it is refused, and the \
+         operator is told their working interface is broken."
+    );
+    check!(
+        body["ok"] == serde_json::json!(true),
+        "the device in use was reported as not ok: {body}"
+    );
+
+    crate::outcome::record(format!(
+        "{asked}: reported in_use after {} callbacks, not reopened",
+        body["callbacks"]
+    ));
     Ok(())
 }

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Test a device from the config editor, before saving the profile**: a Test button beside the
+  device picker opens the selected device with the settings currently in the form, confirms its
+  output callback runs, and closes it — reporting streaming, opened-but-silent, or could-not-open
+  with the reason. The settings matter: a device that opens at one format and refuses another is
+  the failure this catches, so probing at defaults would answer the wrong question. The result is
+  cleared whenever a setting changes, since it describes the settings it was run with.
+
+  A device this player already holds open is reported from its live health instead of being
+  probed. It would refuse the second open, and answering "could not be opened" for the device
+  currently playing is the worst answer available.
+
+  The check itself is `mtrack test-audio`'s, exposed at `POST /api/devices/audio/probe`. Rigs get
+  set up in the web UI, not in a terminal, so a check only reachable over SSH is one most people
+  never run.
+
 - **`mtrack test-audio` proves a device will actually play, before the set rather than during it**:
   `mtrack devices` says a device exists and the web UI's picker says its name resolves. Neither
   says the format will be accepted or that the output callback will ever run — a WING resolves

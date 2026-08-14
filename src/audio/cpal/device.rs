@@ -923,6 +923,20 @@ impl AudioDevice for Device {
         ))
     }
 
+    /// Matches on either the name this device was configured with or the name
+    /// it resolved to.
+    ///
+    /// The two are routinely different — `default` resolves to something with a
+    /// card in its name — and the caller may hold either. The config editor
+    /// shows the configured string, so that is the usual hit; the resolved name
+    /// is what someone gets if they paste from the device list instead.
+    fn matches_name(&self, name: &str) -> bool {
+        let wanted = name.trim();
+        !wanted.is_empty()
+            && (wanted.eq_ignore_ascii_case(self.audio_config.device().trim())
+                || wanted.eq_ignore_ascii_case(self.name.trim()))
+    }
+
     fn set_metronome_defaults(&self, defaults: Option<config::MetronomeDefaults>) {
         *self.metronome_defaults.lock() = defaults;
     }
