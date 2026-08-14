@@ -110,6 +110,26 @@ test.describe("Profile Editor - Audio Section", () => {
     await expect(page.locator("#audio-test-result")).toHaveCount(0);
   });
 
+  // Restoring the settings a result was produced for brings it back, which is
+  // what proves the result is tied to the settings rather than merely wiped by
+  // the change handler. An implementation that clears on edit passes the test
+  // above and fails this one.
+  test("a test result returns when its settings are restored", async ({
+    page,
+  }) => {
+    await page.locator("#audio-test").click();
+    await expect(page.locator("#audio-test-result")).toBeVisible();
+
+    await page.locator("#audio-sample-rate").selectOption("48000");
+    await expect(page.locator("#audio-test-result")).toHaveCount(0);
+
+    await page.locator("#audio-sample-rate").selectOption("");
+    await expect(page.locator("#audio-test-result")).toHaveAttribute(
+      "data-outcome",
+      "streaming",
+    );
+  });
+
   test("shows track mappings section", async ({ page }) => {
     await expect(page.getByText(/track mappings/i)).toBeVisible();
   });

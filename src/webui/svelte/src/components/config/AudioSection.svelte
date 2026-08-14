@@ -51,28 +51,54 @@
   }
 
   let testing = $state(false);
-  let probe: AudioProbeResult | null = $state(null);
-  let probeError: string | null = $state(null);
+  // The generic form, not `let x: T | null = $state(null)`: with the latter
+  // TypeScript narrows the variable to `null` for the rest of the file, and the
+  // deriveds below would come out as `null` rather than the result type.
+  let probeResult = $state<AudioProbeResult | null>(null);
+  let probeErrorText = $state<string | null>(null);
+  // The settings the result describes, captured when the probe was sent.
+  let probedSettings = $state<string | null>(null);
+
+  // Everything the probe honours. A result is about these and nothing else, so
+  // this doubles as the identity a displayed result must still match.
+  let probeRequest = $derived({
+    device: audio.device ?? "",
+    sample_rate: audio.sample_rate,
+    sample_format: audio.sample_format,
+    bits_per_sample: audio.bits_per_sample,
+    buffer_size: audio.buffer_size,
+    stream_buffer_size: audio.stream_buffer_size,
+  });
+  let currentSettings = $derived(JSON.stringify(probeRequest));
+
+  // A result describes the settings it was run with, so it is shown only while
+  // those are still the settings on screen. Derived rather than cleared by the
+  // setters: the editor can also be handed a different profile's audio block
+  // without any setter running — hash history between two profile URLs does
+  // exactly that — and a stale green tick against another rig's device is the
+  // failure this whole panel exists to avoid.
+  let probe = $derived(probedSettings === currentSettings ? probeResult : null);
+  let probeError = $derived(
+    probedSettings === currentSettings ? probeErrorText : null,
+  );
 
   // Probes with the settings currently in the form, not the saved ones. A
   // device that opens at one format and refuses another is the whole reason
   // this exists, so testing the defaults would answer the wrong question.
   async function handleTest() {
     testing = true;
-    probe = null;
-    probeError = null;
+    probeResult = null;
+    probeErrorText = null;
+    // Captured before the await: the form can be edited while the probe runs,
+    // and the result belongs to what was asked, not to what is on screen when
+    // the answer lands.
+    const asked = currentSettings;
     try {
-      probe = await probeAudioDevice({
-        device: audio.device ?? "",
-        sample_rate: audio.sample_rate,
-        sample_format: audio.sample_format,
-        bits_per_sample: audio.bits_per_sample,
-        buffer_size: audio.buffer_size,
-        stream_buffer_size: audio.stream_buffer_size,
-      });
+      probeResult = await probeAudioDevice(probeRequest);
     } catch (e) {
-      probeError = e instanceof Error ? e.message : String(e);
+      probeErrorText = e instanceof Error ? e.message : String(e);
     } finally {
+      probedSettings = asked;
       testing = false;
     }
   }
@@ -121,7 +147,6 @@
 
   function set(key: string, value: any) {
     audio[key] = value;
-    invalidateProbe();
     onchange();
   }
 
@@ -131,16 +156,7 @@
     } else {
       audio[key] = value;
     }
-    invalidateProbe();
     onchange();
-  }
-
-  // Any audio setting can change what the device does with the stream, so a
-  // result from before the edit describes something that is no longer being
-  // asked for. A stale green tick beside a changed device is worse than none.
-  function invalidateProbe() {
-    probe = null;
-    probeError = null;
   }
 
   // Track mappings helpers
