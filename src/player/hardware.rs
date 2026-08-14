@@ -34,10 +34,22 @@ use super::{
 
 /// How long a terminal failure keeps being retried before init gives up.
 ///
-/// Not zero: a device can be briefly unopenable at boot while udev and ALSA
-/// finish with it, and abandoning it on the first attempt would turn that race
-/// into a permanent misconfiguration report.
-const TERMINAL_GRACE: Duration = Duration::from_secs(5);
+/// Not zero, and not short. "Present but will not open" covers two situations
+/// that are indistinguishable here: a format the interface rejects, which is
+/// deterministic, and a device something else still holds, which is not.
+/// Everything below `Device::open` collapses into `Box<dyn Error>`, so the cpal
+/// variant that would separate them is gone by the time this decides.
+///
+/// So the window is sized for the transient one. A sound server releasing a USB
+/// interface as mtrack starts, or a previous instance shutting down, resolves in
+/// seconds; abandoning the device inside that window would turn an ordinary boot
+/// race into a permanent misconfiguration report, and lose the self-healing the
+/// old perpetual retry gave for free.
+///
+/// The cost is paid only by a rig that really is misconfigured: it waits this
+/// long before coming up degraded, once, at boot. A correctly configured rig
+/// never reaches this path at all.
+const TERMINAL_GRACE: Duration = Duration::from_secs(30);
 
 /// How often an unchanged init failure is repeated in the log.
 const FAILURE_LOG_INTERVAL: Duration = Duration::from_secs(30);
@@ -440,7 +452,23 @@ impl Player {
                     }
                 }
                 Err(e) => {
+                    // Counts toward giving up, like any other failure that will
+                    // not resolve itself. A constructor that panics is likely to
+                    // panic again, and leaving this path outside the grace
+                    // window let a repeatedly-panicking device hold the whole
+                    // rig hostage — the exact hazard this function now exists to
+                    // prevent, reachable by the one route that skipped it.
                     error!("Device init task panicked for {name}: {e}");
+                    let since = *terminal_since.get_or_insert_with(std::time::Instant::now);
+                    if since.elapsed() >= terminal_grace {
+                        error!(
+                            "Giving up on {name}: its constructor keeps panicking. The rest of \
+                             the rig is starting without it."
+                        );
+                        return Err(InitFailure::Terminal(format!(
+                            "device initialization panicked: {e}"
+                        )));
+                    }
                 }
             }
 
@@ -947,6 +975,30 @@ mod test {
         assert!(
             outcome.is_ok(),
             "a device that opens on a later attempt must be used, not abandoned"
+        );
+    }
+
+    /// A constructor that panics every time is the same hostage situation as
+    /// one that fails every time, and used to be the one route that skipped the
+    /// give-up logic entirely.
+    #[tokio::test]
+    async fn a_constructor_that_keeps_panicking_gives_up() {
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            // The error type is unconstrained: the closure only ever panics.
+            Player::retry_until_ready_with_grace::<(), Transient, _>(
+                "test device",
+                CancellationToken::new(),
+                SHORT_GRACE,
+                || panic!("device init exploded"),
+            ),
+        )
+        .await
+        .expect("init never gave up on a constructor that always panics");
+
+        assert!(
+            matches!(outcome, Err(InitFailure::Terminal(_))),
+            "a repeatedly-panicking constructor must not be retried forever"
         );
     }
 
