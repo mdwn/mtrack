@@ -754,7 +754,7 @@ impl Device {
     /// Note the `available_hint()` on the failure path: this fires while the
     /// player is coming up, and a bare "not found" leaves the operator nothing
     /// to act on at the worst possible moment.
-    pub fn get(config: config::Audio) -> Result<Device, Box<dyn Error>> {
+    pub fn get(config: config::Audio) -> Result<Device, crate::audio::AudioError> {
         let name = config.device().to_string();
         debug!(
             device_name = %name,
@@ -762,7 +762,11 @@ impl Device {
             device_name_trimmed = %name.trim(),
             "Searching for audio device"
         );
-        match Device::find_cpal_device(&name)? {
+        // Enumeration failing is neither of the two cases below: nothing is
+        // known about the device yet, so it stays retryable.
+        let found = Device::find_cpal_device(&name)
+            .map_err(|e| crate::audio::AudioError::Playback(e.to_string()))?;
+        match found {
             Some(device) => {
                 let resolved = device.name.clone();
                 // Say which of the two situations this is. `retry_until_ready`
@@ -774,14 +778,20 @@ impl Device {
                 // refusing in an hour. The latter is usually a sample rate,
                 // format or buffer size the interface won't accept, or another
                 // process holding it exclusively; either way it needs a person.
-                Device::open(device, config).map_err(|e| -> Box<dyn Error> {
+                Device::open(device, config).map_err(|e| {
                     // No "audio device" prefix: the retry loop and the AudioError
                     // wrapper both add one already, and a line that says it three
                     // times before saying anything is harder to read at 2Hz.
-                    format!("'{resolved}' was found but could not be opened: {e}").into()
+                    crate::audio::AudioError::DeviceUnopenable(format!(
+                        "'{resolved}' was found but could not be opened: {e}"
+                    ))
                 })
             }
-            None => Err(format!("no device found with name {}{}", name, available_hint()).into()),
+            None => Err(crate::audio::AudioError::DeviceNotFound(format!(
+                "no device found with name {}{}",
+                name,
+                available_hint()
+            ))),
         }
     }
 

@@ -20,6 +20,8 @@
 
 use std::time::Duration;
 
+use mtrack::proto::player::v1::{GetConfigRequest, UpdateAudioRequest};
+
 use crate::capabilities::Capabilities;
 use crate::client::Client;
 use crate::outcome::CheckOutcome;
@@ -423,5 +425,94 @@ pub async fn controllers_restart_while_idle() -> CheckOutcome {
     crate::outcome::record("gRPC controller answered again after restart");
 
     server.check_clean_log(&[])?;
+    Ok(())
+}
+
+/// A rig whose audio device will never open still comes up, and can be fixed
+/// from the running player.
+///
+/// This is the whole point of giving up on terminal failures. Init used to
+/// retry an unopenable device twice a second forever, and because subsystems
+/// are joined by phase, everything behind it stayed uninitialised: no MIDI, no
+/// samples, no triggers, `init_done` never firing, and no controllers. A single
+/// bad `bits_per_sample` therefore took away the web UI and the gRPC API that
+/// are how anyone would correct it — the rig was unreachable precisely because
+/// it was misconfigured.
+///
+/// `Server::start` waits for `init_done`, so its returning at all is the first
+/// assertion: before the fix this check could not get past its own setup.
+pub async fn a_rig_with_an_unopenable_device_comes_up_and_can_be_reconfigured() -> CheckOutcome {
+    crate::runner::require_area("subsystems")?;
+    let Some(device) = Capabilities::get().audio_out.clone() else {
+        skip!("no audio output device was detected, so there is nothing present to fail to open");
+    };
+
+    // A real device asked for a bit depth cpal will not accept: present, and
+    // refusing. Under sabotage the same device is asked for nothing unusual and
+    // opens normally, so the "gave up" assertions below have nothing to find.
+    // `pick` takes (real, broken).
+    let audio_profile = crate::sabotage::pick(
+        ProfileSpec::detected("01-e2e").with_audio_key("bits_per_sample", "24"),
+        ProfileSpec::detected("01-e2e"),
+    );
+
+    let project = ProjectBuilder::new()
+        .profiles(vec![audio_profile])
+        .songs(crate::checks::standard_songs())
+        .build()?;
+    let server = Server::start(&project).await?;
+    let mut client = Client::connect(&server).await?;
+
+    // The gRPC controller answering at all means Phase 3 ran, which it could
+    // not have while Phase 1 was still spinning.
+    let status = client.get_json("status").await?;
+    let audio = &status["hardware"]["audio"];
+    check!(
+        audio["status"] == "failed",
+        "a device that will never open reported '{}', not 'failed'.\n\n\
+         Anything else reads as still-trying or not-configured, and neither tells the \
+         operator that the rig has stopped waiting for them.",
+        audio["status"]
+    );
+    let reason = audio["error"].as_str().unwrap_or_default();
+    check!(
+        reason.contains("could not be opened"),
+        "the failed audio subsystem gave no usable reason: {:?}.\n\n\
+         'failed' without the reason leaves the operator exactly where the perpetual \
+         retry did.",
+        audio["error"]
+    );
+    check!(
+        status["hardware"]["init_done"] == true,
+        "hardware init never completed, so the rig is still held up by the one device \
+         that will never come."
+    );
+
+    // The requirement in the operator's terms: the rig came up far enough to
+    // accept a corrected configuration.
+    let config = client
+        .grpc()
+        .get_config(GetConfigRequest {})
+        .await?
+        .into_inner();
+    let updated = client
+        .grpc()
+        .update_audio(UpdateAudioRequest {
+            audio_json: serde_json::json!({ "device": device.name }).to_string(),
+            expected_checksum: config.checksum.clone(),
+        })
+        .await;
+    check!(
+        updated.is_ok(),
+        "a degraded rig would not accept a corrected audio config: {:?}.\n\n\
+         Coming up degraded is only worth anything if the config can then be fixed.",
+        updated.err().map(|e| e.to_string())
+    );
+
+    crate::outcome::record(format!(
+        "unopenable '{}': came up with init_done, reported failed ({reason}), and accepted a \
+         corrected config",
+        device.name
+    ));
     Ok(())
 }

@@ -59,6 +59,21 @@ pub enum AudioError {
     #[error("Audio device not found: {0}")]
     DeviceNotFound(String),
 
+    /// The device is there and will not open.
+    ///
+    /// Distinct from [`Self::DeviceNotFound`] because the two call for opposite
+    /// responses: a device that is not there yet may be mid-enumeration or not
+    /// plugged in, and waiting is exactly right; one that is sitting there
+    /// refusing to open will still be refusing in an hour, and waiting is
+    /// exactly wrong.
+    #[error("Audio device found but could not be opened: {0}")]
+    DeviceUnopenable(String),
+
+    /// The audio config cannot describe a working device, whatever hardware
+    /// turns up.
+    #[error("Audio configuration error: {0}")]
+    Misconfigured(String),
+
     #[error("Audio format mismatch: {0}")]
     FormatMismatch(String),
 
@@ -75,6 +90,32 @@ pub enum AudioError {
 impl From<Box<dyn Error + Send + Sync>> for AudioError {
     fn from(e: Box<dyn Error + Send + Sync>) -> Self {
         AudioError::Other(e)
+    }
+}
+
+impl AudioError {
+    /// Whether this failure will still be a failure however long we wait.
+    ///
+    /// Hardware init retries perpetually, which is right for a device that has
+    /// not appeared yet and wrong for one that has appeared and refuses its
+    /// configuration — the second spins at 2Hz forever and, because subsystems
+    /// are joined, takes the rest of the rig down with it.
+    ///
+    /// Unclassified errors count as **retryable**. That is the pre-existing
+    /// behaviour, so a variant nobody has thought about keeps waiting rather
+    /// than newly abandoning a device that would have arrived. The cost of
+    /// guessing wrong that way is a spin; the other way it is a rig that
+    /// silently comes up without its audio.
+    pub fn is_terminal(&self) -> bool {
+        match self {
+            AudioError::DeviceUnopenable(_)
+            | AudioError::Misconfigured(_)
+            | AudioError::FormatMismatch(_) => true,
+            AudioError::DeviceNotFound(_)
+            | AudioError::Playback(_)
+            | AudioError::Stream(_)
+            | AudioError::Other(_) => false,
+        }
     }
 }
 
@@ -331,15 +372,17 @@ pub fn get_device(config: Option<config::Audio>) -> Result<Arc<dyn Device>, Audi
     let config = match config {
         Some(config) => config,
         None => {
-            return Err(AudioError::DeviceNotFound(
+            // Config problems, not missing hardware: no device will ever turn
+            // up to satisfy a config that names none.
+            return Err(AudioError::Misconfigured(
                 "there must be an audio device specified".to_string(),
-            ))
+            ));
         }
     };
 
     let device = config.device();
     if device.trim().is_empty() {
-        return Err(AudioError::DeviceNotFound(
+        return Err(AudioError::Misconfigured(
             "audio device name is empty; set 'device' in the audio config".to_string(),
         ));
     }
@@ -347,14 +390,59 @@ pub fn get_device(config: Option<config::Audio>) -> Result<Arc<dyn Device>, Audi
         return Ok(Arc::new(mock::Device::get(device)));
     };
 
-    Ok(Arc::new(
-        cpal::Device::get(config).map_err(|e| AudioError::Playback(e.to_string()))?,
-    ))
+    // Passed through rather than restated: `Device::get` is what knows whether
+    // the device was absent or present-and-refusing, and flattening that here
+    // is what left init unable to tell them apart.
+    Ok(Arc::new(cpal::Device::get(config)?))
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// A device that has not turned up may still turn up, so init must keep
+    /// waiting for it. This is the case the perpetual retry exists for.
+    #[test]
+    fn a_missing_device_is_not_terminal() {
+        let Err(err) = get_device(Some(config::Audio::new("definitely-not-a-real-device"))) else {
+            panic!("a nonexistent device must not resolve");
+        };
+        assert!(
+            !err.is_terminal(),
+            "a device that is merely absent must stay retryable: {err}"
+        );
+    }
+
+    /// Config that names no device cannot be satisfied by any hardware, so
+    /// waiting for hardware is waiting for something that cannot happen.
+    #[test]
+    fn a_config_naming_no_device_is_terminal() {
+        for config in [None, Some(config::Audio::new("   "))] {
+            let Err(err) = get_device(config) else {
+                panic!("an empty device name must not resolve");
+            };
+            assert!(
+                err.is_terminal(),
+                "a config error must not be retried forever: {err}"
+            );
+        }
+    }
+
+    /// The classification is the whole point of the split, so it is asserted
+    /// per variant rather than inferred from the two paths above.
+    #[test]
+    fn terminal_variants_are_the_ones_a_person_must_fix() {
+        assert!(AudioError::DeviceUnopenable("x".into()).is_terminal());
+        assert!(AudioError::Misconfigured("x".into()).is_terminal());
+        assert!(AudioError::FormatMismatch("x".into()).is_terminal());
+
+        // Unclassified failures keep waiting: the pre-existing behaviour, so a
+        // variant nobody has considered cannot newly abandon a device.
+        assert!(!AudioError::DeviceNotFound("x".into()).is_terminal());
+        assert!(!AudioError::Playback("x".into()).is_terminal());
+        assert!(!AudioError::Stream("x".into()).is_terminal());
+        assert!(!AudioError::Other("x".into()).is_terminal());
+    }
 
     /// A device that cannot be opened must say so rather than reporting silence
     /// — the two call for different responses, and the reason is the whole
@@ -402,11 +490,15 @@ mod test {
     #[test]
     fn get_device_none_returns_error() {
         let result = get_device(None);
+        // `Misconfigured`, not `DeviceNotFound`: nothing is missing from the
+        // machine, the config names nothing. The distinction decides whether
+        // hardware init waits for a device to appear, and no device can satisfy
+        // a config that asks for none.
         match result {
-            Err(AudioError::DeviceNotFound(msg)) => {
+            Err(AudioError::Misconfigured(msg)) => {
                 assert!(msg.contains("audio device specified"))
             }
-            Err(e) => panic!("expected DeviceNotFound, got: {}", e),
+            Err(e) => panic!("expected Misconfigured, got: {}", e),
             Ok(_) => panic!("expected error for None config"),
         }
     }

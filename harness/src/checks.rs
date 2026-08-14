@@ -91,6 +91,7 @@ const WORLD_LEVEL: &[&str] = &[
     "bogus_midi_device_degrades_gracefully",
     "bogus_audio_device_degrades_gracefully",
     "unopenable_audio_device_is_distinguished_from_a_missing_one",
+    "a_rig_with_an_unopenable_device_comes_up_and_can_be_reconfigured",
     "first_profile_wins",
     "generated_show_passes_validation",
     "malformed_show_is_rejected",
@@ -322,6 +323,14 @@ pub fn all() -> Vec<Check> {
              report connected. Reporting it as missing sends an operator waiting out a\n  \
              retry that can never succeed.",
             subsystems::unopenable_audio_device_is_distinguished_from_a_missing_one
+        ),
+        entry!(
+            "subsystems",
+            "a_rig_with_an_unopenable_device_comes_up_and_can_be_reconfigured",
+            "A device that will never open must not hold the rig hostage. Everything else\n  \
+             must come up, and the config must be fixable from the running player — which\n  \
+             is the only way anyone would fix it.",
+            subsystems::a_rig_with_an_unopenable_device_comes_up_and_can_be_reconfigured
         ),
         entry!(
             "subsystems",
