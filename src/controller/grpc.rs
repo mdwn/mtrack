@@ -22,7 +22,7 @@ use crate::{
     player::Player,
     proto::player::v1::{
         player_service_server::{PlayerService, PlayerServiceServer},
-        AddProfileRequest, Cue, GetActiveEffectsRequest, GetActiveEffectsResponse,
+        AddProfileRequest, AudioHealth, Cue, GetActiveEffectsRequest, GetActiveEffectsResponse,
         GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, GetTrackGainsRequest,
         GetTrackGainsResponse, LoopSectionRequest, LoopSectionResponse, NextRequest, NextResponse,
         PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest, PreviousRequest,
@@ -327,11 +327,28 @@ impl PlayerService for PlayerServer {
 
         let playing = self.player.is_playing().await;
 
+        // Hardware health travels with playback state so a remote monitor can
+        // tell "silent because nothing is playing" from "silent and it should
+        // not be" without a second call.
+        let audio_health = self
+            .player
+            .hardware_status()
+            .audio_output
+            .map(|h| AudioHealth {
+                status: h.status.as_str().to_string(),
+                callback_alive: h.callback_alive,
+                writing_signal: h.writing_signal,
+                recoveries: h.recoveries,
+                underruns: h.underruns,
+                last_error: h.last_error,
+            });
+
         Ok(Response::new(StatusResponse {
             playlist_name: playlist_name.to_string(),
             current_song,
             playing,
             elapsed,
+            audio_health,
         }))
     }
 

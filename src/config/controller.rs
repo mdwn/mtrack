@@ -65,6 +65,9 @@ fn default_osc_track_gain() -> String {
 fn default_osc_status() -> String {
     "/mtrack/status".to_string()
 }
+fn default_osc_audio_health() -> String {
+    "/mtrack/audio/health".to_string()
+}
 fn default_osc_playlist_current() -> String {
     "/mtrack/playlist/current".to_string()
 }
@@ -364,6 +367,14 @@ pub struct OscController {
     /// The OSC address to broadcast to display the current player status.
     #[serde(default = "default_osc_status")]
     status: String,
+    /// The OSC address to broadcast the audio output's health verdict:
+    /// "healthy", "recovering", "stalled" or "never_started".
+    ///
+    /// Separate from `status`, which reports what the *player* is doing. A
+    /// control surface wants both: the player can be playing while the audio
+    /// output is stalled, and that combination is the one worth a red light.
+    #[serde(default = "default_osc_audio_health")]
+    audio_health: String,
     /// The OSC address to broadcast the current playlist songs.
     #[serde(default = "default_osc_playlist_current")]
     playlist_current: String,
@@ -398,6 +409,7 @@ impl Default for OscController {
             seek_section: default_osc_seek_section(),
             track_gain: default_osc_track_gain(),
             status: default_osc_status(),
+            audio_health: default_osc_audio_health(),
             playlist_current: default_osc_playlist_current(),
             playlist_current_song: default_osc_playlist_current_song(),
             playlist_current_song_elapsed: default_osc_playlist_current_song_elapsed(),
@@ -489,6 +501,11 @@ impl OscController {
     /// Gets the player status.
     pub fn status(&self) -> &str {
         &self.status
+    }
+
+    /// The address the audio health verdict is broadcast to.
+    pub fn audio_health(&self) -> &str {
+        &self.audio_health
     }
 
     /// Gets the playlist current OSC address.
