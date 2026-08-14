@@ -263,7 +263,11 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
 
     match cli.command {
         Commands::Songs { path, init } => local::songs(&path, init)?,
-        Commands::Devices {} => print_device_list(audio::list_devices()?, "No devices found."),
+        // `list_device_info` rather than `list_devices`: the latter builds every
+        // device, and each one holds an ALSA handle that stops its siblings
+        // being described, so it under-reports itself -- 8 of 19 on the test
+        // rig.
+        Commands::Devices {} => print_device_list(audio::list_device_info()?, "No devices found."),
         Commands::MidiDevices {} => print_device_list(midi::list_devices()?, "No devices found."),
         Commands::Playlist {
             repository_path,

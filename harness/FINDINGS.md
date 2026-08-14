@@ -212,3 +212,17 @@ These are working as designed but surprised the harness, and cost time:
   `default` and `pulse` advertise 32 regardless of the hardware behind them, so
   ranking candidate devices by channel count picks a plug node over the real
   interface.
+
+  **The 32 is cpal's, not ALSA's**: `cmp::min(max_channels, 32)` in cpal's
+  `host/alsa/mod.rs`. A plug node accepts an unbounded channel count, so the
+  clamp is all anyone ever learns from asking one — and a genuine 32-or-more
+  channel interface reports 32 for the same reason, so the number is a floor
+  rather than a capability in both cases.
+
+  Now handled in `list_device_info`: a plug node takes its channel count from
+  the hardware node behind it (`plughw:CARD=MAT` from `hw:CARD=MAT,DEV=0`), and
+  where there is no such node the count is marked unknown and shown as
+  `virtual` instead of `32`. `AudioDeviceInfo` carries `virtual_node` and
+  `channels_known` for this. Plug nodes are **not** hidden or de-ranked: a WING
+  rack needs `plughw`, because cpal's ALSA format table has `S24_3LE` commented
+  out and so finds no usable format on the raw node.

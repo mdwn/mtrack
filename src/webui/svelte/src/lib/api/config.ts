@@ -57,6 +57,16 @@ export interface AudioDeviceInfo {
   host_name: string;
   supported_sample_rates: number[];
   supported_formats: SupportedFormat[];
+  /** An ALSA plug/virtual node. Still selectable — some rigs need one. */
+  virtual_node: boolean;
+  /** False when max_channels is a floor rather than the real maximum. */
+  channels_known: boolean;
+}
+
+/** Describes a device's channel count without overstating what is known. */
+export function channelsLabel(device: AudioDeviceInfo): string {
+  if (device.channels_known) return `${device.max_channels}ch`;
+  return device.virtual_node ? "virtual" : `${device.max_channels}ch+`;
 }
 
 export interface MidiDeviceInfo {

@@ -47,6 +47,28 @@ test.describe("Profile Editor - Audio Section", () => {
     await expect(page.getByRole("button", { name: "Refresh" })).toBeVisible();
   });
 
+  test("device options show the channel count when it is known", async ({
+    page,
+  }) => {
+    const option = page.locator(
+      "#audio-device-list option[value='USB Interface']",
+    );
+    await expect(option).toHaveText("USB Interface (18ch, ALSA)");
+  });
+
+  // An ALSA plug node reports cpal's clamped 32 channels regardless of the
+  // hardware behind it, so the picker must not present that as a capability.
+  // It stays in the list: on some interfaces it is the only node that works.
+  test("plug nodes are labelled rather than given a fictional channel count", async ({
+    page,
+  }) => {
+    const option = page.locator(
+      "#audio-device-list option[value='alsa:plughw:CARD=WING']",
+    );
+    await expect(option).toHaveText("alsa:plughw:CARD=WING (virtual, ALSA)");
+    await expect(option).not.toContainText("32");
+  });
+
   test("shows track mappings section", async ({ page }) => {
     await expect(page.getByText(/track mappings/i)).toBeVisible();
   });
