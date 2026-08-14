@@ -66,7 +66,11 @@ pub enum AudioError {
     /// plugged in, and waiting is exactly right; one that is sitting there
     /// refusing to open will still be refusing in an hour, and waiting is
     /// exactly wrong.
-    #[error("Audio device found but could not be opened: {0}")]
+    /// Displayed verbatim: the message already names the device and says it
+    /// would not open, and a prefix here made the reason read "Audio device
+    /// found but could not be opened: 'X' was found but could not be opened:
+    /// …" on the operator's screen.
+    #[error("{0}")]
     DeviceUnopenable(String),
 
     /// The audio config cannot describe a working device, whatever hardware
