@@ -19,6 +19,8 @@
   interface SubsystemStatus {
     status: string;
     name: string | null;
+    /** Why init gave up. Present only for `failed`. */
+    error?: string | null;
   }
 
   interface ControllerStatus {
@@ -99,6 +101,9 @@
   function statusColor(status: string): string {
     if (status === "connected") return "var(--green)";
     if (status === "initializing") return "var(--yellow)";
+    // Red rather than dim: `failed` means init stopped trying, which needs
+    // someone to act. Dim reads as "not configured", which needs nobody.
+    if (status === "failed") return "var(--red)";
     return "var(--text-dim)";
   }
 
@@ -164,6 +169,10 @@
   function statusLabel(s: SubsystemStatus): string {
     if (s.status === "connected") return get(t)("status.connected");
     if (s.status === "initializing") return get(t)("status.initializing");
+    // Checked before the `name` fallback below: a failed subsystem has no name
+    // to report, so that fallback would label it "not configured" — the one
+    // reading that tells the operator there is nothing to fix.
+    if (s.status === "failed") return get(t)("status.failed");
     if (!s.name && s.status !== "connected")
       return get(t)("status.notConfigured");
     return get(t)("status.notConnected");
@@ -295,6 +304,9 @@
                 </a>
               {/if}
             </div>
+            {#if s.error}
+              <div class="subsystem-error">{s.error}</div>
+            {/if}
           {/each}
         </div>
       </div>
@@ -526,6 +538,8 @@
     color: var(--nc-fg-3);
     font-style: italic;
   }
+  /* Shares the controller-error shape: same question, same answer. */
+  .subsystem-error,
   .controller-error {
     font-family: var(--nc-font-mono);
     font-size: 12px;

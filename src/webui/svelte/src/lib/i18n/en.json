@@ -113,6 +113,7 @@
   "status.profile": "Profile",
   "status.connected": "Connected",
   "status.initializing": "Initializing",
+  "status.failed": "Failed",
   "status.notConnected": "Not Connected",
   "status.audioStalled": "Open, but not playing out",
   "status.audioRecovering": "Reconnecting to the interface",

@@ -191,6 +191,71 @@ test.describe("Status Page", () => {
     await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
+  /** The point of coming up degraded: init gives up on a device that will never
+   * open, so the rest of the rig starts and the operator can reach this page to
+   * fix the config. The reason has to be here — "Failed" alone leaves them
+   * exactly where the perpetual retry did. */
+  test("a subsystem that gave up reports Failed with the reason", async ({
+    page,
+  }) => {
+    await page.goto("/#/");
+    await page.route("**/api/status", async (route) => {
+      const res = await route.fetch();
+      const body = await res.json();
+      body.hardware.init_done = true;
+      body.hardware.audio = {
+        status: "failed",
+        name: null,
+        error:
+          "'hw:CARD=WING,DEV=0' was found but could not be opened: Unsupported bit depth for integer format: 24",
+      };
+      body.hardware.audio_output = null;
+      await route.fulfill({ json: body });
+    });
+
+    await page.goto("/#/status");
+    const audioRow = page
+      .locator(".subsystem-row")
+      .filter({ hasText: "Audio" });
+    await expect(audioRow).toContainText("Failed");
+    // "Not Configured" is what a failed row falls back to if the label order is
+    // wrong, and it tells the operator there is nothing to fix.
+    await expect(audioRow).not.toContainText("Not Configured");
+    await expect(page.locator(".subsystem-error")).toContainText(
+      "Unsupported bit depth",
+    );
+
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  });
+
+  /** A rig whose audio gave up must not read as healthy anywhere. `init_done`
+   * now fires on a degraded rig, so the nav indicator no longer has the
+   * "still initializing" amber to hide behind. */
+  test("a failed subsystem shows as an error in the nav health indicator", async ({
+    page,
+  }) => {
+    await page.goto("/#/");
+    await page.route("**/api/status", async (route) => {
+      const res = await route.fetch();
+      const body = await res.json();
+      body.hardware.init_done = true;
+      body.hardware.audio = {
+        status: "failed",
+        name: null,
+        error: "'hw:CARD=WING,DEV=0' was found but could not be opened",
+      };
+      body.hardware.audio_output = null;
+      await route.fulfill({ json: body });
+    });
+
+    await page.goto("/#/status");
+    // The indicator carries its verdict in the class and the accessible label;
+    // the label is what a person actually reads out.
+    await expect(page.locator(".topnav__conn--error")).toBeVisible();
+
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  });
+
   test("audio row distinguishes recovering from stalled", async ({ page }) => {
     await page.goto("/#/");
     await page.route("**/api/status", async (route) => {

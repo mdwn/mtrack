@@ -115,6 +115,12 @@ struct HardwareState {
     profile_name: Option<String>,
     /// The resolved machine hostname used for profile matching.
     hostname: Option<String>,
+    /// Subsystems whose init gave up, keyed by name, with the reason.
+    ///
+    /// Only terminal failures land here — a device still being waited for is
+    /// not a failure, it is a wait. Cleared by a reload, so fixing the config
+    /// and reloading clears the report along with the cause.
+    init_errors: HashMap<String, String>,
 }
 
 /// Alias for the shared state sampler sender stored on Player.
@@ -198,8 +204,15 @@ pub struct PlayerDevices {
 /// Status of a single hardware subsystem.
 #[derive(Clone, serde::Serialize)]
 pub struct SubsystemStatus {
+    /// `connected`, `initializing`, `failed`, or `not_connected`.
     pub status: String,
     pub name: Option<String>,
+    /// Why init gave up, present only for `failed`.
+    ///
+    /// `failed` without a reason would be no better than the perpetual retry it
+    /// replaced: the operator still would not know what to change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// What the audio output callback is actually doing, as distinct from whether the
@@ -512,6 +525,7 @@ impl Player {
             song_change_notifiers: Vec::new(),
             profile_name: None,
             hostname: None,
+            init_errors: HashMap::new(),
         };
 
         let (init_done_tx, _init_done_rx) = tokio::sync::watch::channel(true);

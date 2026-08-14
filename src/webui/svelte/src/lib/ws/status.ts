@@ -16,8 +16,15 @@ import { derived, writable } from "svelte/store";
 import { wsConnected } from "./stores";
 
 export interface SubsystemStatus {
-  status: "connected" | "initializing" | "not_connected" | "not_configured";
+  status:
+    | "connected"
+    | "initializing"
+    | "failed"
+    | "not_connected"
+    | "not_configured";
   name: string | null;
+  /** Why init gave up. Present only for `failed`. */
+  error?: string | null;
 }
 
 export interface ControllerStatus {
@@ -100,10 +107,14 @@ export const healthStore = derived(statusStore, ($status): Health => {
   if (!subs.init_done) return "warn";
 
   // Audio is always required — its status is the floor.
-  if (subs.audio.status === "not_connected") return "error";
+  if (subs.audio.status === "not_connected" || subs.audio.status === "failed")
+    return "error";
 
-  // MIDI / DMX are required if configured.
+  // MIDI / DMX are required if configured. `failed` needs no `name` check: a
+  // subsystem only fails if it was configured, and a failed one has no name to
+  // report — testing for one would silently downgrade it to healthy.
   for (const sub of [subs.midi, subs.dmx] as const) {
+    if (sub.status === "failed") return "error";
     if (sub.name && sub.status === "not_connected") return "error";
   }
 
