@@ -56,6 +56,12 @@ pub(super) async fn get_midi_devices() -> impl IntoResponse {
     }
 }
 
+/// Serializes device tests across every client.
+///
+/// Process-wide rather than per-connection because the thing being contended
+/// for is the hardware, not the session.
+static PROBE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// What the config editor asks to have probed: a device name, plus whichever
 /// format settings are filled in beside it.
 ///
@@ -132,6 +138,15 @@ pub(super) async fn post_probe_audio_device(
         )
             .into_response();
     }
+
+    // One test at a time. A probe opens a real interface, and two overlapping
+    // opens of the same one make the second fail as busy — a wrong answer about
+    // a working device, which is the failure this endpoint exists to avoid. The
+    // button being disabled while a test runs only guards one tab.
+    // Waits rather than refusing: a probe takes about two seconds at worst, and
+    // a caller that waited and got a real answer is better served than one told
+    // to try again.
+    let _in_flight = PROBE_LOCK.lock().await;
 
     let mut audio = crate::config::Audio::new(&name);
     if let Some(rate) = body.sample_rate {
