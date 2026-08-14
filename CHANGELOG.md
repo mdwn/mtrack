@@ -42,6 +42,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A device that will never open no longer holds the whole rig hostage**: hardware init retried
+  any device error twice a second, forever, with no way to say "this will never succeed". Because
+  audio and DMX are joined for Phase 1, one unopenable device left everything behind it
+  uninitialised — no MIDI, no samples, no triggers, and no controllers — so a single bad
+  `bits_per_sample` took away the web UI and gRPC API that are how anyone would correct it. The rig
+  was unreachable precisely because it was misconfigured.
+
+  Failures are now classified. A device that is absent may still turn up, so that keeps retrying;
+  a device that is present and refuses its configuration will still be refusing in an hour, so init
+  gives up and the rest of the rig starts without it. The subsystem reports **Failed** with the
+  reason on the Status page, in the nav health indicator, and over the API — and the config can be
+  corrected from the running player, which is the point.
+
+  Giving up is not instant: a device can be briefly unopenable at boot while udev and ALSA finish
+  with it, so terminal failures get a short grace window first. Unclassified errors still retry
+  perpetually, so a failure nobody has considered waits rather than newly abandoning a device that
+  would have arrived. Repeated identical failures are also rate-limited in the log instead of
+  filling a journal at 2Hz.
+
+
 - **Buffer underruns no longer rebuild the output stream**: cpal reports every XRUN through the
   same error callback as a genuine failure, and mtrack tore the stream down for each one —
   replacing a glitch of about a millisecond with a full device reopen, measured at ~29ms on the
