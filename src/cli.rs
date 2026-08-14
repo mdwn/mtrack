@@ -95,6 +95,18 @@ enum Commands {
     },
     /// Lists the available audio output devices.
     Devices {},
+    /// Opens the configured audio device and confirms audio is actually flowing.
+    ///
+    /// Silent: no sound is produced, so this is safe to run before a set with
+    /// the PA live. Proves what `devices` cannot — that the device accepts the
+    /// configured format and its output callback actually runs.
+    TestAudio {
+        /// The path to the player configuration.
+        config: String,
+        /// Override the hostname used to select a hardware profile.
+        #[arg(long)]
+        hostname: Option<String>,
+    },
     /// Lists the available MIDI input/output devices.
     MidiDevices {},
     /// Plays a song through the audio interface.
@@ -269,6 +281,7 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
         // rig.
         Commands::Devices {} => print_device_list(audio::list_device_info()?, "No devices found."),
         Commands::MidiDevices {} => print_device_list(midi::list_devices()?, "No devices found."),
+        Commands::TestAudio { config, hostname } => local::test_audio(&config, hostname)?,
         Commands::Playlist {
             repository_path,
             playlist_path,
