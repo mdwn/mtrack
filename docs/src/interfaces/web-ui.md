@@ -214,9 +214,10 @@ the top — **Default / On / Off** — decides whether the song follows the play
 (see [the config editor](#configuration-editor)) or overrides it, which is `enabled` in the
 song's `metronome:` block: absent to follow, `true` or `false` to override.
 
-Below it: the track name the click is routed to, a click volume that trims this song against
-the rest, presets, and the four click sounds. A sound left unchecked is _inherited from player
-defaults_ rather than silenced — so a song only carries what it actually changes. Accents and
+Below it: the track name the click is routed to, the click volume, presets, and the four click
+sounds. Volume and sounds both start _inherited from player defaults_ rather than silenced or
+pinned — tick the volume to trim this one song against the rest, and a sound left unchecked
+stays the player's. A song only carries what it actually changes. Accents and
 subdivisions are not here; they live on the tempo markers, since they change mid-song.
 
 ![The song's metronome panel](../images/song-metronome-panel.png)
@@ -449,11 +450,11 @@ reinitialization.
 
 ### Metronome defaults
 
-With a dozen songs, click sounds are a player decision rather than a per-song one. The
-Metronome section edits the `metronome:` block of `mtrack.yaml`: the four click roles
-(accent, half, normal, sub) with volume, frequency and an optional sample file each, four
-presets to start from, and a checkbox that turns the click on by default for every song with
-a tempo map. Each sound previews in the browser — the speaker button synthesizes the same
+With a dozen songs, click levels and sounds are a player decision rather than a per-song one.
+The Metronome section edits the `metronome:` block of `mtrack.yaml`: a master click volume
+over the whole mix, the four click roles (accent, half, normal, sub) with volume, frequency
+and an optional sample file each, four presets to start from, and a checkbox that turns the
+click on by default for every song with a tempo map. Each sound previews in the browser — the speaker button synthesizes the same
 envelope the player uses, so you can audition without routing audio.
 
 Songs inherit all of it and override only what they set; see

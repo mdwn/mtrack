@@ -92,7 +92,9 @@
     if (updated.subdivision === 1 || updated.subdivision === undefined) {
       delete updated.subdivision;
     }
-    if (updated.volume === 1 || updated.volume === undefined) {
+    // An explicit 1x is a real override of a player-wide volume, so only an
+    // absent one is dropped.
+    if (updated.volume === undefined) {
       delete updated.volume;
     }
     if (updated.enabled === undefined || updated.enabled === true) {
@@ -151,7 +153,7 @@
     <span class="metronome-info">
       {#if metronomeState === "on"}
         {metronome?.track ?? "metronome"}
-        {#if metronome?.volume !== undefined && metronome.volume !== 1}
+        {#if metronome?.volume !== undefined}
           · ×{metronome.volume}
         {/if}
       {/if}
@@ -176,18 +178,35 @@
     <div class="metronome-body">
       <div class="level-row">
         <div class="field level-field">
-          <span class="field-label">{$t("metronome.level")}</span>
-          <SliderStepper
-            value={metronome.volume ?? 1}
-            min={0}
-            max={2}
-            step={0.05}
-            decimals={2}
-            suffix="×"
-            defaultValue={1}
-            ariaLabel={$t("metronome.level")}
-            onchange={(v) => update({ volume: Math.round(v * 100) / 100 })}
-          />
+          <label class="toggle-row level-toggle">
+            <input
+              type="checkbox"
+              checked={metronome.volume !== undefined}
+              onchange={(e) =>
+                update({
+                  volume: (e.target as HTMLInputElement).checked
+                    ? 1
+                    : undefined,
+                })}
+            />
+            <span class="field-label">{$t("metronome.level")}</span>
+            {#if metronome.volume === undefined}
+              <span class="inherited-note">{$t("metronome.inherited")}</span>
+            {/if}
+          </label>
+          {#if metronome.volume !== undefined}
+            <SliderStepper
+              value={metronome.volume}
+              min={0}
+              max={2}
+              step={0.05}
+              decimals={2}
+              suffix="×"
+              defaultValue={1}
+              ariaLabel={$t("metronome.level")}
+              onchange={(v) => update({ volume: Math.round(v * 100) / 100 })}
+            />
+          {/if}
         </div>
         <label class="field track-field">
           <span class="field-label">{$t("metronome.track")}</span>
@@ -369,6 +388,19 @@
   .level-field {
     flex: 1;
     min-width: 260px;
+  }
+  /* Unchecked the song follows the player-wide volume, so the row is just
+     the label and the note — the slider appears with the override. */
+  .level-toggle {
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  /* The row is a <label> inside .field, which the global stylesheet
+     uppercases; the note is prose and reads like the sound rows'. */
+  .level-toggle .inherited-note {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
   }
   .track-field {
     min-width: 160px;

@@ -134,6 +134,7 @@
   // Player-wide metronome defaults (mtrack.yaml `metronome.sounds`).
   let metronomeSounds = $state<MetronomeDefaultSounds | null>(null);
   let metronomeEnabled = $state(false);
+  let metronomeVolume = $state<number | null>(null);
   let metronomeSnapshot = $state("");
   let metronomeDirty = $state(false);
   let metronomeSaving = $state(false);
@@ -183,7 +184,12 @@
       samplesDirty = false;
       metronomeSounds = parsed?.metronome?.sounds ?? null;
       metronomeEnabled = parsed?.metronome?.enabled === true;
-      metronomeSnapshot = JSON.stringify([metronomeSounds, metronomeEnabled]);
+      metronomeVolume = parsed?.metronome?.volume ?? null;
+      metronomeSnapshot = JSON.stringify([
+        metronomeSounds,
+        metronomeEnabled,
+        metronomeVolume,
+      ]);
       metronomeDirty = false;
     } catch {
       profiles = [];
@@ -484,7 +490,8 @@
 
   function onMetronomeChange() {
     metronomeDirty =
-      JSON.stringify([metronomeSounds, metronomeEnabled]) !== metronomeSnapshot;
+      JSON.stringify([metronomeSounds, metronomeEnabled, metronomeVolume]) !==
+      metronomeSnapshot;
   }
 
   async function saveMetronome() {
@@ -499,10 +506,15 @@
       const snapshot = await updateMetronomeDefaults(
         metronomeSounds as Record<string, unknown> | null,
         metronomeEnabled,
+        metronomeVolume,
         checksum,
       );
       applySnapshot(snapshot);
-      metronomeSnapshot = JSON.stringify([metronomeSounds, metronomeEnabled]);
+      metronomeSnapshot = JSON.stringify([
+        metronomeSounds,
+        metronomeEnabled,
+        metronomeVolume,
+      ]);
       metronomeDirty = false;
       metronomeSaveOk = true;
       setTimeout(() => (metronomeSaveOk = false), 2000);
@@ -696,6 +708,7 @@
       bind:this={metronomeRef}
       bind:sounds={metronomeSounds}
       bind:enabled={metronomeEnabled}
+      bind:volume={metronomeVolume}
       onchange={onMetronomeChange}
       onbrowse={(role) => (metronomeBrowseRole = role)}
     />

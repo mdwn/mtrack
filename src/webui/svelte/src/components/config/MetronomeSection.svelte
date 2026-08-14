@@ -39,6 +39,8 @@
     sounds: MetronomeDefaultSounds | null;
     /** Default-on: songs with a tempo map get a metronome automatically. */
     enabled: boolean;
+    /** Player-wide master click volume, or null to leave it at 1x. */
+    volume: number | null;
     onchange: () => void;
     onbrowse: (role: MetronomeSoundRole) => void;
   }
@@ -46,6 +48,7 @@
   let {
     sounds = $bindable(),
     enabled = $bindable(),
+    volume = $bindable(),
     onchange,
     onbrowse,
   }: Props = $props();
@@ -127,6 +130,24 @@
     />
     <span class="default-label">{$t("config.metronomeDefaultOn")}</span>
   </label>
+  <div class="field master-volume">
+    <span class="field-label">{$t("config.metronomeMaster")}</span>
+    <SliderStepper
+      value={volume ?? 1}
+      min={0}
+      max={2}
+      step={0.05}
+      decimals={2}
+      suffix="×"
+      defaultValue={1}
+      ariaLabel={$t("config.metronomeMaster")}
+      onchange={(v) => {
+        const rounded = Math.round(v * 100) / 100;
+        volume = rounded === 1 ? null : rounded;
+        onchange();
+      }}
+    />
+  </div>
   <div class="presets">
     <span class="field-label">{$t("metronome.presets")}</span>
     {#each METRONOME_PRESETS as preset (preset.key)}
@@ -329,6 +350,11 @@
   .field-label {
     font-size: 11px;
     color: var(--text-muted);
+  }
+  /* The one control above the per-role tiles: it scales all of them. */
+  .master-volume {
+    max-width: 320px;
+    margin-bottom: 4px;
   }
   .sound-file {
     flex: 1;

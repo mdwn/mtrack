@@ -231,6 +231,7 @@ map, and route anywhere.
 metronome:
   track: metronome # the output track name (default "metronome")
   accent: [3, 2, 2] # optional accent grouping (7/8: accents on beats 1, 4, 6)
+  volume: 1.2 # optional master level (0.0-2.0); omit to follow the player
   sounds:
     accent: { freq: 1600, volume: 1.0 } # synthesized click, or:
     normal: { file: clicks/lo.wav } # a sample file (relative to the song dir)
@@ -243,9 +244,12 @@ metronome:
   on beat 1, or on each group start when `accent` is set.
 - Sounds default to short synthesized sine clicks (accent 1600 Hz, normal 1200 Hz); each can
   be overridden with a sample file.
-- Player-wide default sounds can be set once in `mtrack.yaml` (see the player configuration);
-  a song then just needs `metronome: {}` to enable the click with your preferred sound.
-  Song-level sound fields override the defaults per field.
+- `volume` is a master level over the whole click mix, scaling every sound uniformly and
+  preserving the accent/half/normal/sub ordering. Omitting it follows the player-wide
+  `metronome.volume`; setting it — even to `1.0` — overrides that for this song.
+- Player-wide default sounds and volume can be set once in `mtrack.yaml` (see the player
+  configuration); a song then just needs `metronome: {}` to enable the click with your
+  preferred sound. Song-level sound fields override the defaults per field.
 - The `metronome` track name must not collide with a real track. A beat grid (tempo map or
   analyzed click track) is required.
 

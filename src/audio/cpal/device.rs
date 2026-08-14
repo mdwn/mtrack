@@ -357,8 +357,8 @@ pub struct Device {
     /// `None` when the backend was left to choose and did not say, which is what
     /// `BufferSize::Default` gives. Used only to size the liveness window.
     output_buffer_size: Option<u32>,
-    /// Player-level default metronome sounds, set at hardware init.
-    metronome_defaults: parking_lot::Mutex<Option<config::metronome::MetronomeSounds>>,
+    /// Player-wide metronome defaults, set at hardware init.
+    metronome_defaults: parking_lot::Mutex<Option<config::MetronomeDefaults>>,
 }
 
 impl fmt::Display for Device {
@@ -662,7 +662,7 @@ impl AudioDevice for Device {
         ))
     }
 
-    fn set_metronome_defaults(&self, defaults: Option<config::metronome::MetronomeSounds>) {
+    fn set_metronome_defaults(&self, defaults: Option<config::MetronomeDefaults>) {
         *self.metronome_defaults.lock() = defaults;
     }
 

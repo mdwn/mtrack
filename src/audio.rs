@@ -113,9 +113,10 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
         self.mixer().map(|m| m.sample_rate())
     }
 
-    /// Sets player-level default metronome sounds, applied to songs that
-    /// don't override them. Devices that don't play the metronome ignore it.
-    fn set_metronome_defaults(&self, _defaults: Option<config::metronome::MetronomeSounds>) {}
+    /// Sets the player-wide metronome defaults (master volume and click
+    /// sounds), applied to songs that don't override them. Devices that don't
+    /// play the metronome ignore it.
+    fn set_metronome_defaults(&self, _defaults: Option<config::MetronomeDefaults>) {}
 
     /// Liveness facts from the output callback, for devices that have one.
     /// `None` means the device cannot report — not that it is unhealthy.

@@ -449,8 +449,8 @@ pub(super) async fn put_config_metronome(
         },
     };
 
-    if let Some(sounds) = metronome.as_ref().and_then(|m| m.sounds.as_ref()) {
-        if let Err(e) = sounds.validate() {
+    if let Some(defaults) = metronome.as_ref() {
+        if let Err(e) = defaults.validate() {
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response();
         }
     }
