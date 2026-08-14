@@ -72,6 +72,7 @@ macro_rules! entry {
 /// this class rather than burying it in one number.
 const WORLD_LEVEL: &[&str] = &[
     "selected_device_actually_streams",
+    "probing_the_device_in_use_reports_it_rather_than_failing",
     "a_tested_device_is_still_usable_afterwards",
     "testing_another_device_is_not_confused_for_the_one_in_use",
     "overlapping_device_tests_do_not_fail_each_other",

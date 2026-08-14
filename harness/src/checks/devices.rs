@@ -216,17 +216,29 @@ pub async fn probing_the_device_in_use_reports_it_rather_than_failing() -> Check
         skip!("no audio output device was detected, so nothing can be held open");
     };
 
-    let project = crate::checks::standard_project()?;
-    let server = Server::start(&project).await?;
+    // Break the world, not the assertion: under sabotage the player is pointed
+    // at a device that does not exist, so it holds nothing. Asking about the
+    // real device must then be answered by probing it -- anything but `in_use`
+    // -- or this check is reading a constant. Changing the *name asked about*
+    // instead would have been the weaker, predicate-level control.
+    let project = if crate::sabotage::active() {
+        let mut profile = crate::project::ProfileSpec::detected("01-e2e");
+        profile.audio =
+            crate::project::Subsystem::Bogus("e2e-nonexistent-audio-device".to_string());
+        crate::project::ProjectBuilder::new()
+            .profiles(vec![profile])
+            .songs(crate::checks::standard_songs())
+            .build()?
+    } else {
+        crate::checks::standard_project()?
+    };
+    let server = if crate::sabotage::active() {
+        Server::start_degraded(&project).await?
+    } else {
+        Server::start(&project).await?
+    };
     let client = Client::connect_http_only(&server).await?;
-
-    // Asking about a device nobody holds must not answer "in use", or this is
-    // reading a constant. Note the weaker class of control: the world is left
-    // intact and the request is changed, so this check stays off WORLD_LEVEL.
-    let asked = crate::sabotage::pick(
-        device.name.clone(),
-        "e2e-nonexistent-audio-device".to_string(),
-    );
+    let asked = device.name.clone();
 
     let (status, body) = client
         .post_json("devices/audio/probe", serde_json::json!({"device": asked}))
