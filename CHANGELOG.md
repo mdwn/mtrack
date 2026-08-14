@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`mtrack test-audio` proves a device will actually play, before the set rather than during it**:
+  `mtrack devices` says a device exists and the web UI's picker says its name resolves. Neither
+  says the format will be accepted or that the output callback will ever run — a WING resolves
+  happily and then refuses to open, because cpal has S24_3LE commented out of its ALSA format
+  table. The new command opens the device the active profile names, the way playback would, waits
+  for the callback, and closes it, reporting one of: streaming, opened-but-silent, or
+  could-not-open with the reason. Exits non-zero when the device cannot stream.
+
+  Silent by construction — no sources are added, so the device is handed zeroes and the liveness
+  counter confirms the callback ran. Safe to run with the PA live, which is the point: a check you
+  can only run by making a noise is a check nobody runs before a show. The hardware harness runs
+  the same probe against the device it is about to play through.
+
+  It still cannot prove sound reached the room. A device can accept every buffer and produce
+  nothing, and nothing host-side can see that.
+
 ### Fixed
 
 - **Buffer underruns no longer rebuild the output stream**: cpal reports every XRUN through the
