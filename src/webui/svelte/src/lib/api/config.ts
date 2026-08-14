@@ -101,6 +101,48 @@ export async function fetchAudioDevices(): Promise<AudioDeviceInfo[]> {
   return res.json();
 }
 
+/** What a device did when asked to actually stream. */
+export type ProbeOutcome =
+  | "streaming"
+  | "opened_but_silent"
+  | "could_not_open"
+  | "opened_cannot_report"
+  /** Already open by this player, so it was reported rather than probed. */
+  | "in_use";
+
+export interface AudioProbeResult {
+  outcome: ProbeOutcome;
+  /** Whether the device proved it can stream. */
+  ok: boolean;
+  /** Why it could not be opened. Only ever set for `could_not_open`. */
+  reason?: string | null;
+  callbacks?: number | null;
+}
+
+/** The audio settings a probe honours, mirroring the profile's audio block. */
+export interface AudioProbeRequest {
+  device: string;
+  sample_rate?: number;
+  sample_format?: string;
+  bits_per_sample?: number;
+  buffer_size?: number;
+  stream_buffer_size?: string | number;
+}
+
+/**
+ * Opens a device, confirms its output callback runs, and closes it again.
+ *
+ * Silent: no audio is played, so this is safe to run with the PA up. Takes up
+ * to a couple of seconds, since it waits for a callback before giving up.
+ */
+export async function probeAudioDevice(
+  req: AudioProbeRequest,
+): Promise<AudioProbeResult> {
+  const res = await post("/devices/audio/probe", JSON.stringify(req));
+  if (!res.ok) throw await apiError(res, "Device test failed");
+  return res.json();
+}
+
 export async function fetchMidiDevices(): Promise<MidiDeviceInfo[]> {
   const res = await get("/devices/midi");
   if (!res.ok) throw new Error(`Failed to fetch MIDI devices: ${res.status}`);

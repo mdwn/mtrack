@@ -184,6 +184,39 @@ export const AUDIO_DEVICES = [
   },
 ];
 
+// One canned probe result per device, so the result panel's branches can be
+// driven without audio hardware. Keyed by the name the editor sends.
+export const AUDIO_PROBE_RESULTS: Record<
+  string,
+  {
+    outcome: string;
+    ok: boolean;
+    reason?: string | null;
+    callbacks?: number | null;
+  }
+> = {
+  default: { outcome: "streaming", ok: true, reason: null, callbacks: 3 },
+  "USB Interface": {
+    outcome: "streaming",
+    ok: true,
+    reason: null,
+    callbacks: 7,
+  },
+  // The WING failure class: the name resolves, the format does not.
+  "alsa:plughw:CARD=WING": {
+    outcome: "could_not_open",
+    ok: false,
+    reason:
+      "'alsa:plughw:CARD=WING' was found but could not be opened: failed to create audio stream: Unsupported bit depth for integer format: 24",
+    callbacks: null,
+  },
+  "Default Audio Device": {
+    outcome: "in_use",
+    ok: true,
+    callbacks: 4821,
+  },
+};
+
 export const MIDI_DEVICES = [
   { name: "MIDI Through Port-0", has_input: true, has_output: true },
   { name: "USB MIDI Controller", has_input: true, has_output: false },

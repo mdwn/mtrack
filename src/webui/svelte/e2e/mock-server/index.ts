@@ -22,6 +22,7 @@ import {
   CONFIG_STORE,
   STATUS,
   AUDIO_DEVICES,
+  AUDIO_PROBE_RESULTS,
   MIDI_DEVICES,
   PROFILE_FILES,
   PROFILE_FILE_DETAIL,
@@ -145,6 +146,17 @@ app.get("/api/config/store", (_req, res) => {
 
 app.get("/api/devices/audio", (_req, res) => {
   res.json(AUDIO_DEVICES);
+});
+
+// Canned probe results keyed by device name, so a test can drive each branch
+// of the result panel without any audio hardware in the loop.
+app.post("/api/devices/audio/probe", (req, res) => {
+  const device = String(req.body?.device ?? "").trim();
+  if (!device) {
+    res.status(400).json({ error: "device is required" });
+    return;
+  }
+  res.json(AUDIO_PROBE_RESULTS[device] ?? AUDIO_PROBE_RESULTS.default);
 });
 
 app.get("/api/devices/midi", (_req, res) => {

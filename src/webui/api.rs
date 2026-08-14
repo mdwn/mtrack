@@ -158,6 +158,10 @@ pub fn router() -> Router<WebUiState> {
         .route("/controllers/restart", post(status::restart_controllers))
         .route("/lock", get(status::get_lock).put(status::put_lock))
         .route("/devices/audio", get(devices::get_audio_devices))
+        .route(
+            "/devices/audio/probe",
+            post(devices::post_probe_audio_device),
+        )
         .route("/devices/midi", get(devices::get_midi_devices))
         .route("/calibrate/start", post(devices::post_calibrate_start))
         .route("/calibrate/capture", post(devices::post_calibrate_capture))
@@ -300,9 +304,35 @@ pub(super) mod test_helpers {
         test_state_with_registry(songs)
     }
 
+    /// Creates a WebUiState whose player holds an open mock audio device.
+    ///
+    /// The default test state holds none, which is the wrong shape for anything
+    /// that behaves differently when a device is already in use.
+    pub fn test_state_with_audio_device(name: &str) -> (WebUiState, tempfile::TempDir) {
+        use crate::songs::{Song, Songs};
+        use std::collections::HashMap;
+
+        let mut map = HashMap::new();
+        map.insert(
+            "Song A".to_string(),
+            std::sync::Arc::new(Song::new_for_test("Song A", &["kick", "snare"])),
+        );
+        test_state_inner(
+            std::sync::Arc::new(Songs::new(map)),
+            Some(std::sync::Arc::new(crate::audio::mock::Device::get(name))),
+        )
+    }
+
     /// Creates a WebUiState with the given song registry.
     pub fn test_state_with_registry(
         songs: std::sync::Arc<crate::songs::Songs>,
+    ) -> (WebUiState, tempfile::TempDir) {
+        test_state_inner(songs, None)
+    }
+
+    fn test_state_inner(
+        songs: std::sync::Arc<crate::songs::Songs>,
+        audio: Option<std::sync::Arc<dyn crate::audio::Device>>,
     ) -> (WebUiState, tempfile::TempDir) {
         use crate::player::PlayerDevices;
         use crate::playlist;
@@ -325,7 +355,7 @@ pub(super) mod test_helpers {
         let all_songs_playlist = playlist::from_songs(songs.clone()).unwrap();
 
         let devices = PlayerDevices {
-            audio: None,
+            audio,
             mappings: None,
             midi: None,
             dmx_engine: None,

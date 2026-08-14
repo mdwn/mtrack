@@ -375,6 +375,20 @@ impl Player {
         Ok(())
     }
 
+    /// Whether the audio device this player holds open is the one `name` names.
+    ///
+    /// Asked before probing a device from the web UI. The held device will
+    /// refuse a second open, so probing it reports a failure for the one device
+    /// that is demonstrably working — its live health is the better answer and
+    /// is already in [`Self::hardware_status`].
+    pub fn holds_audio_device(&self, name: &str) -> bool {
+        self.hardware
+            .read()
+            .device
+            .as_ref()
+            .is_some_and(|d| d.matches_name(name))
+    }
+
     /// Returns a snapshot of all hardware subsystem statuses.
     pub fn hardware_status(&self) -> HardwareStatusSnapshot {
         let init_done = *self.init_done_tx.borrow();

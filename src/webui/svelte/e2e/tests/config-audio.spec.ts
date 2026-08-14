@@ -69,6 +69,67 @@ test.describe("Profile Editor - Audio Section", () => {
     await expect(option).not.toContainText("32");
   });
 
+  // Setting a rig up happens in this editor, not in a terminal, so the check
+  // that a device will actually stream has to be reachable from here.
+  test("testing a device reports that it streams", async ({ page }) => {
+    await page.locator("#audio-test").click();
+    const result = page.locator("#audio-test-result");
+    await expect(result).toHaveAttribute("data-outcome", "streaming");
+    await expect(result).toContainText("streaming");
+  });
+
+  // The failure that motivated the probe: the name resolves and the format
+  // does not. Reporting only "it failed" would send nobody anywhere.
+  test("a device that will not open shows the reason", async ({ page }) => {
+    await page.locator("#audio-device").fill("alsa:plughw:CARD=WING");
+    await page.locator("#audio-test").click();
+    const result = page.locator("#audio-test-result");
+    await expect(result).toHaveAttribute("data-outcome", "could_not_open");
+    await expect(result).toContainText("Unsupported bit depth");
+  });
+
+  // The device the player already holds would refuse a second open. Reporting
+  // it as broken would be the worst answer available.
+  test("the device already in use is reported, not reopened", async ({
+    page,
+  }) => {
+    await page.locator("#audio-device").fill("Default Audio Device");
+    await page.locator("#audio-test").click();
+    const result = page.locator("#audio-test-result");
+    await expect(result).toHaveAttribute("data-outcome", "in_use");
+    await expect(result).toContainText("playing through right now");
+  });
+
+  // A result describes the settings it was run with. Left standing after an
+  // edit it becomes a claim about something nobody asked for.
+  test("changing a setting clears a stale test result", async ({ page }) => {
+    await page.locator("#audio-test").click();
+    await expect(page.locator("#audio-test-result")).toBeVisible();
+
+    await page.locator("#audio-sample-rate").selectOption("48000");
+    await expect(page.locator("#audio-test-result")).toHaveCount(0);
+  });
+
+  // Restoring the settings a result was produced for brings it back, which is
+  // what proves the result is tied to the settings rather than merely wiped by
+  // the change handler. An implementation that clears on edit passes the test
+  // above and fails this one.
+  test("a test result returns when its settings are restored", async ({
+    page,
+  }) => {
+    await page.locator("#audio-test").click();
+    await expect(page.locator("#audio-test-result")).toBeVisible();
+
+    await page.locator("#audio-sample-rate").selectOption("48000");
+    await expect(page.locator("#audio-test-result")).toHaveCount(0);
+
+    await page.locator("#audio-sample-rate").selectOption("");
+    await expect(page.locator("#audio-test-result")).toHaveAttribute(
+      "data-outcome",
+      "streaming",
+    );
+  });
+
   test("shows track mappings section", async ({ page }) => {
     await expect(page.getByText(/track mappings/i)).toBeVisible();
   });

@@ -16,8 +16,12 @@
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
-  import type { AudioDeviceInfo } from "../../lib/api/config";
-  import { channelsLabel } from "../../lib/api/config";
+  import {
+    channelsLabel,
+    probeAudioDevice,
+    type AudioDeviceInfo,
+    type AudioProbeResult,
+  } from "../../lib/api/config";
 
   interface Props {
     audio: any;
@@ -44,6 +48,76 @@
     } finally {
       refreshing = false;
     }
+  }
+
+  let testing = $state(false);
+  // The generic form, not `let x: T | null = $state(null)`: with the latter
+  // TypeScript narrows the variable to `null` for the rest of the file, and the
+  // deriveds below would come out as `null` rather than the result type.
+  let probeResult = $state<AudioProbeResult | null>(null);
+  let probeErrorText = $state<string | null>(null);
+  // The settings the result describes, captured when the probe was sent.
+  let probedSettings = $state<string | null>(null);
+
+  // Everything the probe honours. A result is about these and nothing else, so
+  // this doubles as the identity a displayed result must still match.
+  let probeRequest = $derived({
+    device: audio.device ?? "",
+    sample_rate: audio.sample_rate,
+    sample_format: audio.sample_format,
+    bits_per_sample: audio.bits_per_sample,
+    buffer_size: audio.buffer_size,
+    stream_buffer_size: audio.stream_buffer_size,
+  });
+  let currentSettings = $derived(JSON.stringify(probeRequest));
+
+  // A result describes the settings it was run with, so it is shown only while
+  // those are still the settings on screen. Derived rather than cleared by the
+  // setters: the editor can also be handed a different profile's audio block
+  // without any setter running — hash history between two profile URLs does
+  // exactly that — and a stale green tick against another rig's device is the
+  // failure this whole panel exists to avoid.
+  let probe = $derived(probedSettings === currentSettings ? probeResult : null);
+  let probeError = $derived(
+    probedSettings === currentSettings ? probeErrorText : null,
+  );
+
+  // Probes with the settings currently in the form, not the saved ones. A
+  // device that opens at one format and refuses another is the whole reason
+  // this exists, so testing the defaults would answer the wrong question.
+  async function handleTest() {
+    testing = true;
+    probeResult = null;
+    probeErrorText = null;
+    // Captured before the await: the form can be edited while the probe runs,
+    // and the result belongs to what was asked, not to what is on screen when
+    // the answer lands.
+    const asked = currentSettings;
+    try {
+      probeResult = await probeAudioDevice(probeRequest);
+    } catch (e) {
+      probeErrorText = e instanceof Error ? e.message : String(e);
+    } finally {
+      probedSettings = asked;
+      testing = false;
+    }
+  }
+
+  const PROBE_MESSAGES: Record<AudioProbeResult["outcome"], string> = {
+    streaming: "audio.testStreaming",
+    opened_cannot_report: "audio.testOpenedCannotReport",
+    opened_but_silent: "audio.testOpenedButSilent",
+    could_not_open: "audio.testCouldNotOpen",
+    in_use: "audio.testInUse",
+  };
+
+  function probeMessage(result: AudioProbeResult): string {
+    // "In use" splits on health: the device is open either way, but an open
+    // device whose callback has stopped is the failure worth shouting about.
+    if (result.outcome === "in_use" && !result.ok) {
+      return $t("audio.testInUseStalled");
+    }
+    return $t(PROBE_MESSAGES[result.outcome]);
   }
 
   let selectedDevice = $derived(devices.find((d) => d.name === audio.device));
@@ -160,7 +234,36 @@
       <button class="btn" onclick={handleRefresh} disabled={refreshing}
         >{refreshing ? $t("common.refreshing") : $t("common.refresh")}</button
       >
+      <button
+        id="audio-test"
+        class="btn"
+        onclick={handleTest}
+        disabled={testing || !audio.device}
+        title={$t("audio.testHint")}
+        >{testing ? $t("audio.testing") : $t("audio.test")}</button
+      >
     </div>
+    {#if probeError}
+      <div id="audio-test-result" class="probe-result probe-bad">
+        {probeError}
+      </div>
+    {:else if probe}
+      <div
+        id="audio-test-result"
+        class="probe-result"
+        class:probe-good={probe.ok}
+        class:probe-bad={!probe.ok}
+        data-outcome={probe.outcome}
+      >
+        <span>{probe.ok ? "✅" : "❌"} {probeMessage(probe)}</span>
+        {#if probe.reason}
+          <span class="probe-reason">{probe.reason}</span>
+        {/if}
+        {#if probe.ok}
+          <span class="probe-caveat">{$t("audio.testCaveat")}</span>
+        {/if}
+      </div>
+    {/if}
   </div>
 
   <div class="field-row-2">
@@ -467,6 +570,31 @@
     font-size: 12px;
     color: var(--red);
     margin-top: -2px;
+  }
+  .probe-result {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 12px;
+    margin-top: 6px;
+    padding: 8px 10px;
+    border-radius: 4px;
+    border-left: 3px solid;
+    background: var(--bg-surface);
+  }
+  .probe-good {
+    border-left-color: var(--green);
+  }
+  .probe-bad {
+    border-left-color: var(--red);
+  }
+  .probe-reason {
+    font-family: var(--mono);
+    word-break: break-word;
+    color: var(--text-muted);
+  }
+  .probe-caveat {
+    color: var(--text-muted);
   }
   @media (max-width: 600px) {
     .field-row-2 {

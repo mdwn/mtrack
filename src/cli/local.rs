@@ -410,6 +410,64 @@ pub fn verify_light_show(show_path: &str, config_path: Option<&str>) -> Result<(
     Ok(())
 }
 
+/// Opens the configured audio device, confirms its callback runs, and closes it.
+///
+/// The pre-show check. `mtrack devices` says a device exists and
+/// `can_open_device` says its name resolves; neither says the format will be
+/// accepted or that the callback will ever fire. This opens the device the
+/// active profile actually names, the way playback would, and reports what
+/// happened.
+///
+/// Silent by construction: no sources are added, so the device is handed zeroes.
+/// Safe to run with the PA hot.
+pub fn test_audio(config: &str, hostname: Option<String>) -> Result<(), Box<dyn Error>> {
+    let config_path = Path::new(config);
+    let player_config = config::Player::deserialize(config_path)?;
+
+    let host = hostname.unwrap_or_else(config::resolve_hostname);
+    let profile = player_config
+        .profiles(&host)
+        .first()
+        .copied()
+        .cloned()
+        .ok_or_else(|| format!("no hardware profile matches hostname '{host}'"))?;
+
+    let audio = profile
+        .audio_config()
+        .map(|ac| ac.audio().clone())
+        .ok_or_else(|| format!("profile for '{host}' configures no audio device"))?;
+
+    println!("Testing audio device \"{}\"...", audio.device());
+    let outcome = crate::audio::probe_device(audio);
+
+    match &outcome {
+        crate::audio::ProbeOutcome::Streaming { callbacks } => {
+            println!("✅ Audio device is streaming ({callbacks} callbacks served).");
+            println!("   The device accepted the format and the output callback is running.");
+            println!("   Note this cannot prove sound reached the room — a device can accept");
+            println!("   every buffer and produce nothing. It rules mtrack out, not the rig.");
+            Ok(())
+        }
+        crate::audio::ProbeOutcome::OpenedCannotReport => {
+            println!("✅ Audio device opened.");
+            println!("   This device cannot report callback liveness, so streaming was not");
+            println!("   confirmed.");
+            Ok(())
+        }
+        crate::audio::ProbeOutcome::OpenedButSilent => {
+            eprintln!("❌ Audio device opened, but the output callback never ran.");
+            eprintln!("   The device accepted the configuration and then produced nothing.");
+            eprintln!("   This is the failure that looks healthy from every other angle.");
+            Err("audio device opened but did not stream".into())
+        }
+        crate::audio::ProbeOutcome::CouldNotOpen(why) => {
+            eprintln!("❌ Audio device could not be opened.");
+            eprintln!("   {why}");
+            Err("audio device could not be opened".into())
+        }
+    }
+}
+
 pub fn verify(
     config: &str,
     check: Option<Vec<String>>,

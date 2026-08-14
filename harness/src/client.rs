@@ -121,6 +121,26 @@ impl Client {
         Ok(serde_json::from_str(&body)?)
     }
 
+    /// POSTs JSON and returns the status alongside the parsed body.
+    ///
+    /// Separate from [`Self::send_text`] because axum's `Json` extractor
+    /// rejects anything not sent as `application/json`, and because the status
+    /// is part of what these endpoints are saying.
+    pub async fn post_json(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<(reqwest::StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
+        let url = format!("{}/api/{}", self.base_url, path.trim_start_matches('/'));
+        let response = self.http.post(&url).json(&body).send().await?;
+        let status = response.status();
+        let text = response.text().await?;
+        let parsed = serde_json::from_str(&text).map_err(|e| {
+            format!("POST {url} returned {status} with a non-JSON body: {e}: {text}")
+        })?;
+        Ok((status, parsed))
+    }
+
     /// Sends a request with a raw body and returns the status and body text.
     ///
     /// The lighting endpoints take and return DSL text rather than JSON, and

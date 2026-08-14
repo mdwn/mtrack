@@ -56,6 +56,146 @@ pub(super) async fn get_midi_devices() -> impl IntoResponse {
     }
 }
 
+/// Serializes device tests across every client.
+///
+/// Process-wide rather than per-connection because the thing being contended
+/// for is the hardware, not the session.
+static PROBE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// What the config editor asks to have probed: a device name, plus whichever
+/// format settings are filled in beside it.
+///
+/// Everything but the name is optional and mirrors the profile's audio block,
+/// so the probe opens the device the way saving this profile would. Probing
+/// with defaults would answer a question nobody asked — a WING opens fine at
+/// some formats and refuses the one that matters.
+#[derive(serde::Deserialize)]
+pub(super) struct ProbeAudioRequest {
+    device: String,
+    sample_rate: Option<u32>,
+    sample_format: Option<String>,
+    bits_per_sample: Option<u16>,
+    buffer_size: Option<usize>,
+    stream_buffer_size: Option<crate::config::StreamBufferSize>,
+}
+
+/// POST /api/devices/audio/probe — opens a device, confirms its callback runs,
+/// and closes it again.
+///
+/// The check the device picker cannot make on its own: listing a device proves
+/// its name exists, not that the format will be accepted or that a callback
+/// will ever fire. Silent by construction, so it is runnable with the PA hot.
+///
+/// A device already held by this player is reported from its live health
+/// instead of being probed. It would refuse the second open, and answering
+/// "could not be opened" for the device currently playing is worse than not
+/// answering at all.
+pub(super) async fn post_probe_audio_device(
+    State(state): State<WebUiState>,
+    Json(body): Json<ProbeAudioRequest>,
+) -> impl IntoResponse {
+    let name = body.device.trim().to_string();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "device is required"})),
+        )
+            .into_response();
+    }
+
+    if state.player.holds_audio_device(&name) {
+        let health = state.player.hardware_status().audio_output;
+        // No health means a device that cannot report one — a mock. It is open
+        // and in use, which is all that can be said, and all a probe of it
+        // would have said either.
+        let ok = health.as_ref().is_none_or(|h| {
+            matches!(
+                h.status,
+                crate::audio::health::OutputStatus::Healthy
+                    | crate::audio::health::OutputStatus::Recovering
+            )
+        });
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "outcome": "in_use",
+                "ok": ok,
+                "callbacks": health.as_ref().map(|h| h.callbacks),
+                "health": health,
+            })),
+        )
+            .into_response();
+    }
+
+    // Opening a second interface mid-song risks an xrun on the one that is
+    // playing. Deliberately after the in-use branch: asking about the device
+    // currently playing is answered from health, opens nothing, and is exactly
+    // the question worth asking when a rig goes quiet during a set.
+    if state.player.is_playing().await {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Cannot test another audio device during playback"})),
+        )
+            .into_response();
+    }
+
+    // One test at a time. A probe opens a real interface, and two overlapping
+    // opens of the same one make the second fail as busy — a wrong answer about
+    // a working device, which is the failure this endpoint exists to avoid. The
+    // button being disabled while a test runs only guards one tab.
+    // Waits rather than refusing: a probe takes about two seconds at worst, and
+    // a caller that waited and got a real answer is better served than one told
+    // to try again.
+    let _in_flight = PROBE_LOCK.lock().await;
+
+    let mut audio = crate::config::Audio::new(&name);
+    if let Some(rate) = body.sample_rate {
+        audio = audio.with_sample_rate(rate);
+    }
+    if let Some(format) = body.sample_format.as_deref() {
+        audio = audio.with_sample_format(format);
+    }
+    if let Some(bits) = body.bits_per_sample {
+        audio = audio.with_bits_per_sample(bits);
+    }
+    if let Some(size) = body.buffer_size {
+        audio = audio.with_buffer_size(size);
+    }
+    if let Some(sbs) = body.stream_buffer_size {
+        audio = audio.with_stream_buffer_size(sbs);
+    }
+
+    // Blocking: the probe waits up to two seconds for a callback, and opens a
+    // real device while it does.
+    match tokio::task::spawn_blocking(move || audio::probe_device(audio)).await {
+        Ok(outcome) => {
+            let reason = match &outcome {
+                audio::ProbeOutcome::CouldNotOpen(why) => Some(why.clone()),
+                _ => None,
+            };
+            let callbacks = match &outcome {
+                audio::ProbeOutcome::Streaming { callbacks } => Some(*callbacks),
+                _ => None,
+            };
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "outcome": outcome.kind(),
+                    "ok": outcome.is_ok(),
+                    "reason": reason,
+                    "callbacks": callbacks,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("task failed: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Calibration endpoints
 // ---------------------------------------------------------------------------
@@ -363,6 +503,7 @@ mod test {
     use super::super::test_helpers::*;
     use axum::body::Body;
     use axum::http::StatusCode;
+    use serde_json::{json, Value};
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -384,6 +525,101 @@ mod test {
         let body = response_body(response).await;
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(parsed.is_array(), "expected array, got {parsed}");
+    }
+
+    /// POSTs to the probe endpoint and returns the parsed body.
+    async fn probe(state: super::WebUiState, body: serde_json::Value) -> (StatusCode, Value) {
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/devices/audio/probe")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let parsed = serde_json::from_str(&response_body(response).await).unwrap();
+        (status, parsed)
+    }
+
+    #[tokio::test]
+    async fn probe_without_a_device_is_rejected() {
+        let (state, _dir) = test_state();
+        let (status, body) = probe(state, json!({"device": "   "})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].is_string(), "expected an error, got {body}");
+    }
+
+    #[tokio::test]
+    async fn probe_of_a_missing_device_reports_why_it_could_not_open() {
+        let (state, _dir) = test_state();
+        let (status, body) = probe(
+            state,
+            json!({"device": "definitely-not-a-real-device-for-probing"}),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["outcome"], "could_not_open");
+        assert_eq!(body["ok"], false);
+        // The reason is the whole point: "it failed" sends nobody anywhere.
+        let reason = body["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains("definitely-not-a-real-device-for-probing"),
+            "reason should name the device, got {reason:?}"
+        );
+    }
+
+    /// Probing the device the player already holds must not open it a second
+    /// time. It would be refused, and reporting "could not be opened" for the
+    /// device currently playing is the worst answer this endpoint could give.
+    #[tokio::test]
+    async fn probe_of_the_held_device_reports_it_in_use_rather_than_opening_it() {
+        let (state, _dir) = test_state_with_audio_device("mock-held-device");
+        let (status, body) = probe(state, json!({"device": "mock-held-device"})).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["outcome"], "in_use");
+        assert_eq!(body["ok"], true);
+    }
+
+    /// The guard is about *this* device, not about holding any device at all.
+    #[tokio::test]
+    async fn probe_of_another_device_is_not_confused_by_the_held_one() {
+        let (state, _dir) = test_state_with_audio_device("mock-held-device");
+        let (status, body) = probe(state, json!({"device": "some-other-device"})).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_ne!(body["outcome"], "in_use");
+    }
+
+    /// Format settings must reach the probe: a device that opens at one format
+    /// and refuses another is the failure this endpoint exists for, so probing
+    /// at defaults would answer a question nobody asked.
+    #[tokio::test]
+    async fn probe_accepts_the_format_settings_beside_the_device() {
+        let (state, _dir) = test_state();
+        let (status, body) = probe(
+            state,
+            json!({
+                "device": "mock-probe-target",
+                "sample_rate": 48000,
+                "sample_format": "int",
+                "bits_per_sample": 24,
+                "buffer_size": 2048,
+                "stream_buffer_size": "min",
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        // A mock opens but cannot report liveness.
+        assert_eq!(body["outcome"], "opened_cannot_report");
+        assert_eq!(body["ok"], true);
     }
 
     #[tokio::test]

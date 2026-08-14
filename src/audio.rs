@@ -129,6 +129,20 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
         None
     }
 
+    /// Whether this open device is the one that `name` refers to.
+    ///
+    /// Asked by the web UI before probing: a probe opens the device, and the
+    /// device this player is holding will refuse a second open. Probing it
+    /// would report "could not be opened" for the one device with minutes of
+    /// positive evidence behind it, which is the worst answer available.
+    ///
+    /// The device answers rather than the caller comparing strings, because
+    /// only the backend knows that a configured name and the name it resolved
+    /// to are the same device.
+    fn matches_name(&self, _name: &str) -> bool {
+        false
+    }
+
     /// How long the output callback may be silent before it counts as stopped.
     ///
     /// Devices that know their callback period size this from it; everything
@@ -208,6 +222,110 @@ pub fn can_open_device(name: &str) -> bool {
     cpal::Device::is_findable(name)
 }
 
+/// How long to wait for the output callback to run before calling a device
+/// silent. Callbacks start within milliseconds of a stream going live, so this
+/// is generous rather than tuned.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What a device did when asked to actually stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// The stream opened and the callback ran. As close to "this device will
+    /// play" as anything host-side can get.
+    Streaming { callbacks: u64 },
+    /// The stream opened but the callback never ran. The device accepted the
+    /// format and then produced nothing — the failure that is invisible to
+    /// every other check.
+    OpenedButSilent,
+    /// The device could not be opened, with the reason.
+    CouldNotOpen(String),
+    /// The device opened but cannot report liveness, so streaming could not be
+    /// confirmed. Mock devices only.
+    OpenedCannotReport,
+}
+
+impl fmt::Display for ProbeOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProbeOutcome::Streaming { callbacks } => {
+                write!(f, "streaming ({callbacks} callbacks served)")
+            }
+            ProbeOutcome::OpenedButSilent => {
+                write!(f, "opened, but the output callback never ran")
+            }
+            ProbeOutcome::CouldNotOpen(why) => write!(f, "could not be opened: {why}"),
+            ProbeOutcome::OpenedCannotReport => {
+                write!(f, "opened (this device cannot report liveness)")
+            }
+        }
+    }
+}
+
+impl ProbeOutcome {
+    /// Stable wire name for this outcome.
+    ///
+    /// The single source for the strings the web UI switches on, so a renamed
+    /// variant cannot quietly change the API. `Display` is prose for a human
+    /// and is free to be reworded.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ProbeOutcome::Streaming { .. } => "streaming",
+            ProbeOutcome::OpenedButSilent => "opened_but_silent",
+            ProbeOutcome::CouldNotOpen(_) => "could_not_open",
+            ProbeOutcome::OpenedCannotReport => "opened_cannot_report",
+        }
+    }
+
+    /// Whether the device proved it can stream.
+    pub fn is_ok(&self) -> bool {
+        matches!(
+            self,
+            ProbeOutcome::Streaming { .. } | ProbeOutcome::OpenedCannotReport
+        )
+    }
+}
+
+/// Opens a device, confirms its output callback runs, and closes it again.
+///
+/// The check `can_open_device` cannot make. Resolving a device proves its name
+/// exists; it does not prove the format will be accepted or that the callback
+/// will ever fire. A WING reports itself happily and then refuses to open,
+/// because cpal has S24_3LE commented out of its ALSA format table — and
+/// nothing short of building a stream finds that out.
+///
+/// Deliberately silent. No sources are added, so the mixer hands the device
+/// zeroes: this confirms the path works without making a sound in a room that
+/// might have an audience in it. It is the whole reason this can be run before
+/// a set rather than only after one goes wrong.
+///
+/// Goes through `get_device`, so it exercises the same code playback does —
+/// format negotiation, buffer resolution, the output thread — rather than a
+/// simplified imitation that could succeed where the real thing fails.
+pub fn probe_device(config: config::Audio) -> ProbeOutcome {
+    let device = match get_device(Some(config)) {
+        Ok(device) => device,
+        Err(e) => return ProbeOutcome::CouldNotOpen(e.to_string()),
+    };
+
+    let started = std::time::Instant::now();
+    loop {
+        match device.output_health() {
+            Some(health) if health.callbacks > 0 => {
+                return ProbeOutcome::Streaming {
+                    callbacks: health.callbacks,
+                }
+            }
+            // Nothing to poll — a mock. Opening is all that can be confirmed.
+            None => return ProbeOutcome::OpenedCannotReport,
+            Some(_) => {}
+        }
+        if started.elapsed() >= PROBE_TIMEOUT {
+            return ProbeOutcome::OpenedButSilent;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// Gets a device with the given name.
 pub fn get_device(config: Option<config::Audio>) -> Result<Arc<dyn Device>, AudioError> {
     let config = match config {
@@ -237,6 +355,49 @@ pub fn get_device(config: Option<config::Audio>) -> Result<Arc<dyn Device>, Audi
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// A device that cannot be opened must say so rather than reporting silence
+    /// — the two call for different responses, and the reason is the whole
+    /// value of the probe.
+    #[test]
+    fn probe_reports_why_a_missing_device_could_not_open() {
+        let outcome = probe_device(config::Audio::new("definitely-not-a-real-device"));
+        match &outcome {
+            ProbeOutcome::CouldNotOpen(why) => {
+                assert!(
+                    why.contains("definitely-not-a-real-device"),
+                    "the reason should name the device: {why}"
+                );
+            }
+            other => panic!("expected CouldNotOpen, got {other:?}"),
+        }
+        assert!(!outcome.is_ok());
+    }
+
+    #[test]
+    fn probe_rejects_an_empty_device_name() {
+        assert!(!probe_device(config::Audio::new("")).is_ok());
+    }
+
+    /// Mock devices open but have no callback to observe, so the probe says
+    /// exactly that instead of claiming a stream it never saw.
+    #[test]
+    fn probe_admits_when_a_device_cannot_report() {
+        let outcome = probe_device(config::Audio::new("mock-probe"));
+        assert_eq!(outcome, ProbeOutcome::OpenedCannotReport);
+        assert!(outcome.is_ok(), "opening is still a pass");
+    }
+
+    #[test]
+    fn probe_outcomes_read_clearly() {
+        assert!(ProbeOutcome::Streaming { callbacks: 12 }
+            .to_string()
+            .contains("12 callbacks"));
+        assert!(ProbeOutcome::OpenedButSilent
+            .to_string()
+            .contains("never ran"));
+        assert!(!ProbeOutcome::OpenedButSilent.is_ok());
+    }
 
     #[test]
     fn get_device_none_returns_error() {

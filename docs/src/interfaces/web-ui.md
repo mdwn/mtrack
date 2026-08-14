@@ -448,6 +448,29 @@ Click a profile to open its settings with tabs for each subsystem:
 Changes are saved with optimistic concurrency (checksums) and trigger automatic hardware
 reinitialization.
 
+### Testing an audio device
+
+The **Test** button beside the device picker opens the selected device with the settings
+currently in the form, waits for its output callback to run, and closes it. It answers the
+question the picker cannot: a device's name resolving proves it exists, not that the format
+will be accepted or that a callback will ever fire.
+
+It is silent. No audio is played — the device is handed zeroes and the liveness counter
+confirms the callback ran — so it is safe to run with the PA up, which is the point. It takes
+up to about two seconds.
+
+The settings matter. A device that opens at one sample format and refuses another is the
+failure this catches, so the result is cleared whenever a setting changes: it describes the
+settings it was run with, not the device in general.
+
+If the device you test is the one mtrack is already playing through, it is reported from its
+live health rather than reopened — it would refuse a second open. Testing a *different* device
+is rejected during playback, as with every other hardware change.
+
+What it cannot prove is that sound reached the room. A device can accept every buffer and
+produce nothing; this rules mtrack out, not the rig. The same check is available headless as
+`mtrack test-audio <config>`, which exits non-zero when the device cannot stream.
+
 ### Metronome defaults
 
 With a dozen songs, click levels and sounds are a player decision rather than a per-song one.

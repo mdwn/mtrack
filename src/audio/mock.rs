@@ -49,6 +49,10 @@ impl Device {
 }
 
 impl crate::audio::Device for Device {
+    fn matches_name(&self, name: &str) -> bool {
+        name.trim().eq_ignore_ascii_case(self.name.trim())
+    }
+
     /// A mock device that will sleep for the remaining song duration after start_time.
     fn play_from(
         &self,
