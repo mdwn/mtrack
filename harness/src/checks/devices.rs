@@ -159,3 +159,43 @@ pub async fn selected_output_is_real_hardware() -> CheckOutcome {
     ));
     Ok(())
 }
+
+/// The device the suite will actually use can stream, not merely resolve.
+///
+/// `advertised_devices_are_openable` asks whether each advertised name
+/// *resolves*, which is the strongest question that can be asked cheaply — but
+/// it is not the question that matters. Production is the counterexample:
+/// `hw:CARD=WING` resolves and then refuses to open, because cpal has S24_3LE
+/// commented out of its ALSA format table. Resolution says nothing about
+/// whether the format will be accepted or the callback will ever fire.
+///
+/// This opens one device — the one the suite is about to play through — waits
+/// for its output callback, and closes it. Silent: no sources are added, so the
+/// device is handed zeroes.
+///
+/// Deliberately not run against every advertised device. Opening nineteen
+/// interfaces to see which survive would disturb whatever else is using them,
+/// and the one that matters is the one about to be used.
+pub async fn selected_device_actually_streams() -> CheckOutcome {
+    let Some(device) = Capabilities::get().audio_out.as_ref() else {
+        skip!("no audio output device was detected, so there is nothing to open");
+    };
+
+    let name = if crate::sabotage::active() {
+        // Break the world, not the assertion: a device that cannot be opened
+        // must make this fail, or it is asserting nothing.
+        "e2e-nonexistent-audio-device".to_string()
+    } else {
+        device.name.clone()
+    };
+
+    let outcome = mtrack::audio::probe_device(mtrack::config::Audio::new(&name));
+    check!(
+        outcome.is_ok(),
+        "the device the suite plays through does not stream: {outcome}.\n\n\
+         Resolving a device proves its name exists; it does not prove the format \
+         is accepted or that the callback ever runs."
+    );
+    crate::outcome::record(format!("{name}: {outcome}"));
+    Ok(())
+}

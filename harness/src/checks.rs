@@ -71,6 +71,7 @@ macro_rules! entry {
 /// needs a broken player. The self-test prints how many of its passes rest on
 /// this class rather than burying it in one number.
 const WORLD_LEVEL: &[&str] = &[
+    "selected_device_actually_streams",
     "stop_halts_playback",
     "playlist_navigation_moves_between_songs",
     "tracks_route_to_their_mapped_channels",
@@ -128,6 +129,14 @@ pub fn all() -> Vec<Check> {
             "Devices offered by the API must be openable by the player, or the web UI\n  \
              lists devices that fail with \"no device found\" when selected.",
             devices::advertised_devices_are_openable
+        ),
+        entry!(
+            "devices",
+            "selected_device_actually_streams",
+            "The device the suite plays through must open and run its callback, not\n  \
+             merely resolve. A device can advertise itself, accept a name lookup, and\n  \
+             still refuse the format.",
+            devices::selected_device_actually_streams
         ),
         entry!(
             "devices",
