@@ -176,11 +176,18 @@ struct Silenced {
 /// The channel count cpal reports for a device whose real maximum it does not
 /// know.
 ///
-/// cpal clamps ALSA's reported maximum to this value -- `cmp::min(max_channels,
-/// 32)` in its `host/alsa/mod.rs` -- so a device advertising exactly this many
-/// channels may have this many or any number more. ALSA plug nodes accept an
-/// unbounded channel count and so always land here.
-const CPAL_CHANNEL_CLAMP: u16 = 32;
+/// cpal clamps ALSA's reported maximum to this value -- `CHANNEL_ENUM_CAP` in
+/// its `host/alsa/mod.rs` -- so a device advertising exactly this many channels
+/// may have this many or any number more. ALSA plug nodes accept an unbounded
+/// channel count and so always land here.
+///
+/// This must track cpal exactly, in both directions. Set too high and a real
+/// interface's honest count is read as a floor; set too low and a plug node's
+/// clamp is read as honest, which is worse -- `resolve_virtual_channel_counts`
+/// would stop correcting plug nodes and mtrack would validate track mappings
+/// against a number the hardware never promised. cpal 0.18 raised the cap from
+/// 32 to 64 (AES10/MADI's maximum), so 32 is now a genuine capability.
+const CPAL_CHANNEL_CLAMP: u16 = 64;
 
 /// The PCM id inside a device name, with cpal's host prefix removed.
 ///
@@ -488,7 +495,7 @@ fn resolve_virtual_channel_counts(infos: &mut [AudioDeviceInfo]) {
     // (card, subdevice) -> real channel count, because subdevices on one card
     // are not interchangeable. An Intel HDA card exposes `hw:CARD=PCH,DEV=0`
     // (analog, 2ch) beside `hw:CARD=PCH,DEV=3` (HDMI, 8ch), and every
-    // `plughw:CARD=PCH,DEV=n` in front of them reports the same clamped 32.
+    // `plughw:CARD=PCH,DEV=n` in front of them reports the same clamped maximum.
     let mut by_subdevice: HashMap<(String, u16), u16> = HashMap::new();
     // Card identity -> (subdevice index, channels) for the lowest subdevice,
     // which is where a plug node naming no `DEV=` routes.
@@ -1687,7 +1694,7 @@ mod test {
         /// The bug this keying exists to prevent, on the most ordinary hardware
         /// there is: an Intel HDA card exposes analog on `DEV=0` and HDMI on
         /// `DEV=3`, with different channel counts, and every plug node in front
-        /// of them reports the same clamped 32.
+        /// of them reports the same clamped maximum.
         ///
         /// Looking the sibling up by card alone handed `plughw:CARD=PCH,DEV=3`
         /// the analog node's 2 channels and marked it `channels_known` — a
@@ -1766,7 +1773,7 @@ mod test {
             assert_eq!(infos[2].channels_display(), "virtual");
         }
 
-        /// A genuine 32-or-more channel interface reports the clamp too, so its
+        /// An interface at or above the clamp reports the clamp too, so its
         /// count is a floor -- but it is hardware, not a plugin, and must not be
         /// labelled "virtual".
         #[test]
@@ -1774,7 +1781,19 @@ mod test {
             let device = info("alsa:hw:CARD=BIG,DEV=0", CPAL_CHANNEL_CLAMP);
             assert!(!device.virtual_node);
             assert!(!device.channels_known);
-            assert_eq!(device.channels_display(), "32+");
+            assert_eq!(device.channels_display(), format!("{CPAL_CHANNEL_CLAMP}+"));
+        }
+
+        /// Below the clamp is an honest count, and the boundary is the whole
+        /// point of the constant: cpal 0.18 raised the cap to 64, so a 32-channel
+        /// interface now reports its real width instead of a floor. Pinned so a
+        /// future cpal bump that moves the cap again fails here rather than
+        /// silently re-labelling real hardware as unknown.
+        #[test]
+        fn a_count_below_the_clamp_is_honest() {
+            let device = info("alsa:hw:CARD=BIG,DEV=0", 32);
+            assert!(device.channels_known);
+            assert_eq!(device.channels_display(), "32");
         }
 
         #[test]
