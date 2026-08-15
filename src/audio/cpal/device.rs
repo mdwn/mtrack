@@ -189,6 +189,25 @@ struct Silenced {
 /// 32 to 64 (AES10/MADI's maximum), so 32 is now a genuine capability.
 const CPAL_CHANNEL_CLAMP: u16 = 64;
 
+/// Whether a device's reported channel count is its real maximum.
+///
+/// Two separate reasons it might not be. Hardware reporting the clamp has that
+/// many channels *or more*, so the figure is a floor. A virtual node's figure is
+/// not about hardware at all -- it is whatever the plugin advertises, and ALSA's
+/// software nodes advertise a number of their own choosing -- so it is never
+/// known from the node's own report, whatever it happens to be. Only
+/// [`resolve_virtual_channel_counts`], borrowing from a hardware sibling, can
+/// make a plug node's count known.
+///
+/// Tying the virtual case to the clamp instead is what cpal 0.18 caught out:
+/// `default` and `pulse` report 32, which *was* the clamp and so came back
+/// unknown by coincidence. Once the clamp moved to 64 the same 32 read as an
+/// honest count and `mtrack devices` printed `alsa:default (Channels=32)`,
+/// offering ALSA's software mixer as if it were a 32-channel interface.
+fn channels_are_known(virtual_node: bool, max_channels: u16) -> bool {
+    !virtual_node && max_channels < CPAL_CHANNEL_CLAMP
+}
+
 /// The PCM id inside a device name, with cpal's host prefix removed.
 ///
 /// Device names here are `cpal::DeviceId` strings, which are `"{host}:{pcm_id}"`
@@ -466,7 +485,7 @@ pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
                             })
                             .collect(),
                         virtual_node,
-                        channels_known: max_channels < CPAL_CHANNEL_CLAMP,
+                        channels_known: channels_are_known(virtual_node, max_channels),
                     });
                 }
             }
@@ -1621,7 +1640,7 @@ mod test {
                 supported_sample_rates: vec![48000],
                 supported_formats: vec![],
                 virtual_node: is_virtual_node(name),
-                channels_known: max_channels < CPAL_CHANNEL_CLAMP,
+                channels_known: channels_are_known(is_virtual_node(name), max_channels),
             }
         }
 
@@ -1794,6 +1813,23 @@ mod test {
             let device = info("alsa:hw:CARD=BIG,DEV=0", 32);
             assert!(device.channels_known);
             assert_eq!(device.channels_display(), "32");
+        }
+
+        /// ...but only for hardware. A software node's count is the plugin's,
+        /// not the rig's, at any value.
+        ///
+        /// Observed on the rig under cpal 0.18: `default` and `pulse` report 32,
+        /// which is below the new clamp, and `mtrack devices` offered them as
+        /// `(Channels=32)`. Under 0.17 the same 32 *was* the clamp, so they read
+        /// as unknown for a reason that had nothing to do with being virtual.
+        #[test]
+        fn a_software_node_never_reports_an_honest_count() {
+            for name in &["alsa:default", "alsa:pulse"] {
+                let device = info(name, 32);
+                assert!(device.virtual_node, "{name} should be a virtual node");
+                assert!(!device.channels_known, "{name} reported 32 as a capability");
+                assert_eq!(device.channels_display(), "virtual");
+            }
         }
 
         #[test]
