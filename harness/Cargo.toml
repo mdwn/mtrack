@@ -15,8 +15,8 @@ mtrack = { path = ".." }
 
 # Hardware access. These mirror mtrack's own versions so the harness talks to
 # the same driver stack the player does.
-cpal = "0.17.1"
-midir = "0.10.1"
+cpal = "0.18.1"
+midir = "0.11.0"
 shh = "1.0.1"
 hound = "3.5.1"
 midly = "0.5.3"

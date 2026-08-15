@@ -31,12 +31,12 @@ bin-dir = "{ name }-{ version }-{ target }/{ bin }{ binary-ext }"
 [dependencies]
 clap = { version = "4.5.60", features = ["cargo", "derive"] }
 config = "0.15.19"
-cpal = "0.17.1"
+cpal = "0.18.1"
 rayon = "1.11.0"
 num_cpus = "1.17.0"
 duration-string = "0.5.3"
 symphonia = { version = "0.6", features = ["all"] }
-midir = "0.10.1"
+midir = "0.11.0"
 midly = "0.5.3"
 ola = "0.1.0"
 prost = "0.14"

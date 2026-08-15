@@ -337,7 +337,7 @@ where
 {
     let channels = channels.max(1) as usize;
     Ok(device.build_input_stream(
-        config,
+        *config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
             if !buffer.active.load(Ordering::Relaxed) {
                 return;
@@ -434,7 +434,7 @@ where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
     Ok(device.build_output_stream(
-        config,
+        *config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
             let mut n = phase.lock();
             for frame in data.chunks_mut(channels) {

@@ -349,7 +349,7 @@ impl TriggerEngine {
         let mut priority_set = false;
 
         let stream = device.build_input_stream(
-            config,
+            *config,
             move |data: &[T], _: &cpal::InputCallbackInfo| {
                 promote_to_realtime(callback_priority, rt_audio, &mut priority_set);
                 // Data is interleaved: [ch0, ch1, ch2, ..., ch0, ch1, ...]
