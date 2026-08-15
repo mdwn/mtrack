@@ -218,7 +218,7 @@ impl CpalOutputStreamFactory {
             let mut callback = create_direct_f32_callback(mixer, source_rx, num_channels, health);
             let notify = error_notify;
             device.build_output_stream(
-                &config,
+                config,
                 move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
                     callback(data, info);
                 },
@@ -238,7 +238,7 @@ impl CpalOutputStreamFactory {
                     );
                     let notify = error_notify;
                     device.build_output_stream(
-                        &config,
+                        config,
                         move |data: &mut [i16], info: &cpal::OutputCallbackInfo| {
                             callback(data, info);
                         },
@@ -257,7 +257,7 @@ impl CpalOutputStreamFactory {
                     );
                     let notify = error_notify;
                     device.build_output_stream(
-                        &config,
+                        config,
                         move |data: &mut [i32], info: &cpal::OutputCallbackInfo| {
                             callback(data, info);
                         },
@@ -286,8 +286,8 @@ impl CpalOutputStreamFactory {
 fn error_handler(
     notify: CondvarNotify,
     health: Arc<OutputHealth>,
-) -> impl FnMut(cpal::StreamError) + Send + 'static {
-    move |err: cpal::StreamError| {
+) -> impl FnMut(cpal::Error) + Send + 'static {
+    move |err: cpal::Error| {
         // Runs on cpal's audio worker, which ALSA has already promoted to
         // realtime priority (`boost_current_thread_priority` sits at the top of
         // the loop that calls this), so the common path has to stay cheap.
@@ -304,10 +304,13 @@ fn error_handler(
         // replaces a glitch of about a millisecond with a full reopen — measured
         // at ~29ms on the test rig. Same outcome, thirty times the interruption.
         //
-        // POLLERR is different and still rebuilds: cpal returns that as an error
-        // *before* it reaches the `avail()` call whose EPIPE would have taken the
-        // recovery path, so the PCM stays in XRUN and only a new stream clears it.
-        if matches!(err, cpal::StreamError::BufferUnderrun) {
+        // Under cpal 0.17 POLLERR was the exception and did still rebuild, because
+        // cpal returned it as an error *before* reaching the `avail()` call whose
+        // EPIPE would have taken the recovery path, leaving the PCM stuck in XRUN.
+        // 0.18 fixed that: POLLERR now falls through to `avail_delay()`, comes back
+        // as `Xrun`, and the worker's `prepare()` clears it. So POLLERR lands here
+        // too, and the reopen it used to force is no longer needed.
+        if err.kind() == cpal::ErrorKind::Xrun {
             health.record_underrun();
             return;
         }

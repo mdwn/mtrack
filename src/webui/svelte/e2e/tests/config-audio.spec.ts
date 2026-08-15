@@ -56,7 +56,7 @@ test.describe("Profile Editor - Audio Section", () => {
     await expect(option).toHaveText("USB Interface (18ch, ALSA)");
   });
 
-  // An ALSA plug node reports cpal's clamped 32 channels regardless of the
+  // An ALSA plug node reports cpal's clamped maximum regardless of the
   // hardware behind it, so the picker must not present that as a capability.
   // It stays in the list: on some interfaces it is the only node that works.
   test("plug nodes are labelled rather than given a fictional channel count", async ({
@@ -66,7 +66,7 @@ test.describe("Profile Editor - Audio Section", () => {
       "#audio-device-list option[value='alsa:plughw:CARD=WING']",
     );
     await expect(option).toHaveText("alsa:plughw:CARD=WING (virtual, ALSA)");
-    await expect(option).not.toContainText("32");
+    await expect(option).not.toContainText("64");
   });
 
   // Setting a rig up happens in this editor, not in a terminal, so the check

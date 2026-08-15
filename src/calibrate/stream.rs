@@ -96,7 +96,7 @@ where
     f32: cpal::FromSample<T>,
 {
     let stream = device.build_input_stream(
-        config,
+        *config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
             if !buffer.active.load(Ordering::Relaxed) {
                 return;
