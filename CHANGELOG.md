@@ -40,7 +40,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It still cannot prove sound reached the room. A device can accept every buffer and produce
   nothing, and nothing host-side can see that.
 
+### Changed
+
+- **Upgraded to cpal 0.18.1**, which also required midir 0.11: cpal 0.18 moves ALSA onto
+  `alsa-sys` 0.4 and midir 0.10 links 0.3, and only one package in the graph may link a given
+  native library.
+
+  Device names persisted in existing configs keep working — cpal's `DeviceId` string form
+  (`"{host}:{pcm_id}"`, as in `alsa:plughw:CARD=WING,DEV=0`) is unchanged.
+
+  One audible difference: an ALSA POLLERR used to reach mtrack as a stream failure and force a
+  full device reopen, around 29ms, in place of a glitch of about one. cpal 0.18 classifies it as
+  an xrun and recovers in place, so it now costs the glitch alone.
+
 ### Fixed
+
+- **Software audio devices no longer advertise a channel count they cannot honour**: `alsa:default`
+  and `alsa:pulse` were listed as 32-channel devices. That number is what ALSA's plugin advertises,
+  not a width any hardware promised, and picking one of those for a 32-channel show would have
+  found that out during the set. Plug and software nodes are now labelled `virtual` unless their
+  real width can be read from the hardware node behind them, whatever count they happen to report.
 
 - **A device that will never open no longer holds the whole rig hostage**: hardware init retried
   any device error twice a second, forever, with no way to say "this will never succeed". Because
