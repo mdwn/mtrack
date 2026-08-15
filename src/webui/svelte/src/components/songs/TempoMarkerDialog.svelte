@@ -451,7 +451,8 @@
   let importNote = $state("");
 
   /** Imports a light show's tempo map as the song tempo. Time-anchored
-   * changes snap to the nearest measure/beat on the grid. */
+   * changes snap to the nearest measure/beat on the grid; the note says what
+   * the conversion cost, since a show can hold positions the song cannot. */
   function importFromLightShow(source: { file: string; tempo: TempoSection }) {
     const result = sectionToConfigSnapped(source.tempo, beatGrid);
     ontempochange(result.config);
@@ -466,6 +467,12 @@
       parts.push(
         $t("tempo.marker.importDropped", {
           values: { count: result.dropped },
+        }),
+      );
+    if (result.duplicates > 0)
+      parts.push(
+        $t("tempo.marker.importDuplicates", {
+          values: { count: result.duplicates },
         }),
       );
     importNote = parts.join(" · ");

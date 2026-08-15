@@ -765,6 +765,7 @@
   "tempo.marker.importLighting": "Import from {file}",
   "tempo.marker.importSnapped": "{count} time-anchored {count, plural, one {change} other {changes}} snapped to the grid",
   "tempo.marker.importDropped": "{count} {count, plural, one {change} other {changes}} dropped (no beat grid)",
+  "tempo.marker.importDuplicates": "{count} {count, plural, one {change} other {changes}} dropped (position already taken)",
   "tempo.copyFromSong": "Copy from song timeline",
   "tempo.marker.noMetronome": "Enable the metronome below to change accents or subdivision at this marker.",
   "pilot.marker.title": "Pilot hint",

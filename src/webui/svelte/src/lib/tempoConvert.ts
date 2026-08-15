@@ -17,6 +17,7 @@
 
 import type { TempoConfig, TempoChangeConfig } from "./api/songs";
 import type { TempoSection, TempoChange } from "./lighting/types";
+import { orderTempoChanges } from "./util/tempo";
 
 export function parseTimeSignature(raw: string | undefined): [number, number] {
   const match = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(raw ?? "");
@@ -104,11 +105,19 @@ export interface SnappedImport {
   snapped: number;
   /** Time-anchored changes dropped for lack of a beat grid. */
   dropped: number;
+  /** Changes dropped for landing on a position another change already held. */
+  duplicates: number;
 }
 
 /** The lighting TempoEditor's data model -> song.yaml tempo config.
  * Measure-anchored changes convert directly; time-anchored ones snap to
- * the nearest measure/beat on the grid (the song format is measure-based). */
+ * the nearest measure/beat on the grid (the song format is measure-based).
+ *
+ * The result is ordered and free of repeated positions, because a light show
+ * is under no obligation to be either: its changes are sorted at playback,
+ * and two of them may share a position (or arrive at one by snapping). The
+ * song format is stricter — `to_tempo_map` refuses both — so an import that
+ * passed either through would come back as an HTTP 400 on the next save. */
 export function sectionToConfigSnapped(
   section: TempoSection,
   beatGrid: BeatGrid | null | undefined,
@@ -160,8 +169,9 @@ export function sectionToConfigSnapped(
     }
     changes.push(change);
   }
-  if (changes.length > 0) {
-    config.changes = changes;
+  const ordered = orderTempoChanges(changes);
+  if (ordered.changes.length > 0) {
+    config.changes = ordered.changes;
   }
-  return { config, snapped, dropped };
+  return { config, snapped, dropped, duplicates: ordered.duplicates };
 }

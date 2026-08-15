@@ -153,23 +153,26 @@ function parseTempoBlock(
       continue;
     }
 
-    // Tempo change entry: @M/B { ... }
+    // Tempo change entry: @M/B, @MM:SS.mmm or @S.sss, then { ... }.
+    //
+    // The DSL anchors a tempo change either way (`tempo_parse.rs` resolves
+    // both into a `TempoChangePosition`), and the serializer writes back
+    // whichever the editor holds — so reading only `@M/B` would drop an
+    // absolute change on load and then erase it from the file on the next
+    // save. Anything else after the `@` is left alone rather than parsed
+    // into a zero timestamp.
     if (inChanges) {
       if (line === "]") {
         inChanges = false;
         i++;
         continue;
       }
-      const changeMatch = line.match(/^@(\d+)\/(\d+(?:\.\d+)?)\s*\{([^}]*)\}/);
-      if (changeMatch) {
+      const changeMatch = line.match(/^@(\S+?)\s*\{([^}]*)\}/);
+      if (changeMatch && TEMPO_ANCHOR.test(changeMatch[1])) {
         const change: TempoChange = {
-          timestamp: {
-            type: "measure_beat",
-            measure: parseInt(changeMatch[1]),
-            beat: parseFloat(changeMatch[2]),
-          },
+          timestamp: parseTimestamp(changeMatch[1]),
         };
-        const params = changeMatch[3];
+        const params = changeMatch[2];
         const bpmM = params.match(/bpm:\s*(\d+(?:\.\d+)?)/);
         if (bpmM) change.bpm = parseFloat(bpmM[1]);
         const tsM = params.match(/time_signature:\s*(\d+)\/(\d+)/);
@@ -309,6 +312,15 @@ function parseCueBlock(lines: string[], startIdx: number): [Cue[], number] {
   if (currentCue) cues.push(currentCue);
   return [cues, i];
 }
+
+/**
+ * The timestamp forms below, for callers that have to tell a timestamp from
+ * something else before parsing — `parseTimestamp` answers time zero for
+ * anything it does not recognise, which is only safe once you know you are
+ * holding one.
+ */
+export const TEMPO_ANCHOR =
+  /^(?:\d+\/\d+(?:\.\d+)?|\d+:\d+(?:\.\d+)?|\d+(?:\.\d+)?)$/;
 
 /**
  * Parse a timestamp string. Handles:

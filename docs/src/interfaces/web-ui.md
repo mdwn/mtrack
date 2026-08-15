@@ -245,7 +245,10 @@ detected clicks, and **Import from _file_** appears for every light show that ha
 `tempo` block. Light shows predate song-level tempo maps, so an existing show is usually the
 best seed a song has. Measure-anchored changes copy across as they are; time-anchored ones
 snap to the nearest beat on the grid, and the dialog says how many were snapped and how many
-had to be dropped — a lossy import is never silent. The reverse direction lives in
+had to be dropped — a lossy import is never silent. A show is also free to list its changes
+in any order and to put two of them on one position, neither of which a song's `tempo:` block
+accepts, so the import sorts them and keeps the last of any repeat — the one the show itself
+was playing. Repeats it drops are reported like the rest. The reverse direction lives in
 [the show's own tempo editor](#tempo-detection).
 
 ![The base tempo marker importing a light show's map](../images/tempo-import-dialog.png)
