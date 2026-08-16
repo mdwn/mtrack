@@ -2036,6 +2036,104 @@ async fn mcp_write_song_lighting_registers_the_show() -> Result<(), Box<dyn Erro
 }
 
 // ---------------------------------------------------------------------------
+// Test 3c-septies: diff_shows (#341)
+// ---------------------------------------------------------------------------
+
+/// The revision the issue describes: end a section a beat early to open a
+/// blackout. A text diff shows a one-character duration edit; the useful answer
+/// is that a dark window appeared.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_diff_shows_reports_resolved_changes() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let v1 = r#"show "S" {
+    @00:00.000
+    all_lights: static color: "blue", duration: 10s
+
+    @00:10.000
+    all_lights: static color: "red", duration: 4s
+}
+"#;
+    let v2 = r#"show "S" {
+    @00:00.000
+    all_lights: static color: "blue", duration: 9s
+
+    @00:10.000
+    all_lights: static color: "red", duration: 4s
+}
+"#;
+
+    let body = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1000,
+            "diff_shows",
+            json!({"a_source": v1, "b_source": v2}),
+        )
+        .await,
+    );
+
+    assert_eq!(body["identical"], false, "{body}");
+    // Matched by group and kind, so this is a duration change rather than a
+    // removal and an unrelated addition.
+    assert_eq!(body["added"].as_array().map(|a| a.len()), Some(0), "{body}");
+    assert_eq!(
+        body["removed"].as_array().map(|a| a.len()),
+        Some(0),
+        "{body}"
+    );
+    let changed = body["changed"].as_array().expect("changed");
+    assert_eq!(changed.len(), 1, "{body}");
+    assert_eq!(changed[0]["fields"][0]["field"], "duration");
+    assert_eq!(changed[0]["fields"][0]["from"], "10.000s");
+    assert_eq!(changed[0]["fields"][0]["to"], "9.000s");
+
+    // The field the issue said it would actually have used.
+    let opened = body["dark_windows_added"].as_array().expect("windows");
+    assert_eq!(opened.len(), 1, "{body}");
+    assert_eq!(opened[0]["from"], 9.0);
+    assert_eq!(opened[0]["to"], 10.0);
+    assert_eq!(
+        body["dark_windows_removed"].as_array().map(|a| a.len()),
+        Some(0),
+        "{body}"
+    );
+
+    // A show against itself is identical, which is the answer that lets a
+    // caller trust the rest.
+    let same = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1001,
+            "diff_shows",
+            json!({"a_source": v1, "b_source": v1}),
+        )
+        .await,
+    );
+    assert_eq!(same["identical"], true, "{same}");
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3d: profile add → update → remove round-trip
 // ---------------------------------------------------------------------------
 

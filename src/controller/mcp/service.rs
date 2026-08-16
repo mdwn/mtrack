@@ -256,6 +256,19 @@ pub struct AnalyzeShowArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct DiffShowsArgs {
+    /// Baseline: a song name, whose registered shows are used.
+    /// Mutually exclusive with `a_source`.
+    pub a_song: Option<String>,
+    /// Baseline: `.light` DSL source. Mutually exclusive with `a_song`.
+    pub a_source: Option<String>,
+    /// Candidate: a song name. Mutually exclusive with `b_source`.
+    pub b_song: Option<String>,
+    /// Candidate: `.light` DSL source. Mutually exclusive with `b_song`.
+    pub b_source: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SongLightingArgs {
     /// Song name as listed by `list_songs`.
     pub song: String,
@@ -1327,6 +1340,90 @@ impl McpServer {
                 .map(|(layer, secs)| (format!("{layer:?}").to_lowercase(), *secs))
                 .collect::<std::collections::BTreeMap<_, _>>(),
             "warnings": warnings,
+        })))
+    }
+
+    #[tool(description = "Report what changed between two versions of a light \
+        show. Compares resolved effects — real times and durations, after the \
+        tempo map has been applied — rather than text, because two cues can be \
+        character-for-character identical and land in different places if the \
+        tempo block changed, and a one-line duration edit can move a section \
+        boundary and open a blackout. Effects are matched on the groups they \
+        target and their kind, so a cue nudged by a beat reads as a changed \
+        time rather than as an unrelated removal and addition. Also reports \
+        `dark_windows_added` and `dark_windows_removed`, since a revision is \
+        usually about what the rig does. Each side takes either a song or DSL \
+        source.")]
+    async fn diff_shows(
+        &self,
+        Parameters(args): Parameters<DiffShowsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (before, before_tempo) = self.resolve_shows_to_evaluate(&EvaluateShowArgs {
+            song: args.a_song.clone(),
+            source: args.a_source.clone(),
+            times: Vec::new(),
+            include_fixtures: false,
+        })?;
+        let (after, after_tempo) = self.resolve_shows_to_evaluate(&EvaluateShowArgs {
+            song: args.b_song.clone(),
+            source: args.b_source.clone(),
+            times: Vec::new(),
+            include_fixtures: false,
+        })?;
+
+        let diff = tokio::task::spawn_blocking(move || {
+            crate::lighting::diff::diff_shows(
+                before,
+                after,
+                before_tempo.as_ref(),
+                after_tempo.as_ref(),
+            )
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("diff failed: {e}"), None))?;
+
+        let entry = |e: &crate::lighting::diff::DiffEntry| {
+            json!({
+                "time": e.time.as_secs_f64(),
+                "position": e.position,
+                "groups": e.groups,
+                "type": e.effect_type,
+                "layer": format!("{:?}", e.layer).to_lowercase(),
+                "duration": e.duration.as_secs_f64(),
+            })
+        };
+        let window = |w: &crate::lighting::analyze::DarkWindow| {
+            json!({
+                "from": w.from.as_secs_f64(),
+                "to": w.to.as_secs_f64(),
+                "seconds": w.seconds(),
+                "position": w.position,
+            })
+        };
+
+        Ok(ok_json(json!({
+            "identical": diff.is_empty(),
+            "added": diff.added.iter().map(entry).collect::<Vec<_>>(),
+            "removed": diff.removed.iter().map(entry).collect::<Vec<_>>(),
+            "changed": diff
+                .changed
+                .iter()
+                .map(|c| json!({
+                    "before": entry(&c.before),
+                    "after": entry(&c.after),
+                    "fields": c
+                        .fields
+                        .iter()
+                        .map(|f| json!({"field": f.field, "from": f.from, "to": f.to}))
+                        .collect::<Vec<_>>(),
+                }))
+                .collect::<Vec<_>>(),
+            "dark_windows_added": diff.dark_windows_added.iter().map(window).collect::<Vec<_>>(),
+            "dark_windows_removed": diff
+                .dark_windows_removed
+                .iter()
+                .map(window)
+                .collect::<Vec<_>>(),
         })))
     }
 

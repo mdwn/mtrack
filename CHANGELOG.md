@@ -30,6 +30,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`diff_shows`: what changed between two versions of a light show**: reports added, removed and
+  changed effects, plus the dark windows the revision opened and closed. Each side takes either a
+  song or DSL source.
+
+  It compares *resolved* effects — real times and durations, after the tempo map — rather than
+  text. Diffing the text is close to useless here: changing one bed's duration from `8measures`
+  to `31beats` is a one-line edit that shifts a section boundary and creates a blackout, while a
+  cue moving from `@63/1` to `@63/3` looks equally small and is a completely different edit. Two
+  cues can also be character-for-character identical and land seconds apart if the tempo block
+  changed between versions.
+
+  Effects are matched on the groups they target and their kind, so a cue nudged by a beat reads
+  as a changed `time` rather than an unrelated removal and addition, while retargeting an effect
+  to a different group reads as the swap it is.
+
 - **`write_song_lighting` registers the show it writes**: it previously wrote the `.light` file and
   reloaded the song registry without adding a `lighting:` entry pointing at it. The result was a
   success response with a real path, a valid file on disk, and a rig that did nothing —
