@@ -215,6 +215,11 @@ pub struct WritePlaylistArgs {
 pub struct ValidateLightingArgs {
     /// `.light` DSL source to validate.
     pub source: String,
+    /// Song whose tempo map should resolve musical timing when the source has
+    /// no `tempo` block of its own. Without it, a show using `@bar/beat`,
+    /// `Nbeats`, or `Nbeat` cannot be validated even though it would load fine
+    /// against that song.
+    pub song: Option<String>,
     /// Include each show's resolved cue timeline. Defaults to true; set false
     /// for a parse-only check on a very large show.
     #[serde(default = "default_true")]
@@ -780,7 +785,10 @@ impl McpServer {
         names with source file + channel, sections, lighting show references, \
         MIDI playback presence, loop flag, and (when the song's click track \
         has been analyzed) the beat-grid summary (counts + measure starts), \
-        dominant BPM, and a `tempo_segments` list that breaks the song into \
+        dominant BPM, the detected `lead_in_seconds` (where bar 1 beat 1 \
+        actually falls, which a `tempo` block written as `start: 0ms` gets \
+        wrong by exactly that much), and a `tempo_segments` list that breaks \
+        the song into \
         runs of roughly constant tempo (each with `start_seconds`, \
         `end_seconds`, `beat_count`, `bpm`). The raw per-beat times are NOT \
         included here — call `song_beat_grid` for those.")]
@@ -826,6 +834,10 @@ impl McpServer {
                 "beat_count": g.beats.len(),
                 "measure_count": g.measure_starts.len(),
                 "measure_starts": g.measure_starts,
+                // Where bar 1 beat 1 actually falls. A show's `tempo` block
+                // written as `start: 0ms` is wrong by exactly this much, and
+                // nothing else says so.
+                "lead_in_seconds": g.lead_in().as_secs_f64(),
             })
         });
         let bpm = song
@@ -1025,7 +1037,8 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ValidateLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match crate::lighting::parser::parse_light_shows(&args.source) {
+        let tempo = self.song_tempo_map(args.song.as_deref())?;
+        match crate::lighting::parser::parse_light_shows_with_tempo(&args.source, tempo.as_ref()) {
             Ok(shows) => {
                 let mut summary: Vec<Value> = shows
                     .iter()
@@ -1053,6 +1066,22 @@ impl McpServer {
                 "error": e.to_string(),
             }))),
         }
+    }
+
+    /// Looks up a song's lighting tempo map by name, if a name was given.
+    fn song_tempo_map(
+        &self,
+        song: Option<&str>,
+    ) -> Result<Option<crate::tempo::TempoMap>, McpError> {
+        let Some(name) = song else {
+            return Ok(None);
+        };
+        let song = self
+            .player
+            .songs()
+            .get(name)
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        Ok(song_lighting_tempo(&song))
     }
 
     /// Resolves `evaluate_show`'s `song`/`source` choice into the shows to
@@ -1098,7 +1127,7 @@ impl McpServer {
                         None,
                     ));
                 }
-                Ok((shows, song.tempo_map().cloned()))
+                Ok((shows, song_lighting_tempo(&song)))
             }
             (None, Some(source)) => {
                 let shows = crate::lighting::parser::parse_light_shows(source)
@@ -1530,14 +1559,19 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<WriteSongLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
-        crate::lighting::parser::parse_light_shows(&args.source)
-            .map_err(|e| McpError::invalid_params(format!("invalid .light source: {e}"), None))?;
         validate_lighting_filename(&args.file)?;
         let song = self
             .player
             .songs()
             .get(&args.song)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        // Validate against the tempo this song will actually load it with,
+        // otherwise a bar/beat show is rejected here and then loads fine.
+        crate::lighting::parser::parse_light_shows_with_tempo(
+            &args.source,
+            song_lighting_tempo(&song).as_ref(),
+        )
+        .map_err(|e| McpError::invalid_params(format!("invalid .light source: {e}"), None))?;
 
         let path = match find_song_lighting_path(&song, &args.file) {
             Some(existing) => existing,
@@ -1902,6 +1936,15 @@ fn evaluation_json(
     }
 
     entry
+}
+
+/// The tempo map a song's `.light` files are parsed with: its explicit
+/// `tempo:` block if it has one, otherwise one derived from the click-derived
+/// beat grid. Mirrors what `Song` does at load time.
+fn song_lighting_tempo(song: &crate::songs::Song) -> Option<crate::tempo::TempoMap> {
+    song.tempo_map()
+        .cloned()
+        .or_else(|| song.beat_grid().and_then(|grid| grid.to_tempo_map()))
 }
 
 /// A show's cues as resolved times, in cue order.

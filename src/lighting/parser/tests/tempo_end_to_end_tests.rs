@@ -1608,3 +1608,106 @@ show "Transition Spanning Changes" {
     let bpm_after2 = tempo_map.bpm_at_time(after_change2, 0.0);
     assert!((bpm_after2 - 160.0).abs() < 0.1);
 }
+
+// ── External tempo map (#337) ──────────────────────────────────────────
+
+/// Musical timing is resolved at parse time, so a `.light` file with no
+/// `tempo` block cannot use `@bar/beat`, `Nbeats`, or `Nbeat` — the song's map
+/// has to reach the parser, not just the engine.
+#[test]
+fn musical_timing_needs_a_tempo_map_from_somewhere() {
+    let source = r#"
+show "T" {
+    @3/1
+    wash: static color: "blue", duration: 4beats
+}
+"#;
+    assert!(
+        parse_light_shows(source).is_err(),
+        "without a tempo map this cannot resolve"
+    );
+
+    let map = crate::tempo::TempoMap::new(
+        std::time::Duration::ZERO,
+        120.0,
+        crate::tempo::TimeSignature::new(4, 4),
+        vec![],
+    );
+    let shows = parse_light_shows_with_tempo(source, Some(&map))
+        .expect("the song's map should make this resolvable");
+    let show = shows.get("T").expect("show");
+
+    // 120bpm 4/4: a bar is 2s, so bar 3 beat 1 is 4.0s.
+    assert_eq!(show.cues[0].time, std::time::Duration::from_secs(4));
+    // And 4 beats is 2s, not a parse error.
+    assert_eq!(
+        show.cues[0].effects[0].total_duration(),
+        std::time::Duration::from_secs(2)
+    );
+}
+
+/// Precedence stays author-first: a `tempo` block in the file wins over the
+/// song's map.
+#[test]
+fn a_files_own_tempo_block_beats_the_external_map() {
+    let source = r#"
+tempo {
+    start: 0ms
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "T" {
+    @3/1
+    wash: static color: "blue", duration: 1s
+}
+"#;
+    // Half the tempo. If it won, bar 3 would land at 8.0s rather than 4.0s.
+    let slow = crate::tempo::TempoMap::new(
+        std::time::Duration::ZERO,
+        60.0,
+        crate::tempo::TimeSignature::new(4, 4),
+        vec![],
+    );
+    let shows = parse_light_shows_with_tempo(source, Some(&slow)).expect("parses");
+    let show = shows.get("T").expect("show");
+    assert_eq!(show.cues[0].time, std::time::Duration::from_secs(4));
+}
+
+/// A map derived from a click-derived grid drives cueing the same way a
+/// hand-written block does — the point of #337.
+#[test]
+fn a_grid_derived_map_resolves_bar_beat_cues() {
+    // Four 4/4 bars at 120bpm, starting 1.5s in.
+    let spacing = 0.5_f64;
+    let lead_in = 1.5_f64;
+    let mut beats = Vec::new();
+    let mut measure_starts = Vec::new();
+    for measure in 0..5 {
+        measure_starts.push(beats.len());
+        for beat in 0..4 {
+            beats.push(lead_in + (measure * 4 + beat) as f64 * spacing);
+        }
+    }
+    let grid = crate::audio::click_analysis::BeatGrid {
+        beats,
+        measure_starts,
+    };
+    let map = grid.to_tempo_map().expect("grid should yield a map");
+
+    let source = r#"
+show "T" {
+    @3/1
+    wash: static color: "blue", duration: 1measures
+}
+"#;
+    let shows = parse_light_shows_with_tempo(source, Some(&map)).expect("parses");
+    let show = shows.get("T").expect("show");
+
+    // Bar 1 is at the lead-in (1.5s); each bar is 2s, so bar 3 is at 5.5s.
+    let cue = show.cues[0].time.as_secs_f64();
+    assert!(
+        (cue - 5.5).abs() < 0.05,
+        "bar 3 should account for the 1.5s lead-in, got {cue}"
+    );
+}

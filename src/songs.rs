@@ -51,7 +51,11 @@ pub struct DslLightingShow {
 
 impl DslLightingShow {
     /// Creates a new DSL lighting show, validating that the file exists and can be parsed.
-    pub fn new(start_path: &Path, config: &config::LightingShow) -> Result<Self, Box<dyn Error>> {
+    pub fn new(
+        start_path: &Path,
+        config: &config::LightingShow,
+        tempo_map: Option<&crate::tempo::TempoMap>,
+    ) -> Result<Self, Box<dyn Error>> {
         let file_path = if config.file().starts_with('/') {
             PathBuf::from(config.file())
         } else {
@@ -76,14 +80,15 @@ impl DslLightingShow {
             )
         })?;
 
-        let shows = crate::lighting::parser::parse_light_shows(&content).map_err(|e| {
-            // Prepend the file path to the error, preserving newlines in the original error
-            format!(
-                "Failed to parse DSL lighting show {}:\n{}",
-                file_path.display(),
-                e
-            )
-        })?;
+        let shows = crate::lighting::parser::parse_light_shows_with_tempo(&content, tempo_map)
+            .map_err(|e| {
+                // Prepend the file path to the error, preserving newlines in the original error
+                format!(
+                    "Failed to parse DSL lighting show {}:\n{}",
+                    file_path.display(),
+                    e
+                )
+            })?;
 
         Ok(DslLightingShow { file_path, shows })
     }
@@ -183,15 +188,6 @@ impl Song {
                 .collect::<Result<Vec<LightShow>, Box<dyn Error>>>()?,
             None => Vec::default(),
         };
-        // Resolve DSL lighting shows to absolute paths
-        let dsl_lighting_shows = match config.lighting() {
-            Some(lighting_shows) => lighting_shows
-                .iter()
-                .map(|lighting_show| DslLightingShow::new(start_path, lighting_show))
-                .collect::<Result<Vec<DslLightingShow>, Box<dyn Error>>>()?,
-            None => Vec::new(),
-        };
-
         // Calculate the number of channels and sample rate by reading the wav headers of each file.
         let tracks = config
             .tracks()
@@ -243,6 +239,23 @@ impl Song {
             ))
         } else {
             Self::analyze_click_track(start_path, &tracks)
+        };
+
+        // A show gets musical timing from its own `tempo` block, else the
+        // song's `tempo:` config, else the click-derived beat grid. Parsing has
+        // to happen here rather than earlier: the grid is what makes the third
+        // option possible, and the parser resolves `@bar/beat` up front.
+        let lighting_tempo = tempo_map
+            .clone()
+            .or_else(|| beat_grid.as_ref().and_then(|grid| grid.to_tempo_map()));
+        let dsl_lighting_shows = match config.lighting() {
+            Some(lighting_shows) => lighting_shows
+                .iter()
+                .map(|lighting_show| {
+                    DslLightingShow::new(start_path, lighting_show, lighting_tempo.as_ref())
+                })
+                .collect::<Result<Vec<DslLightingShow>, Box<dyn Error>>>()?,
+            None => Vec::new(),
         };
 
         let pilot_hints = match config.pilot() {
@@ -2592,7 +2605,7 @@ mod test {
     #[test]
     fn dsl_lighting_show_file_not_found() {
         let config = crate::config::LightingShow::new("nonexistent.dsl".to_string());
-        let err = super::DslLightingShow::new(Path::new("/tmp"), &config)
+        let err = super::DslLightingShow::new(Path::new("/tmp"), &config, None)
             .expect_err("expected error")
             .to_string();
         assert!(err.contains("does not exist"), "Error: {err}");
@@ -2603,7 +2616,7 @@ mod test {
         let tempdir = tempfile::tempdir()?;
         fs::write(tempdir.path().join("bad.dsl"), "show {")?;
         let config = crate::config::LightingShow::new("bad.dsl".to_string());
-        let err = super::DslLightingShow::new(tempdir.path(), &config)
+        let err = super::DslLightingShow::new(tempdir.path(), &config, None)
             .expect_err("expected error")
             .to_string();
         assert!(
@@ -2618,7 +2631,7 @@ mod test {
         let tempdir = tempfile::tempdir()?;
         fs::write(tempdir.path().join("valid.dsl"), "# just a comment\n")?;
         let config = crate::config::LightingShow::new("valid.dsl".to_string());
-        let show = super::DslLightingShow::new(tempdir.path(), &config)?;
+        let show = super::DslLightingShow::new(tempdir.path(), &config, None)?;
         assert_eq!(show.file_path(), tempdir.path().join("valid.dsl"));
         assert!(show.shows().is_empty());
         Ok(())
@@ -2630,7 +2643,7 @@ mod test {
         let abs_path = tempdir.path().join("absolute.dsl");
         fs::write(&abs_path, "")?;
         let config = crate::config::LightingShow::new(abs_path.to_string_lossy().to_string());
-        let show = super::DslLightingShow::new(Path::new("/some/other/path"), &config)?;
+        let show = super::DslLightingShow::new(Path::new("/some/other/path"), &config, None)?;
         assert_eq!(show.file_path(), abs_path);
         Ok(())
     }
