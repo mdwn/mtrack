@@ -19,6 +19,7 @@
     type BeatGrid,
     formatSeconds,
     formatSecondsShort,
+    maxBeatIn,
     parseSeconds,
     positionAtTime,
     timeAtPosition,
@@ -197,8 +198,16 @@
     return out;
   }
 
+  /** The highest beat that still resolves inside a measure. Beat 4½ of a 4/4
+   * measure is one of them — it sits between the last beat and the next
+   * downbeat — but in the measure the grid ends in there is no next beat to
+   * reach towards, so that one stops at its last whole beat. */
+  function highestBeat(m: number): number {
+    return maxBeatIn(beatGrid, m, beatsIn(m), step);
+  }
+
   function clampBeat(m: number, b: number): number {
-    const highest = beatsIn(m) + 1 - step;
+    const highest = highestBeat(m);
     return Math.max(1, Math.min(highest, Math.round(b / step) * step));
   }
 

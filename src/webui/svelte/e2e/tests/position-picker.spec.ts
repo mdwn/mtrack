@@ -230,6 +230,35 @@ test.describe("Position picker", () => {
     await expect(start.locator(".pp-value")).toHaveText("m5 · b3½");
   });
 
+  test("the measure the grid ends in stops at its last whole beat", async ({
+    page,
+  }) => {
+    // Beat 4½ resolves by interpolating towards beat 5 — the next measure's
+    // downbeat. The last measure has none, so `beat_time` refuses that
+    // position and the boundary would drop out of the resolved timeline.
+    const yaml =
+      SONG_YAML.slice(0, SONG_YAML.indexOf("tempo:")) +
+      SONG_YAML.slice(SONG_YAML.indexOf("pilot:"));
+    await routes(page, yaml);
+    await page.goto(`/#/songs/${ENC}/sections`);
+    await expect(page.locator(".section-timeline-editor")).toBeVisible();
+
+    const dialog = await openSectionDialog(page);
+    const end = picker(dialog, "End");
+    const type = async (text: string) => {
+      await end.getByRole("button", { name: "End: type a position" }).click();
+      const field = end.getByRole("textbox", { name: "End: type a position" });
+      await field.fill(text);
+      await field.press("Enter");
+    };
+
+    await type("15.4.5");
+    await expect(end.locator(".pp-value")).toHaveText("m15 · b4½");
+    // The grid is 16 measures long.
+    await type("16.4.5");
+    await expect(end.locator(".pp-value")).toHaveText("m16 · b4");
+  });
+
   test("pilot hints anchor through the same picker", async ({ page }) => {
     await open(page);
     const dialog = await openPilotDialog(page);

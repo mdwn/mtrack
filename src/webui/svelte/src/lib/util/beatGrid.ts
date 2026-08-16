@@ -40,7 +40,20 @@ export function beatsInMeasure(
 }
 
 /**
- * The largest beat that still lies inside its measure, for a given step.
+ * Whether the grid ends inside this measure (1-based) — nothing follows its
+ * last beat to interpolate a fractional position towards.
+ */
+function endsTheGrid(
+  grid: BeatGrid | null | undefined,
+  measure: number,
+): boolean {
+  if (!grid) return false;
+  const nextStart = grid.measure_starts[measure];
+  return nextStart === undefined || nextStart >= grid.beats.length;
+}
+
+/**
+ * The largest beat that still lies inside a measure holding `beats` of them.
  *
  * Beat 4.5 of a 4/4 measure is inside it — between the last beat and the
  * next downbeat — but beat 5 is the downbeat itself and belongs to the
@@ -50,18 +63,28 @@ export function beatsInMeasure(
  * towards the *next* grid beat, and past the end of the grid there is none.
  * `BeatGrid::beat_time` returns `None` there and the section disappears from
  * the resolved timeline, so the bound stops at the last beat that exists.
+ *
+ * The count is passed in because it is not always the grid's: where a
+ * `tempo:` block exists it is the meter in effect, which is what the ruler
+ * labels and what the grid was built from.
  */
+export function maxBeatIn(
+  grid: BeatGrid | null | undefined,
+  measure: number,
+  beats: number,
+  step = 0.5,
+): number {
+  return Math.max(1, endsTheGrid(grid, measure) ? beats : beats + 1 - step);
+}
+
+/** `maxBeatIn` with the count read off the grid; null when it has none. */
 export function maxBeatInMeasure(
   grid: BeatGrid | null | undefined,
   measure: number,
   step = 0.5,
 ): number | null {
   const beats = beatsInMeasure(grid, measure);
-  if (beats === null) return null;
-  const nextStart = grid?.measure_starts[measure];
-  const isLastMeasure =
-    nextStart === undefined || nextStart >= (grid?.beats.length ?? 0);
-  return Math.max(1, isLastMeasure ? beats : beats + 1 - step);
+  return beats === null ? null : maxBeatIn(grid, measure, beats, step);
 }
 
 /**
@@ -85,8 +108,11 @@ export function timeAtPosition(
   if (t0 === undefined) return null;
   const frac = offset - Math.floor(offset);
   if (frac === 0) return t0;
+  // Interpolation needs a beat to head towards. Past the end of the grid the
+  // backend has none and returns `None`; answering `t0` here would show a
+  // time for a boundary the resolved timeline drops.
   const t1 = grid.beats[base + Math.floor(offset) + 1];
-  return t1 === undefined ? t0 : t0 + (t1 - t0) * frac;
+  return t1 === undefined ? null : t0 + (t1 - t0) * frac;
 }
 
 /**
