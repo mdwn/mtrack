@@ -162,33 +162,6 @@ impl Fixture {
     }
 }
 
-/// A group definition.
-#[derive(Clone, Serialize)]
-pub struct Group {
-    /// The name of the group.
-    name: String,
-
-    /// The fixtures in the group.
-    fixtures: Vec<String>,
-}
-
-impl Group {
-    /// Creates a new group.
-    pub fn new(name: String, fixtures: Vec<String>) -> Group {
-        Group { name, fixtures }
-    }
-
-    /// Gets the name.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Gets the fixtures.
-    pub fn fixtures(&self) -> &[String] {
-        &self.fixtures
-    }
-}
-
 /// A venue definition.
 #[derive(Clone, Serialize)]
 pub struct Venue {
@@ -197,23 +170,12 @@ pub struct Venue {
 
     /// The fixtures in the venue.
     fixtures: HashMap<String, Fixture>,
-
-    /// The groups in the venue.
-    groups: HashMap<String, Group>,
 }
 
 impl Venue {
     /// Creates a new venue.
-    pub fn new(
-        name: String,
-        fixtures: HashMap<String, Fixture>,
-        groups: HashMap<String, Group>,
-    ) -> Venue {
-        Venue {
-            name,
-            fixtures,
-            groups,
-        }
+    pub fn new(name: String, fixtures: HashMap<String, Fixture>) -> Venue {
+        Venue { name, fixtures }
     }
 
     /// Gets the name.
@@ -224,11 +186,6 @@ impl Venue {
     /// Gets the fixtures.
     pub fn fixtures(&self) -> &HashMap<String, Fixture> {
         &self.fixtures
-    }
-
-    /// Gets the groups.
-    pub fn groups(&self) -> &HashMap<String, Group> {
-        &self.groups
     }
 }
 
@@ -248,16 +205,6 @@ impl fmt::Display for Venue {
                 write!(f, " tags [{}]", tags.join(", "))?;
             }
             writeln!(f)?;
-        }
-        let mut groups: Vec<_> = self.groups.values().collect();
-        groups.sort_by_key(|g| g.name());
-        for group in &groups {
-            writeln!(
-                f,
-                "  group \"{}\" = {}",
-                group.name,
-                group.fixtures.join(", ")
-            )?;
         }
         write!(f, "}}")
     }
@@ -318,25 +265,6 @@ mod tests {
         assert!(f.tags().is_empty());
     }
 
-    // ── Group ──────────────────────────────────────────────────────
-
-    #[test]
-    fn group_new() {
-        let g = Group::new(
-            "front_wash".to_string(),
-            vec!["par1".to_string(), "par2".to_string()],
-        );
-        assert_eq!(g.name(), "front_wash");
-        assert_eq!(g.fixtures().len(), 2);
-        assert_eq!(g.fixtures()[0], "par1");
-    }
-
-    #[test]
-    fn group_empty_fixtures() {
-        let g = Group::new("empty".to_string(), vec![]);
-        assert!(g.fixtures().is_empty());
-    }
-
     // ── Venue ──────────────────────────────────────────────────────
 
     #[test]
@@ -347,17 +275,9 @@ mod tests {
             Fixture::new("par1".to_string(), "RGB".to_string(), 1, 1, vec![]),
         );
 
-        let mut groups = HashMap::new();
-        groups.insert(
-            "all".to_string(),
-            Group::new("all".to_string(), vec!["par1".to_string()]),
-        );
-
-        let v = Venue::new("Club".to_string(), fixtures, groups);
+        let v = Venue::new("Club".to_string(), fixtures);
         assert_eq!(v.name(), "Club");
         assert_eq!(v.fixtures().len(), 1);
         assert!(v.fixtures().contains_key("par1"));
-        assert_eq!(v.groups().len(), 1);
-        assert!(v.groups().contains_key("all"));
     }
 }

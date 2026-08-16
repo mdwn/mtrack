@@ -935,11 +935,6 @@
                   {$t("lighting.fixtureCount", {
                     values: { count: Object.keys(v.fixtures).length },
                   })}
-                  {#if Object.keys(v.groups).length > 0}
-                    &middot; {$t("lighting.groupCount", {
-                      values: { count: Object.keys(v.groups).length },
-                    })}
-                  {/if}
                 </div>
                 <div class="item-meta">
                   {Object.values(v.fixtures)

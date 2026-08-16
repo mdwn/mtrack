@@ -19,7 +19,7 @@
     saveLightingFile,
     deleteLightingFile,
     validateLighting,
-    fetchVenues,
+    fetchLightingGroups,
   } from "../../lib/api/config";
   import {
     fetchWaveform,
@@ -199,16 +199,8 @@
 
   async function loadVenueGroups() {
     try {
-      const venues = await fetchVenues();
-      const groupNames: string[] = [];
-      for (const v of Object.values(venues)) {
-        if (v.groups) {
-          for (const g of Object.keys(v.groups)) {
-            if (!groupNames.includes(g)) groupNames.push(g);
-          }
-        }
-      }
-      venueGroups = groupNames.sort();
+      const groups = await fetchLightingGroups();
+      venueGroups = groups.map((g) => g.name).sort();
     } catch {
       // Non-critical
     }

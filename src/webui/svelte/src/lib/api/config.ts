@@ -337,7 +337,6 @@ export interface FixtureData {
 export interface VenueData {
   name: string;
   fixtures: Record<string, FixtureData>;
-  groups: Record<string, { name: string; fixtures: string[] }>;
 }
 
 export async function fetchFixtureTypes(
@@ -391,6 +390,18 @@ export async function deleteFixtureType(
   if (!res.ok) throw await apiError(res, "Failed to delete fixture type");
 }
 
+/// Group names a cue can target, with the fixtures each currently resolves to.
+/// These are the logical groups from `dmx.lighting.groups`; venues no longer
+/// define groups of their own.
+export async function fetchLightingGroups(): Promise<
+  { name: string; fixtures: string[] }[]
+> {
+  const res = await get("/lighting/groups");
+  if (!res.ok) throw await apiError(res, "Failed to fetch lighting groups");
+  const data = await res.json();
+  return data.groups ?? [];
+}
+
 export async function fetchVenues(
   dir?: string,
 ): Promise<Record<string, VenueData>> {
@@ -423,7 +434,6 @@ export async function saveVenue(
       start_channel: number;
       tags: string[];
     }[];
-    groups?: Record<string, string[]>;
   },
   dir?: string,
 ): Promise<void> {
