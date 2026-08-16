@@ -482,7 +482,6 @@ pub(super) async fn delete_fixture_type(
     )
 }
 
-/// GET /api/lighting/venues — lists all venues from the directory.
 /// The tempo a `.light` file at this path will be loaded with, found by
 /// matching the path against the loaded songs' directories.
 fn song_tempo_for_path(
@@ -539,6 +538,7 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
     Json(json!({"groups": groups})).into_response()
 }
 
+/// GET /api/lighting/venues — lists all venues from the directory.
 pub(super) async fn get_venues(
     State(state): State<WebUiState>,
     Query(query): Query<LightingDirQuery>,

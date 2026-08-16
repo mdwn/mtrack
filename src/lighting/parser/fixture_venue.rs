@@ -272,9 +272,15 @@ fn parse_venue_content(
                 return Err(format!(
                     "venue group `{name}` is no longer supported. Tag the fixtures \
                      instead — add a tag to each member, e.g. `tags [\"{name}\"]`, \
-                     and declare a logical group under `dmx.lighting.groups` in the \
-                     player config with `constraints: [AllOf: [\"{name}\"]]`. Tags \
-                     survive a venue change; venue groups did not."
+                     then declare a logical group under `dmx.lighting.groups` in \
+                     the player config:\n\
+                     \n\
+                     \x20   groups:\n\
+                     \x20     - name: {name}\n\
+                     \x20       constraints:\n\
+                     \x20         - AllOf: [\"{name}\"]\n\
+                     \n\
+                     Tags survive a venue change; venue groups did not."
                 )
                 .into());
             }

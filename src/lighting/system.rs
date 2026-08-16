@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
 
-use tracing::info;
+use tracing::{info, warn};
 
 use super::parser::{parse_fixture_types, parse_venues};
 use super::types::{Fixture, FixtureType, Venue};
@@ -75,8 +75,7 @@ impl LightingSystem {
 
     /// Returns an iterator over the (name, logical group) pairs known to the
     /// system. These are the tag/constraint-based groups defined under
-    /// `dmx.lighting.groups` in the player config — distinct from the
-    /// explicit-member-list groups defined inside `venue "..." { … }` blocks.
+    /// `dmx.lighting.groups` in the player config.
     pub fn logical_groups_iter(&self) -> impl Iterator<Item = (&String, &LogicalGroup)> {
         self.logical_groups.iter()
     }
@@ -167,8 +166,8 @@ impl LightingSystem {
                     self.fixture_types.insert(name, fixture_type);
                 }
             }
-            Err(_e) => {
-                // Failed to parse fixture types, continue loading other files
+            Err(e) => {
+                warn!(file = %path.display(), error = %e, "Failed to parse fixture type file");
             }
         }
 
@@ -186,8 +185,12 @@ impl LightingSystem {
                     self.venues.insert(name, venue);
                 }
             }
-            Err(_e) => {
-                // Failed to parse venues, continue loading other files
+            Err(e) => {
+                // One bad file must not stop the rest from loading, but it
+                // must not vanish either: the venue-group migration advice
+                // is raised as a parse error, and swallowing it turns a
+                // fixable file into "Venue 'x' not found" much later.
+                warn!(file = %path.display(), error = %e, "Failed to parse venue file");
             }
         }
 
@@ -199,13 +202,12 @@ impl LightingSystem {
         self.current_venue.as_deref()
     }
 
-    /// Gets the current venue object (with fixtures and groups).
+    /// Gets the current venue object and its fixtures.
     pub fn get_current_venue(&self) -> Option<&crate::lighting::types::Venue> {
         let venue_name = self.current_venue.as_deref()?;
         self.venues.get(venue_name)
     }
 
-    /// Gets a group by name from the current venue.
     /// Resolves a logical group to concrete fixture names for the current venue.
     /// Returns an empty vector if the group cannot be resolved (graceful fallback).
     pub fn resolve_logical_group(
@@ -250,6 +252,28 @@ impl LightingSystem {
     /// Resolves a logical group with graceful fallback - returns empty vector if group cannot be resolved.
     /// This allows songs to work even when some groups aren't available at the current venue.
     pub fn resolve_logical_group_graceful(&mut self, group_name: &str) -> Vec<String> {
+        self.resolve_logical_group_graceful_inner(group_name, &mut Vec::new())
+    }
+
+    /// `FallbackTo` is an author-supplied group name that nothing validates, so
+    /// `a -> b -> a` (or `a -> a`) is expressible. Every group takes the
+    /// fallback branch when no venue is selected, which is the normal state for
+    /// a config UI, so the cycle has to be broken here rather than assumed away.
+    fn resolve_logical_group_graceful_inner(
+        &mut self,
+        group_name: &str,
+        seen: &mut Vec<String>,
+    ) -> Vec<String> {
+        if seen.iter().any(|g| g == group_name) {
+            warn!(
+                group = group_name,
+                chain = ?seen,
+                "Cycle in logical group FallbackTo constraints; resolving to no fixtures"
+            );
+            return Vec::new();
+        }
+        seen.push(group_name.to_string());
+
         match self.resolve_logical_group(group_name) {
             Ok(fixtures) => fixtures,
             Err(_) => {
@@ -268,7 +292,7 @@ impl LightingSystem {
                     };
 
                 if let Some(fallback_group) = fallback_group {
-                    return self.resolve_logical_group_graceful(&fallback_group);
+                    return self.resolve_logical_group_graceful_inner(&fallback_group, seen);
                 }
 
                 Vec::new()

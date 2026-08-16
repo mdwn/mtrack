@@ -236,11 +236,12 @@ pub struct ValidateLightingArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EvaluateShowArgs {
-    /// Song name as listed by `list_songs`. Evaluates the song's registered
-    /// lighting shows. Mutually exclusive with `source`.
+    /// Song name as listed by `list_songs`. Alone, evaluates the song's
+    /// registered lighting shows. Passed with `source`, supplies that song's
+    /// tempo map so a draft using `@bar`/`beat` timing can be evaluated.
     pub song: Option<String>,
     /// `.light` DSL source to evaluate directly, without registering it against
-    /// a song. Mutually exclusive with `song`.
+    /// a song. Pass `song` as well if the source uses measure-based timing.
     pub source: Option<String>,
     /// Times to evaluate, each `mm:ss.mmm`, `Ns`, or a bare number of seconds.
     pub times: Vec<String>,
@@ -256,10 +257,12 @@ fn default_true() -> bool {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AnalyzeShowArgs {
-    /// Song name as listed by `list_songs`. Analyses the song's registered
-    /// lighting shows. Mutually exclusive with `source`.
+    /// Song name as listed by `list_songs`. Alone, analyses the song's
+    /// registered lighting shows. Passed with `source`, supplies that song's
+    /// tempo map so a draft using `@bar`/`beat` timing can be analysed.
     pub song: Option<String>,
-    /// `.light` DSL source to analyse directly. Mutually exclusive with `song`.
+    /// `.light` DSL source to analyse directly. Pass `song` as well if the
+    /// source uses measure-based timing.
     pub source: Option<String>,
 }
 
@@ -273,14 +276,15 @@ pub struct GetCuesArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiffShowsArgs {
-    /// Baseline: a song name, whose registered shows are used.
-    /// Mutually exclusive with `a_source`.
+    /// Baseline: a song name, whose registered shows are used. With
+    /// `a_source`, supplies the tempo map that `a_source` is parsed against.
     pub a_song: Option<String>,
-    /// Baseline: `.light` DSL source. Mutually exclusive with `a_song`.
+    /// Baseline: `.light` DSL source. Pass `a_song` too if it uses `@bar`/`beat`.
     pub a_source: Option<String>,
-    /// Candidate: a song name. Mutually exclusive with `b_source`.
+    /// Candidate: a song name. With `b_source`, supplies the tempo map that
+    /// `b_source` is parsed against.
     pub b_song: Option<String>,
-    /// Candidate: `.light` DSL source. Mutually exclusive with `b_song`.
+    /// Candidate: `.light` DSL source. Pass `b_song` too if it uses `@bar`/`beat`.
     pub b_source: Option<String>,
 }
 
@@ -1128,10 +1132,14 @@ impl McpServer {
         Parameters(args): Parameters<ValidateLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
         let tempo = self.song_tempo_map(args.song.as_deref())?;
-        match crate::lighting::parser::parse_light_shows_with_tempo(&args.source, tempo.as_ref()) {
+        let parsed_shows =
+            crate::lighting::parser::parse_light_shows_with_tempo(&args.source, tempo.as_ref())
+                .map_err(|e| e.to_string());
+        match parsed_shows {
             Ok(shows) => {
-                let parsed: Vec<_> = shows.values().cloned().collect();
-                let warnings = self.lint_warnings(&parsed, args.song.as_deref())?;
+                let mut parsed: Vec<_> = shows.values().cloned().collect();
+                sort_shows(&mut parsed);
+                let warnings = self.lint_warnings(&parsed, args.song.as_deref()).await?;
                 let mut summary: Vec<Value> = shows
                     .iter()
                     .map(|(name, show)| {
@@ -1156,7 +1164,7 @@ impl McpServer {
             }
             Err(e) => Ok(ok_json(json!({
                 "ok": false,
-                "error": e.to_string(),
+                "error": e,
             }))),
         }
     }
@@ -1168,11 +1176,42 @@ impl McpServer {
     /// A check whose input is missing is skipped rather than guessed at, so
     /// validating a bare source with no song and no venue reports nothing
     /// rather than reporting everything as suspicious.
-    fn lint_warnings(
+    async fn lint_warnings(
         &self,
         shows: &[crate::lighting::parser::LightShow],
         song: Option<&str>,
     ) -> Result<Vec<Value>, McpError> {
+        // Resolved before the song is looked up: `LintContext` borrows the
+        // song, and a borrow of it must not be held across an await.
+        let group_fixture_counts = match self
+            .player
+            .dmx_engine()
+            .and_then(|dmx| dmx.broadcast_handles().lighting_system)
+        {
+            Some(system) => {
+                let names = group_names(shows);
+                // The lighting-system mutex is shared with the effects loop
+                // thread, so taking it belongs off the async worker.
+                tokio::task::spawn_blocking(move || {
+                    let mut guard = system.lock();
+                    let mut counts = std::collections::HashMap::new();
+                    // Only when a venue is actually loaded. Without one every
+                    // group resolves to nothing, and reporting them all as empty
+                    // would be noise rather than a finding.
+                    if guard.get_current_venue().is_some() {
+                        for name in names {
+                            let count = guard.resolve_logical_group_graceful(&name).len();
+                            counts.insert(name, count);
+                        }
+                    }
+                    counts
+                })
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?
+            }
+            None => std::collections::HashMap::new(),
+        };
+
         let song = match song {
             Some(name) => Some(
                 self.player
@@ -1183,28 +1222,11 @@ impl McpServer {
             None => None,
         };
 
-        let mut ctx = crate::lighting::lint::LintContext {
+        let ctx = crate::lighting::lint::LintContext {
             song_duration: song.as_ref().map(|s| s.duration()),
             beat_grid: song.as_ref().and_then(|s| s.beat_grid()),
-            ..Default::default()
+            group_fixture_counts,
         };
-
-        if let Some(system) = self
-            .player
-            .dmx_engine()
-            .and_then(|dmx| dmx.broadcast_handles().lighting_system)
-        {
-            let mut guard = system.lock();
-            // Only when a venue is actually loaded. Without one every group
-            // resolves to nothing, and reporting them all as empty would be
-            // noise rather than a finding.
-            if guard.get_current_venue().is_some() {
-                for name in group_names(shows) {
-                    let count = guard.resolve_logical_group_graceful(&name).len();
-                    ctx.group_fixture_counts.insert(name, count);
-                }
-            }
-        }
 
         Ok(crate::lighting::lint::lint_shows(shows, &ctx)
             .into_iter()
@@ -1248,10 +1270,24 @@ impl McpServer {
         McpError,
     > {
         match (&args.song, &args.source) {
-            (Some(_), Some(_)) => Err(McpError::invalid_params(
-                "pass either `song` or `source`, not both",
-                None,
-            )),
+            (Some(name), Some(source)) => {
+                // A draft evaluated against the song it belongs to. Without the
+                // song's tempo the parser rejects every `@bar`/`beat` construct,
+                // so this is the only way to evaluate an unsaved edit of a
+                // measure-timed show.
+                let song = self
+                    .player
+                    .songs()
+                    .get(name)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let tempo = song_lighting_tempo(&song);
+                let shows =
+                    crate::lighting::parser::parse_light_shows_with_tempo(source, tempo.as_ref())
+                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let mut shows: Vec<_> = shows.into_values().collect();
+                sort_shows(&mut shows);
+                Ok((shows, tempo))
+            }
             (None, None) => Err(McpError::invalid_params(
                 "pass either `song` (a loaded song's registered shows) or \
                  `source` (raw `.light` DSL)",
@@ -1281,8 +1317,15 @@ impl McpServer {
                 Ok((shows, song_lighting_tempo(&song)))
             }
             (None, Some(source)) => {
-                let shows = crate::lighting::parser::parse_light_shows(source)
-                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let shows = crate::lighting::parser::parse_light_shows(source).map_err(|e| {
+                    McpError::invalid_params(
+                        format!(
+                            "{e}\n\nIf this show uses `@bar`/`beat` timing, pass `song` \
+                             alongside `source` so the song's tempo map can resolve them."
+                        ),
+                        None,
+                    )
+                })?;
                 let mut shows: Vec<_> = shows.into_values().collect();
                 sort_shows(&mut shows);
                 Ok((shows, None))
@@ -1391,7 +1434,7 @@ impl McpServer {
         // Warnings come from the shared linter rather than a second
         // implementation here, so `analyze_show` and `validate_lighting` cannot
         // disagree about the same show.
-        let warnings = self.lint_warnings(&shows, args.song.as_deref())?;
+        let warnings = self.lint_warnings(&shows, args.song.as_deref()).await?;
 
         let analysis = tokio::task::spawn_blocking(move || {
             crate::lighting::analyze::analyze_show(shows, fallback_tempo.as_ref())
@@ -1536,7 +1579,7 @@ impl McpServer {
     }
 
     #[tool(description = "List the venues known to the running DMX engine. Each \
-        venue lists its groups and fixture count.")]
+        venue lists its fixture count.")]
     async fn list_venues(&self) -> Result<CallToolResult, McpError> {
         let dmx = match self.player.dmx_engine() {
             Some(d) => d,
@@ -2299,7 +2342,6 @@ impl ServerHandler for McpServer {
     }
 }
 
-/// Returns a successful tool result wrapping a JSON value as pretty-printed text.
 /// Renders one evaluation — predicted or live — as JSON.
 ///
 /// `evaluate_show` and `get_fixture_state` share this so the two surfaces
@@ -2326,6 +2368,8 @@ fn evaluation_json(
     let mut entry = json!({
         "time": evaluation.time.as_secs_f64(),
         "position": format_duration(evaluation.time),
+        // Null, not false, when no venue is loaded: there were no fixtures to
+        // judge, and "I cannot tell" must not read as "the rig is lit".
         "dark": evaluation.is_dark(),
         "active_effects": effects,
     });
@@ -2584,6 +2628,7 @@ fn group_names(shows: &[crate::lighting::parser::LightShow]) -> Vec<String> {
     names
 }
 
+/// Returns a successful tool result wrapping a JSON value as pretty-printed text.
 pub(crate) fn ok_json(value: Value) -> CallToolResult {
     let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
     CallToolResult::success(vec![Content::text(text)])
@@ -2854,11 +2899,6 @@ async fn send_resource_updated(
     peer.send_notification(notif).await
 }
 
-/// Builds the player-status JSON snapshot used by both `tools/call status`
-/// and the `mtrack://status` resource. Free function so background tasks
-/// can compute it without capturing an `McpServer` (which would form a
-/// reference cycle through `subscriptions` → `SubscriptionHandle` →
-/// `AbortHandle` and silently defeat abort-on-Drop).
 /// Builds the live lighting payload. Free function so the subscription task can
 /// call it while capturing only `Arc<Player>`, for the same reason
 /// [`build_status_snapshot`] is one.
@@ -2890,6 +2930,11 @@ async fn build_lighting_snapshot(player: &Player) -> Result<Value, McpError> {
     Ok(value)
 }
 
+/// Builds the player-status JSON snapshot used by both `tools/call status`
+/// and the `mtrack://status` resource. Free function so background tasks
+/// can compute it without capturing an `McpServer` (which would form a
+/// reference cycle through `subscriptions` → `SubscriptionHandle` →
+/// `AbortHandle` and silently defeat abort-on-Drop).
 async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
     let playlist = player.get_playlist();
     let current = playlist.current();
@@ -3025,6 +3070,7 @@ impl McpServer {
                     continue;
                 }
 
+                let sent = rx.borrow().clone();
                 let payload = build_lighting_snapshot(&player)
                     .await
                     .unwrap_or(Value::Null);
@@ -3039,7 +3085,11 @@ impl McpServer {
                 // next payload is the state then, not a replay of this backlog.
                 tokio::time::sleep(LIGHTING_NOTIFY_INTERVAL).await;
                 rx.mark_unchanged();
-                last = rx.borrow().clone();
+                // Deliberately the state we *sent*, not the state now: the
+                // sampler re-sends unconditionally, so `== last` is the only
+                // change filter. Adopting the post-sleep value here would swallow
+                // any transition that happened during the sleep and then held.
+                last = sent;
             }
         });
         Ok(handle.abort_handle())
