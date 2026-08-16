@@ -16,7 +16,10 @@
   import { t } from "svelte-i18n";
   import { SECTION_COLORS, sectionColor } from "../../lib/sectionColors";
   import { beatsInMeasure, sigAtMeasure } from "../../lib/util/tempo";
-  import type { BeatGrid } from "../../lib/util/beatGrid";
+  import {
+    beatsInMeasure as gridBeatsInMeasure,
+    type BeatGrid,
+  } from "../../lib/util/beatGrid";
   import type { TempoConfig } from "../../lib/api/songs";
   import MarkerDialog from "./MarkerDialog.svelte";
   import PositionPicker, { type Position } from "./PositionPicker.svelte";
@@ -77,6 +80,20 @@
   /** "13" for a measure-line boundary, "13.4" with a beat offset. */
   function posLabel(measure: number, beat?: number): string {
     return beat && beat !== 1 ? `${measure}.${beat}` : `${measure}`;
+  }
+
+  /** How many beats the boundary's measure holds.
+   *
+   * A `tempo:` block is what the grid is built from, so its meter is the
+   * answer and carries the signature the ruler labels. Without one the grid
+   * comes from click analysis, where the tempo helper would answer 4 for a
+   * measure that holds three — and a beat past the measure is one the
+   * backend's `beat_time` refuses. */
+  function sectionBeatsIn(measure: number): number {
+    if (tempo) return beatsInMeasure(tempo, measure);
+    return (
+      gridBeatsInMeasure(beatGrid, measure) ?? beatsInMeasure(null, measure)
+    );
   }
 
   /** Position ordering by resolved time, the way the edge drags do it.
@@ -170,7 +187,7 @@
         showToggle={false}
         {maxMeasure}
         {beatGrid}
-        beatsIn={(m) => beatsInMeasure(tempo, m)}
+        beatsIn={sectionBeatsIn}
         sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
         ghostTime={playheadTime}
         onchange={(v) => v.kind === "beat" && setBoundary("start", v)}
@@ -187,7 +204,7 @@
         showToggle={false}
         {maxMeasure}
         {beatGrid}
-        beatsIn={(m) => beatsInMeasure(tempo, m)}
+        beatsIn={sectionBeatsIn}
         sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
         ghostTime={playheadTime}
         onchange={(v) => v.kind === "beat" && setBoundary("end", v)}

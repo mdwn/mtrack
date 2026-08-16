@@ -66,8 +66,9 @@ export function maxBeatInMeasure(
 
 /**
  * Seconds at a (possibly fractional) beat of a measure, mirroring the
- * backend's `BeatGrid::beat_time`: measures and beats are 1-based, and a
- * fractional beat interpolates between grid beats.
+ * backend's `BeatGrid::beat_time`: measures and beats are 1-based, a
+ * fractional beat interpolates between grid beats, and a beat past the end
+ * of its measure is refused rather than read off the next measure.
  */
 export function timeAtPosition(
   grid: BeatGrid | null | undefined,
@@ -76,6 +77,8 @@ export function timeAtPosition(
 ): number | null {
   if (!grid || beat < 1) return null;
   const offset = beat - 1;
+  const beats = beatsInMeasure(grid, measure);
+  if (beats === null || Math.floor(offset) >= beats) return null;
   const base = grid.measure_starts[measure - 1];
   if (base === undefined) return null;
   const t0 = grid.beats[base + Math.floor(offset)];

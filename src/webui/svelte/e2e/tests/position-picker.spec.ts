@@ -75,7 +75,11 @@ async function openWithPlayhead(page: Page, yaml = SONG_YAML): Promise<void> {
   await expect(page.locator(".playhead-info__pos")).toHaveText("m3.3");
 }
 
-async function routes(page: Page, yaml = SONG_YAML) {
+async function routes(
+  page: Page,
+  yaml = SONG_YAML,
+  patchSong?: (song: (typeof SONGS)["songs"][number]) => void,
+) {
   await page.route(`**/api/songs/${ENC}`, async (route) => {
     if (route.request().method() !== "GET") {
       await route.fulfill({ status: 200, body: "{}" });
@@ -94,6 +98,7 @@ async function routes(page: Page, yaml = SONG_YAML) {
         s.has_tempo_map = true;
         s.duration_ms = 34000;
         s.duration_display = "0:34";
+        patchSong?.(s);
       }
     }
     await route.fulfill({ json: data });
@@ -190,6 +195,39 @@ test.describe("Position picker", () => {
     await expect(
       end.locator('.pp-measure[data-measure="9"] .pp-sig'),
     ).toHaveText("3/4");
+  });
+
+  test("without a tempo block the measure lengths come off the grid", async ({
+    page,
+  }) => {
+    // No `tempo:` means no meter to consult, and the grid is whatever click
+    // analysis found — here measures of three. Assuming 4/4 would offer a
+    // beat 4, which the backend's `beat_time` reads as the next measure's
+    // downbeat and refuses.
+    const yaml =
+      SONG_YAML.slice(0, SONG_YAML.indexOf("tempo:")) +
+      SONG_YAML.slice(SONG_YAML.indexOf("pilot:"));
+    await routes(page, yaml, (song) => {
+      song.beat_grid!.measure_starts = song
+        .beat_grid!.beats.map((_, i) => i)
+        .filter((i) => i % 3 === 0);
+    });
+    await page.goto(`/#/songs/${ENC}/sections`);
+    await expect(page.locator(".section-timeline-editor")).toBeVisible();
+
+    const dialog = await openSectionDialog(page);
+    const start = picker(dialog, "Start");
+    await expect(
+      start.locator('.pp-measure[data-measure="5"] .pp-num'),
+    ).toHaveCount(3);
+
+    await start.getByRole("button", { name: "Start: type a position" }).click();
+    const field = start.getByRole("textbox", {
+      name: "Start: type a position",
+    });
+    await field.fill("5.4");
+    await field.press("Enter");
+    await expect(start.locator(".pp-value")).toHaveText("m5 · b3½");
   });
 
   test("pilot hints anchor through the same picker", async ({ page }) => {
