@@ -2281,6 +2281,161 @@ async fn mcp_lighting_state_resource_pushes_on_change() -> Result<(), Box<dyn Er
 }
 
 // ---------------------------------------------------------------------------
+// Test 3c-nonies: MCP surface consistency (#335)
+// ---------------------------------------------------------------------------
+
+/// Three items from #335: `get_cues` reading another song without making it
+/// current, `play_song_from` reporting a no-op instead of echoing success, and
+/// deleting a song's lighting file taking its `song.yaml` reference with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_surface_consistency_fixes() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+
+    // The bundled shows target groups this fixture's config does not declare,
+    // which fails validation at play time. Replace them with shows aimed at
+    // `all_lights`, which it does declare.
+    let song_lighting_dir = fixture.root.join("songs/dsl-light-show-song/lighting");
+    std::fs::write(
+        song_lighting_dir.join("main_show.light"),
+        "show \"Main\" {\n    @00:00.000\n    all_lights: static color: \"blue\", duration: 8s\n\n    @00:04.000\n    all_lights: static color: \"red\", duration: 4s\n}\n",
+    )?;
+    std::fs::write(
+        song_lighting_dir.join("outro.light"),
+        "show \"Outro\" {\n    @00:20.000\n    all_lights: static color: \"white\", duration: 1s\n}\n",
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let song = "DSL Light Show Song";
+
+    // --- get_cues takes a song, and reading it is not a side effect ---------
+    let before = tool_json(&call_tool(&client, &url, &session, 1200, "status", json!({})).await);
+    let current_before = before["current_song"]["name"].as_str().map(str::to_owned);
+
+    let cues = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1201,
+            "get_cues",
+            json!({"song": song}),
+        )
+        .await,
+    );
+    assert_eq!(cues["song"], song, "{cues}");
+    assert!(
+        cues["cues"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false),
+        "expected cues for a song with a show: {cues}"
+    );
+
+    let after = tool_json(&call_tool(&client, &url, &session, 1202, "status", json!({})).await);
+    assert_eq!(
+        after["current_song"]["name"].as_str().map(str::to_owned),
+        current_before,
+        "reading another song's cues must not change which song is current"
+    );
+
+    // --- play_song_from reports a no-op rather than echoing success --------
+    let started = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1203,
+            "play_song_from",
+            json!({"song_name": song, "start_time": "0.5"}),
+        )
+        .await,
+    );
+    assert_eq!(started["started"], true, "{started}");
+
+    // Second call while playing: the player refuses, and this must say so
+    // rather than returning the requested time as though it had seeked.
+    let refused = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1204,
+            "play_song_from",
+            json!({"song_name": song, "start_time": "1:49.400"}),
+        )
+        .await,
+    );
+    assert_eq!(refused["started"], false, "{refused}");
+    assert!(
+        refused.get("start_time").is_none(),
+        "echoing the requested time is what made this misleading: {refused}"
+    );
+    assert!(
+        refused["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("already playing"),
+        "{refused}"
+    );
+
+    let _ = call_tool(&client, &url, &session, 1205, "stop", json!({})).await;
+
+    // --- deleting a song's lighting file unregisters it too -----------------
+    let deleted = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1206,
+            "delete_song_lighting",
+            json!({"song": song, "file": "outro.light"}),
+        )
+        .await,
+    );
+    assert_eq!(deleted["unregistered"], true, "{deleted}");
+
+    // The file is gone and, crucially, the song still loads — a dangling
+    // reference would fail its next load.
+    let details = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1207,
+            "song_details",
+            json!({"name": song}),
+        )
+        .await,
+    );
+    let shows = details["dsl_lighting_shows"].as_array().expect("shows");
+    assert!(
+        !shows.iter().any(|s| s.to_string().contains("outro")),
+        "deleted show should be gone: {details}"
+    );
+    let yaml = std::fs::read_to_string(fixture.root.join("songs/dsl-light-show-song/song.yaml"))?;
+    assert!(
+        !yaml.contains("outro.light"),
+        "reference should be gone: {yaml}"
+    );
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3d: profile add → update → remove round-trip
 // ---------------------------------------------------------------------------
 

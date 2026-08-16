@@ -36,7 +36,7 @@ show "Optional Name" {
 | `static`  | `duration`                                             | Hold a color/intensity. Use `color`, and `intensity` or `dimmer` for the level. |
 | `cycle`   | one or more `color:`, `duration`                       | Iterates colors. Optional `speed`, `direction`. |
 | `strobe`  | `frequency`, `duration`                                | Hz strobe. Optional `intensity`. |
-| `pulse`   | `frequency`, `duration`                                | Sinusoidal pulse. Optional `intensity`. |
+| `pulse`   | `frequency`, `duration`                                | Sinusoidal pulse. Optional `base_level` (default 50%) and `pulse_amplitude` (also spelled `intensity`). |
 | `chase`   | `speed`, `duration`                                    | A moving brightness mask over the layers beneath — needs a color bed under it. Optional `direction`, `pattern: linear|snake|random`. |
 | `dimmer`  | `start_level`, `end_level`, `duration`                 | Linear ramp; `curve: linear` optional. |
 | `rainbow` | `duration`                                             | Hue sweep. Optional `speed`. |
@@ -63,6 +63,11 @@ Every effect must specify a finite `duration`. Effects can crossfade — set
   - No other effect reads `direction`; on `rainbow` it is accepted and ignored.
 - `layer`: `background | midground | foreground` (grandMA-inspired layers).
 - `blend_mode`: `replace | multiply | add | overlay | screen`.
+
+A `pulse`'s amplitude is added *on top of* its base level: it sweeps
+`base_level` to `base_level + amplitude` rather than modulating around the level
+underneath. `pulse intensity: 16%` at the default base sweeps 50%–66%, not ±16%.
+Set `base_level` explicitly to place the pulse where you want it.
 
 ### Layer commands
 

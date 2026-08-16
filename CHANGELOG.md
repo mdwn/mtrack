@@ -30,6 +30,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP surface consistency (#335)**: several small inconsistencies that were most of the friction
+  in scripting against the server.
+
+  `get_cues` takes an optional `song`, so another song's cues can be read without making it
+  current — a read should not have the side effect of changing what is queued.
+
+  `play_song_from` and `play_from` no longer report success for a no-op. The player refuses to
+  start a song while one is already playing; these echoed the requested `start_time` back anyway,
+  which reads as a successful seek. They now return `started: false` with the reason and a pointer
+  to `seek`, and omit the misleading time entirely.
+
+  `delete_song_lighting`, `delete_venue` and `delete_fixture_type` exist. Deleting a song's
+  lighting file also removes its `lighting:` entry — the inverse of registering it on write —
+  since deleting the file alone leaves a dangling reference that fails the song's next load.
+
+  The DSL reference's `pulse` entry was incomplete rather than wrong: it listed only `intensity`,
+  omitting `base_level` and `pulse_amplitude`, which the parser accepts and the effects
+  documentation already described. It now also carries the sweep semantics — amplitude is added
+  *on top of* the base level, so `intensity: 16%` at the default base sweeps 50%–66%, not ±16%.
+
 - **Lighting arming is guarded and observable (#332)**: a seek or song change starts a new
   playback while the outgoing one's song-time tracker is still winding down, carrying the
   *previous* start offset. One stale write from it is enough to silence a show for its whole
