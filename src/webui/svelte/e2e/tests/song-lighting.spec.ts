@@ -54,7 +54,9 @@ test.describe("Song Detail - Lighting Tab", () => {
 
   test("Validate button calls validation API", async ({ page }) => {
     let validateCalled = false;
-    await page.route("**/api/lighting/validate", async (route) => {
+    // The song editor sends `?song=` so the tempo map can resolve `@bar`/`beat`
+    // timing, so the pattern has to admit a query string.
+    await page.route("**/api/lighting/validate*", async (route) => {
       validateCalled = true;
       await route.fulfill({
         status: 200,
@@ -69,7 +71,9 @@ test.describe("Song Detail - Lighting Tab", () => {
   });
 
   test("successful validation shows OK message", async ({ page }) => {
-    await page.route("**/api/lighting/validate", async (route) => {
+    // The song editor sends `?song=` so the tempo map can resolve `@bar`/`beat`
+    // timing, so the pattern has to admit a query string.
+    await page.route("**/api/lighting/validate*", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -83,7 +87,9 @@ test.describe("Song Detail - Lighting Tab", () => {
   });
 
   test("failed validation shows errors", async ({ page }) => {
-    await page.route("**/api/lighting/validate", async (route) => {
+    // The song editor sends `?song=` so the tempo map can resolve `@bar`/`beat`
+    // timing, so the pattern has to admit a query string.
+    await page.route("**/api/lighting/validate*", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
