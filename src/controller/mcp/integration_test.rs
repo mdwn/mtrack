@@ -1454,19 +1454,23 @@ async fn mcp_fixture_state_matches_offline_evaluation() -> Result<(), Box<dyn Er
     );
 
     // Poll until the timeline has armed and the bed is driving the rig.
+    //
+    // The condition is `dark == false`, not "some fixtures are reported": every
+    // known fixture is always reported, dark ones as zeros, so a non-empty
+    // fixture list says nothing about whether the show has started.
     let live = {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
             let body = tool_json(
                 &call_tool(&client, &url, &session, 952, "get_fixture_state", json!({})).await,
             );
-            let lit = body["fixtures"]
-                .as_array()
-                .map(|a| !a.is_empty())
-                .unwrap_or(false);
-            if lit || std::time::Instant::now() > deadline {
+            if body["dark"] == false {
                 break body;
             }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timeline never armed within 15s: {body}"
+            );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     };
