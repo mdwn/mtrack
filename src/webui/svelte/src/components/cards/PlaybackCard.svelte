@@ -287,17 +287,6 @@
     "249, 115, 22",
   ];
 
-  function measureToMs(
-    grid: { beats: number[]; measure_starts: number[] },
-    measure: number,
-    durationMs: number,
-  ): number {
-    const idx = measure - 1;
-    if (idx < 0) return 0;
-    if (idx >= grid.measure_starts.length) return durationMs;
-    return grid.beats[grid.measure_starts[idx]] * 1000;
-  }
-
   /** Time (ms) of a measure/beat position, interpolating fractional beats the
    *  way the Rust-side `BeatGrid::beat_time` does. */
   function measureBeatToMs(
