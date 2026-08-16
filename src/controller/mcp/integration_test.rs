@@ -1405,11 +1405,11 @@ async fn mcp_fixture_state_matches_offline_evaluation() -> Result<(), Box<dyn Er
         Path::new("examples/lighting/fixture_types"),
         &fixture.root.join("lighting/fixture_types"),
     )?;
-    // Two fixtures in one group, so "how many" cannot stand in for "which".
-    // Exactly one `group` line: a venue declaring two does not parse today.
+    // Two fixtures, and two groups that resolve to different fixture sets — so
+    // a fixture *count* cannot stand in for knowing which ones are lit.
     std::fs::write(
         fixture.root.join("lighting/venues/main_stage.light"),
-        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n  group \"all_lights\" = Par1, Par2\n}\n",
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n  group \"all_lights\" = Par1, Par2\n  group \"left\" = Par1\n}\n",
     )?;
 
     // A long green bed, so the reading is stable however far playback has got.
@@ -1530,6 +1530,59 @@ async fn mcp_fixture_state_matches_offline_evaluation() -> Result<(), Box<dyn Er
     assert_eq!(
         predicted_par1["channels"], par1["channels"],
         "offline evaluation disagrees with the live rig"
+    );
+
+    // The discrimination #331 asks for. `all_lights` and `left` both resolve
+    // to fixture lists, and they differ — two effects reporting "1 fixture"
+    // and "2 fixtures" could not tell you *which*. The song's own show must
+    // target a config-declared logical group, so `left` is exercised through
+    // `source`, which does not go through song validation.
+    let half = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            955,
+            "evaluate_show",
+            json!({
+                "source": "show \"Half\" {\n    @00:00.000\n    left: static color: \"red\", duration: 30s\n}\n",
+                "times": ["1.0"]
+            }),
+        )
+        .await,
+    );
+    let half_effects = half["evaluations"][0]["active_effects"]
+        .as_array()
+        .expect("effects");
+    let half_driving: Vec<&str> = half_effects[0]["fixtures"]
+        .as_array()
+        .expect("fixtures")
+        .iter()
+        .filter_map(|f| f.as_str())
+        .collect();
+    assert_eq!(
+        half_driving,
+        vec!["Par1"],
+        "`left` covers Par1 only: {half}"
+    );
+
+    let half_fixtures = half["evaluations"][0]["fixtures"]
+        .as_array()
+        .expect("fixture states");
+    let half_par2 = half_fixtures
+        .iter()
+        .find(|f| f["name"] == "Par2")
+        .unwrap_or_else(|| panic!("Par2 missing: {half}"));
+    assert_eq!(
+        half_par2["channels"]["red"], 0,
+        "Par2 is not in `left` and must stay dark: {half_par2}"
+    );
+    assert!(
+        half_par2["driven_by"]
+            .as_array()
+            .expect("driven_by")
+            .is_empty(),
+        "nothing should be driving Par2: {half_par2}"
     );
 
     let _ = call_tool(&client, &url, &session, 954, "stop", json!({})).await;

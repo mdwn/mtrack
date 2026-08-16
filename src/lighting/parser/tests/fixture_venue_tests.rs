@@ -162,3 +162,73 @@ venue "built-in" {
     assert_eq!(block6.universe(), 1, "Block6 should be on universe 1");
     assert_eq!(block6.start_channel(), 21, "Block6 should be at address 21");
 }
+
+// ── Items following a `group` (#387) ───────────────────────────────────
+//
+// `identifier` used to be non-atomic, so pest inserted implicit whitespace
+// inside its trailing repetition and a group's member list ran past the end
+// of the line — swallowing the next `group` or `fixture` keyword. The effect
+// was that a venue could declare at most one group, and only as its final
+// item. The diagnostic blamed the *following* line, so it read as a malformed
+// name rather than an over-running member list.
+
+#[test]
+fn venue_accepts_multiple_groups() {
+    let content = r#"venue "v" {
+    fixture "P1" RGBW_Par @ 1:1
+    fixture "P2" RGBW_Par @ 1:7
+    group "all" = P1, P2
+    group "left" = P1
+    group "right" = P2
+}
+"#;
+    let venues = parse_venues(content).expect("a venue may declare more than one group");
+    let venue = venues.get("v").expect("venue `v` not found");
+
+    assert_eq!(venue.groups().len(), 3);
+    assert_eq!(
+        venue.groups().get("all").expect("all").fixtures(),
+        ["P1", "P2"]
+    );
+    assert_eq!(venue.groups().get("left").expect("left").fixtures(), ["P1"]);
+    assert_eq!(
+        venue.groups().get("right").expect("right").fixtures(),
+        ["P2"]
+    );
+}
+
+#[test]
+fn venue_accepts_a_fixture_after_a_group() {
+    // Not specific to groups following groups — anything after a group used to
+    // fail, because the member list ate the next keyword whatever it was.
+    let content = r#"venue "v" {
+    fixture "P1" RGBW_Par @ 1:1
+    group "left" = P1
+    fixture "P2" RGBW_Par @ 1:7
+}
+"#;
+    let venues = parse_venues(content).expect("a fixture may follow a group");
+    let venue = venues.get("v").expect("venue `v` not found");
+
+    assert_eq!(venue.fixtures().len(), 2);
+    assert_eq!(venue.groups().len(), 1);
+    // The group's member list must stop at P1 rather than absorbing `fixture`.
+    assert_eq!(venue.groups().get("left").expect("left").fixtures(), ["P1"]);
+}
+
+#[test]
+fn venue_group_members_do_not_run_past_the_line() {
+    // Two groups on one line: the space-separated case, so this pins the
+    // whitespace handling rather than just newline handling.
+    let content = r#"venue "v" {
+    fixture "P1" RGBW_Par @ 1:1
+    group "a" = P1 group "b" = P1
+}
+"#;
+    let venues = parse_venues(content).expect("groups may share a line");
+    let venue = venues.get("v").expect("venue `v` not found");
+
+    assert_eq!(venue.groups().len(), 2);
+    assert_eq!(venue.groups().get("a").expect("a").fixtures(), ["P1"]);
+    assert_eq!(venue.groups().get("b").expect("b").fixtures(), ["P1"]);
+}

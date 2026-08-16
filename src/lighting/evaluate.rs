@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::lighting::effects::{EffectInstance, EffectLayer, FixtureInfo};
+use crate::lighting::effects::{is_multiplier_channel, EffectInstance, EffectLayer, FixtureInfo};
 use crate::lighting::parser::LightShow;
 use crate::lighting::tempo::TempoMap;
 use crate::lighting::timeline::LightingTimeline;
@@ -53,7 +53,9 @@ pub struct EvaluatedEffect {
 #[derive(Clone, Debug)]
 pub struct Evaluation {
     pub time: Duration,
-    /// Per-fixture DMX channel values (0–255), sorted by fixture name.
+    /// Per-fixture DMX channel values (0–255), sorted by fixture name. Every
+    /// known fixture appears, including ones no effect is touching, so a dark
+    /// fixture is reported as zeros rather than by being absent.
     pub fixtures: Vec<FixtureSnapshot>,
     /// Effects running at this instant, sorted by id.
     pub active_effects: Vec<EvaluatedEffect>,
@@ -61,9 +63,6 @@ pub struct Evaluation {
 
 impl Evaluation {
     /// True when every channel of every fixture is at zero — the rig is dark.
-    ///
-    /// A fixture absent from the snapshot is dark too: the engine only emits
-    /// state for fixtures some effect is driving.
     pub fn is_dark(&self) -> bool {
         self.fixtures
             .iter()
@@ -109,6 +108,8 @@ where
         .map(|f| (f.name.clone(), f.channels.contains_key("dimmer")))
         .collect();
 
+    // Held under a second name because `fixtures` is shadowed inside the closure.
+    let venue_fixtures = fixtures;
     times
         .iter()
         .map(|&time| {
@@ -130,7 +131,8 @@ where
             // clock exactly where the elapsed offsets were computed against.
             let _ = engine.update(Duration::ZERO, Some(time));
 
-            let fixtures = compute_fixture_snapshots(&engine.get_fixture_states(), &has_dimmer);
+            let mut fixtures = compute_fixture_snapshots(&engine.get_fixture_states(), &has_dimmer);
+            fill_dark_fixtures(&mut fixtures, venue_fixtures.iter());
             let mut active_effects: Vec<EvaluatedEffect> = engine
                 .get_active_effects()
                 .values()
@@ -159,6 +161,34 @@ where
             }
         })
         .collect()
+}
+
+/// Adds every known fixture that no effect is driving, with all its channels at
+/// zero.
+///
+/// The engine only holds state for fixtures something is currently touching, so
+/// without this a dark fixture is simply missing — indistinguishable from one
+/// that is not in the venue at all. "Par2 is dark" and "Par2 does not exist"
+/// are very different answers when you are checking a show's coverage.
+fn fill_dark_fixtures<'a>(
+    snapshots: &mut Vec<FixtureSnapshot>,
+    known: impl Iterator<Item = &'a FixtureInfo>,
+) {
+    for info in known {
+        if snapshots.iter().any(|s| s.name == info.name) {
+            continue;
+        }
+        snapshots.push(FixtureSnapshot {
+            name: info.name.clone(),
+            channels: info
+                .channels
+                .keys()
+                .filter(|name| !is_multiplier_channel(name))
+                .map(|name| (name.clone(), 0u8))
+                .collect(),
+        });
+    }
+    snapshots.sort_by(|a, b| a.name.cmp(&b.name));
 }
 
 /// Snapshots a running engine into the same shape [`evaluate_show`] produces.
@@ -195,9 +225,12 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
         .collect();
     active_effects.sort_by(|a, b| a.id.cmp(&b.id));
 
+    let mut fixtures = compute_fixture_snapshots(&engine.get_fixture_states(), &has_dimmer);
+    fill_dark_fixtures(&mut fixtures, engine.get_fixture_registry().values());
+
     Evaluation {
         time: at,
-        fixtures: compute_fixture_snapshots(&engine.get_fixture_states(), &has_dimmer),
+        fixtures,
         active_effects,
     }
 }
@@ -522,10 +555,9 @@ show "T" {
             let _ = engine.update(step, Some(now));
 
             if times.contains(&now) {
-                sampled.push((
-                    now,
-                    compute_fixture_snapshots(&engine.get_fixture_states(), &has_dimmer),
-                ));
+                let mut snap = compute_fixture_snapshots(&engine.get_fixture_states(), &has_dimmer);
+                fill_dark_fixtures(&mut snap, fixtures.iter());
+                sampled.push((now, snap));
             }
             if now >= last {
                 break;
@@ -594,6 +626,42 @@ show "T" {
                 );
             }
         }
+    }
+
+    #[test]
+    fn untouched_fixtures_are_reported_dark_not_omitted() {
+        // "Par2 is dark" and "Par2 is not in this venue" are different answers.
+        // The engine only holds state for fixtures an effect is driving, so
+        // without zero-filling the second fixture would simply be missing.
+        let fixtures = vec![rgb_fixture("lit", 1), rgb_fixture("unlit", 4)];
+        let source = r#"
+show "T" {
+    @00:00.000
+    lit: static color: "blue", duration: 5s
+}
+"#;
+        let results = eval(source, &fixtures, &[1.0]);
+
+        let names: Vec<&str> = results[0]
+            .fixtures
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(names, ["lit", "unlit"], "both fixtures should be reported");
+        assert_eq!(channel(&results[0], "lit", "blue"), 255);
+        assert_eq!(channel(&results[0], "unlit", "blue"), 0);
+
+        let unlit = results[0]
+            .fixtures
+            .iter()
+            .find(|f| f.name == "unlit")
+            .expect("unlit reported");
+        assert!(
+            !unlit.channels.is_empty(),
+            "a dark fixture still names its channels"
+        );
+        assert!(unlit.channels.values().all(|&v| v == 0));
+        assert!(!results[0].is_dark(), "one fixture is lit");
     }
 
     #[test]
