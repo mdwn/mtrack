@@ -45,6 +45,11 @@ export function beatsInMeasure(
  * Beat 4.5 of a 4/4 measure is inside it — between the last beat and the
  * next downbeat — but beat 5 is the downbeat itself and belongs to the
  * measure after. So the bound is one step short of `beats + 1`.
+ *
+ * The final measure is tighter: a fractional beat resolves by interpolating
+ * towards the *next* grid beat, and past the end of the grid there is none.
+ * `BeatGrid::beat_time` returns `None` there and the section disappears from
+ * the resolved timeline, so the bound stops at the last beat that exists.
  */
 export function maxBeatInMeasure(
   grid: BeatGrid | null | undefined,
@@ -52,5 +57,9 @@ export function maxBeatInMeasure(
   step = 0.5,
 ): number | null {
   const beats = beatsInMeasure(grid, measure);
-  return beats === null ? null : Math.max(1, beats + 1 - step);
+  if (beats === null) return null;
+  const nextStart = grid?.measure_starts[measure];
+  const isLastMeasure =
+    nextStart === undefined || nextStart >= (grid?.beats.length ?? 0);
+  return Math.max(1, isLastMeasure ? beats : beats + 1 - step);
 }

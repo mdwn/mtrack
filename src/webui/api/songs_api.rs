@@ -92,6 +92,9 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                     "name": s.name,
                     "start_measure": s.start_measure,
                     "end_measure": s.end_measure,
+                    "start_beat": s.start_beat,
+                    "end_beat": s.end_beat,
+                    "color": s.color,
                 })).collect::<Vec<_>>(),
             })
         })

@@ -37,8 +37,16 @@ export interface BeatGrid {
 
 export interface SectionInfo {
   name: string;
+  /** 1-indexed, inclusive. */
   start_measure: number;
+  /** 1-indexed, exclusive. */
   end_measure: number;
+  /** Beat within `start_measure` (1-based, fractional); absent = the
+   *  measure line. */
+  start_beat?: number | null;
+  /** Beat within `end_measure` (1-based, fractional); absent = the
+   *  measure line, keeping the bound exclusive. */
+  end_beat?: number | null;
   /** Explicit display color; absent = UI palette rotation. */
   color?: string | null;
 }

@@ -199,6 +199,8 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                         "name": s.name,
                         "start_measure": s.start_measure,
                         "end_measure": s.end_measure,
+                        "start_beat": s.start_beat,
+                        "end_beat": s.end_beat,
                         "color": s.color,
                     })
                 })

@@ -535,9 +535,15 @@ export async function deleteLightingFile(name: string): Promise<void> {
   if (!res.ok) throw await apiError(res, "Failed to delete lighting file");
 }
 
+/** Validates `.light` DSL. Pass `song` when the source belongs to one —
+ *  `@bar`/`beat` timing cannot be parsed without that song's tempo map. */
 export async function validateLighting(
   content: string,
+  song?: string,
 ): Promise<{ valid: boolean; errors?: string[] }> {
-  const res = await postText("/lighting/validate", content);
+  const path = song
+    ? `/lighting/validate?song=${encodeURIComponent(song)}`
+    : "/lighting/validate";
+  const res = await postText(path, content);
   return res.json();
 }

@@ -86,17 +86,6 @@ export const CURVES = [
 // values below, `chase` takes the spatial ones. Offering the union lets the
 // editor write a show the parser rejects.
 export const CYCLE_DIRECTIONS = ["forward", "backward", "pingpong"];
-export const DIRECTIONS = [
-  "forward",
-  "backward",
-  "pingpong",
-  "left_to_right",
-  "right_to_left",
-  "top_to_bottom",
-  "bottom_to_top",
-  "clockwise",
-  "counter_clockwise",
-];
 export const CHASE_DIRECTIONS = [
   "left_to_right",
   "right_to_left",

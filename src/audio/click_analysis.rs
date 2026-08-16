@@ -259,7 +259,10 @@ impl BeatGrid {
             .collect();
         let mut refined = vec![0.0_f64; measures.len()];
         for (position, &start) in tempo_starts.iter().enumerate() {
-            let end = tempo_starts.get(position + 1).copied().unwrap_or(measures.len());
+            let end = tempo_starts
+                .get(position + 1)
+                .copied()
+                .unwrap_or(measures.len());
             let run = &measures[start..end];
             let beats: usize = run.iter().map(|m| m.beats).sum();
             let seconds = run.last().map_or(0.0, |m| m.end) - run.first().map_or(0.0, |m| m.start);

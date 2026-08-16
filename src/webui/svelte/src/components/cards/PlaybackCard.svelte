@@ -298,6 +298,26 @@
     return grid.beats[grid.measure_starts[idx]] * 1000;
   }
 
+  /** Time (ms) of a measure/beat position, interpolating fractional beats the
+   *  way the Rust-side `BeatGrid::beat_time` does. */
+  function measureBeatToMs(
+    grid: { beats: number[]; measure_starts: number[] },
+    measure: number,
+    beat: number,
+    durationMs: number,
+  ): number {
+    const startIdx = grid.measure_starts[measure - 1];
+    if (startIdx === undefined) return durationMs;
+    const offset = beat - 1;
+    const base = startIdx + Math.floor(offset);
+    const t0 = grid.beats[base];
+    if (t0 === undefined) return durationMs;
+    const frac = offset - Math.floor(offset);
+    if (frac === 0) return t0 * 1000;
+    const t1 = grid.beats[base + 1];
+    return (t1 === undefined ? t0 : t0 + (t1 - t0) * frac) * 1000;
+  }
+
   let sectionRegions = $derived.by(() => {
     const grid = $playbackStore.beat_grid;
     const dur = $playbackStore.song_duration_ms;
@@ -306,8 +326,16 @@
     if (!grid || dur <= 0 || sections.length === 0) return [];
 
     return sections.map((s, i) => {
-      const startPct = (measureToMs(grid, s.start_measure, dur) / dur) * 100;
-      const endPct = (measureToMs(grid, s.end_measure + 1, dur) / dur) * 100;
+      // `end_measure` is exclusive (config::Section) — adding one drew every
+      // region a measure too long. The beat offsets are what make a boundary
+      // beat-precise; ignoring them put the region up to half a measure away
+      // from where the active-section highlight actually flips.
+      const startPct =
+        (measureBeatToMs(grid, s.start_measure, s.start_beat ?? 1, dur) / dur) *
+        100;
+      const endPct =
+        (measureBeatToMs(grid, s.end_measure, s.end_beat ?? 1, dur) / dur) *
+        100;
       const isActive = active?.name === s.name;
       const rgb = SECTION_COLORS[i % SECTION_COLORS.length];
       return {

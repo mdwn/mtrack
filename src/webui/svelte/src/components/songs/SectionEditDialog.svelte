@@ -69,8 +69,23 @@
     return beat && beat !== 1 ? `${measure}.${beat}` : `${measure}`;
   }
 
-  /** Beat 1 is the measure line — store that as "unset". */
+  /** Beat 1 is the measure line — store that as "unset".
+   *
+   * Refuses a value that would invert the section, the same condition
+   * `canCaptureStart`/`canCaptureEnd` apply to the capture buttons. Without it
+   * a start beat could be stepped past the end beat inside a single measure,
+   * which `Section::validate` rejects on save. */
   function setBeat(field: "start_beat" | "end_beat", beat: number) {
+    const moved = {
+      measure:
+        section[field === "start_beat" ? "start_measure" : "end_measure"],
+      beat,
+    };
+    const ordered =
+      field === "start_beat"
+        ? isBefore(moved, endPos)
+        : isBefore(startPos, moved);
+    if (!ordered) return;
     onchange({ [field]: beat === 1 ? undefined : beat });
   }
 
@@ -125,12 +140,27 @@
     });
   }
 
+  /** Clamps a beat to what the destination measure actually holds. Carrying
+   * beat 4.5 into a 3/4 measure names a beat that does not exist. */
+  function clampBeat(
+    measure: number,
+    beat: number | undefined,
+  ): number | undefined {
+    if (beat === undefined || beat === 1) return undefined;
+    const max = maxBeatInMeasure(beatGrid, measure, BEAT_STEP);
+    if (max === null) return beat;
+    const clamped = Math.min(beat, max);
+    return clamped === 1 ? undefined : clamped;
+  }
+
   /** Moving the start slides the whole section, like a body drag. */
   function moveStart(start: number) {
     const clamped = Math.max(1, Math.min(start, maxMeasure - length + 1));
     onchange({
       start_measure: clamped,
       end_measure: clamped + length,
+      start_beat: clampBeat(clamped, section.start_beat),
+      end_beat: clampBeat(clamped + length, section.end_beat),
     });
   }
 
@@ -139,7 +169,11 @@
       1,
       Math.min(measures, maxMeasure + 1 - section.start_measure),
     );
-    onchange({ end_measure: section.start_measure + clamped });
+    const end = section.start_measure + clamped;
+    onchange({
+      end_measure: end,
+      end_beat: clampBeat(end, section.end_beat),
+    });
   }
 </script>
 

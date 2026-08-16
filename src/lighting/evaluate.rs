@@ -359,7 +359,10 @@ show "T" {
 
         assert_eq!(channel(&results[0], "wash", "blue"), 255);
         assert_eq!(channel(&results[1], "wash", "blue"), 255);
-        assert!(results[2].is_dark() == Some(true), "past its duration the effect is gone");
+        assert!(
+            results[2].is_dark() == Some(true),
+            "past its duration the effect is gone"
+        );
         assert!(results[3].is_dark() == Some(true));
 
         assert_eq!(results[0].active_effects.len(), 1);
@@ -392,7 +395,10 @@ show "T" {
 }
 "#;
         let results = eval(source, &fixtures, &[9.999, 10.0]);
-        assert!(results[0].is_dark() == Some(true), "not yet fired just before the cue");
+        assert!(
+            results[0].is_dark() == Some(true),
+            "not yet fired just before the cue"
+        );
         assert_eq!(channel(&results[1], "wash", "red"), 255);
     }
 
@@ -531,8 +537,14 @@ show "T" {
         let results = evaluate_show(shows(source), &fixtures, Some(&slow), &times, |e| e);
 
         assert_eq!(channel(&results[0], "wash", "blue"), 255);
-        assert!(results[1].is_dark() == Some(true), "4 beats at 120bpm ends by 6.0s");
-        assert!(results[2].is_dark() == Some(true), "the 60bpm fallback was not used");
+        assert!(
+            results[1].is_dark() == Some(true),
+            "4 beats at 120bpm ends by 6.0s"
+        );
+        assert!(
+            results[2].is_dark() == Some(true),
+            "the 60bpm fallback was not used"
+        );
     }
 
     #[test]

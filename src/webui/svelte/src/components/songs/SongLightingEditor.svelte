@@ -419,7 +419,7 @@
 
   async function handleValidate() {
     try {
-      validationResult = await validateLighting(rawContent);
+      validationResult = await validateLighting(rawContent, song.name);
     } catch (e: any) {
       validationResult = { valid: false, errors: [e.message] };
     }

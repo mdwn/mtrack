@@ -220,12 +220,29 @@ pub(super) async fn delete_lighting_file(
     }
 }
 
+/// A `?song=` on an endpoint that otherwise works on bare DSL, naming the song
+/// whose tempo map the source should be parsed against.
+#[derive(serde::Deserialize)]
+pub(super) struct ValidateQuery {
+    song: Option<String>,
+}
+
 /// POST /api/lighting/validate — validates lighting DSL content without saving.
-pub(super) async fn validate_lighting(body: String) -> impl IntoResponse {
-    // No path and no song, so nothing identifies which tempo would apply. A
-    // show that inherits one cannot be checked here; the write path, which
-    // knows the file, validates it properly.
-    match config_io::validate_light_show(&body, None) {
+///
+/// Pass `?song=` when the source belongs to one. Measure-based timing does not
+/// parse at all without a tempo map, so validating a bar/beat show without it
+/// reports a failure the save path does not agree with.
+pub(super) async fn validate_lighting(
+    State(state): State<WebUiState>,
+    Query(query): Query<ValidateQuery>,
+    body: String,
+) -> impl IntoResponse {
+    let tempo = query
+        .song
+        .as_deref()
+        .and_then(|name| state.player.songs().get(name).ok())
+        .and_then(|song| song.lighting_tempo_map());
+    match config_io::validate_light_show(&body, tempo.as_ref()) {
         Ok(()) => (StatusCode::OK, Json(json!({"valid": true}))).into_response(),
         Err(errors) => (
             StatusCode::BAD_REQUEST,
@@ -316,20 +333,26 @@ pub(super) async fn get_fixture_types(
     }
     let all = super::helpers::spawn_blocking_io("load fixture types", move || {
         let mut all = std::collections::HashMap::new();
-        load_light_files_from_dir(&dir, |content| match lighting::parser::parse_fixture_types(
-            content,
-        ) {
-            Ok(types) => {
-                all.extend(types);
-                Ok(())
-            }
-            Err(e) => Err(e),
-        })
-        .map_err(|e| e.to_string())?;
-        Ok::<_, String>(all)
+        let errors =
+            load_light_files_from_dir(&dir, |content| match lighting::parser::parse_fixture_types(
+                content,
+            ) {
+                Ok(types) => {
+                    all.extend(types);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            })
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>((all, errors))
     })
     .await?;
-    Ok((StatusCode::OK, Json(json!({"fixture_types": all}))).into_response())
+    let (all, errors) = all;
+    Ok((
+        StatusCode::OK,
+        Json(json!({"fixture_types": all, "errors": errors})),
+    )
+        .into_response())
 }
 
 /// GET /api/lighting/fixture-types/:name — returns a single fixture type.
@@ -509,7 +532,11 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
         .dmx_engine()
         .and_then(|dmx| dmx.broadcast_handles().lighting_system)
     else {
-        return Json(json!({"groups": []})).into_response();
+        // No DMX device configured — authoring on a laptop, which is the normal
+        // case for editing a show. The groups are declared in the player config,
+        // not by the engine, so the names are still knowable; only the fixtures
+        // each resolves to are not.
+        return groups_from_config(&state.config_path).await;
     };
 
     // The lighting system's mutex is shared with the effects loop thread, and
@@ -530,10 +557,42 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
         out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
         out
     })
+    .await;
+
+    match groups {
+        Ok(groups) => Json(json!({"groups": groups})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to resolve groups: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// The logical group names declared under `dmx.lighting.groups`, read from the
+/// player config when no engine is running to resolve them against.
+async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Response {
+    // codeql[rust/path-injection] config_path is set at startup, not user input.
+    let path = config_path.to_path_buf();
+    let names = tokio::task::spawn_blocking(move || {
+        crate::config::Player::deserialize(&path)
+            .ok()
+            .and_then(|player| player.dmx().and_then(|dmx| dmx.lighting()).cloned())
+            .map(|lighting| {
+                let mut names: Vec<String> = lighting.groups().keys().cloned().collect();
+                names.sort();
+                names
+            })
+            .unwrap_or_default()
+    })
     .await
     .unwrap_or_default();
 
-    Json(json!({"groups": groups})).into_response()
+    let groups: Vec<serde_json::Value> = names
+        .into_iter()
+        .map(|name| json!({"name": name, "fixtures": []}))
+        .collect();
+    Json(json!({"groups": groups, "resolved": false})).into_response()
 }
 
 /// GET /api/lighting/venues — lists all venues from the directory.
@@ -550,20 +609,26 @@ pub(super) async fn get_venues(
     }
     let all = super::helpers::spawn_blocking_io("load venues", move || {
         let mut all = std::collections::HashMap::new();
-        load_light_files_from_dir(&dir, |content| {
-            match lighting::parser::parse_venues(content) {
-                Ok(venues) => {
-                    all.extend(venues);
-                    Ok(())
+        let errors =
+            load_light_files_from_dir(&dir, |content| {
+                match lighting::parser::parse_venues(content) {
+                    Ok(venues) => {
+                        all.extend(venues);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
                 }
-                Err(e) => Err(e),
-            }
-        })
-        .map_err(|e| e.to_string())?;
-        Ok::<_, String>(all)
+            })
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>((all, errors))
     })
     .await?;
-    Ok((StatusCode::OK, Json(json!({"venues": all}))).into_response())
+    let (all, errors) = all;
+    Ok((
+        StatusCode::OK,
+        Json(json!({"venues": all, "errors": errors})),
+    )
+        .into_response())
 }
 
 /// GET /api/lighting/venues/:name — returns a single venue.
@@ -702,16 +767,33 @@ pub(super) async fn delete_venue(
 fn load_light_files_from_dir(
     dir: &std::path::Path,
     mut processor: impl FnMut(&str) -> Result<(), Box<dyn std::error::Error>>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Vec<FileError>, Box<dyn std::error::Error>> {
+    let mut errors = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("light") {
             let content = std::fs::read_to_string(&path)?;
-            processor(&content)?;
+            // Per-file, not fatal: a directory is a set of independent files,
+            // and one that no longer parses must not hide the rest. The caller
+            // reports them so the UI can say which file and why.
+            if let Err(e) = processor(&content) {
+                errors.push(FileError {
+                    file: crate::util::filename_display(&path).to_string(),
+                    error: e.to_string(),
+                });
+            }
         }
     }
-    Ok(())
+    Ok(errors)
+}
+
+/// A file in a lighting directory that could not be parsed, reported alongside
+/// the ones that could.
+#[derive(serde::Serialize)]
+struct FileError {
+    file: String,
+    error: String,
 }
 
 /// Ensures a lighting directory exists (sync version for use inside spawn_blocking).
