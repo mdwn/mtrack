@@ -456,6 +456,73 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn a_fallback_cycle_resolves_to_nothing_instead_of_overflowing_the_stack() {
+        // `FallbackTo` names a group and nothing validates that the graph is
+        // acyclic. With no venue selected every group takes the fallback
+        // branch, which is the normal state for the config UI — and the
+        // lighting editor reaches this over HTTP.
+        let mut system = LightingSystem::new();
+        system.logical_groups.insert(
+            "a".to_string(),
+            LogicalGroup::new(
+                "a".to_string(),
+                vec![GroupConstraint::FallbackTo("b".to_string())],
+            ),
+        );
+        system.logical_groups.insert(
+            "b".to_string(),
+            LogicalGroup::new(
+                "b".to_string(),
+                vec![GroupConstraint::FallbackTo("a".to_string())],
+            ),
+        );
+
+        assert!(system.resolve_logical_group_graceful("a").is_empty());
+
+        // A group that falls back to itself is the same problem, one hop short.
+        system.logical_groups.insert(
+            "self".to_string(),
+            LogicalGroup::new(
+                "self".to_string(),
+                vec![GroupConstraint::FallbackTo("self".to_string())],
+            ),
+        );
+        assert!(system.resolve_logical_group_graceful("self").is_empty());
+    }
+
+    #[test]
+    fn a_venue_file_that_does_not_parse_leaves_the_others_loaded() {
+        // The venue-group migration advice is raised as a parse error, and the
+        // loader used to swallow it silently — dropping every venue in the file
+        // and surfacing as "Venue 'x' not found" much later.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("legacy.light"),
+            "venue \"old\" {\n  fixture \"W1\" RGBW_Par @ 1:1\n  group \"wash\" [\"W1\"]\n}\n",
+        )
+        .expect("write");
+        std::fs::write(
+            dir.path().join("current.light"),
+            "venue \"new\" {\n  fixture \"W1\" RGBW_Par @ 1:1 tags [\"wash\"]\n}\n",
+        )
+        .expect("write");
+
+        let mut system = LightingSystem::new();
+        system
+            .load_venues_directory(dir.path())
+            .expect("directory loads");
+
+        assert!(
+            system.venues.contains_key("new"),
+            "a sibling file's failure must not take the good one with it"
+        );
+        assert!(
+            !system.venues.contains_key("old"),
+            "the legacy file genuinely does not parse"
+        );
+    }
+
+    #[test]
     fn test_tag_based_group_resolution() {
         let mut system = LightingSystem::new();
 

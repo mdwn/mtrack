@@ -291,7 +291,7 @@ fn parse_venue_content(
 }
 
 pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<dyn Error>> {
-    let mut name = String::new();
+    let mut name: Option<String> = None;
     let mut fixture_type = String::new();
     let mut universe = 0u16;
     let mut start_channel = 0u16;
@@ -299,9 +299,12 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
 
     for pair in pair.into_inner() {
         match pair.as_rule() {
-            Rule::string => {
-                name = extract_string(pair);
-            }
+            // Positional: the first quoted value is the fixture's name, a
+            // second is its type. Only the type may be given either way.
+            Rule::string => match name {
+                None => name = Some(extract_string(pair)),
+                Some(_) => fixture_type = extract_string(pair),
+            },
             Rule::identifier => {
                 fixture_type = pair.as_str().to_string();
             }
@@ -319,7 +322,7 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
     }
 
     Ok(Fixture::new(
-        name,
+        name.unwrap_or_default(),
         fixture_type,
         universe,
         start_channel,
