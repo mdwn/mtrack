@@ -316,6 +316,9 @@ pub fn verify_light_show(show_path: &str, config_path: Option<&str>) -> Result<(
 
     // Read and parse the light show
     let content = std::fs::read_to_string(path)?;
+    // Verified standalone, so there is no song to inherit a tempo from: a show
+    // that relies on its song's tempo cannot be checked here, and will report
+    // that it needs a tempo section.
     let shows = match parse_light_shows(&content) {
         Ok(shows) => shows,
         Err(e) => {

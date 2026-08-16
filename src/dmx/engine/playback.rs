@@ -383,6 +383,16 @@ impl Engine {
                                 section = section.name,
                                 "DMX section loop: resetting for next iteration"
                             );
+                            // Rewind the clock and take ownership of it *before*
+                            // arming. Arming first leaves a window in which the
+                            // song-time tracker is still writing end-of-section
+                            // time, and the 44Hz effects loop can advance the
+                            // freshly rewound timeline straight past every cue
+                            // in the section — silencing the loop for good,
+                            // since the cue pointer never moves backwards.
+                            // Every sibling path writes before arming.
+                            section_owns_time.store(true, Ordering::Relaxed);
+                            dmx_engine.update_song_time(section.start_time);
                             dmx_engine.start_lighting_timeline_at(section.start_time);
                             {
                                 let mut playbacks = dmx_engine.midi_dmx_playbacks.lock();
@@ -392,8 +402,6 @@ impl Engine {
                                         events.partition_point(|e| e.time < section.start_time);
                                 }
                             }
-                            dmx_engine.update_song_time(section.start_time);
-                            section_owns_time.store(true, Ordering::Relaxed);
                             iteration_start = Some(elapsed);
                         }
                         crate::section_loop::LoopPoll::SectionCleared => {

@@ -426,6 +426,7 @@ impl Song {
 
         let mut light_shows = vec![];
         let mut dsl_lighting_shows = vec![];
+        let mut light_paths: Vec<PathBuf> = vec![];
         let mut midi_playback = None;
         let mut tracks = vec![];
         for song_file in song_files {
@@ -466,21 +467,10 @@ impl Song {
                     }
                 }
                 "light" => {
-                    let content = std::fs::read_to_string(&path).map_err(|e| {
-                        format!("Failed to read DSL lighting show {}: {}", path.display(), e)
-                    })?;
-                    let shows =
-                        crate::lighting::parser::parse_light_shows(&content).map_err(|e| {
-                            format!(
-                                "Failed to parse DSL lighting show {}:\n{}",
-                                path.display(),
-                                e
-                            )
-                        })?;
-                    dsl_lighting_shows.push(DslLightingShow {
-                        file_path: path,
-                        shows,
-                    });
+                    // Collected, not parsed: musical timing resolves at parse
+                    // time, and the beat grid that supplies it needs the tracks
+                    // this scan has not finished reading yet.
+                    light_paths.push(path);
                 }
                 ext if is_supported_audio_extension(ext) => {
                     let mut new_tracks = Track::load_tracks(&path)?;
@@ -494,6 +484,32 @@ impl Song {
         // Deduplicate track names by appending numeric suffixes on collision.
         deduplicate_track_names(&mut tracks);
 
+        // Now that the tracks are known, derive the tempo the shows inherit and
+        // parse them. Same precedence as `Song::new`: a show's own `tempo`
+        // block wins, otherwise the click-derived grid.
+        let beat_grid = Self::analyze_click_track(song_directory, &tracks);
+        let lighting_tempo = beat_grid.as_ref().and_then(|grid| grid.to_tempo_map());
+        for path in light_paths {
+            let content = std::fs::read_to_string(&path).map_err(|e| {
+                format!("Failed to read DSL lighting show {}: {}", path.display(), e)
+            })?;
+            let shows = crate::lighting::parser::parse_light_shows_with_tempo(
+                &content,
+                lighting_tempo.as_ref(),
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to parse DSL lighting show {}:\n{}",
+                    path.display(),
+                    e
+                )
+            })?;
+            dsl_lighting_shows.push(DslLightingShow {
+                file_path: path,
+                shows,
+            });
+        }
+
         let song = Self {
             name,
             base_path: song_directory.clone(),
@@ -501,6 +517,7 @@ impl Song {
             midi_playback,
             light_shows,
             dsl_lighting_shows,
+            beat_grid,
             tracks,
             samples_config: config::SamplesConfig::default(),
             ..Default::default()

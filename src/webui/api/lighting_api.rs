@@ -158,8 +158,11 @@ pub(super) async fn put_lighting_file(
         }
     };
 
-    // Validate the DSL content
-    if let Err(errors) = config_io::validate_light_show(&body) {
+    // Validate against the tempo the owning song loads this file with. A show
+    // inheriting its song's tempo is valid content that a tempo-less parse
+    // rejects, so writing it through the UI would fail for no real reason.
+    let tempo = song_tempo_for_path(&state, &verified_path);
+    if let Err(errors) = config_io::validate_light_show(&body, tempo.as_ref()) {
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
 
@@ -219,7 +222,10 @@ pub(super) async fn delete_lighting_file(
 
 /// POST /api/lighting/validate — validates lighting DSL content without saving.
 pub(super) async fn validate_lighting(body: String) -> impl IntoResponse {
-    match config_io::validate_light_show(&body) {
+    // No path and no song, so nothing identifies which tempo would apply. A
+    // show that inherits one cannot be checked here; the write path, which
+    // knows the file, validates it properly.
+    match config_io::validate_light_show(&body, None) {
         Ok(()) => (StatusCode::OK, Json(json!({"valid": true}))).into_response(),
         Err(errors) => (
             StatusCode::BAD_REQUEST,
@@ -477,6 +483,23 @@ pub(super) async fn delete_fixture_type(
 }
 
 /// GET /api/lighting/venues — lists all venues from the directory.
+/// The tempo a `.light` file at this path will be loaded with, found by
+/// matching the path against the loaded songs' directories.
+fn song_tempo_for_path(
+    state: &WebUiState,
+    path: &std::path::Path,
+) -> Option<crate::tempo::TempoMap> {
+    let song = state
+        .player
+        .songs()
+        .list()
+        .into_iter()
+        .find(|song| path.starts_with(song.base_path()))?;
+    song.tempo_map()
+        .cloned()
+        .or_else(|| song.beat_grid().and_then(|grid| grid.to_tempo_map()))
+}
+
 /// Returns the group names valid as cue targets, with the fixtures each
 /// currently resolves to in the loaded venue.
 ///

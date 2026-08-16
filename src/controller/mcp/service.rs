@@ -1403,7 +1403,10 @@ impl McpServer {
         tempo block changed, and a one-line duration edit can move a section \
         boundary and open a blackout. Effects are matched on the groups they \
         target and their kind, so a cue nudged by a beat reads as a changed \
-        time rather than as an unrelated removal and addition. Also reports \
+        time rather than as an unrelated removal and addition, and compares \
+        their parameters and blend mode, so a colour or level edit is a \
+        reported change rather than silence. Layer commands are diffed too. \
+        Also reports \
         `dark_windows_added` and `dark_windows_removed`, since a revision is \
         usually about what the rig does. Each side takes either a song or DSL \
         source.")]
@@ -1443,6 +1446,8 @@ impl McpServer {
                 "type": e.effect_type,
                 "layer": format!("{:?}", e.layer).to_lowercase(),
                 "duration": e.duration.as_secs_f64(),
+                "blend_mode": format!("{:?}", e.blend_mode).to_lowercase(),
+                "parameters": e.parameters,
             })
         };
         let window = |w: &crate::lighting::analyze::DarkWindow| {
@@ -1451,6 +1456,15 @@ impl McpServer {
                 "to": w.to.as_secs_f64(),
                 "seconds": w.seconds(),
                 "position": w.position,
+            })
+        };
+
+        let command = |c: &crate::lighting::diff::LayerCommandEntry| {
+            json!({
+                "time": c.time.as_secs_f64(),
+                "position": c.position,
+                "command": c.command,
+                "layer": c.layer,
             })
         };
 
@@ -1470,6 +1484,16 @@ impl McpServer {
                         .map(|f| json!({"field": f.field, "from": f.from, "to": f.to}))
                         .collect::<Vec<_>>(),
                 }))
+                .collect::<Vec<_>>(),
+            "layer_commands_added": diff
+                .layer_commands_added
+                .iter()
+                .map(command)
+                .collect::<Vec<_>>(),
+            "layer_commands_removed": diff
+                .layer_commands_removed
+                .iter()
+                .map(command)
                 .collect::<Vec<_>>(),
             "dark_windows_added": diff.dark_windows_added.iter().map(window).collect::<Vec<_>>(),
             "dark_windows_removed": diff
@@ -1733,6 +1757,7 @@ impl McpServer {
             .replace('\\', "/");
 
         let original = read_text(&config_path).await?;
+        let referenced = references_lighting_file(&original, &reference);
         let unregistered = match unregister_lighting_file(&original, &reference) {
             Some(updated) => {
                 // Same guard the write path uses: never leave a song.yaml that
@@ -1741,9 +1766,27 @@ impl McpServer {
                 staged_write_string(&config_path, &updated).await?;
                 true
             }
+            None if referenced => {
+                // The song points at this file but the entry could not be
+                // edited — an unusual YAML shape such as a flow sequence.
+                // Deleting anyway would leave exactly the dangling reference
+                // this tool exists to prevent, and the song would stop loading.
+                return Err(McpError::invalid_params(
+                    format!(
+                        "song `{}` references `{reference}` but its `lighting:` block \
+                         could not be edited automatically. Remove the entry from {} \
+                         by hand, then delete the file.",
+                        args.song,
+                        config_path.display()
+                    ),
+                    None,
+                ));
+            }
             None => false,
         };
 
+        // The file goes last. If removal fails, the only thing that happened is
+        // the config edit, and the song still loads.
         remove_lighting_file(&path).await?;
         self.reload_songs_from_config().await?;
 
@@ -2007,9 +2050,14 @@ impl McpServer {
         })?;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
-        crate::lighting::parser::parse_light_shows(&updated).map_err(|e| {
-            McpError::invalid_params(format!("patched .light is invalid: {e}"), None)
-        })?;
+        // Validate against the tempo this song loads it with, matching
+        // `write_song_lighting`. Otherwise a patch to a tempo-inheriting show
+        // is rejected here and would have loaded fine.
+        crate::lighting::parser::parse_light_shows_with_tempo(
+            &updated,
+            song_lighting_tempo(&song).as_ref(),
+        )
+        .map_err(|e| McpError::invalid_params(format!("patched .light is invalid: {e}"), None))?;
         staged_write_string(&path, &updated).await?;
         self.reload_songs_from_config().await?;
         Ok(patch_response(&path, &original, &updated))
@@ -2305,6 +2353,59 @@ async fn remove_lighting_file(path: &std::path::Path) -> Result<(), McpError> {
     })
 }
 
+/// The `lighting:` block's location in a song's YAML: the key line, the item
+/// spans beneath it, and where the block ends.
+///
+/// YAML lets a sequence sit at the key's own indentation or deeper, and an
+/// entry may run over several lines — the shipped songs write `- name: "..."`
+/// with `file:` underneath. Both callers need the same understanding of that
+/// shape, so they share this rather than each scanning lines their own way.
+struct LightingBlock {
+    key_index: usize,
+    item_indent: usize,
+    /// Half-open line ranges, one per `- ` entry.
+    spans: Vec<(usize, usize)>,
+    /// One past the block's last line.
+    end: usize,
+}
+
+fn find_lighting_block(lines: &[&str]) -> Option<LightingBlock> {
+    let key_index = lines.iter().position(|line| is_key(line, "lighting"))?;
+    let key_indent = indent_of(lines[key_index]);
+
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut end = key_index + 1;
+    let mut item_indent = key_indent;
+    for (offset, line) in lines.iter().enumerate().skip(key_index + 1) {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let indent = indent_of(line);
+        let is_item = line.trim_start().starts_with('-');
+        // A sequence may be indented under the key or level with it; anything
+        // shallower, or level but not an item, is the next key.
+        if indent < key_indent || (indent == key_indent && !is_item) {
+            break;
+        }
+        end = offset + 1;
+        if is_item {
+            if spans.is_empty() {
+                item_indent = indent;
+            }
+            spans.push((offset, offset + 1));
+        } else if let Some(last) = spans.last_mut() {
+            last.1 = offset + 1;
+        }
+    }
+
+    Some(LightingBlock {
+        key_index,
+        item_indent,
+        spans,
+        end,
+    })
+}
+
 /// Removes the `lighting:` entry referencing `relative_path`, and the whole
 /// block if that was its last entry.
 ///
@@ -2313,44 +2414,23 @@ async fn remove_lighting_file(path: &std::path::Path) -> Result<(), McpError> {
 /// [`register_lighting_file`] does: song.yaml is hand-written.
 pub(crate) fn unregister_lighting_file(yaml: &str, relative_path: &str) -> Option<String> {
     let lines: Vec<&str> = yaml.lines().collect();
-    let key_index = lines.iter().position(|line| is_key(line, "lighting"))?;
-    let key_indent = indent_of(lines[key_index]);
-
-    // Collect the block's item spans. An entry may run over several lines —
-    // the shipped songs write `- name: "..."` with `file:` underneath — so the
-    // path can appear on any line of its item, not just the one starting it.
-    let mut spans: Vec<(usize, usize)> = Vec::new();
-    let mut block_end = key_index + 1;
-    for (offset, line) in lines.iter().enumerate().skip(key_index + 1) {
-        if line.trim().is_empty() || line.trim_start().starts_with('#') {
-            continue;
-        }
-        if indent_of(line) <= key_indent {
-            break;
-        }
-        block_end = offset + 1;
-        if line.trim_start().starts_with('-') {
-            spans.push((offset, offset + 1));
-        } else if let Some(last) = spans.last_mut() {
-            last.1 = offset + 1;
-        }
-    }
+    let block = find_lighting_block(&lines)?;
 
     // Match on the parsed value rather than a bare substring, so
     // `lighting/main.light` cannot match `lighting/main.light.bak`.
-    let target = spans.iter().position(|(start, end)| {
+    let target = block.spans.iter().position(|(start, end)| {
         lines[*start..*end]
             .iter()
             .any(|line| yaml_value_of(line, "file").as_deref() == Some(relative_path))
     })?;
 
     let mut updated: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-    if spans.len() == 1 {
+    if block.spans.len() == 1 {
         // Removing the last entry would leave `lighting:` with no items, which
         // is not a valid sequence and would stop the song loading.
-        updated.drain(key_index..block_end);
+        updated.drain(block.key_index..block.end);
     } else {
-        let (start, end) = spans[target];
+        let (start, end) = block.spans[target];
         updated.drain(start..end);
     }
     Some(with_trailing_newline(updated.join("\n")))
@@ -2381,33 +2461,12 @@ pub(crate) fn register_lighting_file(yaml: &str, relative_path: &str) -> Option<
     let lines: Vec<&str> = yaml.lines().collect();
     let entry = format!("- file: {relative_path}");
 
-    // An existing `lighting:` block: append after its last item, so the new
-    // show reads in the order it was added.
-    if let Some(key_index) = lines.iter().position(|line| is_key(line, "lighting")) {
-        let indent = indent_of(lines[key_index]);
-        let mut end = key_index + 1;
-        for (offset, line) in lines.iter().enumerate().skip(key_index + 1) {
-            // The block ends at the next line that is no more indented than
-            // the key itself. Blank lines and comments belong to whatever
-            // follows, so they do not end it on their own.
-            if line.trim().is_empty() || line.trim_start().starts_with('#') {
-                continue;
-            }
-            if indent_of(line) <= indent {
-                break;
-            }
-            end = offset + 1;
-        }
-        // Match the indentation the existing items use, falling back to the
-        // key's own indentation for an empty block.
-        let item_indent = lines
-            .get(key_index + 1)
-            .filter(|line| indent_of(line) > indent && line.trim_start().starts_with('-'))
-            .map(|line| indent_of(line))
-            .unwrap_or(indent);
-
+    if let Some(block) = find_lighting_block(&lines) {
         let mut updated: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-        updated.insert(end, format!("{}{entry}", " ".repeat(item_indent)));
+        updated.insert(
+            block.end,
+            format!("{}{entry}", " ".repeat(block.item_indent)),
+        );
         return Some(with_trailing_newline(updated.join("\n")));
     }
 
@@ -3463,6 +3522,38 @@ mod unregister_lighting_tests {
             !updated.contains("- file: lighting/main.light\n"),
             "{updated}"
         );
+    }
+
+    #[test]
+    fn handles_a_sequence_at_the_keys_own_indentation() {
+        // Valid YAML and a common hand-written style. A scanner that stops at
+        // the first line no deeper than the key finds no items at all, so
+        // `delete_song_lighting` would orphan the reference.
+        let yaml = format!("{BASE}lighting:\n- file: lighting/a.light\n- file: lighting/b.light\n");
+        let cfg: Result<crate::config::Song, _> = super::serde_yaml_from_str(&yaml);
+        assert!(cfg.is_ok(), "precondition: this is valid YAML");
+
+        let updated = unregister_lighting_file(&yaml, "lighting/a.light").expect("removes");
+        assert!(!updated.contains("a.light"), "{updated}");
+        assert!(updated.contains("b.light"), "{updated}");
+    }
+
+    #[test]
+    fn a_zero_indent_block_loses_its_key_with_the_last_entry() {
+        let yaml = format!("{BASE}lighting:\n- file: lighting/only.light\n");
+        let updated = unregister_lighting_file(&yaml, "lighting/only.light").expect("removes");
+        assert!(!updated.contains("lighting:"), "{updated}");
+        let song: crate::config::Song =
+            super::serde_yaml_from_str(&updated).expect("must remain valid");
+        assert!(song.lighting().is_none());
+    }
+
+    #[test]
+    fn a_flow_sequence_is_declined_rather_than_mangled() {
+        // Not supported by a line-based editor. Returning None is what makes
+        // the delete path refuse instead of orphaning the reference.
+        let yaml = format!("{BASE}lighting: [{{file: \"lighting/a.light\"}}]\n");
+        assert!(unregister_lighting_file(&yaml, "lighting/a.light").is_none());
     }
 
     #[test]
