@@ -26,5 +26,5 @@ mod tests;
 
 // Re-export public items
 pub use fixture_venue::{parse_fixture_types, parse_venues};
-pub use show::parse_light_shows;
+pub use show::{parse_light_shows, parse_light_shows_with_tempo};
 pub use types::{Cue, Effect, LayerCommand, LayerCommandType, LightShow};

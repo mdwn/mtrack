@@ -45,6 +45,20 @@ type ParseCueResult =
 
 /// Parses light shows from DSL content.
 pub fn parse_light_shows(content: &str) -> Result<HashMap<String, LightShow>, Box<dyn Error>> {
+    parse_light_shows_with_tempo(content, None)
+}
+
+/// Parses light shows, supplying a tempo map for files that carry none.
+///
+/// Musical timing — `@bar/beat` cues, `Nbeats` durations, `Nbeat` frequencies —
+/// is resolved at parse time, so a file without a `tempo` block cannot use any
+/// of it. `external` is the song's tempo map: its `tempo:` block if it has one,
+/// otherwise one derived from the click-derived beat grid. A `tempo` block in
+/// the file still wins, keeping precedence author-first.
+pub fn parse_light_shows_with_tempo(
+    content: &str,
+    external: Option<&TempoMap>,
+) -> Result<HashMap<String, LightShow>, Box<dyn Error>> {
     let pairs = match LightingParser::parse(Rule::file, content) {
         Ok(pairs) => pairs,
         Err(e) => {
@@ -65,7 +79,9 @@ pub fn parse_light_shows(content: &str) -> Result<HashMap<String, LightShow>, Bo
 
     let mut shows = HashMap::new();
     let mut sequences = HashMap::new();
-    let mut global_tempo: Option<TempoMap> = None;
+    // Seeded with the song's map so a file with no tempo block inherits it; a
+    // file-level `tempo { }` overwrites this below.
+    let mut global_tempo: Option<TempoMap> = external.cloned();
     let mut show_pairs = Vec::new();
     let mut sequence_pairs = Vec::new();
 

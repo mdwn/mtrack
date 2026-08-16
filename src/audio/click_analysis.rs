@@ -135,6 +135,276 @@ impl BeatGrid {
             measure_starts,
         }
     }
+
+    /// The detected lead-in: how long before the first beat the song starts.
+    ///
+    /// A song with silence or a count-in ahead of bar 1 does not begin on beat
+    /// one at zero, and an author writing `start: 0ms` is wrong by exactly this
+    /// much with nothing to warn them.
+    pub fn lead_in(&self) -> Duration {
+        self.beats
+            .first()
+            .map(|secs| Duration::from_secs_f64(secs.max(0.0)))
+            .unwrap_or(Duration::ZERO)
+    }
+
+    /// Derives a tempo map from this grid, so a show can use `@bar/beat` cueing
+    /// against a song whose timing came from the click track rather than a
+    /// hand-written `tempo:` block.
+    ///
+    /// The grid is ground truth from the audio, so nothing here rounds to a
+    /// "nice" BPM — that would drift a cue by half a second across a long song.
+    /// Instead the measured per-measure tempo is kept, and a change is emitted
+    /// only when the tempo moves more than [`TEMPO_CHANGE_TOLERANCE`] or the
+    /// bar length changes. A steady song therefore yields no tempo changes at
+    /// all, and a song with two 2/4 bars yields exactly the two meter changes
+    /// around them.
+    ///
+    /// Returns `None` for a grid too small to describe a tempo — under two
+    /// measure boundaries there is no complete bar to measure.
+    pub fn to_tempo_map(&self) -> Option<crate::tempo::TempoMap> {
+        use crate::tempo::{TempoChange, TempoChangePosition, TempoTransition, TimeSignature};
+
+        let measures = self.measures()?;
+        let (first, rest) = measures.split_first()?;
+
+        let mut changes = Vec::new();
+        let mut current_bpm = first.bpm;
+        let mut current_beats = first.beats;
+
+        for measure in rest {
+            let tempo_moved = (measure.bpm - current_bpm).abs() / current_bpm.max(f64::EPSILON)
+                > TEMPO_CHANGE_TOLERANCE;
+            let meter_moved = measure.beats != current_beats;
+            if !tempo_moved && !meter_moved {
+                continue;
+            }
+            changes.push(TempoChange {
+                position: TempoChangePosition::MeasureBeat(measure.number, 1.0),
+                original_measure_beat: Some((measure.number, 1.0)),
+                bpm: tempo_moved.then_some(measure.bpm),
+                time_signature: meter_moved.then(|| TimeSignature::new(measure.beats as u32, 4)),
+                transition: TempoTransition::Snap,
+            });
+            if tempo_moved {
+                current_bpm = measure.bpm;
+            }
+            if meter_moved {
+                current_beats = measure.beats;
+            }
+        }
+
+        Some(crate::tempo::TempoMap::new(
+            // Bar 1 beat 1 is the first detected beat, not zero. This is the
+            // lead-in an author would otherwise have to measure by hand.
+            self.lead_in(),
+            first.bpm,
+            TimeSignature::new(first.beats as u32, 4),
+            changes,
+        ))
+    }
+
+    /// Each complete measure's 1-based number, beat count, and measured tempo.
+    /// `None` when the grid holds fewer than two measure boundaries.
+    fn measures(&self) -> Option<Vec<MeasureTempo>> {
+        if self.measure_starts.len() < 2 {
+            return None;
+        }
+
+        let mut measures = Vec::new();
+        for (index, pair) in self.measure_starts.windows(2).enumerate() {
+            let (start_beat, end_beat) = (pair[0], pair[1]);
+            let beats = end_beat.saturating_sub(start_beat);
+            let (Some(start), Some(end)) = (self.beats.get(start_beat), self.beats.get(end_beat))
+            else {
+                continue;
+            };
+            let seconds = end - start;
+            if beats == 0 || seconds <= 0.0 {
+                continue;
+            }
+            measures.push(MeasureTempo {
+                number: index as u32 + 1,
+                beats,
+                bpm: beats as f64 * 60.0 / seconds,
+            });
+        }
+
+        (!measures.is_empty()).then_some(measures)
+    }
+}
+
+/// Relative tempo movement below which a derived map emits no change. Detected
+/// beats jitter by a few milliseconds; without a tolerance a steady song would
+/// produce a tempo change at every bar.
+const TEMPO_CHANGE_TOLERANCE: f64 = 0.005;
+
+/// One measure's measured tempo, used while deriving a tempo map.
+struct MeasureTempo {
+    /// 1-based measure number.
+    number: u32,
+    /// Beats in this measure.
+    beats: usize,
+    /// Tempo measured across this measure.
+    bpm: f64,
+}
+
+#[cfg(test)]
+mod to_tempo_map_tests {
+    use super::*;
+    use crate::tempo::TimeSignature;
+
+    /// Builds a grid from measure beat-counts at a steady tempo, starting at
+    /// `lead_in` seconds.
+    fn grid(lead_in: f64, bpm: f64, measures: &[usize]) -> BeatGrid {
+        let spacing = 60.0 / bpm;
+        let mut beats = Vec::new();
+        let mut measure_starts = Vec::new();
+        let mut t = lead_in;
+        for count in measures {
+            measure_starts.push(beats.len());
+            for _ in 0..*count {
+                beats.push(t);
+                t += spacing;
+            }
+        }
+        // A trailing boundary so the last measure is complete.
+        measure_starts.push(beats.len());
+        beats.push(t);
+        BeatGrid {
+            beats,
+            measure_starts,
+        }
+    }
+
+    #[test]
+    fn steady_song_yields_no_tempo_changes() {
+        let map = grid(0.0, 120.0, &[4, 4, 4, 4]).to_tempo_map().expect("map");
+        assert!((map.initial_bpm - 120.0).abs() < 0.01);
+        assert_eq!(map.initial_time_signature, TimeSignature::new(4, 4));
+        assert!(
+            map.changes.is_empty(),
+            "a steady song should need no changes: {:?}",
+            map.changes
+        );
+    }
+
+    #[test]
+    fn a_short_bar_becomes_a_meter_change_and_back() {
+        // The shape from #337: 4/4 throughout with one 2/4 bar in the middle.
+        let map = grid(0.0, 80.0, &[4, 4, 4, 2, 4, 4])
+            .to_tempo_map()
+            .expect("map");
+        assert_eq!(map.initial_time_signature, TimeSignature::new(4, 4));
+
+        let meters: Vec<(u32, u32)> = map
+            .changes
+            .iter()
+            .filter_map(|c| {
+                c.original_measure_beat
+                    .map(|(m, _)| m)
+                    .zip(c.time_signature.map(|ts| ts.numerator))
+            })
+            .collect();
+        assert_eq!(
+            meters,
+            vec![(4, 2), (5, 4)],
+            "expected 2/4 at bar 4 and back to 4/4 at bar 5: {:?}",
+            map.changes
+        );
+        assert!(
+            map.changes.iter().all(|c| c.bpm.is_none()),
+            "tempo did not move, only the meter: {:?}",
+            map.changes
+        );
+    }
+
+    #[test]
+    fn a_real_tempo_change_is_captured() {
+        let mut g = grid(0.0, 100.0, &[4, 4]);
+        // Append two bars at 140bpm.
+        let spacing = 60.0 / 140.0;
+        let mut t = *g.beats.last().expect("beats");
+        for _ in 0..2 {
+            g.measure_starts.push(g.beats.len());
+            for _ in 0..4 {
+                g.beats.push(t);
+                t += spacing;
+            }
+        }
+        g.measure_starts.push(g.beats.len());
+        g.beats.push(t);
+
+        let map = g.to_tempo_map().expect("map");
+        let tempo_changes: Vec<f64> = map.changes.iter().filter_map(|c| c.bpm).collect();
+        assert_eq!(tempo_changes.len(), 1, "{:?}", map.changes);
+        assert!(
+            (tempo_changes[0] - 140.0).abs() < 1.0,
+            "expected ~140bpm, got {}",
+            tempo_changes[0]
+        );
+    }
+
+    #[test]
+    fn jitter_below_tolerance_emits_no_change() {
+        // Detected beats are never exact. A few milliseconds of wobble must not
+        // produce a tempo change at every bar.
+        let mut g = grid(0.0, 120.0, &[4, 4, 4, 4]);
+        for (i, beat) in g.beats.iter_mut().enumerate() {
+            *beat += if i % 2 == 0 { 0.001 } else { -0.001 };
+        }
+        let map = g.to_tempo_map().expect("map");
+        assert!(
+            map.changes.is_empty(),
+            "jitter should not read as tempo changes: {:?}",
+            map.changes
+        );
+    }
+
+    #[test]
+    fn the_lead_in_becomes_the_tempo_origin() {
+        // Bar 1 beat 1 is where the click actually starts, not zero.
+        let g = grid(2.5, 120.0, &[4, 4]);
+        assert_eq!(g.lead_in(), Duration::from_secs_f64(2.5));
+
+        let map = g.to_tempo_map().expect("map");
+        let bar1 = map
+            .measure_to_time_with_offset(1, 1.0, 0, 0.0)
+            .expect("bar 1");
+        assert!(
+            (bar1.as_secs_f64() - 2.5).abs() < 0.01,
+            "bar 1 should land on the first beat, got {bar1:?}"
+        );
+    }
+
+    #[test]
+    fn round_trips_through_the_forward_derivation() {
+        // to_tempo_map and from_tempo_map are inverses over a grid's own span.
+        let original = grid(0.0, 96.0, &[4, 4, 4, 4]);
+        let map = original.to_tempo_map().expect("map");
+        let rebuilt = BeatGrid::from_tempo_map(&map, Duration::from_secs_f64(10.0));
+
+        assert_eq!(rebuilt.measure_starts.len(), 4, "{rebuilt:?}");
+        for (a, b) in original.beats.iter().zip(rebuilt.beats.iter()) {
+            assert!((a - b).abs() < 0.01, "beat drift: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn a_grid_too_small_to_describe_a_tempo_yields_none() {
+        assert!(BeatGrid {
+            beats: vec![],
+            measure_starts: vec![]
+        }
+        .to_tempo_map()
+        .is_none());
+        assert!(BeatGrid {
+            beats: vec![0.0, 0.5],
+            measure_starts: vec![0]
+        }
+        .to_tempo_map()
+        .is_none());
+    }
 }
 
 /// Classifies onsets into "accented" (downbeat) vs "normal".

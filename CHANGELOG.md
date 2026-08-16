@@ -30,6 +30,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A light show inherits the song's tempo, so `@bar/beat` works without hand-writing one**:
+  musical timing — `@bar/beat` cues, `Nbeats` durations, `Nbeat` frequencies — is resolved when
+  the `.light` file is parsed, so a file with no `tempo` block could not use any of it. The song's
+  timing now reaches the parser: its `tempo:` config if it has one, otherwise a tempo map derived
+  from the click track's beat grid. A `tempo` block in the file still wins, keeping precedence
+  author-first.
+
+  The derived map takes the grid as ground truth. It does not round to a "nice" BPM, which would
+  drift a cue by half a second across a long song; instead it keeps the measured per-measure
+  tempo and emits a change only when the tempo moves more than 0.5% or the bar length changes.
+  A steady song therefore produces no tempo changes at all, and a song with two 2/4 bars produces
+  exactly the two meter changes around them.
+
+  Bar 1 beat 1 is placed at the first detected beat rather than at zero. `song_details` now
+  reports that as `lead_in_seconds`, so an author writing a `tempo` block by hand can see what
+  `start: 0ms` would get wrong.
+
+  `validate_lighting` takes an optional `song` so a bar/beat show can be checked against the
+  tempo it will actually load with, and `write_song_lighting` validates against its own song's
+  tempo rather than rejecting a show that would load fine.
+
 - **`validate_lighting` returns resolved cue times**: on success each show now carries its cue
   timeline — every cue's index, the absolute time it resolves to, the number of effects on it,
   and, when the show has a tempo map, the bar/beat that time corresponds to. "It parses" and

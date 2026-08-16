@@ -158,6 +158,13 @@ transition durations use a slightly different syntax: a bare number means
 beats, and `Nm` means measures (`transition: 4` = 4 beats; `transition: 2m`
 = 2 measures; `transition: snap` for an instantaneous change).
 
+A block is not always required. A show with none inherits the song's tempo —
+its `tempo:` config if it has one, otherwise a map derived from the click
+track's beat grid — so `@bar/beat` cueing works against a song whose timing was
+never hand-written. A block in the file always wins. When writing one by hand,
+check `song_details` for `lead_in_seconds` first: bar 1 beat 1 is where the
+click actually starts, and `start: 0ms` is wrong by exactly the lead-in.
+
 ### Measure offsets
 
 Inside a cue you can shift the bar/beat baseline so the next cues are
