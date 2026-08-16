@@ -1573,10 +1573,15 @@ impl McpServer {
         song. If the song's `lighting:` block already references this \
         basename, the existing path is reused (so root-level layouts and \
         non-standard subdirectories are preserved). Otherwise the file is \
-        created under `<song>/lighting/`. The DSL is parsed first; on \
-        failure the file is not written. The player's song registry is \
-        reloaded after a successful write so the new content takes effect \
-        immediately.")]
+        created under `<song>/lighting/`. The DSL is parsed first, against the \
+        song's own tempo, so a `@bar/beat` show is accepted; on failure the \
+        file is not written. \
+        \
+        The song's `lighting:` block is updated to reference the file if it \
+        does not already — without that the show is written to disk and never \
+        loads. The response reports `registered` and the `reference` as \
+        spelled in `song.yaml`. The player's song registry is reloaded \
+        afterwards so the show takes effect immediately.")]
     async fn write_song_lighting(
         &self,
         Parameters(args): Parameters<WriteSongLightingArgs>,
@@ -1641,11 +1646,60 @@ impl McpServer {
             }
         };
         staged_write_string(&path, &args.source).await?;
+
+        // Writing the file is not enough: without a `lighting:` entry pointing
+        // at it the show never loads, and the caller gets a success response,
+        // a real path, and a rig that does nothing.
+        let registration = self.register_song_lighting(&song, &path).await?;
+
         self.reload_songs_from_config().await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "bytes": args.source.len(),
+            "registered": registration.registered,
+            "already_registered": registration.already_registered,
+            "reference": registration.reference,
         })))
+    }
+
+    /// Ensures the song's `lighting:` block points at a newly written file.
+    async fn register_song_lighting(
+        &self,
+        song: &crate::songs::Song,
+        path: &std::path::Path,
+    ) -> Result<Registration, McpError> {
+        let config_path = song
+            .config_path()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| song.base_path().join("song.yaml"));
+
+        // The reference is stored relative to the song directory, matching how
+        // a hand-written block spells it.
+        let reference = path
+            .strip_prefix(song.base_path())
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        let original = read_text(&config_path).await?;
+        let Some(updated) = register_lighting_file(&original, &reference) else {
+            return Ok(Registration {
+                registered: false,
+                already_registered: true,
+                reference,
+            });
+        };
+
+        // Same guard `patch_song` uses: never write a song.yaml that would not
+        // load back.
+        let _: crate::config::Song = serde_yaml_from_str(&updated)?;
+        staged_write_string(&config_path, &updated).await?;
+
+        Ok(Registration {
+            registered: true,
+            already_registered: false,
+            reference,
+        })
     }
 
     // ---- Patch (string-replace) tools ----
@@ -1967,6 +2021,97 @@ fn song_lighting_tempo(song: &crate::songs::Song) -> Option<crate::tempo::TempoM
     song.tempo_map()
         .cloned()
         .or_else(|| song.beat_grid().and_then(|grid| grid.to_tempo_map()))
+}
+
+/// What `write_song_lighting` did about the song's `lighting:` block.
+struct Registration {
+    /// An entry was added.
+    registered: bool,
+    /// The file was already referenced, so nothing changed.
+    already_registered: bool,
+    /// How the file is spelled in `song.yaml`, relative to the song directory.
+    reference: String,
+}
+
+/// Adds a `lighting:` entry for `relative_path` to a song's YAML.
+///
+/// Returns `None` when the file is already referenced, so a rewrite of an
+/// existing show does not accumulate duplicate entries.
+///
+/// Edits the text rather than round-tripping through serde: a song.yaml is a
+/// file someone wrote by hand, and reserialising it would discard their
+/// comments, ordering, and formatting to add one line.
+pub(crate) fn register_lighting_file(yaml: &str, relative_path: &str) -> Option<String> {
+    if references_lighting_file(yaml, relative_path) {
+        return None;
+    }
+
+    let lines: Vec<&str> = yaml.lines().collect();
+    let entry = format!("- file: {relative_path}");
+
+    // An existing `lighting:` block: append after its last item, so the new
+    // show reads in the order it was added.
+    if let Some(key_index) = lines.iter().position(|line| is_key(line, "lighting")) {
+        let indent = indent_of(lines[key_index]);
+        let mut end = key_index + 1;
+        for (offset, line) in lines.iter().enumerate().skip(key_index + 1) {
+            // The block ends at the next line that is no more indented than
+            // the key itself. Blank lines and comments belong to whatever
+            // follows, so they do not end it on their own.
+            if line.trim().is_empty() || line.trim_start().starts_with('#') {
+                continue;
+            }
+            if indent_of(line) <= indent {
+                break;
+            }
+            end = offset + 1;
+        }
+        // Match the indentation the existing items use, falling back to the
+        // key's own indentation for an empty block.
+        let item_indent = lines
+            .get(key_index + 1)
+            .filter(|line| indent_of(line) > indent && line.trim_start().starts_with('-'))
+            .map(|line| indent_of(line))
+            .unwrap_or(indent);
+
+        let mut updated: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        updated.insert(end, format!("{}{entry}", " ".repeat(item_indent)));
+        return Some(with_trailing_newline(updated.join("\n")));
+    }
+
+    // No block yet — start one at the end of the file.
+    let mut updated = yaml.trim_end().to_string();
+    updated.push_str(&format!("\nlighting:\n  {entry}"));
+    Some(with_trailing_newline(updated))
+}
+
+/// Whether a song's YAML already points at this lighting file.
+fn references_lighting_file(yaml: &str, relative_path: &str) -> bool {
+    serde_yaml_from_str::<crate::config::Song>(yaml)
+        .ok()
+        .and_then(|song| {
+            song.lighting()
+                .map(|shows| shows.iter().any(|s| s.file() == relative_path))
+        })
+        .unwrap_or(false)
+}
+
+fn is_key(line: &str, key: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed
+        .strip_prefix(key)
+        .is_some_and(|rest| rest.trim_start().starts_with(':'))
+}
+
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+fn with_trailing_newline(mut text: String) -> String {
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
 }
 
 /// A show's cues as resolved times, in cue order.
@@ -2798,6 +2943,108 @@ pub(crate) async fn staged_write_string(
     .await
     .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
     .map_err(|e| McpError::internal_error(format!("write failed: {e}"), None))
+}
+
+#[cfg(test)]
+mod register_lighting_tests {
+    use super::register_lighting_file;
+
+    const BASE: &str = "name: Test Song\ntracks:\n  - name: click\n    file: click.wav\n";
+
+    #[test]
+    fn adds_a_lighting_block_when_there_is_none() {
+        let updated = register_lighting_file(BASE, "lighting/main.light").expect("registers");
+        assert!(updated.contains("lighting:"), "{updated}");
+        assert!(updated.contains("- file: lighting/main.light"), "{updated}");
+        // The rest of the file survives untouched.
+        assert!(updated.contains("name: Test Song"));
+        assert!(updated.contains("    file: click.wav"));
+    }
+
+    #[test]
+    fn appends_to_an_existing_block_after_the_last_item() {
+        let yaml =
+            "name: Test Song\nlighting:\n  - file: lighting/a.light\n  - file: lighting/b.light\n";
+        let updated = register_lighting_file(yaml, "lighting/c.light").expect("registers");
+        let lines: Vec<&str> = updated.lines().collect();
+        let positions: Vec<usize> = ["a.light", "b.light", "c.light"]
+            .iter()
+            .map(|f| lines.iter().position(|l| l.contains(f)).expect(f))
+            .collect();
+        assert!(
+            positions[0] < positions[1] && positions[1] < positions[2],
+            "new entry should come last: {updated}"
+        );
+        // Indentation matches the entries already there.
+        assert!(lines[positions[2]].starts_with("  - file:"), "{updated}");
+    }
+
+    #[test]
+    fn a_block_followed_by_other_keys_keeps_them_below() {
+        let yaml = "name: Test Song\nlighting:\n  - file: lighting/a.light\nmidi_file: song.mid\n";
+        let updated = register_lighting_file(yaml, "lighting/b.light").expect("registers");
+        let lines: Vec<&str> = updated.lines().collect();
+        let b = lines.iter().position(|l| l.contains("b.light")).expect("b");
+        let midi = lines
+            .iter()
+            .position(|l| l.contains("midi_file"))
+            .expect("midi");
+        assert!(
+            b < midi,
+            "the entry belongs inside the block, not after the next key: {updated}"
+        );
+    }
+
+    #[test]
+    fn an_already_registered_file_is_left_alone() {
+        // A complete song, since the check reads the parsed `lighting:` block
+        // rather than matching text — the caller always has a loaded song.
+        let yaml = format!("{BASE}lighting:\n  - file: lighting/main.light\n");
+        let yaml = yaml.as_str();
+        assert!(
+            register_lighting_file(yaml, "lighting/main.light").is_none(),
+            "rewriting a registered show must not duplicate its entry"
+        );
+    }
+
+    #[test]
+    fn comments_and_formatting_survive() {
+        let yaml = "# The song\nname: Test Song\n\n# Lighting shows\nlighting:\n  - file: lighting/a.light\n";
+        let updated = register_lighting_file(yaml, "lighting/b.light").expect("registers");
+        assert!(updated.contains("# The song"), "{updated}");
+        assert!(updated.contains("# Lighting shows"), "{updated}");
+    }
+
+    #[test]
+    fn a_trailing_comment_after_the_block_stays_below_the_entry() {
+        let yaml = "name: Test Song\nlighting:\n  - file: lighting/a.light\n\n# trailing note\n";
+        let updated = register_lighting_file(yaml, "lighting/b.light").expect("registers");
+        let lines: Vec<&str> = updated.lines().collect();
+        let b = lines.iter().position(|l| l.contains("b.light")).expect("b");
+        let note = lines
+            .iter()
+            .position(|l| l.contains("# trailing note"))
+            .expect("note");
+        assert!(b < note, "{updated}");
+    }
+
+    #[test]
+    fn the_result_still_parses_as_a_song() {
+        let updated = register_lighting_file(BASE, "lighting/main.light").expect("registers");
+        let song: crate::config::Song =
+            super::serde_yaml_from_str(&updated).expect("must remain valid YAML");
+        assert_eq!(
+            song.lighting().map(|l| l.len()),
+            Some(1),
+            "the entry must actually register"
+        );
+    }
+
+    #[test]
+    fn output_always_ends_with_a_newline() {
+        let updated = register_lighting_file("name: Test Song", "lighting/main.light").unwrap();
+        assert!(updated.ends_with('\n'), "{updated:?}");
+    }
 }
 
 #[cfg(test)]
