@@ -34,6 +34,34 @@ export function sortTempoChanges(
   );
 }
 
+/**
+ * Ordered changes with repeated positions collapsed, and how many went.
+ *
+ * `to_tempo_map` rejects a repeat as firmly as it rejects a reversal, so a
+ * source that anchors two changes to one beat — or two time-anchored ones that
+ * snap onto the same beat — has to lose one before the song can be saved. The
+ * last of a run wins: `TempoMap::new` sorts stably and applies changes in
+ * order, so that is the one that was in effect anyway.
+ *
+ * The editors guard positions with `positionTaken` as they are typed; this is
+ * for changes arriving in bulk, where there is nothing to guard.
+ */
+export function orderTempoChanges(changes: TempoChangeConfig[]): {
+  changes: TempoChangeConfig[];
+  duplicates: number;
+} {
+  const sorted = sortTempoChanges(changes);
+  const kept = sorted.filter((c, i) => {
+    const next = sorted[i + 1];
+    return (
+      next === undefined ||
+      c.measure !== next.measure ||
+      changeBeat(c) !== changeBeat(next)
+    );
+  });
+  return { changes: kept, duplicates: sorted.length - kept.length };
+}
+
 /** Whether a change other than `exceptIndex` already sits at this position. */
 export function positionTaken(
   changes: TempoChangeConfig[],

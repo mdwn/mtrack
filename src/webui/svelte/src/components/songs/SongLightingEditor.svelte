@@ -37,6 +37,7 @@
   import { parseLightFile } from "../../lib/lighting/parser";
   import { serializeLightFile } from "../../lib/lighting/serializer";
   import TimelineEditor from "../lighting/timeline/TimelineEditor.svelte";
+  import { configToSection } from "../../lib/tempoConvert";
   import LightingSummary from "../lighting/LightingSummary.svelte";
   import { isPhone } from "../../lib/util/media";
   import FileUpload from "./FileUpload.svelte";
@@ -63,6 +64,9 @@
     onchange?: () => void;
     onaddlightfile?: (path: string) => void;
     onremovelightfile?: (path: string) => void;
+    /** The song's `tempo:` block, offered as a copy source in the
+     * lighting tempo editor. */
+    songTempo?: import("../../lib/api/songs").TempoConfig | null;
   }
 
   let {
@@ -72,6 +76,7 @@
     onchange,
     onaddlightfile,
     onremovelightfile,
+    songTempo = null,
   }: Props = $props();
 
   let error = $state("");
@@ -625,6 +630,7 @@
         songName={song.name}
         hasBeatGrid={!!song.beat_grid}
         hasMidi={song.has_midi}
+        songTempo={songTempo ? configToSection(songTempo) : null}
         {isPlaying}
         {playheadMs}
         onchange={onTimelineChange}

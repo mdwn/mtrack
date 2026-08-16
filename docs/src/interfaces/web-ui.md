@@ -240,6 +240,19 @@ and pilot voice-hints can be authored against the same beat grid:
 
 ![Tempo change dialog](../images/section-timeline-tempo-dialog.png)
 
+The base marker's dialog also imports: **Guess from beat grid** estimates a map from the
+detected clicks, and **Import from _file_** appears for every light show that has its own
+`tempo` block. Light shows predate song-level tempo maps, so an existing show is usually the
+best seed a song has. Measure-anchored changes copy across as they are; time-anchored ones
+snap to the nearest beat on the grid, and the dialog says how many were snapped and how many
+had to be dropped — a lossy import is never silent. A show is also free to list its changes
+in any order and to put two of them on one position, neither of which a song's `tempo:` block
+accepts, so the import sorts them and keeps the last of any repeat — the one the show itself
+was playing. Repeats it drops are reported like the rest. The reverse direction lives in
+[the show's own tempo editor](#tempo-detection).
+
+![The base tempo marker importing a light show's map](../images/tempo-import-dialog.png)
+
 ![Pilot hint dialog](../images/section-timeline-pilot-dialog.png)
 
 #### Metronome feel
@@ -393,6 +406,10 @@ with controls for BPM, time signature, start offset, and tempo changes.
 - **Guess from beat grid** — When no MIDI file is available but the song has a click track,
   the editor can estimate a tempo map from the detected beat grid. Results are displayed with
   an "estimated from beat grid" badge.
+- **Copy from song timeline** — When the song already carries a tempo map of its own, the
+  show can take it wholesale rather than being authored twice.
+
+![A light show's tempo editor, with the song timeline as a source](../images/tempo-import-lighting.png)
 
 ### Sequences
 
