@@ -91,6 +91,84 @@ impl EffectType {
         }
     }
 
+    /// The effect's authored parameters, as displayable strings keyed by the
+    /// name the DSL uses.
+    ///
+    /// `name()` alone does not identify an effect: two `static` cues differing
+    /// only in colour or level are the same kind and a completely different
+    /// look. Anything comparing effects — `diff_shows` above all — needs these
+    /// as well, so they live here rather than being re-derived per caller.
+    pub fn parameters(&self) -> std::collections::BTreeMap<String, String> {
+        let mut out: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+        match self {
+            EffectType::Static { parameters, .. } => {
+                // Keyed by the DSL spelling the author used (`color`, `dimmer`,
+                // `intensity`, individual channels).
+                for (key, value) in parameters {
+                    out.insert(key.clone(), format!("{value}"));
+                }
+            }
+            EffectType::ColorCycle {
+                colors,
+                speed,
+                direction,
+                transition,
+                ..
+            } => {
+                out.insert("colors".to_string(), format!("{colors:?}"));
+                out.insert("speed".to_string(), format!("{speed:?}"));
+                out.insert("direction".to_string(), format!("{direction:?}"));
+                out.insert("transition".to_string(), format!("{transition:?}"));
+            }
+            EffectType::Strobe { frequency, .. } => {
+                out.insert("frequency".to_string(), format!("{frequency:?}"));
+            }
+            EffectType::Dimmer {
+                start_level,
+                end_level,
+                curve,
+                ..
+            } => {
+                out.insert("start_level".to_string(), format!("{start_level}"));
+                out.insert("end_level".to_string(), format!("{end_level}"));
+                out.insert("curve".to_string(), format!("{curve:?}"));
+            }
+            EffectType::Chase {
+                pattern,
+                speed,
+                direction,
+                transition,
+                ..
+            } => {
+                out.insert("pattern".to_string(), format!("{pattern:?}"));
+                out.insert("speed".to_string(), format!("{speed:?}"));
+                out.insert("direction".to_string(), format!("{direction:?}"));
+                out.insert("transition".to_string(), format!("{transition:?}"));
+            }
+            EffectType::Rainbow {
+                speed,
+                saturation,
+                brightness,
+                ..
+            } => {
+                out.insert("speed".to_string(), format!("{speed:?}"));
+                out.insert("saturation".to_string(), format!("{saturation}"));
+                out.insert("brightness".to_string(), format!("{brightness}"));
+            }
+            EffectType::Pulse {
+                base_level,
+                pulse_amplitude,
+                frequency,
+                ..
+            } => {
+                out.insert("base_level".to_string(), format!("{base_level}"));
+                out.insert("pulse_amplitude".to_string(), format!("{pulse_amplitude}"));
+                out.insert("frequency".to_string(), format!("{frequency:?}"));
+            }
+        }
+        out
+    }
+
     /// The effect's name as reported to users — status output, MCP responses,
     /// and offline evaluation all use this spelling.
     pub fn name(&self) -> &'static str {

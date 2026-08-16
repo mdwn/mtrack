@@ -236,11 +236,12 @@ pub struct ValidateLightingArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EvaluateShowArgs {
-    /// Song name as listed by `list_songs`. Evaluates the song's registered
-    /// lighting shows. Mutually exclusive with `source`.
+    /// Song name as listed by `list_songs`. Alone, evaluates the song's
+    /// registered lighting shows. Passed with `source`, supplies that song's
+    /// tempo map so a draft using `@bar`/`beat` timing can be evaluated.
     pub song: Option<String>,
     /// `.light` DSL source to evaluate directly, without registering it against
-    /// a song. Mutually exclusive with `song`.
+    /// a song. Pass `song` as well if the source uses measure-based timing.
     pub source: Option<String>,
     /// Times to evaluate, each `mm:ss.mmm`, `Ns`, or a bare number of seconds.
     pub times: Vec<String>,
@@ -256,10 +257,12 @@ fn default_true() -> bool {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AnalyzeShowArgs {
-    /// Song name as listed by `list_songs`. Analyses the song's registered
-    /// lighting shows. Mutually exclusive with `source`.
+    /// Song name as listed by `list_songs`. Alone, analyses the song's
+    /// registered lighting shows. Passed with `source`, supplies that song's
+    /// tempo map so a draft using `@bar`/`beat` timing can be analysed.
     pub song: Option<String>,
-    /// `.light` DSL source to analyse directly. Mutually exclusive with `song`.
+    /// `.light` DSL source to analyse directly. Pass `song` as well if the
+    /// source uses measure-based timing.
     pub source: Option<String>,
 }
 
@@ -273,14 +276,15 @@ pub struct GetCuesArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiffShowsArgs {
-    /// Baseline: a song name, whose registered shows are used.
-    /// Mutually exclusive with `a_source`.
+    /// Baseline: a song name, whose registered shows are used. With
+    /// `a_source`, supplies the tempo map that `a_source` is parsed against.
     pub a_song: Option<String>,
-    /// Baseline: `.light` DSL source. Mutually exclusive with `a_song`.
+    /// Baseline: `.light` DSL source. Pass `a_song` too if it uses `@bar`/`beat`.
     pub a_source: Option<String>,
-    /// Candidate: a song name. Mutually exclusive with `b_source`.
+    /// Candidate: a song name. With `b_source`, supplies the tempo map that
+    /// `b_source` is parsed against.
     pub b_song: Option<String>,
-    /// Candidate: `.light` DSL source. Mutually exclusive with `b_song`.
+    /// Candidate: `.light` DSL source. Pass `b_song` too if it uses `@bar`/`beat`.
     pub b_source: Option<String>,
 }
 
@@ -458,7 +462,34 @@ impl McpServer {
                 .flat_map(|dsl| dsl.shows().values().cloned())
                 .collect();
             sort_shows(&mut shows);
-            let cues: Vec<Value> = shows.iter().flat_map(cue_timeline).collect();
+
+            // Merged and time-sorted, the way the player's own timeline
+            // combines a song's shows. Concatenating per show would restart
+            // indices at zero for each one and interleave their times, so the
+            // same song answered differently depending on which branch ran.
+            let tempo = shows.iter().find_map(|s| s.tempo_map.clone());
+            let mut cues: Vec<(std::time::Duration, usize)> = shows
+                .iter()
+                .flat_map(|show| show.cues.iter().map(|cue| (cue.time, cue.effects.len())))
+                .collect();
+            cues.sort_by_key(|(time, _)| *time);
+
+            let cues: Vec<Value> = cues
+                .into_iter()
+                .enumerate()
+                .map(|(index, (time, effects))| {
+                    json!({
+                        "index": index,
+                        "time": format_duration(time),
+                        "seconds": time.as_secs_f64(),
+                        "position": tempo.as_ref().map(|m| {
+                            let (measure, beat) = m.time_to_measure_beat(time);
+                            format!("@{measure}/{beat:.2}")
+                        }),
+                        "effects": effects,
+                    })
+                })
+                .collect();
             return Ok(ok_json(json!({ "song": name, "cues": cues })));
         }
 
@@ -527,10 +558,11 @@ impl McpServer {
         let Some(song) = song else {
             return Ok(ok_json(json!({
                 "started": false,
-                "reason": "a song is already playing; play_from does not \
-                           interrupt it",
-                "hint": "call `stop` first, or use `seek` to move within the \
-                         current song",
+                // See `play_song_from`: `None` covers several cases.
+                "reason": "the player did not start the song; the most common \
+                           cause is that one is already playing",
+                "hint": "check `status`; call `stop` first, or use `seek` to \
+                         move within the current song",
             })));
         };
         Ok(ok_json(json!({
@@ -566,10 +598,13 @@ impl McpServer {
         let Some(song) = song else {
             return Ok(ok_json(json!({
                 "started": false,
-                "reason": "a song is already playing; play_song_from does not \
-                           interrupt it",
-                "hint": "call `stop` first, or use `seek` to move within the \
-                         current song",
+                // The player returns nothing for more than one reason — a song
+                // already playing, a loop break, an empty playlist — and does
+                // not say which. Report the fact, not a guess at the cause.
+                "reason": "the player did not start the song; the most common \
+                           cause is that one is already playing",
+                "hint": "check `status`; call `stop` first, or use `seek` to \
+                         move within the current song",
             })));
         };
 
@@ -1097,10 +1132,14 @@ impl McpServer {
         Parameters(args): Parameters<ValidateLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
         let tempo = self.song_tempo_map(args.song.as_deref())?;
-        match crate::lighting::parser::parse_light_shows_with_tempo(&args.source, tempo.as_ref()) {
+        let parsed_shows =
+            crate::lighting::parser::parse_light_shows_with_tempo(&args.source, tempo.as_ref())
+                .map_err(|e| e.to_string());
+        match parsed_shows {
             Ok(shows) => {
-                let parsed: Vec<_> = shows.values().cloned().collect();
-                let warnings = self.lint_warnings(&parsed, args.song.as_deref())?;
+                let mut parsed: Vec<_> = shows.values().cloned().collect();
+                sort_shows(&mut parsed);
+                let warnings = self.lint_warnings(&parsed, args.song.as_deref()).await?;
                 let mut summary: Vec<Value> = shows
                     .iter()
                     .map(|(name, show)| {
@@ -1125,7 +1164,7 @@ impl McpServer {
             }
             Err(e) => Ok(ok_json(json!({
                 "ok": false,
-                "error": e.to_string(),
+                "error": e,
             }))),
         }
     }
@@ -1137,11 +1176,42 @@ impl McpServer {
     /// A check whose input is missing is skipped rather than guessed at, so
     /// validating a bare source with no song and no venue reports nothing
     /// rather than reporting everything as suspicious.
-    fn lint_warnings(
+    async fn lint_warnings(
         &self,
         shows: &[crate::lighting::parser::LightShow],
         song: Option<&str>,
     ) -> Result<Vec<Value>, McpError> {
+        // Resolved before the song is looked up: `LintContext` borrows the
+        // song, and a borrow of it must not be held across an await.
+        let group_fixture_counts = match self
+            .player
+            .dmx_engine()
+            .and_then(|dmx| dmx.broadcast_handles().lighting_system)
+        {
+            Some(system) => {
+                let names = group_names(shows);
+                // The lighting-system mutex is shared with the effects loop
+                // thread, so taking it belongs off the async worker.
+                tokio::task::spawn_blocking(move || {
+                    let mut guard = system.lock();
+                    let mut counts = std::collections::HashMap::new();
+                    // Only when a venue is actually loaded. Without one every
+                    // group resolves to nothing, and reporting them all as empty
+                    // would be noise rather than a finding.
+                    if guard.get_current_venue().is_some() {
+                        for name in names {
+                            let count = guard.resolve_logical_group_graceful(&name).len();
+                            counts.insert(name, count);
+                        }
+                    }
+                    counts
+                })
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?
+            }
+            None => std::collections::HashMap::new(),
+        };
+
         let song = match song {
             Some(name) => Some(
                 self.player
@@ -1152,28 +1222,11 @@ impl McpServer {
             None => None,
         };
 
-        let mut ctx = crate::lighting::lint::LintContext {
+        let ctx = crate::lighting::lint::LintContext {
             song_duration: song.as_ref().map(|s| s.duration()),
             beat_grid: song.as_ref().and_then(|s| s.beat_grid()),
-            ..Default::default()
+            group_fixture_counts,
         };
-
-        if let Some(system) = self
-            .player
-            .dmx_engine()
-            .and_then(|dmx| dmx.broadcast_handles().lighting_system)
-        {
-            let mut guard = system.lock();
-            // Only when a venue is actually loaded. Without one every group
-            // resolves to nothing, and reporting them all as empty would be
-            // noise rather than a finding.
-            if guard.get_current_venue().is_some() {
-                for name in group_names(shows) {
-                    let count = guard.resolve_logical_group_graceful(&name).len();
-                    ctx.group_fixture_counts.insert(name, count);
-                }
-            }
-        }
 
         Ok(crate::lighting::lint::lint_shows(shows, &ctx)
             .into_iter()
@@ -1217,10 +1270,24 @@ impl McpServer {
         McpError,
     > {
         match (&args.song, &args.source) {
-            (Some(_), Some(_)) => Err(McpError::invalid_params(
-                "pass either `song` or `source`, not both",
-                None,
-            )),
+            (Some(name), Some(source)) => {
+                // A draft evaluated against the song it belongs to. Without the
+                // song's tempo the parser rejects every `@bar`/`beat` construct,
+                // so this is the only way to evaluate an unsaved edit of a
+                // measure-timed show.
+                let song = self
+                    .player
+                    .songs()
+                    .get(name)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let tempo = song_lighting_tempo(&song);
+                let shows =
+                    crate::lighting::parser::parse_light_shows_with_tempo(source, tempo.as_ref())
+                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let mut shows: Vec<_> = shows.into_values().collect();
+                sort_shows(&mut shows);
+                Ok((shows, tempo))
+            }
             (None, None) => Err(McpError::invalid_params(
                 "pass either `song` (a loaded song's registered shows) or \
                  `source` (raw `.light` DSL)",
@@ -1250,8 +1317,15 @@ impl McpServer {
                 Ok((shows, song_lighting_tempo(&song)))
             }
             (None, Some(source)) => {
-                let shows = crate::lighting::parser::parse_light_shows(source)
-                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let shows = crate::lighting::parser::parse_light_shows(source).map_err(|e| {
+                    McpError::invalid_params(
+                        format!(
+                            "{e}\n\nIf this show uses `@bar`/`beat` timing, pass `song` \
+                             alongside `source` so the song's tempo map can resolve them."
+                        ),
+                        None,
+                    )
+                })?;
                 let mut shows: Vec<_> = shows.into_values().collect();
                 sort_shows(&mut shows);
                 Ok((shows, None))
@@ -1360,7 +1434,7 @@ impl McpServer {
         // Warnings come from the shared linter rather than a second
         // implementation here, so `analyze_show` and `validate_lighting` cannot
         // disagree about the same show.
-        let warnings = self.lint_warnings(&shows, args.song.as_deref())?;
+        let warnings = self.lint_warnings(&shows, args.song.as_deref()).await?;
 
         let analysis = tokio::task::spawn_blocking(move || {
             crate::lighting::analyze::analyze_show(shows, fallback_tempo.as_ref())
@@ -1403,7 +1477,10 @@ impl McpServer {
         tempo block changed, and a one-line duration edit can move a section \
         boundary and open a blackout. Effects are matched on the groups they \
         target and their kind, so a cue nudged by a beat reads as a changed \
-        time rather than as an unrelated removal and addition. Also reports \
+        time rather than as an unrelated removal and addition, and compares \
+        their parameters and blend mode, so a colour or level edit is a \
+        reported change rather than silence. Layer commands are diffed too. \
+        Also reports \
         `dark_windows_added` and `dark_windows_removed`, since a revision is \
         usually about what the rig does. Each side takes either a song or DSL \
         source.")]
@@ -1443,6 +1520,8 @@ impl McpServer {
                 "type": e.effect_type,
                 "layer": format!("{:?}", e.layer).to_lowercase(),
                 "duration": e.duration.as_secs_f64(),
+                "blend_mode": format!("{:?}", e.blend_mode).to_lowercase(),
+                "parameters": e.parameters,
             })
         };
         let window = |w: &crate::lighting::analyze::DarkWindow| {
@@ -1451,6 +1530,17 @@ impl McpServer {
                 "to": w.to.as_secs_f64(),
                 "seconds": w.seconds(),
                 "position": w.position,
+            })
+        };
+
+        let command = |c: &crate::lighting::diff::LayerCommandEntry| {
+            json!({
+                "time": c.time.as_secs_f64(),
+                "position": c.position,
+                "command": c.command,
+                "layer": c.layer,
+                "intensity": c.intensity,
+                "speed": c.speed,
             })
         };
 
@@ -1471,6 +1561,16 @@ impl McpServer {
                         .collect::<Vec<_>>(),
                 }))
                 .collect::<Vec<_>>(),
+            "layer_commands_added": diff
+                .layer_commands_added
+                .iter()
+                .map(command)
+                .collect::<Vec<_>>(),
+            "layer_commands_removed": diff
+                .layer_commands_removed
+                .iter()
+                .map(command)
+                .collect::<Vec<_>>(),
             "dark_windows_added": diff.dark_windows_added.iter().map(window).collect::<Vec<_>>(),
             "dark_windows_removed": diff
                 .dark_windows_removed
@@ -1481,7 +1581,7 @@ impl McpServer {
     }
 
     #[tool(description = "List the venues known to the running DMX engine. Each \
-        venue lists its groups and fixture count.")]
+        venue lists its fixture count.")]
     async fn list_venues(&self) -> Result<CallToolResult, McpError> {
         let dmx = match self.player.dmx_engine() {
             Some(d) => d,
@@ -1733,6 +1833,7 @@ impl McpServer {
             .replace('\\', "/");
 
         let original = read_text(&config_path).await?;
+        let referenced = references_lighting_file(&original, &reference);
         let unregistered = match unregister_lighting_file(&original, &reference) {
             Some(updated) => {
                 // Same guard the write path uses: never leave a song.yaml that
@@ -1741,9 +1842,27 @@ impl McpServer {
                 staged_write_string(&config_path, &updated).await?;
                 true
             }
+            None if referenced => {
+                // The song points at this file but the entry could not be
+                // edited — an unusual YAML shape such as a flow sequence.
+                // Deleting anyway would leave exactly the dangling reference
+                // this tool exists to prevent, and the song would stop loading.
+                return Err(McpError::invalid_params(
+                    format!(
+                        "song `{}` references `{reference}` but its `lighting:` block \
+                         could not be edited automatically. Remove the entry from {} \
+                         by hand, then delete the file.",
+                        args.song,
+                        config_path.display()
+                    ),
+                    None,
+                ));
+            }
             None => false,
         };
 
+        // The file goes last. If removal fails, the only thing that happened is
+        // the config edit, and the song still loads.
         remove_lighting_file(&path).await?;
         self.reload_songs_from_config().await?;
 
@@ -2007,9 +2126,14 @@ impl McpServer {
         })?;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
-        crate::lighting::parser::parse_light_shows(&updated).map_err(|e| {
-            McpError::invalid_params(format!("patched .light is invalid: {e}"), None)
-        })?;
+        // Validate against the tempo this song loads it with, matching
+        // `write_song_lighting`. Otherwise a patch to a tempo-inheriting show
+        // is rejected here and would have loaded fine.
+        crate::lighting::parser::parse_light_shows_with_tempo(
+            &updated,
+            song_lighting_tempo(&song).as_ref(),
+        )
+        .map_err(|e| McpError::invalid_params(format!("patched .light is invalid: {e}"), None))?;
         staged_write_string(&path, &updated).await?;
         self.reload_songs_from_config().await?;
         Ok(patch_response(&path, &original, &updated))
@@ -2220,7 +2344,6 @@ impl ServerHandler for McpServer {
     }
 }
 
-/// Returns a successful tool result wrapping a JSON value as pretty-printed text.
 /// Renders one evaluation — predicted or live — as JSON.
 ///
 /// `evaluate_show` and `get_fixture_state` share this so the two surfaces
@@ -2247,6 +2370,8 @@ fn evaluation_json(
     let mut entry = json!({
         "time": evaluation.time.as_secs_f64(),
         "position": format_duration(evaluation.time),
+        // Null, not false, when no venue is loaded: there were no fixtures to
+        // judge, and "I cannot tell" must not read as "the rig is lit".
         "dark": evaluation.is_dark(),
         "active_effects": effects,
     });
@@ -2278,13 +2403,9 @@ fn evaluation_json(
     entry
 }
 
-/// The tempo map a song's `.light` files are parsed with: its explicit
-/// `tempo:` block if it has one, otherwise one derived from the click-derived
-/// beat grid. Mirrors what `Song` does at load time.
+/// The tempo map a song's `.light` files are parsed with.
 fn song_lighting_tempo(song: &crate::songs::Song) -> Option<crate::tempo::TempoMap> {
-    song.tempo_map()
-        .cloned()
-        .or_else(|| song.beat_grid().and_then(|grid| grid.to_tempo_map()))
+    song.lighting_tempo_map()
 }
 
 /// What `write_song_lighting` did about the song's `lighting:` block.
@@ -2305,6 +2426,59 @@ async fn remove_lighting_file(path: &std::path::Path) -> Result<(), McpError> {
     })
 }
 
+/// The `lighting:` block's location in a song's YAML: the key line, the item
+/// spans beneath it, and where the block ends.
+///
+/// YAML lets a sequence sit at the key's own indentation or deeper, and an
+/// entry may run over several lines — the shipped songs write `- name: "..."`
+/// with `file:` underneath. Both callers need the same understanding of that
+/// shape, so they share this rather than each scanning lines their own way.
+struct LightingBlock {
+    key_index: usize,
+    item_indent: usize,
+    /// Half-open line ranges, one per `- ` entry.
+    spans: Vec<(usize, usize)>,
+    /// One past the block's last line.
+    end: usize,
+}
+
+fn find_lighting_block(lines: &[&str]) -> Option<LightingBlock> {
+    let key_index = lines.iter().position(|line| is_key(line, "lighting"))?;
+    let key_indent = indent_of(lines[key_index]);
+
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut end = key_index + 1;
+    let mut item_indent = key_indent;
+    for (offset, line) in lines.iter().enumerate().skip(key_index + 1) {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let indent = indent_of(line);
+        let is_item = line.trim_start().starts_with('-');
+        // A sequence may be indented under the key or level with it; anything
+        // shallower, or level but not an item, is the next key.
+        if indent < key_indent || (indent == key_indent && !is_item) {
+            break;
+        }
+        end = offset + 1;
+        if is_item {
+            if spans.is_empty() {
+                item_indent = indent;
+            }
+            spans.push((offset, offset + 1));
+        } else if let Some(last) = spans.last_mut() {
+            last.1 = offset + 1;
+        }
+    }
+
+    Some(LightingBlock {
+        key_index,
+        item_indent,
+        spans,
+        end,
+    })
+}
+
 /// Removes the `lighting:` entry referencing `relative_path`, and the whole
 /// block if that was its last entry.
 ///
@@ -2313,44 +2487,23 @@ async fn remove_lighting_file(path: &std::path::Path) -> Result<(), McpError> {
 /// [`register_lighting_file`] does: song.yaml is hand-written.
 pub(crate) fn unregister_lighting_file(yaml: &str, relative_path: &str) -> Option<String> {
     let lines: Vec<&str> = yaml.lines().collect();
-    let key_index = lines.iter().position(|line| is_key(line, "lighting"))?;
-    let key_indent = indent_of(lines[key_index]);
-
-    // Collect the block's item spans. An entry may run over several lines —
-    // the shipped songs write `- name: "..."` with `file:` underneath — so the
-    // path can appear on any line of its item, not just the one starting it.
-    let mut spans: Vec<(usize, usize)> = Vec::new();
-    let mut block_end = key_index + 1;
-    for (offset, line) in lines.iter().enumerate().skip(key_index + 1) {
-        if line.trim().is_empty() || line.trim_start().starts_with('#') {
-            continue;
-        }
-        if indent_of(line) <= key_indent {
-            break;
-        }
-        block_end = offset + 1;
-        if line.trim_start().starts_with('-') {
-            spans.push((offset, offset + 1));
-        } else if let Some(last) = spans.last_mut() {
-            last.1 = offset + 1;
-        }
-    }
+    let block = find_lighting_block(&lines)?;
 
     // Match on the parsed value rather than a bare substring, so
     // `lighting/main.light` cannot match `lighting/main.light.bak`.
-    let target = spans.iter().position(|(start, end)| {
+    let target = block.spans.iter().position(|(start, end)| {
         lines[*start..*end]
             .iter()
             .any(|line| yaml_value_of(line, "file").as_deref() == Some(relative_path))
     })?;
 
     let mut updated: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-    if spans.len() == 1 {
+    if block.spans.len() == 1 {
         // Removing the last entry would leave `lighting:` with no items, which
         // is not a valid sequence and would stop the song loading.
-        updated.drain(key_index..block_end);
+        updated.drain(block.key_index..block.end);
     } else {
-        let (start, end) = spans[target];
+        let (start, end) = block.spans[target];
         updated.drain(start..end);
     }
     Some(with_trailing_newline(updated.join("\n")))
@@ -2381,33 +2534,12 @@ pub(crate) fn register_lighting_file(yaml: &str, relative_path: &str) -> Option<
     let lines: Vec<&str> = yaml.lines().collect();
     let entry = format!("- file: {relative_path}");
 
-    // An existing `lighting:` block: append after its last item, so the new
-    // show reads in the order it was added.
-    if let Some(key_index) = lines.iter().position(|line| is_key(line, "lighting")) {
-        let indent = indent_of(lines[key_index]);
-        let mut end = key_index + 1;
-        for (offset, line) in lines.iter().enumerate().skip(key_index + 1) {
-            // The block ends at the next line that is no more indented than
-            // the key itself. Blank lines and comments belong to whatever
-            // follows, so they do not end it on their own.
-            if line.trim().is_empty() || line.trim_start().starts_with('#') {
-                continue;
-            }
-            if indent_of(line) <= indent {
-                break;
-            }
-            end = offset + 1;
-        }
-        // Match the indentation the existing items use, falling back to the
-        // key's own indentation for an empty block.
-        let item_indent = lines
-            .get(key_index + 1)
-            .filter(|line| indent_of(line) > indent && line.trim_start().starts_with('-'))
-            .map(|line| indent_of(line))
-            .unwrap_or(indent);
-
+    if let Some(block) = find_lighting_block(&lines) {
         let mut updated: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-        updated.insert(end, format!("{}{entry}", " ".repeat(item_indent)));
+        updated.insert(
+            block.end,
+            format!("{}{entry}", " ".repeat(block.item_indent)),
+        );
         return Some(with_trailing_newline(updated.join("\n")));
     }
 
@@ -2494,6 +2626,7 @@ fn group_names(shows: &[crate::lighting::parser::LightShow]) -> Vec<String> {
     names
 }
 
+/// Returns a successful tool result wrapping a JSON value as pretty-printed text.
 pub(crate) fn ok_json(value: Value) -> CallToolResult {
     let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
     CallToolResult::success(vec![Content::text(text)])
@@ -2764,11 +2897,6 @@ async fn send_resource_updated(
     peer.send_notification(notif).await
 }
 
-/// Builds the player-status JSON snapshot used by both `tools/call status`
-/// and the `mtrack://status` resource. Free function so background tasks
-/// can compute it without capturing an `McpServer` (which would form a
-/// reference cycle through `subscriptions` → `SubscriptionHandle` →
-/// `AbortHandle` and silently defeat abort-on-Drop).
 /// Builds the live lighting payload. Free function so the subscription task can
 /// call it while capturing only `Arc<Player>`, for the same reason
 /// [`build_status_snapshot`] is one.
@@ -2800,6 +2928,11 @@ async fn build_lighting_snapshot(player: &Player) -> Result<Value, McpError> {
     Ok(value)
 }
 
+/// Builds the player-status JSON snapshot used by both `tools/call status`
+/// and the `mtrack://status` resource. Free function so background tasks
+/// can compute it without capturing an `McpServer` (which would form a
+/// reference cycle through `subscriptions` → `SubscriptionHandle` →
+/// `AbortHandle` and silently defeat abort-on-Drop).
 async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
     let playlist = player.get_playlist();
     let current = playlist.current();
@@ -2815,18 +2948,33 @@ async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
     // The timeline mutex is shared with the effects loop thread, so this reads
     // it on the blocking pool rather than parking a tokio worker on it.
     let lighting = match player.dmx_engine() {
-        Some(dmx) => tokio::task::spawn_blocking(move || dmx.lighting_arming_state())
-            .await
-            .ok()
-            .flatten()
-            .map(|(armed, total, remaining, next)| {
-                json!({
+        Some(dmx) => {
+            // Bounded, because this is the diagnostic of last resort: if the
+            // effects loop wedges holding the timeline mutex, `status` must
+            // still answer rather than hang alongside it. A timeout or a
+            // panicked task is reported as such, not silently flattened into
+            // "no show loaded" — that is the one field meant to tell those
+            // apart.
+            let read = tokio::task::spawn_blocking(move || dmx.lighting_arming_state());
+            match tokio::time::timeout(std::time::Duration::from_millis(500), read).await {
+                Ok(Ok(Some((armed, total, remaining, next)))) => Some(json!({
                     "armed": armed,
                     "cues_total": total,
                     "cues_remaining": remaining,
                     "next_cue_seconds": next.map(|t| t.as_secs_f64()),
-                })
-            }),
+                })),
+                Ok(Ok(None)) => None,
+                Ok(Err(e)) => Some(json!({
+                    "available": false,
+                    "reason": format!("lighting state read failed: {e}"),
+                })),
+                Err(_) => Some(json!({
+                    "available": false,
+                    "reason": "timed out reading lighting state — the effects \
+                               loop may be stalled holding the timeline lock",
+                })),
+            }
+        }
         None => None,
     };
 
@@ -2920,6 +3068,7 @@ impl McpServer {
                     continue;
                 }
 
+                let sent = rx.borrow().clone();
                 let payload = build_lighting_snapshot(&player)
                     .await
                     .unwrap_or(Value::Null);
@@ -2934,7 +3083,11 @@ impl McpServer {
                 // next payload is the state then, not a replay of this backlog.
                 tokio::time::sleep(LIGHTING_NOTIFY_INTERVAL).await;
                 rx.mark_unchanged();
-                last = rx.borrow().clone();
+                // Deliberately the state we *sent*, not the state now: the
+                // sampler re-sends unconditionally, so `== last` is the only
+                // change filter. Adopting the post-sleep value here would swallow
+                // any transition that happened during the sleep and then held.
+                last = sent;
             }
         });
         Ok(handle.abort_handle())
@@ -3427,11 +3580,23 @@ mod unregister_lighting_tests {
     #[test]
     fn handles_the_multi_line_quoted_form_the_shipped_songs_use() {
         // examples/songs/dsl-light-show-song/song.yaml writes entries as
-        // `- name: "..."` with `file:` on the next line, quoted. Matching only
-        // the `-` line misses the path entirely.
-        let yaml = format!(
-            "{BASE}lighting:\n  - name: \"Main Show\"\n    file: \"lighting/main_show.light\"\n               - name: \"Outro Show\"\n    file: \"lighting/outro.light\"\n"
-        );
+        // `- name: "..."` with `file:` on the next line, quoted and indented
+        // two spaces. Matching only the `-` line misses the path entirely.
+        let block = [
+            "lighting:",
+            "  - name: \"Main Show\"",
+            "    file: \"lighting/main_show.light\"",
+            "  - name: \"Outro Show\"",
+            "    file: \"lighting/outro.light\"",
+            "",
+        ]
+        .join("\n");
+        let yaml = format!("{BASE}{block}");
+
+        let song: crate::config::Song =
+            super::serde_yaml_from_str(&yaml).expect("precondition: valid song");
+        assert_eq!(song.lighting().map(|l| l.len()), Some(2));
+
         let updated =
             unregister_lighting_file(&yaml, "lighting/outro.light").expect("removes the entry");
         assert!(!updated.contains("outro.light"), "{updated}");
@@ -3463,6 +3628,38 @@ mod unregister_lighting_tests {
             !updated.contains("- file: lighting/main.light\n"),
             "{updated}"
         );
+    }
+
+    #[test]
+    fn handles_a_sequence_at_the_keys_own_indentation() {
+        // Valid YAML and a common hand-written style. A scanner that stops at
+        // the first line no deeper than the key finds no items at all, so
+        // `delete_song_lighting` would orphan the reference.
+        let yaml = format!("{BASE}lighting:\n- file: lighting/a.light\n- file: lighting/b.light\n");
+        let cfg: Result<crate::config::Song, _> = super::serde_yaml_from_str(&yaml);
+        assert!(cfg.is_ok(), "precondition: this is valid YAML");
+
+        let updated = unregister_lighting_file(&yaml, "lighting/a.light").expect("removes");
+        assert!(!updated.contains("a.light"), "{updated}");
+        assert!(updated.contains("b.light"), "{updated}");
+    }
+
+    #[test]
+    fn a_zero_indent_block_loses_its_key_with_the_last_entry() {
+        let yaml = format!("{BASE}lighting:\n- file: lighting/only.light\n");
+        let updated = unregister_lighting_file(&yaml, "lighting/only.light").expect("removes");
+        assert!(!updated.contains("lighting:"), "{updated}");
+        let song: crate::config::Song =
+            super::serde_yaml_from_str(&updated).expect("must remain valid");
+        assert!(song.lighting().is_none());
+    }
+
+    #[test]
+    fn a_flow_sequence_is_declined_rather_than_mangled() {
+        // Not supported by a line-based editor. Returning None is what makes
+        // the delete path refuse instead of orphaning the reference.
+        let yaml = format!("{BASE}lighting: [{{file: \"lighting/a.light\"}}]\n");
+        assert!(unregister_lighting_file(&yaml, "lighting/a.light").is_none());
     }
 
     #[test]

@@ -62,11 +62,19 @@ pub struct Evaluation {
 }
 
 impl Evaluation {
-    /// True when every channel of every fixture is at zero — the rig is dark.
-    pub fn is_dark(&self) -> bool {
-        self.fixtures
-            .iter()
-            .all(|f| f.channels.values().all(|&v| v == 0))
+    /// `Some(true)` when every channel of every fixture is at zero — the rig
+    /// is dark. `None` when there were no fixtures to evaluate, which is not
+    /// darkness but an absence of evidence: no venue is loaded, so nothing can
+    /// be said either way. `all()` over an empty set would answer `true`.
+    pub fn is_dark(&self) -> Option<bool> {
+        if self.fixtures.is_empty() {
+            return None;
+        }
+        Some(
+            self.fixtures
+                .iter()
+                .all(|f| f.channels.values().all(|&v| v == 0)),
+        )
     }
 }
 
@@ -152,7 +160,21 @@ where
                     }
                 })
                 .collect();
-            active_effects.sort_by(|a, b| a.id.cmp(&b.id));
+            // Ordered by nothing that depends on the id. Ids come from a
+            // process-global counter and were compared as strings, so
+            // `song_effect_10` sorted before `song_effect_9` and the order
+            // shifted as the counter advanced — two evaluations of the same
+            // instant in one call could disagree, contradicting the
+            // independence this module promises. Elapsed descending puts the
+            // earliest-started effect first; the rest of the key is stable
+            // content.
+            active_effects.sort_by(|a, b| {
+                b.elapsed
+                    .cmp(&a.elapsed)
+                    .then_with(|| a.layer.cmp(&b.layer))
+                    .then_with(|| a.effect_type.cmp(b.effect_type))
+                    .then_with(|| a.fixtures.cmp(&b.fixtures))
+            });
 
             Evaluation {
                 time,
@@ -223,7 +245,15 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
             }
         })
         .collect();
-    active_effects.sort_by(|a, b| a.id.cmp(&b.id));
+    // Same stable ordering as `evaluate_show`, so predicted and live output
+    // can be compared line for line.
+    active_effects.sort_by(|a, b| {
+        b.elapsed
+            .cmp(&a.elapsed)
+            .then_with(|| a.layer.cmp(&b.layer))
+            .then_with(|| a.effect_type.cmp(b.effect_type))
+            .then_with(|| a.fixtures.cmp(&b.fixtures))
+    });
 
     let mut fixtures = compute_fixture_snapshots(&engine.get_fixture_states(), &has_dimmer);
     fill_dark_fixtures(&mut fixtures, engine.get_fixture_registry().values());
@@ -329,8 +359,11 @@ show "T" {
 
         assert_eq!(channel(&results[0], "wash", "blue"), 255);
         assert_eq!(channel(&results[1], "wash", "blue"), 255);
-        assert!(results[2].is_dark(), "past its duration the effect is gone");
-        assert!(results[3].is_dark());
+        assert!(
+            results[2].is_dark() == Some(true),
+            "past its duration the effect is gone"
+        );
+        assert!(results[3].is_dark() == Some(true));
 
         assert_eq!(results[0].active_effects.len(), 1);
         assert_eq!(results[0].active_effects[0].effect_type, "Static");
@@ -362,7 +395,10 @@ show "T" {
 }
 "#;
         let results = eval(source, &fixtures, &[9.999, 10.0]);
-        assert!(results[0].is_dark(), "not yet fired just before the cue");
+        assert!(
+            results[0].is_dark() == Some(true),
+            "not yet fired just before the cue"
+        );
         assert_eq!(channel(&results[1], "wash", "red"), 255);
     }
 
@@ -413,7 +449,7 @@ show "T" {
         let results = eval(source, &fixtures, &[4.0, 6.0]);
         assert_eq!(channel(&results[0], "wash", "blue"), 255);
         assert!(
-            results[1].is_dark(),
+            results[1].is_dark() == Some(true),
             "the clear at 5s should have killed a 60s effect"
         );
     }
@@ -433,7 +469,7 @@ show "T" {
 
         let unresolved = evaluate_show(shows(source), &fixtures, None, &times, |e| e);
         assert!(
-            unresolved[0].is_dark(),
+            unresolved[0].is_dark() == Some(true),
             "an unresolved group name matches no fixture"
         );
 
@@ -501,17 +537,25 @@ show "T" {
         let results = evaluate_show(shows(source), &fixtures, Some(&slow), &times, |e| e);
 
         assert_eq!(channel(&results[0], "wash", "blue"), 255);
-        assert!(results[1].is_dark(), "4 beats at 120bpm ends by 6.0s");
-        assert!(results[2].is_dark(), "the 60bpm fallback was not used");
+        assert!(
+            results[1].is_dark() == Some(true),
+            "4 beats at 120bpm ends by 6.0s"
+        );
+        assert!(
+            results[2].is_dark() == Some(true),
+            "the 60bpm fallback was not used"
+        );
     }
 
     #[test]
     fn no_fixtures_yields_no_state_but_still_reports_effects() {
         let results = eval(BLUE_5S, &[], &[1.0]);
         assert!(results[0].fixtures.is_empty());
-        assert!(results[0].is_dark());
+        // Not `Some(true)`: with no venue there is nothing to be dark, and
+        // answering "dark" here would be a vacuous truth over an empty set.
+        assert_eq!(results[0].is_dark(), None);
         // With nothing to validate against the effect never starts, so an empty
-        // venue reads as a dark rig rather than a crash.
+        // venue reports no effects rather than crashing.
         assert!(results[0].active_effects.is_empty());
     }
 
@@ -519,7 +563,7 @@ show "T" {
     fn an_empty_show_is_dark_everywhere() {
         let fixtures = vec![rgb_fixture("wash", 1)];
         let results = eval("show \"T\" {\n}\n", &fixtures, &[0.0, 5.0, 100.0]);
-        assert!(results.iter().all(|r| r.is_dark()));
+        assert!(results.iter().all(|r| r.is_dark() == Some(true)));
         assert!(results.iter().all(|r| r.active_effects.is_empty()));
     }
 
@@ -661,7 +705,7 @@ show "T" {
             "a dark fixture still names its channels"
         );
         assert!(unlit.channels.values().all(|&v| v == 0));
-        assert!(!results[0].is_dark(), "one fixture is lit");
+        assert!(results[0].is_dark() == Some(false), "one fixture is lit");
     }
 
     #[test]

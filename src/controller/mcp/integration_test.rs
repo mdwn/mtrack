@@ -1450,13 +1450,23 @@ async fn mcp_fixture_state_matches_offline_evaluation() -> Result<(), Box<dyn Er
     wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
-    // With nothing playing there is an engine, and nothing lit.
+    // With nothing playing there is an engine and nothing running. Venue
+    // fixtures are registered at play time, so there are none to report yet —
+    // and `dark` is null rather than true, because "no fixtures" is an absence
+    // of evidence and not a dark rig.
     let idle =
         tool_json(&call_tool(&client, &url, &session, 950, "get_fixture_state", json!({})).await);
     assert_eq!(idle["available"], true, "expected a live engine: {idle}");
-    assert_eq!(
-        idle["dark"], true,
-        "nothing should be lit before play: {idle}"
+    assert!(
+        idle["dark"].is_null(),
+        "no fixtures are registered before play, so darkness is unknowable: {idle}"
+    );
+    assert!(
+        idle["active_effects"]
+            .as_array()
+            .expect("effects")
+            .is_empty(),
+        "nothing should be running before play: {idle}"
     );
 
     let play_resp = tool_json(&call_tool(&client, &url, &session, 951, "play", json!({})).await);

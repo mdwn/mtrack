@@ -20,7 +20,6 @@
     LAYERS,
     BLEND_MODES,
     CURVES,
-    DIRECTIONS,
     CYCLE_DIRECTIONS,
     CHASE_DIRECTIONS,
     CHASE_PATTERNS,
@@ -624,22 +623,6 @@
               }}
             /></label
           >
-          <label class="param"
-            ><span class="param-label">{$t("effect.direction")}</span>
-            <select
-              class="param-input"
-              value={effect.effect.direction ?? ""}
-              onchange={(e) =>
-                updateParam(
-                  "direction",
-                  (e.target as HTMLSelectElement).value || undefined,
-                )}
-            >
-              <option value="">--</option>{#each DIRECTIONS as d (d)}<option
-                  value={d}>{d}</option
-                >{/each}
-            </select>
-          </label>
           <label class="param"
             ><span class="param-label">{$t("effect.duration")}</span><input
               type="text"

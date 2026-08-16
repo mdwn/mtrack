@@ -15,7 +15,6 @@
 use std::path::Path;
 
 use crate::config;
-use crate::lighting::parser::parse_light_shows;
 use crate::util;
 
 /// Writes content to a config file, preserving its ownership and leaving a
@@ -35,8 +34,17 @@ pub fn validate_player_config(yaml: &str) -> Result<(), Vec<String>> {
 }
 
 /// Validates a light show DSL string by attempting to parse it.
-pub fn validate_light_show(content: &str) -> Result<(), Vec<String>> {
-    parse_light_shows(content).map_err(|e| vec![format!("{}", e)])?;
+///
+/// `tempo` is the map the show will be loaded with — a song's `tempo:` block,
+/// or one derived from its click track. Musical timing resolves at parse time,
+/// so validating a tempo-inheriting show without it rejects content the player
+/// loads without complaint.
+pub fn validate_light_show(
+    content: &str,
+    tempo: Option<&crate::tempo::TempoMap>,
+) -> Result<(), Vec<String>> {
+    crate::lighting::parser::parse_light_shows_with_tempo(content, tempo)
+        .map_err(|e| vec![format!("{}", e)])?;
     Ok(())
 }
 
@@ -69,13 +77,13 @@ show "test" {
     lights: static color: "red", duration: 5s
 }
 "#;
-        assert!(validate_light_show(content).is_ok());
+        assert!(validate_light_show(content, None).is_ok());
     }
 
     #[test]
     fn test_validate_light_show_invalid() {
         let content = "this is not valid DSL content {{{";
-        assert!(validate_light_show(content).is_err());
+        assert!(validate_light_show(content, None).is_err());
     }
 
     #[test]

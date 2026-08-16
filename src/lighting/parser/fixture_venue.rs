@@ -272,9 +272,15 @@ fn parse_venue_content(
                 return Err(format!(
                     "venue group `{name}` is no longer supported. Tag the fixtures \
                      instead — add a tag to each member, e.g. `tags [\"{name}\"]`, \
-                     and declare a logical group under `dmx.lighting.groups` in the \
-                     player config with `constraints: [AllOf: [\"{name}\"]]`. Tags \
-                     survive a venue change; venue groups did not."
+                     then declare a logical group under `dmx.lighting.groups` in \
+                     the player config:\n\
+                     \n\
+                     \x20   groups:\n\
+                     \x20     - name: {name}\n\
+                     \x20       constraints:\n\
+                     \x20         - AllOf: [\"{name}\"]\n\
+                     \n\
+                     Tags survive a venue change; venue groups did not."
                 )
                 .into());
             }
@@ -285,7 +291,7 @@ fn parse_venue_content(
 }
 
 pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<dyn Error>> {
-    let mut name = String::new();
+    let mut name: Option<String> = None;
     let mut fixture_type = String::new();
     let mut universe = 0u16;
     let mut start_channel = 0u16;
@@ -293,9 +299,12 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
 
     for pair in pair.into_inner() {
         match pair.as_rule() {
-            Rule::string => {
-                name = extract_string(pair);
-            }
+            // Positional: the first quoted value is the fixture's name, a
+            // second is its type. Only the type may be given either way.
+            Rule::string => match name {
+                None => name = Some(extract_string(pair)),
+                Some(_) => fixture_type = extract_string(pair),
+            },
             Rule::identifier => {
                 fixture_type = pair.as_str().to_string();
             }
@@ -313,7 +322,7 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
     }
 
     Ok(Fixture::new(
-        name,
+        name.unwrap_or_default(),
         fixture_type,
         universe,
         start_channel,

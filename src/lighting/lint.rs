@@ -65,11 +65,17 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
     let mut warnings = Vec::new();
     for show in shows {
         empty_groups(show, ctx, &mut warnings);
-        effects_past_end_of_song(show, ctx, &mut warnings);
-        stomping_replace_effects(show, &mut warnings);
         tempo_disagrees_with_grid(show, ctx, &mut warnings);
         cues_beyond_the_tempo_map(show, ctx, &mut warnings);
     }
+    // Across all shows at once, for the same reason the stomp check is: a
+    // `clear` in one show of a file ends effects in its siblings.
+    effects_past_end_of_song(shows, ctx, &mut warnings);
+    // Across all shows at once, not per show: `LightingTimeline` merges every
+    // show in a file into one cue list and plays them together, so two shows
+    // both driving `wash` on the background layer stomp each other exactly as
+    // two cues in one show would. Checking them separately misses that.
+    stomping_replace_effects(shows, &mut warnings);
     warnings
 }
 
@@ -101,13 +107,23 @@ fn empty_groups(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) {
 
 /// An effect whose duration runs past the end of the song. Playback truncates
 /// it, which is usually not what the author meant.
-fn effects_past_end_of_song(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) {
+fn effects_past_end_of_song(shows: &[LightShow], ctx: &LintContext, out: &mut Vec<Warning>) {
     let Some(song_end) = ctx.song_duration else {
         return;
     };
-    for cue in &show.cues {
+    // A song with no audio tracks has zero duration, which would put every
+    // effect "past the end".
+    if song_end.is_zero() {
+        return;
+    }
+    let clears: Vec<(Option<EffectLayer>, Duration)> = shows.iter().flat_map(clear_times).collect();
+    for cue in shows.iter().flat_map(|show| show.cues.iter()) {
         for effect in &cue.effects {
-            let end = cue.time + effect.total_duration();
+            // The authored end is not the real one. A long bed cut by a
+            // `clear` does not overrun the song, and warning that it does is
+            // the false positive the stomp check already avoids.
+            let layer = effect.layer.unwrap_or(EffectLayer::Background);
+            let end = effective_end(cue.time + effect.total_duration(), cue.time, layer, &clears);
             if end <= song_end {
                 continue;
             }
@@ -129,13 +145,14 @@ fn effects_past_end_of_song(show: &LightShow, ctx: &LintContext, out: &mut Vec<W
 /// Two `replace`-blend effects overlapping on the same layer *and* group. Last
 /// writer wins with no diagnostic, which is the easiest way to author a cue
 /// that appears to do nothing because something else is stomping it.
-fn stomping_replace_effects(show: &LightShow, out: &mut Vec<Warning>) {
-    let clears = clear_times(show);
+fn stomping_replace_effects(shows: &[LightShow], out: &mut Vec<Warning>) {
+    let clears: Vec<(Option<EffectLayer>, Duration)> = shows.iter().flat_map(clear_times).collect();
+    let stops: Vec<(String, Duration)> = shows.iter().flat_map(stop_times).collect();
 
     // (layer, group) -> the spans replace-blend effects occupy on it.
     let mut spans: BTreeMap<(EffectLayer, String), Vec<(Duration, Duration)>> = BTreeMap::new();
 
-    for cue in &show.cues {
+    for cue in shows.iter().flat_map(|show| show.cues.iter()) {
         for effect in &cue.effects {
             // Both default to the same values the engine applies when the DSL
             // omits them, so an unannotated effect is checked as it will run.
@@ -147,7 +164,20 @@ fn stomping_replace_effects(show: &LightShow, out: &mut Vec<Warning>) {
             // The authored end is not the real one: a `clear` on this layer
             // ends the effect there. Comparing authored spans would report a
             // stomp between two effects that never coexist.
-            let end = effective_end(cue.time + effect.total_duration(), cue.time, layer, &clears);
+            let mut end =
+                effective_end(cue.time + effect.total_duration(), cue.time, layer, &clears);
+            // An explicit `stop sequence` ends that sequence's effects too.
+            if let Some(sequence) = effect.sequence_name.as_deref() {
+                if let Some(stopped) = stops
+                    .iter()
+                    .filter(|(name, at)| name == sequence && *at > cue.time)
+                    .map(|(_, at)| *at)
+                    .filter(|at| *at < end)
+                    .min()
+                {
+                    end = stopped;
+                }
+            }
             if end <= cue.time {
                 continue;
             }
@@ -200,6 +230,21 @@ fn clear_times(show: &LightShow) -> Vec<(Option<EffectLayer>, Duration)> {
     times
 }
 
+/// When each named sequence is explicitly stopped.
+fn stop_times(show: &LightShow) -> Vec<(String, Duration)> {
+    let mut times: Vec<(String, Duration)> = show
+        .cues
+        .iter()
+        .flat_map(|cue| {
+            cue.stop_sequences
+                .iter()
+                .map(move |name| (name.clone(), cue.time))
+        })
+        .collect();
+    times.sort_by_key(|(_, at)| *at);
+    times
+}
+
 /// An effect's real end: its authored end, or the first `clear` affecting its
 /// layer after it starts, whichever comes first.
 fn effective_end(
@@ -212,7 +257,8 @@ fn effective_end(
         .iter()
         .filter(|(cleared, at)| *at > start && cleared.is_none_or(|l| l == layer))
         .map(|(_, at)| *at)
-        .find(|at| *at < authored_end)
+        .filter(|at| *at < authored_end)
+        .min()
         .unwrap_or(authored_end)
 }
 
@@ -290,9 +336,15 @@ fn cues_beyond_the_tempo_map(show: &LightShow, ctx: &LintContext, out: &mut Vec<
     }
 }
 
+/// How many bars the grid covers.
+///
+/// `measure_starts` holds one index per downbeat, so its length is the number
+/// of bars the song reaches. (`BeatGrid::measure_count` subtracts one because
+/// it counts bars of *known duration*; for "is this cue past the end", a cue in
+/// the final bar is inside the song.)
 fn grid_measure_count(ctx: &LintContext) -> Option<usize> {
     ctx.beat_grid
-        .and_then(|g| g.measure_starts.len().checked_sub(1))
+        .map(|g| g.measure_starts.len())
         .filter(|n| *n > 0)
 }
 
@@ -313,6 +365,11 @@ mod tests {
     }
 
     /// A steady grid of `measures` bars of 4 beats at `bpm`, starting at zero.
+    ///
+    /// Shaped the way real grids are: one `measure_starts` entry per downbeat
+    /// and nothing after the last beat. An earlier version appended a trailing
+    /// sentinel that neither `from_tempo_map` nor `analyze_click_track`
+    /// produces, which hid an off-by-one in the bar count.
     fn grid(bpm: f64, measures: usize) -> BeatGrid {
         let spacing = 60.0 / bpm;
         let mut beats = Vec::new();
@@ -323,8 +380,6 @@ mod tests {
                 beats.push((m * 4 + b) as f64 * spacing);
             }
         }
-        measure_starts.push(beats.len());
-        beats.push((measures * 4) as f64 * spacing);
         BeatGrid {
             beats,
             measure_starts,
@@ -485,6 +540,25 @@ show "T" {
 }
 "#;
         assert!(lint_shows(&shows(source), &LintContext::default()).is_empty());
+    }
+
+    #[test]
+    fn two_shows_in_one_file_can_stomp_each_other() {
+        // A file's shows are merged into one timeline and played together, so
+        // they contend for a layer exactly as two cues in one show would.
+        let source = r#"
+show "A" {
+    @00:00.000
+    wash: static color: "blue", duration: 10s
+}
+
+show "B" {
+    @00:05.000
+    wash: static color: "red", duration: 10s
+}
+"#;
+        let warnings = lint_shows(&shows(source), &LintContext::default());
+        assert_eq!(kinds(&warnings), ["replace-overlap"], "{warnings:?}");
     }
 
     #[test]
@@ -676,6 +750,77 @@ show "T" {
             ..Default::default()
         };
         assert!(lint_shows(&parsed, &ctx).is_empty());
+    }
+
+    #[test]
+    fn a_cue_in_the_songs_last_bar_is_not_past_the_end() {
+        // The bar count is the number of downbeats. Counting bars of known
+        // duration instead reports the final bar as out of range.
+        let map = crate::tempo::TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            crate::tempo::TimeSignature::new(4, 4),
+            vec![],
+        );
+        let source = r#"
+show "T" {
+    @8/1
+    wash: static color: "blue", duration: 1s
+}
+"#;
+        let parsed: Vec<LightShow> = parse_light_shows_with_tempo(source, Some(&map))
+            .expect("parses")
+            .into_values()
+            .collect();
+        let g = grid(120.0, 8);
+        let ctx = LintContext {
+            beat_grid: Some(&g),
+            ..Default::default()
+        };
+        assert!(
+            lint_shows(&parsed, &ctx).is_empty(),
+            "bar 8 of an 8-bar song is inside it"
+        );
+    }
+
+    #[test]
+    fn an_effect_cut_by_a_clear_does_not_overrun_the_song() {
+        // The long-bed-plus-clear idiom, which `analyze`'s own tests use. The
+        // bed is authored for 60s but ends at 5s, well inside a 30s song.
+        let source = r#"
+show "T" {
+    @00:00.000
+    wash: static color: "blue", duration: 60s
+
+    @00:05.000
+    clear(layer: background)
+}
+"#;
+        let ctx = LintContext {
+            song_duration: Some(Duration::from_secs(30)),
+            ..Default::default()
+        };
+        assert!(
+            lint_shows(&shows(source), &ctx).is_empty(),
+            "the clear ends the bed long before the song does"
+        );
+    }
+
+    #[test]
+    fn a_song_with_no_duration_is_not_warned_about() {
+        // A song with no audio tracks has zero duration; warning that every
+        // effect overruns it is noise.
+        let source = r#"
+show "T" {
+    @00:00.000
+    wash: static color: "blue", duration: 4s
+}
+"#;
+        let ctx = LintContext {
+            song_duration: Some(Duration::ZERO),
+            ..Default::default()
+        };
+        assert!(lint_shows(&shows(source), &ctx).is_empty());
     }
 
     // ── nothing to say ─────────────────────────────────────────────

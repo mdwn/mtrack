@@ -42,8 +42,9 @@ export interface SongSummary {
     name: string;
     start_measure: number;
     end_measure: number;
-    start_beat?: number;
-    end_beat?: number;
+    start_beat?: number | null;
+    end_beat?: number | null;
+    color?: string | null;
   }[];
 }
 

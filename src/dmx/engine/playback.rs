@@ -77,6 +77,17 @@ impl Engine {
         let has_lighting = !dsl_lighting_shows.is_empty();
 
         if light_shows.is_empty() && !has_lighting {
+            // A song with no lighting at all still has to evict the previous
+            // song's state, or `status.lighting` and `get_timeline_cues()` keep
+            // answering with that song's cues.
+            {
+                let mut effect_engine = dmx_engine.effect_engine.lock();
+                effect_engine.set_tempo_map(None);
+            }
+            {
+                let mut current_timeline = dmx_engine.current_song_timeline.lock();
+                *current_timeline = None;
+            }
             ready_tx.send();
             return Ok(());
         }
@@ -116,7 +127,7 @@ impl Engine {
                         timeline
                             .tempo_map()
                             .cloned()
-                            .or_else(|| song.tempo_map().cloned()),
+                            .or_else(|| song.lighting_tempo_map()),
                     );
                 }
                 {
@@ -166,7 +177,7 @@ impl Engine {
                         dmx_engine.current_song_time.clone(),
                         dmx_engine.lighting_system.clone(),
                         dmx_engine.lighting_config.clone(),
-                        song.tempo_map().cloned(),
+                        song.lighting_tempo_map(),
                         tx.clone(),
                     ) {
                         Ok(handle) => {
@@ -202,6 +213,8 @@ impl Engine {
 
         if dmx_midi_sheets.is_empty() && !has_lighting {
             info!(song = song.name(), "Song has no matching light shows.");
+            // The `!has_lighting` branch above already dropped the previous
+            // song's timeline and tempo map.
             ready_tx.send();
             return Ok(());
         }
@@ -383,6 +396,16 @@ impl Engine {
                                 section = section.name,
                                 "DMX section loop: resetting for next iteration"
                             );
+                            // Rewind the clock and take ownership of it *before*
+                            // arming. Arming first leaves a window in which the
+                            // song-time tracker is still writing end-of-section
+                            // time, and the 44Hz effects loop can advance the
+                            // freshly rewound timeline straight past every cue
+                            // in the section — silencing the loop for good,
+                            // since the cue pointer never moves backwards.
+                            // Every sibling path writes before arming.
+                            section_owns_time.store(true, Ordering::Relaxed);
+                            dmx_engine.update_song_time(section.start_time);
                             dmx_engine.start_lighting_timeline_at(section.start_time);
                             {
                                 let mut playbacks = dmx_engine.midi_dmx_playbacks.lock();
@@ -392,8 +415,6 @@ impl Engine {
                                         events.partition_point(|e| e.time < section.start_time);
                                 }
                             }
-                            dmx_engine.update_song_time(section.start_time);
-                            section_owns_time.store(true, Ordering::Relaxed);
                             iteration_start = Some(elapsed);
                         }
                         crate::section_loop::LoopPoll::SectionCleared => {

@@ -180,14 +180,23 @@ impl BeatGrid {
         }
     }
 
-    /// The detected lead-in: how long before the first beat the song starts.
+    /// The detected lead-in: how long before *bar 1 beat 1* the song starts.
     ///
     /// A song with silence or a count-in ahead of bar 1 does not begin on beat
     /// one at zero, and an author writing `start: 0ms` is wrong by exactly this
     /// much with nothing to warn them.
+    ///
+    /// This is the first *downbeat*, not the first beat. `measure_starts` comes
+    /// from accented onsets and nothing guarantees the first click is one: a
+    /// count-in of plain clicks ahead of the first accent would otherwise place
+    /// bar 1 early by the pickup and shift every `@bar/beat` cue with it.
     pub fn lead_in(&self) -> Duration {
-        self.beats
+        let first_downbeat = self
+            .measure_starts
             .first()
+            .and_then(|index| self.beats.get(*index))
+            .or_else(|| self.beats.first());
+        first_downbeat
             .map(|secs| Duration::from_secs_f64(secs.max(0.0)))
             .unwrap_or(Duration::ZERO)
     }
@@ -210,26 +219,22 @@ impl BeatGrid {
         use crate::tempo::{TempoChange, TempoChangePosition, TempoTransition, TimeSignature};
 
         let measures = self.measures()?;
-        let (first, rest) = measures.split_first()?;
+        let first = measures.first()?;
 
-        let mut changes = Vec::new();
+        // Pass one: where does the tempo or the meter actually move? The
+        // decision uses each bar's own measured tempo, which is why
+        // `TEMPO_CHANGE_TOLERANCE` has to stay coarser than the detector's hop.
+        let mut boundaries = Vec::new();
         let mut current_bpm = first.bpm;
         let mut current_beats = first.beats;
-
-        for measure in rest {
+        for (index, measure) in measures.iter().enumerate().skip(1) {
             let tempo_moved = (measure.bpm - current_bpm).abs() / current_bpm.max(f64::EPSILON)
                 > TEMPO_CHANGE_TOLERANCE;
             let meter_moved = measure.beats != current_beats;
             if !tempo_moved && !meter_moved {
                 continue;
             }
-            changes.push(TempoChange {
-                position: TempoChangePosition::MeasureBeat(measure.number, 1.0),
-                original_measure_beat: Some((measure.number, 1.0)),
-                bpm: tempo_moved.then_some(measure.bpm),
-                time_signature: meter_moved.then(|| TimeSignature::new(measure.beats as u32, 4)),
-                transition: TempoTransition::Snap,
-            });
+            boundaries.push((index, tempo_moved, meter_moved));
             if tempo_moved {
                 current_bpm = measure.bpm;
             }
@@ -238,11 +243,59 @@ impl BeatGrid {
             }
         }
 
+        // Pass two: re-measure each constant-tempo run across its whole span.
+        // A single bar is a poor tempo estimate — detected beats land on hop
+        // boundaries, so a 2s bar carries ~0.3% of BPM error, and holding that
+        // estimate for the rest of the song walks the bars off the grid
+        // linearly (0.27s across 100 bars of a metronomic click). Averaging
+        // over the run divides that error by the number of bars in it.
+        let tempo_starts: Vec<usize> = std::iter::once(0)
+            .chain(
+                boundaries
+                    .iter()
+                    .filter(|(_, tempo_moved, _)| *tempo_moved)
+                    .map(|(index, _, _)| *index),
+            )
+            .collect();
+        let mut refined = vec![0.0_f64; measures.len()];
+        for (position, &start) in tempo_starts.iter().enumerate() {
+            let end = tempo_starts
+                .get(position + 1)
+                .copied()
+                .unwrap_or(measures.len());
+            let run = &measures[start..end];
+            let beats: usize = run.iter().map(|m| m.beats).sum();
+            let seconds = run.last().map_or(0.0, |m| m.end) - run.first().map_or(0.0, |m| m.start);
+            let bpm = if beats > 0 && seconds > 0.0 {
+                beats as f64 * 60.0 / seconds
+            } else {
+                measures[start].bpm
+            };
+            for slot in &mut refined[start..end] {
+                *slot = bpm;
+            }
+        }
+
+        let changes = boundaries
+            .into_iter()
+            .map(|(index, tempo_moved, meter_moved)| {
+                let measure = &measures[index];
+                TempoChange {
+                    position: TempoChangePosition::MeasureBeat(measure.number, 1.0),
+                    original_measure_beat: Some((measure.number, 1.0)),
+                    bpm: tempo_moved.then_some(refined[index]),
+                    time_signature: meter_moved
+                        .then(|| TimeSignature::new(measure.beats as u32, 4)),
+                    transition: TempoTransition::Snap,
+                }
+            })
+            .collect();
+
         Some(crate::tempo::TempoMap::new(
             // Bar 1 beat 1 is the first detected beat, not zero. This is the
             // lead-in an author would otherwise have to measure by hand.
             self.lead_in(),
-            first.bpm,
+            refined[0],
             TimeSignature::new(first.beats as u32, 4),
             changes,
         ))
@@ -271,6 +324,8 @@ impl BeatGrid {
                 number: index as u32 + 1,
                 beats,
                 bpm: beats as f64 * 60.0 / seconds,
+                start: *start,
+                end: *end,
             });
         }
 
@@ -289,8 +344,13 @@ struct MeasureTempo {
     number: u32,
     /// Beats in this measure.
     beats: usize,
-    /// Tempo measured across this measure.
+    /// Tempo measured across this measure alone. Good enough to detect that the
+    /// tempo moved; too noisy to hold for a whole run of bars.
     bpm: f64,
+    /// Absolute time of this measure's downbeat.
+    start: f64,
+    /// Absolute time of the next measure's downbeat.
+    end: f64,
 }
 
 #[cfg(test)]
@@ -422,6 +482,44 @@ mod to_tempo_map_tests {
     }
 
     #[test]
+    fn the_lead_in_is_the_first_downbeat_not_the_first_click() {
+        // A count-in of unaccented clicks ahead of bar 1: `measure_starts[0]`
+        // is not 0, so taking `beats[0]` as the origin puts bar 1 early by the
+        // whole pickup and drags every cue with it.
+        let spacing = 0.5_f64; // 120bpm
+        let mut beats = Vec::new();
+        // Four count-in clicks, none accented.
+        for i in 0..4 {
+            beats.push(i as f64 * spacing);
+        }
+        let mut measure_starts = Vec::new();
+        for measure in 0..3 {
+            measure_starts.push(beats.len());
+            for beat in 0..4 {
+                beats.push((4 + measure * 4 + beat) as f64 * spacing);
+            }
+        }
+        measure_starts.push(beats.len());
+        beats.push((4 + 12) as f64 * spacing);
+
+        let grid = BeatGrid {
+            beats,
+            measure_starts,
+        };
+        // The first downbeat is after the four-click count-in.
+        assert_eq!(grid.lead_in(), Duration::from_secs_f64(2.0));
+
+        let map = grid.to_tempo_map().expect("map");
+        let bar1 = map
+            .measure_to_time_with_offset(1, 1.0, 0, 0.0)
+            .expect("bar 1");
+        assert!(
+            (bar1.as_secs_f64() - 2.0).abs() < 0.01,
+            "bar 1 should land on the first downbeat, got {bar1:?}"
+        );
+    }
+
+    #[test]
     fn round_trips_through_the_forward_derivation() {
         // to_tempo_map and from_tempo_map are inverses over a grid's own span.
         let original = grid(0.0, 96.0, &[4, 4, 4, 4]);
@@ -432,6 +530,140 @@ mod to_tempo_map_tests {
         for (a, b) in original.beats.iter().zip(rebuilt.beats.iter()) {
             assert!((a - b).abs() < 0.01, "beat drift: {a} vs {b}");
         }
+    }
+
+    #[test]
+    fn bar_times_track_the_grid_through_a_sustained_ramp() {
+        // A one-signed accelerando is where re-integrating each change from the
+        // previous anchor at the stale BPM accumulates: the error never
+        // cancels. Anchoring changes to their measured downbeat keeps every bar
+        // on the grid it came from.
+        let mut beats = Vec::new();
+        let mut measure_starts = Vec::new();
+        let mut t = 0.0_f64;
+        let mut downbeats = Vec::new();
+        for measure in 0..32 {
+            measure_starts.push(beats.len());
+            downbeats.push(t);
+            // 100bpm ramping to ~140 over the span.
+            let bpm = 100.0 + (measure as f64) * 40.0 / 32.0;
+            let spacing = 60.0 / bpm;
+            for _ in 0..4 {
+                beats.push(t);
+                t += spacing;
+            }
+        }
+        measure_starts.push(beats.len());
+        beats.push(t);
+
+        let grid = BeatGrid {
+            beats,
+            measure_starts,
+        };
+        let map = grid.to_tempo_map().expect("map");
+
+        let mut worst = 0.0_f64;
+        for (index, expected) in downbeats.iter().enumerate() {
+            let got = map
+                .measure_to_time_with_offset(index as u32 + 1, 1.0, 0, 0.0)
+                .expect("bar")
+                .as_secs_f64();
+            worst = worst.max((got - expected).abs());
+        }
+        println!("MEASURED worst drift = {worst:.6}s");
+        assert!(
+            worst < 0.020,
+            "bar times drifted from the grid by {worst:.3}s across the ramp"
+        );
+    }
+
+    #[test]
+    fn a_steady_click_derives_no_tempo_changes_despite_detector_quantization() {
+        // Detected beat times land on hop boundaries (256 samples @ 44.1k =
+        // 5.805ms), so even a metronomic click reports a per-bar BPM that
+        // wobbles. Any emit threshold finer than that hop mistakes the
+        // quantization for tempo movement: a 5ms drift bound derived 93 changes
+        // across these 100 bars. The relative tolerance has to stay coarser
+        // than the detector's own resolution.
+        let hop = 256.0 / 44100.0;
+        let spacing = 0.5_f64; // 120bpm
+        let mut beats = Vec::new();
+        let mut measure_starts = Vec::new();
+        for measure in 0..100 {
+            measure_starts.push(beats.len());
+            for beat in 0..4 {
+                let exact = (measure * 4 + beat) as f64 * spacing;
+                beats.push((exact / hop).round() * hop);
+            }
+        }
+        measure_starts.push(beats.len());
+        beats.push(400.0 * spacing);
+
+        let grid = BeatGrid {
+            beats,
+            measure_starts,
+        };
+        let map = grid.to_tempo_map().expect("map");
+
+        let mut worst = 0.0_f64;
+        for measure in 0..100u32 {
+            let got = map
+                .measure_to_time_with_offset(measure + 1, 1.0, 0, 0.0)
+                .expect("bar")
+                .as_secs_f64();
+            let expected = measure as f64 * 4.0 * spacing;
+            worst = worst.max((got - expected).abs());
+        }
+        assert!(
+            worst < 0.005,
+            "bar times drifted {worst:.4}s from a metronomic click"
+        );
+    }
+
+    #[test]
+    fn a_ramp_gentler_than_the_tempo_tolerance_still_tracks_the_grid() {
+        // Each bar only 0.4% faster than the last — under the relative
+        // threshold, so this whole span reads as one constant-tempo run. Fitting
+        // that run across its full extent puts the map through the middle of the
+        // ramp instead of pinning it to bar 1's tempo and walking away from the
+        // grid.
+        let mut beats = Vec::new();
+        let mut measure_starts = Vec::new();
+        let mut downbeats = Vec::new();
+        let mut t = 0.0_f64;
+        let mut bpm = 100.0_f64;
+        for _ in 0..64 {
+            measure_starts.push(beats.len());
+            downbeats.push(t);
+            let spacing = 60.0 / bpm;
+            for _ in 0..4 {
+                beats.push(t);
+                t += spacing;
+            }
+            bpm *= 1.004;
+        }
+        measure_starts.push(beats.len());
+        beats.push(t);
+
+        let map = BeatGrid {
+            beats,
+            measure_starts,
+        }
+        .to_tempo_map()
+        .expect("map");
+
+        let mut worst = 0.0_f64;
+        for (index, expected) in downbeats.iter().enumerate() {
+            let got = map
+                .measure_to_time_with_offset(index as u32 + 1, 1.0, 0, 0.0)
+                .expect("bar")
+                .as_secs_f64();
+            worst = worst.max((got - expected).abs());
+        }
+        assert!(
+            worst < 0.010,
+            "bar times drifted {worst:.4}s from the grid across a gradual ramp"
+        );
     }
 
     #[test]

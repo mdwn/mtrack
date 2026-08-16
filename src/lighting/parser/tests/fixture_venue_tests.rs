@@ -212,3 +212,21 @@ fn a_venue_of_only_fixtures_still_parses() {
         "RGBW_Par"
     );
 }
+
+#[test]
+fn a_fixture_type_whose_name_is_not_a_bare_word_can_be_quoted() {
+    // `identifier` is atomic, so `Moving Head` unquoted is two tokens and does
+    // not parse — it only ever worked because a non-atomic rule swallowed the
+    // space along with the word. Quoting says the same thing explicitly.
+    let quoted = "venue \"v\" {\n  fixture \"M1\" \"Moving Head\" @ 1:1\n}\n";
+    let venues = parse_venues(quoted).expect("a quoted type parses");
+    let venue = venues.get("v").expect("venue");
+    let fixture = venue.fixtures().get("M1").expect("fixture");
+    assert_eq!(fixture.fixture_type(), "Moving Head");
+    assert_eq!(fixture.name(), "M1");
+
+    // The bare form still parses for ordinary names.
+    let bare = "venue \"v\" {\n  fixture \"M1\" MovingHead @ 1:1\n}\n";
+    let venues = parse_venues(bare).expect("a bare type parses");
+    assert_eq!(venues["v"].fixtures()["M1"].fixture_type(), "MovingHead");
+}

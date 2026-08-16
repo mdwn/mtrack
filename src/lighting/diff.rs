@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::lighting::analyze::{analyze_show, DarkWindow};
-use crate::lighting::effects::EffectLayer;
+use crate::lighting::effects::{BlendMode, EffectLayer};
 use crate::lighting::parser::LightShow;
 use crate::tempo::TempoMap;
 
@@ -45,14 +45,41 @@ pub struct DiffEntry {
     pub effect_type: &'static str,
     pub layer: EffectLayer,
     pub duration: Duration,
+    pub blend_mode: BlendMode,
+    /// The effect's authored parameters, keyed by their DSL spelling.
+    ///
+    /// Without these an edit that changes what the rig looks like — a colour,
+    /// a level, a strobe rate — is invisible: the kind, group, layer, time and
+    /// duration are all unchanged, and the diff reports the two versions as
+    /// identical. That is the worst answer this tool can give.
+    pub parameters: BTreeMap<String, String>,
 }
 
 /// A field that differs between two versions of the same effect.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FieldChange {
-    pub field: &'static str,
+    pub field: String,
     pub from: String,
     pub to: String,
+}
+
+/// A layer command at a resolved time.
+///
+/// These are diffed because they change what the rig does as much as effects
+/// do — deleting a `clear` re-opens a section that was deliberately cut, and
+/// nothing in the effect lists would show it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerCommandEntry {
+    pub time: Duration,
+    pub position: Option<String>,
+    /// e.g. `clear`, `freeze`, `master`.
+    pub command: String,
+    /// The layer it targets, or `all` for a bare `clear()`.
+    pub layer: String,
+    /// `master`'s intensity argument, when given.
+    pub intensity: Option<f64>,
+    /// `master`'s speed argument, when given.
+    pub speed: Option<f64>,
 }
 
 /// An effect present in both versions but not identical.
@@ -69,6 +96,10 @@ pub struct ShowDiff {
     pub added: Vec<DiffEntry>,
     pub removed: Vec<DiffEntry>,
     pub changed: Vec<ChangedEntry>,
+    /// Layer commands the second version has that the first does not.
+    pub layer_commands_added: Vec<LayerCommandEntry>,
+    /// Layer commands the first version had that the second does not.
+    pub layer_commands_removed: Vec<LayerCommandEntry>,
     /// Dark windows the second version has that the first does not.
     pub dark_windows_added: Vec<DarkWindow>,
     /// Dark windows the first version had that the second does not.
@@ -77,8 +108,19 @@ pub struct ShowDiff {
 
 impl ShowDiff {
     /// True when the two shows resolve identically.
+    ///
+    /// Includes the coverage deltas: a change that only shows up as a gap
+    /// opening or closing — deleting a `clear`, for instance — is still a
+    /// change, and reporting "identical" beside a non-empty dark-window list
+    /// would contradict itself.
     pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.removed.is_empty() && self.changed.is_empty()
+        self.added.is_empty()
+            && self.removed.is_empty()
+            && self.changed.is_empty()
+            && self.layer_commands_added.is_empty()
+            && self.layer_commands_removed.is_empty()
+            && self.dark_windows_added.is_empty()
+            && self.dark_windows_removed.is_empty()
     }
 }
 
@@ -133,6 +175,13 @@ pub fn diff_shows(
         diff.added.extend(news.into_iter().skip(paired));
     }
 
+    // Layer commands: compared as a multiset of (time, command, layer), since
+    // there is no per-command identity to pair on.
+    let old_cmds = layer_commands(&before, before_tempo);
+    let new_cmds = layer_commands(&after, after_tempo);
+    diff.layer_commands_added = command_difference(&new_cmds, &old_cmds);
+    diff.layer_commands_removed = command_difference(&old_cmds, &new_cmds);
+
     diff.added.sort_by_key(|e| e.time);
     diff.removed.sort_by_key(|e| e.time);
     diff.changed.sort_by_key(|c| c.before.time);
@@ -145,6 +194,59 @@ pub fn diff_shows(
     diff.dark_windows_removed = difference(&before_dark, &after_dark);
 
     diff
+}
+
+/// Every layer command in the shows, in time order.
+fn layer_commands(shows: &[LightShow], tempo: Option<&TempoMap>) -> Vec<LayerCommandEntry> {
+    let mut out = Vec::new();
+    for show in shows {
+        let map = show.tempo_map.as_ref().or(tempo);
+        for cue in &show.cues {
+            for cmd in &cue.layer_commands {
+                out.push(LayerCommandEntry {
+                    time: cue.time,
+                    position: map.map(|m| {
+                        let (measure, beat) = m.time_to_measure_beat(cue.time);
+                        format!("@{measure}/{beat:.2}")
+                    }),
+                    command: format!("{:?}", cmd.command_type).to_lowercase(),
+                    layer: cmd
+                        .layer
+                        .map(|l| format!("{l:?}").to_lowercase())
+                        .unwrap_or_else(|| "all".to_string()),
+                    intensity: cmd.intensity,
+                    speed: cmd.speed,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| (a.time, &a.command, &a.layer).cmp(&(b.time, &b.command, &b.layer)));
+    out
+}
+
+/// Commands in `a` with no counterpart left in `b`, matching one-for-one so a
+/// duplicated command is reported rather than absorbed.
+fn command_difference(a: &[LayerCommandEntry], b: &[LayerCommandEntry]) -> Vec<LayerCommandEntry> {
+    let mut remaining: Vec<&LayerCommandEntry> = b.iter().collect();
+    let mut out = Vec::new();
+    for entry in a {
+        // Arguments are part of the identity: `master(intensity: 100%)` and
+        // `master(intensity: 10%)` are the same verb on the same layer at the
+        // same time, and matching on that alone reported no change.
+        match remaining.iter().position(|o| {
+            o.time == entry.time
+                && o.command == entry.command
+                && o.layer == entry.layer
+                && o.intensity == entry.intensity
+                && o.speed == entry.speed
+        }) {
+            Some(i) => {
+                remaining.remove(i);
+            }
+            None => out.push(entry.clone()),
+        }
+    }
+    out
 }
 
 /// Resolved effects keyed by what they target and what kind they are, each list
@@ -173,6 +275,11 @@ fn entries(
                         effect_type,
                         layer: effect.layer.unwrap_or(EffectLayer::Background),
                         duration: effect.total_duration(),
+                        // Both default to what the engine applies when the DSL
+                        // omits them, so an unannotated effect compares as it
+                        // will actually run.
+                        blend_mode: effect.blend_mode.unwrap_or(BlendMode::Replace),
+                        parameters: effect.effect_type.parameters(),
                     });
             }
         }
@@ -188,23 +295,48 @@ fn field_changes(old: &DiffEntry, new: &DiffEntry) -> Vec<FieldChange> {
     let mut fields = Vec::new();
     if old.time != new.time {
         fields.push(FieldChange {
-            field: "time",
+            field: "time".to_string(),
             from: seconds(old.time),
             to: seconds(new.time),
         });
     }
     if old.duration != new.duration {
         fields.push(FieldChange {
-            field: "duration",
+            field: "duration".to_string(),
             from: seconds(old.duration),
             to: seconds(new.duration),
         });
     }
     if old.layer != new.layer {
         fields.push(FieldChange {
-            field: "layer",
+            field: "layer".to_string(),
             from: format!("{:?}", old.layer).to_lowercase(),
             to: format!("{:?}", new.layer).to_lowercase(),
+        });
+    }
+    if old.blend_mode != new.blend_mode {
+        fields.push(FieldChange {
+            field: "blend_mode".to_string(),
+            from: format!("{:?}", old.blend_mode).to_lowercase(),
+            to: format!("{:?}", new.blend_mode).to_lowercase(),
+        });
+    }
+
+    // Parameters, over the union of both sides so an added or removed one is
+    // reported rather than skipped.
+    let mut keys: Vec<&String> = old.parameters.keys().chain(new.parameters.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    for key in keys {
+        let before = old.parameters.get(key);
+        let after = new.parameters.get(key);
+        if before == after {
+            continue;
+        }
+        fields.push(FieldChange {
+            field: key.clone(),
+            from: before.cloned().unwrap_or_else(|| "—".to_string()),
+            to: after.cloned().unwrap_or_else(|| "—".to_string()),
         });
     }
     fields
@@ -374,6 +506,83 @@ show "T" {
         assert_eq!(d.changed[0].fields[0].to, "foreground");
     }
 
+    #[test]
+    fn a_colour_change_is_reported() {
+        // The failure an audit caught: kind, group, layer, time and duration
+        // are all unchanged, so without comparing parameters the diff asserted
+        // the two versions were identical.
+        let after = r#"
+show "T" {
+    @00:00.000
+    wash: static color: "red", duration: 4s
+
+    @00:10.000
+    wash: static color: "red", duration: 4s
+}
+"#;
+        let d = diff(BASE, after);
+        assert!(!d.is_empty(), "a colour change is a change: {d:?}");
+        assert_eq!(d.changed.len(), 1, "{d:?}");
+        assert!(
+            d.changed[0].fields.iter().any(|f| f.from != f.to),
+            "{:?}",
+            d.changed[0].fields
+        );
+    }
+
+    #[test]
+    fn a_level_change_is_reported() {
+        let before = r#"
+show "T" {
+    @00:00.000
+    wash: static color: "blue", dimmer: 100%, duration: 4s
+}
+"#;
+        let after = r#"
+show "T" {
+    @00:00.000
+    wash: static color: "blue", dimmer: 20%, duration: 4s
+}
+"#;
+        let d = diff(before, after);
+        assert!(!d.is_empty(), "{d:?}");
+        assert!(
+            d.changed[0].fields.iter().any(|f| f.field == "dimmer"),
+            "{:?}",
+            d.changed[0].fields
+        );
+    }
+
+    #[test]
+    fn a_strobe_rate_change_is_reported() {
+        let before =
+            "show \"T\" {\n    @00:00.000\n    wash: strobe frequency: 8, duration: 4s\n}\n";
+        let after =
+            "show \"T\" {\n    @00:00.000\n    wash: strobe frequency: 2, duration: 4s\n}\n";
+        let d = diff(before, after);
+        assert!(!d.is_empty(), "{d:?}");
+        assert!(
+            d.changed[0].fields.iter().any(|f| f.field == "frequency"),
+            "{:?}",
+            d.changed[0].fields
+        );
+    }
+
+    #[test]
+    fn a_blend_mode_change_is_reported() {
+        // replace -> add changes whether the effect stomps the layer.
+        let before =
+            "show \"T\" {\n    @00:00.000\n    wash: static color: \"blue\", duration: 4s\n}\n";
+        let after = "show \"T\" {\n    @00:00.000\n    wash: static color: \"blue\", duration: 4s, blend_mode: add\n}\n";
+        let d = diff(before, after);
+        assert!(!d.is_empty(), "{d:?}");
+        assert!(
+            d.changed[0].fields.iter().any(|f| f.field == "blend_mode"),
+            "{:?}",
+            d.changed[0].fields
+        );
+    }
+
     // ── the field the issue said it would actually use ─────────────
 
     #[test]
@@ -493,6 +702,77 @@ show "T" {
             "{:?}",
             d.changed[0].before
         );
+    }
+
+    #[test]
+    fn a_deleted_clear_is_reported() {
+        // Nothing in the effect lists changes — the same cues at the same times
+        // with the same parameters. Only the `clear` is gone, which re-opens a
+        // section that was deliberately cut.
+        let before = r#"
+show "T" {
+    @00:00.000
+    wash: static color: "blue", duration: 30s
+
+    @00:05.000
+    clear(layer: background)
+}
+"#;
+        let after = r#"
+show "T" {
+    @00:00.000
+    wash: static color: "blue", duration: 30s
+}
+"#;
+        let d = diff(before, after);
+        assert!(!d.is_empty(), "removing a clear is a change: {d:?}");
+        assert_eq!(d.layer_commands_removed.len(), 1, "{d:?}");
+        assert_eq!(d.layer_commands_removed[0].command, "clear");
+        assert_eq!(d.layer_commands_removed[0].layer, "background");
+        assert!(d.layer_commands_added.is_empty());
+    }
+
+    #[test]
+    fn an_added_master_is_reported() {
+        let after = r#"
+show "T" {
+    @00:00.000
+    wash: static color: "blue", duration: 4s
+    master(layer: background, intensity: 50%)
+
+    @00:10.000
+    wash: static color: "red", duration: 4s
+}
+"#;
+        let d = diff(BASE, after);
+        assert_eq!(d.layer_commands_added.len(), 1, "{d:?}");
+        assert_eq!(d.layer_commands_added[0].command, "master");
+    }
+
+    #[test]
+    fn a_master_intensity_edit_is_not_identical() {
+        // The command's arguments are what it does. Comparing only the verb and
+        // the layer made a full-to-dim master read as no change at all.
+        let with = |intensity: &str| {
+            format!(
+                "show \"T\" {{\n    @00:00.000\n    wash: static color: \"blue\", duration: 4s\n                     master(layer: background, intensity: {intensity})\n}}\n"
+            )
+        };
+        let d = diff(&with("100%"), &with("10%"));
+        assert!(!d.is_empty(), "{d:?}");
+        assert_eq!(d.layer_commands_added.len(), 1, "{d:?}");
+        assert_eq!(d.layer_commands_removed.len(), 1, "{d:?}");
+    }
+
+    #[test]
+    fn is_empty_accounts_for_coverage_changes() {
+        // A duration edit that only manifests as a gap must not be reported as
+        // "identical" just because the effect lists line up.
+        let before = "show \"T\" {\n    @00:00.000\n    wash: static color: \"blue\", duration: 10s\n\n    @00:10.000\n    wash: static color: \"red\", duration: 4s\n}\n";
+        let after = "show \"T\" {\n    @00:00.000\n    wash: static color: \"blue\", duration: 9s\n\n    @00:10.000\n    wash: static color: \"red\", duration: 4s\n}\n";
+        let d = diff(before, after);
+        assert!(!d.is_empty(), "{d:?}");
+        assert_eq!(d.dark_windows_added.len(), 1, "{d:?}");
     }
 
     #[test]

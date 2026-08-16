@@ -463,20 +463,6 @@ impl EffectEngine {
             return Ok(self.cache.get_cached());
         }
 
-        // Cache-only fast path: effects existed previously but are now done,
-        // permanent state exists, and nothing has changed.
-        if !self.cache.dirty && self.active_effects.is_empty() {
-            let store_gen = self
-                .midi_dmx_store
-                .as_ref()
-                .map(|s| s.read().generation())
-                .unwrap_or(0);
-            if store_gen == self.cache.last_store_generation {
-                self.update_subphase.store(0, Ordering::Relaxed);
-                return Ok(self.cache.get_cached());
-            }
-        }
-
         self.update_subphase.store(20, Ordering::Relaxed);
 
         // Use song_time for tempo-aware speed lookups (BPM at current position).

@@ -205,8 +205,12 @@ fn reload_timeline(
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
-        let shows = crate::lighting::parser::parse_light_shows(&content)
-            .map_err(|e| format!("Parse error in {}: {}", path.display(), e))?;
+        // Parse with the same tempo this timeline will run under. Using the
+        // tempo-less entry point here meant a show inheriting the song's tempo
+        // failed every live edit, and the timeline silently never swapped.
+        let shows =
+            crate::lighting::parser::parse_light_shows_with_tempo(&content, fallback_tempo_map)
+                .map_err(|e| format!("Parse error in {}: {}", path.display(), e))?;
 
         // Validate if lighting config is available
         if let Some(lc) = lighting_config {

@@ -228,12 +228,29 @@ pub(super) async fn create_song_in_directory(
 
     // Use Song::initialize to scan the directory and build the config with proper
     // channel-aware track splitting (stereo -> L/R, multichannel -> per-channel).
-    let mut song_config = match songs::Song::initialize(&dir_canonical) {
-        Ok(song) => song.get_config(),
-        Err(e) => {
+    // Same blocking decode/analysis as the bulk path, for one song.
+    let scan = tokio::task::spawn_blocking({
+        let dir = dir_canonical.clone();
+        move || {
+            songs::Song::initialize(&dir)
+                .map(|song| song.get_config())
+                .map_err(|e| e.to_string())
+        }
+    })
+    .await;
+    let mut song_config = match scan {
+        Ok(Ok(config)) => config,
+        Ok(Err(e)) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"error": format!("Failed to scan directory: {}", e)})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Directory scan failed: {e}")})),
             )
                 .into_response();
         }
@@ -299,19 +316,36 @@ pub(super) async fn bulk_import(
     }
     let dir_canonical = dir_safe.as_path().to_path_buf();
 
-    let mut created: Vec<String> = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
-    let mut failed: Vec<serde_json::Value> = Vec::new();
+    // `Song::initialize` decodes and analyses each candidate's click track, so
+    // a first import of a large library is minutes of blocking CPU and file
+    // I/O. Off the async worker, or it parks a runtime thread for the duration.
+    let scan = tokio::task::spawn_blocking(move || {
+        let mut created: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        let mut failed: Vec<serde_json::Value> = Vec::new();
+        // codeql[rust/path-injection] dir_canonical is canonicalized and
+        // verified via starts_with(root_canonical) above, preventing traversal.
+        bulk_import_recursive(
+            &dir_canonical,
+            &dir_canonical,
+            &mut created,
+            &mut skipped,
+            &mut failed,
+        );
+        (created, skipped, failed)
+    })
+    .await;
 
-    // codeql[rust/path-injection] dir_canonical is canonicalized and verified
-    // via starts_with(root_canonical) above, preventing path traversal.
-    bulk_import_recursive(
-        &dir_canonical,
-        &dir_canonical,
-        &mut created,
-        &mut skipped,
-        &mut failed,
-    );
+    let (created, skipped, failed) = match scan {
+        Ok(result) => result,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Import scan failed: {e}")})),
+            )
+                .into_response();
+        }
+    };
 
     // Refresh the player's song state once after all imports
     if !created.is_empty() {

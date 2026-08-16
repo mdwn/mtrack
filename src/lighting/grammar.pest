@@ -264,7 +264,11 @@ venue = { "venue" ~ string ~ "{" ~ venue_content ~ "}" }
 
 venue_content = { (fixture | group)* }
 
-fixture = { "fixture" ~ string ~ identifier ~ "@" ~ universe_num ~ ":" ~ address_num ~ tags? }
+// The type may be quoted. `identifier` is atomic, so a type whose declared
+// name is not a bare word — `fixture_type "Moving Head"` — has no other way to
+// be referenced. It used to work only because a non-atomic `identifier`
+// silently swallowed the space.
+fixture = { "fixture" ~ string ~ (string | identifier) ~ "@" ~ universe_num ~ ":" ~ address_num ~ tags? }
 
 universe_num = { ASCII_DIGIT+ }
 address_num = { ASCII_DIGIT+ }
