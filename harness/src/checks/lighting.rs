@@ -267,10 +267,13 @@ pub async fn a_song_without_lighting_clears_the_previous_timeline() -> CheckOutc
         "lighting/show.light",
         LIGHTING_GROUP,
     ));
-    // The break point: give the second song a show too and the timeline it
-    // finds installed is legitimately its own, so nothing can be concluded.
+    // The break point: give the second song a show of its own. Its cue list is
+    // then legitimately non-empty, so the assertion below must fire.
+    //
+    // `active()`, not `perform()` — this break point *adds* something rather
+    // than omitting it, and `perform()` is false under sabotage.
     let dark = SongSpec::tones("Dark Song", "dark-song", 2, 8.0);
-    let dark = if crate::sabotage::perform() {
+    let dark = if crate::sabotage::active() {
         dark.with_lighting(LightingSpec::simple(
             "Sabotage Show",
             "lighting/sabotage.light",
