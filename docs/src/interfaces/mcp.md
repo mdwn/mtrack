@@ -64,6 +64,10 @@ Roughly 50 tools are available. They fall into a few groups:
   detailed song metadata and beat-grid queries.
 - **Lighting authoring** — read, write, validate, and patch `.light` DSL files for songs, venues,
   and fixture types, list the lighting cues and active effects, and fetch a DSL reference primer.
+- **Show analysis** — `analyze_show` reports where the rig goes dark, how long each group and
+  layer is actually doing something, and which targeted groups resolve to no fixtures. Durations
+  resolve through the tempo map and layer commands are honoured, so a `clear` that truncates a
+  long effect shows up as the gap it creates rather than the duration the source claims.
 - **Lighting state** — `evaluate_show` reports what the fixtures *would* be doing at any set of
   times, and `get_fixture_state` reports what they *are* doing right now. Both return per-fixture
   DMX values (0–255, including virtual-dimmer RGB scaling) alongside the effects running at each

@@ -238,6 +238,15 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct AnalyzeShowArgs {
+    /// Song name as listed by `list_songs`. Analyses the song's registered
+    /// lighting shows. Mutually exclusive with `source`.
+    pub song: Option<String>,
+    /// `.light` DSL source to analyse directly. Mutually exclusive with `song`.
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SongLightingArgs {
     /// Song name as listed by `list_songs`.
     pub song: String,
@@ -1161,6 +1170,97 @@ impl McpServer {
             .collect();
 
         Ok(ok_json(json!({ "evaluations": results })))
+    }
+
+    #[tool(description = "Analyse a light show's coverage: where the rig goes \
+        dark, how long each group and layer is actually doing something, and \
+        which targeted groups resolve to no fixtures in the current venue. \
+        Durations resolve through the tempo map, so `1measure` is correctly \
+        1.5s inside a 2/4 bar, and layer commands are honoured, so a `clear` \
+        that truncates a long effect shows up as the gap it creates. Darkness \
+        means no effect is running rather than every channel at zero, so a \
+        strobe's off-phase is not reported as a gap. Pass either `song` or \
+        `source`.")]
+    async fn analyze_show(
+        &self,
+        Parameters(args): Parameters<AnalyzeShowArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (shows, fallback_tempo) = self.resolve_shows_to_evaluate(&EvaluateShowArgs {
+            song: args.song.clone(),
+            source: args.source.clone(),
+            times: Vec::new(),
+            include_fixtures: false,
+        })?;
+
+        let lighting_system = self
+            .player
+            .dmx_engine()
+            .and_then(|dmx| dmx.broadcast_handles().lighting_system);
+        let targeted = group_names(&shows);
+
+        let (analysis, empty_groups, venue) = tokio::task::spawn_blocking(move || {
+            // Which targeted groups the current venue cannot fill. This is the
+            // warning the issue asks for, and it needs the venue — the analysis
+            // itself deliberately does not.
+            let (empty_groups, venue) = match &lighting_system {
+                Some(system) => {
+                    let mut guard = system.lock();
+                    let venue = guard.current_venue().map(str::to_owned);
+                    let empty: Vec<String> = targeted
+                        .iter()
+                        .filter(|name| guard.resolve_logical_group_graceful(name).is_empty())
+                        .cloned()
+                        .collect();
+                    (empty, venue)
+                }
+                None => (Vec::new(), None),
+            };
+            let analysis = crate::lighting::analyze::analyze_show(shows, fallback_tempo.as_ref());
+            (analysis, empty_groups, venue)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("analysis failed: {e}"), None))?;
+
+        let dark_windows: Vec<Value> = analysis
+            .dark_windows
+            .iter()
+            .map(|w| {
+                json!({
+                    "from": w.from.as_secs_f64(),
+                    "to": w.to.as_secs_f64(),
+                    "seconds": w.seconds(),
+                    "position": w.position,
+                })
+            })
+            .collect();
+
+        let warnings: Vec<String> = empty_groups
+            .iter()
+            .map(|name| match &venue {
+                Some(venue) => format!(
+                    "group `{name}` resolves to 0 fixtures in venue `{venue}` — \
+                     its cues will do nothing"
+                ),
+                None => format!(
+                    "group `{name}` resolves to 0 fixtures — no venue is loaded, \
+                     so this may be a false alarm"
+                ),
+            })
+            .collect();
+
+        Ok(ok_json(json!({
+            "cue_count": analysis.cue_count,
+            "span_seconds": analysis.span.as_secs_f64(),
+            "dark_seconds": analysis.dark_seconds(),
+            "dark_windows": dark_windows,
+            "per_group_seconds": analysis.per_group_seconds,
+            "per_layer_seconds": analysis
+                .per_layer_seconds
+                .iter()
+                .map(|(layer, secs)| (format!("{layer:?}").to_lowercase(), *secs))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+            "warnings": warnings,
+        })))
     }
 
     #[tool(description = "List the venues known to the running DMX engine. Each \

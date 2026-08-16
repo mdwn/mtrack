@@ -123,9 +123,9 @@ where
             // on it. `start_at` stops short of `time` by design, so both halves
             // are needed for a cue at the requested instant to count.
             let history = timeline.start_at(time);
-            apply(&mut engine, history, &mut resolve_groups);
+            apply_timeline_update(&mut engine, history, &mut resolve_groups);
             let now = timeline.update(time);
-            apply(&mut engine, now, &mut resolve_groups);
+            apply_timeline_update(&mut engine, now, &mut resolve_groups);
 
             // Render a single frame at `time`. A zero delta keeps the engine's
             // clock exactly where the elapsed offsets were computed against.
@@ -238,7 +238,7 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
 /// Applies one timeline update to the engine in the same order the live path
 /// uses: layer commands, then stopped sequences, then seek-started effects in
 /// cue order, then freshly-fired effects with sequence effects first.
-fn apply<F>(
+pub(crate) fn apply_timeline_update<F>(
     engine: &mut EffectEngine,
     update: crate::lighting::timeline::TimelineUpdate,
     resolve_groups: &mut F,
@@ -551,7 +551,7 @@ show "T" {
 
         loop {
             let update = timeline.update(now);
-            apply(&mut engine, update, &mut |e| e);
+            apply_timeline_update(&mut engine, update, &mut |e| e);
             let _ = engine.update(step, Some(now));
 
             if times.contains(&now) {

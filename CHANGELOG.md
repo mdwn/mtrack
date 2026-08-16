@@ -30,6 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`analyze_show`: where the rig goes dark, and what the rig is actually doing**: reports dark
+  windows, per-group and per-layer coverage seconds, the show's span, and which targeted groups
+  resolve to no fixtures in the current venue. Dark windows are the headline — they are invisible
+  in the source and the most error-prone thing to compute by hand, because doing it correctly
+  means resolving every duration through the tempo map (`1measure` is 1.5s inside a 2/4 bar) and
+  honouring layer commands (a `clear` truncates effects the source says run far longer).
+
+  Darkness means "no effect is running", not "every channel is zero". A strobe is dark half its
+  life by design, and reporting its off-phase would bury the real gaps. The span likewise ends
+  where activity ends, not at the furthest authored duration, so it cannot contradict the gap
+  list beside it.
+
 - **Test a device from the config editor, before saving the profile**: a Test button beside the
   device picker opens the selected device with the settings currently in the form, confirms its
   output callback runs, and closes it — reporting streaming, opened-but-silent, or could-not-open
