@@ -19,7 +19,7 @@ use std::path::Path;
 use tracing::info;
 
 use super::parser::{parse_fixture_types, parse_venues};
-use super::types::{Fixture, FixtureType, Group, Venue};
+use super::types::{Fixture, FixtureType, Venue};
 use crate::config::lighting::{GroupConstraint, LogicalGroup};
 use crate::config::Lighting;
 
@@ -206,17 +206,6 @@ impl LightingSystem {
     }
 
     /// Gets a group by name from the current venue.
-    pub fn get_group(&self, group_name: &str) -> Result<&Group, Box<dyn Error>> {
-        if let Some(venue_name) = self.current_venue() {
-            if let Some(venue) = self.venues.get(venue_name) {
-                if let Some(group) = venue.groups().get(group_name) {
-                    return Ok(group);
-                }
-            }
-        }
-        Err(format!("Group '{}' not found in current venue", group_name).into())
-    }
-
     /// Resolves a logical group to concrete fixture names for the current venue.
     /// Returns an empty vector if the group cannot be resolved (graceful fallback).
     pub fn resolve_logical_group(
@@ -282,10 +271,6 @@ impl LightingSystem {
                     return self.resolve_logical_group_graceful(&fallback_group);
                 }
 
-                // Try venue group system as final fallback
-                if let Ok(venue_group) = self.get_group(group_name) {
-                    return venue_group.fixtures().to_vec();
-                }
                 Vec::new()
             }
         }
@@ -483,7 +468,7 @@ mod tests {
             ),
         );
 
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        let venue = Venue::new("Test Venue".to_string(), fixtures);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
@@ -539,7 +524,7 @@ mod tests {
             ),
         );
 
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        let venue = Venue::new("Test Venue".to_string(), fixtures);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
@@ -611,7 +596,7 @@ mod tests {
             ),
         );
 
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        let venue = Venue::new("Test Venue".to_string(), fixtures);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
@@ -659,7 +644,7 @@ mod tests {
             );
         }
 
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        let venue = Venue::new("Test Venue".to_string(), fixtures);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
@@ -718,7 +703,7 @@ mod tests {
             ),
         );
 
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        let venue = Venue::new("Test Venue".to_string(), fixtures);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
@@ -802,7 +787,7 @@ mod tests {
             ),
         );
 
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        let venue = Venue::new("Test Venue".to_string(), fixtures);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
@@ -868,7 +853,7 @@ mod tests {
             ),
         );
 
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        let venue = Venue::new("Test Venue".to_string(), fixtures);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
@@ -918,7 +903,7 @@ mod tests {
             ),
         );
 
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        let venue = Venue::new("Test Venue".to_string(), fixtures);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
@@ -965,7 +950,7 @@ mod tests {
             ),
         );
 
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        let venue = Venue::new("Test Venue".to_string(), fixtures);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
@@ -991,7 +976,7 @@ mod tests {
             ),
         );
 
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        let venue = Venue::new("Test Venue".to_string(), fixtures);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
@@ -1030,7 +1015,7 @@ mod tests {
             ),
         );
 
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        let venue = Venue::new("Test Venue".to_string(), fixtures);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
@@ -1068,7 +1053,7 @@ mod tests {
             ),
         );
 
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        let venue = Venue::new("Test Venue".to_string(), fixtures);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
@@ -1122,7 +1107,7 @@ mod tests {
             ),
         );
 
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        let venue = Venue::new("Test Venue".to_string(), fixtures);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
@@ -1168,39 +1153,6 @@ mod tests {
     // ── get_group ────────────────────────────────────────────────────
 
     #[test]
-    fn test_get_group_not_found() {
-        let mut system = LightingSystem::new();
-
-        let fixtures = HashMap::new();
-        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
-        system.venues.insert("Test Venue".to_string(), venue);
-        system.current_venue = Some("Test Venue".to_string());
-
-        let result = system.get_group("nonexistent");
-        assert!(result.is_err(), "Should error for missing group");
-        match result {
-            Err(error) => {
-                assert!(
-                    error.to_string().contains("not found"),
-                    "Error should mention 'not found': {}",
-                    error
-                );
-            }
-            Ok(_) => panic!("Expected error for missing group"),
-        }
-    }
-
-    #[test]
-    fn test_get_group_no_venue() {
-        let system = LightingSystem::new();
-
-        let result = system.get_group("some_group");
-        assert!(result.is_err(), "Should error when no venue selected");
-    }
-
-    // ── get_current_venue_fixtures ────────────────────────────
-
-    #[test]
     fn test_get_current_venue_fixtures_no_venue() {
         let system = LightingSystem::new();
         let result = system.get_current_venue_fixtures();
@@ -1231,8 +1183,7 @@ mod tests {
                 vec!["front".to_string()],
             ),
         );
-        let venue =
-            super::super::types::Venue::new("TestVenue".to_string(), fixtures, HashMap::new());
+        let venue = super::super::types::Venue::new("TestVenue".to_string(), fixtures);
         system.venues.insert("TestVenue".to_string(), venue);
         system.current_venue = Some("TestVenue".to_string());
 
@@ -1259,8 +1210,7 @@ mod tests {
                 vec![],
             ),
         );
-        let venue =
-            super::super::types::Venue::new("TestVenue".to_string(), fixtures, HashMap::new());
+        let venue = super::super::types::Venue::new("TestVenue".to_string(), fixtures);
         system.venues.insert("TestVenue".to_string(), venue);
         system.current_venue = Some("TestVenue".to_string());
 
@@ -1270,45 +1220,5 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Fixture type 'UnknownType' not found"));
-    }
-
-    #[test]
-    fn test_graceful_with_venue_group_fallback() {
-        let mut system = LightingSystem::new();
-
-        let mut fixtures = HashMap::new();
-        fixtures.insert(
-            "Wash1".to_string(),
-            Fixture::new(
-                "Wash1".to_string(),
-                "RGBW_Par".to_string(),
-                1,
-                1,
-                vec!["wash".to_string()],
-            ),
-        );
-
-        // Create venue with a venue group definition
-        let mut groups = HashMap::new();
-        groups.insert(
-            "venue_wash".to_string(),
-            Group::new("venue_wash".to_string(), vec!["Wash1".to_string()]),
-        );
-
-        let venue = Venue::new("Test Venue".to_string(), fixtures, groups);
-        system.venues.insert("Test Venue".to_string(), venue);
-        system.current_venue = Some("Test Venue".to_string());
-
-        // Don't define venue_wash as a logical group - it should fall through to venue groups
-        let results = system.resolve_logical_group_graceful("venue_wash");
-        assert_eq!(
-            results.len(),
-            1,
-            "Venue group fallback should return 1 fixture"
-        );
-        assert!(
-            results.contains(&"Wash1".to_string()),
-            "Venue group fallback should contain Wash1"
-        );
     }
 }

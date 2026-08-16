@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Venue-defined groups**: a `venue "..." { … }` block no longer accepts
+  `group "name" = Fixture1, Fixture2`. Tag the fixtures instead and declare a
+  logical group under `dmx.lighting.groups` that selects on the tag — that is
+  what every shipped example, and the documented three-layer model, has done
+  since tags were introduced one release after venue groups landed. Tags
+  survive a venue change; venue groups did not.
+
+  A venue still using one now fails to load with a message naming the group and
+  the migration. Nothing else changes: logical groups, constraints, and tags are
+  untouched.
+
+  This was not a live feature in practice. No shipped venue has ever declared a
+  group, they were absent from the documentation, they were a last-resort
+  fallback behind logical groups during resolution, and the web UI's venue
+  editor could neither create them nor preserve them — saving a venue there
+  silently dropped any it had. A venue could not hold more than one until it was
+  fixed days before this removal, which is how long the feature had gone
+  unexercised.
+
 ### Added
 
 - **Test a device from the config editor, before saving the profile**: a Test button beside the

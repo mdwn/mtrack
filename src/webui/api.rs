@@ -177,6 +177,7 @@ pub fn router() -> Router<WebUiState> {
                 .put(lighting_api::put_fixture_type)
                 .delete(lighting_api::delete_fixture_type),
         )
+        .route("/lighting/groups", get(lighting_api::get_lighting_groups))
         .route("/lighting/venues", get(lighting_api::get_venues))
         .route(
             "/lighting/venues/{name}",

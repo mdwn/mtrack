@@ -437,6 +437,10 @@ dmx:
         name: "all_lights"
         constraints:
           - MinCount: 1
+      left:
+        name: "left"
+        constraints:
+          - AllOf: ["left"]
     directories:
       fixture_types: "lighting/fixture_types"
       venues: "lighting/venues"
@@ -754,7 +758,8 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
             .to_string(),
         "venues dir resolved unexpectedly: {initial_venues}",
     );
-    let venue_dsl = "venue \"test_stage\" {\n  fixture \"Wash1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  group \"front_wash\" = Wash1\n}\n";
+    let venue_dsl =
+        "venue \"test_stage\" {\n  fixture \"Wash1\" RGBW_Par @ 1:1 tags [\"wash\"]\n}\n";
     let _ = call_tool(
         &client,
         &url,
@@ -1113,7 +1118,7 @@ async fn mcp_cues_and_effects_against_live_timeline() -> Result<(), Box<dyn Erro
     )?;
     std::fs::write(
         fixture.root.join("lighting/venues/main_stage.light"),
-        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n  group \"all_lights\" = Par1, Par2\n}\n",
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n}\n",
     )?;
 
     // The bundled `main_show.light` references groups (front_wash, back_wash,
@@ -1252,7 +1257,7 @@ async fn mcp_evaluate_show_runs_offline() -> Result<(), Box<dyn Error>> {
     )?;
     std::fs::write(
         fixture.root.join("lighting/venues/main_stage.light"),
-        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n  group \"all_lights\" = Par1, Par2\n}\n",
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n}\n",
     )?;
 
     let player = build_standalone_player(&fixture).await?;
@@ -1409,7 +1414,7 @@ async fn mcp_fixture_state_matches_offline_evaluation() -> Result<(), Box<dyn Er
     // a fixture *count* cannot stand in for knowing which ones are lit.
     std::fs::write(
         fixture.root.join("lighting/venues/main_stage.light"),
-        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n  group \"all_lights\" = Par1, Par2\n  group \"left\" = Par1\n}\n",
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\", \"left\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n}\n",
     )?;
 
     // A long green bed, so the reading is stable however far playback has got.
@@ -2519,9 +2524,9 @@ async fn mcp_host_info_returns_runtime_identity() -> Result<(), Box<dyn Error>> 
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_list_groups_surfaces_logical_groups() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
-    // The standalone fixture already declares a logical group named
-    // `all_lights` (see write_config). Build a minimal venue with one
-    // explicit group too, so we can assert both flavors come back.
+    // The standalone fixture declares two logical groups (see write_config):
+    // `all_lights`, which selects on count alone, and `left`, which selects on
+    // a tag. The venue supplies the tags they resolve against.
     std::fs::create_dir_all(fixture.root.join("lighting/venues"))?;
     std::fs::create_dir_all(fixture.root.join("lighting/fixture_types"))?;
     copy_dir_recursive(
@@ -2530,7 +2535,7 @@ async fn mcp_list_groups_surfaces_logical_groups() -> Result<(), Box<dyn Error>>
     )?;
     std::fs::write(
         fixture.root.join("lighting/venues/main_stage.light"),
-        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n  group \"my_venue_group\" = Par1, Par2\n}\n",
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\", \"left\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n}\n",
     )?;
 
     let player = build_standalone_player(&fixture).await?;
@@ -2558,15 +2563,9 @@ async fn mcp_list_groups_surfaces_logical_groups() -> Result<(), Box<dyn Error>>
         .filter_map(|g| g["name"].as_str().map(|n| (n, g)))
         .collect();
     assert!(
-        by_name.contains_key("my_venue_group"),
-        "venue group missing from list_groups: {resp}",
-    );
-    assert_eq!(by_name["my_venue_group"]["source"].as_str(), Some("venue"));
-    assert!(
         by_name.contains_key("all_lights"),
         "logical group missing from list_groups: {resp}",
     );
-    assert_eq!(by_name["all_lights"]["source"].as_str(), Some("logical"));
     assert!(
         by_name["all_lights"]["constraints"]
             .as_array()
@@ -2574,6 +2573,20 @@ async fn mcp_list_groups_surfaces_logical_groups() -> Result<(), Box<dyn Error>>
             .unwrap_or(false),
         "logical group missing constraints: {resp}",
     );
+
+    // A tag-selecting group resolves to only the fixtures carrying that tag —
+    // the discrimination venue groups used to provide, now done with tags.
+    assert!(
+        by_name.contains_key("left"),
+        "tag-based group missing from list_groups: {resp}",
+    );
+    let left: Vec<&str> = by_name["left"]["fixtures"]
+        .as_array()
+        .expect("fixtures")
+        .iter()
+        .filter_map(|f| f.as_str())
+        .collect();
+    assert_eq!(left, vec!["Par1"], "`left` should select only Par1: {resp}");
 
     controller.shutdown();
     Ok(())

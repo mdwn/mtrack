@@ -1178,11 +1178,9 @@ impl McpServer {
         let venues: Vec<Value> = guard
             .venues_iter()
             .map(|(name, venue)| {
-                let groups: Vec<&String> = venue.groups().keys().collect();
                 json!({
                     "name": name,
                     "fixtures": venue.fixtures().len(),
-                    "groups": groups,
                 })
             })
             .collect();
@@ -1192,12 +1190,10 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "List every group name valid as a cue target. Returns \
-        both venue-defined groups (explicit member lists from `venue \"...\" { … }` \
-        blocks) and logical groups (tag/constraint-based, declared under \
-        `dmx.lighting.groups` in the player config), each tagged with its \
-        `source`. Logical groups include their constraints and, when a venue \
-        is loaded, the fixtures they currently resolve to.")]
+    #[tool(description = "List every group name valid as a cue target. Groups \
+        are tag/constraint-based and declared under `dmx.lighting.groups` in the \
+        player config; each is returned with its constraints and, when a venue \
+        is loaded, the fixtures it currently resolves to.")]
     async fn list_groups(&self) -> Result<CallToolResult, McpError> {
         let dmx = match self.player.dmx_engine() {
             Some(d) => d,
@@ -1208,28 +1204,13 @@ impl McpServer {
             None => return Ok(ok_json(json!({ "groups": [] }))),
         };
 
-        // First pass: snapshot venue groups + logical group definitions while
-        // holding the guard immutably. `resolve_logical_group_graceful` takes
-        // `&mut self`, so we drop and re-acquire for the resolution pass to
-        // avoid borrow-checker contortions.
+        // First pass: snapshot the group definitions while holding the guard
+        // immutably. `resolve_logical_group_graceful` takes `&mut self`, so we
+        // drop and re-acquire for the resolution pass to avoid borrow-checker
+        // contortions.
         let snapshot: GroupSnapshot = {
             let guard = system.lock();
             let venue = guard.current_venue().map(str::to_owned);
-            let venue_groups = guard
-                .get_current_venue()
-                .map(|v| {
-                    v.groups()
-                        .iter()
-                        .map(|(name, group)| {
-                            json!({
-                                "name": name,
-                                "source": "venue",
-                                "fixtures": group.fixtures(),
-                            })
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
             let logical_defs = guard
                 .logical_groups_iter()
                 .map(|(name, group)| {
@@ -1243,7 +1224,6 @@ impl McpServer {
                 .collect();
             GroupSnapshot {
                 venue,
-                venue_groups,
                 logical_defs,
             }
         };
@@ -1251,14 +1231,13 @@ impl McpServer {
         // Second pass: resolve each logical group against the current venue
         // so callers see what fixtures the group would actually target right
         // now. Resolution mutates the cache, hence the mutable lock.
-        let mut groups = snapshot.venue_groups;
+        let mut groups = Vec::new();
         {
             let mut guard = system.lock();
             for (name, constraints) in snapshot.logical_defs {
                 let fixtures = guard.resolve_logical_group_graceful(&name);
                 groups.push(json!({
                     "name": name,
-                    "source": "logical",
                     "constraints": constraints,
                     "fixtures": fixtures,
                 }));
@@ -2491,7 +2470,6 @@ pub(crate) fn validate_lighting_filename(name: &str) -> Result<(), McpError> {
 /// for logical-group resolution.
 struct GroupSnapshot {
     venue: Option<String>,
-    venue_groups: Vec<Value>,
     logical_defs: Vec<(String, Vec<String>)>,
 }
 
