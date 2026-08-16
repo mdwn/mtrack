@@ -30,6 +30,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`write_song_lighting` registers the show it writes**: it previously wrote the `.light` file and
+  reloaded the song registry without adding a `lighting:` entry pointing at it. The result was a
+  success response with a real path, a valid file on disk, and a rig that did nothing —
+  `song_details` would report `dsl_lighting_shows: []` immediately afterwards. Registering it took
+  a separate hand-written `patch_song`.
+
+  The song's `lighting:` block is now updated when the file is not already referenced, and the
+  response reports `registered` along with the `reference` as spelled in `song.yaml`. Rewriting an
+  already-referenced show changes nothing and says so.
+
+  `song.yaml` is edited as text rather than round-tripped through the config types: it is a file
+  someone wrote by hand, and reserialising it would discard their comments, ordering, and
+  formatting to add one line. The result is checked to still parse as a song before it is written,
+  the same guard `patch_song` uses.
+
 - **`validate_lighting` reports lint-level warnings, not just parse success**: several classes of
   mistake are perfectly legal DSL and silently do nothing. The response now carries a `warnings`
   array — non-fatal, so `ok: true` still means "parses" — covering a group that resolves to no

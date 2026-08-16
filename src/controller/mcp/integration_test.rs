@@ -1904,6 +1904,138 @@ show "S" {
 }
 
 // ---------------------------------------------------------------------------
+// Test 3c-sexies: write_song_lighting registers the show (#334)
+// ---------------------------------------------------------------------------
+
+/// Writing a show used to leave an orphan: a success response, a real file on
+/// disk, and nothing playing, because `song.yaml` never referenced it. The
+/// proof is not that a `lighting:` entry appears — it is that the show is
+/// actually loaded afterwards.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_write_song_lighting_registers_the_show() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+
+    // Strip the song back to no lighting at all, before the player loads it.
+    // The name has to match the shipped fixture's, since songs are looked up
+    // by their `name:` rather than their directory.
+    let song = "DSL Light Show Song";
+    let song_dir = fixture.root.join("songs/dsl-light-show-song");
+    std::fs::write(
+        song_dir.join("song.yaml"),
+        "kind: song\nname: \"DSL Light Show Song\"\nmidi_file: \"song.mid\"\ntracks:\n  - name: \"Main Track\"\n    file: \"song.mp3\"\n    file_channel: 1\n",
+    )?;
+    let _ = std::fs::remove_dir_all(song_dir.join("lighting"));
+
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let before = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            991,
+            "song_details",
+            json!({"name": song}),
+        )
+        .await,
+    );
+    assert_eq!(
+        before["dsl_lighting_shows"].as_array().map(|a| a.len()),
+        Some(0),
+        "song should start with no shows: {before}"
+    );
+
+    let source = "show \"Written\" {\n    @00:00.000\n    all_lights: static color: \"blue\", duration: 4s\n}\n";
+    let write = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            992,
+            "write_song_lighting",
+            json!({"song": song, "file": "main_show.light", "source": source}),
+        )
+        .await,
+    );
+    assert_eq!(write["registered"], true, "{write}");
+    assert_eq!(write["reference"], "lighting/main_show.light", "{write}");
+
+    // The load is the assertion that matters. An entry in song.yaml that the
+    // loader ignores would be the same silent failure in a new costume.
+    let after = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            993,
+            "song_details",
+            json!({"name": song}),
+        )
+        .await,
+    );
+    assert_eq!(
+        after["dsl_lighting_shows"].as_array().map(|a| a.len()),
+        Some(1),
+        "the written show should now be loaded: {after}"
+    );
+
+    // Rewriting the same basename must not add a second entry.
+    let rewrite = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            994,
+            "write_song_lighting",
+            json!({"song": song, "file": "main_show.light", "source": source}),
+        )
+        .await,
+    );
+    assert_eq!(rewrite["registered"], false, "{rewrite}");
+    assert_eq!(rewrite["already_registered"], true, "{rewrite}");
+
+    let yaml = std::fs::read_to_string(song_dir.join("song.yaml"))?;
+    assert_eq!(
+        yaml.matches("main_show.light").count(),
+        1,
+        "a rewrite must not duplicate the entry: {yaml}"
+    );
+
+    // And the song still loads exactly one show.
+    let again = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            995,
+            "song_details",
+            json!({"name": song}),
+        )
+        .await,
+    );
+    assert_eq!(
+        again["dsl_lighting_shows"].as_array().map(|a| a.len()),
+        Some(1),
+        "{again}"
+    );
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3d: profile add → update → remove round-trip
 // ---------------------------------------------------------------------------
 
