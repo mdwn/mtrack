@@ -493,8 +493,9 @@ mod click_track_tests {
     use super::*;
 
     /// The generated click track has to be something the real analyser can
-    /// read: a song whose grid comes back empty takes the whole tempo chain
-    /// with it, and the failure surfaces far away as an empty playlist.
+    /// read. A grid that comes back empty takes the whole tempo chain with it,
+    /// and the failure surfaces far away as an empty playlist rather than as
+    /// anything about audio.
     #[test]
     fn a_generated_click_track_yields_a_beat_grid() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -509,35 +510,20 @@ mod click_track_tests {
         song.write(dir.path()).expect("write song");
 
         let song_dir = dir.path().join("clicked");
-        println!(
-            "PROBE files: {:?}",
-            std::fs::read_dir(&song_dir)
-                .unwrap()
-                .filter_map(|e| e.ok().map(|e| e.file_name()))
-                .collect::<Vec<_>>()
-        );
-        println!(
-            "PROBE yaml:\n{}",
-            std::fs::read_to_string(song_dir.join("song.yaml")).unwrap()
-        );
-
         let cfg = mtrack::config::Song::deserialize(&song_dir.join("song.yaml"))
             .expect("song.yaml parses");
-        let loaded = mtrack::songs::Song::new(&song_dir, &cfg);
-        match loaded {
-            Ok(s) => {
-                println!("PROBE loaded ok, duration={:?}", s.duration());
-                match s.beat_grid() {
-                    Some(g) => println!(
-                        "PROBE grid: {} beats, {} measure starts, first={:?}",
-                        g.beats.len(),
-                        g.measure_starts.len(),
-                        g.beats.first()
-                    ),
-                    None => println!("PROBE grid: NONE"),
-                }
-            }
-            Err(e) => println!("PROBE load FAILED: {e}"),
-        }
+        // A bar-timed show with no `tempo` block only parses if the click
+        // track produced a usable grid, so loading at all is the assertion.
+        let loaded = mtrack::songs::Song::new(&song_dir, &cfg).expect("song loads");
+
+        let grid = loaded.beat_grid().expect("a click track yields a grid");
+        assert_eq!(grid.beats.len(), 32, "8 measures of 4 beats");
+        assert_eq!(grid.measure_starts.len(), 8, "one start per measure");
+        // The first onset lands within a detector hop of zero.
+        assert!(
+            grid.beats[0] < 256.0 / 44100.0 * 2.0,
+            "first beat at {}s",
+            grid.beats[0]
+        );
     }
 }

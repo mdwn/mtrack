@@ -113,9 +113,14 @@ else
     HARNESS="$PROJECT_ROOT/target/debug/mtrack-harness"
 fi
 
-# Pin the player only when this script built it. Doing so unconditionally broke
-# --no-build on a release-only machine, where the harness's own release-first
-# fallback would have found a perfectly good binary.
+# Pin the player to what this script just built. Under --no-build there is
+# nothing to pin to, so the harness resolves it itself -- newest of debug and
+# release, and it prints which one it chose.
+#
+# This used to leave MTRACK_BIN unset under --no-build while the harness
+# preferred release unconditionally, so a stale release binary shadowed a debug
+# one built minutes earlier and every check silently reported on the wrong
+# code. That cost an afternoon of chasing a defect that did not exist.
 if [[ "$SKIP_BUILD" != "true" ]]; then
     export MTRACK_BIN="${MTRACK_BIN:-$PROJECT_ROOT/target/debug/mtrack}"
 fi

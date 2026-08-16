@@ -124,10 +124,31 @@ async fn main() -> ExitCode {
 
     // Resolving the binary first means an unusable installation is reported
     // immediately rather than as every check failing to start a server.
-    if let Err(e) = server::resolve_mtrack_binary() {
-        eprintln!("Cannot find the mtrack binary: {e}");
-        eprintln!("Build it with `cargo build` or set MTRACK_BIN.");
-        return ExitCode::from(2);
+    match server::resolve_mtrack_binary() {
+        Err(e) => {
+            eprintln!("Cannot find the mtrack binary: {e}");
+            eprintln!("Build it with `cargo build` or set MTRACK_BIN.");
+            return ExitCode::from(2);
+        }
+        // Always say which player ran, and how old it is. A stale binary
+        // shadowing a fresh one produces a full report about code that is not
+        // under test, and nothing else in the output would reveal it.
+        Ok(binary) => {
+            let age = std::fs::metadata(&binary)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .map(|age| {
+                    let mins = age.as_secs() / 60;
+                    if mins < 90 {
+                        format!("{mins} minute(s) old")
+                    } else {
+                        format!("{} hour(s) old", mins / 60)
+                    }
+                })
+                .unwrap_or_else(|| "age unknown".to_string());
+            println!("  player:  {} ({age})", binary.display());
+        }
     }
 
     // Listing must not measure: discovery plays tones and sends MIDI, which is

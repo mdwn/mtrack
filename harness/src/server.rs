@@ -30,6 +30,22 @@ use crate::project::Project;
 /// `CARGO_BIN_EXE_mtrack` exists only for test targets, so the harness looks
 /// where cargo would have put it, honouring `MTRACK_BIN` for an installed or
 /// cross-built binary.
+/// The most recently modified of `candidates` that exists.
+///
+/// Separate from [`resolve_mtrack_binary`] so the choice can be tested without
+/// a real target directory.
+fn newest_existing(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .filter(|candidate| candidate.is_file())
+        .filter_map(|candidate| {
+            let modified = std::fs::metadata(candidate).ok()?.modified().ok()?;
+            Some((modified, candidate.clone()))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
+}
+
 pub fn resolve_mtrack_binary() -> Result<PathBuf, String> {
     if let Ok(explicit) = std::env::var("MTRACK_BIN") {
         let path = PathBuf::from(&explicit);
@@ -47,16 +63,17 @@ pub fn resolve_mtrack_binary() -> Result<PathBuf, String> {
         .map(|p| p.to_path_buf())
         .unwrap_or_default();
 
-    // Release before debug, unconditionally -- mtime is not consulted. Callers
-    // that care (the wrapper script) set MTRACK_BIN explicitly.
+    // Newest wins, not release-first. Preferring release unconditionally meant
+    // a months-old release binary silently shadowed one built minutes ago, and
+    // nothing in the output said which had run: every check then reported on
+    // code that was not the code under test. That is the worst failure this
+    // suite can have, because it looks exactly like a pass.
     let candidates = [
         workspace.join("target/release/mtrack"),
         workspace.join("target/debug/mtrack"),
     ];
-    for candidate in &candidates {
-        if candidate.is_file() {
-            return Ok(candidate.clone());
-        }
+    if let Some(path) = newest_existing(&candidates) {
+        return Ok(path);
     }
     Err(format!(
         "looked for {}",
@@ -408,4 +425,51 @@ unsafe fn libc_kill(pid: i32, sig: i32) -> i32 {
         fn kill(pid: i32, sig: i32) -> i32;
     }
     unsafe { kill(pid, sig) }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::newest_existing;
+
+    /// The newest binary wins, whichever profile it came from.
+    ///
+    /// Release used to win unconditionally, so a stale release binary shadowed
+    /// a debug one built minutes before, and the whole suite reported on code
+    /// that was not under test — indistinguishable from a clean pass.
+    #[test]
+    fn the_newest_player_binary_wins_not_release() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let release = dir.path().join("release/mtrack");
+        let debug = dir.path().join("debug/mtrack");
+        std::fs::create_dir_all(release.parent().unwrap()).expect("release dir");
+        std::fs::create_dir_all(debug.parent().unwrap()).expect("debug dir");
+
+        std::fs::write(&release, b"old").expect("write release");
+        // Filesystem mtime granularity can be coarse; make the ordering real
+        // rather than relying on write order alone.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&debug, b"new").expect("write debug");
+
+        let candidates = [release.clone(), debug.clone()];
+        assert_eq!(
+            newest_existing(&candidates),
+            Some(debug),
+            "a freshly built debug binary must win over an older release one"
+        );
+    }
+
+    #[test]
+    fn a_missing_candidate_is_skipped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let present = dir.path().join("mtrack");
+        std::fs::write(&present, b"x").expect("write");
+        let candidates = [dir.path().join("absent"), present.clone()];
+        assert_eq!(newest_existing(&candidates), Some(present));
+    }
+
+    #[test]
+    fn no_candidates_yields_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(newest_existing(&[dir.path().join("nope")]), None);
+    }
 }
