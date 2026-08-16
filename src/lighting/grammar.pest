@@ -138,8 +138,11 @@ quoted_rgb_color = @{ "\"" ~ "rgb(" ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~
 // Supports absolute time (ms, s) and musical time (beats, measures)
 time_parameter = @{ time_value ~ time_unit }
 
+// `cycle` accepts the first three, `chase` the last six. No effect accepts
+// both sets, and nothing accepts `random` — that value belongs to
+// chase_pattern_parameter and loop_parameter, not here.
 direction_parameter = {
-    "forward" | "backward" | "random" | "pingpong" |
+    "forward" | "backward" | "pingpong" |
     "left_to_right" | "right_to_left" |
     "top_to_bottom" | "bottom_to_top" |
     "clockwise" | "counter_clockwise"
@@ -176,7 +179,11 @@ time_unit = @{ "measures" | "measure" | "beats" | "beat" | "ms" | "s" }
 
 string = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
-identifier = { (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+// Atomic for the same reason bare_identifier is: without it pest inserts
+// implicit WHITESPACE inside the trailing repetition, so a venue's
+// `group "a" = P1` swallows the newline and the next line's `group` keyword
+// as further identifier characters.
+identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
 
 // Tempo section rules
 tempo = { "tempo" ~ "{" ~ tempo_content ~ "}" }

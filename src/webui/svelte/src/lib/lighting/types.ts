@@ -82,10 +82,13 @@ export const CURVES = [
   "sine",
   "cosine",
 ];
+// `direction` is two disjoint sets, not one list: `cycle` takes the ordering
+// values below, `chase` takes the spatial ones. Offering the union lets the
+// editor write a show the parser rejects.
+export const CYCLE_DIRECTIONS = ["forward", "backward", "pingpong"];
 export const DIRECTIONS = [
   "forward",
   "backward",
-  "random",
   "pingpong",
   "left_to_right",
   "right_to_left",

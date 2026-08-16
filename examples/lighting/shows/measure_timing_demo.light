@@ -75,7 +75,7 @@ show "Measure Timing Demo" {
     front_wash: static color: "purple", dimmer: 100%, layer: background, blend_mode: replace, duration: 5s
     
     @18/1
-    front_wash: chase color: "purple", color: "magenta", color: "blue", duration: 1s, direction: forward, loop: loop
+    front_wash: chase color: "purple", color: "magenta", color: "blue", duration: 1s, direction: left_to_right, loop: loop
     
     # Section 4 - gradual tempo increase to 180 BPM (over 2 measures starting at measure 24)
     @24/1

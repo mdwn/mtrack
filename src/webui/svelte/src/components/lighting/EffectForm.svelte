@@ -21,6 +21,7 @@
     BLEND_MODES,
     CURVES,
     DIRECTIONS,
+    CYCLE_DIRECTIONS,
     CHASE_DIRECTIONS,
     CHASE_PATTERNS,
   } from "../../lib/lighting/types";
@@ -288,7 +289,8 @@
                 )}
             >
               <option value="">--</option>
-              {#each DIRECTIONS as d (d)}<option value={d}>{d}</option>{/each}
+              {#each CYCLE_DIRECTIONS as d (d)}<option value={d}>{d}</option
+                >{/each}
             </select>
           </label>
           <label class="param"

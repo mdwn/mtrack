@@ -1234,6 +1234,367 @@ async fn mcp_cues_and_effects_against_live_timeline() -> Result<(), Box<dyn Erro
 }
 
 // ---------------------------------------------------------------------------
+// Test 3c-bis: offline show evaluation (#330)
+// ---------------------------------------------------------------------------
+
+/// `evaluate_show` answers "what would the rig be doing at time T" without
+/// audio, DMX, or the wall clock. This test never calls `play` — that is the
+/// whole point of the tool, so the absence of playback is the assertion.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_evaluate_show_runs_offline() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+
+    std::fs::create_dir_all(fixture.root.join("lighting/venues"))?;
+    std::fs::create_dir_all(fixture.root.join("lighting/fixture_types"))?;
+    copy_dir_recursive(
+        Path::new("examples/lighting/fixture_types"),
+        &fixture.root.join("lighting/fixture_types"),
+    )?;
+    std::fs::write(
+        fixture.root.join("lighting/venues/main_stage.light"),
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n  group \"all_lights\" = Par1, Par2\n}\n",
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let source = r#"show "Offline" {
+    @00:00.000
+    all_lights: static color: "blue", duration: 4s
+
+    @00:10.000
+    all_lights: static color: "red", duration: 4s
+}
+"#;
+
+    let body = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            900,
+            "evaluate_show",
+            json!({"source": source, "times": ["1.0", "6.0", "0:11.000"]}),
+        )
+        .await,
+    );
+
+    let evaluations = body["evaluations"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected evaluations array: {body}"));
+    assert_eq!(evaluations.len(), 3, "one entry per requested time: {body}");
+
+    // 1.0s — inside the blue cue.
+    let at_1s = &evaluations[0];
+    assert_eq!(at_1s["dark"], false, "should be lit at 1s: {at_1s}");
+    let effects = at_1s["active_effects"].as_array().expect("effects");
+    assert_eq!(effects.len(), 1, "one effect at 1s: {at_1s}");
+    assert_eq!(effects[0]["type"], "Static");
+    assert_eq!(effects[0]["layer"], "background");
+    // The group resolved to real fixtures rather than staying a group name.
+    let resolved: Vec<&str> = effects[0]["fixtures"]
+        .as_array()
+        .expect("fixtures")
+        .iter()
+        .filter_map(|f| f.as_str())
+        .collect();
+    assert_eq!(
+        resolved,
+        vec!["Par1", "Par2"],
+        "group `all_lights` should resolve to the venue's fixtures: {at_1s}"
+    );
+
+    let fixtures = at_1s["fixtures"].as_array().expect("fixture states");
+    assert_eq!(fixtures.len(), 2, "both fixtures reported: {at_1s}");
+    assert_eq!(fixtures[0]["name"], "Par1");
+    assert_eq!(fixtures[0]["channels"]["blue"], 255);
+    assert_eq!(fixtures[0]["channels"]["red"], 0);
+
+    // 6.0s — the blue cue has expired and the red one has not fired.
+    assert_eq!(
+        evaluations[1]["dark"], true,
+        "the gap between cues should be dark: {}",
+        evaluations[1]
+    );
+    assert!(evaluations[1]["active_effects"]
+        .as_array()
+        .expect("effects")
+        .is_empty());
+
+    // 0:11.000 — inside the red cue, and proof mm:ss.mmm times parse.
+    let at_11s = &evaluations[2];
+    assert_eq!(at_11s["dark"], false);
+    assert_eq!(at_11s["position"], "0:11.000");
+    let fixtures = at_11s["fixtures"].as_array().expect("fixture states");
+    assert_eq!(fixtures[0]["channels"]["red"], 255);
+    assert_eq!(fixtures[0]["channels"]["blue"], 0);
+
+    // `include_fixtures: false` drops the per-fixture block but keeps effects.
+    let lean = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            901,
+            "evaluate_show",
+            json!({"source": source, "times": ["1.0"], "include_fixtures": false}),
+        )
+        .await,
+    );
+    let lean_entry = &lean["evaluations"][0];
+    assert!(lean_entry.get("fixtures").is_none(), "{lean_entry}");
+    assert_eq!(
+        lean_entry["active_effects"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0),
+        1
+    );
+
+    // Passing both `song` and `source` is a caller error, not a silent choice.
+    let both = call_tool(
+        &client,
+        &url,
+        &session,
+        902,
+        "evaluate_show",
+        json!({"song": "song", "source": source, "times": ["1.0"]}),
+    )
+    .await;
+    assert!(
+        both["error"].is_object() || tool_text(&both).contains("not both"),
+        "expected a rejection when both song and source are given: {both}"
+    );
+
+    // Playback was never started, and evaluating must not have started it.
+    assert!(
+        !player.is_playing().await,
+        "evaluate_show must not touch the transport"
+    );
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test 3c-ter: live fixture-level state (#331)
+// ---------------------------------------------------------------------------
+
+/// `get_fixture_state` reports which fixtures are lit, what they are outputting,
+/// and what is driving them — not just how many. It returns the same shape as
+/// `evaluate_show`, so this also checks the predicted and live answers agree.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_fixture_state_matches_offline_evaluation() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+
+    std::fs::create_dir_all(fixture.root.join("lighting/venues"))?;
+    std::fs::create_dir_all(fixture.root.join("lighting/fixture_types"))?;
+    copy_dir_recursive(
+        Path::new("examples/lighting/fixture_types"),
+        &fixture.root.join("lighting/fixture_types"),
+    )?;
+    // Two fixtures, and two groups that resolve to different fixture sets — so
+    // a fixture *count* cannot stand in for knowing which ones are lit.
+    std::fs::write(
+        fixture.root.join("lighting/venues/main_stage.light"),
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n  group \"all_lights\" = Par1, Par2\n  group \"left\" = Par1\n}\n",
+    )?;
+
+    // A long green bed, so the reading is stable however far playback has got.
+    let show = "show \"Which\" {\n    @00:00.000\n    all_lights: static color: \"green\", duration: 120s\n}\n";
+    let song_lighting_dir = fixture.root.join("songs/dsl-light-show-song/lighting");
+    std::fs::write(song_lighting_dir.join("main_show.light"), show)?;
+    // The song registers this show too. Keep its cue clear of the window under
+    // test so exactly one effect is running when we look.
+    std::fs::write(
+        song_lighting_dir.join("outro.light"),
+        "show \"Outro\" {\n    @01:00.000\n    all_lights: static color: \"white\", duration: 1s\n}\n",
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // With nothing playing there is an engine, and nothing lit.
+    let idle =
+        tool_json(&call_tool(&client, &url, &session, 950, "get_fixture_state", json!({})).await);
+    assert_eq!(idle["available"], true, "expected a live engine: {idle}");
+    assert_eq!(
+        idle["dark"], true,
+        "nothing should be lit before play: {idle}"
+    );
+
+    let play_resp = tool_json(&call_tool(&client, &url, &session, 951, "play", json!({})).await);
+    assert!(
+        play_resp["now_playing"].is_object(),
+        "play did not start the song: {play_resp}"
+    );
+
+    // Poll until the timeline has armed and the bed is driving the rig.
+    //
+    // The condition is `dark == false`, not "some fixtures are reported": every
+    // known fixture is always reported, dark ones as zeros, so a non-empty
+    // fixture list says nothing about whether the show has started.
+    let live = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let body = tool_json(
+                &call_tool(&client, &url, &session, 952, "get_fixture_state", json!({})).await,
+            );
+            if body["dark"] == false {
+                break body;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timeline never armed within 15s: {body}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+
+    let effects = live["active_effects"].as_array().expect("effects");
+    assert_eq!(effects.len(), 1, "expected only the green bed: {live}");
+    let bed = &effects[0];
+    assert_eq!(bed["type"], "Static");
+
+    // The heart of #331: the effect names the fixtures it covers. A count of
+    // "2 fixture(s)" could not distinguish this from any other pair.
+    let driving: Vec<&str> = bed["fixtures"]
+        .as_array()
+        .expect("fixtures")
+        .iter()
+        .filter_map(|f| f.as_str())
+        .collect();
+    assert_eq!(
+        driving,
+        vec!["Par1", "Par2"],
+        "the effect should name its fixtures: {live}"
+    );
+
+    // Per-fixture values, each naming what drives it.
+    let fixtures = live["fixtures"].as_array().expect("fixture states");
+    assert_eq!(fixtures.len(), 2, "both fixtures reported: {live}");
+    let par1 = fixtures
+        .iter()
+        .find(|f| f["name"] == "Par1")
+        .unwrap_or_else(|| panic!("Par1 missing: {live}"));
+    assert_eq!(par1["channels"]["green"], 255);
+    assert_eq!(par1["channels"]["red"], 0);
+    let driven_by: Vec<&str> = par1["driven_by"]
+        .as_array()
+        .expect("driven_by")
+        .iter()
+        .filter_map(|d| d.as_str())
+        .collect();
+    assert_eq!(driven_by.len(), 1, "Par1 should name its driver: {par1}");
+    assert_eq!(driven_by[0], bed["id"].as_str().unwrap_or_default());
+
+    // The offline evaluator, given the same show and venue, must agree.
+    let predicted = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            953,
+            "evaluate_show",
+            json!({"source": show, "times": ["1.0"]}),
+        )
+        .await,
+    );
+    let predicted_par1 = predicted["evaluations"][0]["fixtures"]
+        .as_array()
+        .expect("predicted fixtures")
+        .iter()
+        .find(|f| f["name"] == "Par1")
+        .cloned()
+        .unwrap_or_else(|| panic!("Par1 missing from prediction: {predicted}"));
+    assert_eq!(
+        predicted_par1["channels"], par1["channels"],
+        "offline evaluation disagrees with the live rig"
+    );
+
+    // The discrimination #331 asks for. `all_lights` and `left` both resolve
+    // to fixture lists, and they differ — two effects reporting "1 fixture"
+    // and "2 fixtures" could not tell you *which*. The song's own show must
+    // target a config-declared logical group, so `left` is exercised through
+    // `source`, which does not go through song validation.
+    let half = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            955,
+            "evaluate_show",
+            json!({
+                "source": "show \"Half\" {\n    @00:00.000\n    left: static color: \"red\", duration: 30s\n}\n",
+                "times": ["1.0"]
+            }),
+        )
+        .await,
+    );
+    let half_effects = half["evaluations"][0]["active_effects"]
+        .as_array()
+        .expect("effects");
+    let half_driving: Vec<&str> = half_effects[0]["fixtures"]
+        .as_array()
+        .expect("fixtures")
+        .iter()
+        .filter_map(|f| f.as_str())
+        .collect();
+    assert_eq!(
+        half_driving,
+        vec!["Par1"],
+        "`left` covers Par1 only: {half}"
+    );
+
+    let half_fixtures = half["evaluations"][0]["fixtures"]
+        .as_array()
+        .expect("fixture states");
+    let half_par2 = half_fixtures
+        .iter()
+        .find(|f| f["name"] == "Par2")
+        .unwrap_or_else(|| panic!("Par2 missing: {half}"));
+    assert_eq!(
+        half_par2["channels"]["red"], 0,
+        "Par2 is not in `left` and must stay dark: {half_par2}"
+    );
+    assert!(
+        half_par2["driven_by"]
+            .as_array()
+            .expect("driven_by")
+            .is_empty(),
+        "nothing should be driving Par2: {half_par2}"
+    );
+
+    let _ = call_tool(&client, &url, &session, 954, "stop", json!({})).await;
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3d: profile add → update → remove round-trip
 // ---------------------------------------------------------------------------
 

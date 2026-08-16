@@ -90,6 +90,20 @@ impl EffectType {
             | EffectType::Rainbow { duration, .. } => *duration,
         }
     }
+
+    /// The effect's name as reported to users — status output, MCP responses,
+    /// and offline evaluation all use this spelling.
+    pub fn name(&self) -> &'static str {
+        match self {
+            EffectType::Static { .. } => "Static",
+            EffectType::ColorCycle { .. } => "ColorCycle",
+            EffectType::Strobe { .. } => "Strobe",
+            EffectType::Dimmer { .. } => "Dimmer",
+            EffectType::Chase { .. } => "Chase",
+            EffectType::Rainbow { .. } => "Rainbow",
+            EffectType::Pulse { .. } => "Pulse",
+        }
+    }
 }
 
 /// Cycle direction for color cycling effects

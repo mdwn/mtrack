@@ -871,7 +871,6 @@ impl Player {
     }
 
     /// Returns the effect engine, if a DMX engine is configured.
-    #[cfg(test)]
     pub fn effect_engine(&self) -> Option<Arc<parking_lot::Mutex<crate::lighting::EffectEngine>>> {
         self.hardware
             .read()

@@ -218,6 +218,26 @@ pub struct ValidateLightingArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct EvaluateShowArgs {
+    /// Song name as listed by `list_songs`. Evaluates the song's registered
+    /// lighting shows. Mutually exclusive with `source`.
+    pub song: Option<String>,
+    /// `.light` DSL source to evaluate directly, without registering it against
+    /// a song. Mutually exclusive with `song`.
+    pub source: Option<String>,
+    /// Times to evaluate, each `mm:ss.mmm`, `Ns`, or a bare number of seconds.
+    pub times: Vec<String>,
+    /// Include per-fixture channel values. Set false for a cheaper reply when
+    /// only the active-effect list is wanted. Defaults to true.
+    #[serde(default = "default_true")]
+    pub include_fixtures: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SongLightingArgs {
     /// Song name as listed by `list_songs`.
     pub song: String,
@@ -382,7 +402,8 @@ impl McpServer {
 
     #[tool(
         description = "Return a human-readable summary of all lighting effects \
-        currently active on the player."
+        currently active on the player. For a structured answer — and for what \
+        each fixture is actually outputting — use `get_fixture_state`."
     )]
     async fn get_active_effects(&self) -> Result<CallToolResult, McpError> {
         let summary = self
@@ -390,6 +411,47 @@ impl McpServer {
             .format_active_effects()
             .unwrap_or_else(|| "(no effect engine configured)".to_string());
         Ok(CallToolResult::success(vec![Content::text(summary)]))
+    }
+
+    #[tool(
+        description = "Return what the rig is doing right now: per-fixture DMX \
+        channel values (0-255, including virtual-dimmer RGB scaling), which \
+        effects are driving each fixture, and the active effects with the \
+        fixtures each resolved to. This is the live twin of `evaluate_show` and \
+        returns the same shape, so predicted and actual state can be compared \
+        directly. Unlike `get_active_effects` it distinguishes fixtures rather \
+        than only counting them."
+    )]
+    async fn get_fixture_state(&self) -> Result<CallToolResult, McpError> {
+        let engine = match self.player.effect_engine() {
+            Some(engine) => engine,
+            None => {
+                return Ok(ok_json(json!({
+                    "available": false,
+                    "reason": "no effect engine configured",
+                })))
+            }
+        };
+
+        let elapsed = self
+            .player
+            .elapsed()
+            .await
+            .map_err(internal_err)?
+            .unwrap_or_default();
+
+        // The effect engine's mutex is shared with the effects loop thread, so
+        // never block a tokio worker on it.
+        let snapshot = tokio::task::spawn_blocking(move || {
+            let guard = engine.lock();
+            crate::lighting::evaluate::snapshot(&guard, elapsed)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("snapshot failed: {e}"), None))?;
+
+        let mut value = evaluation_json(&snapshot, true);
+        value["available"] = json!(true);
+        Ok(ok_json(value))
     }
 
     // ---- Playback control ----
@@ -966,6 +1028,139 @@ impl McpServer {
                 "error": e.to_string(),
             }))),
         }
+    }
+
+    /// Resolves `evaluate_show`'s `song`/`source` choice into the shows to
+    /// evaluate plus the song's tempo map, if any.
+    fn resolve_shows_to_evaluate(
+        &self,
+        args: &EvaluateShowArgs,
+    ) -> Result<
+        (
+            Vec<crate::lighting::parser::LightShow>,
+            Option<crate::lighting::tempo::TempoMap>,
+        ),
+        McpError,
+    > {
+        match (&args.song, &args.source) {
+            (Some(_), Some(_)) => Err(McpError::invalid_params(
+                "pass either `song` or `source`, not both",
+                None,
+            )),
+            (None, None) => Err(McpError::invalid_params(
+                "pass either `song` (a loaded song's registered shows) or \
+                 `source` (raw `.light` DSL)",
+                None,
+            )),
+            (Some(name), None) => {
+                let song = self
+                    .player
+                    .songs()
+                    .get(name)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let mut shows: Vec<_> = song
+                    .dsl_lighting_shows()
+                    .iter()
+                    .flat_map(|dsl| dsl.shows().values().cloned())
+                    .collect();
+                sort_shows(&mut shows);
+                if shows.is_empty() {
+                    return Err(McpError::invalid_params(
+                        format!(
+                            "song `{name}` has no DSL light shows loaded — check its \
+                             `lighting:` block actually references a `.light` file"
+                        ),
+                        None,
+                    ));
+                }
+                Ok((shows, song.tempo_map().cloned()))
+            }
+            (None, Some(source)) => {
+                let shows = crate::lighting::parser::parse_light_shows(source)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let mut shows: Vec<_> = shows.into_values().collect();
+                sort_shows(&mut shows);
+                Ok((shows, None))
+            }
+        }
+    }
+
+    #[tool(description = "Evaluate a light show offline and report what the \
+        fixtures would be doing at each requested time. No audio, no DMX output, \
+        and no real-time waiting — this is a pure function of the show, the \
+        current venue, and the tempo map, so it neither needs nor disturbs \
+        playback. Pass either `song` (evaluates that song's registered shows) or \
+        `source` (evaluates DSL directly). Returns per-fixture DMX channel values \
+        (0-255, including virtual-dimmer RGB scaling) plus the effects running at \
+        each instant, with the fixtures each one resolved to.")]
+    async fn evaluate_show(
+        &self,
+        Parameters(args): Parameters<EvaluateShowArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (shows, fallback_tempo) = self.resolve_shows_to_evaluate(&args)?;
+
+        let times = args
+            .times
+            .iter()
+            .map(|t| parse_duration(t))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let lighting_system = self
+            .player
+            .dmx_engine()
+            .and_then(|dmx| dmx.broadcast_handles().lighting_system);
+
+        let include_fixtures = args.include_fixtures;
+        // The lighting system and effect engine are `parking_lot` mutexes shared
+        // with the effects loop thread, and evaluation is pure CPU besides — both
+        // belong off the async worker.
+        let evaluations = tokio::task::spawn_blocking(move || {
+            // Resolve every group the show mentions once, up front, so the lock
+            // is held for a short bounded step rather than across evaluation.
+            let (fixtures, group_map) = match &lighting_system {
+                Some(system) => {
+                    let mut guard = system.lock();
+                    let fixtures = guard.get_current_venue_fixtures().unwrap_or_default();
+                    let mut group_map: HashMap<String, Vec<String>> = HashMap::new();
+                    for name in group_names(&shows) {
+                        let resolved = guard.resolve_logical_group_graceful(&name);
+                        group_map.insert(name, resolved);
+                    }
+                    (fixtures, group_map)
+                }
+                None => (Vec::new(), HashMap::new()),
+            };
+
+            crate::lighting::evaluate::evaluate_show(
+                shows,
+                &fixtures,
+                fallback_tempo.as_ref(),
+                &times,
+                |mut effect| {
+                    effect.target_fixtures = effect
+                        .target_fixtures
+                        .iter()
+                        .flat_map(|target| match group_map.get(target) {
+                            Some(resolved) => resolved.clone(),
+                            // Not a known group — already a fixture name, or a
+                            // name that resolves to nothing. Either way, leave it
+                            // for the engine to accept or reject.
+                            None => vec![target.clone()],
+                        })
+                        .collect();
+                    effect
+                },
+            )
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("evaluation failed: {e}"), None))?;
+
+        let results: Vec<Value> = evaluations
+            .iter()
+            .map(|evaluation| evaluation_json(evaluation, include_fixtures))
+            .collect();
+
+        Ok(ok_json(json!({ "evaluations": results })))
     }
 
     #[tool(description = "List the venues known to the running DMX engine. Each \
@@ -1557,6 +1752,85 @@ impl ServerHandler for McpServer {
 }
 
 /// Returns a successful tool result wrapping a JSON value as pretty-printed text.
+/// Renders one evaluation — predicted or live — as JSON.
+///
+/// `evaluate_show` and `get_fixture_state` share this so the two surfaces
+/// cannot drift into different shapes for the same data.
+fn evaluation_json(
+    evaluation: &crate::lighting::evaluate::Evaluation,
+    include_fixtures: bool,
+) -> Value {
+    let effects: Vec<Value> = evaluation
+        .active_effects
+        .iter()
+        .map(|effect| {
+            json!({
+                "id": effect.id,
+                "type": effect.effect_type,
+                "layer": format!("{:?}", effect.layer).to_lowercase(),
+                "elapsed": effect.elapsed.as_secs_f64(),
+                "duration": effect.duration.as_secs_f64(),
+                "fixtures": effect.fixtures,
+            })
+        })
+        .collect();
+
+    let mut entry = json!({
+        "time": evaluation.time.as_secs_f64(),
+        "position": format_duration(evaluation.time),
+        "dark": evaluation.is_dark(),
+        "active_effects": effects,
+    });
+
+    if include_fixtures {
+        let fixtures: Vec<Value> = evaluation
+            .fixtures
+            .iter()
+            .map(|fixture| {
+                // Which effects are driving this fixture. Inverting the per-effect
+                // lists here is what makes "4 fixture(s)" answerable as "these
+                // four, driven by that effect".
+                let driven_by: Vec<&str> = evaluation
+                    .active_effects
+                    .iter()
+                    .filter(|effect| effect.fixtures.iter().any(|f| f == &fixture.name))
+                    .map(|effect| effect.id.as_str())
+                    .collect();
+                json!({
+                    "name": fixture.name,
+                    "channels": fixture.channels,
+                    "driven_by": driven_by,
+                })
+            })
+            .collect();
+        entry["fixtures"] = json!(fixtures);
+    }
+
+    entry
+}
+
+/// Orders shows by name so evaluation is reproducible.
+///
+/// Shows arrive from a `HashMap`, so without this both the cue order for
+/// identically-timed cues and — because `LightingTimeline` takes the first
+/// show's tempo map — which tempo block wins would vary between runs.
+fn sort_shows(shows: &mut [crate::lighting::parser::LightShow]) {
+    shows.sort_by(|a, b| a.name.cmp(&b.name));
+}
+
+/// Every distinct group name a set of shows targets, deduplicated.
+fn group_names(shows: &[crate::lighting::parser::LightShow]) -> Vec<String> {
+    let mut names: Vec<String> = shows
+        .iter()
+        .flat_map(|show| show.cues.iter())
+        .flat_map(|cue| cue.effects.iter())
+        .flat_map(|effect| effect.groups.iter().cloned())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 pub(crate) fn ok_json(value: Value) -> CallToolResult {
     let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
     CallToolResult::success(vec![Content::text(text)])
