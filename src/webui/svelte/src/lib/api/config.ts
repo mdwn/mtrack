@@ -339,14 +339,18 @@ export interface VenueData {
   fixtures: Record<string, FixtureData>;
 }
 
-export async function fetchFixtureTypes(
-  dir?: string,
-): Promise<Record<string, FixtureTypeData>> {
+export async function fetchFixtureTypes(dir?: string): Promise<{
+  fixtureTypes: Record<string, FixtureTypeData>;
+  errors: LightingFileError[];
+}> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(`/lighting/fixture-types${params}`);
   if (!res.ok) throw await apiError(res, "Failed to fetch fixture types");
   const data = await res.json();
-  return data.fixture_types;
+  return {
+    fixtureTypes: data.fixture_types ?? {},
+    errors: data.errors ?? [],
+  };
 }
 
 export async function fetchFixtureType(
@@ -402,14 +406,25 @@ export async function fetchLightingGroups(): Promise<
   return data.groups ?? [];
 }
 
+/** A `.light` file in a lighting directory that could not be parsed. */
+export interface LightingFileError {
+  file: string;
+  error: string;
+}
+
+/** Venues that parsed, plus the files that did not.
+ *
+ *  A directory is a set of independent files, so one bad file no longer empties
+ *  the list — but it must still be reported, or the only signal is a venue
+ *  quietly missing. */
 export async function fetchVenues(
   dir?: string,
-): Promise<Record<string, VenueData>> {
+): Promise<{ venues: Record<string, VenueData>; errors: LightingFileError[] }> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(`/lighting/venues${params}`);
   if (!res.ok) throw await apiError(res, "Failed to fetch venues");
   const data = await res.json();
-  return data.venues;
+  return { venues: data.venues ?? {}, errors: data.errors ?? [] };
 }
 
 export async function fetchVenue(

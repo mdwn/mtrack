@@ -344,3 +344,94 @@ pub async fn a_song_without_lighting_clears_the_previous_timeline() -> CheckOutc
     server.check_clean_log(&[])?;
     Ok(())
 }
+
+/// A bar-timed cue lands where the click track says the bar is.
+///
+/// This is the only check that exercises the whole tempo chain end to end:
+/// real audio -> onset detection -> `BeatGrid` -> `BeatGrid::to_tempo_map` ->
+/// `Song::lighting_tempo_map` -> measure-based cue resolution. The unit tests
+/// for the conversion feed it a hand-built grid, so they never see what the
+/// detector actually produces, and detected beats land on hop boundaries
+/// (256 samples, ~5.8ms) rather than exact times.
+///
+/// The show carries no `tempo` block, so if the song's derived map is missing
+/// or wrong the cue either fails to parse or lands at the wrong second.
+pub async fn a_bar_timed_cue_lands_where_the_click_track_says() -> CheckOutcome {
+    crate::runner::require_area("lighting")?;
+
+    // 120bpm 4/4: a bar is 2s, so bar 3 beat 1 is 4.0s.
+    const BPM: f32 = 120.0;
+    const BEATS: usize = 4;
+    const BAR: u32 = 3;
+    let expected_secs = (BAR - 1) as f64 * BEATS as f64 * 60.0 / BPM as f64;
+
+    // The break point: a tempo the click track does not play. The derived map
+    // then puts bar 3 somewhere else, and the assertion has to notice.
+    let bpm = crate::sabotage::pick(BPM, BPM * 1.5);
+
+    let song = SongSpec::tones("Clicked Song", "clicked-song", 1, 16.0)
+        .with_click(bpm, BEATS, 8)
+        .with_lighting(LightingSpec::at_bar(
+            "Bar Cue",
+            "lighting/bars.light",
+            LIGHTING_GROUP,
+            BAR,
+        ));
+
+    let project = ProjectBuilder::new()
+        .profiles(vec![ProfileSpec::detected("01-e2e").with_lighting()])
+        .songs(vec![song])
+        .build()?;
+    let server = Server::start(&project).await?;
+    let mut client = Client::connect(&server).await?;
+
+    check_eq!(
+        client.subsystem_status("dmx").await?,
+        "connected",
+        "the DMX engine did not come up, so lighting cannot be exercised.\n--- log ---\n{}",
+        server.log()
+    );
+
+    client.grpc().play(PlayRequest {}).await?;
+    client.wait_until_playing(Duration::from_secs(10)).await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let cues = client
+        .grpc()
+        .get_cues(GetCuesRequest {})
+        .await?
+        .into_inner()
+        .cues;
+    client.grpc().stop(StopRequest {}).await?;
+
+    check!(
+        !cues.is_empty(),
+        "a bar-timed show produced no cues, so the song's tempo map was never \
+         derived from the click track.\n--- log ---\n{}",
+        server.log()
+    );
+
+    let Some(actual) = cues
+        .first()
+        .and_then(|c| c.time.as_ref())
+        .map(|d| d.seconds as f64 + d.nanos as f64 / 1e9)
+    else {
+        crate::fail!("the cue carried no time: {cues:?}");
+    };
+
+    // A quarter beat at this tempo. Detection quantises to ~5.8ms and the
+    // click's own onset adds a little, so this is loose enough not to be
+    // flaky and far tighter than the half-bar error a wrong map produces.
+    let tolerance = 0.125;
+    check!(
+        (actual - expected_secs).abs() < tolerance,
+        "bar {BAR} resolved to {actual:.3}s, but at {BPM}bpm 4/4 the click puts \
+         it at {expected_secs:.3}s (tolerance {tolerance:.3}s)"
+    );
+    crate::outcome::record(format!(
+        "bar {BAR} resolved to {actual:.3}s against {expected_secs:.3}s from the click track"
+    ));
+
+    server.check_clean_log(&[])?;
+    Ok(())
+}

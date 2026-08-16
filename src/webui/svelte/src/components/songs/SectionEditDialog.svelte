@@ -71,22 +71,30 @@
 
   /** Beat 1 is the measure line — store that as "unset".
    *
-   * Refuses a value that would invert the section, the same condition
-   * `canCaptureStart`/`canCaptureEnd` apply to the capture buttons. Without it
-   * a start beat could be stepped past the end beat inside a single measure,
-   * which `Section::validate` rejects on save. */
+   * A value that would invert the section is clamped to the last one that does
+   * not, rather than refused: the steppers are controlled, so a silent refusal
+   * reads as a broken button. An inverted range is what `Section::validate`
+   * rejects on save, which is the outcome being avoided. */
   function setBeat(field: "start_beat" | "end_beat", beat: number) {
-    const moved = {
-      measure:
-        section[field === "start_beat" ? "start_measure" : "end_measure"],
-      beat,
-    };
-    const ordered =
+    const measure =
+      section[field === "start_beat" ? "start_measure" : "end_measure"];
+    const ordered = (b: number) =>
       field === "start_beat"
-        ? isBefore(moved, endPos)
-        : isBefore(startPos, moved);
-    if (!ordered) return;
-    onchange({ [field]: beat === 1 ? undefined : beat });
+        ? isBefore({ measure, beat: b }, endPos)
+        : isBefore(startPos, { measure, beat: b });
+
+    // Walk back by whole steps rather than computing the nearest legal value:
+    // the ordering test resolves through the grid, where beat 5 of a 4/4
+    // measure and beat 1 of the next are the same instant, so there is no
+    // arithmetic shortcut.
+    let candidate = beat;
+    while (candidate > 1 && !ordered(candidate)) {
+      candidate = Math.max(1, candidate - BEAT_STEP);
+    }
+    // Beat 1 is the measure line, which orders correctly against any
+    // well-formed section, so the walk terminates there at worst.
+    if (!ordered(candidate)) return;
+    onchange({ [field]: candidate === 1 ? undefined : candidate });
   }
 
   /** How far the beat steppers go: the end of their own measure. Without a

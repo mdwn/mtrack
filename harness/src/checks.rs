@@ -376,6 +376,12 @@ pub fn all() -> Vec<Check> {
         ),
         entry!(
             "lighting",
+            "a_bar_timed_cue_lands_where_the_click_track_says",
+            "A bar-timed cue must land where the click track puts the bar.",
+            lighting::a_bar_timed_cue_lands_where_the_click_track_says
+        ),
+        entry!(
+            "lighting",
             "a_song_without_lighting_clears_the_previous_timeline",
             "A song with no show must not inherit the last song's cues.",
             lighting::a_song_without_lighting_clears_the_previous_timeline

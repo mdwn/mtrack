@@ -26,6 +26,45 @@ test.describe("Venues Management", () => {
     await page.locator(".sub-tab", { hasText: "Venues" }).click();
   });
 
+  test("a venue file that will not parse is named, and the rest still list", async ({
+    page,
+  }) => {
+    // Removing venue-defined groups turned every un-migrated venue file into a
+    // parse error, and the loader used to abort the whole directory on the
+    // first one — so a single stale file emptied the list with nothing to say
+    // why, and re-saving through this very UI was the migration route.
+    await page.route("**/api/lighting/venues*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          venues: {
+            "test-venue": { name: "test-venue", fixtures: {} },
+          },
+          errors: [
+            {
+              file: "legacy.light",
+              error:
+                "venue group `wash` is no longer supported. Tag the fixtures instead",
+            },
+          ],
+        }),
+      });
+    });
+    // Re-fetch through the panel's own Refresh rather than reloading the page,
+    // which would discard the navigation `beforeEach` performed.
+    await page.getByRole("button", { name: "Refresh" }).first().click();
+
+    // The good venue is still listed — the failure did not take it with it.
+    await expect(page.locator(".item-name")).toContainText("test-venue");
+
+    // And the bad file is named, with the reason.
+    const errors = page.getByTestId("venue-file-errors");
+    await expect(errors).toBeVisible();
+    await expect(errors).toContainText("legacy.light");
+    await expect(errors).toContainText("no longer supported");
+  });
+
   test("shows existing venue from mock data", async ({ page }) => {
     await expect(page.locator(".item-card")).toBeVisible();
     await expect(page.locator(".item-name")).toContainText("test-venue");

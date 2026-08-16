@@ -69,6 +69,15 @@
   let venues = $state<Record<string, VenueData>>({});
   let venueLoading = $state(false);
   let venueError = $state("");
+  /** Files in the venue directory that would not parse. Reported alongside the
+   *  venues that did, since one bad file no longer empties the list — and a
+   *  venue quietly missing is the only other signal. */
+  let venueFileErrors = $state<
+    import("../../lib/api/config").LightingFileError[]
+  >([]);
+  let ftFileErrors = $state<import("../../lib/api/config").LightingFileError[]>(
+    [],
+  );
   let venueSaving = $state(false);
   let venueMsg = $state("");
   let editingVenue = $state<string | null>(null);
@@ -96,8 +105,11 @@
   async function loadFixtureTypes() {
     ftLoading = true;
     ftError = "";
+    ftFileErrors = [];
     try {
-      fixtureTypes = await fetchFixtureTypes(ftDir || undefined);
+      const result = await fetchFixtureTypes(ftDir || undefined);
+      fixtureTypes = result.fixtureTypes;
+      ftFileErrors = result.errors;
     } catch (e: any) {
       ftError = e.message;
     } finally {
@@ -108,8 +120,11 @@
   async function loadVenues() {
     venueLoading = true;
     venueError = "";
+    venueFileErrors = [];
     try {
-      venues = await fetchVenues(venueDir || undefined);
+      const result = await fetchVenues(venueDir || undefined);
+      venues = result.venues;
+      venueFileErrors = result.errors;
     } catch (e: any) {
       venueError = e.message;
     } finally {
@@ -695,6 +710,13 @@
             >
           </div>
         </div>
+        {#if ftFileErrors.length > 0}
+          <ul class="file-errors" data-testid="fixture-type-file-errors">
+            {#each ftFileErrors as fe (fe.file)}
+              <li class="status-text error-text">{fe.file}: {fe.error}</li>
+            {/each}
+          </ul>
+        {/if}
         {#if ftLoading}
           <p class="status-text">{$t("common.loading")}</p>
         {:else if ftError}
@@ -898,6 +920,13 @@
             >
           </div>
         </div>
+        {#if venueFileErrors.length > 0}
+          <ul class="file-errors" data-testid="venue-file-errors">
+            {#each venueFileErrors as fe (fe.file)}
+              <li class="status-text error-text">{fe.file}: {fe.error}</li>
+            {/each}
+          </ul>
+        {/if}
         {#if venueLoading}
           <p class="status-text">{$t("common.loading")}</p>
         {:else if venueError}
