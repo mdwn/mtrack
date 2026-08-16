@@ -137,8 +137,6 @@ impl Effect {
 pub enum LayerCommandType {
     /// Clear - immediately stop all effects on the layer
     Clear,
-    /// Release - gracefully fade out all effects on the layer
-    Release,
     /// Freeze - pause all effects on the layer at their current state
     Freeze,
     /// Unfreeze - resume paused effects on the layer
@@ -152,7 +150,6 @@ pub enum LayerCommandType {
 pub struct LayerCommand {
     pub command_type: LayerCommandType,
     pub layer: Option<EffectLayer>, // None means all layers (only valid for clear)
-    pub fade_time: Option<Duration>,
     pub intensity: Option<f64>,
     pub speed: Option<f64>,
 }
@@ -411,7 +408,6 @@ mod tests {
     #[test]
     fn layer_command_type_equality() {
         assert_eq!(LayerCommandType::Clear, LayerCommandType::Clear);
-        assert_ne!(LayerCommandType::Clear, LayerCommandType::Release);
         assert_ne!(LayerCommandType::Freeze, LayerCommandType::Unfreeze);
     }
 }

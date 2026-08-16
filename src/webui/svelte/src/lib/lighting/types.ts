@@ -141,11 +141,10 @@ export interface CueEffect {
   sequenceName?: string;
 }
 
-/** Layer command (clear/release/freeze/unfreeze/master) */
+/** Layer command (clear/freeze/unfreeze/master) */
 export interface LayerCommand {
-  command: "clear" | "release" | "freeze" | "unfreeze" | "master";
+  command: "clear" | "freeze" | "unfreeze" | "master";
   layer?: string;
-  time?: string;
   intensity?: string;
   speed?: string;
 }

@@ -667,7 +667,6 @@
   "effect.removeEffect": "Remove effect",
   "effect.command.command": "Command",
   "effect.command.layer": "Layer",
-  "effect.command.time": "Time",
   "effect.command.intensity": "Intensity",
   "effect.command.speed": "Speed",
   "effect.command.removeCommand": "Remove command",

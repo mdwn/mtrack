@@ -66,8 +66,8 @@ parameters: `layer:` is required, the others are optional.
 
 ```
 @01:00.000
-release(layer: foreground)                       # stop all effects on this layer
-clear(layer: midground, time: 250ms)             # fade everything off over 250ms
+clear(layer: midground)                          # hard cut — stop this layer now
+clear()                                          # hard cut on every layer
 freeze(layer: background)                        # pin current output, ignore new cues
 unfreeze(layer: background)                      # resume normal updates
 master(layer: foreground, intensity: 50%)        # scale the layer's output
@@ -75,6 +75,10 @@ master(layer: foreground, intensity: 50%)        # scale the layer's output
 
 `master(...)` also accepts `speed:` (scales effect rates) in addition to
 `intensity:`.
+
+`clear(...)` is an immediate stop, not a fade. There is no layer command that
+fades a layer out: every effect declares a finite duration, so author the
+fade on the effect itself with `down_time:` and let it end when it should.
 
 Layer masters and freezes last for the song that set them. They are reset when
 playback stops or a new song loads, and when the layer is cleared (`clear(layer:

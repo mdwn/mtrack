@@ -589,7 +589,7 @@ show "Test" {
     sequence "seq"
 
     @10.000
-    release(layer: background, time: 1s)
+    freeze(layer: background)
 }
 "#;
 
@@ -625,7 +625,7 @@ show "Test" {
         "Cue at 5.0s should have effects from sequence"
     );
 
-    // Find cue at 10.0s - should have release command
+    // Find cue at 10.0s - should have freeze command
     let cue_at_10 = show
         .cues
         .iter()
@@ -635,12 +635,8 @@ show "Test" {
     assert!(
         cue.layer_commands
             .iter()
-            .any(|lc| lc.command_type == LayerCommandType::Release),
-        "Cue at 10.0s should have release layer command"
-    );
-    assert!(
-        cue.layer_commands[0].fade_time.is_some(),
-        "Release command should have fade_time"
+            .any(|lc| lc.command_type == LayerCommandType::Freeze),
+        "Cue at 10.0s should have freeze layer command"
     );
 }
 
@@ -1291,7 +1287,9 @@ show "Test" {
 }
 
 #[test]
-fn test_layer_command_release_with_time() {
+fn test_release_command_is_rejected() {
+    // `release` was removed once every effect gained a mandatory finite duration
+    // (#342). A show still using it should fail loudly rather than silently no-op.
     let content = r#"
 show "Test" {
     @0.000
@@ -1302,37 +1300,29 @@ show "Test" {
 }
 "#;
 
-    let result = parse_light_shows(content);
     assert!(
-        result.is_ok(),
-        "Should parse release with time: {:?}",
-        result.err()
+        parse_light_shows(content).is_err(),
+        "release() should no longer parse"
     );
+}
 
-    let shows = result.unwrap();
-    let show = shows.get("Test").unwrap();
+#[test]
+fn test_clear_with_time_is_rejected() {
+    // `time:` only ever fed `release`. `clear(time: ...)` parsed but was silently
+    // ignored, so the parameter is gone rather than left lying about what it does.
+    let content = r#"
+show "Test" {
+    @0.000
+    front_wash: static, color: "red", layer: background, duration: 5s
 
-    let cue_at_5 = show
-        .cues
-        .iter()
-        .find(|c| (c.time.as_secs_f64() - 5.0).abs() < 0.01);
-    assert!(cue_at_5.is_some(), "Should have a cue at 5.0s");
-    let cue = cue_at_5.unwrap();
+    @5.000
+    clear(layer: background, time: 2s)
+}
+"#;
 
-    assert_eq!(cue.layer_commands.len(), 1);
-    assert_eq!(
-        cue.layer_commands[0].command_type,
-        LayerCommandType::Release
-    );
     assert!(
-        cue.layer_commands[0].fade_time.is_some(),
-        "Release should have fade_time"
-    );
-    let fade_time = cue.layer_commands[0].fade_time.unwrap();
-    assert!(
-        (fade_time.as_secs_f64() - 2.0).abs() < 0.01,
-        "Fade time should be 2.0s, got {:?}",
-        fade_time
+        parse_light_shows(content).is_err(),
+        "clear() should no longer accept a time parameter"
     );
 }
 

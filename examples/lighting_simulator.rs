@@ -144,7 +144,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Update timeline
         timeline_update = timeline.update(current_time);
 
-        // Process layer commands (clear, release, etc.) before starting new effects
+        // Process layer commands (clear, freeze, master) before starting new effects
         apply_layer_commands(&mut effect_engine, &timeline_update);
 
         // Start new effects (sequence effects first so show effects win conflicts)
@@ -249,15 +249,6 @@ fn apply_layer_commands(effect_engine: &mut EffectEngine, timeline_update: &Time
                     effect_engine.clear_layer(layer);
                 } else {
                     effect_engine.clear_all_layers();
-                }
-            }
-            LayerCommandType::Release => {
-                if let Some(layer) = cmd.layer {
-                    if let Some(fade_time) = cmd.fade_time {
-                        effect_engine.release_layer_with_time(layer, Some(fade_time));
-                    } else {
-                        effect_engine.release_layer(layer);
-                    }
                 }
             }
             LayerCommandType::Freeze => {

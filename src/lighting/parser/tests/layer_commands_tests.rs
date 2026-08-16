@@ -23,9 +23,6 @@ fn test_layer_command_parsing() {
     front_wash: static color: "blue", duration: 5s, layer: foreground
 
     @00:05.000
-    release(layer: foreground, time: 2s)
-
-    @00:10.000
     clear(layer: foreground)
 
     @00:15.000
@@ -48,40 +45,31 @@ fn test_layer_command_parsing() {
     let show = shows.get("Layer Control Test").expect("Show should exist");
 
     // Check that cues were parsed
-    assert_eq!(show.cues.len(), 6, "Should have 6 cues");
+    assert_eq!(show.cues.len(), 5, "Should have 5 cues");
 
     // First cue has an effect, no layer commands
     assert_eq!(show.cues[0].effects.len(), 1);
     assert_eq!(show.cues[0].layer_commands.len(), 0);
 
-    // Second cue: release command
+    // Second cue: clear command
     assert_eq!(show.cues[1].effects.len(), 0);
     assert_eq!(show.cues[1].layer_commands.len(), 1);
-    let release_cmd = &show.cues[1].layer_commands[0];
-    assert_eq!(release_cmd.command_type, LayerCommandType::Release);
-    assert_eq!(release_cmd.layer, Some(EffectLayer::Foreground));
-    assert_eq!(
-        release_cmd.fade_time,
-        Some(std::time::Duration::from_secs(2))
-    );
-
-    // Third cue: clear command
-    let clear_cmd = &show.cues[2].layer_commands[0];
+    let clear_cmd = &show.cues[1].layer_commands[0];
     assert_eq!(clear_cmd.command_type, LayerCommandType::Clear);
     assert_eq!(clear_cmd.layer, Some(EffectLayer::Foreground));
 
-    // Fourth cue: freeze command
-    let freeze_cmd = &show.cues[3].layer_commands[0];
+    // Third cue: freeze command
+    let freeze_cmd = &show.cues[2].layer_commands[0];
     assert_eq!(freeze_cmd.command_type, LayerCommandType::Freeze);
     assert_eq!(freeze_cmd.layer, Some(EffectLayer::Background));
 
-    // Fifth cue: unfreeze command
-    let unfreeze_cmd = &show.cues[4].layer_commands[0];
+    // Fourth cue: unfreeze command
+    let unfreeze_cmd = &show.cues[3].layer_commands[0];
     assert_eq!(unfreeze_cmd.command_type, LayerCommandType::Unfreeze);
     assert_eq!(unfreeze_cmd.layer, Some(EffectLayer::Background));
 
-    // Sixth cue: master command
-    let master_cmd = &show.cues[5].layer_commands[0];
+    // Fifth cue: master command
+    let master_cmd = &show.cues[4].layer_commands[0];
     assert_eq!(master_cmd.command_type, LayerCommandType::Master);
     assert_eq!(master_cmd.layer, Some(EffectLayer::Midground));
     assert!((master_cmd.intensity.unwrap() - 0.5).abs() < 0.01);

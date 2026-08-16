@@ -166,8 +166,6 @@ pub struct EffectEngine {
     /// Optional tempo map for tempo-aware effects (measure/beat-based timing)
     tempo_map: Option<TempoMap>,
     layer_state: LayerState,
-    /// Effects being released — tracks (release_fade_time, release_start_time) per effect
-    releasing_effects: HashMap<String, (Duration, Instant)>,
     /// Last computed merged fixture states (for preview/debugging)
     last_merged_states: HashMap<String, FixtureState>,
     /// Last known song time (score-time) for tempo-aware speed lookups.
@@ -194,7 +192,6 @@ impl EffectEngine {
             engine_elapsed: Duration::ZERO,
             tempo_map: None,
             layer_state: LayerState::new(),
-            releasing_effects: HashMap::new(),
             last_merged_states: HashMap::new(),
             last_song_time: None,
             midi_dmx_store: None,
@@ -413,8 +410,7 @@ impl EffectEngine {
         // Fast path for MIDI-DMX-only frames: when no DSL effects are running,
         // generate DmxCommands directly from the store. This skips all HashMap
         // cloning, fixture state rebuilding, and the full pipeline.
-        if !self.cache.dirty && self.active_effects.is_empty() && self.releasing_effects.is_empty()
-        {
+        if !self.cache.dirty && self.active_effects.is_empty() {
             let store_gen = self
                 .midi_dmx_store
                 .as_ref()
@@ -469,8 +465,7 @@ impl EffectEngine {
 
         // Cache-only fast path: effects existed previously but are now done,
         // permanent state exists, and nothing has changed.
-        if !self.cache.dirty && self.active_effects.is_empty() && self.releasing_effects.is_empty()
-        {
+        if !self.cache.dirty && self.active_effects.is_empty() {
             let store_gen = self
                 .midi_dmx_store
                 .as_ref()
@@ -586,9 +581,6 @@ impl EffectEngine {
                 // Get reference to effect to avoid unnecessary clone
                 let effect = self.active_effects.get(&effect_id).unwrap();
 
-                // Check if this effect is being released
-                let release_info = self.releasing_effects.get(&effect_id).cloned();
-
                 // Calculate base elapsed time
                 // If layer is frozen, use the frozen time instead of current time
                 let reference_time = frozen_at.unwrap_or(self.current_time);
@@ -625,19 +617,9 @@ impl EffectEngine {
                     false
                 };
 
-                // Check if a releasing effect has completed its fade
-                let release_completed = if let Some((fade_time, release_start)) = &release_info {
-                    let release_elapsed = self.current_time.duration_since(*release_start);
-                    release_elapsed >= *fade_time
-                } else {
-                    false
-                };
-
-                if is_expired || release_completed {
-                    // Effect has completed. For temporary effects, do not blend final state.
-                    // For permanent effects, preserve via the completion handler below.
-
-                    // Queue for removal after this frame
+                if is_expired {
+                    // Effect has completed — no state persists, so don't blend a final
+                    // frame. Queue for removal after this frame.
                     completed_effects.push(effect_id.clone());
                     continue;
                 }
@@ -650,29 +632,11 @@ impl EffectEngine {
                     absolute_time,
                     self.tempo_map.as_ref(),
                 )? {
-                    // Calculate release fade multiplier if this effect is being released
-                    let release_multiplier = if let Some((fade_time, release_start)) = release_info
-                    {
-                        let release_elapsed = self.current_time.duration_since(release_start);
-                        let progress = if fade_time.is_zero() {
-                            1.0
-                        } else {
-                            (release_elapsed.as_secs_f64() / fade_time.as_secs_f64())
-                                .clamp(0.0, 1.0)
-                        };
-                        1.0 - progress // Fade from 1.0 to 0.0
-                    } else {
-                        1.0
-                    };
-
-                    // Combined intensity multiplier (layer master * release fade)
-                    let intensity_multiplier = layer_intensity * release_multiplier;
-
-                    // Apply intensity multiplier to effect states if not 1.0
-                    if (intensity_multiplier - 1.0).abs() > f64::EPSILON {
+                    // Apply the layer intensity master to effect states if not 1.0
+                    if (layer_intensity - 1.0).abs() > f64::EPSILON {
                         for fixture_state in effect_states.values_mut() {
                             for channel_state in fixture_state.channels.values_mut() {
-                                channel_state.value *= intensity_multiplier;
+                                channel_state.value *= layer_intensity;
                             }
                         }
                     }
@@ -694,8 +658,6 @@ impl EffectEngine {
 
         // Handle completed effects — simply remove them. No state persists after completion.
         for effect_id in completed_effects {
-            self.releasing_effects.remove(&effect_id);
-
             if let Some(effect) = self.active_effects.remove(&effect_id) {
                 // Clean up per-layer multipliers for completed effects
                 let multiplier_keys: Vec<String> = MULTIPLIER_PREFIXES
@@ -742,7 +704,6 @@ impl EffectEngine {
     /// Stop all active effects and reset per-song layer state
     pub fn stop_all_effects(&mut self) {
         self.active_effects.clear();
-        self.releasing_effects.clear();
         self.last_merged_states.clear();
         // Layer masters and freezes belong to the song that set them. The engine is
         // reused across songs, so without this a show stopped mid-duck leaves the next
@@ -775,7 +736,6 @@ impl EffectEngine {
         // Remove the effects
         for effect_id in to_remove {
             self.active_effects.remove(&effect_id);
-            self.releasing_effects.remove(&effect_id);
         }
         self.cache.invalidate();
     }
@@ -787,7 +747,6 @@ impl EffectEngine {
     pub fn clear_layer(&mut self, layer: EffectLayer) {
         layers::clear_layer(
             &mut self.active_effects,
-            &mut self.releasing_effects,
             &mut self.layer_state.frozen,
             layer,
         );
@@ -801,35 +760,11 @@ impl EffectEngine {
     /// Clear all layers - immediately stops all effects on all layers
     /// This is equivalent to a "kill all" or panic button for everything
     pub fn clear_all_layers(&mut self) {
-        layers::clear_all_layers(
-            &mut self.active_effects,
-            &mut self.releasing_effects,
-            &mut self.layer_state.frozen,
-        );
+        layers::clear_all_layers(&mut self.active_effects, &mut self.layer_state.frozen);
         // Including the layer masters — a panic button that leaves the rig mastered
         // down is not a panic button.
         self.layer_state.reset();
         self.last_merged_states.clear();
-        self.cache.invalidate();
-    }
-
-    /// Release a layer - gracefully fades out all effects on the specified layer
-    /// Uses each effect's down_time, or a default of 1 second if not specified
-    pub fn release_layer(&mut self, layer: EffectLayer) {
-        self.release_layer_with_time(layer, None);
-    }
-
-    /// Release a layer with a custom fade time
-    /// If fade_time is None, uses each effect's down_time (or 1 second default)
-    pub fn release_layer_with_time(&mut self, layer: EffectLayer, fade_time: Option<Duration>) {
-        layers::release_layer_with_time(
-            &mut self.active_effects,
-            &mut self.releasing_effects,
-            &mut self.layer_state.frozen,
-            layer,
-            fade_time,
-            self.current_time,
-        );
         self.cache.invalidate();
     }
 
@@ -909,15 +844,6 @@ impl EffectEngine {
                     self.clear_layer(layer);
                 } else {
                     self.clear_all_layers();
-                }
-            }
-            LayerCommandType::Release => {
-                if let Some(layer) = cmd.layer {
-                    if let Some(fade_time) = cmd.fade_time {
-                        self.release_layer_with_time(layer, Some(fade_time));
-                    } else {
-                        self.release_layer(layer);
-                    }
                 }
             }
             LayerCommandType::Freeze => {
@@ -1038,27 +964,6 @@ impl EffectEngine {
                     effect.target_fixtures.len(),
                     elapsed.as_secs_f64(),
                     duration_str
-                )
-                .unwrap();
-            }
-        }
-
-        // Also show releasing effects if any
-        if !self.releasing_effects.is_empty() {
-            writeln!(
-                output,
-                "\nReleasing effects ({}):",
-                self.releasing_effects.len()
-            )
-            .unwrap();
-            for (effect_id, (fade_time, release_start)) in &self.releasing_effects {
-                let release_elapsed = self.current_time.duration_since(*release_start);
-                writeln!(
-                    output,
-                    "    - {} - fading out (elapsed: {:.2}s / {:.2}s)",
-                    effect_id,
-                    release_elapsed.as_secs_f64(),
-                    fade_time.as_secs_f64()
                 )
                 .unwrap();
             }

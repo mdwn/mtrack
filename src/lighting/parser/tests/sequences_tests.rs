@@ -307,7 +307,7 @@ show "Test" {
     # Some comment
     
     @1.000
-    release(layer: background, time: 2s)
+    freeze(layer: background)
     # Another comment
     
     @2.000
@@ -342,19 +342,18 @@ show "Test" {
         Some(crate::lighting::effects::EffectLayer::Foreground)
     );
 
-    // Second cue should have release command with time
+    // Second cue should have freeze command
     let second_cue = &show.cues[1];
     assert_eq!(second_cue.layer_commands.len(), 1);
-    let release_cmd = &second_cue.layer_commands[0];
+    let freeze_cmd = &second_cue.layer_commands[0];
     assert_eq!(
-        release_cmd.command_type,
-        crate::lighting::parser::LayerCommandType::Release
+        freeze_cmd.command_type,
+        crate::lighting::parser::LayerCommandType::Freeze
     );
     assert_eq!(
-        release_cmd.layer,
+        freeze_cmd.layer,
         Some(crate::lighting::effects::EffectLayer::Background)
     );
-    assert!(release_cmd.fade_time.is_some());
 
     // Third cue should have master command with intensity
     let third_cue = &show.cues[2];

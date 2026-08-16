@@ -215,7 +215,6 @@ function serializeEffect(cueEffect: CueEffect): string {
 function serializeLayerCommand(cmd: LayerCommand): string {
   const params: string[] = [];
   if (cmd.layer) params.push(`layer: ${cmd.layer}`);
-  if (cmd.time) params.push(`time: ${cmd.time}`);
   if (cmd.intensity) params.push(`intensity: ${cmd.intensity}`);
   if (cmd.speed) params.push(`speed: ${cmd.speed}`);
   return `${cmd.command}(${params.join(", ")})`;

@@ -645,7 +645,6 @@ mod tests {
                 layer_commands: vec![LayerCommand {
                     command_type: LayerCommandType::Clear,
                     layer: Some(EffectLayer::Foreground),
-                    fade_time: None,
                     intensity: None,
                     speed: None,
                 }],
@@ -656,9 +655,8 @@ mod tests {
                 time: Duration::from_secs(1),
                 effects: vec![],
                 layer_commands: vec![LayerCommand {
-                    command_type: LayerCommandType::Release,
+                    command_type: LayerCommandType::Freeze,
                     layer: Some(EffectLayer::Background),
-                    fade_time: Some(Duration::from_secs(2)),
                     intensity: None,
                     speed: None,
                 }],
@@ -671,7 +669,6 @@ mod tests {
                 layer_commands: vec![LayerCommand {
                     command_type: LayerCommandType::Master,
                     layer: Some(EffectLayer::Midground),
-                    fade_time: None,
                     intensity: Some(0.5),
                     speed: Some(2.0),
                 }],
@@ -696,16 +693,16 @@ mod tests {
             Some(EffectLayer::Foreground)
         );
 
-        // Second cue: release command with fade time
+        // Second cue: freeze command
         let result1 = timeline.update(Duration::from_secs(1));
         assert_eq!(result1.layer_commands.len(), 1);
         assert_eq!(
             result1.layer_commands[0].command_type,
-            LayerCommandType::Release
+            LayerCommandType::Freeze
         );
         assert_eq!(
-            result1.layer_commands[0].fade_time,
-            Some(Duration::from_secs(2))
+            result1.layer_commands[0].layer,
+            Some(EffectLayer::Background)
         );
 
         // Third cue: master command with intensity and speed
@@ -747,7 +744,6 @@ mod tests {
             layer_commands: vec![LayerCommand {
                 command_type: LayerCommandType::Master,
                 layer: Some(EffectLayer::Background),
-                fade_time: None,
                 intensity: Some(0.75),
                 speed: None,
             }],
@@ -992,7 +988,6 @@ mod tests {
                 layer_commands: vec![LayerCommand {
                     command_type: LayerCommandType::Clear,
                     layer: Some(EffectLayer::Foreground),
-                    fade_time: None,
                     intensity: None,
                     speed: None,
                 }],
@@ -1080,7 +1075,6 @@ mod tests {
                 layer_commands: vec![LayerCommand {
                     command_type: LayerCommandType::Clear,
                     layer: None,
-                    fade_time: None,
                     intensity: None,
                     speed: None,
                 }],
