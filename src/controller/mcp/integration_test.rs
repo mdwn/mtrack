@@ -347,6 +347,93 @@ async fn mcp_initialize_list_and_call_tools() -> Result<(), Box<dyn Error>> {
 
 /// Waits for any line of SSE event data that, parsed as JSON, satisfies
 /// `predicate`. Returns the matched value or panics if the wait timed out.
+/// A predicate over SSE events, boxed so a sequence of differing closures can
+/// be held in one list.
+type EventPredicate = Box<dyn FnMut(&Value) -> bool + Send>;
+
+/// Waits for a series of events on a *single* SSE stream, in order.
+///
+/// A session may have only one GET stream, so a second listener does not
+/// observe a second change — it kills the first stream. Anything watching for
+/// more than one state transition has to do it from one subscription, which is
+/// also how a real client behaves.
+///
+/// Each predicate is tried against every event until it matches; matching
+/// advances to the next predicate. Returns the events that satisfied them.
+async fn wait_for_event_sequence(
+    client: &Client,
+    url: &str,
+    session: &str,
+    timeout: Duration,
+    mut predicates: Vec<EventPredicate>,
+) -> Vec<Value> {
+    let resp = client
+        .get(url)
+        .header("mcp-session-id", session)
+        .header("accept", "text/event-stream")
+        .timeout(timeout)
+        .send()
+        .await
+        .expect("open GET /mcp");
+    assert!(
+        resp.status().is_success(),
+        "GET /mcp returned {}",
+        resp.status()
+    );
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+    let mut matched: Vec<Value> = Vec::new();
+    let mut next = 0usize;
+    let mut stream_error: Option<String> = None;
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline && next < predicates.len() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match tokio::time::timeout(remaining, stream.next()).await {
+            Ok(Some(Ok(bytes))) => {
+                buf.push_str(std::str::from_utf8(&bytes).unwrap_or(""));
+            }
+            // A stream error here is usually the request timeout arriving as a
+            // body decode failure. Record it and let the assertion below report
+            // how many events did arrive, which is the diagnostic that matters.
+            Ok(Some(Err(e))) => {
+                stream_error = Some(e.to_string());
+                break;
+            }
+            Ok(None) => break,
+            Err(_) => break,
+        }
+        while let Some(idx) = buf.find("\n\n") {
+            let event = buf[..idx].to_string();
+            buf = buf[idx + 2..].to_string();
+            for line in event.lines() {
+                let Some(payload) = line.strip_prefix("data:").map(str::trim_start) else {
+                    continue;
+                };
+                if payload.is_empty() {
+                    continue;
+                }
+                if let Ok(value) = serde_json::from_str::<Value>(payload) {
+                    if next < predicates.len() && (predicates[next])(&value) {
+                        matched.push(value);
+                        next += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(
+        next,
+        predicates.len(),
+        "only {next} of {} expected events arrived (stream error: {:?}); \
+         last matched: {:?}\nbuffer tail:\n{}",
+        predicates.len(),
+        stream_error,
+        matched.last().map(|v| v["params"]["_meta"].clone()),
+        &buf[buf.len().saturating_sub(600)..]
+    );
+    matched
+}
+
 async fn wait_for_event(
     client: &Client,
     url: &str,
@@ -2174,12 +2261,27 @@ async fn mcp_lighting_state_resource_pushes_on_change() -> Result<(), Box<dyn Er
     let song_lighting_dir = fixture.root.join("songs/dsl-light-show-song/lighting");
     std::fs::write(
         song_lighting_dir.join("main_show.light"),
-        "show \"Lit\" {\n    @00:00.000\n    all_lights: static color: \"green\", duration: 120s\n}\n",
+        // Finite, then dark for good: the rig lights up, the effect expires,
+        // and the dark state *holds*. That hold is what made the transition
+        // easy to lose, since the sampler keeps re-sending that identical
+        // snapshot and a filter adopting it as its baseline never reports it.
+        //
+        // Five seconds rather than one, so the lit state is still observable on
+        // a machine running the rest of the suite in parallel — otherwise the
+        // test fails for want of the first event rather than the second.
+        "show \"Lit\" {\n    @00:00.000\n    all_lights: static color: \"green\", duration: 5s\n}\n",
     )?;
     std::fs::write(
         song_lighting_dir.join("outro.light"),
         "show \"Outro\" {\n    @01:00.000\n    all_lights: static color: \"white\", duration: 1s\n}\n",
     )?;
+
+    // Widen the coalescing window so the transition below lands inside it
+    // deterministically. At the production 100ms this is a race, and a test
+    // that cannot hit it passes just as happily against the bug as with it.
+    // Past the effect's five seconds: the expiry has to land inside the window
+    // opened by the "lit" notification for the race to be exercised at all.
+    crate::controller::mcp::service::set_lighting_notify_interval_ms(10_000);
 
     let player = build_standalone_player(&fixture).await?;
     let port = pick_free_port();
@@ -2251,19 +2353,38 @@ async fn mcp_lighting_state_resource_pushes_on_change() -> Result<(), Box<dyn Er
         "subscribe was rejected: {sub}"
     );
 
+    // Both transitions are watched on one stream: the rig lighting up, then
+    // going dark again at the end. The second is the one that regressed — it
+    // lands and then *holds*, and the sampler re-sends the identical snapshot
+    // forever, so it is only observable if the change filter compares against
+    // what was last sent rather than against the state after the coalescing
+    // sleep. A second listener cannot be used to look for it: the protocol
+    // allows one GET per session, and opening another kills the first.
+    let is_lighting_update = |v: &Value| {
+        v.get("method").and_then(|m| m.as_str()) == Some("notifications/resources/updated")
+            && v["params"]["uri"].as_str() == Some("mtrack://lighting/state")
+    };
+    let predicates: Vec<EventPredicate> = vec![
+        Box::new(move |v: &Value| {
+            is_lighting_update(v) && v["params"]["_meta"]["mtrack.lighting"]["dark"] == json!(false)
+        }),
+        Box::new(move |v: &Value| {
+            is_lighting_update(v) && v["params"]["_meta"]["mtrack.lighting"]["dark"] != json!(false)
+        }),
+    ];
+
     let session_clone = session.clone();
     let url_clone = url.clone();
     let listener_client = client.clone();
     let listener = tokio::spawn(async move {
-        wait_for_event(
+        wait_for_event_sequence(
             &listener_client,
             &url_clone,
             &session_clone,
-            Duration::from_secs(10),
-            |v| {
-                v.get("method").and_then(|m| m.as_str()) == Some("notifications/resources/updated")
-                    && v["params"]["uri"].as_str() == Some("mtrack://lighting/state")
-            },
+            // Covers the 10s coalescing window set above plus server start-up
+            // under a loaded machine — the whole suite runs these in parallel.
+            Duration::from_secs(45),
+            predicates,
         )
         .await
     });
@@ -2274,18 +2395,21 @@ async fn mcp_lighting_state_resource_pushes_on_change() -> Result<(), Box<dyn Er
     // Starting the show lights the rig, which is a real state change.
     let _ = call_tool(&client, &url, &session, 1103, "play", json!({})).await;
 
-    let event = listener.await.expect("listener task");
-    assert_eq!(
-        event["params"]["uri"].as_str(),
-        Some("mtrack://lighting/state"),
-        "{event}"
-    );
-    // The payload rides along, so a listener never needs the follow-up read.
-    let payload = &event["params"]["_meta"]["mtrack.lighting"];
-    assert_eq!(payload["available"], true, "{event}");
-    assert!(payload["fixtures"].is_array(), "{event}");
-
+    // No second action is needed: the effect expires on its own a second in,
+    // and the rig goes dark while playback continues and the sampler runs.
+    let events = listener.await.expect("listener task");
     let _ = call_tool(&client, &url, &session, 1104, "stop", json!({})).await;
+    assert_eq!(events.len(), 2, "{events:?}");
+
+    // The payload rides along, so a listener never needs the follow-up read.
+    let lit = &events[0]["params"]["_meta"]["mtrack.lighting"];
+    assert_eq!(lit["available"], true, "{:?}", events[0]);
+    assert!(lit["fixtures"].is_array(), "{:?}", events[0]);
+    assert_eq!(lit["dark"], false, "{:?}", events[0]);
+
+    // The blackout at the end of the song reached the subscriber.
+    let dark = &events[1]["params"]["_meta"]["mtrack.lighting"];
+    assert_ne!(dark["dark"], json!(false), "{:?}", events[1]);
     controller.shutdown();
     Ok(())
 }

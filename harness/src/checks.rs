@@ -374,6 +374,12 @@ pub fn all() -> Vec<Check> {
             "A show written through the API must read back.",
             lighting::show_written_via_api_is_readable
         ),
+        entry!(
+            "lighting",
+            "a_song_without_lighting_clears_the_previous_timeline",
+            "A song with no show must not inherit the last song's cues.",
+            lighting::a_song_without_lighting_clears_the_previous_timeline
+        ),
     ]
 }
 

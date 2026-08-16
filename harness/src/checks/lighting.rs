@@ -21,7 +21,7 @@
 use std::time::Duration;
 
 use mtrack::proto::player::v1::{
-    GetActiveEffectsRequest, GetCuesRequest, PlayRequest, StopRequest,
+    GetActiveEffectsRequest, GetCuesRequest, NextRequest, PlayRequest, StopRequest,
 };
 
 use crate::capabilities::Capabilities;
@@ -243,6 +243,100 @@ pub async fn show_written_via_api_is_readable() -> CheckOutcome {
         readback.contains(crate::sabotage::pick(LIGHTING_GROUP, "e2e-absent-marker")),
         "the show read back does not contain what was written:\n{readback}"
     );
+
+    server.check_clean_log(&[])?;
+    Ok(())
+}
+
+/// A song with no lighting evicts the previous song's timeline.
+///
+/// The DMX engine holds one installed timeline. A song that has no show at all
+/// returns early from the lighting setup, and used to do so without clearing
+/// what the last song left behind -- so `GetCues` and `status.lighting` kept
+/// answering with the previous song's cues while a song with no lighting
+/// played. That reads as "a show is loaded but never armed", which is the
+/// wrong answer from the surfaces added to end exactly that guesswork.
+///
+/// Ordering matters: the lit song has to play first so there is a timeline to
+/// leak, and playback (not selection) is what installs it.
+pub async fn a_song_without_lighting_clears_the_previous_timeline() -> CheckOutcome {
+    crate::runner::require_area("lighting")?;
+
+    let lit = SongSpec::tones("Lit Song", "lit-song", 2, 8.0).with_lighting(LightingSpec::simple(
+        "E2E Show",
+        "lighting/show.light",
+        LIGHTING_GROUP,
+    ));
+    // The break point: give the second song a show too and the timeline it
+    // finds installed is legitimately its own, so nothing can be concluded.
+    let dark = SongSpec::tones("Dark Song", "dark-song", 2, 8.0);
+    let dark = if crate::sabotage::perform() {
+        dark.with_lighting(LightingSpec::simple(
+            "Sabotage Show",
+            "lighting/sabotage.light",
+            LIGHTING_GROUP,
+        ))
+    } else {
+        dark
+    };
+
+    let project = ProjectBuilder::new()
+        .profiles(vec![ProfileSpec::detected("01-e2e").with_lighting()])
+        .songs(vec![lit, dark])
+        .build()?;
+    let server = Server::start(&project).await?;
+    let mut client = Client::connect(&server).await?;
+
+    check_eq!(
+        client.subsystem_status("dmx").await?,
+        "connected",
+        "the DMX engine did not come up, so lighting cannot be exercised.\n--- log ---\n{}",
+        server.log()
+    );
+
+    // Play the lit song so its timeline is installed.
+    client.grpc().play(PlayRequest {}).await?;
+    client.wait_until_playing(Duration::from_secs(10)).await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let lit_cues = client
+        .grpc()
+        .get_cues(GetCuesRequest {})
+        .await?
+        .into_inner()
+        .cues;
+    check!(
+        !lit_cues.is_empty(),
+        "the lit song produced no cues, so there is no stale timeline to detect.\n--- log ---\n{}",
+        server.log()
+    );
+
+    // Move to the song that has no lighting at all.
+    client.grpc().stop(StopRequest {}).await?;
+    client.grpc().next(NextRequest {}).await?;
+    client.grpc().play(PlayRequest {}).await?;
+    client.wait_until_playing(Duration::from_secs(10)).await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let cues = client
+        .grpc()
+        .get_cues(GetCuesRequest {})
+        .await?
+        .into_inner()
+        .cues;
+    client.grpc().stop(StopRequest {}).await?;
+
+    check!(
+        cues.is_empty(),
+        "a song with no light show reported {} cue(s), which can only be the \
+         previous song's timeline still installed ({} cue(s) then).\n--- log ---\n{}",
+        cues.len(),
+        lit_cues.len(),
+        server.log()
+    );
+    crate::outcome::record(format!(
+        "{} cue(s) while the lit song played, none once a song without lighting took over",
+        lit_cues.len()
+    ));
 
     server.check_clean_log(&[])?;
     Ok(())

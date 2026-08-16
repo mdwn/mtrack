@@ -70,7 +70,30 @@ const RESOURCE_LIGHTING_URI: &str = "mtrack://lighting/state";
 /// every tick is more than a monitoring client needs and is the load the
 /// polling in #338 was standing in for. Ticks between notifications are
 /// coalesced — the next payload sent is the current state, not a backlog.
-const LIGHTING_NOTIFY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+const LIGHTING_NOTIFY_INTERVAL_MS: u64 = 100;
+
+/// The coalescing window, in milliseconds.
+///
+/// Overridable only so a test can widen it. The bug this guards against is a
+/// change landing *inside* this window and then holding steady, which at 100ms
+/// is a race no test can hit reliably; widening it makes the same code path
+/// deterministic. Nothing in production changes it.
+static LIGHTING_NOTIFY_INTERVAL_OVERRIDE_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(LIGHTING_NOTIFY_INTERVAL_MS);
+
+fn lighting_notify_interval() -> std::time::Duration {
+    std::time::Duration::from_millis(
+        LIGHTING_NOTIFY_INTERVAL_OVERRIDE_MS.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// Widens the coalescing window for a test. Only the lighting subscription
+/// reads this, and only one test drives that path, so the global is not
+/// contended in practice.
+#[cfg(test)]
+pub(crate) fn set_lighting_notify_interval_ms(ms: u64) {
+    LIGHTING_NOTIFY_INTERVAL_OVERRIDE_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// MCP server handler holding shared state for tool calls.
 ///
@@ -3034,7 +3057,7 @@ impl McpServer {
     /// subscribed peer.
     ///
     /// Two behaviours matter more than the plumbing. Notifications are
-    /// coalesced to [`LIGHTING_NOTIFY_INTERVAL`], because a monitoring client
+    /// coalesced to [`lighting_notify_interval`], because a monitoring client
     /// does not need every sampler tick and the request load is the thing this
     /// resource exists to remove. And a tick that produced the same state sends
     /// nothing at all, so a subscriber attached to an idle rig stays quiet
@@ -3081,7 +3104,7 @@ impl McpServer {
 
                 // Coalesce the ticks that arrive while we were sending. The
                 // next payload is the state then, not a replay of this backlog.
-                tokio::time::sleep(LIGHTING_NOTIFY_INTERVAL).await;
+                tokio::time::sleep(lighting_notify_interval()).await;
                 rx.mark_unchanged();
                 // Deliberately the state we *sent*, not the state now: the
                 // sampler re-sends unconditionally, so `== last` is the only
