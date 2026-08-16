@@ -69,6 +69,10 @@ Roughly 50 tools are available. They fall into a few groups:
   lint-level `warnings` for mistakes that are legal DSL but silently do nothing — an empty group,
   an effect past the end of the song, two `replace` effects stomping each other, a `tempo` block
   that drifts from the click track.
+- **Show comparison** — `diff_shows` reports what changed between two versions of a show: added,
+  removed and changed effects by resolved time, plus the dark windows the revision opened and
+  closed. It compares resolved effects rather than text, since identical cue text can land in
+  different places when the tempo block changes.
 - **Show analysis** — `analyze_show` reports where the rig goes dark, how long each group and
   layer is actually doing something, and which targeted groups resolve to no fixtures. Durations
   resolve through the tempo map and layer commands are honoured, so a `clear` that truncates a
