@@ -30,6 +30,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Lighting arming is guarded and observable (#332)**: a seek or song change starts a new
+  playback while the outgoing one's song-time tracker is still winding down, carrying the
+  *previous* start offset. One stale write from it is enough to silence a show for its whole
+  duration — the cue pointer only moves forward, so a write past the last cue exhausts the
+  timeline permanently, and active effects expire against score time that jumped. Song-time
+  writers now carry a playback generation and a write from a superseded playback is dropped.
+
+  `status` reports `lighting.armed`, `cues_total`, `cues_remaining` and `next_cue_seconds` when a
+  show is loaded, so "will this fire?" is one call instead of polling for effects and inferring
+  from their absence. A show that is armed with no cues ahead of its pointer also logs a warning,
+  since that state produces silence and otherwise says nothing about it.
+
+  Note this is a guard against a race that was identified by inspection, not one reproduced from
+  the original report. The failure was only ever seen under heavy MCP polling, which
+  `mtrack://lighting/state` now removes the need for.
+
 - **`mtrack://lighting/state`: subscribe to lighting instead of polling it**: a new MCP resource
   carrying per-fixture DMX values, the effects running, and which effects drive each fixture —
   the same payload `get_fixture_state` returns, through the same builder so the two cannot drift.

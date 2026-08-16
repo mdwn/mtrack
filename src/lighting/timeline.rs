@@ -213,6 +213,30 @@ impl LightingTimeline {
         self.stopped_sequences.clear();
     }
 
+    /// Whether the timeline has been started and is dispatching cues.
+    ///
+    /// A timeline that is installed but never armed looks identical from the
+    /// outside to one that is armed and simply between cues — which is the
+    /// ambiguity that made #332 diagnosable only by inference.
+    pub fn is_armed(&self) -> bool {
+        self.is_playing
+    }
+
+    /// How many cues are still ahead of the pointer.
+    pub fn cues_remaining(&self) -> usize {
+        self.cues.len().saturating_sub(self.next_cue_index)
+    }
+
+    /// Total cues in the timeline.
+    pub fn cue_count(&self) -> usize {
+        self.cues.len()
+    }
+
+    /// When the next cue fires, if any remain.
+    pub fn next_cue_time(&self) -> Option<Duration> {
+        self.cues.get(self.next_cue_index).map(|cue| cue.time)
+    }
+
     /// Returns true if all cues have been processed (including empty timelines)
     pub fn is_finished(&self) -> bool {
         self.next_cue_index >= self.cues.len()
