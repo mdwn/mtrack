@@ -264,6 +264,14 @@ pub struct AnalyzeShowArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetCuesArgs {
+    /// Song to read cues from. Omit for the song the player currently has
+    /// loaded. Naming a song reads it without making it current — inspecting
+    /// one song's cues should not change which song is queued.
+    pub song: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiffShowsArgs {
     /// Baseline: a song name, whose registered shows are used.
     /// Mutually exclusive with `a_source`.
@@ -425,10 +433,35 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Return the cue list (time + index) for the lighting timeline \
-        of the song currently loaded by the player."
+        description = "Return the cue list for a song's lighting timeline. With \
+        no `song`, reads the timeline the player currently has loaded (index + \
+        time). With a `song`, reads that song's registered shows without making \
+        it current, reporting each cue's resolved time, musical position, and \
+        effect count."
     )]
-    async fn get_cues(&self) -> Result<CallToolResult, McpError> {
+    async fn get_cues(
+        &self,
+        Parameters(args): Parameters<GetCuesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        // A named song is read from its registered shows rather than by making
+        // it current: inspecting cues is a read, and it should not have the
+        // side effect of changing what is queued.
+        if let Some(name) = args.song.as_deref() {
+            let song = self
+                .player
+                .songs()
+                .get(name)
+                .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+            let mut shows: Vec<_> = song
+                .dsl_lighting_shows()
+                .iter()
+                .flat_map(|dsl| dsl.shows().values().cloned())
+                .collect();
+            sort_shows(&mut shows);
+            let cues: Vec<Value> = shows.iter().flat_map(cue_timeline).collect();
+            return Ok(ok_json(json!({ "song": name, "cues": cues })));
+        }
+
         let cues: Vec<Value> = self
             .player
             .get_cues()
@@ -489,8 +522,20 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let start = parse_duration(&args.start_time)?;
         let song = self.player.play_from(start).await.map_err(internal_err)?;
+        // Same no-op as `play_song_from`: echoing the requested time back when
+        // nothing started is what made this misleading.
+        let Some(song) = song else {
+            return Ok(ok_json(json!({
+                "started": false,
+                "reason": "a song is already playing; play_from does not \
+                           interrupt it",
+                "hint": "call `stop` first, or use `seek` to move within the \
+                         current song",
+            })));
+        };
         Ok(ok_json(json!({
-            "now_playing": song.as_ref().map(|s| song_summary(s)),
+            "started": true,
+            "now_playing": song_summary(&song),
             "start_time": format_duration(start),
         })))
     }
@@ -512,8 +557,25 @@ impl McpServer {
             .play_song_from(&args.song_name, start)
             .await
             .map_err(internal_err)?;
+
+        // The player refuses to start a song while one is already playing, and
+        // returns nothing. Echoing the requested `start_time` back in that case
+        // reads as success and is how this silently answered the wrong
+        // question — the caller believes they are at 1:49 while playback
+        // continues from wherever it was.
+        let Some(song) = song else {
+            return Ok(ok_json(json!({
+                "started": false,
+                "reason": "a song is already playing; play_song_from does not \
+                           interrupt it",
+                "hint": "call `stop` first, or use `seek` to move within the \
+                         current song",
+            })));
+        };
+
         Ok(ok_json(json!({
-            "now_playing": song.as_ref().map(|s| song_summary(s)),
+            "started": true,
+            "now_playing": song_summary(&song),
             "start_time": format_duration(start),
         })))
     }
@@ -1608,6 +1670,90 @@ impl McpServer {
         })))
     }
 
+    #[tool(description = "Delete a venue `.light` file from the configured \
+        venues directory.")]
+    async fn delete_venue(
+        &self,
+        Parameters(args): Parameters<LightingFileArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let path = self
+            .resolve_lighting_file(LightingDirKind::Venues, &args.file)
+            .await?;
+        remove_lighting_file(&path).await?;
+        Ok(ok_json(json!({"deleted": path.display().to_string()})))
+    }
+
+    #[tool(description = "Delete a fixture-type `.light` file from the \
+        configured fixture types directory.")]
+    async fn delete_fixture_type(
+        &self,
+        Parameters(args): Parameters<LightingFileArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let path = self
+            .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
+            .await?;
+        remove_lighting_file(&path).await?;
+        Ok(ok_json(json!({"deleted": path.display().to_string()})))
+    }
+
+    #[tool(description = "Delete a lighting `.light` file belonging to a song, \
+        and remove the `lighting:` entry that references it. Deleting the file \
+        alone would leave a dangling reference that fails the song's next load, \
+        so both go together — the inverse of what `write_song_lighting` does \
+        when it registers a new show. The player's song registry is reloaded \
+        afterwards.")]
+    async fn delete_song_lighting(
+        &self,
+        Parameters(args): Parameters<SongLightingArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        validate_lighting_filename(&args.file)?;
+        let song = self
+            .player
+            .songs()
+            .get(&args.song)
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let path = find_song_lighting_path(&song, &args.file).ok_or_else(|| {
+            McpError::invalid_params(
+                format!(
+                    "song `{}` has no lighting file named `{}`",
+                    args.song, args.file
+                ),
+                None,
+            )
+        })?;
+
+        let config_path = song
+            .config_path()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| song.base_path().join("song.yaml"));
+        let reference = path
+            .strip_prefix(song.base_path())
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        let original = read_text(&config_path).await?;
+        let unregistered = match unregister_lighting_file(&original, &reference) {
+            Some(updated) => {
+                // Same guard the write path uses: never leave a song.yaml that
+                // would not load back.
+                let _: crate::config::Song = serde_yaml_from_str(&updated)?;
+                staged_write_string(&config_path, &updated).await?;
+                true
+            }
+            None => false,
+        };
+
+        remove_lighting_file(&path).await?;
+        self.reload_songs_from_config().await?;
+
+        Ok(ok_json(json!({
+            "deleted": path.display().to_string(),
+            "unregistered": unregistered,
+            "reference": reference,
+        })))
+    }
+
     #[tool(description = "List the fixture-type `.light` files in the \
         configured fixture types directory.")]
     async fn list_fixture_type_files(&self) -> Result<CallToolResult, McpError> {
@@ -2149,6 +2295,74 @@ struct Registration {
     already_registered: bool,
     /// How the file is spelled in `song.yaml`, relative to the song directory.
     reference: String,
+}
+
+/// Removes the file, mapping a missing path to a clear error rather than an
+/// opaque io message.
+async fn remove_lighting_file(path: &std::path::Path) -> Result<(), McpError> {
+    tokio::fs::remove_file(path).await.map_err(|e| {
+        McpError::internal_error(format!("failed to delete {}: {e}", path.display()), None)
+    })
+}
+
+/// Removes the `lighting:` entry referencing `relative_path`, and the whole
+/// block if that was its last entry.
+///
+/// Returns `None` when nothing referenced it. Edits text rather than
+/// round-tripping through the config types, for the same reason
+/// [`register_lighting_file`] does: song.yaml is hand-written.
+pub(crate) fn unregister_lighting_file(yaml: &str, relative_path: &str) -> Option<String> {
+    let lines: Vec<&str> = yaml.lines().collect();
+    let key_index = lines.iter().position(|line| is_key(line, "lighting"))?;
+    let key_indent = indent_of(lines[key_index]);
+
+    // Collect the block's item spans. An entry may run over several lines —
+    // the shipped songs write `- name: "..."` with `file:` underneath — so the
+    // path can appear on any line of its item, not just the one starting it.
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut block_end = key_index + 1;
+    for (offset, line) in lines.iter().enumerate().skip(key_index + 1) {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        if indent_of(line) <= key_indent {
+            break;
+        }
+        block_end = offset + 1;
+        if line.trim_start().starts_with('-') {
+            spans.push((offset, offset + 1));
+        } else if let Some(last) = spans.last_mut() {
+            last.1 = offset + 1;
+        }
+    }
+
+    // Match on the parsed value rather than a bare substring, so
+    // `lighting/main.light` cannot match `lighting/main.light.bak`.
+    let target = spans.iter().position(|(start, end)| {
+        lines[*start..*end]
+            .iter()
+            .any(|line| yaml_value_of(line, "file").as_deref() == Some(relative_path))
+    })?;
+
+    let mut updated: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    if spans.len() == 1 {
+        // Removing the last entry would leave `lighting:` with no items, which
+        // is not a valid sequence and would stop the song loading.
+        updated.drain(key_index..block_end);
+    } else {
+        let (start, end) = spans[target];
+        updated.drain(start..end);
+    }
+    Some(with_trailing_newline(updated.join("\n")))
+}
+
+/// The value of `key:` on a line, unquoted. `None` if the line sets a different
+/// key or none at all.
+fn yaml_value_of(line: &str, key: &str) -> Option<String> {
+    let trimmed = line.trim_start().trim_start_matches('-').trim_start();
+    let rest = trimmed.strip_prefix(key)?.trim_start();
+    let value = rest.strip_prefix(':')?.trim();
+    Some(value.trim_matches('"').trim_matches('\'').to_string())
 }
 
 /// Adds a `lighting:` entry for `relative_path` to a song's YAML.
@@ -3172,6 +3386,106 @@ pub(crate) async fn staged_write_string(
     .await
     .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
     .map_err(|e| McpError::internal_error(format!("write failed: {e}"), None))
+}
+
+#[cfg(test)]
+mod unregister_lighting_tests {
+    use super::unregister_lighting_file;
+
+    const BASE: &str = "name: Test Song\ntracks:\n  - name: click\n    file: click.wav\n";
+
+    #[test]
+    fn removes_one_entry_and_keeps_the_others() {
+        let yaml =
+            format!("{BASE}lighting:\n  - file: lighting/a.light\n  - file: lighting/b.light\n");
+        let updated = unregister_lighting_file(&yaml, "lighting/a.light").expect("removes");
+        assert!(!updated.contains("a.light"), "{updated}");
+        assert!(updated.contains("b.light"), "{updated}");
+        assert!(updated.contains("lighting:"), "block survives: {updated}");
+    }
+
+    #[test]
+    fn removing_the_last_entry_takes_the_block_with_it() {
+        // `lighting:` with no items is not a valid sequence, and the song would
+        // stop loading.
+        let yaml = format!("{BASE}lighting:\n  - file: lighting/only.light\n");
+        let updated = unregister_lighting_file(&yaml, "lighting/only.light").expect("removes");
+        assert!(!updated.contains("lighting:"), "{updated}");
+        let song: crate::config::Song =
+            super::serde_yaml_from_str(&updated).expect("must remain valid");
+        assert!(song.lighting().is_none());
+    }
+
+    #[test]
+    fn keys_after_the_block_survive() {
+        let yaml = format!("{BASE}lighting:\n  - file: lighting/only.light\nmidi_file: song.mid\n");
+        let updated = unregister_lighting_file(&yaml, "lighting/only.light").expect("removes");
+        assert!(updated.contains("midi_file: song.mid"), "{updated}");
+        assert!(updated.contains("file: click.wav"), "{updated}");
+    }
+
+    #[test]
+    fn handles_the_multi_line_quoted_form_the_shipped_songs_use() {
+        // examples/songs/dsl-light-show-song/song.yaml writes entries as
+        // `- name: "..."` with `file:` on the next line, quoted. Matching only
+        // the `-` line misses the path entirely.
+        let yaml = format!(
+            "{BASE}lighting:\n  - name: \"Main Show\"\n    file: \"lighting/main_show.light\"\n               - name: \"Outro Show\"\n    file: \"lighting/outro.light\"\n"
+        );
+        let updated =
+            unregister_lighting_file(&yaml, "lighting/outro.light").expect("removes the entry");
+        assert!(!updated.contains("outro.light"), "{updated}");
+        assert!(
+            !updated.contains("Outro Show"),
+            "the whole entry goes: {updated}"
+        );
+        assert!(updated.contains("main_show.light"), "{updated}");
+        assert!(updated.contains("Main Show"), "{updated}");
+        let song: crate::config::Song =
+            super::serde_yaml_from_str(&updated).expect("must remain valid");
+        assert_eq!(song.lighting().map(|l| l.len()), Some(1));
+    }
+
+    #[test]
+    fn a_prefix_of_another_path_is_not_matched() {
+        let yaml = format!(
+            "{BASE}lighting:\n  - file: lighting/main.light\n  - file: lighting/main.light.bak\n"
+        );
+        let updated = unregister_lighting_file(&yaml, "lighting/main.light").expect("removes");
+        assert!(updated.contains("main.light.bak"), "{updated}");
+        // The exact path goes; the one it is a prefix of stays.
+        assert_eq!(
+            updated.matches("lighting/main.light").count(),
+            1,
+            "{updated}"
+        );
+        assert!(
+            !updated.contains("- file: lighting/main.light\n"),
+            "{updated}"
+        );
+    }
+
+    #[test]
+    fn an_unreferenced_file_changes_nothing() {
+        let yaml = format!("{BASE}lighting:\n  - file: lighting/a.light\n");
+        assert!(unregister_lighting_file(&yaml, "lighting/other.light").is_none());
+    }
+
+    #[test]
+    fn a_song_with_no_block_changes_nothing() {
+        assert!(unregister_lighting_file(BASE, "lighting/a.light").is_none());
+    }
+
+    #[test]
+    fn round_trips_with_register() {
+        // Adding then removing returns a song that still loads and has no block.
+        let added = super::register_lighting_file(BASE, "lighting/x.light").expect("adds");
+        let removed = unregister_lighting_file(&added, "lighting/x.light").expect("removes");
+        let song: crate::config::Song =
+            super::serde_yaml_from_str(&removed).expect("must remain valid");
+        assert!(song.lighting().is_none());
+        assert!(removed.contains("file: click.wav"), "{removed}");
+    }
 }
 
 #[cfg(test)]
