@@ -64,10 +64,13 @@ Roughly 50 tools are available. They fall into a few groups:
   detailed song metadata and beat-grid queries.
 - **Lighting authoring** — read, write, validate, and patch `.light` DSL files for songs, venues,
   and fixture types, list the lighting cues and active effects, and fetch a DSL reference primer.
-- **Offline show evaluation** — `evaluate_show` reports what the fixtures would be doing at any
-  set of times, as per-fixture DMX values plus the effects running at each instant. It needs no
-  audio, no DMX output, and no real-time waiting, so a show can be verified without playing the
-  song through the PA and the rig — and without perturbing playback if a song *is* running.
+- **Lighting state** — `evaluate_show` reports what the fixtures *would* be doing at any set of
+  times, and `get_fixture_state` reports what they *are* doing right now. Both return per-fixture
+  DMX values (0–255, including virtual-dimmer RGB scaling) alongside the effects running at each
+  instant and the fixtures each one resolved to, in the same shape, so predicted and actual state
+  can be compared directly. `evaluate_show` needs no audio, no DMX output, and no real-time
+  waiting, so a show can be verified without playing the song through the PA and the rig — and
+  without perturbing playback if a song *is* running.
 
 Every write and patch tool validates its input (YAML schema or `.light` DSL parse) **before** it
 writes to disk, so a malformed edit is rejected rather than corrupting a project file.

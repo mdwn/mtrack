@@ -161,6 +161,47 @@ where
         .collect()
 }
 
+/// Snapshots a running engine into the same shape [`evaluate_show`] produces.
+///
+/// This is the live twin of offline evaluation: predicted and actual state come
+/// out in one format, so they can be compared directly rather than by eye.
+///
+/// `at` is the time to label the snapshot with — normally the song's elapsed
+/// time. It does not drive the reading; effect elapsed values come from the
+/// engine's own clock, which is what makes this a measurement rather than a
+/// prediction.
+pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
+    let has_dimmer: HashMap<String, bool> = engine
+        .get_fixture_registry()
+        .iter()
+        .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
+        .collect();
+
+    let mut active_effects: Vec<EvaluatedEffect> = engine
+        .get_active_effects()
+        .values()
+        .map(|effect| {
+            let mut fixtures = effect.target_fixtures.clone();
+            fixtures.sort();
+            EvaluatedEffect {
+                id: effect.id.clone(),
+                effect_type: effect.effect_type.name(),
+                layer: effect.layer,
+                elapsed: engine.effect_elapsed(effect),
+                duration: effect.total_duration(),
+                fixtures,
+            }
+        })
+        .collect();
+    active_effects.sort_by(|a, b| a.id.cmp(&b.id));
+
+    Evaluation {
+        time: at,
+        fixtures: compute_fixture_snapshots(&engine.get_fixture_states(), &has_dimmer),
+        active_effects,
+    }
+}
+
 /// Applies one timeline update to the engine in the same order the live path
 /// uses: layer commands, then stopped sequences, then seek-started effects in
 /// cue order, then freshly-fired effects with sequence effects first.

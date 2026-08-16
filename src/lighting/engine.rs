@@ -901,6 +901,15 @@ impl EffectEngine {
         self.fixtures.as_map()
     }
 
+    /// How long an effect has been running, by the engine's own clock.
+    /// Zero for an effect that has not started.
+    pub fn effect_elapsed(&self, effect: &EffectInstance) -> Duration {
+        effect
+            .start_time
+            .map(|start| self.current_time.duration_since(start))
+            .unwrap_or(Duration::ZERO)
+    }
+
     /// Get a formatted string listing all active effects
     pub fn format_active_effects(&self) -> String {
         use std::fmt::Write;
@@ -937,12 +946,7 @@ impl EffectEngine {
             };
             writeln!(output, "  {}:", layer_name).unwrap();
             for effect in effects {
-                let elapsed = if let Some(start_time) = effect.start_time {
-                    self.current_time.duration_since(start_time)
-                } else {
-                    Duration::ZERO
-                };
-
+                let elapsed = self.effect_elapsed(effect);
                 let effect_type_str = effect.effect_type.name();
 
                 let total = effect.total_duration();

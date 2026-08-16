@@ -402,7 +402,8 @@ impl McpServer {
 
     #[tool(
         description = "Return a human-readable summary of all lighting effects \
-        currently active on the player."
+        currently active on the player. For a structured answer — and for what \
+        each fixture is actually outputting — use `get_fixture_state`."
     )]
     async fn get_active_effects(&self) -> Result<CallToolResult, McpError> {
         let summary = self
@@ -410,6 +411,47 @@ impl McpServer {
             .format_active_effects()
             .unwrap_or_else(|| "(no effect engine configured)".to_string());
         Ok(CallToolResult::success(vec![Content::text(summary)]))
+    }
+
+    #[tool(
+        description = "Return what the rig is doing right now: per-fixture DMX \
+        channel values (0-255, including virtual-dimmer RGB scaling), which \
+        effects are driving each fixture, and the active effects with the \
+        fixtures each resolved to. This is the live twin of `evaluate_show` and \
+        returns the same shape, so predicted and actual state can be compared \
+        directly. Unlike `get_active_effects` it distinguishes fixtures rather \
+        than only counting them."
+    )]
+    async fn get_fixture_state(&self) -> Result<CallToolResult, McpError> {
+        let engine = match self.player.effect_engine() {
+            Some(engine) => engine,
+            None => {
+                return Ok(ok_json(json!({
+                    "available": false,
+                    "reason": "no effect engine configured",
+                })))
+            }
+        };
+
+        let elapsed = self
+            .player
+            .elapsed()
+            .await
+            .map_err(internal_err)?
+            .unwrap_or_default();
+
+        // The effect engine's mutex is shared with the effects loop thread, so
+        // never block a tokio worker on it.
+        let snapshot = tokio::task::spawn_blocking(move || {
+            let guard = engine.lock();
+            crate::lighting::evaluate::snapshot(&guard, elapsed)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("snapshot failed: {e}"), None))?;
+
+        let mut value = evaluation_json(&snapshot, true);
+        value["available"] = json!(true);
+        Ok(ok_json(value))
     }
 
     // ---- Playback control ----
@@ -1115,43 +1157,7 @@ impl McpServer {
 
         let results: Vec<Value> = evaluations
             .iter()
-            .map(|evaluation| {
-                let effects: Vec<Value> = evaluation
-                    .active_effects
-                    .iter()
-                    .map(|effect| {
-                        json!({
-                            "id": effect.id,
-                            "type": effect.effect_type,
-                            "layer": format!("{:?}", effect.layer).to_lowercase(),
-                            "elapsed": effect.elapsed.as_secs_f64(),
-                            "duration": effect.duration.as_secs_f64(),
-                            "fixtures": effect.fixtures,
-                        })
-                    })
-                    .collect();
-
-                let mut entry = json!({
-                    "time": evaluation.time.as_secs_f64(),
-                    "position": format_duration(evaluation.time),
-                    "dark": evaluation.is_dark(),
-                    "active_effects": effects,
-                });
-                if include_fixtures {
-                    let fixtures: Vec<Value> = evaluation
-                        .fixtures
-                        .iter()
-                        .map(|fixture| {
-                            json!({
-                                "name": fixture.name,
-                                "channels": fixture.channels,
-                            })
-                        })
-                        .collect();
-                    entry["fixtures"] = json!(fixtures);
-                }
-                entry
-            })
+            .map(|evaluation| evaluation_json(evaluation, include_fixtures))
             .collect();
 
         Ok(ok_json(json!({ "evaluations": results })))
@@ -1746,6 +1752,63 @@ impl ServerHandler for McpServer {
 }
 
 /// Returns a successful tool result wrapping a JSON value as pretty-printed text.
+/// Renders one evaluation — predicted or live — as JSON.
+///
+/// `evaluate_show` and `get_fixture_state` share this so the two surfaces
+/// cannot drift into different shapes for the same data.
+fn evaluation_json(
+    evaluation: &crate::lighting::evaluate::Evaluation,
+    include_fixtures: bool,
+) -> Value {
+    let effects: Vec<Value> = evaluation
+        .active_effects
+        .iter()
+        .map(|effect| {
+            json!({
+                "id": effect.id,
+                "type": effect.effect_type,
+                "layer": format!("{:?}", effect.layer).to_lowercase(),
+                "elapsed": effect.elapsed.as_secs_f64(),
+                "duration": effect.duration.as_secs_f64(),
+                "fixtures": effect.fixtures,
+            })
+        })
+        .collect();
+
+    let mut entry = json!({
+        "time": evaluation.time.as_secs_f64(),
+        "position": format_duration(evaluation.time),
+        "dark": evaluation.is_dark(),
+        "active_effects": effects,
+    });
+
+    if include_fixtures {
+        let fixtures: Vec<Value> = evaluation
+            .fixtures
+            .iter()
+            .map(|fixture| {
+                // Which effects are driving this fixture. Inverting the per-effect
+                // lists here is what makes "4 fixture(s)" answerable as "these
+                // four, driven by that effect".
+                let driven_by: Vec<&str> = evaluation
+                    .active_effects
+                    .iter()
+                    .filter(|effect| effect.fixtures.iter().any(|f| f == &fixture.name))
+                    .map(|effect| effect.id.as_str())
+                    .collect();
+                json!({
+                    "name": fixture.name,
+                    "channels": fixture.channels,
+                    "driven_by": driven_by,
+                })
+            })
+            .collect();
+        entry["fixtures"] = json!(fixtures);
+    }
+
+    entry
+}
+
 /// Orders shows by name so evaluation is reproducible.
 ///
 /// Shows arrive from a `HashMap`, so without this both the cue order for

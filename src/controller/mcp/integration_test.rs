@@ -1389,6 +1389,155 @@ async fn mcp_evaluate_show_runs_offline() -> Result<(), Box<dyn Error>> {
 }
 
 // ---------------------------------------------------------------------------
+// Test 3c-ter: live fixture-level state (#331)
+// ---------------------------------------------------------------------------
+
+/// `get_fixture_state` reports which fixtures are lit, what they are outputting,
+/// and what is driving them — not just how many. It returns the same shape as
+/// `evaluate_show`, so this also checks the predicted and live answers agree.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_fixture_state_matches_offline_evaluation() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+
+    std::fs::create_dir_all(fixture.root.join("lighting/venues"))?;
+    std::fs::create_dir_all(fixture.root.join("lighting/fixture_types"))?;
+    copy_dir_recursive(
+        Path::new("examples/lighting/fixture_types"),
+        &fixture.root.join("lighting/fixture_types"),
+    )?;
+    // Two fixtures in one group, so "how many" cannot stand in for "which".
+    // Exactly one `group` line: a venue declaring two does not parse today.
+    std::fs::write(
+        fixture.root.join("lighting/venues/main_stage.light"),
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n  group \"all_lights\" = Par1, Par2\n}\n",
+    )?;
+
+    // A long green bed, so the reading is stable however far playback has got.
+    let show = "show \"Which\" {\n    @00:00.000\n    all_lights: static color: \"green\", duration: 120s\n}\n";
+    let song_lighting_dir = fixture.root.join("songs/dsl-light-show-song/lighting");
+    std::fs::write(song_lighting_dir.join("main_show.light"), show)?;
+    // The song registers this show too. Keep its cue clear of the window under
+    // test so exactly one effect is running when we look.
+    std::fs::write(
+        song_lighting_dir.join("outro.light"),
+        "show \"Outro\" {\n    @01:00.000\n    all_lights: static color: \"white\", duration: 1s\n}\n",
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // With nothing playing there is an engine, and nothing lit.
+    let idle =
+        tool_json(&call_tool(&client, &url, &session, 950, "get_fixture_state", json!({})).await);
+    assert_eq!(idle["available"], true, "expected a live engine: {idle}");
+    assert_eq!(
+        idle["dark"], true,
+        "nothing should be lit before play: {idle}"
+    );
+
+    let play_resp = tool_json(&call_tool(&client, &url, &session, 951, "play", json!({})).await);
+    assert!(
+        play_resp["now_playing"].is_object(),
+        "play did not start the song: {play_resp}"
+    );
+
+    // Poll until the timeline has armed and the bed is driving the rig.
+    let live = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let body = tool_json(
+                &call_tool(&client, &url, &session, 952, "get_fixture_state", json!({})).await,
+            );
+            let lit = body["fixtures"]
+                .as_array()
+                .map(|a| !a.is_empty())
+                .unwrap_or(false);
+            if lit || std::time::Instant::now() > deadline {
+                break body;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+
+    let effects = live["active_effects"].as_array().expect("effects");
+    assert_eq!(effects.len(), 1, "expected only the green bed: {live}");
+    let bed = &effects[0];
+    assert_eq!(bed["type"], "Static");
+
+    // The heart of #331: the effect names the fixtures it covers. A count of
+    // "2 fixture(s)" could not distinguish this from any other pair.
+    let driving: Vec<&str> = bed["fixtures"]
+        .as_array()
+        .expect("fixtures")
+        .iter()
+        .filter_map(|f| f.as_str())
+        .collect();
+    assert_eq!(
+        driving,
+        vec!["Par1", "Par2"],
+        "the effect should name its fixtures: {live}"
+    );
+
+    // Per-fixture values, each naming what drives it.
+    let fixtures = live["fixtures"].as_array().expect("fixture states");
+    assert_eq!(fixtures.len(), 2, "both fixtures reported: {live}");
+    let par1 = fixtures
+        .iter()
+        .find(|f| f["name"] == "Par1")
+        .unwrap_or_else(|| panic!("Par1 missing: {live}"));
+    assert_eq!(par1["channels"]["green"], 255);
+    assert_eq!(par1["channels"]["red"], 0);
+    let driven_by: Vec<&str> = par1["driven_by"]
+        .as_array()
+        .expect("driven_by")
+        .iter()
+        .filter_map(|d| d.as_str())
+        .collect();
+    assert_eq!(driven_by.len(), 1, "Par1 should name its driver: {par1}");
+    assert_eq!(driven_by[0], bed["id"].as_str().unwrap_or_default());
+
+    // The offline evaluator, given the same show and venue, must agree.
+    let predicted = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            953,
+            "evaluate_show",
+            json!({"source": show, "times": ["1.0"]}),
+        )
+        .await,
+    );
+    let predicted_par1 = predicted["evaluations"][0]["fixtures"]
+        .as_array()
+        .expect("predicted fixtures")
+        .iter()
+        .find(|f| f["name"] == "Par1")
+        .cloned()
+        .unwrap_or_else(|| panic!("Par1 missing from prediction: {predicted}"));
+    assert_eq!(
+        predicted_par1["channels"], par1["channels"],
+        "offline evaluation disagrees with the live rig"
+    );
+
+    let _ = call_tool(&client, &url, &session, 954, "stop", json!({})).await;
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3d: profile add → update → remove round-trip
 // ---------------------------------------------------------------------------
 
