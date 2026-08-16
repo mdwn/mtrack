@@ -487,3 +487,57 @@ pub fn write_tone_wav(
     writer.finalize()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod click_track_tests {
+    use super::*;
+
+    /// The generated click track has to be something the real analyser can
+    /// read: a song whose grid comes back empty takes the whole tempo chain
+    /// with it, and the failure surfaces far away as an empty playlist.
+    #[test]
+    fn a_generated_click_track_yields_a_beat_grid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let song = SongSpec::tones("Clicked", "clicked", 1, 16.0)
+            .with_click(120.0, 4, 8)
+            .with_lighting(LightingSpec::at_bar(
+                "Bar Cue",
+                "lighting/bars.light",
+                crate::project::LIGHTING_GROUP,
+                3,
+            ));
+        song.write(dir.path()).expect("write song");
+
+        let song_dir = dir.path().join("clicked");
+        println!(
+            "PROBE files: {:?}",
+            std::fs::read_dir(&song_dir)
+                .unwrap()
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect::<Vec<_>>()
+        );
+        println!(
+            "PROBE yaml:\n{}",
+            std::fs::read_to_string(song_dir.join("song.yaml")).unwrap()
+        );
+
+        let cfg = mtrack::config::Song::deserialize(&song_dir.join("song.yaml"))
+            .expect("song.yaml parses");
+        let loaded = mtrack::songs::Song::new(&song_dir, &cfg);
+        match loaded {
+            Ok(s) => {
+                println!("PROBE loaded ok, duration={:?}", s.duration());
+                match s.beat_grid() {
+                    Some(g) => println!(
+                        "PROBE grid: {} beats, {} measure starts, first={:?}",
+                        g.beats.len(),
+                        g.measure_starts.len(),
+                        g.beats.first()
+                    ),
+                    None => println!("PROBE grid: NONE"),
+                }
+            }
+            Err(e) => println!("PROBE load FAILED: {e}"),
+        }
+    }
+}

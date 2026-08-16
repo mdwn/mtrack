@@ -392,7 +392,12 @@ pub async fn a_bar_timed_cue_lands_where_the_click_track_says() -> CheckOutcome 
         server.log()
     );
 
-    client.grpc().play(PlayRequest {}).await?;
+    // `play` answering `Ok(None)` is reported as "song already playing" whatever
+    // the cause, and an empty playlist is one of the others — so a song that
+    // failed to load looks like a transport error here. Carry the log.
+    if let Err(e) = client.grpc().play(PlayRequest {}).await {
+        crate::fail!("play was rejected ({e}).\n--- log ---\n{}", server.log());
+    }
     client.wait_until_playing(Duration::from_secs(10)).await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
