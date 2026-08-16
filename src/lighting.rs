@@ -20,6 +20,7 @@ pub mod engine;
 pub mod evaluate;
 #[cfg(test)]
 mod layering_tests;
+pub mod lint;
 pub mod parser;
 pub mod system;
 // Tempo lives at the crate root (shared with the metronome and song config);

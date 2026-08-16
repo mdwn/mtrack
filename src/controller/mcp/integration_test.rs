@@ -1687,20 +1687,23 @@ async fn mcp_analyze_show_reports_gaps_and_coverage() -> Result<(), Box<dyn Erro
     // everything is background, and its off-phase must not read as a gap.
     assert_eq!(body["per_layer_seconds"]["background"], 9.0, "{body}");
 
-    // `movers` matches no configured group, so its cues would do nothing.
-    let warnings: Vec<&str> = body["warnings"]
+    // `movers` matches no configured group, so its cues would do nothing. The
+    // clear at 5s means the 30s bed never actually overlaps the 8s cue, so no
+    // stomp is reported alongside it.
+    let warnings: Vec<(&str, &str)> = body["warnings"]
         .as_array()
         .expect("warnings")
         .iter()
-        .filter_map(|w| w.as_str())
+        .filter_map(|w| Some((w["kind"].as_str()?, w["message"].as_str()?)))
         .collect();
-    assert!(
-        warnings.iter().any(|w| w.contains("movers")),
-        "expected a warning about `movers`: {body}"
+    assert_eq!(
+        warnings.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+        ["empty-group"],
+        "expected only the empty-group warning: {body}"
     );
     assert!(
-        !warnings.iter().any(|w| w.contains("all_lights")),
-        "`all_lights` resolves and should not be warned about: {body}"
+        warnings[0].1.contains("movers"),
+        "expected a warning about `movers`: {body}"
     );
 
     controller.shutdown();
@@ -1823,6 +1826,48 @@ show "S" {
         a["shows"][0]["timeline"][0]["position"].is_null(),
         "absolute-time show has no tempo map: {a}"
     );
+
+    // Warnings ride alongside the parse result. Nothing here is suspicious, and
+    // with no song and no venue the checks that need them stay quiet rather
+    // than guessing.
+    assert_eq!(
+        a["warnings"].as_array().map(|w| w.len()),
+        Some(0),
+        "a clean show should warn about nothing: {a}"
+    );
+
+    // A show that parses but stomps itself: two `replace` effects overlapping
+    // on the same group and layer, where the later silently wins.
+    let stomping = r#"show "S" {
+    @00:00.000
+    all: static color: "blue", duration: 10s
+
+    @00:05.000
+    all: static color: "red", duration: 10s
+}
+"#;
+    let stomp = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            984,
+            "validate_lighting",
+            json!({"source": stomping}),
+        )
+        .await,
+    );
+    assert_eq!(
+        stomp["ok"], true,
+        "it is legal DSL, just suspicious: {stomp}"
+    );
+    let kinds: Vec<&str> = stomp["warnings"]
+        .as_array()
+        .expect("warnings")
+        .iter()
+        .filter_map(|w| w["kind"].as_str())
+        .collect();
+    assert_eq!(kinds, ["replace-overlap"], "{stomp}");
 
     // The timeline can be turned off for a parse-only check.
     let lean = tool_json(

@@ -30,6 +30,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`validate_lighting` reports lint-level warnings, not just parse success**: several classes of
+  mistake are perfectly legal DSL and silently do nothing. The response now carries a `warnings`
+  array — non-fatal, so `ok: true` still means "parses" — covering a group that resolves to no
+  fixtures, an effect whose duration runs past the end of the song, two `replace` effects
+  overlapping on the same layer *and* group (last writer wins, the earlier one appears to do
+  nothing), a `tempo` block that drifts from the click track it describes, and a cue positioned
+  past the song's last bar.
+
+  Each check is skipped when its input is missing rather than guessed at. Validating a bare
+  source with no song and no venue reports nothing rather than reporting everything as
+  suspicious, and the group check does not run at all without a loaded venue, where every group
+  would resolve to nothing.
+
+  The overlap check honours `clear`: an effect authored for 30s but cut at 5s does not overlap a
+  cue at 8s, and reporting one would be a false alarm. The tempo check reports only the first bar
+  where the block and the audio diverge, since the rest follow from it.
+
+  `analyze_show` sources its warnings from the same checks, so the two surfaces cannot disagree
+  about the same show.
+
 - **A light show inherits the song's tempo, so `@bar/beat` works without hand-writing one**:
   musical timing — `@bar/beat` cues, `Nbeats` durations, `Nbeat` frequencies — is resolved when
   the `.light` file is parsed, so a file with no `tempo` block could not use any of it. The song's

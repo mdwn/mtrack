@@ -65,7 +65,10 @@ Roughly 50 tools are available. They fall into a few groups:
 - **Lighting authoring** — read, write, validate, and patch `.light` DSL files for songs, venues,
   and fixture types, list the lighting cues and active effects, and fetch a DSL reference primer.
   `validate_lighting` returns each show's resolved cue timeline alongside the parse result, so
-  "the cues land where I meant" can be checked without loading the show into the player.
+  "the cues land where I meant" can be checked without loading the show into the player, plus
+  lint-level `warnings` for mistakes that are legal DSL but silently do nothing — an empty group,
+  an effect past the end of the song, two `replace` effects stomping each other, a `tempo` block
+  that drifts from the click track.
 - **Show analysis** — `analyze_show` reports where the rig goes dark, how long each group and
   layer is actually doing something, and which targeted groups resolve to no fixtures. Durations
   resolve through the tempo map and layer commands are honoured, so a `clear` that truncates a

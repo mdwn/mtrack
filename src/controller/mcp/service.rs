@@ -1040,6 +1040,8 @@ impl McpServer {
         let tempo = self.song_tempo_map(args.song.as_deref())?;
         match crate::lighting::parser::parse_light_shows_with_tempo(&args.source, tempo.as_ref()) {
             Ok(shows) => {
+                let parsed: Vec<_> = shows.values().cloned().collect();
+                let warnings = self.lint_warnings(&parsed, args.song.as_deref())?;
                 let mut summary: Vec<Value> = shows
                     .iter()
                     .map(|(name, show)| {
@@ -1059,6 +1061,7 @@ impl McpServer {
                 Ok(ok_json(json!({
                     "ok": true,
                     "shows": summary,
+                    "warnings": warnings,
                 })))
             }
             Err(e) => Ok(ok_json(json!({
@@ -1066,6 +1069,57 @@ impl McpServer {
                 "error": e.to_string(),
             }))),
         }
+    }
+
+    /// Runs the non-fatal checks over parsed shows, gathering whatever context
+    /// is available: the venue's group resolution, and — when a song is named —
+    /// its duration and click-derived beat grid.
+    ///
+    /// A check whose input is missing is skipped rather than guessed at, so
+    /// validating a bare source with no song and no venue reports nothing
+    /// rather than reporting everything as suspicious.
+    fn lint_warnings(
+        &self,
+        shows: &[crate::lighting::parser::LightShow],
+        song: Option<&str>,
+    ) -> Result<Vec<Value>, McpError> {
+        let song = match song {
+            Some(name) => Some(
+                self.player
+                    .songs()
+                    .get(name)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?,
+            ),
+            None => None,
+        };
+
+        let mut ctx = crate::lighting::lint::LintContext {
+            song_duration: song.as_ref().map(|s| s.duration()),
+            beat_grid: song.as_ref().and_then(|s| s.beat_grid()),
+            ..Default::default()
+        };
+
+        if let Some(system) = self
+            .player
+            .dmx_engine()
+            .and_then(|dmx| dmx.broadcast_handles().lighting_system)
+        {
+            let mut guard = system.lock();
+            // Only when a venue is actually loaded. Without one every group
+            // resolves to nothing, and reporting them all as empty would be
+            // noise rather than a finding.
+            if guard.get_current_venue().is_some() {
+                for name in group_names(shows) {
+                    let count = guard.resolve_logical_group_graceful(&name).len();
+                    ctx.group_fixture_counts.insert(name, count);
+                }
+            }
+        }
+
+        Ok(crate::lighting::lint::lint_shows(shows, &ctx)
+            .into_iter()
+            .map(|w| json!({"kind": w.kind, "message": w.message}))
+            .collect())
     }
 
     /// Looks up a song's lighting tempo map by name, if a name was given.
@@ -1237,31 +1291,13 @@ impl McpServer {
             include_fixtures: false,
         })?;
 
-        let lighting_system = self
-            .player
-            .dmx_engine()
-            .and_then(|dmx| dmx.broadcast_handles().lighting_system);
-        let targeted = group_names(&shows);
+        // Warnings come from the shared linter rather than a second
+        // implementation here, so `analyze_show` and `validate_lighting` cannot
+        // disagree about the same show.
+        let warnings = self.lint_warnings(&shows, args.song.as_deref())?;
 
-        let (analysis, empty_groups, venue) = tokio::task::spawn_blocking(move || {
-            // Which targeted groups the current venue cannot fill. This is the
-            // warning the issue asks for, and it needs the venue — the analysis
-            // itself deliberately does not.
-            let (empty_groups, venue) = match &lighting_system {
-                Some(system) => {
-                    let mut guard = system.lock();
-                    let venue = guard.current_venue().map(str::to_owned);
-                    let empty: Vec<String> = targeted
-                        .iter()
-                        .filter(|name| guard.resolve_logical_group_graceful(name).is_empty())
-                        .cloned()
-                        .collect();
-                    (empty, venue)
-                }
-                None => (Vec::new(), None),
-            };
-            let analysis = crate::lighting::analyze::analyze_show(shows, fallback_tempo.as_ref());
-            (analysis, empty_groups, venue)
+        let analysis = tokio::task::spawn_blocking(move || {
+            crate::lighting::analyze::analyze_show(shows, fallback_tempo.as_ref())
         })
         .await
         .map_err(|e| McpError::internal_error(format!("analysis failed: {e}"), None))?;
@@ -1276,20 +1312,6 @@ impl McpServer {
                     "seconds": w.seconds(),
                     "position": w.position,
                 })
-            })
-            .collect();
-
-        let warnings: Vec<String> = empty_groups
-            .iter()
-            .map(|name| match &venue {
-                Some(venue) => format!(
-                    "group `{name}` resolves to 0 fixtures in venue `{venue}` — \
-                     its cues will do nothing"
-                ),
-                None => format!(
-                    "group `{name}` resolves to 0 fixtures — no venue is loaded, \
-                     so this may be a false alarm"
-                ),
             })
             .collect();
 
