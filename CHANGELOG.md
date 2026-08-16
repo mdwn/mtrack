@@ -30,6 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`validate_lighting` returns resolved cue times**: on success each show now carries its cue
+  timeline — every cue's index, the absolute time it resolves to, the number of effects on it,
+  and, when the show has a tempo map, the bar/beat that time corresponds to. "It parses" and
+  "the cues are where I think they are" are different claims, and for a show written in
+  `@bar/beat` against a `tempo` block with meter changes, the second is the one worth checking.
+
+  Confirming a measure-based rewrite lands on the same times as an absolute-time original
+  previously meant writing the candidate under a second basename, repointing the song's
+  `lighting:` block, reloading, reading `get_cues`, then reverting — six steps, two of them
+  mutating the user's song config, to answer a read-only question. It is now one call per
+  version, touching nothing.
+
+  Pass `include_timeline: false` for a parse-only check.
+
 - **`analyze_show`: where the rig goes dark, and what the rig is actually doing**: reports dark
   windows, per-group and per-layer coverage seconds, the show's span, and which targeted groups
   resolve to no fixtures in the current venue. Dark windows are the headline — they are invisible
