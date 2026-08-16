@@ -1708,6 +1708,157 @@ async fn mcp_analyze_show_reports_gaps_and_coverage() -> Result<(), Box<dyn Erro
 }
 
 // ---------------------------------------------------------------------------
+// Test 3c-quinquies: validate_lighting returns resolved cue times (#333)
+// ---------------------------------------------------------------------------
+
+/// The job #333 describes: confirm a measure-based rewrite of a show lands on
+/// the same times as the absolute-time original. That used to take six steps,
+/// two of which mutated the user's song config, to answer a read-only question.
+/// Here it is two calls that touch nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_validate_lighting_returns_resolved_cue_times() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // 120bpm 4/4: a bar is 2s. Bars 1, 3 and 5 are 0.0s, 4.0s and 8.0s.
+    let absolute = r#"show "S" {
+    @00:00.000
+    all: static color: "blue", duration: 1s
+
+    @00:04.000
+    all: static color: "red", duration: 1s
+
+    @00:08.000
+    all: static color: "green", duration: 1s
+}
+"#;
+    let measures = r#"tempo {
+    start: 0ms
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "S" {
+    @1/1
+    all: static color: "blue", duration: 1s
+
+    @3/1
+    all: static color: "red", duration: 1s
+
+    @5/1
+    all: static color: "green", duration: 1s
+}
+"#;
+
+    let times = |body: &Value| -> Vec<f64> {
+        body["shows"][0]["timeline"]
+            .as_array()
+            .expect("timeline")
+            .iter()
+            .filter_map(|c| c["time"].as_f64())
+            .collect()
+    };
+
+    let a = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            980,
+            "validate_lighting",
+            json!({"source": absolute}),
+        )
+        .await,
+    );
+    assert_eq!(a["ok"], true, "{a}");
+    assert_eq!(a["shows"][0]["cues"], 3, "{a}");
+    assert_eq!(times(&a), vec![0.0, 4.0, 8.0], "{a}");
+
+    let b = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            981,
+            "validate_lighting",
+            json!({"source": measures}),
+        )
+        .await,
+    );
+    assert_eq!(b["ok"], true, "{b}");
+    assert_eq!(
+        times(&b),
+        times(&a),
+        "the measure rewrite should land on the same times"
+    );
+
+    // With a tempo map, each cue reports the bar/beat its time corresponds to —
+    // this is what makes a wrong tempo block obvious at a glance.
+    let positions: Vec<&str> = b["shows"][0]["timeline"]
+        .as_array()
+        .expect("timeline")
+        .iter()
+        .filter_map(|c| c["position"].as_str())
+        .collect();
+    assert_eq!(positions.len(), 3, "{b}");
+    assert!(positions[0].starts_with("@1/"), "{positions:?}");
+    assert!(positions[1].starts_with("@3/"), "{positions:?}");
+    assert!(positions[2].starts_with("@5/"), "{positions:?}");
+
+    // Without a tempo map there is no musical position to report, and saying so
+    // beats inventing one.
+    assert!(
+        a["shows"][0]["timeline"][0]["position"].is_null(),
+        "absolute-time show has no tempo map: {a}"
+    );
+
+    // The timeline can be turned off for a parse-only check.
+    let lean = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            982,
+            "validate_lighting",
+            json!({"source": absolute, "include_timeline": false}),
+        )
+        .await,
+    );
+    assert_eq!(lean["ok"], true, "{lean}");
+    assert!(lean["shows"][0].get("timeline").is_none(), "{lean}");
+
+    // A broken show still reports the parse error, not a timeline.
+    let bad = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            983,
+            "validate_lighting",
+            json!({"source": "show \"Broken\" { @00:00.000 cue without colon }"}),
+        )
+        .await,
+    );
+    assert_eq!(bad["ok"], false, "{bad}");
+    assert!(bad["error"].as_str().is_some(), "{bad}");
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3d: profile add → update → remove round-trip
 // ---------------------------------------------------------------------------
 

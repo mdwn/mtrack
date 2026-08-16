@@ -215,6 +215,10 @@ pub struct WritePlaylistArgs {
 pub struct ValidateLightingArgs {
     /// `.light` DSL source to validate.
     pub source: String,
+    /// Include each show's resolved cue timeline. Defaults to true; set false
+    /// for a parse-only check on a very large show.
+    #[serde(default = "default_true")]
+    pub include_timeline: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1010,23 +1014,35 @@ impl McpServer {
     }
 
     #[tool(description = "Parse a `.light` DSL source and report any syntax or \
-        semantic errors. Returns the parsed show names and a summary of cues if \
-        valid; an error message otherwise.")]
+        semantic errors. On success returns each show with its resolved cue \
+        timeline: every cue's index, the absolute time it lands on, and — when \
+        the show has a tempo map — the bar/beat that time corresponds to. \
+        \"It parses\" and \"the cues are where I think they are\" are different \
+        claims, especially with meter changes in play; the timeline answers the \
+        second without touching the player or the song config. Returns an error \
+        message otherwise.")]
     async fn validate_lighting(
         &self,
         Parameters(args): Parameters<ValidateLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
         match crate::lighting::parser::parse_light_shows(&args.source) {
             Ok(shows) => {
-                let summary: Vec<Value> = shows
+                let mut summary: Vec<Value> = shows
                     .iter()
                     .map(|(name, show)| {
-                        json!({
+                        let mut entry = json!({
                             "name": name,
                             "cues": show.cues.len(),
-                        })
+                        });
+                        if args.include_timeline {
+                            entry["timeline"] = json!(cue_timeline(show));
+                        }
+                        entry
                     })
                     .collect();
+                // Shows come out of a HashMap; order them so two runs of the
+                // same source can be diffed against each other.
+                summary.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
                 Ok(ok_json(json!({
                     "ok": true,
                     "shows": summary,
@@ -1886,6 +1902,32 @@ fn evaluation_json(
     }
 
     entry
+}
+
+/// A show's cues as resolved times, in cue order.
+///
+/// `position` is derived from the show's tempo map rather than read back from
+/// the source text, which the parser does not retain. That is what makes it
+/// useful for the job this exists for: a tempo block that disagrees with what
+/// the author intended shows up as a position that is not where they put the
+/// cue.
+fn cue_timeline(show: &crate::lighting::parser::LightShow) -> Vec<Value> {
+    show.cues
+        .iter()
+        .enumerate()
+        .map(|(index, cue)| {
+            let position = show.tempo_map.as_ref().map(|map| {
+                let (measure, beat) = map.time_to_measure_beat(cue.time);
+                format!("@{measure}/{beat:.2}")
+            });
+            json!({
+                "index": index,
+                "time": cue.time.as_secs_f64(),
+                "position": position,
+                "effects": cue.effects.len(),
+            })
+        })
+        .collect()
 }
 
 /// Orders shows by name so evaluation is reproducible.
