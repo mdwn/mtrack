@@ -943,15 +943,7 @@ impl EffectEngine {
                     Duration::ZERO
                 };
 
-                let effect_type_str = match &effect.effect_type {
-                    EffectType::Static { .. } => "Static",
-                    EffectType::ColorCycle { .. } => "ColorCycle",
-                    EffectType::Strobe { .. } => "Strobe",
-                    EffectType::Dimmer { .. } => "Dimmer",
-                    EffectType::Chase { .. } => "Chase",
-                    EffectType::Rainbow { .. } => "Rainbow",
-                    EffectType::Pulse { .. } => "Pulse",
-                };
+                let effect_type_str = effect.effect_type.name();
 
                 let total = effect.total_duration();
                 let duration_str = format!(" (duration: {:.2}s)", total.as_secs_f64());

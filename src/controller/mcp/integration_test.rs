@@ -1234,6 +1234,161 @@ async fn mcp_cues_and_effects_against_live_timeline() -> Result<(), Box<dyn Erro
 }
 
 // ---------------------------------------------------------------------------
+// Test 3c-bis: offline show evaluation (#330)
+// ---------------------------------------------------------------------------
+
+/// `evaluate_show` answers "what would the rig be doing at time T" without
+/// audio, DMX, or the wall clock. This test never calls `play` — that is the
+/// whole point of the tool, so the absence of playback is the assertion.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_evaluate_show_runs_offline() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+
+    std::fs::create_dir_all(fixture.root.join("lighting/venues"))?;
+    std::fs::create_dir_all(fixture.root.join("lighting/fixture_types"))?;
+    copy_dir_recursive(
+        Path::new("examples/lighting/fixture_types"),
+        &fixture.root.join("lighting/fixture_types"),
+    )?;
+    std::fs::write(
+        fixture.root.join("lighting/venues/main_stage.light"),
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n  group \"all_lights\" = Par1, Par2\n}\n",
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let source = r#"show "Offline" {
+    @00:00.000
+    all_lights: static color: "blue", duration: 4s
+
+    @00:10.000
+    all_lights: static color: "red", duration: 4s
+}
+"#;
+
+    let body = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            900,
+            "evaluate_show",
+            json!({"source": source, "times": ["1.0", "6.0", "0:11.000"]}),
+        )
+        .await,
+    );
+
+    let evaluations = body["evaluations"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected evaluations array: {body}"));
+    assert_eq!(evaluations.len(), 3, "one entry per requested time: {body}");
+
+    // 1.0s — inside the blue cue.
+    let at_1s = &evaluations[0];
+    assert_eq!(at_1s["dark"], false, "should be lit at 1s: {at_1s}");
+    let effects = at_1s["active_effects"].as_array().expect("effects");
+    assert_eq!(effects.len(), 1, "one effect at 1s: {at_1s}");
+    assert_eq!(effects[0]["type"], "Static");
+    assert_eq!(effects[0]["layer"], "background");
+    // The group resolved to real fixtures rather than staying a group name.
+    let resolved: Vec<&str> = effects[0]["fixtures"]
+        .as_array()
+        .expect("fixtures")
+        .iter()
+        .filter_map(|f| f.as_str())
+        .collect();
+    assert_eq!(
+        resolved,
+        vec!["Par1", "Par2"],
+        "group `all_lights` should resolve to the venue's fixtures: {at_1s}"
+    );
+
+    let fixtures = at_1s["fixtures"].as_array().expect("fixture states");
+    assert_eq!(fixtures.len(), 2, "both fixtures reported: {at_1s}");
+    assert_eq!(fixtures[0]["name"], "Par1");
+    assert_eq!(fixtures[0]["channels"]["blue"], 255);
+    assert_eq!(fixtures[0]["channels"]["red"], 0);
+
+    // 6.0s — the blue cue has expired and the red one has not fired.
+    assert_eq!(
+        evaluations[1]["dark"], true,
+        "the gap between cues should be dark: {}",
+        evaluations[1]
+    );
+    assert!(evaluations[1]["active_effects"]
+        .as_array()
+        .expect("effects")
+        .is_empty());
+
+    // 0:11.000 — inside the red cue, and proof mm:ss.mmm times parse.
+    let at_11s = &evaluations[2];
+    assert_eq!(at_11s["dark"], false);
+    assert_eq!(at_11s["position"], "0:11.000");
+    let fixtures = at_11s["fixtures"].as_array().expect("fixture states");
+    assert_eq!(fixtures[0]["channels"]["red"], 255);
+    assert_eq!(fixtures[0]["channels"]["blue"], 0);
+
+    // `include_fixtures: false` drops the per-fixture block but keeps effects.
+    let lean = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            901,
+            "evaluate_show",
+            json!({"source": source, "times": ["1.0"], "include_fixtures": false}),
+        )
+        .await,
+    );
+    let lean_entry = &lean["evaluations"][0];
+    assert!(lean_entry.get("fixtures").is_none(), "{lean_entry}");
+    assert_eq!(
+        lean_entry["active_effects"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0),
+        1
+    );
+
+    // Passing both `song` and `source` is a caller error, not a silent choice.
+    let both = call_tool(
+        &client,
+        &url,
+        &session,
+        902,
+        "evaluate_show",
+        json!({"song": "song", "source": source, "times": ["1.0"]}),
+    )
+    .await;
+    assert!(
+        both["error"].is_object() || tool_text(&both).contains("not both"),
+        "expected a rejection when both song and source are given: {both}"
+    );
+
+    // Playback was never started, and evaluating must not have started it.
+    assert!(
+        !player.is_playing().await,
+        "evaluate_show must not touch the transport"
+    );
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3d: profile add → update → remove round-trip
 // ---------------------------------------------------------------------------
 

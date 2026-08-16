@@ -144,7 +144,7 @@ async fn sampler_loop_cancellable(
 }
 
 /// Converts fixture states into sorted `FixtureSnapshot` values with DMX 0-255 channel values.
-fn compute_fixture_snapshots(
+pub(crate) fn compute_fixture_snapshots(
     states: &HashMap<String, FixtureState>,
     has_dimmer_map: &HashMap<String, bool>,
 ) -> Vec<FixtureSnapshot> {

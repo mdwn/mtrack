@@ -16,6 +16,7 @@
 mod consistency_tests;
 pub mod effects;
 pub mod engine;
+pub mod evaluate;
 #[cfg(test)]
 mod layering_tests;
 pub mod parser;
