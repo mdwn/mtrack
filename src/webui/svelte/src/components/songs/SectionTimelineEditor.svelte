@@ -388,10 +388,17 @@
 
   let sectionDialogIndex = $state<number | null>(null);
 
-  /** The nearest (measure, beat) at a timeline position; beats snap to
-   * halves. Used to capture the preview playhead as a section boundary. */
+  /** The nearest (measure, beat) at a timeline position, snapped to `snap`
+   * of a beat. Used to capture the preview playhead as a section boundary.
+   *
+   * The snap lands on the flat beat index and the measure is read off
+   * afterwards, so a position three quarters through the last beat of a
+   * measure becomes the next measure's beat 1 — never this measure's beat
+   * "one past the end", which is the same instant under a name the beat
+   * grid does not accept. */
   function msToMeasureBeat(
     ms: number,
+    snap = 0.5,
   ): { measure: number; beat: number } | null {
     const grid = song.beat_grid;
     if (!grid || grid.beats.length < 2) return null;
@@ -409,7 +416,7 @@
         ? grid.beats[lo + 1] - grid.beats[lo]
         : 0;
     const frac = gap > 0 ? (sec - grid.beats[lo]) / gap : 0;
-    const idx = lo + Math.round(frac * 2) / 2;
+    const idx = lo + Math.round(frac / snap) * snap;
     // Measure containing the (possibly fractional) beat index.
     let mIdx = 0;
     for (let i = 0; i < grid.measure_starts.length; i++) {
@@ -436,11 +443,10 @@
         (grid.beats.length - 1)) *
       1000;
     if (avgBeatGapMs * pixelsPerMs < BEAT_SNAP_MIN_PX) return null;
-    const pos = msToMeasureBeat(ms);
-    if (!pos) return null;
     // Edge drags snap to whole beats; fractions stay a dialog affair.
-    const beat = Math.round(pos.beat);
-    return { measure: pos.measure, beat };
+    // Rounding the beat here instead would push the last beat of a measure
+    // up to one past its end rather than onto the next downbeat.
+    return msToMeasureBeat(ms, 1);
   }
 
   function patchSection(index: number, patch: Partial<SectionEntry>) {
@@ -936,6 +942,8 @@
     section={sections[sectionDialogIndex]}
     index={sectionDialogIndex}
     maxMeasure={measureTimesMs.length || 9999}
+    beatGrid={song.beat_grid}
+    posToMs={measureBeatToMs}
     {playheadPos}
     onchange={(patch) => patchSection(sectionDialogIndex!, patch)}
     ondelete={() => deleteSection(sectionDialogIndex!)}

@@ -77,16 +77,40 @@ impl BeatGrid {
         self.measure_starts.len().saturating_sub(1)
     }
 
+    /// Returns the number of beats in a measure (0-indexed). The last
+    /// measure runs to the end of the grid.
+    pub fn beats_in_measure(&self, measure: usize) -> Option<usize> {
+        let start = *self.measure_starts.get(measure)?;
+        let end = self
+            .measure_starts
+            .get(measure + 1)
+            .copied()
+            .unwrap_or(self.beats.len());
+        end.checked_sub(start)
+    }
+
     /// Returns the absolute time of a (possibly fractional) beat within a
     /// measure: measure 0-indexed, beat 1-based (beat 1.0 is the measure
     /// boundary, 2.5 is halfway between the measure's second and third
     /// beats). Fractional positions interpolate linearly between grid
     /// beats. Returns `None` when the position falls outside the grid.
+    ///
+    /// A beat must also stay inside its own measure. `beats` is flat, so
+    /// without that bound "beat 5" of a 4/4 measure would index the next
+    /// measure's downbeat and quietly resolve to it — and since the config
+    /// validator orders boundaries as `(measure, beat)` tuples without a
+    /// grid to consult, a section written that way would pass validation
+    /// and then resolve to a zero-length or inverted range. The last
+    /// fractional beat may still interpolate towards the next downbeat:
+    /// beat 4.5 of a 4/4 measure is inside the measure, beat 5.0 is not.
     pub fn beat_time(&self, measure: usize, beat: f64) -> Option<f64> {
         if !beat.is_finite() || beat < 1.0 {
             return None;
         }
         let offset = beat - 1.0;
+        if offset.floor() as usize >= self.beats_in_measure(measure)? {
+            return None;
+        }
         let base = self.measure_starts.get(measure)? + offset.floor() as usize;
         let t0 = *self.beats.get(base)?;
         let frac = offset.fract();
@@ -1083,10 +1107,27 @@ mod tests {
         // The final grid beat is addressable; past it is not.
         assert_eq!(grid.beat_time(1, 4.0), Some(3.5));
         assert!(grid.beat_time(1, 4.5).is_none());
+        // A beat stays inside its measure: beat 5 of a four-beat measure is
+        // the next measure's downbeat, not a position in this one.
+        assert!(grid.beat_time(0, 5.0).is_none());
+        assert!(grid.beat_time(0, 6.5).is_none());
         // Invalid inputs.
         assert!(grid.beat_time(0, 0.5).is_none());
         assert!(grid.beat_time(2, 1.0).is_none());
         assert!(grid.beat_time(0, f64::NAN).is_none());
+    }
+
+    #[test]
+    fn beat_grid_beats_in_measure() {
+        let grid = BeatGrid {
+            beats: vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0],
+            measure_starts: vec![0, 4],
+        };
+
+        assert_eq!(grid.beats_in_measure(0), Some(4));
+        // The last measure runs to the end of the grid, however short.
+        assert_eq!(grid.beats_in_measure(1), Some(3));
+        assert_eq!(grid.beats_in_measure(2), None);
     }
 
     #[test]

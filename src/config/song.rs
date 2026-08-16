@@ -218,15 +218,37 @@ impl Song {
                     ));
                 }
             }
-            for (field, beat) in [
-                ("start_beat", section.start_beat),
-                ("end_beat", section.end_beat),
+            for (field, beat, measure) in [
+                ("start_beat", section.start_beat, section.start_measure),
+                ("end_beat", section.end_beat, section.end_measure),
             ] {
-                if let Some(beat) = beat {
-                    if !beat.is_finite() || beat < 1.0 {
+                let Some(beat) = beat else { continue };
+                if !beat.is_finite() || beat < 1.0 {
+                    errors.push(format!(
+                        "{}: {} must be 1 or greater (beats are 1-indexed within the measure), got {}",
+                        label, field, beat
+                    ));
+                    continue;
+                }
+                // A beat past its measure's length is not a position in that
+                // measure — it is the next measure's downbeat by another
+                // name, and the ordering check below (which compares
+                // (measure, beat) tuples) cannot see that. The beat grid is
+                // not built yet here, but a `tempo:` block gives the meter,
+                // which is where the grid's measure lengths come from too.
+                // Without one the grid comes from click analysis and its
+                // measures are only known at load, where `beat_time`
+                // rejects the same position.
+                let beats = self
+                    .tempo
+                    .as_ref()
+                    .zip(u32::try_from(measure).ok())
+                    .and_then(|(tempo, measure)| tempo.beats_in_measure(measure));
+                if let Some(beats) = beats {
+                    if beat >= f64::from(beats) + 1.0 {
                         errors.push(format!(
-                            "{}: {} must be 1 or greater (beats are 1-indexed within the measure), got {}",
-                            label, field, beat
+                            "{}: {} {} is past the end of measure {}, which has {} beats — use measure {} beat 1 for the next downbeat",
+                            label, field, beat, measure, beats, measure + 1
                         ));
                     }
                 }
@@ -482,6 +504,7 @@ fn default_song_kind() -> super::kind::ConfigKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::tempo::TempoChangeConfig;
     use crate::config::track::Track;
 
     fn minimal_song() -> Song {
@@ -958,6 +981,101 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| e.contains("start_beat must be 1 or greater")));
+    }
+
+    fn song_in(time_signature: &str) -> Song {
+        let mut song = minimal_song();
+        song.tempo = Some(TempoConfig {
+            bpm: 120.0,
+            time_signature: time_signature.to_string(),
+            start: None,
+            changes: vec![],
+        });
+        song
+    }
+
+    #[test]
+    fn validate_rejects_section_beat_past_its_measure() {
+        // Beat 5 of a 4/4 measure is the next downbeat wearing a disguise:
+        // the grid would resolve it there, making an ordered pair of tuples
+        // into a zero-length section.
+        let mut song = song_in("4/4");
+        song.sections = vec![Section {
+            name: "spill".to_string(),
+            start_measure: 1,
+            end_measure: 2,
+            start_beat: Some(5.0),
+            end_beat: None,
+            color: None,
+        }];
+        let errors = song.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("start_beat 5 is past the end of measure 1, which has 4 beats")));
+    }
+
+    #[test]
+    fn validate_accepts_a_beat_inside_its_measure() {
+        // 4.5 is between the last beat and the next downbeat — still inside.
+        let mut song = song_in("4/4");
+        song.sections = vec![Section {
+            name: "late".to_string(),
+            start_measure: 1,
+            end_measure: 2,
+            start_beat: Some(4.5),
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_counts_beats_the_way_the_grid_does() {
+        // 6/8 is six grid beats, not the three quarter-notes
+        // `beats_per_measure` reports.
+        let mut song = song_in("6/8");
+        song.sections = vec![Section {
+            name: "compound".to_string(),
+            start_measure: 1,
+            end_measure: 2,
+            start_beat: Some(6.0),
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.validate().is_ok());
+
+        song.sections[0].start_beat = Some(7.0);
+        let errors = song.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("which has 6 beats")));
+    }
+
+    #[test]
+    fn validate_uses_the_meter_in_effect_at_the_measure() {
+        let mut song = song_in("4/4");
+        song.tempo.as_mut().unwrap().changes = vec![TempoChangeConfig {
+            measure: 9,
+            beat: None,
+            bpm: None,
+            time_signature: Some("7/8".to_string()),
+            transition: None,
+        }];
+        song.sections = vec![Section {
+            name: "odd".to_string(),
+            start_measure: 9,
+            end_measure: 12,
+            start_beat: Some(7.0),
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.validate().is_ok());
+
+        // The same beat back in the 4/4 stretch is past the measure's end.
+        song.sections[0].start_measure = 5;
+        song.sections[0].end_measure = 8;
+        let errors = song.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("past the end of measure 5, which has 4 beats")));
     }
 
     #[test]

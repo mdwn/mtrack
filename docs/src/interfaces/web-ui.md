@@ -190,7 +190,10 @@ Real songs change parts mid-measure, so a section's bounds are not limited to me
 `start_beat` / `end_beat` — 1-based within the boundary measure, fractional allowed, omitted
 meaning the measure line — offset either end to any position on the beat grid (see
 [song configuration](../configuration/song-config.md)). Seeking to a section and looping it
-both follow the offsets; a section may even begin and end inside one measure.
+both follow the offsets; a section may even begin and end inside one measure. The beat
+steppers stop at the end of their own measure — the next downbeat is the measure after, not
+a fifth beat of a 4/4 bar — and both the drags and the capture buttons order the two bounds
+by the time they resolve to rather than by their measure and beat numbers.
 
 ![A section starting and ending off the measure line](../images/section-beat-boundaries.png)
 

@@ -714,6 +714,16 @@ impl Song {
             *grid.beats.last()?
         };
 
+        // Config validation orders boundaries without the grid in hand, so
+        // it cannot always tell that two positions resolve to the same time
+        // or in the wrong order. Here the grid is available, and a section
+        // that is not a forward range is no section at all: better an
+        // honest "cannot be resolved" from seek and loop_section than a
+        // zero-length range that arms silently and never fires.
+        if start_secs >= end_secs {
+            return None;
+        }
+
         Some((
             Duration::from_secs_f64(start_secs),
             Duration::from_secs_f64(end_secs),
@@ -3862,6 +3872,46 @@ pilot:
             color: None,
         }];
         assert!(song.resolve_section("bad").is_none());
+    }
+
+    #[test]
+    fn resolve_section_beat_past_its_measure_returns_none() {
+        // Beat 5 of a four-beat measure is measure 2's downbeat, so the
+        // section quietly starts a measure later than it reads — and here
+        // the range still comes out forward, so nothing downstream notices.
+        // A beat has to stay inside the measure that names it.
+        let mut song = super::Song::new_for_test("test", &["click"]);
+        song.beat_grid = Some(crate::audio::click_analysis::BeatGrid {
+            beats: (0..12).map(|i| i as f64 * 0.5).collect(),
+            measure_starts: vec![0, 4, 8],
+        });
+        song.sections = vec![crate::config::Section {
+            name: "spill".to_string(),
+            start_measure: 1,
+            end_measure: 3,
+            start_beat: Some(5.0),
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.resolve_section("spill").is_none());
+    }
+
+    #[test]
+    fn resolve_section_refuses_a_range_that_is_not_forward() {
+        // Reachable with every beat inside its measure and validation happy:
+        // the start is the grid's final beat (3.5s), and an end measure past
+        // the grid clamps to that same final beat. Zero length, so the loop
+        // would arm and never fire.
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "empty".to_string(),
+            start_measure: 2,
+            end_measure: 5,
+            start_beat: Some(4.0),
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.resolve_section("empty").is_none());
     }
 
     #[test]

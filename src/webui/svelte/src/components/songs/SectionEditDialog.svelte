@@ -17,6 +17,7 @@
   import { SECTION_COLORS, sectionColor } from "../../lib/sectionColors";
   import MarkerDialog from "./MarkerDialog.svelte";
   import NumberStepper from "../NumberStepper.svelte";
+  import { maxBeatInMeasure, type BeatGrid } from "../../lib/util/beatGrid";
 
   interface SectionEntry {
     name: string;
@@ -34,6 +35,12 @@
     index: number;
     /** The song's measure count, bounding the steppers. */
     maxMeasure?: number;
+    /** Beat times, so the beat steppers can stop at the end of their
+     * measure and the two boundaries can be ordered by resolved time. */
+    beatGrid?: BeatGrid | null;
+    /** Resolves a boundary to milliseconds — the same function the edge
+     * drags order positions with. */
+    posToMs?: ((measure: number, beat: number) => number) | null;
     /** The preview playhead as a boundary position (half-beat snapped),
      * when this song is loaded in the player. Enables "set here". */
     playheadPos?: { measure: number; beat: number } | null;
@@ -46,6 +53,8 @@
     section,
     index,
     maxMeasure = 9999,
+    beatGrid = null,
+    posToMs = null,
     playheadPos = null,
     onchange,
     ondelete,
@@ -65,11 +74,28 @@
     onchange({ [field]: beat === 1 ? undefined : beat });
   }
 
-  /** Position ordering as (measure, beat) tuples. */
+  /** How far the beat steppers go: the end of their own measure. Without a
+   * grid there is nothing to measure against, so they stay open. */
+  const BEAT_STEP = 0.5;
+  let maxStartBeat = $derived(
+    maxBeatInMeasure(beatGrid, section.start_measure, BEAT_STEP) ?? 32,
+  );
+  let maxEndBeat = $derived(
+    maxBeatInMeasure(beatGrid, section.end_measure, BEAT_STEP) ?? 32,
+  );
+
+  /** Position ordering by resolved time, the way the edge drags do it.
+   * Comparing (measure, beat) tuples instead would call m1 beat 5 earlier
+   * than m2 beat 1 when in 4/4 they are the same instant — the steppers no
+   * longer offer that, but a hand-written config still can. Falls back to
+   * the tuples when there is no grid to resolve against. */
   function isBefore(
     a: { measure: number; beat: number },
     b: { measure: number; beat: number },
   ): boolean {
+    if (posToMs) {
+      return posToMs(a.measure, a.beat) < posToMs(b.measure, b.beat);
+    }
     return (
       a.measure < b.measure || (a.measure === b.measure && a.beat < b.beat)
     );
@@ -167,8 +193,8 @@
         <NumberStepper
           value={section.start_beat ?? 1}
           min={1}
-          max={32}
-          step={0.5}
+          max={maxStartBeat}
+          step={BEAT_STEP}
           decimals={1}
           ariaLabel={$t("sections.dialog.startBeat")}
           onchange={(v) => setBeat("start_beat", v)}
@@ -179,8 +205,8 @@
         <NumberStepper
           value={section.end_beat ?? 1}
           min={1}
-          max={32}
-          step={0.5}
+          max={maxEndBeat}
+          step={BEAT_STEP}
           decimals={1}
           ariaLabel={$t("sections.dialog.endBeat")}
           onchange={(v) => setBeat("end_beat", v)}

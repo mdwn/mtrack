@@ -325,6 +325,15 @@ sections:
   between beats: `2.5` is halfway between the measure's second and third beats.
   With beats, a section may start and end inside the same measure.
 
+  A beat has to stay inside the measure that names it: in 4/4 the last position
+  is anything below `5`, since beat `5` is the next measure's downbeat and is
+  written `start_measure: 22` instead. (Counting follows the beat grid, so a
+  measure holds as many beats as the meter's numerator — six in 6/8, not
+  three.) A beat past the end of its measure is a config error when the song
+  has a `tempo:` block; without one the measure lengths come from click
+  analysis, and the section simply fails to resolve, so seeking to it and
+  looping it both report the section as unresolvable.
+
 Sections can also be created visually in the web UI's Timeline tab with a canvas-based
 timeline editor that supports drag-to-create, resize, move, rename, and delete.
 
