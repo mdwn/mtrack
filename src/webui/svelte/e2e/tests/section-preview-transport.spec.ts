@@ -183,4 +183,22 @@ test.describe("Section editor preview transport", () => {
     await page.keyboard.press("ArrowRight");
     await seekPromise;
   });
+
+  test("the section dialog captures the playhead as a boundary", async ({
+    page,
+  }) => {
+    // Stopped at 5.0s → measure 3, beat 3 of the 120 BPM 4/4 grid.
+    await sendWsMessage(page, wsId, playbackState());
+
+    const firstBlock = page.locator(".section-block").first();
+    const box = await firstBlock.boundingBox();
+    if (!box) throw new Error("section block not found");
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+
+    // The dialog shows the playhead position and captures it as the end
+    // boundary of verse (m1–4), beat-precise.
+    await expect(page.locator(".playhead-capture")).toContainText("m3.3");
+    await page.getByRole("button", { name: "End here" }).click();
+    await expect(page.locator(".range-note")).toHaveText("m1–3.3");
+  });
 });

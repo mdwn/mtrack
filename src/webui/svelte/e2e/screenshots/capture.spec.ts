@@ -360,11 +360,23 @@ test("section-timeline-editor", async ({ page }) => {
 // --- Section editing UX (dialog, colors, preview transport) --------------
 
 test("section-dialog", async ({ page }) => {
-  await steOpen(page);
+  const wsId = freshWsId("section-dialog");
+  await steOpen(page, STE_YAML, wsId);
+  // With the song in the player the dialog also offers the playhead as a
+  // boundary — the other half of authoring off the measure line.
+  await pushWs(page, wsId, {
+    ...DEFAULT_PLAYBACK,
+    song_name: STE_SONG,
+    song_duration_ms: 34000,
+    playlist_position: 1,
+    elapsed_ms: 5000,
+  });
+  await expect(page.locator(".playhead")).toBeVisible();
   const block = page.locator(".section-block").first();
   const box = (await block.boundingBox())!;
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await expect(page.locator(".marker-dialog")).toBeVisible();
+  await expect(page.locator(".playhead-capture")).toBeVisible();
   await page.waitForTimeout(250);
   await page.locator(".marker-dialog").screenshot({
     path: path.join(DOCS_IMAGES, "section-dialog.png"),
@@ -578,6 +590,26 @@ test("song-metronome-panel", async ({ page }) => {
   await page.waitForTimeout(200);
   await panel.screenshot({
     path: path.join(DOCS_IMAGES, "song-metronome-panel.png"),
+  });
+});
+
+// A section that starts and ends off the measure line, which is the whole
+// point of the beat offsets.
+const OFFBEAT_YAML = STE_YAML.replace(
+  `  - name: chorus
+    start_measure: 5
+    end_measure: 8`,
+  `  - name: chorus
+    start_measure: 5
+    start_beat: 3
+    end_measure: 8
+    end_beat: 2.5`,
+);
+
+test("section-beat-boundaries", async ({ page }) => {
+  await steOpen(page, OFFBEAT_YAML);
+  await page.locator(".section-timeline-editor").screenshot({
+    path: path.join(DOCS_IMAGES, "section-beat-boundaries.png"),
   });
 });
 

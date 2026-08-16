@@ -483,6 +483,63 @@ test.describe("Song Detail - Section Editor", () => {
     await expect(page.locator(".unsaved")).toBeVisible();
   });
 
+  test("section boundaries can be offset to a beat in the editor", async ({
+    page,
+  }) => {
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    await page.locator(".tab", { hasText: "Timeline" }).click();
+
+    // The first block (verse, m1–4) starts at the left edge.
+    const firstBlock = page.locator(".section-block").first();
+    await expect(firstBlock).toHaveAttribute("style", /left: 0px/);
+    const blockBox = await firstBlock.boundingBox();
+    if (!blockBox) throw new Error("section block not found");
+    await page.mouse.click(
+      blockBox.x + blockBox.width / 2,
+      blockBox.y + blockBox.height / 2,
+    );
+
+    // Move the start to beat 3 of measure 1; the range note follows.
+    const startBeat = page.getByRole("textbox", { name: "Start beat" });
+    await startBeat.fill("3");
+    await startBeat.press("Enter");
+    await expect(page.locator(".range-note")).toHaveText("m1.3–4");
+    await page.getByRole("button", { name: "Done" }).click();
+
+    // The block no longer starts on the measure line, and the config is
+    // dirty.
+    await expect(page.locator(".section-block").first()).not.toHaveAttribute(
+      "style",
+      /left: 0px/,
+    );
+    await expect(page.locator(".unsaved")).toBeVisible();
+  });
+
+  test("a section beat stops at the end of its own measure", async ({
+    page,
+  }) => {
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    await page.locator(".tab", { hasText: "Timeline" }).click();
+
+    const firstBlock = page.locator(".section-block").first();
+    const blockBox = await firstBlock.boundingBox();
+    if (!blockBox) throw new Error("section block not found");
+    await page.mouse.click(
+      blockBox.x + blockBox.width / 2,
+      blockBox.y + blockBox.height / 2,
+    );
+
+    // Beat 5 of a 4/4 measure is the next measure's downbeat: the beat grid
+    // is flat, so the backend would resolve it there while validation — which
+    // orders (measure, beat) pairs — still read it as measure 1. The field
+    // clamps to the last position that is genuinely inside the measure.
+    const startBeat = page.getByRole("textbox", { name: "Start beat" });
+    await startBeat.fill("5");
+    await startBeat.press("Enter");
+    await expect(startBeat).toHaveValue("4.5");
+    await expect(page.locator(".range-note")).toHaveText("m1.4.5–4");
+  });
+
   test("section editing marks config as dirty", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Beta");
     await page.locator(".tab", { hasText: "Timeline" }).click();

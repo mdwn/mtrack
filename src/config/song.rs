@@ -87,6 +87,14 @@ pub struct Section {
     pub start_measure: usize,
     /// End measure (1-indexed, exclusive).
     pub end_measure: usize,
+    /// Start beat within the start measure (1-based, fractional allowed;
+    /// omitted = 1, the measure boundary).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_beat: Option<f64>,
+    /// End beat within the end measure (1-based, fractional allowed;
+    /// omitted = 1, keeping the end bound exclusive at the measure line).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_beat: Option<f64>,
     /// Optional display color for the web UI timeline (hex "#rrggbb").
     /// Without one the UI rotates through its palette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -210,10 +218,51 @@ impl Song {
                     ));
                 }
             }
-            if section.end_measure <= section.start_measure {
+            for (field, beat, measure) in [
+                ("start_beat", section.start_beat, section.start_measure),
+                ("end_beat", section.end_beat, section.end_measure),
+            ] {
+                let Some(beat) = beat else { continue };
+                if !beat.is_finite() || beat < 1.0 {
+                    errors.push(format!(
+                        "{}: {} must be 1 or greater (beats are 1-indexed within the measure), got {}",
+                        label, field, beat
+                    ));
+                    continue;
+                }
+                // A beat past its measure's length is not a position in that
+                // measure — it is the next measure's downbeat by another
+                // name, and the ordering check below (which compares
+                // (measure, beat) tuples) cannot see that. The beat grid is
+                // not built yet here, but a `tempo:` block gives the meter,
+                // which is where the grid's measure lengths come from too.
+                // Without one the grid comes from click analysis and its
+                // measures are only known at load, where `beat_time`
+                // rejects the same position.
+                let beats = self
+                    .tempo
+                    .as_ref()
+                    .zip(u32::try_from(measure).ok())
+                    .and_then(|(tempo, measure)| tempo.beats_in_measure(measure));
+                if let Some(beats) = beats {
+                    if beat >= f64::from(beats) + 1.0 {
+                        errors.push(format!(
+                            "{}: {} {} is past the end of measure {}, which has {} beats — use measure {} beat 1 for the next downbeat",
+                            label, field, beat, measure, beats, measure + 1
+                        ));
+                    }
+                }
+            }
+            // The end bound must come after the start; equal measures are
+            // fine when the beats are ordered (a section within one measure).
+            let start_beat = section.start_beat.unwrap_or(1.0);
+            let end_beat = section.end_beat.unwrap_or(1.0);
+            if section.end_measure < section.start_measure
+                || (section.end_measure == section.start_measure && end_beat <= start_beat)
+            {
                 errors.push(format!(
-                    "{}: end_measure must be greater than start_measure",
-                    label
+                    "{}: the end position (measure {} beat {}) must come after the start (measure {} beat {})",
+                    label, section.end_measure, end_beat, section.start_measure, start_beat
                 ));
             }
         }
@@ -455,6 +504,7 @@ fn default_song_kind() -> super::kind::ConfigKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::tempo::TempoChangeConfig;
     use crate::config::track::Track;
 
     fn minimal_song() -> Song {
@@ -843,6 +893,8 @@ mod tests {
             name: "bad".to_string(),
             start_measure: 0,
             end_measure: 4,
+            start_beat: None,
+            end_beat: None,
             color: None,
         }];
         let errors = song.validate().unwrap_err();
@@ -856,12 +908,14 @@ mod tests {
             name: "bad".to_string(),
             start_measure: 5,
             end_measure: 5,
+            start_beat: None,
+            end_beat: None,
             color: None,
         }];
         let errors = song.validate().unwrap_err();
         assert!(errors
             .iter()
-            .any(|e| e.contains("end_measure must be greater")));
+            .any(|e| e.contains("must come after the start")));
     }
 
     #[test]
@@ -871,12 +925,157 @@ mod tests {
             name: "bad".to_string(),
             start_measure: 8,
             end_measure: 4,
+            start_beat: None,
+            end_beat: None,
             color: None,
         }];
         let errors = song.validate().unwrap_err();
         assert!(errors
             .iter()
-            .any(|e| e.contains("end_measure must be greater")));
+            .any(|e| e.contains("must come after the start")));
+    }
+
+    #[test]
+    fn validate_accepts_section_within_one_measure_via_beats() {
+        let mut song = minimal_song();
+        song.sections = vec![Section {
+            name: "pickup".to_string(),
+            start_measure: 5,
+            end_measure: 5,
+            start_beat: Some(2.0),
+            end_beat: Some(4.5),
+            color: None,
+        }];
+        assert!(song.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_section_same_position_beats() {
+        let mut song = minimal_song();
+        song.sections = vec![Section {
+            name: "bad".to_string(),
+            start_measure: 5,
+            end_measure: 5,
+            start_beat: Some(3.0),
+            end_beat: Some(3.0),
+            color: None,
+        }];
+        let errors = song.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("must come after the start")));
+    }
+
+    #[test]
+    fn validate_rejects_section_beat_below_one() {
+        let mut song = minimal_song();
+        song.sections = vec![Section {
+            name: "bad".to_string(),
+            start_measure: 1,
+            end_measure: 4,
+            start_beat: Some(0.5),
+            end_beat: None,
+            color: None,
+        }];
+        let errors = song.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("start_beat must be 1 or greater")));
+    }
+
+    fn song_in(time_signature: &str) -> Song {
+        let mut song = minimal_song();
+        song.tempo = Some(TempoConfig {
+            bpm: 120.0,
+            time_signature: time_signature.to_string(),
+            start: None,
+            changes: vec![],
+        });
+        song
+    }
+
+    #[test]
+    fn validate_rejects_section_beat_past_its_measure() {
+        // Beat 5 of a 4/4 measure is the next downbeat wearing a disguise:
+        // the grid would resolve it there, making an ordered pair of tuples
+        // into a zero-length section.
+        let mut song = song_in("4/4");
+        song.sections = vec![Section {
+            name: "spill".to_string(),
+            start_measure: 1,
+            end_measure: 2,
+            start_beat: Some(5.0),
+            end_beat: None,
+            color: None,
+        }];
+        let errors = song.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("start_beat 5 is past the end of measure 1, which has 4 beats")));
+    }
+
+    #[test]
+    fn validate_accepts_a_beat_inside_its_measure() {
+        // 4.5 is between the last beat and the next downbeat — still inside.
+        let mut song = song_in("4/4");
+        song.sections = vec![Section {
+            name: "late".to_string(),
+            start_measure: 1,
+            end_measure: 2,
+            start_beat: Some(4.5),
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_counts_beats_the_way_the_grid_does() {
+        // 6/8 is six grid beats, not the three quarter-notes
+        // `beats_per_measure` reports.
+        let mut song = song_in("6/8");
+        song.sections = vec![Section {
+            name: "compound".to_string(),
+            start_measure: 1,
+            end_measure: 2,
+            start_beat: Some(6.0),
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.validate().is_ok());
+
+        song.sections[0].start_beat = Some(7.0);
+        let errors = song.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("which has 6 beats")));
+    }
+
+    #[test]
+    fn validate_uses_the_meter_in_effect_at_the_measure() {
+        let mut song = song_in("4/4");
+        song.tempo.as_mut().unwrap().changes = vec![TempoChangeConfig {
+            measure: 9,
+            beat: None,
+            bpm: None,
+            time_signature: Some("7/8".to_string()),
+            transition: None,
+        }];
+        song.sections = vec![Section {
+            name: "odd".to_string(),
+            start_measure: 9,
+            end_measure: 12,
+            start_beat: Some(7.0),
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.validate().is_ok());
+
+        // The same beat back in the 4/4 stretch is past the measure's end.
+        song.sections[0].start_measure = 5;
+        song.sections[0].end_measure = 8;
+        let errors = song.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("past the end of measure 5, which has 4 beats")));
     }
 
     #[test]
@@ -886,6 +1085,8 @@ mod tests {
             name: "".to_string(),
             start_measure: 1,
             end_measure: 4,
+            start_beat: None,
+            end_beat: None,
             color: None,
         }];
         let errors = song.validate().unwrap_err();
@@ -900,12 +1101,16 @@ mod tests {
                 name: "verse".to_string(),
                 start_measure: 1,
                 end_measure: 8,
+                start_beat: None,
+                end_beat: None,
                 color: None,
             },
             Section {
                 name: "chorus".to_string(),
                 start_measure: 9,
                 end_measure: 16,
+                start_beat: None,
+                end_beat: None,
                 color: None,
             },
         ];

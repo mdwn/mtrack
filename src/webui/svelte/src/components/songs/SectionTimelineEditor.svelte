@@ -41,6 +41,9 @@
     name: string;
     start_measure: number;
     end_measure: number;
+    /** 1-based beat within the measure, fractional allowed; absent = 1. */
+    start_beat?: number;
+    end_beat?: number;
     color?: string;
   }
 
@@ -385,12 +388,76 @@
 
   let sectionDialogIndex = $state<number | null>(null);
 
+  /** The nearest (measure, beat) at a timeline position, snapped to `snap`
+   * of a beat. Used to capture the preview playhead as a section boundary.
+   *
+   * The snap lands on the flat beat index and the measure is read off
+   * afterwards, so a position three quarters through the last beat of a
+   * measure becomes the next measure's beat 1 — never this measure's beat
+   * "one past the end", which is the same instant under a name the beat
+   * grid does not accept. */
+  function msToMeasureBeat(
+    ms: number,
+    snap = 0.5,
+  ): { measure: number; beat: number } | null {
+    const grid = song.beat_grid;
+    if (!grid || grid.beats.length < 2) return null;
+    const sec = ms / 1000;
+    // Last beat at or before the position (binary search).
+    let lo = 0;
+    let hi = grid.beats.length - 1;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (grid.beats[mid] <= sec) lo = mid;
+      else hi = mid - 1;
+    }
+    const gap =
+      grid.beats[lo + 1] !== undefined
+        ? grid.beats[lo + 1] - grid.beats[lo]
+        : 0;
+    const frac = gap > 0 ? (sec - grid.beats[lo]) / gap : 0;
+    const idx = lo + Math.round(frac / snap) * snap;
+    // Measure containing the (possibly fractional) beat index.
+    let mIdx = 0;
+    for (let i = 0; i < grid.measure_starts.length; i++) {
+      if (grid.measure_starts[i] <= idx) mIdx = i;
+      else break;
+    }
+    return { measure: mIdx + 1, beat: idx - grid.measure_starts[mIdx] + 1 };
+  }
+
+  /** Playhead position as a section boundary, when this song is loaded. */
+  let playheadPos = $derived(
+    isCurrentSong ? msToMeasureBeat(playheadMs) : null,
+  );
+
+  /** Beat-snapping for edge drags: only when zoomed in far enough that
+   * individual beats are visually distinct; zoomed out, edges keep
+   * snapping to measure lines (SectionBar falls back on null). */
+  const BEAT_SNAP_MIN_PX = 14;
+  function snapBoundary(ms: number): { measure: number; beat: number } | null {
+    const grid = song.beat_grid;
+    if (!grid || grid.beats.length < 2) return null;
+    const avgBeatGapMs =
+      ((grid.beats[grid.beats.length - 1] - grid.beats[0]) /
+        (grid.beats.length - 1)) *
+      1000;
+    if (avgBeatGapMs * pixelsPerMs < BEAT_SNAP_MIN_PX) return null;
+    // Edge drags snap to whole beats; fractions stay a dialog affair.
+    // Rounding the beat here instead would push the last beat of a measure
+    // up to one past its end rather than onto the next downbeat.
+    return msToMeasureBeat(ms, 1);
+  }
+
   function patchSection(index: number, patch: Partial<SectionEntry>) {
     const updated = [...sections];
     const merged = { ...updated[index], ...patch };
     // An empty name keeps the previous one; "auto" color drops the key.
+    // Beat 1 is the measure boundary — drop the key to keep configs clean.
     if (!merged.name) merged.name = updated[index].name;
     if (!merged.color) delete merged.color;
+    if (!merged.start_beat || merged.start_beat === 1) delete merged.start_beat;
+    if (!merged.end_beat || merged.end_beat === 1) delete merged.end_beat;
     updated[index] = merged;
     handleSectionsChange(updated);
   }
@@ -416,8 +483,16 @@
     if (!grid) return 0;
     const startIdx = grid.measure_starts[measure - 1];
     if (startIdx === undefined) return songDurationMs;
-    const time = grid.beats[startIdx + (beat - 1)];
-    return time === undefined ? songDurationMs : time * 1000;
+    const offset = beat - 1;
+    const base = startIdx + Math.floor(offset);
+    const t0 = grid.beats[base];
+    if (t0 === undefined) return songDurationMs;
+    // Fractional beats interpolate between grid beats, matching the
+    // Rust-side BeatGrid::beat_time.
+    const frac = offset - Math.floor(offset);
+    if (frac === 0) return t0 * 1000;
+    const t1 = grid.beats[base + 1];
+    return (t1 === undefined ? t0 : t0 + (t1 - t0) * frac) * 1000;
   }
 
   /** Signature in effect at a position (base + prior changes). */
@@ -769,6 +844,8 @@
         {scrollLeft}
         {viewportWidth}
         {measureTimesMs}
+        beatToMs={measureBeatToMs}
+        {snapBoundary}
         {songDurationMs}
         emptyHint={song.beat_grid ? $t("sections.emptyHint") : ""}
         onsectionschange={handleSectionsChange}
@@ -865,6 +942,9 @@
     section={sections[sectionDialogIndex]}
     index={sectionDialogIndex}
     maxMeasure={measureTimesMs.length || 9999}
+    beatGrid={song.beat_grid}
+    posToMs={measureBeatToMs}
+    {playheadPos}
     onchange={(patch) => patchSection(sectionDialogIndex!, patch)}
     ondelete={() => deleteSection(sectionDialogIndex!)}
     onclose={() => (sectionDialogIndex = null)}

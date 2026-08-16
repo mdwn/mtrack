@@ -698,19 +698,31 @@ impl Song {
         let section = self.sections.iter().find(|s| s.name == name)?;
         let grid = self.beat_grid.as_ref()?;
 
-        // Measures are 1-indexed in config, 0-indexed in beat grid.
+        // Measures are 1-indexed in config, 0-indexed in beat grid. Beats
+        // are 1-based within their measure and may be fractional; omitted
+        // beats mean the measure boundary, matching the pre-beat behavior.
         let start_measure = section.start_measure.checked_sub(1)?;
         let end_measure = section.end_measure.checked_sub(1)?;
 
-        let (start_secs, _) = grid.measure_time_range(start_measure)?;
-        // For end, we want the start of the end measure (exclusive boundary).
+        let start_secs = grid.beat_time(start_measure, section.start_beat.unwrap_or(1.0))?;
+        // The end bound is exclusive: by default the start of the end
+        // measure; with an end_beat, that beat's time within it.
         let end_secs = if end_measure < grid.measure_starts.len() {
-            let beat_idx = *grid.measure_starts.get(end_measure)?;
-            *grid.beats.get(beat_idx)?
+            grid.beat_time(end_measure, section.end_beat.unwrap_or(1.0))?
         } else {
             // End measure is past the last measure — use the last beat time.
             *grid.beats.last()?
         };
+
+        // Config validation orders boundaries without the grid in hand, so
+        // it cannot always tell that two positions resolve to the same time
+        // or in the wrong order. Here the grid is available, and a section
+        // that is not a forward range is no section at all: better an
+        // honest "cannot be resolved" from seek and loop_section than a
+        // zero-length range that arms silently and never fires.
+        if start_secs >= end_secs {
+            return None;
+        }
 
         Some((
             Duration::from_secs_f64(start_secs),
@@ -3711,12 +3723,16 @@ pilot:
                 name: "verse".to_string(),
                 start_measure: 1,
                 end_measure: 2,
+                start_beat: None,
+                end_beat: None,
                 color: None,
             },
             crate::config::Section {
                 name: "chorus".to_string(),
                 start_measure: 2,
                 end_measure: 3,
+                start_beat: None,
+                end_beat: None,
                 color: None,
             },
         ];
@@ -3761,6 +3777,8 @@ pilot:
             name: "verse".to_string(),
             start_measure: 1,
             end_measure: 2,
+            start_beat: None,
+            end_beat: None,
             color: None,
         }];
         // No beat grid set.
@@ -3774,6 +3792,8 @@ pilot:
             name: "bad".to_string(),
             start_measure: 0, // Invalid: 1-indexed, so 0 means checked_sub fails.
             end_measure: 2,
+            start_beat: None,
+            end_beat: None,
             color: None,
         }];
         assert!(song.resolve_section("bad").is_none());
@@ -3786,9 +3806,112 @@ pilot:
             name: "far".to_string(),
             start_measure: 99,
             end_measure: 100,
+            start_beat: None,
+            end_beat: None,
             color: None,
         }];
         assert!(song.resolve_section("far").is_none());
+    }
+
+    #[test]
+    fn resolve_section_with_beats() {
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "riff".to_string(),
+            start_measure: 1,
+            end_measure: 2,
+            start_beat: Some(3.0), // beat 3 of measure 1 → 1.0s
+            end_beat: Some(2.0),   // beat 2 of measure 2 → 2.5s
+            color: None,
+        }];
+        let (start, end) = song.resolve_section("riff").unwrap();
+        assert!((start.as_secs_f64() - 1.0).abs() < 0.001);
+        assert!((end.as_secs_f64() - 2.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolve_section_with_fractional_beat() {
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "pickup".to_string(),
+            start_measure: 1,
+            end_measure: 2,
+            start_beat: Some(4.5), // halfway between beats 4 (1.5s) and 5 (2.0s)
+            end_beat: None,
+            color: None,
+        }];
+        let (start, _) = song.resolve_section("pickup").unwrap();
+        assert!((start.as_secs_f64() - 1.75).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolve_section_within_one_measure() {
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "bar".to_string(),
+            start_measure: 1,
+            end_measure: 1,
+            start_beat: Some(2.0), // 0.5s
+            end_beat: Some(4.0),   // 1.5s
+            color: None,
+        }];
+        let (start, end) = song.resolve_section("bar").unwrap();
+        assert!((start.as_secs_f64() - 0.5).abs() < 0.001);
+        assert!((end.as_secs_f64() - 1.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolve_section_beat_beyond_grid_returns_none() {
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "bad".to_string(),
+            start_measure: 2,
+            end_measure: 3,
+            start_beat: Some(9.0), // measure 2 has only beats 5..8 of the grid
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.resolve_section("bad").is_none());
+    }
+
+    #[test]
+    fn resolve_section_beat_past_its_measure_returns_none() {
+        // Beat 5 of a four-beat measure is measure 2's downbeat, so the
+        // section quietly starts a measure later than it reads — and here
+        // the range still comes out forward, so nothing downstream notices.
+        // A beat has to stay inside the measure that names it.
+        let mut song = super::Song::new_for_test("test", &["click"]);
+        song.beat_grid = Some(crate::audio::click_analysis::BeatGrid {
+            beats: (0..12).map(|i| i as f64 * 0.5).collect(),
+            measure_starts: vec![0, 4, 8],
+        });
+        song.sections = vec![crate::config::Section {
+            name: "spill".to_string(),
+            start_measure: 1,
+            end_measure: 3,
+            start_beat: Some(5.0),
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.resolve_section("spill").is_none());
+    }
+
+    #[test]
+    fn resolve_section_refuses_a_range_that_is_not_forward() {
+        // Reachable with every beat inside its measure and validation happy:
+        // the start is the grid's final beat (3.5s), and an end measure past
+        // the grid clamps to that same final beat. Zero length, so the loop
+        // would arm and never fire.
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "empty".to_string(),
+            start_measure: 2,
+            end_measure: 5,
+            start_beat: Some(4.0),
+            end_beat: None,
+            color: None,
+        }];
+        assert!(song.resolve_section("empty").is_none());
     }
 
     #[test]

@@ -307,11 +307,32 @@ sections:
   - name: verse
     start_measure: 5
     end_measure: 21
+  # A section that doesn't sit on measure lines: from beat 4 of measure 21
+  # to halfway between beats 2 and 3 of measure 29.
+  - name: outro-riff
+    start_measure: 21
+    start_beat: 4
+    end_measure: 29
+    end_beat: 2.5
 ```
 
 - `name` — Display name for the section (must not be empty)
 - `start_measure` — Start measure, 1-indexed, inclusive
-- `end_measure` — End measure, 1-indexed, exclusive (must be greater than `start_measure`)
+- `end_measure` — End measure, 1-indexed, exclusive (the end position must come
+  after the start position)
+- `start_beat` / `end_beat` — Optional beat within the boundary measure
+  (1-based; omitted means beat 1, the measure line). Fractional values land
+  between beats: `2.5` is halfway between the measure's second and third beats.
+  With beats, a section may start and end inside the same measure.
+
+  A beat has to stay inside the measure that names it: in 4/4 the last position
+  is anything below `5`, since beat `5` is the next measure's downbeat and is
+  written `start_measure: 22` instead. (Counting follows the beat grid, so a
+  measure holds as many beats as the meter's numerator — six in 6/8, not
+  three.) A beat past the end of its measure is a config error when the song
+  has a `tempo:` block; without one the measure lengths come from click
+  analysis, and the section simply fails to resolve, so seeking to it and
+  looping it both report the section as unresolvable.
 
 Sections can also be created visually in the web UI's Timeline tab with a canvas-based
 timeline editor that supports drag-to-create, resize, move, rename, and delete.

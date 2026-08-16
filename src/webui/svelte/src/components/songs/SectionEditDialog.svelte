@@ -17,11 +17,15 @@
   import { SECTION_COLORS, sectionColor } from "../../lib/sectionColors";
   import MarkerDialog from "./MarkerDialog.svelte";
   import NumberStepper from "../NumberStepper.svelte";
+  import { maxBeatInMeasure, type BeatGrid } from "../../lib/util/beatGrid";
 
   interface SectionEntry {
     name: string;
     start_measure: number;
     end_measure: number;
+    /** 1-based beat within the measure, fractional allowed; absent = 1. */
+    start_beat?: number;
+    end_beat?: number;
     color?: string;
   }
 
@@ -31,6 +35,15 @@
     index: number;
     /** The song's measure count, bounding the steppers. */
     maxMeasure?: number;
+    /** Beat times, so the beat steppers can stop at the end of their
+     * measure and the two boundaries can be ordered by resolved time. */
+    beatGrid?: BeatGrid | null;
+    /** Resolves a boundary to milliseconds — the same function the edge
+     * drags order positions with. */
+    posToMs?: ((measure: number, beat: number) => number) | null;
+    /** The preview playhead as a boundary position (half-beat snapped),
+     * when this song is loaded in the player. Enables "set here". */
+    playheadPos?: { measure: number; beat: number } | null;
     onchange: (patch: Partial<SectionEntry>) => void;
     ondelete: () => void;
     onclose: () => void;
@@ -40,6 +53,9 @@
     section,
     index,
     maxMeasure = 9999,
+    beatGrid = null,
+    posToMs = null,
+    playheadPos = null,
     onchange,
     ondelete,
     onclose,
@@ -47,6 +63,67 @@
 
   let autoColor = $derived(sectionColor(undefined, index));
   let length = $derived(section.end_measure - section.start_measure);
+
+  /** "13" for a measure-line boundary, "13.4" with a beat offset. */
+  function posLabel(measure: number, beat?: number): string {
+    return beat && beat !== 1 ? `${measure}.${beat}` : `${measure}`;
+  }
+
+  /** Beat 1 is the measure line — store that as "unset". */
+  function setBeat(field: "start_beat" | "end_beat", beat: number) {
+    onchange({ [field]: beat === 1 ? undefined : beat });
+  }
+
+  /** How far the beat steppers go: the end of their own measure. Without a
+   * grid there is nothing to measure against, so they stay open. */
+  const BEAT_STEP = 0.5;
+  let maxStartBeat = $derived(
+    maxBeatInMeasure(beatGrid, section.start_measure, BEAT_STEP) ?? 32,
+  );
+  let maxEndBeat = $derived(
+    maxBeatInMeasure(beatGrid, section.end_measure, BEAT_STEP) ?? 32,
+  );
+
+  /** Position ordering by resolved time, the way the edge drags do it.
+   * Comparing (measure, beat) tuples instead would call m1 beat 5 earlier
+   * than m2 beat 1 when in 4/4 they are the same instant — the steppers no
+   * longer offer that, but a hand-written config still can. Falls back to
+   * the tuples when there is no grid to resolve against. */
+  function isBefore(
+    a: { measure: number; beat: number },
+    b: { measure: number; beat: number },
+  ): boolean {
+    if (posToMs) {
+      return posToMs(a.measure, a.beat) < posToMs(b.measure, b.beat);
+    }
+    return (
+      a.measure < b.measure || (a.measure === b.measure && a.beat < b.beat)
+    );
+  }
+
+  let startPos = $derived({
+    measure: section.start_measure,
+    beat: section.start_beat ?? 1,
+  });
+  let endPos = $derived({
+    measure: section.end_measure,
+    beat: section.end_beat ?? 1,
+  });
+  /** The capture buttons stay disabled when they would invert the section. */
+  let canCaptureStart = $derived(
+    playheadPos !== null && isBefore(playheadPos, endPos),
+  );
+  let canCaptureEnd = $derived(
+    playheadPos !== null && isBefore(startPos, playheadPos),
+  );
+
+  function captureBoundary(field: "start" | "end") {
+    if (!playheadPos) return;
+    onchange({
+      [`${field}_measure`]: playheadPos.measure,
+      [`${field}_beat`]: playheadPos.beat === 1 ? undefined : playheadPos.beat,
+    });
+  }
 
   /** Moving the start slides the whole section, like a body drag. */
   function moveStart(start: number) {
@@ -71,7 +148,10 @@
     <span class="section-label">
       {$t("sections.dialog.name")}
       <span class="range-note"
-        >m{section.start_measure}–{section.end_measure}</span
+        >m{posLabel(section.start_measure, section.start_beat)}–{posLabel(
+          section.end_measure,
+          section.end_beat,
+        )}</span
       >
     </span>
     <input
@@ -107,6 +187,58 @@
         />
       </div>
     </div>
+    <div class="stepper-row">
+      <div class="labeled-stepper">
+        <span class="mini-label">{$t("sections.dialog.startBeat")}</span>
+        <NumberStepper
+          value={section.start_beat ?? 1}
+          min={1}
+          max={maxStartBeat}
+          step={BEAT_STEP}
+          decimals={1}
+          ariaLabel={$t("sections.dialog.startBeat")}
+          onchange={(v) => setBeat("start_beat", v)}
+        />
+      </div>
+      <div class="labeled-stepper">
+        <span class="mini-label">{$t("sections.dialog.endBeat")}</span>
+        <NumberStepper
+          value={section.end_beat ?? 1}
+          min={1}
+          max={maxEndBeat}
+          step={BEAT_STEP}
+          decimals={1}
+          ariaLabel={$t("sections.dialog.endBeat")}
+          onchange={(v) => setBeat("end_beat", v)}
+        />
+      </div>
+    </div>
+    <span class="beat-note">{$t("sections.dialog.beatNote")}</span>
+    {#if playheadPos}
+      <div class="stepper-row playhead-capture">
+        <span class="mini-label"
+          >{$t("sections.dialog.playheadAt", {
+            values: {
+              pos: `m${posLabel(playheadPos.measure, playheadPos.beat)}`,
+            },
+          })}</span
+        >
+        <button
+          type="button"
+          class="btn btn-sm"
+          disabled={!canCaptureStart}
+          onclick={() => captureBoundary("start")}
+          >{$t("sections.dialog.setStartHere")}</button
+        >
+        <button
+          type="button"
+          class="btn btn-sm"
+          disabled={!canCaptureEnd}
+          onclick={() => captureBoundary("end")}
+          >{$t("sections.dialog.setEndHere")}</button
+        >
+      </div>
+    {/if}
   </div>
 
   <div class="dialog-section">
@@ -163,6 +295,22 @@
     text-transform: none;
     letter-spacing: 0;
     color: var(--text-dim);
+  }
+
+  .beat-note {
+    display: block;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .playhead-capture {
+    margin-top: 10px;
+    align-items: center;
+  }
+
+  .playhead-capture .mini-label {
+    font-family: var(--mono);
   }
   .name-input {
     font-size: 16px;
