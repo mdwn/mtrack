@@ -147,7 +147,15 @@ pub fn analyze_show(shows: Vec<LightShow>, fallback_tempo_map: Option<&TempoMap>
             dark_from.get_or_insert(start);
         } else {
             if let Some(from) = dark_from.take() {
-                analysis.dark_windows.push(window(from, start, &tempo_map));
+                // Only a gap *between* activity counts. A show whose first cue
+                // carries just layer commands — `clear()` and `master(...)` to
+                // reset the rig — starts its boundary list before anything
+                // runs, and reporting that as a window would put dark seconds
+                // outside the span and make the two numbers contradict each
+                // other. Trailing silence is dropped below for the same reason.
+                if first_active.is_some() {
+                    analysis.dark_windows.push(window(from, start, &tempo_map));
+                }
             }
             first_active.get_or_insert(start);
             last_active_end = end;
@@ -516,6 +524,36 @@ show "T" {
 "#,
         );
         assert_eq!(analysis.span, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn silence_before_the_first_effect_is_not_a_gap() {
+        // Opening with layer commands to reset the rig puts a boundary at zero
+        // before anything runs. Counting that as a dark window made
+        // `dark_seconds` exceed `span` — two numbers in one report
+        // contradicting each other.
+        let analysis = analyze(
+            r#"
+show "T" {
+    @00:00.000
+    clear()
+    master(layer: background, intensity: 100%)
+
+    @00:08.000
+    wash: static color: "blue", duration: 4s
+}
+"#,
+        );
+        assert!(
+            analysis.dark_windows.is_empty(),
+            "the show simply starts at 8s: {:?}",
+            analysis.dark_windows
+        );
+        assert_eq!(analysis.span, Duration::from_secs(4));
+        assert!(
+            analysis.dark_seconds() <= analysis.span.as_secs_f64(),
+            "dark time cannot exceed the span"
+        );
     }
 
     #[test]

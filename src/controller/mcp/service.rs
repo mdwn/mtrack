@@ -458,7 +458,34 @@ impl McpServer {
                 .flat_map(|dsl| dsl.shows().values().cloned())
                 .collect();
             sort_shows(&mut shows);
-            let cues: Vec<Value> = shows.iter().flat_map(cue_timeline).collect();
+
+            // Merged and time-sorted, the way the player's own timeline
+            // combines a song's shows. Concatenating per show would restart
+            // indices at zero for each one and interleave their times, so the
+            // same song answered differently depending on which branch ran.
+            let tempo = shows.iter().find_map(|s| s.tempo_map.clone());
+            let mut cues: Vec<(std::time::Duration, usize)> = shows
+                .iter()
+                .flat_map(|show| show.cues.iter().map(|cue| (cue.time, cue.effects.len())))
+                .collect();
+            cues.sort_by_key(|(time, _)| *time);
+
+            let cues: Vec<Value> = cues
+                .into_iter()
+                .enumerate()
+                .map(|(index, (time, effects))| {
+                    json!({
+                        "index": index,
+                        "time": format_duration(time),
+                        "seconds": time.as_secs_f64(),
+                        "position": tempo.as_ref().map(|m| {
+                            let (measure, beat) = m.time_to_measure_beat(time);
+                            format!("@{measure}/{beat:.2}")
+                        }),
+                        "effects": effects,
+                    })
+                })
+                .collect();
             return Ok(ok_json(json!({ "song": name, "cues": cues })));
         }
 
@@ -527,10 +554,11 @@ impl McpServer {
         let Some(song) = song else {
             return Ok(ok_json(json!({
                 "started": false,
-                "reason": "a song is already playing; play_from does not \
-                           interrupt it",
-                "hint": "call `stop` first, or use `seek` to move within the \
-                         current song",
+                // See `play_song_from`: `None` covers several cases.
+                "reason": "the player did not start the song; the most common \
+                           cause is that one is already playing",
+                "hint": "check `status`; call `stop` first, or use `seek` to \
+                         move within the current song",
             })));
         };
         Ok(ok_json(json!({
@@ -566,10 +594,13 @@ impl McpServer {
         let Some(song) = song else {
             return Ok(ok_json(json!({
                 "started": false,
-                "reason": "a song is already playing; play_song_from does not \
-                           interrupt it",
-                "hint": "call `stop` first, or use `seek` to move within the \
-                         current song",
+                // The player returns nothing for more than one reason — a song
+                // already playing, a loop break, an empty playlist — and does
+                // not say which. Report the fact, not a guess at the cause.
+                "reason": "the player did not start the song; the most common \
+                           cause is that one is already playing",
+                "hint": "check `status`; call `stop` first, or use `seek` to \
+                         move within the current song",
             })));
         };
 
@@ -2874,18 +2905,33 @@ async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
     // The timeline mutex is shared with the effects loop thread, so this reads
     // it on the blocking pool rather than parking a tokio worker on it.
     let lighting = match player.dmx_engine() {
-        Some(dmx) => tokio::task::spawn_blocking(move || dmx.lighting_arming_state())
-            .await
-            .ok()
-            .flatten()
-            .map(|(armed, total, remaining, next)| {
-                json!({
+        Some(dmx) => {
+            // Bounded, because this is the diagnostic of last resort: if the
+            // effects loop wedges holding the timeline mutex, `status` must
+            // still answer rather than hang alongside it. A timeout or a
+            // panicked task is reported as such, not silently flattened into
+            // "no show loaded" — that is the one field meant to tell those
+            // apart.
+            let read = tokio::task::spawn_blocking(move || dmx.lighting_arming_state());
+            match tokio::time::timeout(std::time::Duration::from_millis(500), read).await {
+                Ok(Ok(Some((armed, total, remaining, next)))) => Some(json!({
                     "armed": armed,
                     "cues_total": total,
                     "cues_remaining": remaining,
                     "next_cue_seconds": next.map(|t| t.as_secs_f64()),
-                })
-            }),
+                })),
+                Ok(Ok(None)) => None,
+                Ok(Err(e)) => Some(json!({
+                    "available": false,
+                    "reason": format!("lighting state read failed: {e}"),
+                })),
+                Err(_) => Some(json!({
+                    "available": false,
+                    "reason": "timed out reading lighting state — the effects \
+                               loop may be stalled holding the timeline lock",
+                })),
+            }
+        }
         None => None,
     };
 
@@ -3486,11 +3532,23 @@ mod unregister_lighting_tests {
     #[test]
     fn handles_the_multi_line_quoted_form_the_shipped_songs_use() {
         // examples/songs/dsl-light-show-song/song.yaml writes entries as
-        // `- name: "..."` with `file:` on the next line, quoted. Matching only
-        // the `-` line misses the path entirely.
-        let yaml = format!(
-            "{BASE}lighting:\n  - name: \"Main Show\"\n    file: \"lighting/main_show.light\"\n               - name: \"Outro Show\"\n    file: \"lighting/outro.light\"\n"
-        );
+        // `- name: "..."` with `file:` on the next line, quoted and indented
+        // two spaces. Matching only the `-` line misses the path entirely.
+        let block = [
+            "lighting:",
+            "  - name: \"Main Show\"",
+            "    file: \"lighting/main_show.light\"",
+            "  - name: \"Outro Show\"",
+            "    file: \"lighting/outro.light\"",
+            "",
+        ]
+        .join("\n");
+        let yaml = format!("{BASE}{block}");
+
+        let song: crate::config::Song =
+            super::serde_yaml_from_str(&yaml).expect("precondition: valid song");
+        assert_eq!(song.lighting().map(|l| l.len()), Some(2));
+
         let updated =
             unregister_lighting_file(&yaml, "lighting/outro.light").expect("removes the entry");
         assert!(!updated.contains("outro.light"), "{updated}");

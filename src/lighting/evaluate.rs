@@ -152,7 +152,21 @@ where
                     }
                 })
                 .collect();
-            active_effects.sort_by(|a, b| a.id.cmp(&b.id));
+            // Ordered by nothing that depends on the id. Ids come from a
+            // process-global counter and were compared as strings, so
+            // `song_effect_10` sorted before `song_effect_9` and the order
+            // shifted as the counter advanced — two evaluations of the same
+            // instant in one call could disagree, contradicting the
+            // independence this module promises. Elapsed descending puts the
+            // earliest-started effect first; the rest of the key is stable
+            // content.
+            active_effects.sort_by(|a, b| {
+                b.elapsed
+                    .cmp(&a.elapsed)
+                    .then_with(|| a.layer.cmp(&b.layer))
+                    .then_with(|| a.effect_type.cmp(b.effect_type))
+                    .then_with(|| a.fixtures.cmp(&b.fixtures))
+            });
 
             Evaluation {
                 time,
@@ -223,7 +237,15 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
             }
         })
         .collect();
-    active_effects.sort_by(|a, b| a.id.cmp(&b.id));
+    // Same stable ordering as `evaluate_show`, so predicted and live output
+    // can be compared line for line.
+    active_effects.sort_by(|a, b| {
+        b.elapsed
+            .cmp(&a.elapsed)
+            .then_with(|| a.layer.cmp(&b.layer))
+            .then_with(|| a.effect_type.cmp(b.effect_type))
+            .then_with(|| a.fixtures.cmp(&b.fixtures))
+    });
 
     let mut fixtures = compute_fixture_snapshots(&engine.get_fixture_states(), &has_dimmer);
     fill_dark_fixtures(&mut fixtures, engine.get_fixture_registry().values());

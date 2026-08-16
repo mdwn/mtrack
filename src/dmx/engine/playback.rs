@@ -202,6 +202,15 @@ impl Engine {
 
         if dmx_midi_sheets.is_empty() && !has_lighting {
             info!(song = song.name(), "Song has no matching light shows.");
+            // Drop the previous song's timeline. Leaving it installed makes
+            // `status.lighting` report that song's cue counts for this one —
+            // "a show is loaded but never armed" for a song that has no show,
+            // which is exactly the wrong answer from the field added to end
+            // that guesswork.
+            {
+                let mut current_timeline = dmx_engine.current_song_timeline.lock();
+                *current_timeline = None;
+            }
             ready_tx.send();
             return Ok(());
         }

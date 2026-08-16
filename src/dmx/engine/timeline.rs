@@ -217,6 +217,11 @@ impl Engine {
     /// A write stamped with a superseded generation is dropped. See
     /// [`Engine::playback_generation`] for why one stale write is fatal rather
     /// than merely untidy.
+    ///
+    /// Best-effort, not airtight: the generation is read and the time stored as
+    /// two operations, so a writer preempted between them can still land after
+    /// a new playback has begun. It closes the window that stays open for a
+    /// whole tracker sleep interval, not the one that lasts two instructions.
     pub fn update_song_time_for_generation(&self, song_time: Duration, generation: u64) {
         if generation != self.playback_generation() {
             return;
