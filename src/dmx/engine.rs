@@ -101,6 +101,16 @@ pub struct Engine {
     pub(super) effects_loop_handle: Mutex<Option<JoinHandle<()>>>,
     pub(super) current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
     pub(super) current_song_time: Arc<AtomicU64>,
+    /// Which playback the song-time writers belong to.
+    ///
+    /// A seek or song change starts a new playback while the outgoing one's
+    /// song-time tracker is still winding down, and that tracker carries the
+    /// *previous* start offset. One stale write is enough to silence a show
+    /// for its whole duration: the cue pointer only moves forward, so a write
+    /// past the last cue exhausts the timeline permanently, and effects expire
+    /// against score time that jumped. Writers stamp their generation and a
+    /// write from a superseded one is dropped.
+    pub(super) playback_generation: Arc<AtomicU64>,
     pub(super) timeline_finished: Arc<AtomicBool>,
     pub(super) timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>>,
     pub(super) broadcast_tx: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
@@ -191,6 +201,7 @@ impl Engine {
         let current_song_timeline: Arc<Mutex<Option<LightingTimeline>>> =
             Arc::new(Mutex::new(None));
         let current_song_time = Arc::new(AtomicU64::new(0));
+        let playback_generation = Arc::new(AtomicU64::new(0));
         let timeline_finished = Arc::new(AtomicBool::new(true));
         let timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>> = Arc::new(Mutex::new(None));
 
@@ -209,6 +220,7 @@ impl Engine {
             lighting_system,
             lighting_config: lighting_config.cloned(),
             current_song_timeline,
+            playback_generation,
             current_song_time,
             timeline_finished,
             timeline_cancel_handle,
@@ -1836,6 +1848,94 @@ mod test {
                 ));
             }
             assert!(engine.get_timeline_cues().is_empty());
+            Ok(())
+        }
+    }
+
+    /// A stale song-time write cannot be undone: the cue pointer only moves
+    /// forward, so one jump past the end of the show silences it permanently.
+    ///
+    /// This is the failure shape #332 reports — reconstruction at the seek
+    /// point works, then not a single cue fires for the rest of the playback —
+    /// and it is why song time is now guarded by a playback generation.
+    mod stale_song_time_tests {
+        use super::*;
+        use crate::lighting::parser::{Cue, LayerCommand};
+        use crate::lighting::timeline::LightingTimeline;
+
+        fn cue_at(secs: u64) -> Cue {
+            Cue {
+                time: std::time::Duration::from_secs(secs),
+                effects: vec![],
+                layer_commands: Vec::<LayerCommand>::new(),
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            }
+        }
+
+        fn armed_engine() -> Result<(Arc<Engine>, CancelHandle), Box<dyn Error>> {
+            let (engine, cancel) = create_engine()?;
+            {
+                let mut timeline = engine.current_song_timeline.lock();
+                *timeline = Some(LightingTimeline::new_with_cues(vec![
+                    cue_at(1),
+                    cue_at(2),
+                    cue_at(3),
+                ]));
+            }
+            engine.update_song_time(Duration::ZERO);
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            Ok((engine, cancel))
+        }
+
+        fn cues_remaining(engine: &Engine) -> bool {
+            let timeline = engine.current_song_timeline.lock();
+            timeline.as_ref().is_some_and(|tl| !tl.is_finished())
+        }
+
+        #[test]
+        fn a_jump_past_the_end_exhausts_the_timeline() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel) = armed_engine()?;
+            assert!(cues_remaining(&engine), "freshly armed");
+
+            // What a stale tracker from the outgoing playback would write.
+            engine.update_song_lighting(Duration::from_secs(300))?;
+            assert!(!cues_remaining(&engine), "one jump exhausts every cue");
+
+            // And it never recovers: the pointer does not move backwards.
+            engine.update_song_lighting(Duration::from_secs(1))?;
+            assert!(
+                !cues_remaining(&engine),
+                "the show stays silent for the rest of the playback"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn the_generation_guard_drops_a_stale_write() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel) = armed_engine()?;
+            let stale = engine.playback_generation();
+
+            // A new playback begins — the previous one's writers are now stale.
+            engine.begin_playback_generation();
+            engine.update_song_time(Duration::ZERO);
+
+            engine.update_song_time_for_generation(Duration::from_secs(300), stale);
+            assert_eq!(
+                engine.get_song_time(),
+                Duration::ZERO,
+                "a write from the previous playback must not land"
+            );
+
+            engine.update_song_time_for_generation(
+                Duration::from_secs(1),
+                engine.playback_generation(),
+            );
+            assert_eq!(
+                engine.get_song_time(),
+                Duration::from_secs(1),
+                "the current playback still writes normally"
+            );
             Ok(())
         }
     }

@@ -137,6 +137,12 @@ impl Engine {
             }
         }
 
+        // Claim this playback's generation before anything writes song time.
+        // The outgoing playback's tracker may still be awake for up to its
+        // sleep interval, carrying the previous start offset; from here its
+        // writes are dropped rather than landing on our freshly armed timeline.
+        let generation = dmx_engine.begin_playback_generation();
+
         // Reset song time to start time for new song BEFORE starting timeline
         // This ensures the effects loop uses the correct time when updating
         dmx_engine.update_song_time(start_time);
@@ -243,6 +249,7 @@ impl Engine {
             start_time,
             clock.clone(),
             Some(section_owns_time.clone()),
+            generation,
         );
 
         // Store the cancel handle so the effects loop can notify when everything finishes
@@ -569,19 +576,24 @@ impl Engine {
         }
     }
 
-    /// Starts a thread to track song time from a specific start time
+    /// Starts a thread to track song time from a specific start time.
+    ///
+    /// Claims a fresh playback generation, so any tracker still running from a
+    /// previous playback stops being able to write.
     pub fn start_song_time_tracker_from(
         dmx_engine: Arc<Engine>,
         cancel_handle: CancelHandle,
         start_offset: Duration,
         clock: crate::clock::PlaybackClock,
     ) -> JoinHandle<()> {
+        let generation = dmx_engine.begin_playback_generation();
         Self::start_song_time_tracker_with_section(
             dmx_engine,
             cancel_handle,
             start_offset,
             clock,
             None,
+            generation,
         )
     }
 
@@ -591,6 +603,7 @@ impl Engine {
         start_offset: Duration,
         clock: crate::clock::PlaybackClock,
         section_owns_time: Option<Arc<AtomicBool>>,
+        generation: u64,
     ) -> JoinHandle<()> {
         let timeline_finished = dmx_engine.timeline_finished.clone();
         thread::spawn(move || {
@@ -605,7 +618,7 @@ impl Engine {
                 if !section_writing {
                     let elapsed = clock.elapsed();
                     let song_time = start_offset + elapsed;
-                    dmx_engine.update_song_time(song_time);
+                    dmx_engine.update_song_time_for_generation(song_time, generation);
                 }
 
                 thread::sleep(Duration::from_millis(10));

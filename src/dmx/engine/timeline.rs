@@ -14,7 +14,7 @@
 
 use std::{error::Error, time::Duration};
 
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::songs::Song;
 
@@ -97,6 +97,23 @@ impl Engine {
                 crate::lighting::timeline::TimelineUpdate::default()
             }
         };
+
+        // A show that is loaded but exhausted the moment it is armed will not
+        // fire anything for the whole playback, and says nothing about it. That
+        // is the shape of #332, so it is worth a line in the log.
+        {
+            let timeline = self.current_song_timeline.lock();
+            if let Some(tl) = timeline.as_ref() {
+                if tl.cue_count() > 0 && tl.cues_remaining() == 0 {
+                    warn!(
+                        cues = tl.cue_count(),
+                        start_time_ms = start_time.as_millis(),
+                        "lighting timeline armed with no cues ahead of the pointer — \
+                         no cues will fire for this playback"
+                    );
+                }
+            }
+        }
 
         // Apply the historical timeline update to ensure deterministic state
         // This must happen before the effects loop can process new cues to avoid conflicts
@@ -187,12 +204,38 @@ impl Engine {
         // or when explicitly stopping playback.
     }
 
-    /// Updates the current song time
+    /// Updates the current song time.
     pub fn update_song_time(&self, song_time: Duration) {
         self.current_song_time.store(
             song_time.as_nanos() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
+    }
+
+    /// Updates the current song time on behalf of a specific playback.
+    ///
+    /// A write stamped with a superseded generation is dropped. See
+    /// [`Engine::playback_generation`] for why one stale write is fatal rather
+    /// than merely untidy.
+    pub fn update_song_time_for_generation(&self, song_time: Duration, generation: u64) {
+        if generation != self.playback_generation() {
+            return;
+        }
+        self.update_song_time(song_time);
+    }
+
+    /// Starts a new playback generation, superseding the previous one's
+    /// song-time writers. Returns the new generation.
+    pub fn begin_playback_generation(&self) -> u64 {
+        self.playback_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1
+    }
+
+    /// The generation writes must carry to be accepted.
+    pub fn playback_generation(&self) -> u64 {
+        self.playback_generation
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Gets the current song time
@@ -223,6 +266,24 @@ impl Engine {
     /// state the live loop will go on to advance from.
     pub(crate) fn to_delayed_song_time(&self, song_time: Duration) -> Duration {
         song_time.saturating_sub(self.playback_delay)
+    }
+
+    /// A one-call answer to "is the lighting actually going to fire".
+    ///
+    /// Returns `None` when no show is loaded. Otherwise reports whether the
+    /// timeline is armed and where its cue pointer sits — the state that
+    /// previously could only be inferred by watching for effects and waiting
+    /// to see whether any arrived.
+    pub fn lighting_arming_state(&self) -> Option<(bool, usize, usize, Option<Duration>)> {
+        let timeline = self.current_song_timeline.lock();
+        timeline.as_ref().map(|tl| {
+            (
+                tl.is_armed(),
+                tl.cue_count(),
+                tl.cues_remaining(),
+                tl.next_cue_time(),
+            )
+        })
     }
 
     /// Gets all cues from the current timeline with their times and indices

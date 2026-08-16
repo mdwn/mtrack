@@ -374,7 +374,11 @@ impl McpServer {
     }
 
     #[tool(description = "Return the current playback status: active playlist, \
-        current song, whether a song is playing, and elapsed time.")]
+        current song, whether a song is playing, elapsed time, and — when a \
+        light show is loaded — whether its timeline is armed and where its cue \
+        pointer sits. `lighting.armed` false, or `cues_remaining` 0 while the \
+        song is still playing, means no cues will fire for the rest of this \
+        playback.")]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         Ok(ok_json(self.status_snapshot().await?))
     }
@@ -2591,11 +2595,33 @@ async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
         .await
         .map_err(internal_err)?
         .unwrap_or_default();
+    // Whether the lighting will actually fire, answerable here rather than by
+    // polling for effects and inferring from their absence (#332).
+    //
+    // The timeline mutex is shared with the effects loop thread, so this reads
+    // it on the blocking pool rather than parking a tokio worker on it.
+    let lighting = match player.dmx_engine() {
+        Some(dmx) => tokio::task::spawn_blocking(move || dmx.lighting_arming_state())
+            .await
+            .ok()
+            .flatten()
+            .map(|(armed, total, remaining, next)| {
+                json!({
+                    "armed": armed,
+                    "cues_total": total,
+                    "cues_remaining": remaining,
+                    "next_cue_seconds": next.map(|t| t.as_secs_f64()),
+                })
+            }),
+        None => None,
+    };
+
     Ok(json!({
         "playlist_name": playlist.name(),
         "current_song": current.as_ref().map(|s| song_summary(s)),
         "playing": playing,
         "elapsed": format_duration(elapsed),
+        "lighting": lighting,
     }))
 }
 
