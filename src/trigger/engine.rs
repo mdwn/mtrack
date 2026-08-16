@@ -36,6 +36,23 @@ use crate::thread_priority::{callback_thread_priority, promote_to_realtime, rt_a
 /// to the recovery thread.
 type ErrorNotify = Arc<(Mutex<bool>, Condvar)>;
 
+/// Whether a backend error means this stream is finished and must be replaced.
+///
+/// An xrun is not. cpal's input worker reports every one through the error
+/// callback and then calls `prepare()` and `start()` and carries on, so the
+/// stream keeps delivering — and they arrive routinely, exactly when the machine
+/// is already under load. Rebuilding for one costs a device re-resolve, a
+/// detector rebuild, and a window with no trigger detection at all, to replace a
+/// glitch cpal had already fixed. The output path reached the same conclusion in
+/// #370 and measured the reopen at ~29ms against a glitch of about one.
+///
+/// Everything else does warrant a rebuild, including the case that makes this
+/// loop necessary: on `DeviceNotAvailable` cpal's worker returns outright, so
+/// nothing will ever be delivered again until the stream is replaced.
+fn warrants_rebuild(err: &cpal::Error) -> bool {
+    err.kind() != cpal::ErrorKind::Xrun
+}
+
 /// Shared shutdown signal so `Drop` can wake the recovery thread.
 type ShutdownNotify = Arc<(Mutex<bool>, Condvar)>;
 
@@ -184,7 +201,7 @@ impl TriggerEngine {
             std::thread::Builder::new()
                 .name("trigger-input-recovery".into())
                 .spawn(move || {
-                    Self::recovery_loop(stream, params, tx, error_notify, shutdown);
+                    Self::recovery_loop(stream, error_notify, params, tx, shutdown);
                 })?
         };
 
@@ -203,26 +220,30 @@ impl TriggerEngine {
     /// Runs the stream recovery loop. Blocks until shutdown.
     fn recovery_loop(
         mut stream: cpal::Stream,
+        mut error_notify: ErrorNotify,
         params: StreamParams,
         tx: Sender<TriggerAction>,
-        error_notify: ErrorNotify,
         shutdown: ShutdownNotify,
     ) {
         loop {
             // Wait for either a stream error or shutdown.
-            let (err_mutex, err_condvar) = &*error_notify;
-            let (shut_mutex, _) = &*shutdown;
-            loop {
-                if *shut_mutex.lock() {
-                    drop(stream);
-                    return;
+            //
+            // Scoped so the borrow of `error_notify` ends before the rebuild
+            // below replaces it.
+            {
+                let (err_mutex, err_condvar) = &*error_notify;
+                let (shut_mutex, _) = &*shutdown;
+                loop {
+                    if *shut_mutex.lock() {
+                        drop(stream);
+                        return;
+                    }
+                    let mut errored = err_mutex.lock();
+                    if *errored {
+                        break;
+                    }
+                    err_condvar.wait_for(&mut errored, std::time::Duration::from_millis(500));
                 }
-                let mut errored = err_mutex.lock();
-                if *errored {
-                    *errored = false;
-                    break;
-                }
-                err_condvar.wait_for(&mut errored, std::time::Duration::from_millis(500));
             }
 
             // Drop the old stream and attempt to rebuild.
@@ -257,6 +278,21 @@ impl TriggerEngine {
                     }
                 };
 
+                // A fresh signal per attempt, never the one the dead stream held.
+                //
+                // Sharing one meant an error latched by a stream that was already
+                // gone was still set when its replacement came up, and the wait
+                // above returned immediately and tore the new stream straight back
+                // down. cpal can raise the same fault twice — one USB unplug on the
+                // test rig produced two POLLERR callbacks 0.2ms apart — so the
+                // second outlived the rebuild it triggered. Clearing the flag
+                // before each build fixes that instance and not the class: the
+                // attempt below can build a stream, have `play()` fail, drop it,
+                // and go round again, and that discarded stream still holds the
+                // signal. A fresh one has nobody to inherit from. Same fix as the
+                // output path in #370.
+                let attempt_notify: ErrorNotify = Arc::new((Mutex::new(false), Condvar::new()));
+
                 match Self::build_input_stream(
                     &device,
                     &params.stream_config,
@@ -265,7 +301,7 @@ impl TriggerEngine {
                     tx.clone(),
                     params.sample_format,
                     params.crosstalk,
-                    error_notify.clone(),
+                    attempt_notify.clone(),
                 ) {
                     Ok(new_stream) => {
                         if let Err(e) = new_stream.play() {
@@ -275,6 +311,7 @@ impl TriggerEngine {
                         }
                         info!("Trigger input stream recovered after backend error");
                         stream = new_stream;
+                        error_notify = attempt_notify;
                         break;
                     }
                     Err(e) => {
@@ -361,7 +398,15 @@ impl TriggerEngine {
                     process_frame(&f32_frame, &mut detectors, &tx, crosstalk);
                 }
             },
-            move |err| {
+            move |err: cpal::Error| {
+                if !warrants_rebuild(&err) {
+                    // Runs on cpal's input worker. No formatting happens unless
+                    // the level is enabled, which matters because xruns arrive
+                    // in storms precisely when the machine is already struggling.
+                    debug!(error = %err, "Trigger input xrun; cpal recovered in place");
+                    return;
+                }
+
                 error!(
                     error = %err,
                     "Trigger input stream error (will attempt to recover)"
@@ -532,6 +577,54 @@ fn process_frame(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    mod warrants_rebuild_tests {
+        use super::*;
+
+        /// cpal recovers an input xrun itself, via `prepare()` + `start()`, so
+        /// the stream keeps delivering. Rebuilding costs a device re-resolve and
+        /// a window with no trigger detection, to replace a glitch already fixed.
+        #[test]
+        fn an_xrun_does_not_warrant_a_rebuild() {
+            assert!(!warrants_rebuild(&cpal::Error::new(cpal::ErrorKind::Xrun)));
+        }
+
+        /// The case this loop exists for: cpal's worker returns outright, so
+        /// nothing is ever delivered again until the stream is replaced.
+        #[test]
+        fn a_lost_device_warrants_a_rebuild() {
+            assert!(warrants_rebuild(&cpal::Error::new(
+                cpal::ErrorKind::DeviceNotAvailable
+            )));
+        }
+
+        /// Unknown faults rebuild. Guessing wrong that way costs one reopen;
+        /// guessing wrong the other way leaves triggers silently dead for a set.
+        #[test]
+        fn other_faults_warrant_a_rebuild() {
+            for kind in [
+                cpal::ErrorKind::StreamInvalidated,
+                cpal::ErrorKind::BackendError,
+                cpal::ErrorKind::DeviceBusy,
+                cpal::ErrorKind::Other,
+            ] {
+                assert!(
+                    warrants_rebuild(&cpal::Error::new(kind)),
+                    "{kind:?} should rebuild"
+                );
+            }
+        }
+
+        /// The message carried alongside the kind must not change the verdict —
+        /// an xrun that cpal annotated is still an xrun.
+        #[test]
+        fn the_verdict_comes_from_the_kind_not_the_message() {
+            assert!(!warrants_rebuild(&cpal::Error::with_message(
+                cpal::ErrorKind::Xrun,
+                "buffer underrun on capture"
+            )));
+        }
+    }
 
     mod resolve_stream_format_tests {
         use super::*;
