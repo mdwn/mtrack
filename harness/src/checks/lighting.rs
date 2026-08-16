@@ -396,7 +396,25 @@ pub async fn a_bar_timed_cue_lands_where_the_click_track_says() -> CheckOutcome 
     // the cause, and an empty playlist is one of the others — so a song that
     // failed to load looks like a transport error here. Carry the log.
     if let Err(e) = client.grpc().play(PlayRequest {}).await {
-        crate::fail!("play was rejected ({e}).\n--- log ---\n{}", server.log());
+        let song_dir = project.root().join("songs/clicked-song");
+        let listing: Vec<String> = std::fs::read_dir(&song_dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| entry.ok())
+                    .map(|entry| {
+                        let len = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                        format!("{} ({len} bytes)", entry.file_name().to_string_lossy())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        crate::fail!(
+            "play was rejected ({e}).\n--- song dir {} ---\n{}\n--- yaml ---\n{}\n--- log ---\n{}",
+            song_dir.display(),
+            listing.join("\n"),
+            std::fs::read_to_string(song_dir.join("song.yaml")).unwrap_or_default(),
+            server.log()
+        );
     }
     client.wait_until_playing(Duration::from_secs(10)).await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
