@@ -173,35 +173,27 @@ reset_measures      # back to the original baseline
 
 ## Groups
 
-A cue targets one or more **groups**. Groups come from two places:
+A cue targets one or more **groups**. Groups are declared in `mtrack.yaml`
+under `dmx.lighting.groups` and select fixtures by the tags those fixtures
+carry in the venue, so the same show works against a different rig. They are
+defined in YAML, not the `.light` DSL:
 
-1. **Logical groups** — declared in `mtrack.yaml` under `dmx.lighting.groups`.
-   These match by tag/role and survive venue changes. Defined in YAML, not the
-   `.light` DSL:
+```yaml
+lighting:
+  groups:
+    all_lights:
+      name: "all_lights"
+      constraints:
+        - MinCount: 1
+    front_wash:
+      constraints:
+        - AllOf: ["wash", "front"]
+        - MinCount: 1
+```
 
-   ```yaml
-   lighting:
-     groups:
-       all_lights:
-         name: "all_lights"
-         constraints:
-           - MinCount: 1
-       front_wash:
-         constraints:
-           - AllOf: ["wash", "front"]
-           - MinCount: 1
-   ```
-
-2. **Venue groups** — declared inside a `venue "..." { … }` block. These are
-   explicit member lists tied to that venue:
-
-   ```
-   venue "main_stage" {
-       fixture "Wash1" RGBW_Par @ 1:1 tags ["wash", "front"]
-       fixture "Wash2" RGBW_Par @ 1:7 tags ["wash", "front"]
-       group "front_wash" = Wash1, Wash2
-   }
-   ```
+Venues do not define groups of their own — tag the fixtures instead. A cue
+cannot target a bare tag or a bare fixture name; it targets a group name from
+the config.
 
 `all_lights` is **not** auto-generated — define it explicitly as a logical
 group with `MinCount: 1` if you want a catch-all. Use `list_groups` from MCP
@@ -222,9 +214,12 @@ fixture_type "RGBW_Par" {
 venue "main_stage" {
     fixture "Wash1" RGBW_Par @ 1:1 tags ["wash", "front"]
     fixture "Wash2" RGBW_Par @ 1:7 tags ["wash", "front"]
-    group "front_wash" = Wash1, Wash2
 }
 ```
+
+Tags are the whole vocabulary a venue offers. Anything a show wants to address
+— `front`, `left`, an odd/even split — is a tag on the fixtures, selected by a
+logical group in the config.
 
 ## Authoring tips
 

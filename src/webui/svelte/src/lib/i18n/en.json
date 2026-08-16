@@ -358,7 +358,6 @@
   "lighting.noVenues": "No venues defined.",
   "lighting.venueHint": "Create one to define the physical fixture layout at a performance location.",
   "lighting.fixtureCount": "{count} fixture(s)",
-  "lighting.groupCount": "{count} group(s)",
   "lighting.deleteVenue": "Delete venue \"{name}\"?",
   "lighting.directories": "Directories",
   "lighting.directoriesHint": "Override where fixture types and venues are loaded from. Leave empty to use the defaults (lighting/fixture_types, lighting/venues).",

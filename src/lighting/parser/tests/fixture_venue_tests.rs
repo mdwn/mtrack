@@ -75,7 +75,6 @@ fn test_t_parse_venue() {
     let venue = result.get("Club Venue").unwrap();
     assert_eq!(venue.name(), "Club Venue");
     assert_eq!(venue.fixtures().len(), 0);
-    assert_eq!(venue.groups().len(), 0);
 }
 
 #[test]
@@ -163,72 +162,53 @@ venue "built-in" {
     assert_eq!(block6.start_channel(), 21, "Block6 should be at address 21");
 }
 
-// ── Items following a `group` (#387) ───────────────────────────────────
+// ── Venue groups are gone (superseded by tags) ─────────────────────────
 //
-// `identifier` used to be non-atomic, so pest inserted implicit whitespace
-// inside its trailing repetition and a group's member list ran past the end
-// of the line — swallowing the next `group` or `fixture` keyword. The effect
-// was that a venue could declare at most one group, and only as its final
-// item. The diagnostic blamed the *following* line, so it read as a malformed
-// name rather than an over-running member list.
+// Venue groups were removed in favour of fixture tags plus logical groups.
+// The grammar still matches the old syntax so the parser can say what to do
+// about it — a bare pest failure would only report "expected fixture".
 
 #[test]
-fn venue_accepts_multiple_groups() {
+fn multiple_venue_groups_are_rejected() {
+    // This shape used to fail for an unrelated reason: `identifier` was not
+    // atomic, so a member list ran past the end of its line and swallowed the
+    // next keyword (#387). It now fails deliberately, and says why.
     let content = r#"venue "v" {
     fixture "P1" RGBW_Par @ 1:1
     fixture "P2" RGBW_Par @ 1:7
     group "all" = P1, P2
     group "left" = P1
-    group "right" = P2
 }
 "#;
-    let venues = parse_venues(content).expect("a venue may declare more than one group");
-    let venue = venues.get("v").expect("venue `v` not found");
-
-    assert_eq!(venue.groups().len(), 3);
-    assert_eq!(
-        venue.groups().get("all").expect("all").fixtures(),
-        ["P1", "P2"]
-    );
-    assert_eq!(venue.groups().get("left").expect("left").fixtures(), ["P1"]);
-    assert_eq!(
-        venue.groups().get("right").expect("right").fixtures(),
-        ["P2"]
-    );
+    let msg = match parse_venues(content) {
+        Ok(_) => panic!("venue groups should be rejected"),
+        Err(e) => e.to_string(),
+    };
+    assert!(msg.contains("no longer supported"), "{msg}");
+    assert!(msg.contains("tags"), "should point at the migration: {msg}");
 }
 
 #[test]
-fn venue_accepts_a_fixture_after_a_group() {
-    // Not specific to groups following groups — anything after a group used to
-    // fail, because the member list ate the next keyword whatever it was.
+fn a_venue_of_only_fixtures_still_parses() {
+    // The shape every real venue uses. This also covers the `identifier`
+    // atomicity fix from #387: without it a fixture's type name could run past
+    // the end of its line and swallow the next `fixture` keyword.
     let content = r#"venue "v" {
-    fixture "P1" RGBW_Par @ 1:1
-    group "left" = P1
-    fixture "P2" RGBW_Par @ 1:7
+    fixture "P1" RGBW_Par @ 1:1 tags ["wash", "left"]
+    fixture "P2" RGBW_Par @ 1:7 tags ["wash", "right"]
+    fixture "P3" RGBW_Par @ 1:13
 }
 "#;
-    let venues = parse_venues(content).expect("a fixture may follow a group");
+    let venues = parse_venues(content).expect("a fixtures-only venue parses");
     let venue = venues.get("v").expect("venue `v` not found");
 
-    assert_eq!(venue.fixtures().len(), 2);
-    assert_eq!(venue.groups().len(), 1);
-    // The group's member list must stop at P1 rather than absorbing `fixture`.
-    assert_eq!(venue.groups().get("left").expect("left").fixtures(), ["P1"]);
-}
-
-#[test]
-fn venue_group_members_do_not_run_past_the_line() {
-    // Two groups on one line: the space-separated case, so this pins the
-    // whitespace handling rather than just newline handling.
-    let content = r#"venue "v" {
-    fixture "P1" RGBW_Par @ 1:1
-    group "a" = P1 group "b" = P1
-}
-"#;
-    let venues = parse_venues(content).expect("groups may share a line");
-    let venue = venues.get("v").expect("venue `v` not found");
-
-    assert_eq!(venue.groups().len(), 2);
-    assert_eq!(venue.groups().get("a").expect("a").fixtures(), ["P1"]);
-    assert_eq!(venue.groups().get("b").expect("b").fixtures(), ["P1"]);
+    assert_eq!(venue.fixtures().len(), 3);
+    assert_eq!(
+        venue.fixtures().get("P1").expect("P1").tags(),
+        ["wash", "left"]
+    );
+    assert_eq!(
+        venue.fixtures().get("P3").expect("P3").fixture_type(),
+        "RGBW_Par"
+    );
 }

@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use super::super::types::{Fixture, FixtureType, Group, Venue};
+use super::super::types::{Fixture, FixtureType, Venue};
 use super::error::get_error_context;
 use super::grammar::{LightingParser, Rule};
 use pest::iterators::Pair;
@@ -229,7 +229,6 @@ fn extract_string(pair: Pair<Rule>) -> String {
 fn parse_venue_definition(pair: Pair<Rule>) -> Result<Venue, Box<dyn Error>> {
     let mut name = String::new();
     let mut fixtures = HashMap::new();
-    let mut groups = HashMap::new();
 
     for pair in pair.into_inner() {
         match pair.as_rule() {
@@ -237,7 +236,7 @@ fn parse_venue_definition(pair: Pair<Rule>) -> Result<Venue, Box<dyn Error>> {
                 name = extract_string(pair);
             }
             Rule::venue_content => {
-                parse_venue_content(pair, &mut fixtures, &mut groups)?;
+                parse_venue_content(pair, &mut fixtures)?;
             }
             _ => {}
         }
@@ -247,13 +246,12 @@ fn parse_venue_definition(pair: Pair<Rule>) -> Result<Venue, Box<dyn Error>> {
         return Err("Venue name is required".into());
     }
 
-    Ok(Venue::new(name, fixtures, groups))
+    Ok(Venue::new(name, fixtures))
 }
 
 fn parse_venue_content(
     pair: Pair<Rule>,
     fixtures: &mut HashMap<String, Fixture>,
-    groups: &mut HashMap<String, Group>,
 ) -> Result<(), Box<dyn Error>> {
     for content_pair in pair.into_inner() {
         match content_pair.as_rule() {
@@ -261,9 +259,24 @@ fn parse_venue_content(
                 let fixture = parse_fixture_definition(content_pair)?;
                 fixtures.insert(fixture.name().to_string(), fixture);
             }
+            // `group` still parses so this can say what to do about it. Venue
+            // groups were superseded by fixture tags one release after they
+            // landed; a bare pest failure here would only say "expected
+            // fixture", which is no help to someone holding a rig file.
             Rule::group => {
-                let group = parse_group_definition(content_pair)?;
-                groups.insert(group.name().to_string(), group);
+                let name = content_pair
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::string)
+                    .map(extract_string)
+                    .unwrap_or_default();
+                return Err(format!(
+                    "venue group `{name}` is no longer supported. Tag the fixtures \
+                     instead — add a tag to each member, e.g. `tags [\"{name}\"]`, \
+                     and declare a logical group under `dmx.lighting.groups` in the \
+                     player config with `constraints: [AllOf: [\"{name}\"]]`. Tags \
+                     survive a venue change; venue groups did not."
+                )
+                .into());
             }
             _ => {}
         }
@@ -317,32 +330,6 @@ fn parse_tags(pair: Pair<Rule>) -> Vec<String> {
                 .filter(|p| p.as_rule() == Rule::string)
                 .map(|tag| extract_string(tag))
         })
-        .collect()
-}
-
-fn parse_group_definition(pair: Pair<Rule>) -> Result<Group, Box<dyn Error>> {
-    let mut name = String::new();
-    let mut fixtures = Vec::new();
-
-    for pair in pair.into_inner() {
-        match pair.as_rule() {
-            Rule::string => {
-                name = extract_string(pair);
-            }
-            Rule::identifier_list => {
-                fixtures = parse_identifier_list(pair);
-            }
-            _ => {}
-        }
-    }
-
-    Ok(Group::new(name, fixtures))
-}
-
-fn parse_identifier_list(pair: Pair<Rule>) -> Vec<String> {
-    pair.into_inner()
-        .filter(|p| p.as_rule() == Rule::identifier)
-        .map(|id| id.as_str().trim().to_string())
         .collect()
 }
 
@@ -474,7 +461,6 @@ fixture_type "TypeB" {
         let v = result.get("Empty Hall").unwrap();
         assert_eq!(v.name(), "Empty Hall");
         assert!(v.fixtures().is_empty());
-        assert!(v.groups().is_empty());
     }
 
     #[test]
@@ -516,21 +502,25 @@ fixture_type "TypeB" {
     }
 
     #[test]
-    fn venue_with_groups() {
+    fn venue_group_is_rejected_with_migration_advice() {
+        // Venue groups were superseded by fixture tags (#104, one release after
+        // they landed) and are gone. The error has to be actionable: this is a
+        // rig file someone may be reading at soundcheck.
         let content = r#"venue "Stage" {
     fixture "L1" Par @ 1:1
     fixture "L2" Par @ 1:5
-    fixture "L3" Par @ 1:9
-    group "front" = L1, L2, L3
+    group "front" = L1, L2
 }"#;
-        let result = parse_venues(content).unwrap();
-        let v = result.get("Stage").unwrap();
-        assert_eq!(v.fixtures().len(), 3);
-        assert_eq!(v.groups().len(), 1);
-
-        let front = v.groups().get("front").unwrap();
-        assert_eq!(front.name(), "front");
-        assert_eq!(front.fixtures(), &["L1", "L2", "L3"]);
+        let msg = match parse_venues(content) {
+            Ok(_) => panic!("venue groups should be rejected"),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg.contains("front"), "should name the group: {msg}");
+        assert!(msg.contains("tags"), "should point at tags: {msg}");
+        assert!(
+            msg.contains("dmx.lighting.groups"),
+            "should point at logical groups: {msg}"
+        );
     }
 
     #[test]

@@ -477,6 +477,45 @@ pub(super) async fn delete_fixture_type(
 }
 
 /// GET /api/lighting/venues — lists all venues from the directory.
+/// Returns the group names valid as cue targets, with the fixtures each
+/// currently resolves to in the loaded venue.
+///
+/// These are the logical groups declared under `dmx.lighting.groups`. Venues no
+/// longer define groups of their own — fixtures carry tags, and logical groups
+/// select on them — so this is the only list a show can target.
+pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl IntoResponse {
+    let Some(system) = state
+        .player
+        .dmx_engine()
+        .and_then(|dmx| dmx.broadcast_handles().lighting_system)
+    else {
+        return Json(json!({"groups": []})).into_response();
+    };
+
+    // The lighting system's mutex is shared with the effects loop thread, and
+    // resolution mutates its cache, so this belongs on the blocking pool.
+    let groups = tokio::task::spawn_blocking(move || {
+        let mut guard = system.lock();
+        let names: Vec<String> = guard
+            .logical_groups_iter()
+            .map(|(n, _)| n.clone())
+            .collect();
+        let mut out: Vec<serde_json::Value> = names
+            .into_iter()
+            .map(|name| {
+                let fixtures = guard.resolve_logical_group_graceful(&name);
+                json!({"name": name, "fixtures": fixtures})
+            })
+            .collect();
+        out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        out
+    })
+    .await
+    .unwrap_or_default();
+
+    Json(json!({"groups": groups})).into_response()
+}
+
 pub(super) async fn get_venues(
     State(state): State<WebUiState>,
     Query(query): Query<LightingDirQuery>,
@@ -753,18 +792,6 @@ fn venue_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<String, Str
             }
         }
         dsl.push('\n');
-    }
-
-    if let Some(groups) = json.get("groups").and_then(|v| v.as_object()) {
-        for (group_name, group_fixtures) in groups {
-            if let Some(fixture_list) = group_fixtures.as_array() {
-                let names: Vec<&str> = fixture_list.iter().filter_map(|v| v.as_str()).collect();
-                dsl.push_str(&format!(
-                    "  group \"{group_name}\" = {}\n",
-                    names.join(", ")
-                ));
-            }
-        }
     }
 
     dsl.push_str("}\n");
@@ -1542,7 +1569,9 @@ show "test" {
     }
 
     #[test]
-    fn venue_json_to_dsl_with_groups() {
+    fn venue_json_to_dsl_ignores_groups() {
+        // Venue groups are gone. A stale client still sending them must not
+        // produce a file the parser then rejects.
         let json = serde_json::json!({
             "fixtures": [
                 {
@@ -1550,24 +1579,18 @@ show "test" {
                     "fixture_type": "Par",
                     "universe": 1,
                     "start_channel": 1
-                },
-                {
-                    "name": "L2",
-                    "fixture_type": "Par",
-                    "universe": 1,
-                    "start_channel": 5
                 }
             ],
             "groups": {
-                "front": ["L1", "L2"]
+                "front": ["L1"]
             }
         });
         let dsl = venue_json_to_dsl("Grouped", &json).unwrap();
-        assert!(dsl.contains("group \"front\" = L1, L2"));
-        // Verify the DSL actually parses.
-        let venues = lighting::parser::parse_venues(&dsl).unwrap();
-        let v = venues.get("Grouped").unwrap();
-        assert!(v.groups().contains_key("front"));
+        assert!(
+            !dsl.contains("group"),
+            "groups should not be emitted: {dsl}"
+        );
+        lighting::parser::parse_venues(&dsl).expect("emitted DSL must parse");
     }
 
     #[test]
