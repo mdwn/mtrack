@@ -24,14 +24,18 @@ use crate::lighting::effects::{is_multiplier_channel, FixtureState};
 use crate::lighting::EffectEngine;
 
 /// Pre-computed fixture display state: all non-multiplier channels at 0-255.
-#[derive(Clone, Debug)]
+///
+/// `PartialEq` so a push-based consumer can tell a real change from a sampler
+/// tick that produced the same values — an idle rig must not wake subscribers
+/// twenty times a second.
+#[derive(Clone, Debug, PartialEq)]
 pub struct FixtureSnapshot {
     pub name: String,
     pub channels: HashMap<String, u8>,
 }
 
 /// State snapshot broadcast to all display consumers.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct StateSnapshot {
     pub fixtures: Vec<FixtureSnapshot>,
     pub active_effects: Vec<String>,

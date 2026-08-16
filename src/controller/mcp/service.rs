@@ -63,6 +63,14 @@ use crate::player::Player;
 const RESOURCE_STATUS_URI: &str = "mtrack://status";
 /// Resource URI exposing the current configuration YAML plus checksum.
 const RESOURCE_CONFIG_URI: &str = "mtrack://config";
+/// Live lighting state: per-fixture DMX values and the effects driving them.
+const RESOURCE_LIGHTING_URI: &str = "mtrack://lighting/state";
+
+/// Fastest a lighting subscriber is woken. The sampler runs at 20Hz; sending
+/// every tick is more than a monitoring client needs and is the load the
+/// polling in #338 was standing in for. Ticks between notifications are
+/// coalesced — the next payload sent is the current state, not a backlog.
+const LIGHTING_NOTIFY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// MCP server handler holding shared state for tool calls.
 ///
@@ -454,35 +462,7 @@ impl McpServer {
         than only counting them."
     )]
     async fn get_fixture_state(&self) -> Result<CallToolResult, McpError> {
-        let engine = match self.player.effect_engine() {
-            Some(engine) => engine,
-            None => {
-                return Ok(ok_json(json!({
-                    "available": false,
-                    "reason": "no effect engine configured",
-                })))
-            }
-        };
-
-        let elapsed = self
-            .player
-            .elapsed()
-            .await
-            .map_err(internal_err)?
-            .unwrap_or_default();
-
-        // The effect engine's mutex is shared with the effects loop thread, so
-        // never block a tokio worker on it.
-        let snapshot = tokio::task::spawn_blocking(move || {
-            let guard = engine.lock();
-            crate::lighting::evaluate::snapshot(&guard, elapsed)
-        })
-        .await
-        .map_err(|e| McpError::internal_error(format!("snapshot failed: {e}"), None))?;
-
-        let mut value = evaluation_json(&snapshot, true);
-        value["available"] = json!(true);
-        Ok(ok_json(value))
+        Ok(ok_json(self.lighting_snapshot().await?))
     }
 
     // ---- Playback control ----
@@ -1133,6 +1113,13 @@ impl McpServer {
             .into_iter()
             .map(|w| json!({"kind": w.kind, "message": w.message}))
             .collect())
+    }
+
+    /// Builds the live lighting payload returned by `get_fixture_state` and by
+    /// reading the `mtrack://lighting/state` resource, so the tool and the
+    /// resource never drift. Thin wrapper around [`build_lighting_snapshot`].
+    pub(crate) async fn lighting_snapshot(&self) -> Result<Value, McpError> {
+        build_lighting_snapshot(&self.player).await
     }
 
     /// Looks up a song's lighting tempo map by name, if a name was given.
@@ -1934,7 +1921,8 @@ impl ServerHandler for McpServer {
             "mtrack MCP server. Inspect and control the running multitrack player: \
              query playback status, list songs, edit playlists, and create lighting shows. \
              Use the `lighting_dsl_reference` tool before generating .light files. \
-             Subscribe to `mtrack://status` or `mtrack://config` for resource-updated \
+             Subscribe to `mtrack://status`, `mtrack://lighting/state`, or \
+             `mtrack://config` for resource-updated \
              notifications when playback state or configuration changes."
                 .to_string(),
         )
@@ -1955,6 +1943,27 @@ impl ServerHandler for McpServer {
                         description: Some(
                             "Live JSON snapshot of the player: active playlist, \
                              current song, playing flag, elapsed time."
+                                .to_string(),
+                        ),
+                        mime_type: Some("application/json".to_string()),
+                        size: None,
+                        icons: None,
+                        meta: None,
+                    },
+                    annotations: None,
+                },
+                Resource {
+                    raw: RawResource {
+                        uri: RESOURCE_LIGHTING_URI.to_string(),
+                        name: "Lighting State".to_string(),
+                        title: None,
+                        description: Some(
+                            "Live per-fixture DMX values (0-255, including \
+                             virtual-dimmer RGB scaling), the effects running, \
+                             and which effects drive each fixture. Subscribe for \
+                             pushes instead of polling; notifications are \
+                             coalesced to at most 10 per second and are only sent \
+                             when the state actually changes."
                                 .to_string(),
                         ),
                         mime_type: Some("application/json".to_string()),
@@ -2000,6 +2009,13 @@ impl ServerHandler for McpServer {
                     request.uri,
                 )]))
             }
+            RESOURCE_LIGHTING_URI => {
+                let json = self.lighting_snapshot().await?;
+                Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                    serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string()),
+                    request.uri,
+                )]))
+            }
             RESOURCE_CONFIG_URI => {
                 let store = self.config_store()?;
                 let (yaml, checksum) = store.read_yaml().await.map_err(internal_err)?;
@@ -2029,6 +2045,7 @@ impl ServerHandler for McpServer {
         }
         let handle = match uri.as_str() {
             RESOURCE_STATUS_URI => self.spawn_status_subscription(ctx.peer.clone())?,
+            RESOURCE_LIGHTING_URI => self.spawn_lighting_subscription(ctx.peer.clone())?,
             RESOURCE_CONFIG_URI => self.spawn_config_subscription(ctx.peer.clone())?,
             other => {
                 return Err(McpError::invalid_params(
@@ -2534,6 +2551,37 @@ async fn send_resource_updated(
 /// can compute it without capturing an `McpServer` (which would form a
 /// reference cycle through `subscriptions` → `SubscriptionHandle` →
 /// `AbortHandle` and silently defeat abort-on-Drop).
+/// Builds the live lighting payload. Free function so the subscription task can
+/// call it while capturing only `Arc<Player>`, for the same reason
+/// [`build_status_snapshot`] is one.
+async fn build_lighting_snapshot(player: &Player) -> Result<Value, McpError> {
+    let Some(engine) = player.effect_engine() else {
+        return Ok(json!({
+            "available": false,
+            "reason": "no effect engine configured",
+        }));
+    };
+
+    let elapsed = player
+        .elapsed()
+        .await
+        .map_err(internal_err)?
+        .unwrap_or_default();
+
+    // The effect engine's mutex is shared with the effects loop thread, so
+    // never block a tokio worker on it.
+    let snapshot = tokio::task::spawn_blocking(move || {
+        let guard = engine.lock();
+        crate::lighting::evaluate::snapshot(&guard, elapsed)
+    })
+    .await
+    .map_err(|e| McpError::internal_error(format!("snapshot failed: {e}"), None))?;
+
+    let mut value = evaluation_json(&snapshot, true);
+    value["available"] = json!(true);
+    Ok(value)
+}
+
 async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
     let playlist = player.get_playlist();
     let current = playlist.current();
@@ -2589,6 +2637,64 @@ impl McpServer {
                 {
                     break;
                 }
+            }
+        });
+        Ok(handle.abort_handle())
+    }
+
+    /// Watches the 20Hz state sampler and pushes lighting updates to the
+    /// subscribed peer.
+    ///
+    /// Two behaviours matter more than the plumbing. Notifications are
+    /// coalesced to [`LIGHTING_NOTIFY_INTERVAL`], because a monitoring client
+    /// does not need every sampler tick and the request load is the thing this
+    /// resource exists to remove. And a tick that produced the same state sends
+    /// nothing at all, so a subscriber attached to an idle rig stays quiet
+    /// rather than being woken ten times a second forever.
+    ///
+    /// The payload rides along under `_meta["mtrack.lighting"]`, so a listener
+    /// never needs the follow-up `resources/read` round trip.
+    fn spawn_lighting_subscription(&self, peer: Peer<RoleServer>) -> Result<AbortHandle, McpError> {
+        let mut rx = self.player.state_rx().ok_or_else(|| {
+            McpError::internal_error(
+                "lighting state is not available (no state sampler is running)",
+                None,
+            )
+        })?;
+        // Captures only `Arc<Player>`, never the whole `McpServer` — the
+        // subscriptions map holds this task's abort handle, so capturing the
+        // server would keep it alive and defeat abort-on-drop at session end.
+        let player = self.player.clone();
+
+        let handle = tokio::spawn(async move {
+            // Whatever is on the channel now is what a fresh `resources/read`
+            // would return, so only emit on change from here.
+            rx.mark_unchanged();
+            let mut last = rx.borrow().clone();
+
+            loop {
+                if rx.changed().await.is_err() {
+                    break;
+                }
+                if *rx.borrow_and_update() == last {
+                    continue;
+                }
+
+                let payload = build_lighting_snapshot(&player)
+                    .await
+                    .unwrap_or(Value::Null);
+                if send_resource_updated(&peer, RESOURCE_LIGHTING_URI, "mtrack.lighting", payload)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+
+                // Coalesce the ticks that arrive while we were sending. The
+                // next payload is the state then, not a replay of this backlog.
+                tokio::time::sleep(LIGHTING_NOTIFY_INTERVAL).await;
+                rx.mark_unchanged();
+                last = rx.borrow().clone();
             }
         });
         Ok(handle.abort_handle())

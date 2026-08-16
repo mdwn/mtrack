@@ -511,6 +511,13 @@ async fn build_standalone_player(
     ));
     player.set_config_store(store);
 
+    // `cli::local::start` installs this before hardware init, and the sampler
+    // that feeds `mtrack://lighting/state` is started by that init. Without it
+    // the harness has no lighting feed while a real deployment always does.
+    let (state_tx, _state_rx) =
+        tokio::sync::watch::channel(Arc::new(crate::state::StateSnapshot::default()));
+    player.set_state_tx(state_tx);
+
     player.await_hardware_ready().await;
     Ok(player)
 }
@@ -2129,6 +2136,146 @@ async fn mcp_diff_shows_reports_resolved_changes() -> Result<(), Box<dyn Error>>
     );
     assert_eq!(same["identical"], true, "{same}");
 
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test 3c-octies: subscribable lighting state (#338)
+// ---------------------------------------------------------------------------
+
+/// The lighting feed exists — a 20Hz sampler on a watch channel that the web
+/// UI's `/ws` already streams. This connects it to MCP so a monitoring client
+/// gets pushes instead of polling `status` + `get_active_effects` at 120
+/// requests a second, which is the load #332 was suspected of being induced by.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_lighting_state_resource_pushes_on_change() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    std::fs::create_dir_all(fixture.root.join("lighting/venues"))?;
+    std::fs::create_dir_all(fixture.root.join("lighting/fixture_types"))?;
+    copy_dir_recursive(
+        Path::new("examples/lighting/fixture_types"),
+        &fixture.root.join("lighting/fixture_types"),
+    )?;
+    std::fs::write(
+        fixture.root.join("lighting/venues/main_stage.light"),
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n}\n",
+    )?;
+    let song_lighting_dir = fixture.root.join("songs/dsl-light-show-song/lighting");
+    std::fs::write(
+        song_lighting_dir.join("main_show.light"),
+        "show \"Lit\" {\n    @00:00.000\n    all_lights: static color: \"green\", duration: 120s\n}\n",
+    )?;
+    std::fs::write(
+        song_lighting_dir.join("outro.light"),
+        "show \"Outro\" {\n    @01:00.000\n    all_lights: static color: \"white\", duration: 1s\n}\n",
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // The resource is advertised alongside the existing two.
+    let (_, listed) = mcp_post(
+        &client,
+        &url,
+        Some(&session),
+        &json!({"jsonrpc": "2.0", "id": 1100, "method": "resources/list"}),
+    )
+    .await;
+    let uris: Vec<&str> = listed["result"]["resources"]
+        .as_array()
+        .expect("resources")
+        .iter()
+        .filter_map(|r| r["uri"].as_str())
+        .collect();
+    assert!(
+        uris.contains(&"mtrack://lighting/state"),
+        "lighting resource not advertised: {uris:?}"
+    );
+
+    // Reading it gives the same shape `get_fixture_state` returns.
+    let (_, read) = mcp_post(
+        &client,
+        &url,
+        Some(&session),
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1101,
+            "method": "resources/read",
+            "params": {"uri": "mtrack://lighting/state"}
+        }),
+    )
+    .await;
+    let text = read["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no contents: {read}"));
+    let body: Value = serde_json::from_str(text).expect("resource payload is JSON");
+    assert_eq!(body["available"], true, "{body}");
+    assert!(body["fixtures"].is_array(), "{body}");
+
+    let (_, sub) = mcp_post(
+        &client,
+        &url,
+        Some(&session),
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1102,
+            "method": "resources/subscribe",
+            "params": {"uri": "mtrack://lighting/state"}
+        }),
+    )
+    .await;
+    assert!(
+        sub.get("error").is_none() && sub["result"].is_object(),
+        "subscribe was rejected: {sub}"
+    );
+
+    let session_clone = session.clone();
+    let url_clone = url.clone();
+    let listener_client = client.clone();
+    let listener = tokio::spawn(async move {
+        wait_for_event(
+            &listener_client,
+            &url_clone,
+            &session_clone,
+            Duration::from_secs(10),
+            |v| {
+                v.get("method").and_then(|m| m.as_str()) == Some("notifications/resources/updated")
+                    && v["params"]["uri"].as_str() == Some("mtrack://lighting/state")
+            },
+        )
+        .await
+    });
+
+    // Let the listener open its GET before anything changes.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Starting the show lights the rig, which is a real state change.
+    let _ = call_tool(&client, &url, &session, 1103, "play", json!({})).await;
+
+    let event = listener.await.expect("listener task");
+    assert_eq!(
+        event["params"]["uri"].as_str(),
+        Some("mtrack://lighting/state"),
+        "{event}"
+    );
+    // The payload rides along, so a listener never needs the follow-up read.
+    let payload = &event["params"]["_meta"]["mtrack.lighting"];
+    assert_eq!(payload["available"], true, "{event}");
+    assert!(payload["fixtures"].is_array(), "{event}");
+
+    let _ = call_tool(&client, &url, &session, 1104, "stop", json!({})).await;
     controller.shutdown();
     Ok(())
 }
