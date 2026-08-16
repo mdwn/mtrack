@@ -17,13 +17,7 @@
   import type { LayerCommand } from "../../lib/lighting/types";
   import { LAYERS } from "../../lib/lighting/types";
 
-  const COMMANDS = [
-    "clear",
-    "release",
-    "freeze",
-    "unfreeze",
-    "master",
-  ] as const;
+  const COMMANDS = ["clear", "freeze", "unfreeze", "master"] as const;
 
   interface Props {
     command: LayerCommand;
@@ -69,22 +63,6 @@
         {/each}
       </select>
     </label>
-
-    {#if command.command === "release"}
-      <label class="field">
-        <span class="field-label">{$t("effect.command.time")}</span>
-        <input
-          type="text"
-          class="input"
-          placeholder="2s"
-          value={command.time ?? ""}
-          onchange={(e) => {
-            const v = (e.target as HTMLInputElement).value;
-            update("time", v || undefined);
-          }}
-        />
-      </label>
-    {/if}
 
     {#if command.command === "master"}
       <label class="field">

@@ -597,7 +597,7 @@ fn parse_sequence_cue_structure(
     }
 
     for layer_command_pair in layer_command_pairs {
-        let layer_command = parse_layer_command(layer_command_pair, tempo_map, abs_time)?;
+        let layer_command = parse_layer_command(layer_command_pair)?;
         layer_commands.push(layer_command);
     }
 
@@ -1326,7 +1326,7 @@ fn parse_cue_definition(
         }
 
         for layer_command_pair in layer_command_pairs {
-            let layer_command = parse_layer_command(layer_command_pair, tempo_map, abs_time)?;
+            let layer_command = parse_layer_command(layer_command_pair)?;
             layer_commands.push(layer_command);
         }
 
@@ -1511,7 +1511,7 @@ fn parse_cue_definition(
 
     // Parse layer commands
     for layer_command_pair in layer_command_pairs {
-        let layer_command = parse_layer_command(layer_command_pair, tempo_map, abs_time)?;
+        let layer_command = parse_layer_command(layer_command_pair)?;
         layer_commands.push(layer_command);
     }
 
@@ -1529,14 +1529,9 @@ fn parse_cue_definition(
     ))
 }
 
-fn parse_layer_command(
-    pair: Pair<Rule>,
-    tempo_map: &Option<TempoMap>,
-    cue_time: Duration,
-) -> Result<LayerCommand, Box<dyn Error>> {
+fn parse_layer_command(pair: Pair<Rule>) -> Result<LayerCommand, Box<dyn Error>> {
     let mut command_type = LayerCommandType::Clear;
     let mut layer: Option<EffectLayer> = None;
-    let mut fade_time = None;
     let mut intensity = None;
     let mut speed = None;
 
@@ -1545,7 +1540,6 @@ fn parse_layer_command(
             Rule::layer_command_type => {
                 command_type = match inner_pair.as_str() {
                     "clear" => LayerCommandType::Clear,
-                    "release" => LayerCommandType::Release,
                     "freeze" => LayerCommandType::Freeze,
                     "unfreeze" => LayerCommandType::Unfreeze,
                     "master" => LayerCommandType::Master,
@@ -1578,14 +1572,6 @@ fn parse_layer_command(
                                     "foreground" => EffectLayer::Foreground,
                                     other => return Err(format!("Invalid layer: {}", other).into()),
                                 });
-                            }
-                            "time" => {
-                                fade_time = Some(super::utils::parse_duration_string(
-                                    &param_value,
-                                    tempo_map,
-                                    Some(cue_time),
-                                    0.0, // Layer commands don't use offsets for duration parsing
-                                )?);
                             }
                             "intensity" => {
                                 // Parse percentage (e.g., "50%") or number (e.g., "0.5")
@@ -1626,7 +1612,6 @@ fn parse_layer_command(
             "Layer command '{}' requires a layer parameter",
             match command_type {
                 LayerCommandType::Clear => "clear",
-                LayerCommandType::Release => "release",
                 LayerCommandType::Freeze => "freeze",
                 LayerCommandType::Unfreeze => "unfreeze",
                 LayerCommandType::Master => "master",
@@ -1638,7 +1623,6 @@ fn parse_layer_command(
     Ok(LayerCommand {
         command_type,
         layer,
-        fade_time,
         intensity,
         speed,
     })

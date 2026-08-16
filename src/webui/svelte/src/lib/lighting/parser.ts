@@ -251,10 +251,8 @@ function parseCueBlock(lines: string[], startIdx: number): [Cue[], number] {
       continue;
     }
 
-    // Layer command: clear(...) / release(...) / freeze(...) / unfreeze(...) / master(...)
-    const cmdMatch = line.match(
-      /^(clear|release|freeze|unfreeze|master)\(([^)]*)\)/,
-    );
+    // Layer command: clear(...) / freeze(...) / unfreeze(...) / master(...)
+    const cmdMatch = line.match(/^(clear|freeze|unfreeze|master)\(([^)]*)\)/);
     if (cmdMatch) {
       const cmd = parseLayerCommand(cmdMatch[1], cmdMatch[2]);
       currentCue.commands.push(cmd);
@@ -398,9 +396,6 @@ function parseLayerCommand(cmd: string, paramsStr: string): LayerCommand {
 
   const layerM = paramsStr.match(/layer:\s*(\w+)/);
   if (layerM) result.layer = layerM[1];
-
-  const timeM = paramsStr.match(/time:\s*(\S+)/);
-  if (timeM) result.time = timeM[1];
 
   const intensityM = paramsStr.match(/intensity:\s*(\S+)/);
   if (intensityM) result.intensity = intensityM[1].replace(/,/g, "");

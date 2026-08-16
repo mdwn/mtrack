@@ -120,51 +120,6 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
 }
 
 #[test]
-fn test_stop_sequence_handles_releasing_effects() {
-    let mut engine = EffectEngine::new();
-    let fixture = create_test_fixture("test_fixture", 1, 1);
-    engine.register_fixture(fixture);
-
-    // Create an effect that will be releasing
-    let mut seq_effect = EffectInstance::new(
-        "seq_test_effect_1".to_string(),
-        EffectType::Static {
-            parameters: {
-                let mut p = HashMap::new();
-                p.insert("dimmer".to_string(), 1.0);
-                p
-            },
-            duration: Duration::from_secs(5),
-        },
-        vec!["test_fixture".to_string()],
-        None,
-        None,
-        None,
-    );
-    seq_effect.id = "seq_test_effect_1".to_string();
-    seq_effect.layer = EffectLayer::Foreground;
-
-    engine.start_effect(seq_effect).unwrap();
-    assert_eq!(engine.active_effects_count(), 1);
-
-    // Start releasing the layer (adds effect to releasing_effects, but keeps it in active_effects)
-    engine.release_layer(EffectLayer::Foreground);
-
-    // Effect should still be in active_effects (release doesn't remove it)
-    assert_eq!(engine.active_effects_count(), 1);
-    engine.update(Duration::from_millis(100), None).unwrap();
-
-    // Stop the sequence - should remove from both active_effects and releasing_effects
-    // The effect ID is "seq_test_effect_1", so sequence name "test" should match
-    engine.stop_sequence("test");
-
-    // Effect should be completely gone (both from active and releasing)
-    assert_eq!(engine.active_effects_count(), 0);
-    // Verify the effect is not in the engine at all
-    assert!(!engine.has_effect("seq_test_effect_1"));
-}
-
-#[test]
 fn test_stop_sequence_with_no_matching_effects() {
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
@@ -316,62 +271,6 @@ fn test_clear_all_layers_clears_frozen_layers() {
 
     // Layer should no longer be frozen and effect should be gone
     assert!(!engine.is_layer_frozen(EffectLayer::Background));
-    assert_eq!(engine.active_effects_count(), 0);
-}
-
-#[test]
-fn test_clear_all_layers_clears_releasing_effects() {
-    let mut engine = EffectEngine::new();
-    let fixture = create_test_fixture("test_fixture", 1, 1);
-    engine.register_fixture(fixture);
-
-    // Start effects on different layers
-    let mut bg_effect = EffectInstance::new(
-        "bg_effect".to_string(),
-        EffectType::Static {
-            parameters: {
-                let mut p = HashMap::new();
-                p.insert("dimmer".to_string(), 0.5);
-                p
-            },
-            duration: Duration::from_secs(5),
-        },
-        vec!["test_fixture".to_string()],
-        None,
-        None,
-        None,
-    );
-    bg_effect.layer = EffectLayer::Background;
-
-    let mut fg_effect = EffectInstance::new(
-        "fg_effect".to_string(),
-        EffectType::Static {
-            parameters: {
-                let mut p = HashMap::new();
-                p.insert("red".to_string(), 1.0);
-                p
-            },
-            duration: Duration::from_secs(5),
-        },
-        vec!["test_fixture".to_string()],
-        None,
-        None,
-        None,
-    );
-    fg_effect.layer = EffectLayer::Foreground;
-
-    engine.start_effect(bg_effect).unwrap();
-    engine.start_effect(fg_effect).unwrap();
-
-    // Start releasing one layer
-    engine.release_layer(EffectLayer::Foreground);
-
-    // Update to move effect to releasing state
-    engine.update(Duration::from_millis(100), None).unwrap();
-
-    // Clear all layers - should stop both active and releasing effects
-    engine.clear_all_layers();
-
     assert_eq!(engine.active_effects_count(), 0);
 }
 
@@ -630,43 +529,6 @@ fn test_freeze_unfreeze_different_layers_independently() {
 
     // Both effects should still be active
     assert_eq!(engine.active_effects_count(), 2);
-}
-
-#[test]
-fn test_freeze_unfreeze_with_releasing_effects() {
-    let mut engine = EffectEngine::new();
-    let fixture = create_test_fixture("test_fixture", 1, 1);
-    engine.register_fixture(fixture);
-
-    // Start an effect
-    let mut effect = EffectInstance::new(
-        "test_effect".to_string(),
-        EffectType::Static {
-            parameters: {
-                let mut p = HashMap::new();
-                p.insert("dimmer".to_string(), 1.0);
-                p
-            },
-            duration: Duration::from_secs(5),
-        },
-        vec!["test_fixture".to_string()],
-        None,
-        None,
-        None,
-    );
-    effect.layer = EffectLayer::Background;
-
-    engine.start_effect(effect).unwrap();
-
-    // Freeze the layer
-    engine.freeze_layer(EffectLayer::Background);
-    assert!(engine.is_layer_frozen(EffectLayer::Background));
-
-    // Start releasing - should unfreeze automatically
-    engine.release_layer(EffectLayer::Background);
-
-    // Layer should no longer be frozen (release clears freeze)
-    assert!(!engine.is_layer_frozen(EffectLayer::Background));
 }
 
 // ── Layer master lifetime (#343) ───────────────────────────────────

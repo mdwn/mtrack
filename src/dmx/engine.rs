@@ -3248,7 +3248,6 @@ mod test {
                 layer_commands: vec![LayerCommand {
                     command_type: LayerCommandType::Clear,
                     layer: None,
-                    fade_time: None,
                     intensity: None,
                     speed: None,
                 }],

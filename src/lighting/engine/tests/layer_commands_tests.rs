@@ -185,10 +185,11 @@ fn test_freeze_unfreeze_layer() {
 }
 
 #[test]
-fn test_release_frozen_layer_maintains_animation_continuity() {
-    // Regression test: releasing a frozen layer should not cause animation discontinuity.
-    // Before the fix, release_layer_with_time would call frozen_layers.remove() directly
-    // instead of unfreeze_layer(), causing effects to jump forward in their animation.
+fn test_unfreeze_layer_maintains_animation_continuity() {
+    // Regression test: unfreezing a layer must resume the animation where it stopped,
+    // not jump forward by the wall-clock time that elapsed while frozen. This requires
+    // pushing each effect's start_time forward by the frozen duration; dropping the
+    // layer out of `frozen` without that adjustment produces a visible snap.
     let mut engine = EffectEngine::new();
 
     // Create RGB fixture for rainbow test
@@ -245,26 +246,26 @@ fn test_release_frozen_layer_maintains_animation_continuity() {
     frozen_sorted.sort_by_key(|(ch, _)| *ch);
     let vals_frozen: Vec<u8> = frozen_sorted.iter().map(|(_, v)| *v).collect();
 
-    // Now release the frozen layer with a fade time
-    engine.release_layer_with_time(EffectLayer::Background, Some(Duration::from_secs(2)));
+    // Now unfreeze the layer
+    engine.unfreeze_layer(EffectLayer::Background);
 
-    // Immediately after release, the effect should continue from where it was frozen,
+    // Immediately after unfreezing, the effect should continue from where it was frozen,
     // NOT jump forward by the 1 second that passed while frozen.
-    let commands_after_release = engine.update(Duration::from_millis(10), None).unwrap();
+    let commands_after_unfreeze = engine.update(Duration::from_millis(10), None).unwrap();
     // Sort by channel for consistent comparison
-    let mut after_release_sorted: Vec<_> = commands_after_release
+    let mut after_unfreeze_sorted: Vec<_> = commands_after_unfreeze
         .iter()
         .map(|c| (c.channel, c.value))
         .collect();
-    after_release_sorted.sort_by_key(|(ch, _)| *ch);
-    let vals_after_release: Vec<u8> = after_release_sorted.iter().map(|(_, v)| *v).collect();
+    after_unfreeze_sorted.sort_by_key(|(ch, _)| *ch);
+    let vals_after_unfreeze: Vec<u8> = after_unfreeze_sorted.iter().map(|(_, v)| *v).collect();
 
-    // The values right after release should be very close to the frozen values
+    // The values right after unfreezing should be very close to the frozen values
     // (only 10ms of animation has passed, not 1+ second)
     // We allow small differences due to the 10ms update and fade starting
     let max_diff: i16 = vals_frozen
         .iter()
-        .zip(vals_after_release.iter())
+        .zip(vals_after_unfreeze.iter())
         .map(|(a, b)| (*a as i16 - *b as i16).abs())
         .max()
         .unwrap_or(0);
@@ -276,37 +277,12 @@ fn test_release_frozen_layer_maintains_animation_continuity() {
     // With the fix, we should see only tiny differences from the 10ms elapsed.
     assert!(
         max_diff < 30,
-        "Release of frozen layer caused animation discontinuity! \
-     Frozen: {:?}, After release: {:?}, Max diff: {}. \
+        "Unfreeze caused animation discontinuity! \
+     Frozen: {:?}, After unfreeze: {:?}, Max diff: {}. \
      Effect should continue from frozen state, not jump forward.",
         vals_frozen,
-        vals_after_release,
+        vals_after_unfreeze,
         max_diff
-    );
-
-    // Also verify the effect is actually fading out over time
-    engine.update(Duration::from_millis(1000), None).unwrap();
-    let commands_mid_fade = engine.update(Duration::from_millis(10), None).unwrap();
-    // Sort by channel for consistent comparison
-    let mut mid_fade_sorted: Vec<_> = commands_mid_fade
-        .iter()
-        .map(|c| (c.channel, c.value))
-        .collect();
-    mid_fade_sorted.sort_by_key(|(ch, _)| *ch);
-    let vals_mid_fade: Vec<u8> = mid_fade_sorted.iter().map(|(_, v)| *v).collect();
-
-    // At 1 second into a 2 second fade, values should be roughly half
-    let avg_mid: f64 =
-        vals_mid_fade.iter().map(|v| *v as f64).sum::<f64>() / vals_mid_fade.len() as f64;
-    let avg_frozen: f64 =
-        vals_frozen.iter().map(|v| *v as f64).sum::<f64>() / vals_frozen.len() as f64;
-
-    // Mid-fade average should be notably lower than frozen average
-    assert!(
-        avg_mid < avg_frozen * 0.8,
-        "Effect should be fading: frozen avg={:.1}, mid-fade avg={:.1}",
-        avg_frozen,
-        avg_mid
     );
 }
 
@@ -370,54 +346,6 @@ fn test_layer_speed_master() {
 }
 
 #[test]
-fn test_release_layer_fade_behavior() {
-    let mut engine = EffectEngine::new();
-    let fixture = create_test_fixture("test_fixture", 1, 1);
-    engine.register_fixture(fixture);
-
-    // Start an effect on background layer
-    let effect = EffectInstance::new(
-        "bg_effect".to_string(),
-        EffectType::Static {
-            parameters: {
-                let mut p = HashMap::new();
-                p.insert("dimmer".to_string(), 1.0);
-                p
-            },
-            duration: Duration::from_secs(5),
-        },
-        vec!["test_fixture".to_string()],
-        None,
-        None,
-        None,
-    );
-    engine.start_effect(effect).unwrap();
-
-    // Get initial commands at full brightness
-    let commands_before = engine.update(Duration::from_millis(16), None).unwrap();
-    assert_eq!(commands_before.len(), 1);
-    assert_eq!(commands_before[0].value, 255);
-
-    // Release the layer with a 1 second fade
-    engine.release_layer_with_time(EffectLayer::Background, Some(Duration::from_secs(1)));
-
-    // Immediately after release, should still be near full
-    let commands_start = engine.update(Duration::from_millis(16), None).unwrap();
-    assert!(!commands_start.is_empty());
-
-    // Halfway through fade (500ms), should be around half brightness
-    let commands_mid = engine.update(Duration::from_millis(500), None).unwrap();
-    if !commands_mid.is_empty() {
-        // Value should be less than full
-        assert!(
-            commands_mid[0].value < 200,
-            "Should be fading: {}",
-            commands_mid[0].value
-        );
-    }
-}
-
-#[test]
 fn test_layer_commands_edge_cases() {
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
@@ -426,9 +354,6 @@ fn test_layer_commands_edge_cases() {
     // Clear an empty layer - should not panic
     engine.clear_layer(EffectLayer::Foreground);
     assert_eq!(engine.active_effects_count(), 0);
-
-    // Release an empty layer - should not panic
-    engine.release_layer(EffectLayer::Midground);
 
     // Double freeze - should not panic
     engine.freeze_layer(EffectLayer::Background);

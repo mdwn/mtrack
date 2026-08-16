@@ -3,9 +3,12 @@
 //
 // This show demonstrates:
 // - clear() - instantly stop all effects on a layer
-// - release() - gracefully fade out a layer
 // - freeze() / unfreeze() - pause and resume effects
 // - master() - control intensity and speed per layer
+//
+// There is no release() command. Every effect declares a finite duration, so a
+// graceful fade-out is authored on the effect itself with down_time rather than
+// imposed on the layer afterwards.
 
 show "Layer Control Demo" {
     // Start with effects on multiple layers
@@ -30,16 +33,16 @@ show "Layer Control Demo" {
     @00:12.000
         unfreeze(layer: midground)
 
-    // Gracefully release the foreground with a 2 second fade
+    // A foreground effect that fades itself out over its last 2 seconds
     @00:15.000
-        release(layer: foreground, time: 2s)
+        accent: static color: "#ff8800", dimmer: 90%, layer: foreground, duration: 3s, down_time: 2s
 
-    // Add a new strobe effect on foreground (previous one is fading out)
-    @00:16.000
+    // Add a new strobe effect on foreground
+    @00:18.000
         strobe_fx: strobe frequency: 8, layer: foreground, duration: 5s
 
     // Slow down the midground rainbow to half speed
-    @00:18.000
+    @00:19.000
         master(layer: midground, speed: 50%)
 
     // Restore background to full intensity
@@ -58,17 +61,8 @@ show "Layer Control Demo" {
     @00:26.000
         master(layer: midground, speed: 100%)
 
-    // Release all layers gracefully at the end
-    @00:30.000
-        release(layer: foreground, time: 1s)
-        release(layer: midground, time: 2s)
-        release(layer: background, time: 3s)
+    // A closing wash that fades out under its own down_time
+    @00:28.000
+        front_wash: static color: "#0066ff", dimmer: 100%, layer: background, duration: 5s, down_time: 3s
+        back_wash: static color: "#0066ff", dimmer: 100%, layer: midground, duration: 5s, down_time: 2s
 }
-
-
-
-
-
-
-
-

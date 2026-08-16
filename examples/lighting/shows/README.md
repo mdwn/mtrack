@@ -49,18 +49,19 @@ The lighting system supports professional-grade crossfades for smooth transition
 
 ```light
 # Basic crossfade syntax
-effect_name: effect_type parameters..., fade_in: 2s, fade_out: 1s, duration: 5s
+effect_name: effect_type parameters..., up_time: 2s, down_time: 1s, duration: 5s
 
 # Examples
-front_wash: static color: "blue", dimmer: 100%, duration: 5s, fade_in: 2s
-back_wash: cycle color: "red", color: "green", speed: 1.0, fade_in: 1s, fade_out: 1s, duration: 8s
-strobe_lights: strobe frequency: 4, fade_in: 0.5s, fade_out: 0.5s, duration: 3s
+front_wash: static color: "blue", dimmer: 100%, duration: 5s, up_time: 2s
+back_wash: cycle color: "red", color: "green", speed: 1.0, up_time: 1s, down_time: 1s, duration: 8s
+strobe_lights: strobe frequency: 4, up_time: 0.5s, down_time: 0.5s, duration: 3s
 ```
 
 ### Crossfade Parameters
 
-- `fade_in: <duration>` - Time to fade in from 0% to 100% intensity
-- `fade_out: <duration>` - Time to fade out from 100% to 0% intensity
+- `up_time: <duration>` - Time to fade in from 0% to 100% intensity
+- `down_time: <duration>` - Time to fade out from 100% to 0% intensity
+- `hold_time: <duration>` - Time held at full intensity between the two fades
 - `duration: <duration>` - Total effect duration (**required** for all effect types except dimmer)
 - Fade parameters are optional; duration is required
 - Duration can be specified in seconds (s), milliseconds (ms), or as time values (e.g., 2.5s)
@@ -213,22 +214,23 @@ Effects are organized into three layers, processed from bottom to top:
 ### Commands
 
 #### `clear` - Immediate Stop
-Immediately stops all effects on a layer (like a panic button).
+Immediately stops all effects on a layer (like a panic button). This is a hard
+cut, not a fade, and it takes no time parameter.
 
 ```light
+# Hard cut on one layer
 clear(layer: foreground)
+
+# Hard cut on every layer
+clear()
 ```
 
-#### `release` - Graceful Fade Out
-Gracefully fades out all effects on a layer. Uses each effect's `fade_out` time, or a custom time.
+There is no command that fades a layer out. Every effect declares a finite
+duration, so a graceful exit is authored on the effect itself with `down_time`
+and happens when the effect ends:
 
 ```light
-# Use effects' own fade_out times (or 1s default)
-release(layer: foreground)
-
-# Custom fade time
-release(layer: foreground, time: 2s)
-release(layer: background, time: 500ms)
+front_wash: static color: "blue", duration: 8s, down_time: 2s
 ```
 
 #### `freeze` - Pause Effects
@@ -276,17 +278,13 @@ show "Layer Control Demo" {
     @00:05.000
         master(layer: background, intensity: 50%)
 
-    # Add a foreground strobe
+    # Add a foreground strobe that fades itself out over its last 2 seconds
     @00:10.000
-        strobes: strobe frequency: 8, layer: foreground, duration: 30s
+        strobes: strobe frequency: 8, layer: foreground, duration: 12s, down_time: 2s
 
     # Freeze the rainbow effect
     @00:15.000
         freeze(layer: midground)
-
-    # Release foreground with 2 second fade
-    @00:20.000
-        release(layer: foreground, time: 2s)
 
     # Resume the rainbow
     @00:25.000
@@ -311,7 +309,7 @@ show "Layer Control Demo" {
 | Scenario | Command |
 |----------|---------|
 | Panic/blackout on a layer | `clear(layer: foreground)` |
-| Smooth transition to next song section | `release(layer: midground, time: 4s)` |
+| Smooth transition to next song section | `down_time: 4s` on the outgoing effects |
 | Dramatic pause | `freeze(layer: background)` |
 | Build intensity gradually | `master(layer: background, intensity: 25%)` then increase |
 | Sync effects to tempo change | `master(layer: midground, speed: 150%)` |

@@ -13,24 +13,16 @@
 //
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::super::effects::{EffectInstance, EffectLayer};
 
 /// Clear a layer - immediately stops all effects on the specified layer
 pub(crate) fn clear_layer(
     active_effects: &mut HashMap<String, EffectInstance>,
-    releasing_effects: &mut HashMap<String, (Duration, Instant)>,
     frozen_layers: &mut HashMap<EffectLayer, Instant>,
     layer: EffectLayer,
 ) {
-    // Remove matching effects from releasing_effects before removing from active_effects,
-    // since we need active_effects to know which IDs are on this layer
-    releasing_effects.retain(|id, _| {
-        active_effects
-            .get(id)
-            .is_none_or(|effect| effect.layer != layer)
-    });
     active_effects.retain(|_, effect| effect.layer != layer);
     frozen_layers.remove(&layer);
 }
@@ -38,35 +30,10 @@ pub(crate) fn clear_layer(
 /// Clear all layers - immediately stops all effects on all layers
 pub(crate) fn clear_all_layers(
     active_effects: &mut HashMap<String, EffectInstance>,
-    releasing_effects: &mut HashMap<String, (Duration, Instant)>,
     frozen_layers: &mut HashMap<EffectLayer, Instant>,
 ) {
     active_effects.clear();
-    releasing_effects.clear();
     frozen_layers.clear();
-}
-
-/// Release a layer with a custom fade time
-pub(crate) fn release_layer_with_time(
-    active_effects: &mut HashMap<String, EffectInstance>,
-    releasing_effects: &mut HashMap<String, (Duration, Instant)>,
-    frozen_layers: &mut HashMap<EffectLayer, Instant>,
-    layer: EffectLayer,
-    fade_time: Option<Duration>,
-    current_time: Instant,
-) {
-    let default_fade = Duration::from_secs(1);
-
-    for (effect_id, effect) in active_effects.iter() {
-        if effect.layer == layer && !releasing_effects.contains_key(effect_id) {
-            let release_time =
-                fade_time.unwrap_or_else(|| effect.down_time.unwrap_or(default_fade));
-            releasing_effects.insert(effect_id.clone(), (release_time, current_time));
-        }
-    }
-    // Unfreeze the layer if it was frozen (properly adjusts effect start times
-    // to maintain smooth animation continuity during the fade-out)
-    unfreeze_layer(frozen_layers, active_effects, layer, current_time);
 }
 
 /// Freeze a layer - pauses all effects on the layer at their current state
@@ -192,14 +159,8 @@ mod tests {
             "b".to_string(),
             make_effect("b", vec!["f1"], EffectLayer::Foreground),
         );
-        let mut releasing = HashMap::new();
         let mut frozen = HashMap::new();
-        clear_layer(
-            &mut active,
-            &mut releasing,
-            &mut frozen,
-            EffectLayer::Background,
-        );
+        clear_layer(&mut active, &mut frozen, EffectLayer::Background);
         assert!(!active.contains_key("a"));
         assert!(active.contains_key("b"));
     }
@@ -213,13 +174,10 @@ mod tests {
             "a".to_string(),
             make_effect("a", vec!["f1"], EffectLayer::Background),
         );
-        let mut releasing = HashMap::new();
-        releasing.insert("a".to_string(), (Duration::from_secs(1), Instant::now()));
         let mut frozen = HashMap::new();
         frozen.insert(EffectLayer::Background, Instant::now());
-        clear_all_layers(&mut active, &mut releasing, &mut frozen);
+        clear_all_layers(&mut active, &mut frozen);
         assert!(active.is_empty());
-        assert!(releasing.is_empty());
         assert!(frozen.is_empty());
     }
 
