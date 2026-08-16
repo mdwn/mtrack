@@ -1802,36 +1802,44 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
     assert!(engine.has_effect("high_priority_effect"));
     assert!(engine.has_effect("conflicting_strobe"));
 }
+/// Every shipped example show must parse.
+///
+/// This walks the directory rather than naming files. An earlier hardcoded list
+/// covered four of the six shows, and `measure_timing_demo.light` sat broken in
+/// the gap — it used `direction: forward` on a `chase`, which only `cycle`
+/// accepts. Adding an example is now enough to get it covered.
 #[test]
 fn test_example_files_parse() {
     use crate::lighting::parser::parse_light_shows;
     use std::fs;
 
-    let example_files = [
-        "examples/lighting/shows/crossfade_show.light",
-        "examples/lighting/shows/layering_show.light",
-        "examples/lighting/shows/comprehensive_show.light",
-        "examples/lighting/shows/layer_control_demo.light",
-    ];
+    let dir = "examples/lighting/shows";
+    let mut example_files: Vec<_> = fs::read_dir(dir)
+        .expect("Failed to read example show directory")
+        .map(|entry| entry.expect("Failed to read directory entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "light"))
+        .collect();
+    example_files.sort();
 
-    for file_path in example_files {
+    assert!(
+        !example_files.is_empty(),
+        "No .light files found in {} — the glob is wrong, not the examples",
+        dir
+    );
+
+    for file_path in &example_files {
+        let display = file_path.display();
         let content = fs::read_to_string(file_path).expect("Failed to read example file");
         let result = parse_light_shows(&content);
         assert!(
             result.is_ok(),
             "Failed to parse {}: {:?}",
-            file_path,
+            display,
             result.err()
         );
 
         let shows = result.unwrap();
-        assert!(!shows.is_empty(), "No shows found in {}", file_path);
-
-        println!(
-            "✅ {} parsed successfully with {} shows",
-            file_path,
-            shows.len()
-        );
+        assert!(!shows.is_empty(), "No shows found in {}", display);
     }
 }
 

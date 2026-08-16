@@ -55,7 +55,12 @@ Every effect must specify a finite `duration`. Effects can crossfade — set
   string (`#FF8800` or `"#FF8800"`), or `rgb(255, 128, 0)`.
 - `intensity`, `dimmer`, `red`, `green`, `blue`: floats `0.0`–`1.0`, or a
   percentage like `60%`.
-- `direction`: `forward | backward | random | pingpong | left_to_right | right_to_left | top_to_bottom | bottom_to_top | clockwise | counter_clockwise`.
+- `direction`: the accepted values depend on the effect — they are two
+  separate sets, not one list.
+  - `cycle`: `forward | backward | pingpong` (the order colours are stepped).
+  - `chase`: `left_to_right | right_to_left | top_to_bottom | bottom_to_top |
+    clockwise | counter_clockwise` (where the mask travels).
+  - No other effect reads `direction`; on `rainbow` it is accepted and ignored.
 - `layer`: `background | midground | foreground` (grandMA-inspired layers).
 - `blend_mode`: `replace | multiply | add | overlay | screen`.
 
@@ -97,7 +102,7 @@ sequence "Verse" {
     front_wash: static color: "blue", duration: 4s
 
     @00:02.000
-    movers: chase speed: 2.0, direction: forward, duration: 4s
+    movers: chase speed: 2.0, direction: left_to_right, duration: 4s
 }
 
 show "Song" {
