@@ -259,6 +259,27 @@ test.describe("Position picker", () => {
     await expect(end.locator(".pp-value")).toHaveText("m16 · b4");
   });
 
+  test("a boundary asked past the other one clamps up against it", async ({
+    page,
+  }) => {
+    await open(page);
+    const dialog = await openSectionDialog(page);
+    const start = picker(dialog, "Start");
+
+    // The section runs m5–m8, so a start at m9 would invert it. Refusing
+    // outright would leave the ruler sitting at m5 as if the control were
+    // dead; it lands half a beat clear of the end instead.
+    await start.getByRole("button", { name: "Start: type a position" }).click();
+    const field = start.getByRole("textbox", {
+      name: "Start: type a position",
+    });
+    await field.fill("9.1");
+    await field.press("Enter");
+
+    await expect(start.locator(".pp-value")).toHaveText("m7 · b4½");
+    await expect(page.locator(".range-note")).toHaveText("m7.4.5–8");
+  });
+
   test("pilot hints anchor through the same picker", async ({ page }) => {
     await open(page);
     const dialog = await openPilotDialog(page);

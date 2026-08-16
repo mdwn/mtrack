@@ -18,6 +18,7 @@
   import { beatsInMeasure, sigAtMeasure } from "../../lib/util/tempo";
   import {
     beatsInMeasure as gridBeatsInMeasure,
+    maxBeatIn,
     type BeatGrid,
   } from "../../lib/util/beatGrid";
   import type { TempoConfig } from "../../lib/api/songs";
@@ -129,17 +130,65 @@
     playheadPos !== null && isBefore(startPos, playheadPos),
   );
 
+  /** Half beats: the granularity a section boundary is stored at. */
+  const BEAT_STEP = 0.5;
+
+  /** One step earlier (`delta` -1) or later (+1), rolling over measure lines
+   * the way the picker's transport does and stopping at the ends of the
+   * song, so walking always terminates. */
+  function stepped(pos: Position, delta: number): Position {
+    let { measure, beat } = pos;
+    beat += delta * BEAT_STEP;
+    while (beat >= sectionBeatsIn(measure) + 1 && measure < maxMeasure) {
+      beat -= sectionBeatsIn(measure);
+      measure += 1;
+    }
+    while (beat < 1 && measure > 1) {
+      measure -= 1;
+      beat += sectionBeatsIn(measure);
+    }
+    const highest = maxBeatIn(
+      beatGrid,
+      measure,
+      sectionBeatsIn(measure),
+      BEAT_STEP,
+    );
+    return { measure, beat: Math.max(1, Math.min(highest, beat)) };
+  }
+
   /** Writes a boundary; beat 1 is the measure line, stored as "unset".
-   * A move that would invert the section is refused — the picker is
-   * controlled, so it snaps back to the position still in the config. */
+   *
+   * A move that would invert the section lands on the closest position that
+   * would not, rather than being refused: the picker is controlled, so a
+   * silent refusal snaps the ruler back under the finger and reads as a dead
+   * control. An inverted range is what `Section::validate` rejects on save,
+   * and that is the outcome being avoided.
+   *
+   * The clamp walks out from the *other* boundary instead of computing a
+   * nearest legal beat, because ordering resolves through the grid — in 4/4,
+   * m5 beat 5 and m6 beat 1 are the same instant — so there is no arithmetic
+   * shortcut to "one step clear of it". */
   function setBoundary(field: "start" | "end", pos: Position) {
     const other = field === "start" ? endPos : startPos;
-    const ordered =
-      field === "start" ? isBefore(pos, other) : isBefore(other, pos);
-    if (!ordered) return;
+    const delta = field === "start" ? -1 : 1;
+    const ordered = (p: Position) =>
+      field === "start" ? isBefore(p, other) : isBefore(other, p);
+
+    let target = pos;
+    if (!ordered(target)) {
+      target = stepped(other, delta);
+      while (!ordered(target)) {
+        const next = stepped(target, delta);
+        // The walk has run into measure 1 or the last measure; there is no
+        // position left that keeps the section forward.
+        if (next.measure === target.measure && next.beat === target.beat)
+          return;
+        target = next;
+      }
+    }
     onchange({
-      [`${field}_measure`]: pos.measure,
-      [`${field}_beat`]: pos.beat === 1 ? undefined : pos.beat,
+      [`${field}_measure`]: target.measure,
+      [`${field}_beat`]: target.beat === 1 ? undefined : target.beat,
     });
   }
 
