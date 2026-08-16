@@ -76,6 +76,10 @@ pub struct LayerCommandEntry {
     pub command: String,
     /// The layer it targets, or `all` for a bare `clear()`.
     pub layer: String,
+    /// `master`'s intensity argument, when given.
+    pub intensity: Option<f64>,
+    /// `master`'s speed argument, when given.
+    pub speed: Option<f64>,
 }
 
 /// An effect present in both versions but not identical.
@@ -210,6 +214,8 @@ fn layer_commands(shows: &[LightShow], tempo: Option<&TempoMap>) -> Vec<LayerCom
                         .layer
                         .map(|l| format!("{l:?}").to_lowercase())
                         .unwrap_or_else(|| "all".to_string()),
+                    intensity: cmd.intensity,
+                    speed: cmd.speed,
                 });
             }
         }
@@ -224,8 +230,15 @@ fn command_difference(a: &[LayerCommandEntry], b: &[LayerCommandEntry]) -> Vec<L
     let mut remaining: Vec<&LayerCommandEntry> = b.iter().collect();
     let mut out = Vec::new();
     for entry in a {
+        // Arguments are part of the identity: `master(intensity: 100%)` and
+        // `master(intensity: 10%)` are the same verb on the same layer at the
+        // same time, and matching on that alone reported no change.
         match remaining.iter().position(|o| {
-            o.time == entry.time && o.command == entry.command && o.layer == entry.layer
+            o.time == entry.time
+                && o.command == entry.command
+                && o.layer == entry.layer
+                && o.intensity == entry.intensity
+                && o.speed == entry.speed
         }) {
             Some(i) => {
                 remaining.remove(i);
@@ -734,6 +747,21 @@ show "T" {
         let d = diff(BASE, after);
         assert_eq!(d.layer_commands_added.len(), 1, "{d:?}");
         assert_eq!(d.layer_commands_added[0].command, "master");
+    }
+
+    #[test]
+    fn a_master_intensity_edit_is_not_identical() {
+        // The command's arguments are what it does. Comparing only the verb and
+        // the layer made a full-to-dim master read as no change at all.
+        let with = |intensity: &str| {
+            format!(
+                "show \"T\" {{\n    @00:00.000\n    wash: static color: \"blue\", duration: 4s\n                     master(layer: background, intensity: {intensity})\n}}\n"
+            )
+        };
+        let d = diff(&with("100%"), &with("10%"));
+        assert!(!d.is_empty(), "{d:?}");
+        assert_eq!(d.layer_commands_added.len(), 1, "{d:?}");
+        assert_eq!(d.layer_commands_removed.len(), 1, "{d:?}");
     }
 
     #[test]

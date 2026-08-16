@@ -77,6 +77,17 @@ impl Engine {
         let has_lighting = !dsl_lighting_shows.is_empty();
 
         if light_shows.is_empty() && !has_lighting {
+            // A song with no lighting at all still has to evict the previous
+            // song's state, or `status.lighting` and `get_timeline_cues()` keep
+            // answering with that song's cues.
+            {
+                let mut effect_engine = dmx_engine.effect_engine.lock();
+                effect_engine.set_tempo_map(None);
+            }
+            {
+                let mut current_timeline = dmx_engine.current_song_timeline.lock();
+                *current_timeline = None;
+            }
             ready_tx.send();
             return Ok(());
         }
@@ -116,7 +127,7 @@ impl Engine {
                         timeline
                             .tempo_map()
                             .cloned()
-                            .or_else(|| song.tempo_map().cloned()),
+                            .or_else(|| song.lighting_tempo_map()),
                     );
                 }
                 {
@@ -166,7 +177,7 @@ impl Engine {
                         dmx_engine.current_song_time.clone(),
                         dmx_engine.lighting_system.clone(),
                         dmx_engine.lighting_config.clone(),
-                        song.tempo_map().cloned(),
+                        song.lighting_tempo_map(),
                         tx.clone(),
                     ) {
                         Ok(handle) => {
@@ -202,15 +213,8 @@ impl Engine {
 
         if dmx_midi_sheets.is_empty() && !has_lighting {
             info!(song = song.name(), "Song has no matching light shows.");
-            // Drop the previous song's timeline. Leaving it installed makes
-            // `status.lighting` report that song's cue counts for this one —
-            // "a show is loaded but never armed" for a song that has no show,
-            // which is exactly the wrong answer from the field added to end
-            // that guesswork.
-            {
-                let mut current_timeline = dmx_engine.current_song_timeline.lock();
-                *current_timeline = None;
-            }
+            // The `!has_lighting` branch above already dropped the previous
+            // song's timeline and tempo map.
             ready_tx.send();
             return Ok(());
         }

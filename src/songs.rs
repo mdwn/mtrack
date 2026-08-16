@@ -649,6 +649,20 @@ impl Song {
         self.tempo_map.as_ref()
     }
 
+    /// The tempo map this song's `.light` files are parsed with: its explicit
+    /// `tempo:` block if it has one, otherwise one derived from the click
+    /// track's beat grid.
+    ///
+    /// Anything that parses a show for this song has to use this and not
+    /// [`Song::tempo_map`] alone — the parser rejects every `@bar`/`beat`
+    /// construct outright without a tempo, so the difference is not a matter
+    /// of accuracy but of whether the show parses at all.
+    pub fn lighting_tempo_map(&self) -> Option<crate::tempo::TempoMap> {
+        self.tempo_map
+            .clone()
+            .or_else(|| self.beat_grid.as_ref().and_then(|grid| grid.to_tempo_map()))
+    }
+
     /// Gets the metronome configuration, if configured.
     pub fn metronome(&self) -> Option<&config::MetronomeConfig> {
         self.metronome.as_ref()

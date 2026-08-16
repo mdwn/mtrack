@@ -65,10 +65,12 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
     let mut warnings = Vec::new();
     for show in shows {
         empty_groups(show, ctx, &mut warnings);
-        effects_past_end_of_song(show, ctx, &mut warnings);
         tempo_disagrees_with_grid(show, ctx, &mut warnings);
         cues_beyond_the_tempo_map(show, ctx, &mut warnings);
     }
+    // Across all shows at once, for the same reason the stomp check is: a
+    // `clear` in one show of a file ends effects in its siblings.
+    effects_past_end_of_song(shows, ctx, &mut warnings);
     // Across all shows at once, not per show: `LightingTimeline` merges every
     // show in a file into one cue list and plays them together, so two shows
     // both driving `wash` on the background layer stomp each other exactly as
@@ -105,7 +107,7 @@ fn empty_groups(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) {
 
 /// An effect whose duration runs past the end of the song. Playback truncates
 /// it, which is usually not what the author meant.
-fn effects_past_end_of_song(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) {
+fn effects_past_end_of_song(shows: &[LightShow], ctx: &LintContext, out: &mut Vec<Warning>) {
     let Some(song_end) = ctx.song_duration else {
         return;
     };
@@ -114,8 +116,8 @@ fn effects_past_end_of_song(show: &LightShow, ctx: &LintContext, out: &mut Vec<W
     if song_end.is_zero() {
         return;
     }
-    let clears = clear_times(show);
-    for cue in &show.cues {
+    let clears: Vec<(Option<EffectLayer>, Duration)> = shows.iter().flat_map(clear_times).collect();
+    for cue in shows.iter().flat_map(|show| show.cues.iter()) {
         for effect in &cue.effects {
             // The authored end is not the real one. A long bed cut by a
             // `clear` does not overrun the song, and warning that it does is
@@ -170,7 +172,8 @@ fn stomping_replace_effects(shows: &[LightShow], out: &mut Vec<Warning>) {
                     .iter()
                     .filter(|(name, at)| name == sequence && *at > cue.time)
                     .map(|(_, at)| *at)
-                    .find(|at| *at < end)
+                    .filter(|at| *at < end)
+                    .min()
                 {
                     end = stopped;
                 }
@@ -254,7 +257,8 @@ fn effective_end(
         .iter()
         .filter(|(cleared, at)| *at > start && cleared.is_none_or(|l| l == layer))
         .map(|(_, at)| *at)
-        .find(|at| *at < authored_end)
+        .filter(|at| *at < authored_end)
+        .min()
         .unwrap_or(authored_end)
 }
 

@@ -1539,6 +1539,8 @@ impl McpServer {
                 "position": c.position,
                 "command": c.command,
                 "layer": c.layer,
+                "intensity": c.intensity,
+                "speed": c.speed,
             })
         };
 
@@ -2401,13 +2403,9 @@ fn evaluation_json(
     entry
 }
 
-/// The tempo map a song's `.light` files are parsed with: its explicit
-/// `tempo:` block if it has one, otherwise one derived from the click-derived
-/// beat grid. Mirrors what `Song` does at load time.
+/// The tempo map a song's `.light` files are parsed with.
 fn song_lighting_tempo(song: &crate::songs::Song) -> Option<crate::tempo::TempoMap> {
-    song.tempo_map()
-        .cloned()
-        .or_else(|| song.beat_grid().and_then(|grid| grid.to_tempo_map()))
+    song.lighting_tempo_map()
 }
 
 /// What `write_song_lighting` did about the song's `lighting:` block.

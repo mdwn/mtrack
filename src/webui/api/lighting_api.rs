@@ -494,9 +494,7 @@ fn song_tempo_for_path(
         .list()
         .into_iter()
         .find(|song| path.starts_with(song.base_path()))?;
-    song.tempo_map()
-        .cloned()
-        .or_else(|| song.beat_grid().and_then(|grid| grid.to_tempo_map()))
+    song.lighting_tempo_map()
 }
 
 /// Returns the group names valid as cue targets, with the fixtures each
