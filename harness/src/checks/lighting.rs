@@ -408,11 +408,26 @@ pub async fn a_bar_timed_cue_lands_where_the_click_track_says() -> CheckOutcome 
                     .collect()
             })
             .unwrap_or_default();
+        // Load the same directory in-process, so the failure is attributable
+        // to the song rather than to anything the player did around it.
+        let direct = match mtrack::config::Song::deserialize(&song_dir.join("song.yaml")) {
+            Ok(cfg) => match mtrack::songs::Song::new(&song_dir, &cfg) {
+                Ok(song) => format!(
+                    "Song::new OK; beat grid: {}",
+                    song.beat_grid().map_or("NONE".to_string(), |g| format!(
+                        "{} beats, {} measure starts",
+                        g.beats.len(),
+                        g.measure_starts.len()
+                    ))
+                ),
+                Err(e) => format!("Song::new FAILED: {e}"),
+            },
+            Err(e) => format!("config deserialize FAILED: {e}"),
+        };
         crate::fail!(
-            "play was rejected ({e}).\n--- song dir {} ---\n{}\n--- yaml ---\n{}\n--- log ---\n{}",
+            "play was rejected ({e}).\n--- direct load ---\n{direct}\n--- song dir {} ---\n{}\n--- log ---\n{}",
             song_dir.display(),
             listing.join("\n"),
-            std::fs::read_to_string(song_dir.join("song.yaml")).unwrap_or_default(),
             server.log()
         );
     }
