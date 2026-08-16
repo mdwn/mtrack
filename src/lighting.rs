@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+pub mod analyze;
 #[cfg(test)]
 mod consistency_tests;
 pub mod effects;

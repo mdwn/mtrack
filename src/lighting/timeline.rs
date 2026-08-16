@@ -273,6 +273,16 @@ impl LightingTimeline {
         result
     }
 
+    /// Each cue's time paired with the effects it starts.
+    ///
+    /// Coverage analysis needs both to know where the running set can change:
+    /// a cue time, and that time plus each effect's authored duration.
+    pub fn cue_effects(&self) -> impl Iterator<Item = (Duration, &[Effect])> {
+        self.cues
+            .iter()
+            .map(|cue| (cue.time, cue.effects.as_slice()))
+    }
+
     /// Get all cues with their times and indices
     pub fn cues(&self) -> Vec<(Duration, usize)> {
         self.cues

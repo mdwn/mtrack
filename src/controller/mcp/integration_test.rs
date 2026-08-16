@@ -1600,6 +1600,114 @@ async fn mcp_fixture_state_matches_offline_evaluation() -> Result<(), Box<dyn Er
 }
 
 // ---------------------------------------------------------------------------
+// Test 3c-quater: show coverage analysis (#339)
+// ---------------------------------------------------------------------------
+
+/// `analyze_show` reports the gaps and coverage that are invisible in the
+/// source. This drives it over the wire with a show whose real dark window is
+/// created by a `clear`, not by the durations on the page.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_analyze_show_reports_gaps_and_coverage() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    std::fs::create_dir_all(fixture.root.join("lighting/venues"))?;
+    std::fs::create_dir_all(fixture.root.join("lighting/fixture_types"))?;
+    copy_dir_recursive(
+        Path::new("examples/lighting/fixture_types"),
+        &fixture.root.join("lighting/fixture_types"),
+    )?;
+    std::fs::write(
+        fixture.root.join("lighting/venues/main_stage.light"),
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\", \"left\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n}\n",
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // `all_lights` is a configured logical group; `movers` is not, so it
+    // resolves to nothing and should be warned about. The 30s bed is cut short
+    // by a clear at 5s, opening a gap the durations alone do not reveal.
+    let source = r#"show "Coverage" {
+    @00:00.000
+    all_lights: static color: "blue", duration: 30s
+
+    @00:05.000
+    clear(layer: background)
+
+    @00:08.000
+    all_lights: static color: "red", duration: 2s
+
+    @00:10.000
+    movers: strobe frequency: 8, duration: 2s
+}
+"#;
+
+    let body = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            970,
+            "analyze_show",
+            json!({"source": source}),
+        )
+        .await,
+    );
+
+    assert_eq!(body["cue_count"], 4, "{body}");
+    assert_eq!(
+        body["span_seconds"], 12.0,
+        "span ends with activity: {body}"
+    );
+
+    // The gap is 5s (the clear) to 8s (the next cue) — invisible in the source,
+    // which says the first effect runs for 30 seconds.
+    let windows = body["dark_windows"].as_array().expect("dark_windows");
+    assert_eq!(windows.len(), 1, "expected one gap: {body}");
+    assert_eq!(windows[0]["from"], 5.0);
+    assert_eq!(windows[0]["to"], 8.0);
+    assert_eq!(windows[0]["seconds"], 3.0);
+    assert_eq!(body["dark_seconds"], 3.0);
+
+    // Coverage is per authored group, unioned.
+    assert_eq!(body["per_group_seconds"]["all_lights"], 7.0, "{body}");
+    assert_eq!(body["per_group_seconds"]["movers"], 2.0, "{body}");
+
+    // The strobe runs on the foreground by default only if authored so; here
+    // everything is background, and its off-phase must not read as a gap.
+    assert_eq!(body["per_layer_seconds"]["background"], 9.0, "{body}");
+
+    // `movers` matches no configured group, so its cues would do nothing.
+    let warnings: Vec<&str> = body["warnings"]
+        .as_array()
+        .expect("warnings")
+        .iter()
+        .filter_map(|w| w.as_str())
+        .collect();
+    assert!(
+        warnings.iter().any(|w| w.contains("movers")),
+        "expected a warning about `movers`: {body}"
+    );
+    assert!(
+        !warnings.iter().any(|w| w.contains("all_lights")),
+        "`all_lights` resolves and should not be warned about: {body}"
+    );
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3d: profile add → update → remove round-trip
 // ---------------------------------------------------------------------------
 

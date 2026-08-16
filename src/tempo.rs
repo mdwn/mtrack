@@ -493,7 +493,7 @@ impl TempoMap {
 
     /// Convert an absolute time to a (measure, beat) position by integrating through
     /// all tempo/time-signature changes that precede it.
-    fn time_to_measure_beat(&self, target_time: Duration) -> (u32, f64) {
+    pub(crate) fn time_to_measure_beat(&self, target_time: Duration) -> (u32, f64) {
         let mut m: u32 = 1;
         let mut b: f64 = 1.0;
         let mut temp_time = self.start_offset;
