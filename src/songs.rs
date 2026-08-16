@@ -992,6 +992,9 @@ impl Song {
                 name: s.name.clone(),
                 start_measure: s.start_measure as u32,
                 end_measure: s.end_measure as u32,
+                start_beat: s.start_beat,
+                end_beat: s.end_beat,
+                color: s.color.clone(),
             })
             .collect();
 
@@ -3993,5 +3996,38 @@ pilot:
         assert_eq!(proto.sections[0].start_measure, 1);
         assert_eq!(proto.sections[0].end_measure, 2);
         assert_eq!(proto.sections[1].name, "chorus");
+    }
+
+    #[test]
+    fn to_proto_carries_section_beat_offsets() {
+        // Measures alone do not locate a boundary: the player resolves it via
+        // `grid.beat_time(measure, beat)`, so a client given only measures
+        // draws the section somewhere the player disagrees with — by up to a
+        // whole measure. The offsets have to cross the wire.
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "bridge".to_string(),
+            start_measure: 2,
+            end_measure: 4,
+            start_beat: Some(3.0),
+            end_beat: Some(2.5),
+            color: Some("#ff8800".to_string()),
+        }];
+
+        let proto = song.to_proto().unwrap();
+        assert_eq!(proto.sections.len(), 1);
+        assert_eq!(proto.sections[0].start_beat, Some(3.0));
+        assert_eq!(proto.sections[0].end_beat, Some(2.5));
+        assert_eq!(proto.sections[0].color.as_deref(), Some("#ff8800"));
+    }
+
+    #[test]
+    fn to_proto_leaves_absent_beat_offsets_absent() {
+        // Absent means "the measure line", which is not the same claim as
+        // beat 1 and must not be materialised into one.
+        let song = make_song_with_beat_grid();
+        let proto = song.to_proto().unwrap();
+        assert_eq!(proto.sections[0].start_beat, None);
+        assert_eq!(proto.sections[0].end_beat, None);
     }
 }

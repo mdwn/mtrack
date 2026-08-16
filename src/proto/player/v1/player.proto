@@ -34,6 +34,16 @@ message Section {
     uint32 start_measure = 2;
     // End measure (1-indexed, exclusive).
     uint32 end_measure = 3;
+    // Beat within start_measure (1-based, fractional allowed). Absent means
+    // the measure line. A boundary is only measure-accurate without this, and
+    // the player resolves it through the beat grid, so a client that ignores
+    // these draws the section somewhere the player does not agree with.
+    optional double start_beat = 4;
+    // Beat within end_measure (1-based, fractional allowed). Absent means the
+    // measure line, keeping the bound exclusive.
+    optional double end_beat = 5;
+    // Display colour for timelines ("#rrggbb"); absent means the client picks.
+    optional string color = 6;
 }
 
 // Song is a message that contains information about a song.

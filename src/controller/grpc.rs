@@ -115,17 +115,45 @@ impl PlayerServer {
     }
 
     /// Converts a play/play_from result into a gRPC response.
+    ///
+    /// `Ok(None)` means the player declined to start, and it declines for more
+    /// than one reason: a song already playing, an empty playlist, or breaking
+    /// out of a looping song to advance. Reporting "song already playing" for
+    /// all three sent one investigation a long way in the wrong direction —
+    /// a song that failed to load leaves an empty playlist, and the transport
+    /// error said nothing about that. The state is cheap to read, so read it.
     #[allow(clippy::result_large_err)]
-    fn play_response(
-        result: Result<Option<Arc<crate::songs::Song>>, Box<dyn Error>>,
+    async fn play_response(
+        &self,
+        // Takes the error already flattened: `Box<dyn Error>` is not `Send`,
+        // and as a parameter it is captured by this future whatever the body
+        // does with it.
+        result: Result<Option<Arc<crate::songs::Song>>, String>,
     ) -> Result<Response<PlayResponse>, Status> {
-        match result {
-            Ok(Some(song)) => Ok(Response::new(PlayResponse {
-                song: Some(song.to_proto()?),
-            })),
-            Ok(None) => Err(Status::failed_precondition("song already playing")),
-            Err(e) => Err(Status::failed_precondition(e.to_string())),
+        let song = match result {
+            Ok(Some(song)) => song,
+            Ok(None) => {
+                return Err(Status::failed_precondition(self.declined_reason().await));
+            }
+            Err(e) => return Err(Status::failed_precondition(e)),
+        };
+        Ok(Response::new(PlayResponse {
+            song: Some(song.to_proto()?),
+        }))
+    }
+
+    /// Why the player declined to start, determined from its current state
+    /// rather than assumed.
+    async fn declined_reason(&self) -> String {
+        if self.player.is_playing().await {
+            return "song already playing".to_string();
         }
+        if self.player.get_playlist().songs().is_empty() {
+            return "the playlist is empty — no songs loaded, which usually \
+                    means none passed validation at startup (check the log)"
+                .to_string();
+        }
+        "the player did not start a song".to_string()
     }
 
     /// Returns a reference to the config store or a NOT_FOUND error.
@@ -161,7 +189,8 @@ fn snapshot_to_update_response(
 #[tonic::async_trait]
 impl PlayerService for PlayerServer {
     async fn play(&self, _: Request<PlayRequest>) -> Result<Response<PlayResponse>, Status> {
-        Self::play_response(self.player.play().await)
+        self.play_response(self.player.play().await.map_err(|e| e.to_string()))
+            .await
     }
 
     async fn play_from(
@@ -176,7 +205,13 @@ impl PlayerService for PlayerServer {
             .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))?
             .unwrap_or(std::time::Duration::ZERO);
 
-        Self::play_response(self.player.play_from(start_time).await)
+        self.play_response(
+            self.player
+                .play_from(start_time)
+                .await
+                .map_err(|e| e.to_string()),
+        )
+        .await
     }
 
     async fn play_song_from(
@@ -191,7 +226,13 @@ impl PlayerService for PlayerServer {
             .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))?
             .unwrap_or(std::time::Duration::ZERO);
 
-        Self::play_response(self.player.play_song_from(&req.song_name, start_time).await)
+        self.play_response(
+            self.player
+                .play_song_from(&req.song_name, start_time)
+                .await
+                .map_err(|e| e.to_string()),
+        )
+        .await
     }
 
     async fn seek(&self, request: Request<SeekRequest>) -> Result<Response<SeekResponse>, Status> {
@@ -655,6 +696,50 @@ mod test {
     };
 
     use super::Player;
+
+    /// An empty playlist is not "a song is already playing".
+    ///
+    /// `Player::play` answers `Ok(None)` for three different situations and
+    /// says which for none of them. Reporting the most common one as fact sent
+    /// a hardware investigation a long way in the wrong direction: a song that
+    /// failed to load leaves the playlist empty, and the transport error
+    /// mentioned nothing of the sort.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn play_on_an_empty_playlist_says_so() -> Result<(), Box<dyn Error>> {
+        let empty = tempfile::tempdir()?;
+        let songs = songs::get_all_songs(empty.path())?;
+        let mut playlists = HashMap::new();
+        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
+        let player = Player::new(
+            playlists,
+            "all_songs".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                empty.path().to_str().expect("path"),
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+
+        let server = super::PlayerServer::new(player);
+        let status = crate::proto::player::v1::player_service_server::PlayerService::play(
+            &server,
+            tonic::Request::new(PlayRequest {}),
+        )
+        .await
+        .expect_err("an empty playlist cannot play");
+
+        assert!(
+            status.message().contains("playlist is empty"),
+            "expected the empty playlist to be named, got: {}",
+            status.message()
+        );
+        Ok(())
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_grpc() -> Result<(), Box<dyn Error>> {

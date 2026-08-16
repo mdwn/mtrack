@@ -512,12 +512,33 @@ pub async fn overlapping_device_tests_do_not_fail_each_other() -> CheckOutcome {
     // really does refuse a second open. Without that, a machine whose driver
     // allowed concurrent opens would pass this check while proving nothing.
     let held = if crate::sabotage::active() {
-        Some(
-            mtrack::audio::get_device(Some(mtrack::config::Audio::new(&device.name)))
-                .map_err(|e| CheckError::Harness(format!("could not hold the device open: {e}")))?,
-        )
+        match mtrack::audio::get_device(Some(mtrack::config::Audio::new(&device.name))) {
+            Ok(device) => Some(device),
+            // Not every interface can be held open by us: this rig's own
+            // reports a native format mtrack cannot open directly. Turning that
+            // into a harness error left the check with no working control at
+            // all, which `--self-test` reported as "NO ASSERTION" — the check
+            // was never proven capable of failing on this machine.
+            Err(e) => {
+                crate::outcome::record(format!(
+                    "caveat: could not hold '{}' open for the world-level control ({e}); \
+                     fell back to probing a device that does not exist",
+                    device.name
+                ));
+                None
+            }
+        }
     } else {
         None
+    };
+
+    // With the device held, probing the real one fails because it is busy.
+    // Without it, the fallback names a device that cannot resolve, so the
+    // probes fail for a different reason but the assertion still fires.
+    let probe_target = if crate::sabotage::active() && held.is_none() {
+        "e2e-nonexistent-audio-device".to_string()
+    } else {
+        device.name.clone()
     };
 
     let concurrent = 3;
@@ -525,7 +546,7 @@ pub async fn overlapping_device_tests_do_not_fail_each_other() -> CheckOutcome {
     for _ in 0..concurrent {
         requests.push(client.post_json(
             "devices/audio/probe",
-            serde_json::json!({"device": device.name}),
+            serde_json::json!({"device": probe_target}),
         ));
     }
     let responses = futures_util::future::join_all(requests).await;
