@@ -90,10 +90,13 @@ writes to disk, so a malformed edit is rejected rather than corrupting a project
 
 ### Resources
 
-Two resources can be subscribed to (via `resources/subscribe`) for live push updates:
+Three resources can be subscribed to (via `resources/subscribe`) for live push updates:
 
 - `mtrack://status` — a snapshot of player state (active playlist, current song, playback position).
 - `mtrack://config` — the current configuration as YAML, plus a checksum.
+- `mtrack://lighting/state` — live per-fixture DMX values, the effects running, and which effects
+  drive each fixture. Notifications carry the payload, are coalesced to at most 10/second, and are
+  only sent when the state actually changes, so an idle rig stays quiet.
 
 ## Security
 

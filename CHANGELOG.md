@@ -30,6 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mtrack://lighting/state`: subscribe to lighting instead of polling it**: a new MCP resource
+  carrying per-fixture DMX values, the effects running, and which effects drive each fixture —
+  the same payload `get_fixture_state` returns, through the same builder so the two cannot drift.
+  Subscribers get `notifications/resources/updated` with the payload attached, so a listener
+  never needs a follow-up read.
+
+  Verifying a 124-cue show previously meant polling `status` + `get_active_effects` in a tight
+  loop — around 120 requests a second — reconstructing by hand a stream the server already
+  maintains internally. That polling is the load #332's failures clustered under.
+
+  Notifications are coalesced to at most ten a second rather than firing on every 20Hz sampler
+  tick, and a tick that produced identical state sends nothing at all, so a client attached to an
+  idle rig stays quiet instead of being woken ten times a second forever.
+
 - **`diff_shows`: what changed between two versions of a light show**: reports added, removed and
   changed effects, plus the dark windows the revision opened and closed. Each side takes either a
   song or DSL source.
