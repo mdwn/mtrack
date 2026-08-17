@@ -914,6 +914,88 @@ show "T" {
         );
     }
 
+    /// The web UI's own table of per-effect parameters must match the engine.
+    ///
+    /// `EffectForm.svelte` keeps a `USED_PARAMS` map that decides which fields
+    /// survive an effect-type change. It was written by hand from what the
+    /// engine accepts, and nothing tied the two together — so a parameter added
+    /// to an effect, or removed from one, would leave the editor silently
+    /// dropping a real setting or carrying a dead one. Both are the failure this
+    /// branch exists to remove, so the table is read from the source and checked
+    /// rather than trusted.
+    #[test]
+    fn the_editors_parameter_table_matches_what_the_engine_accepts() {
+        let source = std::fs::read_to_string(
+            "src/webui/svelte/src/components/lighting/EffectForm.svelte",
+        )
+        .expect("the effect form must be readable");
+
+        // From the object literal's opening brace, so the type annotation —
+        // `Record<EffectType, string[]>` — does not leak in with its own
+        // brackets and break the parse below.
+        let table = source
+            .split_once("const USED_PARAMS")
+            .and_then(|(_, rest)| rest.split_once('{'))
+            .and_then(|(_, body)| body.split_once("};"))
+            .map(|(body, _)| body.to_string())
+            .expect("USED_PARAMS must still be a literal this test can read");
+
+        // `kind: ["a", "b"]` across however many lines prettier wrapped it to.
+        let flattened: String = table.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut checked = 0;
+        for entry in flattened.split(']') {
+            let Some((kind, params)) = entry.split_once('[') else {
+                continue;
+            };
+            let kind = kind.trim().trim_start_matches(',').trim().trim_end_matches(':').trim();
+            if kind.is_empty() {
+                continue;
+            }
+            for param in params.split(',') {
+                let param = param.trim().trim_matches('"');
+                if param.is_empty() {
+                    continue;
+                }
+                let value = sample_value(kind, param);
+                let source = format!(
+                    "show \"T\" {{\n    @00:00.000\n    wash: {kind} {param}: {value}, duration: 2s\n}}\n"
+                );
+                let parsed = crate::lighting::parser::parse_light_shows(&source)
+                    .unwrap_or_else(|e| panic!("`{kind} {param}: {value}` does not parse: {e}"));
+                let shows: Vec<_> = parsed.into_values().collect();
+                let unused: Vec<&str> = lint_shows(&shows, &LintContext::default())
+                    .iter()
+                    .filter(|w| w.kind == "unused-parameter" && w.message.contains(param))
+                    .map(|_| param)
+                    .collect();
+                assert!(
+                    unused.is_empty(),
+                    "the editor keeps `{param}` when an effect becomes `{kind}`, but {kind} \
+                     does not read it — the editor would carry a setting that does nothing"
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 25,
+            "only {checked} parameters were checked; the table was probably not parsed"
+        );
+    }
+
+    /// A value the parser accepts for a given parameter.
+    fn sample_value(kind: &str, param: &str) -> &'static str {
+        match param {
+            "duration" => "2s",
+            "direction" if kind == "chase" => "left_to_right",
+            "direction" => "forward",
+            "transition" => "fade",
+            "pattern" => "linear",
+            "curve" => "linear",
+            "speed" | "frequency" => "1",
+            _ => "0.5",
+        }
+    }
+
     /// The shipped shows must not carry a parameter that does nothing.
     ///
     /// They carried nineteen: `fade`, `loop`, `duty`, `dimmer` on a cycle,
