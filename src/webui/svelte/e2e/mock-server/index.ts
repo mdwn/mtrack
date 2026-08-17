@@ -331,6 +331,20 @@ app.delete("/api/lighting/venues/:name", (_req, res) => {
   res.json({ status: "deleted" });
 });
 
+// Before the `:name` route, or it captures "groups" and answers with DSL text —
+// which `fetchLightingGroups` then fails to parse as JSON. That was invisible
+// while the callers swallowed the error and became a fabricated message on
+// every mock run once they stopped.
+app.get("/api/lighting/groups", (_req, res) => {
+  res.json({
+    groups: [
+      { name: "front_wash", fixtures: ["par1", "par2"] },
+      { name: "back_wash", fixtures: ["par3"] },
+    ],
+    resolved: true,
+  });
+});
+
 app.get("/api/lighting/:name", (_req, res) => {
   res
     .type("text/plain")

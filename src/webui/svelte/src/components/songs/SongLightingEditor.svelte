@@ -622,9 +622,9 @@
       <LightingSummary lightFile={mergedLightFile} />
     {:else}
       {#if venueGroupsError}
-        <p class="status-text error-text" data-testid="venue-groups-error">
+        <div class="error-banner" data-testid="venue-groups-error">
           {venueGroupsError}
-        </p>
+        </div>
       {/if}
       <TimelineEditor
         lightFile={mergedLightFile}

@@ -945,10 +945,20 @@ show "T" {
             let Ok(source) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            // Fixture-type and venue files live alongside the shows and are not
-            // shows; they simply do not parse as one.
-            let Ok(parsed) = crate::lighting::parser::parse_light_shows(&source) else {
-                continue;
+            // Fixture-type and venue files live alongside the shows and are
+            // not shows, so a parse failure is expected for them — but a show
+            // that stops parsing must not drop silently out of this check.
+            let is_show = source.contains("show \"");
+            let parsed = match crate::lighting::parser::parse_light_shows(&source) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    assert!(
+                        !is_show,
+                        "{} declares a show but does not parse: {e}",
+                        path.display()
+                    );
+                    continue;
+                }
             };
             let shows: Vec<_> = parsed.into_values().collect();
             for warning in lint_shows(&shows, &LintContext::default()) {

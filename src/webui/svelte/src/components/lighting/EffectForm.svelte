@@ -47,15 +47,56 @@
     onchange({ ...effect, groups: newGroups });
   }
 
+  /** What each effect type actually reads, mirroring the engine's own arms. */
+  const USED_PARAMS: Record<EffectType, string[]> = {
+    static: [
+      "dimmer",
+      "intensity",
+      "red",
+      "green",
+      "blue",
+      "white",
+      "duration",
+    ],
+    cycle: ["speed", "direction", "transition", "duration"],
+    strobe: ["frequency", "duration"],
+    pulse: [
+      "base_level",
+      "pulse_amplitude",
+      "intensity",
+      "frequency",
+      "duration",
+    ],
+    chase: ["pattern", "speed", "direction", "transition", "duration"],
+    dimmer: ["start_level", "end_level", "curve", "duration"],
+    rainbow: ["speed", "saturation", "brightness", "duration"],
+  };
+
+  /** Whether a type reads colours at all. */
+  const USES_COLOR: EffectType[] = ["static", "cycle"];
+
   function updateType(type: EffectType) {
+    // Changing the type used to carry every field across. A cycle with speed,
+    // direction, transition and a colour became a strobe still carrying all of
+    // them — parameters the strobe ignores, written to the file on the next
+    // save. Only what the new type reads survives; the timing fields live on
+    // the effect wrapper, not here, so they are untouched.
+    const keep = USED_PARAMS[type] ?? [];
+    const carried: Record<string, unknown> = {};
+    for (const key of keep) {
+      const value = (effect.effect as unknown as Record<string, unknown>)[key];
+      if (value !== undefined) {
+        carried[key] = value;
+      }
+    }
     onchange({
       ...effect,
       effect: {
-        ...effect.effect,
+        ...carried,
         type,
-        colors: effect.effect.colors,
+        colors: USES_COLOR.includes(type) ? effect.effect.colors : [],
         extra: effect.effect.extra,
-      },
+      } as typeof effect.effect,
     });
   }
 
@@ -93,8 +134,13 @@
     if (p.colors.length > 0) {
       // Shown as swatches, skip text
     }
-    if (p.dimmer) parts.push(p.dimmer);
-    if (p.intensity !== undefined)
+    // Only where the effect reads them, or the collapsed row advertises a value
+    // that has no control to edit it and is dropped on the next save.
+    if (p.dimmer && effect.effect.type === "static") parts.push(p.dimmer);
+    if (
+      p.intensity !== undefined &&
+      (effect.effect.type === "static" || effect.effect.type === "pulse")
+    )
       parts.push(`${Math.round(p.intensity * 100)}%`);
     if (p.speed) parts.push(`spd:${p.speed}`);
     if (p.frequency) parts.push(`freq:${p.frequency}`);
@@ -265,19 +311,6 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">{$t("effect.dimmer")}</span><input
-              type="text"
-              class="param-input"
-              placeholder="100%"
-              value={effect.effect.dimmer ?? ""}
-              onchange={(e) =>
-                updateParam(
-                  "dimmer",
-                  (e.target as HTMLInputElement).value || undefined,
-                )}
-            /></label
-          >
-          <label class="param"
             ><span class="param-label">{$t("effect.direction")}</span>
             <select
               class="param-input"
@@ -291,24 +324,6 @@
               <option value="">--</option>
               {#each CYCLE_DIRECTIONS as d (d)}<option value={d}>{d}</option
                 >{/each}
-            </select>
-          </label>
-          <label class="param"
-            ><span class="param-label">{$t("effect.loop")}</span>
-            <select
-              class="param-input"
-              value={effect.effect.loop ?? ""}
-              onchange={(e) =>
-                updateParam(
-                  "loop",
-                  (e.target as HTMLSelectElement).value || undefined,
-                )}
-            >
-              <option value="">--</option><option value="once"
-                >{$t("effect.once")}</option
-              ><option value="loop">{$t("effect.loopOption")}</option><option
-                value="pingpong">{$t("effect.pingpong")}</option
-              ><option value="random">{$t("effect.random")}</option>
             </select>
           </label>
         {:else if effect.effect.type === "strobe"}
@@ -410,19 +425,6 @@
                 )}
             /></label
           >
-          <label class="param"
-            ><span class="param-label">{$t("effect.dimmer")}</span><input
-              type="text"
-              class="param-input"
-              placeholder="80%"
-              value={effect.effect.dimmer ?? ""}
-              onchange={(e) =>
-                updateParam(
-                  "dimmer",
-                  (e.target as HTMLInputElement).value || undefined,
-                )}
-            /></label
-          >
         {:else if effect.effect.type === "chase"}
           <label class="param"
             ><span class="param-label">{$t("effect.speed")}</span><input
@@ -480,24 +482,6 @@
               <option value="">--</option
               >{#each CHASE_DIRECTIONS as d (d)}<option value={d}>{d}</option
                 >{/each}
-            </select>
-          </label>
-          <label class="param"
-            ><span class="param-label">{$t("effect.loop")}</span>
-            <select
-              class="param-input"
-              value={effect.effect.loop ?? ""}
-              onchange={(e) =>
-                updateParam(
-                  "loop",
-                  (e.target as HTMLSelectElement).value || undefined,
-                )}
-            >
-              <option value="">--</option><option value="once"
-                >{$t("effect.once")}</option
-              ><option value="loop">{$t("effect.loopOption")}</option><option
-                value="pingpong">{$t("effect.pingpong")}</option
-              ><option value="random">{$t("effect.random")}</option>
             </select>
           </label>
         {:else if effect.effect.type === "dimmer"}
@@ -613,22 +597,6 @@
                 )}
             /></label
           >
-          <label class="param"
-            ><span class="param-label">{$t("effect.loop")}</span>
-            <select
-              class="param-input"
-              value={effect.effect.loop ?? ""}
-              onchange={(e) =>
-                updateParam(
-                  "loop",
-                  (e.target as HTMLSelectElement).value || undefined,
-                )}
-            >
-              <option value="">--</option><option value="once"
-                >{$t("effect.once")}</option
-              ><option value="loop">{$t("effect.loopOption")}</option>
-            </select>
-          </label>
         {/if}
 
         <!-- Layer & blend mode -->

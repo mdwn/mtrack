@@ -51,10 +51,17 @@ Every effect must specify a finite `duration`. Effects can crossfade — set
   between number and unit** — write `500ms`, `2s`, `4beats`, `2measures` (not
   `4 beats`). `speed` and `frequency` parameters accept the same forms
   (`speed: 1measure`, `frequency: 1beat`).
-- `color`: a named color (`"red"`, `"blue"`, `"white"`, `"orange"`, …), a hex
-  string (`#FF8800` or `"#FF8800"`), or `rgb(255, 128, 0)`.
-- `intensity`, `dimmer`, `red`, `green`, `blue`: floats `0.0`–`1.0`, or a
-  percentage like `60%`.
+- `color` (**`static` and `cycle` only**): a named color (`"red"`, `"blue"`,
+  `"white"`, `"orange"`, …), a hex string (`#FF8800` or `"#FF8800"`), or
+  `rgb(255, 128, 0)`. The other effect types have no color of their own — a
+  `chase` or `strobe` gates whatever is beneath it, so put the color on the bed.
+- `dimmer`, `red`, `green`, `blue` (**`static` only**), and `intensity`
+  (**`static` and `pulse` only**): floats `0.0`–`1.0`, or a percentage like
+  `60%`.
+
+These are listed per effect deliberately. A parameter an effect does not read is
+accepted by the parser and dropped, so writing one produces a setting that never
+takes effect — `validate_lighting` reports it as an `unused-parameter` warning.
 - `direction`: the accepted values depend on the effect — they are two
   separate sets, not one list.
   - `cycle`: `forward | backward | pingpong` (the order colours are stepped).

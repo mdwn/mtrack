@@ -360,7 +360,11 @@ pub(crate) fn apply_parameters_to_effect_type(
                         // are addressed. Anything else is not used by anything,
                         // and `static` is where a typo is most likely, so it
                         // must not be the one effect type the lint cannot see.
-                        if let Ok(val) = value.parse::<f64>() {
+                        // A percentage is as valid a channel level as a bare
+                        // float — `gobo: 50%` was dropped silently, and the
+                        // warning then blamed the name when the fault was the
+                        // `%`.
+                        if let Ok(val) = parse_percentage_to_f64(value) {
                             static_params.insert(key.clone(), val);
                         } else {
                             ignored.push(other.to_string());
