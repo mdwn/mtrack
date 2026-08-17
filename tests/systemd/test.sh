@@ -58,6 +58,15 @@ check "service file does not contain ProtectHome" bash -c '! grep -q "ProtectHom
 check "environment file exists" test -f /etc/default/mtrack
 check "environment file sets MTRACK_PATH" grep -q "MTRACK_PATH=$MTRACK_PATH" /etc/default/mtrack
 
+# The unit is generated with the library path, so it must say the mtrack user
+# needs access to it and declare it writable (#351). A freshly created system
+# user owns none of the library, and nothing used to point at permissions when
+# the service then failed.
+check "service file documents the library permissions" grep -q "read/write access" /etc/systemd/system/mtrack.service
+check "service file names the library in the chown hint" grep -q "chown -R mtrack:mtrack \"$MTRACK_PATH\"" /etc/systemd/system/mtrack.service
+check "service file declares the library writable" grep -q "ReadWritePaths=-\"$MTRACK_PATH\"" /etc/systemd/system/mtrack.service
+check "service file has no unrendered placeholders" bash -c '! grep -q "{{" /etc/systemd/system/mtrack.service' 
+
 echo ""
 echo "--- Test: Service startup ---"
 

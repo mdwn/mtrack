@@ -75,7 +75,10 @@ RUN useradd --system --no-create-home --shell /usr/sbin/nologin mtrack \
     && mkdir -p /var/lib/mtrack \
     && chown mtrack:mtrack /var/lib/mtrack
 
-RUN mtrack systemd > /etc/systemd/system/mtrack.service
+# With the library path, so the generated unit carries ReadWritePaths and the
+# specific permission hint — the form the deployment guide recommends, and the
+# one that can fail under real systemd if the directive is malformed.
+RUN mtrack systemd /var/lib/mtrack > /etc/systemd/system/mtrack.service
 RUN echo 'MTRACK_PATH=/var/lib/mtrack' > /etc/default/mtrack
 
 COPY tests/systemd/test.sh /test.sh

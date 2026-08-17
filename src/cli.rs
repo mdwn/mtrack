@@ -302,7 +302,10 @@ fn render_systemd_service(executable_path: &str, library_path: Option<&str>) -> 
         None => String::new(),
         Some(path) => format!(
             "\n# The library must stay writable however the sandbox is tightened.\n\
-             ReadWritePaths=\"{path}\"\n"
+             # The leading `-` keeps a missing directory from failing the unit: \
+             systemd\n# refuses to start a service whose ReadWritePaths does not \
+             exist, and this\n# unit is generated before the library necessarily \
+             does.\nReadWritePaths=-\"{path}\"\n"
         ),
     };
     SYSTEMD_SERVICE
@@ -496,7 +499,7 @@ mod tests {
             let result = render_systemd_service("/usr/local/bin/mtrack", Some("/srv/songs"));
             assert!(result.contains("sudo chown -R mtrack:mtrack \"/srv/songs\""));
             assert!(
-                result.contains("ReadWritePaths=\"/srv/songs\""),
+                result.contains("ReadWritePaths=-\"/srv/songs\""),
                 "declaring it keeps the unit correct if the sandbox is ever tightened to strict"
             );
             assert!(
@@ -514,7 +517,23 @@ mod tests {
         fn quotes_a_library_path_with_spaces() {
             let result = render_systemd_service("/usr/local/bin/mtrack", Some("/opt/my songs"));
             assert!(result.contains("sudo chown -R mtrack:mtrack \"/opt/my songs\""));
-            assert!(result.contains("ReadWritePaths=\"/opt/my songs\""));
+            assert!(result.contains("ReadWritePaths=-\"/opt/my songs\""));
+        }
+
+        /// A missing library directory must not stop the service starting.
+        ///
+        /// systemd refuses to start a unit whose `ReadWritePaths` does not
+        /// exist, and this unit is generated before the library necessarily
+        /// does — the deployment guide has the operator create the user, then
+        /// generate the unit. Without the leading `-` this change would have
+        /// introduced the same class of cryptic startup failure #351 is about.
+        #[test]
+        fn a_missing_library_does_not_fail_the_unit() {
+            let result = render_systemd_service("/usr/local/bin/mtrack", Some("/srv/songs"));
+            assert!(
+                result.contains("ReadWritePaths=-"),
+                "the directive has to tolerate a path that does not exist yet"
+            );
         }
 
         /// The template must not leak a placeholder into the rendered unit.
