@@ -117,20 +117,20 @@ impl Player {
             Some(p) => (*p).clone(),
             None => {
                 info!("No matching hardware profile found; starting with no hardware");
-                {
-                    let mut hw = self.hardware.write();
+                install_if_current(&self.hardware, &cancel, |hw| {
                     hw.hostname = Some(hostname);
-                }
+                });
                 self.init_done_tx.send_modify(|v| *v = true);
                 return;
             }
         };
 
         // Store the active profile name and hostname.
-        {
-            let mut hw = self.hardware.write();
+        if !install_if_current(&self.hardware, &cancel, |hw| {
             hw.profile_name = Some(profile.hostname().unwrap_or("default").to_string());
             hw.hostname = Some(hostname);
+        }) {
+            return;
         }
 
         info!(
@@ -222,18 +222,26 @@ impl Player {
                 // sounds) for songs that don't override them.
                 device.set_metronome_defaults(config.metronome().cloned());
 
-                let mut hw = self.hardware.write();
-                hw.device = Some(device.clone());
-                hw.mappings = Some(Arc::new(mappings.clone()));
-                hw.track_gains = Some(track_gains);
-                hw.clock_source = clock_source;
+                let installed = install_if_current(&self.hardware, &cancel, |hw| {
+                    hw.device = Some(device.clone());
+                    hw.mappings = Some(Arc::new(mappings.clone()));
+                    hw.track_gains = Some(track_gains);
+                    hw.clock_source = clock_source;
+                });
+                if !installed {
+                    return;
+                }
                 (Some(device), Some(mappings), Some(resolved_audio))
             }
             None => (None, None, None),
         };
 
         if let Some(ref dmx_engine) = dmx_result {
-            self.hardware.write().dmx_engine = Some(dmx_engine.clone());
+            if !install_if_current(&self.hardware, &cancel, |hw| {
+                hw.dmx_engine = Some(dmx_engine.clone());
+            }) {
+                return;
+            }
             // Wire the broadcast channel if one has been set.
             if let Some(ref tx) = *self.broadcast_tx.lock() {
                 dmx_engine.set_broadcast_tx(tx.clone());
@@ -292,13 +300,28 @@ impl Player {
 
         // Write Phase 2 results.
         if let Some(ref midi_device) = midi_result {
-            self.hardware.write().midi_device = Some(midi_device.clone());
+            if !install_if_current(&self.hardware, &cancel, |hw| {
+                hw.midi_device = Some(midi_device.clone());
+            }) {
+                return;
+            }
         }
         if let Some(ref se) = sample_engine {
-            self.hardware.write().sample_engine = Some(se.clone());
+            if !install_if_current(&self.hardware, &cancel, |hw| {
+                hw.sample_engine = Some(se.clone());
+            }) {
+                return;
+            }
         }
 
         // Phase 3: Trigger engine (needs sample engine) + post-init wiring.
+        //
+        // Checked before constructing as well as before installing: this opens
+        // a cpal input stream, and a round that is already dead should not take
+        // the device from the round that replaced it even briefly.
+        if cancel.is_cancelled() {
+            return;
+        }
         let trigger_engine = match init_trigger_engine(&profile, &sample_engine) {
             Ok(te) => te,
             Err(e) => {
@@ -307,7 +330,12 @@ impl Player {
             }
         };
         if let Some(ref te) = trigger_engine {
-            self.hardware.write().trigger_engine = Some(te.clone());
+            if !install_if_current(&self.hardware, &cancel, |hw| {
+                hw.trigger_engine = Some(te.clone());
+            }) {
+                // Dropping it here closes the input stream it just opened.
+                return;
+            }
         }
 
         // Start controllers now that all hardware is ready.
@@ -794,6 +822,35 @@ pub(super) fn init_sample_engine(
 /// Initializes the trigger engine if configured and sample engine is available.
 /// Unlike audio/MIDI devices, triggers are non-essential — fail immediately
 /// rather than retrying indefinitely.
+/// Applies `install` to the hardware state, but only if `cancel` says this init
+/// round is still the current one. Returns whether it did.
+///
+/// The cancellation check happens *while holding the write lock*, and that is
+/// what makes it correct. `reload_hardware` cancels the in-flight round and
+/// then resets the state, so either this round takes the lock first and the
+/// reset clears what it wrote, or it takes the lock afterwards and sees the
+/// cancellation. Checking before acquiring the lock leaves a window as long as
+/// whatever runs in between — for the trigger engine that is a cpal device
+/// open, which is not short. A round cancelled inside that window used to
+/// install its input stream into the state its successor had just cleared,
+/// leaving a trigger engine live and firing with no configuration anywhere
+/// describing it, and nothing short of a restart able to remove it (#380).
+///
+/// A free function rather than a method so the invariant can be tested without
+/// standing up a whole player.
+fn install_if_current(
+    hardware: &parking_lot::RwLock<HardwareState>,
+    cancel: &CancellationToken,
+    install: impl FnOnce(&mut HardwareState),
+) -> bool {
+    let mut hw = hardware.write();
+    if cancel.is_cancelled() {
+        return false;
+    }
+    install(&mut hw);
+    true
+}
+
 pub(super) fn init_trigger_engine(
     profile: &config::Profile,
     sample_engine: &Option<Arc<RwLock<SampleEngine>>>,
@@ -879,6 +936,129 @@ mod test {
     }
 
     const SHORT_GRACE: Duration = Duration::from_millis(200);
+
+    fn empty_hardware() -> parking_lot::RwLock<HardwareState> {
+        parking_lot::RwLock::new(HardwareState {
+            device: None,
+            mappings: None,
+            track_gains: None,
+            midi_device: None,
+            dmx_engine: None,
+            sample_engine: None,
+            trigger_engine: None,
+            clock_source: ClockSource::Wall,
+            song_change_notifiers: Vec::new(),
+            profile_name: None,
+            hostname: None,
+            init_errors: std::collections::HashMap::new(),
+        })
+    }
+
+    /// #380: a cancelled init round must not install anything.
+    ///
+    /// It used to. `init_hardware_async` checked cancellation, then opened a
+    /// cpal input stream for the trigger engine, then wrote it in — and a
+    /// reload landing inside that window had already cleared the state the
+    /// write then landed in. The engine stayed live and firing, described by no
+    /// configuration and reachable by no UI, until mtrack was restarted.
+    #[test]
+    fn a_cancelled_round_installs_nothing() {
+        let hardware = empty_hardware();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let installed = install_if_current(&hardware, &cancel, |hw| {
+            hw.profile_name = Some("from the round that was replaced".to_string());
+        });
+
+        assert!(!installed, "a cancelled round reported that it installed");
+        assert_eq!(
+            hardware.read().profile_name,
+            None,
+            "a cancelled round wrote into the state its successor had cleared"
+        );
+    }
+
+    /// The actual race, with a real interleaving rather than a token that was
+    /// already cancelled on entry.
+    ///
+    /// A round is current when it starts installing and is not by the time it
+    /// gets the lock — which is what happens when a reload lands while the
+    /// trigger engine is opening its device. Checking cancellation before
+    /// acquiring the lock passes here and then writes anyway; checking it under
+    /// the lock is what makes the write impossible.
+    #[test]
+    fn a_round_cancelled_while_it_waits_for_the_lock_installs_nothing() {
+        let hardware = std::sync::Arc::new(empty_hardware());
+        let cancel = CancellationToken::new();
+
+        // Held the way `reload_hardware`'s reset holds it.
+        let guard = hardware.write();
+
+        let installer = {
+            let hardware = hardware.clone();
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                install_if_current(&hardware, &cancel, |hw| {
+                    hw.profile_name = Some("from the round that was replaced".to_string());
+                })
+            })
+        };
+
+        // Long enough that a check made *before* acquiring the lock has already
+        // passed, and the thread is parked waiting for it.
+        std::thread::sleep(Duration::from_millis(100));
+
+        // The reload cancels, then releases the lock it cleared under.
+        cancel.cancel();
+        drop(guard);
+
+        let installed = installer.join().expect("installer thread");
+        assert!(
+            !installed,
+            "a round cancelled while waiting for the lock reported that it installed"
+        );
+        assert_eq!(
+            hardware.read().profile_name,
+            None,
+            "a cancelled round installed into the state its successor had cleared"
+        );
+    }
+
+    /// The other half: the guard must not stop a live round from installing.
+    #[test]
+    fn a_live_round_installs_normally() {
+        let hardware = empty_hardware();
+        let cancel = CancellationToken::new();
+
+        let installed = install_if_current(&hardware, &cancel, |hw| {
+            hw.profile_name = Some("current".to_string());
+        });
+
+        assert!(installed);
+        assert_eq!(hardware.read().profile_name.as_deref(), Some("current"));
+    }
+
+    /// Cancellation is observed under the lock, so a round cancelled *while*
+    /// it was constructing still writes nothing — which is the actual race,
+    /// rather than one where the token is already cancelled on entry.
+    #[test]
+    fn cancellation_during_the_slow_work_is_still_caught() {
+        let hardware = empty_hardware();
+        let cancel = CancellationToken::new();
+
+        // Stands in for `init_trigger_engine` opening a device: the round was
+        // current when it started this work and is not by the time it installs.
+        let expensive_result = "an input stream this round no longer owns";
+        cancel.cancel();
+
+        let installed = install_if_current(&hardware, &cancel, |hw| {
+            hw.profile_name = Some(expensive_result.to_string());
+        });
+
+        assert!(!installed);
+        assert_eq!(hardware.read().profile_name, None);
+    }
 
     /// The defect this exists to fix: a device that will never open used to
     /// spin forever, and because subsystems are joined by phase, held the whole
