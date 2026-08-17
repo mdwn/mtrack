@@ -2446,6 +2446,7 @@ mod test {
             use crate::lighting::parser::{Cue, Effect};
             let effect = Effect {
                 sequence_name: None,
+                ignored_parameters: Vec::new(),
                 groups: vec!["front_wash".to_string()],
                 effect_type: crate::lighting::effects::EffectType::Static {
                     parameters: {
@@ -2540,6 +2541,7 @@ mod test {
                 time: std::time::Duration::from_secs(1),
                 effects: vec![Effect {
                     sequence_name: None,
+                    ignored_parameters: Vec::new(),
                     groups: vec!["test_fixture".to_string()],
                     effect_type: crate::lighting::effects::EffectType::Static {
                         parameters: {
@@ -2629,6 +2631,7 @@ mod test {
                 time: std::time::Duration::ZERO,
                 effects: vec![Effect {
                     sequence_name: None,
+                    ignored_parameters: Vec::new(),
                     groups: vec!["test_fixture".to_string()],
                     effect_type: crate::lighting::effects::EffectType::Static {
                         parameters: {

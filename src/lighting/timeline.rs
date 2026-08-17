@@ -414,6 +414,7 @@ mod tests {
         // Timeline with cues should not be finished initially
         let effect = Effect {
             sequence_name: None,
+            ignored_parameters: Vec::new(),
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -458,6 +459,7 @@ mod tests {
 
         let effect = Effect {
             sequence_name: None,
+            ignored_parameters: Vec::new(),
             groups: vec!["front_wash".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -497,6 +499,7 @@ mod tests {
 
         let effect = Effect {
             sequence_name: None,
+            ignored_parameters: Vec::new(),
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -559,6 +562,7 @@ mod tests {
 
         let effect = Effect {
             sequence_name: None,
+            ignored_parameters: Vec::new(),
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -603,6 +607,7 @@ mod tests {
 
         let effect1 = Effect {
             sequence_name: None,
+            ignored_parameters: Vec::new(),
             groups: vec!["fixture1".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -617,6 +622,7 @@ mod tests {
 
         let effect2 = Effect {
             sequence_name: None,
+            ignored_parameters: Vec::new(),
             groups: vec!["fixture2".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -758,6 +764,7 @@ mod tests {
         // Create cue with both an effect and a layer command
         let effect = Effect {
             sequence_name: None,
+            ignored_parameters: Vec::new(),
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -803,6 +810,7 @@ mod tests {
 
         let effect = Effect {
             sequence_name: None,
+            ignored_parameters: Vec::new(),
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -861,6 +869,7 @@ mod tests {
 
         let effect = Effect {
             sequence_name: None,
+            ignored_parameters: Vec::new(),
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -925,6 +934,7 @@ mod tests {
 
         let effect = Effect {
             sequence_name: None,
+            ignored_parameters: Vec::new(),
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -980,6 +990,7 @@ mod tests {
 
         let bg_effect = Effect {
             sequence_name: None,
+            ignored_parameters: Vec::new(),
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -994,6 +1005,7 @@ mod tests {
 
         let fg_effect = Effect {
             sequence_name: None,
+            ignored_parameters: Vec::new(),
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -1081,6 +1093,7 @@ mod tests {
 
         let effect = Effect {
             sequence_name: None,
+            ignored_parameters: Vec::new(),
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -1146,6 +1159,7 @@ mod tests {
 
         let seq_effect = |seq: &str| Effect {
             sequence_name: Some(seq.to_string()),
+            ignored_parameters: Vec::new(),
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -1221,6 +1235,7 @@ mod tests {
 
         let seq_effect = |seq: &str| Effect {
             sequence_name: Some(seq.to_string()),
+            ignored_parameters: Vec::new(),
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),

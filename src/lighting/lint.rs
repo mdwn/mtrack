@@ -71,12 +71,47 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
     // Across all shows at once, for the same reason the stomp check is: a
     // `clear` in one show of a file ends effects in its siblings.
     effects_past_end_of_song(shows, ctx, &mut warnings);
+    parameters_the_effect_ignores(shows, &mut warnings);
     // Across all shows at once, not per show: `LightingTimeline` merges every
     // show in a file into one cue list and plays them together, so two shows
     // both driving `wash` on the background layer stomp each other exactly as
     // two cues in one show would. Checking them separately misses that.
     stomping_replace_effects(shows, &mut warnings);
     warnings
+}
+
+/// A parameter the effect type does not use.
+///
+/// The DSL accepts any parameter and each effect type takes what it recognises,
+/// so `rainbow ... direction: left_to_right` parses and does nothing — the
+/// author has written a setting that will never have an effect, and nothing
+/// says so. Non-fatal, because shows already carry these and rejecting them
+/// would break on upgrade.
+fn parameters_the_effect_ignores(shows: &[LightShow], out: &mut Vec<Warning>) {
+    let mut reported = HashSet::new();
+    for cue in shows.iter().flat_map(|show| show.cues.iter()) {
+        for effect in &cue.effects {
+            for name in &effect.ignored_parameters {
+                let kind = effect.effect_type.name();
+                // Once per (effect type, parameter): a show that repeats the
+                // same mistake on forty cues has one problem, not forty.
+                if !reported.insert((kind, name.clone())) {
+                    continue;
+                }
+                out.push(Warning::new(
+                    "unused-parameter",
+                    format!(
+                        "`{}` on `{}` at {:.3}s is not a parameter {} uses, so it does \
+                         nothing — check the spelling, or the effect type",
+                        name,
+                        effect.groups.join(", "),
+                        cue.time.as_secs_f64(),
+                        kind.to_lowercase(),
+                    ),
+                ));
+            }
+        }
+    }
 }
 
 /// A group that resolves to no fixtures. Its cues parse and silently no-op, so
@@ -857,6 +892,70 @@ show "T" {
             lint_shows(&shows(source), &ctx).is_empty(),
             "the stop ends the bed long before the song does, but got: {:?}",
             lint_shows(&shows(source), &ctx)
+        );
+    }
+
+    #[test]
+    fn a_parameter_the_effect_does_not_use_is_reported() {
+        // `EffectType::Rainbow` has no direction. This parses, the direction is
+        // dropped, and the author has written a setting that will never do
+        // anything — which is what the web UI's own rainbow direction control
+        // used to produce before it was removed.
+        let source = r#"
+show "T" {
+    @00:00.000
+    wash: rainbow speed: 0.5, direction: left_to_right, duration: 4s
+}
+"#;
+        let warnings = lint_shows(&shows(source), &LintContext::default());
+        let unused: Vec<&Warning> = warnings
+            .iter()
+            .filter(|w| w.kind == "unused-parameter")
+            .collect();
+        assert_eq!(unused.len(), 1, "{warnings:?}");
+        assert!(
+            unused[0].message.contains("direction") && unused[0].message.contains("rainbow"),
+            "the parameter and the effect type both have to be named: {}",
+            unused[0].message
+        );
+    }
+
+    #[test]
+    fn a_parameter_the_effect_does_use_is_not_reported() {
+        // Guards against the check firing on every parameter, which would make
+        // it noise and get it ignored.
+        let source = r#"
+show "T" {
+    @00:00.000
+    wash: rainbow speed: 0.5, saturation: 80%, brightness: 90%, duration: 4s
+}
+"#;
+        let warnings = lint_shows(&shows(source), &LintContext::default());
+        assert!(
+            !warnings.iter().any(|w| w.kind == "unused-parameter"),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn the_same_mistake_on_many_cues_is_reported_once() {
+        let source = r#"
+show "T" {
+    @00:00.000
+    wash: rainbow speed: 0.5, direction: left_to_right, duration: 2s
+
+    @00:04.000
+    wash: rainbow speed: 0.5, direction: left_to_right, duration: 2s
+}
+"#;
+        let warnings = lint_shows(&shows(source), &LintContext::default());
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|w| w.kind == "unused-parameter")
+                .count(),
+            1,
+            "a repeated mistake is one problem, not one per cue: {warnings:?}"
         );
     }
 
