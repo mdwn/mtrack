@@ -117,13 +117,21 @@ fn effects_past_end_of_song(shows: &[LightShow], ctx: &LintContext, out: &mut Ve
         return;
     }
     let clears: Vec<(Option<EffectLayer>, Duration)> = shows.iter().flat_map(clear_times).collect();
+    let stops: Vec<(String, Duration)> = shows.iter().flat_map(stop_times).collect();
     for cue in shows.iter().flat_map(|show| show.cues.iter()) {
         for effect in &cue.effects {
             // The authored end is not the real one. A long bed cut by a
-            // `clear` does not overrun the song, and warning that it does is
-            // the false positive the stomp check already avoids.
+            // `clear` or a `stop sequence` does not overrun the song, and
+            // warning that it does is a false positive.
             let layer = effect.layer.unwrap_or(EffectLayer::Background);
-            let end = effective_end(cue.time + effect.total_duration(), cue.time, layer, &clears);
+            let end = effective_end(
+                cue.time + effect.total_duration(),
+                cue.time,
+                layer,
+                effect.sequence_name.as_deref(),
+                &clears,
+                &stops,
+            );
             if end <= song_end {
                 continue;
             }
@@ -161,23 +169,18 @@ fn stomping_replace_effects(shows: &[LightShow], out: &mut Vec<Warning>) {
                 continue;
             }
             let layer = effect.layer.unwrap_or(EffectLayer::Background);
-            // The authored end is not the real one: a `clear` on this layer
-            // ends the effect there. Comparing authored spans would report a
-            // stomp between two effects that never coexist.
-            let mut end =
-                effective_end(cue.time + effect.total_duration(), cue.time, layer, &clears);
-            // An explicit `stop sequence` ends that sequence's effects too.
-            if let Some(sequence) = effect.sequence_name.as_deref() {
-                if let Some(stopped) = stops
-                    .iter()
-                    .filter(|(name, at)| name == sequence && *at > cue.time)
-                    .map(|(_, at)| *at)
-                    .filter(|at| *at < end)
-                    .min()
-                {
-                    end = stopped;
-                }
-            }
+            // The authored end is not the real one: a `clear` on this layer,
+            // or a `stop sequence` naming this effect's sequence, ends it
+            // there. Comparing authored spans would report a stomp between two
+            // effects that never coexist.
+            let end = effective_end(
+                cue.time + effect.total_duration(),
+                cue.time,
+                layer,
+                effect.sequence_name.as_deref(),
+                &clears,
+                &stops,
+            );
             if end <= cue.time {
                 continue;
             }
@@ -245,18 +248,35 @@ fn stop_times(show: &LightShow) -> Vec<(String, Duration)> {
     times
 }
 
-/// An effect's real end: its authored end, or the first `clear` affecting its
-/// layer after it starts, whichever comes first.
+/// An effect's real end: the earliest of its authored end, a `clear` affecting
+/// its layer, and a `stop sequence` naming the sequence it came from.
+///
+/// Both callers go through here rather than each capping by the mechanisms it
+/// happens to remember. They did not always: the stomp check capped by clears
+/// and stops while the past-end check capped by clears alone, so the two
+/// disagreed about the same effect — one treating a stopped bed as ending at
+/// the stop, the other warning that it overran the song by the difference.
 fn effective_end(
     authored_end: Duration,
     start: Duration,
     layer: EffectLayer,
+    sequence: Option<&str>,
     clears: &[(Option<EffectLayer>, Duration)],
+    stops: &[(String, Duration)],
 ) -> Duration {
-    clears
+    let cleared_at = clears
         .iter()
         .filter(|(cleared, at)| *at > start && cleared.is_none_or(|l| l == layer))
-        .map(|(_, at)| *at)
+        .map(|(_, at)| *at);
+    // `LightingEngine::stop_sequence` drops every effect carrying the
+    // sequence's id prefix, so a stop really is an end.
+    let stopped_at = stops
+        .iter()
+        .filter(|(name, at)| Some(name.as_str()) == sequence && *at > start)
+        .map(|(_, at)| *at);
+
+    cleared_at
+        .chain(stopped_at)
         .filter(|at| *at < authored_end)
         .min()
         .unwrap_or(authored_end)
@@ -803,6 +823,40 @@ show "T" {
         assert!(
             lint_shows(&shows(source), &ctx).is_empty(),
             "the clear ends the bed long before the song does"
+        );
+    }
+
+    #[test]
+    fn an_effect_cut_by_a_stop_sequence_does_not_overrun_the_song() {
+        // The same claim as the clear case, by the other mechanism that ends an
+        // effect early. `LightingEngine::stop_sequence` drops every effect whose
+        // id carries the sequence's prefix, so the 60s bed really ends at 15s —
+        // well inside a 30s song.
+        //
+        // The stomp check already reasons this way. When only that one did, two
+        // lints in the same file disagreed about the same effect.
+        let source = r#"
+sequence "X" {
+    @00:00.000
+    wash: static color: "blue", duration: 60s
+}
+
+show "T" {
+    @00:10.000
+    sequence "X"
+
+    @00:15.000
+    stop sequence "X"
+}
+"#;
+        let ctx = LintContext {
+            song_duration: Some(Duration::from_secs(30)),
+            ..Default::default()
+        };
+        assert!(
+            lint_shows(&shows(source), &ctx).is_empty(),
+            "the stop ends the bed long before the song does, but got: {:?}",
+            lint_shows(&shows(source), &ctx)
         );
     }
 

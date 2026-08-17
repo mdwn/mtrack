@@ -384,6 +384,7 @@ async fn wait_for_event_sequence(
     let mut buf = String::new();
     let mut matched: Vec<Value> = Vec::new();
     let mut next = 0usize;
+    let mut seen: Vec<String> = Vec::new();
     let mut stream_error: Option<String> = None;
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline && next < predicates.len() {
@@ -413,6 +414,30 @@ async fn wait_for_event_sequence(
                     continue;
                 }
                 if let Ok(value) = serde_json::from_str::<Value>(payload) {
+                    // Every event, not just matching ones: "nothing matched"
+                    // and "nothing arrived" are different failures and the
+                    // assertion has to be able to tell them apart.
+                    let light = &value["params"]["_meta"]["mtrack.lighting"];
+                    seen.push(format!(
+                        "{} dark={} available={} fixtures={} effects={} pos={}",
+                        value["params"]["uri"].as_str().unwrap_or("(no uri)"),
+                        light["dark"],
+                        light["available"],
+                        light["fixtures"].as_array().map_or(0, |a| a.len()),
+                        light["active_effects"].as_array().map_or(0, |a| a.len()),
+                        light["position"]
+                    ));
+                    // What the effect actually resolved to: an effect running
+                    // against no fixtures is a group that resolved to nothing,
+                    // which looks identical to "not lit yet" from outside.
+                    if let Some(effects) = light["active_effects"].as_array() {
+                        for e in effects {
+                            seen.push(format!(
+                                "    effect {} -> fixtures {:?}",
+                                e["id"], e["fixtures"]
+                            ));
+                        }
+                    }
                     if next < predicates.len() && (predicates[next])(&value) {
                         matched.push(value);
                         next += 1;
@@ -424,11 +449,12 @@ async fn wait_for_event_sequence(
     assert_eq!(
         next,
         predicates.len(),
-        "only {next} of {} expected events arrived (stream error: {:?}); \
-         last matched: {:?}\nbuffer tail:\n{}",
+        "only {next} of {} expected events arrived (stream error: {:?}).\n\
+         events seen ({}):\n  {}\nbuffer tail:\n{}",
         predicates.len(),
         stream_error,
-        matched.last().map(|v| v["params"]["_meta"].clone()),
+        seen.len(),
+        seen.join("\n  "),
         &buf[buf.len().saturating_sub(600)..]
     );
     matched
@@ -2261,15 +2287,18 @@ async fn mcp_lighting_state_resource_pushes_on_change() -> Result<(), Box<dyn Er
     let song_lighting_dir = fixture.root.join("songs/dsl-light-show-song/lighting");
     std::fs::write(
         song_lighting_dir.join("main_show.light"),
-        // Finite, then dark for good: the rig lights up, the effect expires,
-        // and the dark state *holds*. That hold is what made the transition
-        // easy to lose, since the sampler keeps re-sending that identical
-        // snapshot and a filter adopting it as its baseline never reports it.
+        // Two effects on different layers, ending three seconds apart, so both
+        // transitions the test watches happen well after it has subscribed.
         //
-        // Five seconds rather than one, so the lit state is still observable on
-        // a machine running the rest of the suite in parallel — otherwise the
-        // test fails for want of the first event rather than the second.
-        "show \"Lit\" {\n    @00:00.000\n    all_lights: static color: \"green\", duration: 5s\n}\n",
+        // The subtlety this avoids: an effect is registered a frame before its
+        // fixture values are computed, so a sampler tick can catch "effect
+        // active, fixtures still dark". That transient is a state change, so it
+        // is notified — and it opens the coalescing window, inside which the
+        // entire lit period then passes unreported. Subscribing only once the
+        // rig is settled and lit removes it from the picture.
+        "show \"Lit\" {\n    @00:00.000\n    \
+         all_lights: static color: \"green\", duration: 10s, layer: background\n    \
+         all_lights: static color: \"blue\", duration: 11s, layer: foreground\n}\n",
     )?;
     std::fs::write(
         song_lighting_dir.join("outro.light"),
@@ -2279,9 +2308,15 @@ async fn mcp_lighting_state_resource_pushes_on_change() -> Result<(), Box<dyn Er
     // Widen the coalescing window so the transition below lands inside it
     // deterministically. At the production 100ms this is a race, and a test
     // that cannot hit it passes just as happily against the bug as with it.
-    // Past the effect's five seconds: the expiry has to land inside the window
-    // opened by the "lit" notification for the race to be exercised at all.
-    crate::controller::mcp::service::set_lighting_notify_interval_ms(10_000);
+    // Three seconds: long enough that the second transition (11s) lands inside
+    // the window opened by the first (10s), which is the case that regressed,
+    // and short enough that any settling notification right after subscribe has
+    // closed its own window well before either.
+    //
+    // A ten-second window looked more robust and was the opposite: it left a
+    // window open across the first transition, so the second became the first
+    // one delivered and the test passed against the bug.
+    crate::controller::mcp::service::set_lighting_notify_interval_ms(3_000);
 
     let player = build_standalone_player(&fixture).await?;
     let port = pick_free_port();
@@ -2336,6 +2371,46 @@ async fn mcp_lighting_state_resource_pushes_on_change() -> Result<(), Box<dyn Er
     assert_eq!(body["available"], true, "{body}");
     assert!(body["fixtures"].is_array(), "{body}");
 
+    // Start the show and wait for the rig to be settled and lit *before*
+    // subscribing, so the subscription's baseline is a steady lit state rather
+    // than the half-applied frame described above.
+    let play = tool_json(&call_tool(&client, &url, &session, 1103, "play", json!({})).await);
+    assert!(
+        play["now_playing"].is_object(),
+        "play did not start the song, so nothing will ever light: {play}"
+    );
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let body = tool_json(
+                &call_tool(
+                    &client,
+                    &url,
+                    &session,
+                    1104,
+                    "get_fixture_state",
+                    json!({}),
+                )
+                .await,
+            );
+            if body["dark"] == json!(false) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the rig never lit, so there is no settled state to subscribe from: {body}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    // `get_fixture_state` reads the engine, but the subscription's baseline
+    // comes from the sampler, which lags it by up to a tick. Subscribing while
+    // those disagree makes the sampler's next tick look like a change, and that
+    // spurious notification opens the coalescing window early — putting the
+    // transitions this test watches in the wrong place relative to it. Several
+    // ticks of quiet puts the two views in agreement.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
     let (_, sub) = mcp_post(
         &client,
         &url,
@@ -2389,16 +2464,15 @@ async fn mcp_lighting_state_resource_pushes_on_change() -> Result<(), Box<dyn Er
         .await
     });
 
-    // Let the listener open its GET before anything changes.
+    // Let the listener open its GET. Both transitions are ten seconds out, so
+    // this is margin, not a race.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Starting the show lights the rig, which is a real state change.
-    let _ = call_tool(&client, &url, &session, 1103, "play", json!({})).await;
-
-    // No second action is needed: the effect expires on its own a second in,
-    // and the rig goes dark while playback continues and the sampler runs.
+    // Nothing more to do: the background effect ends at 10s (rig still lit by
+    // the foreground one) and the foreground at 13s. The second lands inside
+    // the window opened by the first, which is the case that regressed.
     let events = listener.await.expect("listener task");
-    let _ = call_tool(&client, &url, &session, 1104, "stop", json!({})).await;
+    let _ = call_tool(&client, &url, &session, 1105, "stop", json!({})).await;
     assert_eq!(events.len(), 2, "{events:?}");
 
     // The payload rides along, so a listener never needs the follow-up read.
