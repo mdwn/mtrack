@@ -158,13 +158,19 @@ function serializeEffect(cueEffect: CueEffect): string {
 
   // All effect types use comma-separated parameters.
 
-  // Colors
-  for (const color of effect.colors) {
-    parts.push(`color: "${color}"`);
+  // Colors, for the effect types that have one. `EffectType::Strobe`, `Chase`,
+  // `Pulse` and `Dimmer` do not: the parser accepts a `color:` on them and
+  // drops it, so writing one produced a file whose colour never took effect.
+  const usesColor = effect.type === "static" || effect.type === "cycle";
+  if (usesColor) {
+    for (const color of effect.colors) {
+      parts.push(`color: "${color}"`);
+    }
   }
 
-  // Known parameters
-  if (effect.intensity !== undefined)
+  // Known parameters. `intensity` only where it is read — on a strobe it is
+  // accepted and ignored, which is why the control was removed.
+  if (effect.intensity !== undefined && effect.type !== "strobe")
     parts.push(`intensity: ${effect.intensity}`);
   if (effect.dimmer !== undefined) parts.push(`dimmer: ${effect.dimmer}`);
   if (effect.frequency !== undefined)
@@ -193,8 +199,8 @@ function serializeEffect(cueEffect: CueEffect): string {
     parts.push(`base_level: ${effect.base_level}`);
   if (effect.pulse_amplitude !== undefined)
     parts.push(`pulse_amplitude: ${effect.pulse_amplitude}`);
-  if (effect.duty_cycle !== undefined)
-    parts.push(`duty_cycle: ${effect.duty_cycle}`);
+  // `duty_cycle` is read by nothing — `EffectType::Strobe` carries only a
+  // frequency and a duration — so it is not written.
   if (effect.pattern !== undefined) parts.push(`pattern: ${effect.pattern}`);
   if (effect.saturation !== undefined)
     parts.push(`saturation: ${effect.saturation}`);

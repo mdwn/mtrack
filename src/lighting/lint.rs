@@ -914,6 +914,56 @@ show "T" {
         );
     }
 
+    /// The shipped shows must not carry a parameter that does nothing.
+    ///
+    /// They carried nineteen: `fade`, `loop`, `duty`, `dimmer` on a cycle,
+    /// `intensity` on a strobe, `color` on pulse/chase/strobe, and the rainbow
+    /// `direction` that led to this check. Anyone copying an example inherited
+    /// settings that are silently ignored, which is how the habit spreads.
+    #[test]
+    fn the_shipped_examples_carry_no_parameter_that_does_nothing() {
+        fn shows_in(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    shows_in(&path, out);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("light") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        shows_in(std::path::Path::new("examples"), &mut files);
+        assert!(!files.is_empty(), "no example shows were found to check");
+
+        let mut offenders = Vec::new();
+        for path in files {
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            // Fixture-type and venue files live alongside the shows and are not
+            // shows; they simply do not parse as one.
+            let Ok(parsed) = crate::lighting::parser::parse_light_shows(&source) else {
+                continue;
+            };
+            let shows: Vec<_> = parsed.into_values().collect();
+            for warning in lint_shows(&shows, &LintContext::default()) {
+                if warning.kind == "unused-parameter" {
+                    offenders.push(format!("{}: {}", path.display(), warning.message));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "shipped examples carry parameters that do nothing:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
     #[test]
     fn a_parameter_the_effect_does_not_use_is_reported() {
         // `EffectType::Rainbow` has no direction. This parses, the direction is

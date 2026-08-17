@@ -66,6 +66,13 @@ async function readout(
  * splitting on "." silently concatenates "m10 b1" into 101, which compares as
  * measure 101 and made two different positions look identical. */
 function parsePos(text: string): { measure: number; beat: number } {
+  // The readout must be a measure/beat position. The picker can render a clock
+  // time instead, and "0:18.0" parses to a perfectly plausible measure 0 beat
+  // 18 — so a regression that flips the unit would be compared as an ordering
+  // fact rather than failing.
+  if (!/^m\d+/.test(text.trim())) {
+    throw new Error(`expected a measure/beat readout, got "${text}"`);
+  }
   // Half beats render as a fraction glyph — "m10 \u00b7 b1\u00bd" — which a
   // plain number match reads as 1, making a walked-forward boundary look
   // identical to one that never moved.

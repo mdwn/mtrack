@@ -73,12 +73,13 @@
     });
   }
 
+  // Only the effect types that actually use a colour. `EffectType::Strobe`,
+  // `Chase`, `Pulse` and `Dimmer` have no colour field: the parser accepts a
+  // `color:` on them and drops it, so offering the control wrote a setting that
+  // never did anything — the same defect as the rainbow direction control
+  // removed in #398, which is how these were found.
   let showsColor = $derived(
-    effect.effect.type === "static" ||
-      effect.effect.type === "cycle" ||
-      effect.effect.type === "chase" ||
-      effect.effect.type === "strobe" ||
-      effect.effect.type === "pulse",
+    effect.effect.type === "static" || effect.effect.type === "cycle",
   );
 
   let isMultiColor = $derived(
@@ -325,20 +326,6 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">{$t("effect.intensity")}</span><input
-              type="number"
-              class="param-input"
-              min="0"
-              max="1"
-              step="0.1"
-              value={effect.effect.intensity ?? ""}
-              onchange={(e) => {
-                const v = (e.target as HTMLInputElement).value;
-                updateParam("intensity", v ? parseFloat(v) : undefined);
-              }}
-            /></label
-          >
-          <label class="param"
             ><span class="param-label">{$t("effect.duration")}</span><input
               type="text"
               class="param-input"
@@ -351,19 +338,9 @@
                 )}
             /></label
           >
-          <label class="param"
-            ><span class="param-label">{$t("effect.duty")}</span><input
-              type="text"
-              class="param-input"
-              placeholder="50%"
-              value={effect.effect.duty_cycle ?? ""}
-              onchange={(e) =>
-                updateParam(
-                  "duty_cycle",
-                  (e.target as HTMLInputElement).value || undefined,
-                )}
-            /></label
-          >
+          <!-- No intensity or duty cycle: `EffectType::Strobe` carries only a
+               frequency and a duration, so the parser accepted both and dropped
+               them. -->
         {:else if effect.effect.type === "pulse"}
           <label class="param"
             ><span class="param-label">{$t("effect.frequency")}</span><input

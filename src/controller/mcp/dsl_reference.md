@@ -35,7 +35,7 @@ show "Optional Name" {
 |-----------|--------------------------------------------------------|-------|
 | `static`  | `duration`                                             | Hold a color/intensity. Use `color`, and `intensity` or `dimmer` for the level. |
 | `cycle`   | one or more `color:`, `duration`                       | Iterates colors. Optional `speed`, `direction`. |
-| `strobe`  | `frequency`, `duration`                                | Hz strobe. Optional `intensity`. |
+| `strobe`  | `frequency`, `duration`                                | Hz strobe. Takes no color or intensity — it gates whatever is beneath it. |
 | `pulse`   | `frequency`, `duration`                                | Sinusoidal pulse. Optional `base_level` (default 50%) and `pulse_amplitude` (also spelled `intensity`). |
 | `chase`   | `speed`, `duration`                                    | A moving brightness mask over the layers beneath — needs a color bed under it. Optional `direction`, `pattern: linear|snake|random`. |
 | `dimmer`  | `start_level`, `end_level`, `duration`                 | Linear ramp; `curve: linear` optional. |
@@ -46,7 +46,7 @@ Every effect must specify a finite `duration`. Effects can crossfade — set
 
 ### Common parameters
 
-- `duration`, `up_time`, `down_time`, `hold_time`, `fade`: time values. Units
+- `duration`, `up_time`, `down_time`, `hold_time`: time values. Units
   are `ms`, `s`, `beats`, `beat`, `measures`, or `measure`. **No whitespace
   between number and unit** — write `500ms`, `2s`, `4beats`, `2measures` (not
   `4 beats`). `speed` and `frequency` parameters accept the same forms

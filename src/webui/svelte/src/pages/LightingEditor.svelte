@@ -107,6 +107,12 @@
 
   // Venue groups for autocomplete
   let venueGroups = $state<string[]>([]);
+  /// Why the cue-target group list is empty, when it is empty for a reason.
+  ///
+  /// Swallowing this left an unloadable player config rendering an empty
+  /// autocomplete with nothing said — the same ambiguity the server-side
+  /// fallback exists to remove, moved to the client.
+  let venueGroupsError = $state("");
   let sequenceNames = $derived(mergedLightFile.sequences.map((s) => s.name));
 
   let uploading = $state(false);
@@ -131,8 +137,10 @@
     try {
       const groups = await fetchLightingGroups();
       venueGroups = groups.map((g) => g.name).sort();
-    } catch {
-      // Non-critical
+      venueGroupsError = "";
+    } catch (e: any) {
+      venueGroups = [];
+      venueGroupsError = e?.message ?? String(e);
     }
   }
 
@@ -556,6 +564,11 @@
         {#if $isPhone}
           <LightingSummary lightFile={mergedLightFile} />
         {:else}
+          {#if venueGroupsError}
+            <p class="status-text error-text" data-testid="venue-groups-error">
+              {venueGroupsError}
+            </p>
+          {/if}
           <TimelineEditor
             lightFile={mergedLightFile}
             groups={venueGroups}

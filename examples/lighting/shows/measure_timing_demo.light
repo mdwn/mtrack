@@ -34,16 +34,16 @@ show "Measure Timing Demo" {
     
     # On each beat of measure 2
     @2/1
-    front_wash: pulse color: "blue", duration: 500ms, layer: foreground, blend_mode: multiply
+    front_wash: pulse duration: 500ms, layer: foreground, blend_mode: multiply
     
     @2/2
-    front_wash: pulse color: "blue", duration: 500ms, layer: foreground, blend_mode: multiply
+    front_wash: pulse duration: 500ms, layer: foreground, blend_mode: multiply
     
     @2/3
-    front_wash: pulse color: "blue", duration: 500ms, layer: foreground, blend_mode: multiply
+    front_wash: pulse duration: 500ms, layer: foreground, blend_mode: multiply
     
     @2/4
-    front_wash: pulse color: "blue", duration: 500ms, layer: foreground, blend_mode: multiply
+    front_wash: pulse duration: 500ms, layer: foreground, blend_mode: multiply
     
     # Subdivision example - halfway through beat 3
     @3/2.5
@@ -55,16 +55,16 @@ show "Measure Timing Demo" {
     back_lights: static color: "yellow", dimmer: 75%, layer: midground, blend_mode: add, duration: 5s
     
     @10/1
-    front_wash: cycle color: "green", color: "cyan", duration: 2s, loop: loop, layer: background
+    front_wash: cycle color: "green", color: "cyan", duration: 2s, layer: background
     
     # Example: Red-green-blue pattern repeating every measure using measure-based speed
     # With 3 colors and speed: 1measure, each color will last 1/3 of a measure
     @12/1
-    front_wash: cycle color: "red", color: "green", color: "blue", speed: 1measure, loop: loop, layer: background, duration: 10s
+    front_wash: cycle color: "red", color: "green", color: "blue", speed: 1measure, layer: background, duration: 10s
     
     # Example: Pattern repeating every 2 beats (faster)
     @14/1
-    back_lights: cycle color: "yellow", color: "orange", speed: 2beats, loop: loop, layer: midground, duration: 10s
+    back_lights: cycle color: "yellow", color: "orange", speed: 2beats, layer: midground, duration: 10s
     
     # Example: Strobe flashing once per beat using measure-based frequency
     @15/1
@@ -75,11 +75,11 @@ show "Measure Timing Demo" {
     front_wash: static color: "purple", dimmer: 100%, layer: background, blend_mode: replace, duration: 5s
     
     @18/1
-    front_wash: chase color: "purple", color: "magenta", color: "blue", duration: 1s, direction: left_to_right, loop: loop
+    front_wash: chase duration: 1s, direction: left_to_right
     
     # Section 4 - gradual tempo increase to 180 BPM (over 2 measures starting at measure 24)
     @24/1
-    front_wash, back_lights: strobe color: "white", frequency: 5, duty_cycle: 50%, layer: foreground, blend_mode: add, duration: 5s
+    front_wash, back_lights: strobe frequency: 5, layer: foreground, blend_mode: add, duration: 5s
     
     @28/1
     front_wash, back_lights: static color: "white", dimmer: 0%, layer: foreground, blend_mode: replace, duration: 5s
@@ -90,13 +90,13 @@ show "Measure Timing Demo" {
     
     # In 3/4 time - only 3 beats per measure
     @33/1
-    front_wash: pulse color: "orange", duration: 400ms, layer: foreground, blend_mode: multiply
+    front_wash: pulse duration: 400ms, layer: foreground, blend_mode: multiply
     
     @33/2
-    front_wash: pulse color: "orange", duration: 400ms, layer: foreground, blend_mode: multiply
+    front_wash: pulse duration: 400ms, layer: foreground, blend_mode: multiply
     
     @33/3
-    front_wash: pulse color: "orange", duration: 400ms, layer: foreground, blend_mode: multiply
+    front_wash: pulse duration: 400ms, layer: foreground, blend_mode: multiply
     
     # Section 6 - gradual slowdown to 100 BPM (over 4 measures starting at measure 40)
     @40/1
@@ -108,7 +108,7 @@ show "Measure Timing Demo" {
     front_wash, back_lights: static color: "white", dimmer: 100%, layer: background, blend_mode: replace, duration: 5s
     
     @50/1
-    front_wash, back_lights: rainbow duration: 3s, loop: loop, layer: background
+    front_wash, back_lights: rainbow duration: 3s, layer: background
     
     # End - measure 56
     @56/1

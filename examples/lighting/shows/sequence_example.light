@@ -18,13 +18,13 @@ sequence "color_chase" {
 // Define another sequence for a strobe pattern
 sequence "strobe_pattern" {
     @0.000
-    strobe_lights: strobe, frequency: 8, intensity: 0.9, up_time: 0.1s, hold_time: 0.5s, duration: 5s
+    strobe_lights: strobe, frequency: 8, up_time: 0.1s, hold_time: 0.5s, duration: 5s
     
     @1.000
-    strobe_lights: strobe, frequency: 12, intensity: 0.9, up_time: 0.1s, hold_time: 0.5s, duration: 5s
+    strobe_lights: strobe, frequency: 12, up_time: 0.1s, hold_time: 0.5s, duration: 5s
     
     @2.000
-    strobe_lights: strobe, frequency: 16, intensity: 0.9, up_time: 0.1s, hold_time: 0.5s, duration: 5s
+    strobe_lights: strobe, frequency: 16, up_time: 0.1s, hold_time: 0.5s, duration: 5s
 }
 
 show "Sequence Example Show" {

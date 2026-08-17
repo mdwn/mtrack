@@ -15,7 +15,7 @@ show "Layer Control Demo" {
     @00:00.000
         front_wash: static color: "#0066ff", dimmer: 100%, layer: background, duration: 5s
         back_wash: rainbow speed: 0.5, layer: midground, duration: 10s
-        accent: pulse frequency: 2, dimmer: 80%, layer: foreground, duration: 5s
+        accent: pulse frequency: 2, layer: foreground, duration: 5s
 
     // Dim the background to 50%
     @00:05.000
