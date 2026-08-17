@@ -34,6 +34,45 @@ use crate::{check, check_eq, inconclusive, skip};
 /// derived from a default rather than from the file is obvious.
 const TEMPO_BPM: f32 = 104.0;
 
+/// How long the port must stay silent before a capture is considered clean.
+///
+/// Two beats at [`TEMPO_BPM`]. The generated files hold each note for three
+/// quarters of a beat, so the longest gap inside a playing stream is most of a
+/// beat — a window shorter than that can land in a gap and call a
+/// still-arriving stream quiet, which is #378 at a lower rate.
+fn quiet_window() -> Duration {
+    Duration::from_secs_f32(2.0 * 60.0 / TEMPO_BPM)
+}
+
+/// Waits for the port to go quiet before a check captures its own traffic, and
+/// records what it found.
+///
+/// Every check here clears the buffer and then acts, which does not empty the
+/// driver queue — so a previous check's clock or notes arrive afterwards and are
+/// counted as this one's. Recorded rather than silent, and deliberately worded
+/// as "before play was requested": the server is already running by this point,
+/// so messages seen here are not provably a *previous* player's, and calling
+/// them stale would hide a build that transmits when it should not.
+async fn settle_port(capture: &MidiCapture) -> Result<(), crate::outcome::CheckError> {
+    let outcome = capture.drain(quiet_window(), Duration::from_secs(10)).await;
+    if !outcome.discarded.is_empty() {
+        crate::outcome::record(format!(
+            "caveat: {} message(s) were on the port before play was requested, and were \
+             discarded",
+            outcome.discarded.len()
+        ));
+    }
+    if !outcome.went_quiet {
+        crate::fail!(
+            "the MIDI port never went quiet: {} message(s) kept arriving before this check \
+             asked for anything, so nothing captured here would be attributable to it. \
+             Another player or harness run is probably using the rig.",
+            outcome.discarded.len()
+        );
+    }
+    Ok(())
+}
+
 /// Tempo of the second song in the between-songs checks. Distinct from
 /// [`TEMPO_BPM`] by enough that a clock still running at the first song's tempo
 /// is unmistakable, and equally un-round.
@@ -231,21 +270,10 @@ pub async fn song_midi_notes_are_transmitted() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let capture = MidiCapture::open(&listen)?;
-    capture.clear();
-
-    // Wait for the port to go quiet before capturing anything of ours.
-    //
-    // `clear` empties the harness buffer, not the driver queue, so a previous
-    // player's notes arrive after it and count as ours — which is what made
-    // this check fail about half the time (#378), and why it failed *faster*
-    // than it passed: the stale notes satisfied the expected count early.
-    let stale = capture.drain(Duration::from_millis(400)).await;
-    if !stale.is_empty() {
-        crate::outcome::record(format!(
-            "caveat: drained {} stale message(s) from the port before capturing",
-            stale.len()
-        ));
-    }
+    // `clear` alone does not empty the driver queue, so a previous check's
+    // traffic would be counted as this check's. `settle_port` subsumes it, and
+    // clearing first would discard the evidence it exists to report.
+    settle_port(&capture).await?;
 
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
@@ -267,11 +295,11 @@ pub async fn song_midi_notes_are_transmitted() -> CheckOutcome {
     // the other, and these numbers say which.
     let timeline: Vec<String> = notes
         .iter()
-        .scan(None::<u64>, |prev, n| {
-            let delta = prev.map(|p| n.micros.saturating_sub(p));
-            *prev = Some(n.micros);
+        .scan(None::<std::time::Instant>, |prev, n| {
+            let delta = prev.map(|p| n.at.saturating_duration_since(p));
+            *prev = Some(n.at);
             Some(match (n.note(), delta) {
-                (Some(note), Some(d)) => format!("{note}(+{}ms)", d / 1000),
+                (Some(note), Some(d)) => format!("{note}(+{}ms)", d.as_millis()),
                 (Some(note), None) => format!("{note}(first)"),
                 _ => "?".to_string(),
             })
@@ -323,7 +351,7 @@ pub async fn beat_clock_runs_at_the_song_tempo() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let capture = MidiCapture::open(&listen)?;
-    capture.clear();
+    settle_port(&capture).await?;
 
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
@@ -393,7 +421,7 @@ pub async fn beat_clock_is_silent_when_disabled() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let capture = MidiCapture::open(&listen)?;
-    capture.clear();
+    settle_port(&capture).await?;
 
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
@@ -452,7 +480,7 @@ pub async fn beat_clock_holds_tempo_after_a_song_stops() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let capture = MidiCapture::open(&listen)?;
-    capture.clear();
+    settle_port(&capture).await?;
 
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
@@ -542,7 +570,7 @@ pub async fn beat_clock_is_silent_after_stop_without_persist() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let capture = MidiCapture::open(&listen)?;
-    capture.clear();
+    settle_port(&capture).await?;
 
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
@@ -602,7 +630,7 @@ pub async fn beat_clock_bridges_the_gap_between_songs() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let capture = MidiCapture::open(&listen)?;
-    capture.clear();
+    settle_port(&capture).await?;
 
     // Song one.
     client.grpc().play(PlayRequest {}).await?;
