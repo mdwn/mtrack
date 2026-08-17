@@ -57,6 +57,15 @@ app.get("/api/songs/:name", (req, res) => {
     yaml += `sections:\n`;
     for (const s of song.sections) {
       yaml += `  - name: ${s.name}\n    start_measure: ${s.start_measure}\n    end_measure: ${s.end_measure}\n`;
+      // Beat offsets are what make a boundary sub-measure accurate. Omitting
+      // them here made the section editor's clamping paths unreachable from a
+      // test, since a boundary can only invert when the beats are in play.
+      if (s.start_beat !== undefined) {
+        yaml += `    start_beat: ${s.start_beat}\n`;
+      }
+      if (s.end_beat !== undefined) {
+        yaml += `    end_beat: ${s.end_beat}\n`;
+      }
     }
   }
   if (song.lighting_files && song.lighting_files.length > 0) {

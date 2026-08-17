@@ -64,6 +64,17 @@ export const SONGS = {
       sections: [
         { name: "verse", start_measure: 1, end_measure: 4 },
         { name: "chorus", start_measure: 5, end_measure: 8 },
+        // Both boundaries inside one measure. A section can only be inverted
+        // when its start and end are close enough for a beat step to cross
+        // them, so without one of these the editor's clamping never runs and
+        // cannot be tested.
+        {
+          name: "stab",
+          start_measure: 10,
+          end_measure: 10,
+          start_beat: 1,
+          end_beat: 3,
+        },
       ],
     },
   ],
