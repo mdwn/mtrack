@@ -64,13 +64,14 @@ fn quiet_window() -> Duration {
 /// driver queue — so a previous check's clock or notes arrive afterwards and are
 /// counted as this one's (#378).
 ///
-/// A port that never settles is reported as **inconclusive, not failed**. It is
-/// an environmental condition — another harness run on the same rig is a
-/// documented recurring one — and `fail!` would mint an assertion-class defect
-/// from a helper: `--self-test` reads that flag and would print
-/// "assertion fired" for all six of these checks on a busy rig, crediting them
-/// as proven capable of failing when their sabotage was never evaluated. That is
-/// the false proof the flag exists to prevent.
+/// A port that never settles fails the run, but as a *before-assertion* defect.
+/// The class matters twice over. `fail!` would mint an assertion-class defect
+/// from a helper, and `--self-test` reads that flag: on a busy rig it would
+/// print "assertion fired" for all six of these checks, crediting them as
+/// proven capable of failing when their sabotage was never evaluated — the false
+/// proof the flag exists to prevent. `inconclusive!` errs the other way, since
+/// `Outcome::is_bad` counts only Failed and HarnessError, so the run would exit
+/// zero and report no defect while six checks tested nothing.
 ///
 /// The message names both possible causes. mtrack transmitting before anything
 /// was asked to play is itself a defect, and blaming the environment for it
@@ -80,30 +81,51 @@ fn quiet_window() -> Duration {
 async fn settle_port(capture: &MidiCapture) -> Result<(), crate::outcome::CheckError> {
     let outcome = capture.drain(quiet_window(), SETTLE_DEADLINE).await;
 
-    let notes = outcome
+    // Note-*ons* specifically: `note()` also matches note-offs, and a player
+    // being torn down emits a trailing note-off burst. Counting those as
+    // "another player is on the port" would steer an operator at traffic that
+    // contains no note-on at all.
+    let note_ons = outcome.discarded.iter().filter(|m| m.is_note_on()).count();
+    let note_offs = outcome
         .discarded
         .iter()
-        .filter(|m| m.note().is_some())
+        .filter(|m| m.note().is_some() && !m.is_note_on())
         .count();
     let pulses = outcome
         .discarded
         .iter()
         .filter(|m| m.status() == Some(midi::TIMING_CLOCK))
         .count();
-    let other = outcome.discarded.len() - notes - pulses;
-    let breakdown = format!("{notes} note(s), {pulses} clock pulse(s), {other} other");
+    let other = outcome.discarded.len() - note_ons - note_offs - pulses;
+    let breakdown = format!(
+        "{note_ons} note-on(s), {note_offs} note-off(s), {pulses} clock pulse(s), {other} other"
+    );
 
     if !outcome.went_quiet {
-        inconclusive!(
+        // `before_assertion`, not `inconclusive!`: `Outcome::is_bad` counts only
+        // Failed and HarnessError, so an inconclusive result exits 0 and
+        // `run_repeated` reports "no check reported an mtrack defect". One of the
+        // two causes named below *is* a defect — a build transmitting before
+        // anything was asked to play — and it would have produced a green run
+        // with six checks silently testing nothing. This class fails the run
+        // while still telling `--self-test` the truth: it proves nothing as a
+        // negative control, because the check's own assertion never ran.
+        return Err(crate::outcome::CheckError::before_assertion(format!(
             "the MIDI port never went quiet across {}s: {} kept arriving before this check \
              asked for anything, so nothing it captured would be attributable to it. Either \
              something else is using the rig — only one harness run at a time — or this build \
              is transmitting when nothing has been asked to play, which is itself a defect.",
             SETTLE_DEADLINE.as_secs(),
             breakdown
-        );
+        )));
     }
-    if !outcome.discarded.is_empty() {
+    // Recorded either way. A quiet window proves nothing about the rig, only
+    // about that window — a concurrent run sitting in its own inter-song pause
+    // is silent for longer than this — so "the port looked idle" is itself the
+    // evidence a reader needs when a recurrence has to be explained.
+    if outcome.discarded.is_empty() {
+        crate::outcome::record("the MIDI port was already idle before play was requested");
+    } else {
         crate::outcome::record(format!(
             "caveat: {breakdown} were on the port before play was requested, and were discarded"
         ));
