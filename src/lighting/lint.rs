@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 use crate::audio::click_analysis::BeatGrid;
-use crate::lighting::effects::{BlendMode, EffectLayer};
+use crate::lighting::effects::{BlendMode, EffectLayer, EffectType};
 use crate::lighting::parser::LayerCommandType;
 use crate::lighting::parser::LightShow;
 
@@ -80,6 +80,19 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
     warnings
 }
 
+/// The keyword an author writes for an effect type.
+fn dsl_keyword(effect_type: &EffectType) -> &'static str {
+    match effect_type {
+        EffectType::Static { .. } => "static",
+        EffectType::ColorCycle { .. } => "cycle",
+        EffectType::Strobe { .. } => "strobe",
+        EffectType::Pulse { .. } => "pulse",
+        EffectType::Chase { .. } => "chase",
+        EffectType::Dimmer { .. } => "dimmer",
+        EffectType::Rainbow { .. } => "rainbow",
+    }
+}
+
 /// A parameter the effect type does not use.
 ///
 /// The DSL accepts any parameter and each effect type takes what it recognises,
@@ -92,10 +105,16 @@ fn parameters_the_effect_ignores(shows: &[LightShow], out: &mut Vec<Warning>) {
     for cue in shows.iter().flat_map(|show| show.cues.iter()) {
         for effect in &cue.effects {
             for name in &effect.ignored_parameters {
-                let kind = effect.effect_type.name();
-                // Once per (effect type, parameter): a show that repeats the
-                // same mistake on forty cues has one problem, not forty.
-                if !reported.insert((kind, name.clone())) {
+                // The DSL keyword, not the Rust variant: `ColorCycle` would be
+                // reported as "colorcycle", which is not a word the author can
+                // have written.
+                let kind = dsl_keyword(&effect.effect_type);
+                // Once per (group, effect type, parameter): a show repeating
+                // the same mistake on forty cues has one problem, not forty —
+                // but the message names a group and a time, so two groups
+                // making the same mistake must not collapse into one warning
+                // pointing at whichever came first.
+                if !reported.insert((effect.groups.join(", "), kind, name.clone())) {
                     continue;
                 }
                 out.push(Warning::new(
@@ -106,7 +125,7 @@ fn parameters_the_effect_ignores(shows: &[LightShow], out: &mut Vec<Warning>) {
                         name,
                         effect.groups.join(", "),
                         cue.time.as_secs_f64(),
-                        kind.to_lowercase(),
+                        kind,
                     ),
                 ));
             }

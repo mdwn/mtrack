@@ -354,9 +354,16 @@ pub(crate) fn apply_parameters_to_effect_type(
                             parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
                         *duration = dur;
                     }
-                    _ => {
+                    other => {
+                        // A bare number is a channel level, which `static`
+                        // accepts by name — that is how a fixture's own channels
+                        // are addressed. Anything else is not used by anything,
+                        // and `static` is where a typo is most likely, so it
+                        // must not be the one effect type the lint cannot see.
                         if let Ok(val) = value.parse::<f64>() {
                             static_params.insert(key.clone(), val);
+                        } else {
+                            ignored.push(other.to_string());
                         }
                     }
                 }

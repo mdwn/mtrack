@@ -334,9 +334,18 @@ mod migration_advice_tests {
     /// than the error it was replacing.
     #[test]
     fn the_migration_advice_shape_deserializes() {
-        let yaml =
-            "groups:\n  wash:\n    name: wash\n    constraints:\n      - AllOf: [\"wash\"]\n";
-        let lighting: super::Lighting = parse(yaml).expect("the documented shape must load");
+        // The advice itself, not a copy of it. Parsing a hand-written string
+        // here left the real message free to say anything: reverting it to a
+        // sequence kept this test green, which is the failure it exists to
+        // prevent.
+        let advice = crate::lighting::parser::fixture_venue::migration_yaml("wash");
+        let dedented: String = advice
+            .lines()
+            .map(|line| line.strip_prefix("    ").unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lighting: super::Lighting =
+            parse(&dedented).expect("the shape the migration message prints must load");
         assert!(lighting.groups().contains_key("wash"));
         assert_eq!(lighting.groups()["wash"].name(), "wash");
     }

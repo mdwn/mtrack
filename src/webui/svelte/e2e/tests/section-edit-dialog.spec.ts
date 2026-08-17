@@ -34,7 +34,7 @@ async function openSectionDialog(
   page: import("@playwright/test").Page,
   name: string,
 ) {
-  await page.goto("/#/songs/Test%20Song%20Beta");
+  await page.goto("/#/songs/Test%20Song%20Gamma");
   await page.locator(".tab", { hasText: "Timeline" }).click();
   const block = page.locator(".section-block", { hasText: name });
   await expect(block).toBeVisible();

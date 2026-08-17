@@ -64,10 +64,37 @@ export const SONGS = {
       sections: [
         { name: "verse", start_measure: 1, end_measure: 4 },
         { name: "chorus", start_measure: 5, end_measure: 8 },
-        // Both boundaries inside one measure. A section can only be inverted
-        // when its start and end are close enough for a beat step to cross
-        // them, so without one of these the editor's clamping never runs and
-        // cannot be tested.
+      ],
+    },
+    {
+      // A song of its own for the section editor's clamping, rather than a
+      // third section on Beta: song-detail.spec.ts asserts Beta's section count
+      // in five places and drags on what it expects to be empty bar space, so
+      // adding one there broke six unrelated tests.
+      //
+      // "stab" has both boundaries inside measure 10. A section can only be
+      // inverted when its start and end are close enough for one step to cross
+      // them, so without it the clamping cannot be reached from a test at all.
+      name: "Test Song Gamma",
+      duration_ms: 240000,
+      duration_display: "4:00",
+      num_channels: 2,
+      sample_format: "S24LE",
+      track_count: 2,
+      tracks: ["guitar", "vocals"],
+      has_midi: false,
+      has_lighting: false,
+      base_dir: "Test Song Gamma",
+      lighting_files: [],
+      midi_dmx_files: [],
+      beat_grid: {
+        // The same 16 measures of 4/4 at 120bpm as Beta: a beat every 0.5s.
+        beats: Array.from({ length: 64 }, (_, i) => i * 0.5),
+        measure_starts: Array.from({ length: 16 }, (_, i) => i * 4),
+      },
+      has_tempo_map: false,
+      loop_playback: false,
+      sections: [
         {
           name: "stab",
           start_measure: 10,
