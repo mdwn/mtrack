@@ -34,6 +34,105 @@ use crate::{check, check_eq, inconclusive, skip};
 /// derived from a default rather than from the file is obvious.
 const TEMPO_BPM: f32 = 104.0;
 
+/// How long to keep waiting for a port that will not go quiet.
+///
+/// Long enough to outlast traffic still draining from a stopped player, short
+/// enough that a genuinely busy rig is reported rather than hung on — the runner
+/// awaits checks without a timeout, so an unbounded wait is a silent hang of the
+/// whole suite.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// How long the port must stay silent before a capture is considered clean.
+///
+/// Two beats at [`TEMPO_BPM`]. The generated files hold each note for three
+/// quarters of a beat, so the longest gap inside a *playing* stream is most of a
+/// beat, and the beat clock's 24 PPQN is a 24ms gap — both well inside this.
+///
+/// It does not bound the rig, only the last window: another run's structural
+/// silences are longer than this (a 2s pause between songs, 3s post-stop
+/// observation windows, server teardown and startup), so a drain can go quiet
+/// mid-way through someone else's timeline. One run at a time is the actual
+/// guarantee; this only catches traffic still in flight.
+fn quiet_window() -> Duration {
+    Duration::from_secs_f32(2.0 * 60.0 / TEMPO_BPM)
+}
+
+/// Waits for the port to go quiet before a check captures its own traffic, and
+/// reports what it found.
+///
+/// Every check here cleared the buffer and then acted, which does not empty the
+/// driver queue — so a previous check's clock or notes arrive afterwards and are
+/// counted as this one's (#378).
+///
+/// A port that never settles fails the run, but as a *before-assertion* defect.
+/// The class matters twice over. `fail!` would mint an assertion-class defect
+/// from a helper, and `--self-test` reads that flag: on a busy rig it would
+/// print "assertion fired" for all six of these checks, crediting them as
+/// proven capable of failing when their sabotage was never evaluated — the false
+/// proof the flag exists to prevent. `inconclusive!` errs the other way, since
+/// `Outcome::is_bad` counts only Failed and HarnessError, so the run would exit
+/// zero and report no defect while six checks tested nothing.
+///
+/// The message names both possible causes. mtrack transmitting before anything
+/// was asked to play is itself a defect, and blaming the environment for it
+/// would hide exactly the build `beat_clock_is_silent_when_disabled` exists to
+/// catch — so the breakdown by message type is reported, since note-ons mean
+/// another player and clock pulses mean a clock that should not be running.
+async fn settle_port(capture: &MidiCapture) -> Result<(), crate::outcome::CheckError> {
+    let outcome = capture.drain(quiet_window(), SETTLE_DEADLINE).await;
+
+    // Note-*ons* specifically: `note()` also matches note-offs, and a player
+    // being torn down emits a trailing note-off burst. Counting those as
+    // "another player is on the port" would steer an operator at traffic that
+    // contains no note-on at all.
+    let note_ons = outcome.discarded.iter().filter(|m| m.is_note_on()).count();
+    let note_offs = outcome
+        .discarded
+        .iter()
+        .filter(|m| m.note().is_some() && !m.is_note_on())
+        .count();
+    let pulses = outcome
+        .discarded
+        .iter()
+        .filter(|m| m.status() == Some(midi::TIMING_CLOCK))
+        .count();
+    let other = outcome.discarded.len() - note_ons - note_offs - pulses;
+    let breakdown = format!(
+        "{note_ons} note-on(s), {note_offs} note-off(s), {pulses} clock pulse(s), {other} other"
+    );
+
+    if !outcome.went_quiet {
+        // `before_assertion`, not `inconclusive!`: `Outcome::is_bad` counts only
+        // Failed and HarnessError, so an inconclusive result exits 0 and
+        // `run_repeated` reports "no check reported an mtrack defect". One of the
+        // two causes named below *is* a defect — a build transmitting before
+        // anything was asked to play — and it would have produced a green run
+        // with six checks silently testing nothing. This class fails the run
+        // while still telling `--self-test` the truth: it proves nothing as a
+        // negative control, because the check's own assertion never ran.
+        return Err(crate::outcome::CheckError::before_assertion(format!(
+            "the MIDI port never went quiet across {}s: {} kept arriving before this check \
+             asked for anything, so nothing it captured would be attributable to it. Either \
+             something else is using the rig — only one harness run at a time — or this build \
+             is transmitting when nothing has been asked to play, which is itself a defect.",
+            SETTLE_DEADLINE.as_secs(),
+            breakdown
+        )));
+    }
+    // Recorded either way. A quiet window proves nothing about the rig, only
+    // about that window — a concurrent run sitting in its own inter-song pause
+    // is silent for longer than this — so "the port looked idle" is itself the
+    // evidence a reader needs when a recurrence has to be explained.
+    if outcome.discarded.is_empty() {
+        crate::outcome::record("the MIDI port was already idle before play was requested");
+    } else {
+        crate::outcome::record(format!(
+            "caveat: {breakdown} were on the port before play was requested, and were discarded"
+        ));
+    }
+    Ok(())
+}
+
 /// Tempo of the second song in the between-songs checks. Distinct from
 /// [`TEMPO_BPM`] by enough that a clock still running at the first song's tempo
 /// is unmistakable, and equally un-round.
@@ -231,7 +330,10 @@ pub async fn song_midi_notes_are_transmitted() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let capture = MidiCapture::open(&listen)?;
-    capture.clear();
+    // `clear` alone does not empty the driver queue, so a previous check's
+    // traffic would be counted as this check's. `settle_port` subsumes it, and
+    // clearing first would discard the evidence it exists to report.
+    settle_port(&capture).await?;
 
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
@@ -246,6 +348,25 @@ pub async fn song_midi_notes_are_transmitted() -> CheckOutcome {
     client.grpc().stop(StopRequest {}).await?;
 
     let notes = capture.note_ons();
+    // The full timeline, with inter-note spacing. Two sources sending the same
+    // file put notes at roughly half the expected spacing; one source playing
+    // twice leaves a gap and then restarts. The failure signature — the first
+    // four notes twice, in half the time a clean pass takes — has to be one or
+    // the other, and these numbers say which.
+    let timeline: Vec<String> = notes
+        .iter()
+        .scan(None::<std::time::Instant>, |prev, n| {
+            let delta = prev.map(|p| n.at.saturating_duration_since(p));
+            *prev = Some(n.at);
+            Some(match (n.note(), delta) {
+                (Some(note), Some(d)) => format!("{note}(+{}ms)", d.as_millis()),
+                (Some(note), None) => format!("{note}(first)"),
+                _ => "?".to_string(),
+            })
+        })
+        .collect();
+    crate::outcome::record(format!("note timeline: {}", timeline.join(" ")));
+
     check!(
         arrived,
         "expected {expected_notes} note-on messages, captured {}: {:?}\n--- log ---\n{}",
@@ -290,7 +411,7 @@ pub async fn beat_clock_runs_at_the_song_tempo() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let capture = MidiCapture::open(&listen)?;
-    capture.clear();
+    settle_port(&capture).await?;
 
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
@@ -360,7 +481,7 @@ pub async fn beat_clock_is_silent_when_disabled() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let capture = MidiCapture::open(&listen)?;
-    capture.clear();
+    settle_port(&capture).await?;
 
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
@@ -419,7 +540,7 @@ pub async fn beat_clock_holds_tempo_after_a_song_stops() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let capture = MidiCapture::open(&listen)?;
-    capture.clear();
+    settle_port(&capture).await?;
 
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
@@ -509,7 +630,7 @@ pub async fn beat_clock_is_silent_after_stop_without_persist() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let capture = MidiCapture::open(&listen)?;
-    capture.clear();
+    settle_port(&capture).await?;
 
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
@@ -569,7 +690,7 @@ pub async fn beat_clock_bridges_the_gap_between_songs() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let capture = MidiCapture::open(&listen)?;
-    capture.clear();
+    settle_port(&capture).await?;
 
     // Song one.
     client.grpc().play(PlayRequest {}).await?;

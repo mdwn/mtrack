@@ -31,6 +31,17 @@ pub const START: u8 = 0xFA;
 /// MIDI real-time status byte for stop.
 pub const STOP: u8 = 0xFC;
 
+/// What [`MidiCapture::drain`] discarded, and whether the port ever went quiet.
+///
+/// `went_quiet == false` means the drain gave up: something is still
+/// transmitting, and whatever the caller captures next is not cleanly its own.
+/// Reported rather than swallowed, so a check says so instead of quietly
+/// measuring someone else's traffic.
+pub struct DrainOutcome {
+    pub discarded: Vec<TimedMessage>,
+    pub went_quiet: bool,
+}
+
 /// One received message and when it arrived.
 #[derive(Debug, Clone)]
 pub struct TimedMessage {
@@ -150,6 +161,78 @@ impl MidiCapture {
             .lock()
             .expect("midi capture buffer poisoned")
             .clear();
+    }
+
+    /// Waits for the port to go quiet, discarding whatever arrives.
+    ///
+    /// [`Self::clear`] empties this buffer, not the driver's queue — anything
+    /// already in flight arrives afterwards and is indistinguishable from
+    /// traffic the check itself caused. That is what made
+    /// `song_midi_notes_are_transmitted` fail about half the time (#378): a
+    /// previous player's notes landed after the clear and were counted as ours,
+    /// which is why it failed *faster* than it passed.
+    ///
+    /// `quiet_for` must exceed the longest gap in the stream being drained, or
+    /// the window can land inside a gap and declare a still-arriving stream
+    /// quiet. The generated files hold each note for three quarters of a beat,
+    /// so the longest gap is most of a beat — pass a couple of beats at the
+    /// tempo in play, not a round number.
+    ///
+    /// Gives up after `deadline`: a port that never goes quiet is a real
+    /// condition (a persisted beat clock, a concurrent run on the same rig),
+    /// and looping forever would hang the whole suite with no report, which is
+    /// worse than any wrong answer.
+    pub async fn drain(
+        &self,
+        quiet_for: std::time::Duration,
+        deadline: std::time::Duration,
+    ) -> DrainOutcome {
+        // A zero window would make `sleep` a bare yield, turning a busy port into
+        // a spin that holds and releases this mutex as fast as the scheduler
+        // allows and starves the midir callback. Nothing calls it that way, but
+        // the signature does not stop it.
+        let quiet_for = quiet_for.max(std::time::Duration::from_millis(1));
+        let give_up_at = Instant::now() + deadline;
+        let mut discarded = Vec::new();
+        // No fast path: an empty buffer now says nothing about the next second,
+        // and the whole point is to establish that nothing is still in flight.
+        // One window is the price of the guarantee, paid once per check.
+        loop {
+            discarded.extend(
+                self.messages
+                    .lock()
+                    .expect("midi capture buffer poisoned")
+                    .drain(..),
+            );
+            tokio::time::sleep(quiet_for).await;
+            // Empty after a full window means nothing arrived during it. A
+            // length comparison would instead count a message that landed
+            // between one iteration's drain and the next iteration's snapshot
+            // as pre-existing rather than as ongoing traffic.
+            if self
+                .messages
+                .lock()
+                .expect("midi capture buffer poisoned")
+                .is_empty()
+            {
+                return DrainOutcome {
+                    discarded,
+                    went_quiet: true,
+                };
+            }
+            if Instant::now() >= give_up_at {
+                discarded.extend(
+                    self.messages
+                        .lock()
+                        .expect("midi capture buffer poisoned")
+                        .drain(..),
+                );
+                return DrainOutcome {
+                    discarded,
+                    went_quiet: false,
+                };
+            }
+        }
     }
 
     /// Timing clock pulses received.
