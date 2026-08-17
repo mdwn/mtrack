@@ -77,6 +77,7 @@ enum SubsystemUpdate {
     Audio(Option<Audio>),
     Midi(Option<Midi>),
     Dmx(Option<Dmx>),
+    Controllers(Vec<Controller>),
 }
 
 impl SubsystemUpdate {
@@ -87,6 +88,7 @@ impl SubsystemUpdate {
             SubsystemUpdate::Audio(audio) => profile.set_audio(audio),
             SubsystemUpdate::Midi(midi) => profile.set_midi(midi),
             SubsystemUpdate::Dmx(dmx) => profile.set_dmx(dmx),
+            SubsystemUpdate::Controllers(controllers) => profile.set_controllers(controllers),
         }
     }
 
@@ -97,6 +99,7 @@ impl SubsystemUpdate {
             SubsystemUpdate::Audio(audio) => config.set_audio(audio),
             SubsystemUpdate::Midi(midi) => config.set_midi(midi),
             SubsystemUpdate::Dmx(dmx) => config.set_dmx(dmx),
+            SubsystemUpdate::Controllers(controllers) => config.set_controllers(controllers),
         }
     }
 }
@@ -150,6 +153,39 @@ impl ConfigStore {
     /// Returns a clone of the current config.
     pub async fn read_config(&self) -> Player {
         self.inner.read().await.clone()
+    }
+
+    /// Re-reads the config from disk, including any profiles in `profiles_dir`,
+    /// and replaces the in-memory copy.
+    ///
+    /// The file-based profile endpoints write YAML straight to `profiles_dir`,
+    /// and `Player::reload_hardware` re-initialises from *this* copy — which
+    /// `Player::deserialize` populated from those files at startup and which a
+    /// later file write does not touch. Without this, saving a profile is
+    /// written, acknowledged with a 200, followed by a hardware reload, and
+    /// still has no effect until the process restarts: the reload rebuilds
+    /// everything from the profile as it was at boot.
+    ///
+    /// That is what made a disabled trigger stay live — the checkbox wrote a
+    /// profile with no trigger, and the reload built one anyway from the copy
+    /// that still had it.
+    pub async fn reload_from_disk(&self) -> Result<(), ConfigError> {
+        // The write lock is taken *before* the read, not after it. Reading disk
+        // first and swapping afterwards leaves a window in which another
+        // mutation can commit to memory and disk between the two — that value
+        // is then overwritten in memory by this older snapshot, the client that
+        // wrote it holds a checksum that is already stale, and the next persist
+        // writes the pre-mutation value back over the file.
+        let mut guard = self.inner.write().await;
+        let path = self.path.clone();
+        let config = tokio::task::spawn_blocking(move || Player::deserialize(&path))
+            .await
+            .map_err(|e| ConfigError::StoreSerialization(e.to_string()))??;
+        *guard = config;
+        drop(guard);
+        // Ignored deliberately: no subscribers is normal.
+        let _ = self.change_tx.send(());
+        Ok(())
     }
 
     /// Returns the path to the on-disk config file.
@@ -449,15 +485,21 @@ impl ConfigStore {
     }
 
     /// Updates the controllers configuration.
+    ///
+    /// Routed through [`Self::update_subsystem`] like audio, MIDI and DMX,
+    /// rather than writing the top-level `controllers` field. Everything that
+    /// *reads* controllers — `init_hardware_async`, `reload_controllers` —
+    /// takes them from the active profile, and `Player::normalize` discards the
+    /// top-level list whenever profiles are present, which after normalization
+    /// is always. Writing there returned a fresh checksum, persisted a value,
+    /// reloaded, changed nothing, and lost the value on the next restart.
     pub async fn update_controllers(
         &self,
         controllers: Vec<Controller>,
         checksum: &str,
     ) -> Result<ConfigSnapshot, ConfigError> {
-        self.mutate(checksum, |config| {
-            config.set_controllers(controllers);
-        })
-        .await
+        self.update_subsystem(SubsystemUpdate::Controllers(controllers), checksum)
+            .await
     }
 
     /// Updates the inline sample definitions.
@@ -722,6 +764,52 @@ profiles:
         let midi = profile.midi().expect("the update must land on the profile");
         assert_eq!(midi.device(), "new-midi");
         assert!(midi.persist_tempo(), "persist_tempo was discarded");
+    }
+
+    /// Controllers must land on the active profile, like every other subsystem.
+    ///
+    /// They used to be written to the top-level `controllers` field, which
+    /// nothing reads once profiles exist — `init_hardware_async` and
+    /// `reload_controllers` both take them from the active profile, and
+    /// `normalize` discards the top-level list. An `UpdateControllers` call
+    /// therefore returned a fresh checksum, persisted a value, reloaded,
+    /// changed nothing, and lost the value on the next restart.
+    #[tokio::test]
+    async fn update_controllers_reaches_the_active_profile() {
+        let yaml = "songs: songs\nprofiles:\n  - audio:\n      device: a\n      track_mappings:\n        click: [1]\n    controllers:\n      - kind: grpc\n        port: 1111\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        let player = Player::deserialize(&path).unwrap();
+
+        let store = ConfigStore::new(player, path.clone());
+        let snap = store.read().await.unwrap();
+        store
+            .update_controllers(
+                vec![Controller::Grpc(super::super::GrpcController::new(2222))],
+                &snap.checksum,
+            )
+            .await
+            .unwrap();
+
+        // Survives a full reload, which is what the player does on restart.
+        let mut reloaded = Player::deserialize(&path).unwrap();
+        let profile = reloaded
+            .active_profile_mut(&super::super::hostname::resolve_hostname())
+            .expect("a hostname-less profile matches every host");
+        let ports: Vec<u16> = profile
+            .controllers()
+            .iter()
+            .filter_map(|c| match c {
+                Controller::Grpc(g) => Some(g.port()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ports,
+            vec![2222],
+            "the update did not reach the profile, so nothing reads it"
+        );
     }
 
     /// The same, on a `profiles_dir` layout: the owning file is rewritten and

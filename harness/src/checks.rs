@@ -333,6 +333,18 @@ pub fn all() -> Vec<Check> {
             subsystems::a_rig_with_an_unopenable_device_comes_up_and_can_be_reconfigured
         ),
         entry!(
+            "triggers",
+            "disabling_triggers_by_file_takes_effect",
+            "Disabling triggers by saving the profile file must disable them.",
+            subsystems::disabling_triggers_by_file_takes_effect
+        ),
+        entry!(
+            "triggers",
+            "a_reload_during_init_leaves_no_stray_trigger_engine",
+            "A reload landing during init must not strand a trigger engine.",
+            subsystems::a_reload_during_init_leaves_no_stray_trigger_engine
+        ),
+        entry!(
             "subsystems",
             "first_profile_wins",
             "The first matching profile must be the one applied.",

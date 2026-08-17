@@ -102,13 +102,22 @@ impl Player {
     ///   Phase 1: Audio + DMX (parallel)
     ///   Phase 2: MIDI (needs DMX), Sample engine (needs Audio) — parallel
     ///   Phase 3: Trigger engine (needs Sample engine), status reporting
+    /// `cancel` is captured by the *spawner*, not read here.
+    ///
+    /// Reading `init_cancel` inside the task takes effect at first poll, which
+    /// is after the spawning function returned — so a reload landing in that
+    /// window installs its replacement token and the older round then picks
+    /// *that* one up. Both rounds would hold an uncancelled token, both would
+    /// pass every `install_if_current`, and both would install: two audio
+    /// opens, two trigger engines, and whichever finished last winning, with
+    /// the other's input stream stranded. The guard is only ever as good as
+    /// the token the round is holding.
     pub(super) async fn init_hardware_async(
         self: &Arc<Self>,
         config: config::Player,
         base_path: Option<PathBuf>,
+        cancel: CancellationToken,
     ) {
-        let cancel = self.init_cancel.lock().clone();
-
         let hostname = config::resolve_hostname();
         info!(hostname = %hostname, "Resolved hostname for hardware profiles");
 
@@ -117,9 +126,14 @@ impl Player {
             Some(p) => (*p).clone(),
             None => {
                 info!("No matching hardware profile found; starting with no hardware");
-                {
-                    let mut hw = self.hardware.write();
+                if !install_if_current(&self.hardware, &cancel, |hw| {
                     hw.hostname = Some(hostname);
+                }) {
+                    return;
+                }
+                // Re-checked under the lock for the same reason as the tail.
+                if !install_if_current(&self.hardware, &cancel, |_| {}) {
+                    return;
                 }
                 self.init_done_tx.send_modify(|v| *v = true);
                 return;
@@ -127,10 +141,11 @@ impl Player {
         };
 
         // Store the active profile name and hostname.
-        {
-            let mut hw = self.hardware.write();
+        if !install_if_current(&self.hardware, &cancel, |hw| {
             hw.profile_name = Some(profile.hostname().unwrap_or("default").to_string());
             hw.hostname = Some(hostname);
+        }) {
+            return;
         }
 
         info!(
@@ -169,7 +184,7 @@ impl Player {
                         }
                     })
                     .await;
-                    self.record_init_outcome("audio", outcome)
+                    self.record_init_outcome("audio", outcome, &cancel)
                 } else {
                     info!("Audio not configured in profile; proceeding without audio");
                     None
@@ -183,7 +198,7 @@ impl Player {
                             .map_err(|e| e.to_string())
                     })
                     .await;
-                    self.record_init_outcome("dmx", outcome).flatten()
+                    self.record_init_outcome("dmx", outcome, &cancel).flatten()
                 } else {
                     info!("DMX not configured in profile; proceeding without DMX");
                     None
@@ -222,18 +237,26 @@ impl Player {
                 // sounds) for songs that don't override them.
                 device.set_metronome_defaults(config.metronome().cloned());
 
-                let mut hw = self.hardware.write();
-                hw.device = Some(device.clone());
-                hw.mappings = Some(Arc::new(mappings.clone()));
-                hw.track_gains = Some(track_gains);
-                hw.clock_source = clock_source;
+                let installed = install_if_current(&self.hardware, &cancel, |hw| {
+                    hw.device = Some(device.clone());
+                    hw.mappings = Some(Arc::new(mappings.clone()));
+                    hw.track_gains = Some(track_gains);
+                    hw.clock_source = clock_source;
+                });
+                if !installed {
+                    return;
+                }
                 (Some(device), Some(mappings), Some(resolved_audio))
             }
             None => (None, None, None),
         };
 
         if let Some(ref dmx_engine) = dmx_result {
-            self.hardware.write().dmx_engine = Some(dmx_engine.clone());
+            if !install_if_current(&self.hardware, &cancel, |hw| {
+                hw.dmx_engine = Some(dmx_engine.clone());
+            }) {
+                return;
+            }
             // Wire the broadcast channel if one has been set.
             if let Some(ref tx) = *self.broadcast_tx.lock() {
                 dmx_engine.set_broadcast_tx(tx.clone());
@@ -267,7 +290,7 @@ impl Player {
                             .map_err(|e| e.to_string())
                     })
                     .await;
-                    self.record_init_outcome("midi", outcome).flatten()
+                    self.record_init_outcome("midi", outcome, &cancel).flatten()
                 } else {
                     info!("MIDI not configured in profile; proceeding without MIDI");
                     None
@@ -292,13 +315,28 @@ impl Player {
 
         // Write Phase 2 results.
         if let Some(ref midi_device) = midi_result {
-            self.hardware.write().midi_device = Some(midi_device.clone());
+            if !install_if_current(&self.hardware, &cancel, |hw| {
+                hw.midi_device = Some(midi_device.clone());
+            }) {
+                return;
+            }
         }
         if let Some(ref se) = sample_engine {
-            self.hardware.write().sample_engine = Some(se.clone());
+            if !install_if_current(&self.hardware, &cancel, |hw| {
+                hw.sample_engine = Some(se.clone());
+            }) {
+                return;
+            }
         }
 
         // Phase 3: Trigger engine (needs sample engine) + post-init wiring.
+        //
+        // Checked before constructing as well as before installing: this opens
+        // a cpal input stream, and a round that is already dead should not take
+        // the device from the round that replaced it even briefly.
+        if cancel.is_cancelled() {
+            return;
+        }
         let trigger_engine = match init_trigger_engine(&profile, &sample_engine) {
             Ok(te) => te,
             Err(e) => {
@@ -307,7 +345,20 @@ impl Player {
             }
         };
         if let Some(ref te) = trigger_engine {
-            self.hardware.write().trigger_engine = Some(te.clone());
+            if !install_if_current(&self.hardware, &cancel, |hw| {
+                hw.trigger_engine = Some(te.clone());
+            }) {
+                // Dropping it here closes the input stream it just opened.
+                return;
+            }
+        }
+
+        // Nothing past here belongs to a round that has been replaced: starting
+        // controllers would restart the successor's, and announcing init_done
+        // would let playback past the "still initializing" gate against a rig
+        // this round no longer owns.
+        if cancel.is_cancelled() {
+            return;
         }
 
         // Start controllers now that all hardware is ready.
@@ -342,6 +393,14 @@ impl Player {
             }
         }
 
+        // Under the hardware lock, like every other write in this function: a
+        // bare check leaves a window in which the round is cancelled, the
+        // successor sets init_done false, and this then sets it back to true —
+        // opening the "still initializing" gate for a rig this round no longer
+        // owns.
+        if !install_if_current(&self.hardware, &cancel, |_| {}) {
+            return;
+        }
         self.init_done_tx.send_modify(|v| *v = true);
         info!("Hardware initialization complete");
     }
@@ -353,19 +412,29 @@ impl Player {
     /// "not connected", which is indistinguishable from "not configured" and
     /// leaves the operator exactly where the perpetual retry did — except now
     /// it is quiet about it too.
+    /// Records a subsystem's init outcome, ignoring it if this round has been
+    /// cancelled.
+    ///
+    /// Cancellation is only checked at the bottom of `retry_until_ready`'s
+    /// loop, after the constructor has run, so a round cancelled while a device
+    /// open was in flight can still come back with a terminal failure. Writing
+    /// that unguarded put a dead round's reason into the state its successor
+    /// had just cleared — reporting a subsystem as failed, with an error
+    /// describing a device the new config may not even mention, until some
+    /// later reload cleared it.
     fn record_init_outcome<T>(
         &self,
         subsystem: &str,
         outcome: Result<T, InitFailure>,
+        cancel: &CancellationToken,
     ) -> Option<T> {
         match outcome {
             Ok(value) => Some(value),
             Err(InitFailure::Cancelled) => None,
             Err(InitFailure::Terminal(why)) => {
-                self.hardware
-                    .write()
-                    .init_errors
-                    .insert(subsystem.to_string(), why);
+                install_if_current(&self.hardware, cancel, |hw| {
+                    hw.init_errors.insert(subsystem.to_string(), why);
+                });
                 None
             }
         }
@@ -492,41 +561,62 @@ impl Player {
             return Err("Cannot reload hardware during playback".into());
         }
 
+        // Held until this reload has spawned its round, so a concurrent reload
+        // cannot read a newer config, spawn, and then be cancelled by an older
+        // one that had already read its own.
+        let _reload_guard = self.reload_lock.clone().lock_owned().await;
+
         let config = self
             .config_store()
             .ok_or("No config store available")?
             .read_config()
             .await;
 
-        // Cancel the previous init round.
-        {
-            let mut cancel = self.init_cancel.lock();
-            cancel.cancel();
-            *cancel = CancellationToken::new();
-        }
+        // Cancel the previous init round and take the replacement token here,
+        // so the round spawned below carries it from the start.
+        let cancel = {
+            let mut guard = self.init_cancel.lock();
+            guard.cancel();
+            *guard = CancellationToken::new();
+            guard.clone()
+        };
 
         // Reset hardware to empty.
-        *self.hardware.write() = HardwareState {
-            device: None,
-            mappings: None,
-            track_gains: None,
-            midi_device: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-            clock_source: ClockSource::Wall,
-            song_change_notifiers: Vec::new(),
-            profile_name: None,
-            hostname: None,
-            init_errors: HashMap::new(),
-        };
+        //
+        // Song-change notifiers are deliberately carried over: they are
+        // registered by the controllers, and a reload no longer necessarily
+        // restarts those. Clearing them here while the controller that owns
+        // them keeps running left `emit_song_change` iterating an empty list
+        // for the rest of the process — a Morningstar pedalboard would simply
+        // stop receiving song changes, with nothing logged. They are cleared
+        // by `start_controllers_inner` instead, at the point the controllers
+        // that own them are actually torn down.
+        {
+            let mut hw = self.hardware.write();
+            let notifiers = std::mem::take(&mut hw.song_change_notifiers);
+            *hw = HardwareState {
+                device: None,
+                mappings: None,
+                track_gains: None,
+                midi_device: None,
+                dmx_engine: None,
+                sample_engine: None,
+                trigger_engine: None,
+                clock_source: ClockSource::Wall,
+                song_change_notifiers: notifiers,
+                profile_name: None,
+                hostname: None,
+                init_errors: HashMap::new(),
+            };
+        }
         self.init_done_tx.send_modify(|v| *v = false);
 
-        // Spawn new async init.
+        // Spawn new async init, handing it the token captured above rather
+        // than letting it read the shared cell when it is first polled.
         let init_player = self.clone();
         let bp = self.base_path.clone();
         tokio::spawn(async move {
-            init_player.init_hardware_async(config, bp).await;
+            init_player.init_hardware_async(config, bp, cancel).await;
         });
 
         info!("Hardware reload initiated");
@@ -640,19 +730,68 @@ impl Player {
     /// Starts controllers from the given config. Called at startup and on reload.
     /// Requires `Arc<Player>` because controllers hold a reference to the player.
     pub fn start_controllers(self: &Arc<Self>, config: Vec<config::Controller>) {
-        // Shut down any existing controllers.
+        self.start_controllers_inner(config, false);
+    }
+
+    /// Starts controllers, restarting them even if their config is unchanged.
+    ///
+    /// "Restart controllers" means restart them. Skipping on an unchanged
+    /// fingerprint would make that button a no-op that still reports success —
+    /// and it is precisely the button reached for when a driver failed to bind
+    /// at boot, where the config is unchanged and the controllers are dead.
+    pub fn restart_controllers_forced(self: &Arc<Self>, config: Vec<config::Controller>) {
+        self.start_controllers_inner(config, true);
+    }
+
+    fn start_controllers_inner(self: &Arc<Self>, config: Vec<config::Controller>, force: bool) {
+        // Restarting controllers tears down the transport a caller may be
+        // speaking on: a config change requested over gRPC would drop that
+        // client's own connection mid-response. Since a hardware reload runs
+        // this every time, leaving unchanged controllers alone is what makes it
+        // safe for those paths to reload at all.
+        let fingerprint = crate::util::to_yaml_string(&config).ok();
+        if !force && fingerprint.is_some() && *self.controller_config.lock() == fingerprint {
+            info!("Controllers unchanged; leaving them running");
+            return;
+        }
+
+        // Shut down any existing controllers, and drop the notifiers they
+        // registered — the replacements register their own.
         if let Some(old) = self.controller.lock().take() {
             info!("Shutting down existing controllers");
             old.shutdown();
         }
+        self.hardware.write().song_change_notifiers.clear();
 
         if config.is_empty() {
             info!("No controllers configured");
+            *self.controller_config.lock() = fingerprint;
             return;
         }
 
         let controller = crate::controller::Controller::new(config, Arc::clone(self));
+        // Only a clean start is remembered. `Controller::new` records per-driver
+        // failures and carries on, and a reload restarts controllers *before*
+        // the init round has installed any devices — so the MIDI driver finds no
+        // device and errors. Recording the fingerprint there would make the next
+        // call, the init round's own, skip the restart that heals it, and the
+        // controller would stay dead with nothing logged until someone pressed
+        // Restart Controllers. A failed start stays retryable.
+        let healthy = controller.statuses().iter().all(|s| s.status != "error");
+        if !healthy {
+            let failed: Vec<&str> = controller
+                .statuses()
+                .iter()
+                .filter(|s| s.status == "error")
+                .map(|s| s.kind.as_str())
+                .collect();
+            warn!(
+                failed = ?failed,
+                "Some controllers did not start; they will be retried on the next reload"
+            );
+        }
         *self.controller.lock() = Some(controller);
+        *self.controller_config.lock() = healthy.then_some(fingerprint).flatten();
         info!("Controllers started");
     }
 
@@ -672,7 +811,10 @@ impl Player {
             .map(|p| p.controllers().to_vec())
             .unwrap_or_default();
 
-        self.start_controllers(controllers);
+        // Forced: this is only reached from the operator's explicit "restart
+        // controllers", and from the config paths that have just changed them.
+        // Both mean "do it", not "do it if you think something changed".
+        self.restart_controllers_forced(controllers);
         Ok(())
     }
 
@@ -794,6 +936,35 @@ pub(super) fn init_sample_engine(
 /// Initializes the trigger engine if configured and sample engine is available.
 /// Unlike audio/MIDI devices, triggers are non-essential — fail immediately
 /// rather than retrying indefinitely.
+/// Applies `install` to the hardware state, but only if `cancel` says this init
+/// round is still the current one. Returns whether it did.
+///
+/// The cancellation check happens *while holding the write lock*, and that is
+/// what makes it correct. `reload_hardware` cancels the in-flight round and
+/// then resets the state, so either this round takes the lock first and the
+/// reset clears what it wrote, or it takes the lock afterwards and sees the
+/// cancellation. Checking before acquiring the lock leaves a window as long as
+/// whatever runs in between — for the trigger engine that is a cpal device
+/// open, which is not short. A round cancelled inside that window used to
+/// install its input stream into the state its successor had just cleared,
+/// leaving a trigger engine live and firing with no configuration anywhere
+/// describing it, and nothing short of a restart able to remove it (#380).
+///
+/// A free function rather than a method so the invariant can be tested without
+/// standing up a whole player.
+fn install_if_current(
+    hardware: &parking_lot::RwLock<HardwareState>,
+    cancel: &CancellationToken,
+    install: impl FnOnce(&mut HardwareState),
+) -> bool {
+    let mut hw = hardware.write();
+    if cancel.is_cancelled() {
+        return false;
+    }
+    install(&mut hw);
+    true
+}
+
 pub(super) fn init_trigger_engine(
     profile: &config::Profile,
     sample_engine: &Option<Arc<RwLock<SampleEngine>>>,
@@ -879,6 +1050,155 @@ mod test {
     }
 
     const SHORT_GRACE: Duration = Duration::from_millis(200);
+
+    fn empty_hardware() -> parking_lot::RwLock<HardwareState> {
+        parking_lot::RwLock::new(HardwareState {
+            device: None,
+            mappings: None,
+            track_gains: None,
+            midi_device: None,
+            dmx_engine: None,
+            sample_engine: None,
+            trigger_engine: None,
+            clock_source: ClockSource::Wall,
+            song_change_notifiers: Vec::new(),
+            profile_name: None,
+            hostname: None,
+            init_errors: std::collections::HashMap::new(),
+        })
+    }
+
+    /// Restarting controllers on every reload would drop the connection of the
+    /// very client that asked for the change.
+    ///
+    /// The web UI escapes this because the web server is not a controller; a
+    /// gRPC client is not so lucky, which is why its config mutations did not
+    /// reload at all. Leaving unchanged controllers alone is what makes those
+    /// paths able to reload.
+    #[test]
+    fn unchanged_controllers_are_left_running() {
+        let a = vec![config::Controller::Grpc(config::GrpcController::new(7654))];
+        let b = vec![config::Controller::Grpc(config::GrpcController::new(7654))];
+        let different = vec![config::Controller::Grpc(config::GrpcController::new(7655))];
+
+        let fingerprint = |c: &Vec<config::Controller>| crate::util::to_yaml_string(c).ok();
+        assert_eq!(
+            fingerprint(&a),
+            fingerprint(&b),
+            "the same controller config must compare equal, or every reload restarts them"
+        );
+        assert_ne!(
+            fingerprint(&a),
+            fingerprint(&different),
+            "a changed port must compare different, or a real change would be ignored"
+        );
+    }
+
+    /// #380: a cancelled init round must not install anything.
+    ///
+    /// It used to. `init_hardware_async` checked cancellation, then opened a
+    /// cpal input stream for the trigger engine, then wrote it in — and a
+    /// reload landing inside that window had already cleared the state the
+    /// write then landed in. The engine stayed live and firing, described by no
+    /// configuration and reachable by no UI, until mtrack was restarted.
+    #[test]
+    fn a_cancelled_round_installs_nothing() {
+        let hardware = empty_hardware();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let installed = install_if_current(&hardware, &cancel, |hw| {
+            hw.profile_name = Some("from the round that was replaced".to_string());
+        });
+
+        assert!(!installed, "a cancelled round reported that it installed");
+        assert_eq!(
+            hardware.read().profile_name,
+            None,
+            "a cancelled round wrote into the state its successor had cleared"
+        );
+    }
+
+    /// The actual race, with a real interleaving rather than a token that was
+    /// already cancelled on entry.
+    ///
+    /// A round is current when it starts installing and is not by the time it
+    /// gets the lock — which is what happens when a reload lands while the
+    /// trigger engine is opening its device. Checking cancellation before
+    /// acquiring the lock passes here and then writes anyway; checking it under
+    /// the lock is what makes the write impossible.
+    #[test]
+    fn a_round_cancelled_while_it_waits_for_the_lock_installs_nothing() {
+        let hardware = std::sync::Arc::new(empty_hardware());
+        let cancel = CancellationToken::new();
+
+        // Held the way `reload_hardware`'s reset holds it.
+        let guard = hardware.write();
+
+        let installer = {
+            let hardware = hardware.clone();
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                install_if_current(&hardware, &cancel, |hw| {
+                    hw.profile_name = Some("from the round that was replaced".to_string());
+                })
+            })
+        };
+
+        // Long enough that a check made *before* acquiring the lock has already
+        // passed, and the thread is parked waiting for it.
+        std::thread::sleep(Duration::from_millis(100));
+
+        // The reload cancels, then releases the lock it cleared under.
+        cancel.cancel();
+        drop(guard);
+
+        let installed = installer.join().expect("installer thread");
+        assert!(
+            !installed,
+            "a round cancelled while waiting for the lock reported that it installed"
+        );
+        assert_eq!(
+            hardware.read().profile_name,
+            None,
+            "a cancelled round installed into the state its successor had cleared"
+        );
+    }
+
+    /// The other half: the guard must not stop a live round from installing.
+    #[test]
+    fn a_live_round_installs_normally() {
+        let hardware = empty_hardware();
+        let cancel = CancellationToken::new();
+
+        let installed = install_if_current(&hardware, &cancel, |hw| {
+            hw.profile_name = Some("current".to_string());
+        });
+
+        assert!(installed);
+        assert_eq!(hardware.read().profile_name.as_deref(), Some("current"));
+    }
+
+    /// Cancellation is observed under the lock, so a round cancelled *while*
+    /// it was constructing still writes nothing — which is the actual race,
+    /// rather than one where the token is already cancelled on entry.
+    #[test]
+    fn cancellation_during_the_slow_work_is_still_caught() {
+        let hardware = empty_hardware();
+        let cancel = CancellationToken::new();
+
+        // Stands in for `init_trigger_engine` opening a device: the round was
+        // current when it started this work and is not by the time it installs.
+        let expensive_result = "an input stream this round no longer owns";
+        cancel.cancel();
+
+        let installed = install_if_current(&hardware, &cancel, |hw| {
+            hw.profile_name = Some(expensive_result.to_string());
+        });
+
+        assert!(!installed);
+        assert_eq!(hardware.read().profile_name, None);
+    }
 
     /// The defect this exists to fix: a device that will never open used to
     /// spin forever, and because subsystems are joined by phase, held the whole

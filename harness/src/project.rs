@@ -74,6 +74,9 @@ pub struct ProfileSpec {
     pub midi_extra: BTreeMap<String, String>,
     /// Whether to emit a `dmx.lighting` block referencing the generated venue.
     pub lighting: bool,
+    /// Whether to emit a `trigger:` block with one audio input, which makes
+    /// the player build a trigger engine and open an input stream.
+    pub trigger: bool,
 }
 
 impl ProfileSpec {
@@ -89,6 +92,7 @@ impl ProfileSpec {
             audio_extra: BTreeMap::new(),
             midi_extra: BTreeMap::new(),
             lighting: false,
+            trigger: false,
         }
     }
 
@@ -110,6 +114,13 @@ impl ProfileSpec {
         self
     }
 
+    /// Emits a `trigger:` block, so the player builds a trigger engine and
+    /// holds an input stream.
+    pub fn with_trigger(mut self) -> ProfileSpec {
+        self.trigger = true;
+        self
+    }
+
     /// Renders the profile as YAML.
     fn render(&self, caps: &Capabilities, songs: &[SongSpec], grpc_port: u16) -> String {
         let mut out = String::new();
@@ -122,6 +133,7 @@ impl ProfileSpec {
         self.render_audio(&mut out, caps, songs);
         self.render_midi(&mut out, caps);
         self.render_dmx(&mut out, caps);
+        self.render_trigger(&mut out, caps);
 
         // Controllers belong to the profile: when `profiles` is present mtrack
         // ignores top-level `controller`/`controllers` entirely. Every profile
@@ -204,6 +216,28 @@ impl ProfileSpec {
                 .join(", ");
             let _ = writeln!(out, "    \"{}\": [{}]", escape(track), list);
         }
+    }
+
+    /// A `trigger:` block with a single audio input.
+    ///
+    /// The point is only that the player builds a trigger engine and opens an
+    /// input stream — the threshold is set high enough that ambient noise on an
+    /// unpatched input will not fire it, and the sample it names need not
+    /// exist, since nothing here waits for it to fire.
+    fn render_trigger(&self, out: &mut String, caps: &Capabilities) {
+        if !self.trigger {
+            return;
+        }
+        let Some(input) = caps.audio_in.as_ref() else {
+            return;
+        };
+        out.push_str("trigger:\n");
+        let _ = writeln!(out, "  device: \"{}\"", escape(&input.name));
+        out.push_str("  inputs:\n");
+        out.push_str("    - kind: audio\n");
+        out.push_str("      channel: 1\n");
+        out.push_str("      sample: \"e2e-trigger-sample\"\n");
+        out.push_str("      threshold: 0.95\n");
     }
 
     fn render_midi(&self, out: &mut String, caps: &Capabilities) {
