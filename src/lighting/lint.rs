@@ -925,10 +925,9 @@ show "T" {
     /// rather than trusted.
     #[test]
     fn the_editors_parameter_table_matches_what_the_engine_accepts() {
-        let source = std::fs::read_to_string(
-            "src/webui/svelte/src/components/lighting/EffectForm.svelte",
-        )
-        .expect("the effect form must be readable");
+        let source =
+            std::fs::read_to_string("src/webui/svelte/src/components/lighting/EffectForm.svelte")
+                .expect("the effect form must be readable");
 
         // From the object literal's opening brace, so the type annotation —
         // `Record<EffectType, string[]>` — does not leak in with its own
@@ -947,7 +946,12 @@ show "T" {
             let Some((kind, params)) = entry.split_once('[') else {
                 continue;
             };
-            let kind = kind.trim().trim_start_matches(',').trim().trim_end_matches(':').trim();
+            let kind = kind
+                .trim()
+                .trim_start_matches(',')
+                .trim()
+                .trim_end_matches(':')
+                .trim();
             if kind.is_empty() {
                 continue;
             }
