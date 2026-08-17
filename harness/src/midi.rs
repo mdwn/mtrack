@@ -187,8 +187,16 @@ impl MidiCapture {
         quiet_for: std::time::Duration,
         deadline: std::time::Duration,
     ) -> DrainOutcome {
+        // A zero window would make `sleep` a bare yield, turning a busy port into
+        // a spin that holds and releases this mutex as fast as the scheduler
+        // allows and starves the midir callback. Nothing calls it that way, but
+        // the signature does not stop it.
+        let quiet_for = quiet_for.max(std::time::Duration::from_millis(1));
         let give_up_at = Instant::now() + deadline;
         let mut discarded = Vec::new();
+        // No fast path: an empty buffer now says nothing about the next second,
+        // and the whole point is to establish that nothing is still in flight.
+        // One window is the price of the guarantee, paid once per check.
         loop {
             discarded.extend(
                 self.messages

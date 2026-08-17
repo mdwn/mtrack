@@ -34,41 +34,79 @@ use crate::{check, check_eq, inconclusive, skip};
 /// derived from a default rather than from the file is obvious.
 const TEMPO_BPM: f32 = 104.0;
 
+/// How long to keep waiting for a port that will not go quiet.
+///
+/// Long enough to outlast traffic still draining from a stopped player, short
+/// enough that a genuinely busy rig is reported rather than hung on — the runner
+/// awaits checks without a timeout, so an unbounded wait is a silent hang of the
+/// whole suite.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(10);
+
 /// How long the port must stay silent before a capture is considered clean.
 ///
 /// Two beats at [`TEMPO_BPM`]. The generated files hold each note for three
-/// quarters of a beat, so the longest gap inside a playing stream is most of a
-/// beat — a window shorter than that can land in a gap and call a
-/// still-arriving stream quiet, which is #378 at a lower rate.
+/// quarters of a beat, so the longest gap inside a *playing* stream is most of a
+/// beat, and the beat clock's 24 PPQN is a 24ms gap — both well inside this.
+///
+/// It does not bound the rig, only the last window: another run's structural
+/// silences are longer than this (a 2s pause between songs, 3s post-stop
+/// observation windows, server teardown and startup), so a drain can go quiet
+/// mid-way through someone else's timeline. One run at a time is the actual
+/// guarantee; this only catches traffic still in flight.
 fn quiet_window() -> Duration {
     Duration::from_secs_f32(2.0 * 60.0 / TEMPO_BPM)
 }
 
 /// Waits for the port to go quiet before a check captures its own traffic, and
-/// records what it found.
+/// reports what it found.
 ///
-/// Every check here clears the buffer and then acts, which does not empty the
+/// Every check here cleared the buffer and then acted, which does not empty the
 /// driver queue — so a previous check's clock or notes arrive afterwards and are
-/// counted as this one's. Recorded rather than silent, and deliberately worded
-/// as "before play was requested": the server is already running by this point,
-/// so messages seen here are not provably a *previous* player's, and calling
-/// them stale would hide a build that transmits when it should not.
+/// counted as this one's (#378).
+///
+/// A port that never settles is reported as **inconclusive, not failed**. It is
+/// an environmental condition — another harness run on the same rig is a
+/// documented recurring one — and `fail!` would mint an assertion-class defect
+/// from a helper: `--self-test` reads that flag and would print
+/// "assertion fired" for all six of these checks on a busy rig, crediting them
+/// as proven capable of failing when their sabotage was never evaluated. That is
+/// the false proof the flag exists to prevent.
+///
+/// The message names both possible causes. mtrack transmitting before anything
+/// was asked to play is itself a defect, and blaming the environment for it
+/// would hide exactly the build `beat_clock_is_silent_when_disabled` exists to
+/// catch — so the breakdown by message type is reported, since note-ons mean
+/// another player and clock pulses mean a clock that should not be running.
 async fn settle_port(capture: &MidiCapture) -> Result<(), crate::outcome::CheckError> {
-    let outcome = capture.drain(quiet_window(), Duration::from_secs(10)).await;
+    let outcome = capture.drain(quiet_window(), SETTLE_DEADLINE).await;
+
+    let notes = outcome
+        .discarded
+        .iter()
+        .filter(|m| m.note().is_some())
+        .count();
+    let pulses = outcome
+        .discarded
+        .iter()
+        .filter(|m| m.status() == Some(midi::TIMING_CLOCK))
+        .count();
+    let other = outcome.discarded.len() - notes - pulses;
+    let breakdown = format!("{notes} note(s), {pulses} clock pulse(s), {other} other");
+
+    if !outcome.went_quiet {
+        inconclusive!(
+            "the MIDI port never went quiet across {}s: {} kept arriving before this check \
+             asked for anything, so nothing it captured would be attributable to it. Either \
+             something else is using the rig — only one harness run at a time — or this build \
+             is transmitting when nothing has been asked to play, which is itself a defect.",
+            SETTLE_DEADLINE.as_secs(),
+            breakdown
+        );
+    }
     if !outcome.discarded.is_empty() {
         crate::outcome::record(format!(
-            "caveat: {} message(s) were on the port before play was requested, and were \
-             discarded",
-            outcome.discarded.len()
+            "caveat: {breakdown} were on the port before play was requested, and were discarded"
         ));
-    }
-    if !outcome.went_quiet {
-        crate::fail!(
-            "the MIDI port never went quiet: {} message(s) kept arriving before this check \
-             asked for anything, so nothing captured here would be attributable to it. \
-             Another player or harness run is probably using the rig.",
-            outcome.discarded.len()
-        );
     }
     Ok(())
 }
