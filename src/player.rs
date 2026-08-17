@@ -681,10 +681,29 @@ impl Player {
         *self.broadcast_tx.lock() = Some(tx);
     }
 
-    /// Stores the state sampler watch sender. When the DMX engine comes up
-    /// during async init, the sampler will be started using this sender.
+    /// Stores the state sampler watch sender and starts the sampler if the DMX
+    /// engine is already up.
+    ///
+    /// Hardware init is spawned by [`Player::new`], so a caller that sets this
+    /// afterwards races it: init reads the sender once, when the DMX engine
+    /// comes up, and if it is not there yet no sampler is ever started — the
+    /// lighting feed is then silently dead for the life of the player. The
+    /// only reason production does not hit this is that `cli::local` happens
+    /// to set the sender first.
+    ///
+    /// Symmetrical with [`Player::set_broadcast_tx`], which already wires an
+    /// engine that came up first.
     pub fn set_state_tx(&self, tx: tokio::sync::watch::Sender<Arc<crate::state::StateSnapshot>>) {
-        *self.state_tx.lock() = Some(Arc::new(tx));
+        let tx = Arc::new(tx);
+        let dmx_engine = self.hardware.read().dmx_engine.clone();
+        if let Some(engine) = dmx_engine {
+            crate::state::start_sampler_cancellable(
+                engine.effect_engine(),
+                tx.clone(),
+                self.init_cancel.lock().clone(),
+            );
+        }
+        *self.state_tx.lock() = Some(tx);
     }
 
     /// Returns a fresh state-watch receiver, if a state sender has been wired.
