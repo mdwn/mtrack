@@ -9,7 +9,7 @@ show "Comprehensive Light Show" {
     
     @00:10.000
     # Strobe effect (no color - applies to existing fixtures) with crossfades
-    strobe_lights: strobe, frequency: 8, intensity: 0.8, up_time: 0.5s, down_time: 0.5s, hold_time: 4s, duration: 5s
+    strobe_lights: strobe, frequency: 8, up_time: 0.5s, down_time: 0.5s, hold_time: 4s, duration: 5s
     
     @00:15.000
     # Chase effect (no color - applies to existing fixtures) with crossfades
@@ -21,7 +21,7 @@ show "Comprehensive Light Show" {
     
     @00:25.000
     # Rainbow effect (generates its own colors) with crossfades
-    rainbow_effect: rainbow, speed: 2.0, direction: "forward", up_time: 2s, down_time: 2s, hold_time: 6s, duration: 10s
+    rainbow_effect: rainbow, speed: 2.0, up_time: 2s, down_time: 2s, hold_time: 6s, duration: 10s
     
     @00:30.000
     # Pulse effect (no color - applies to existing fixtures) with crossfades
@@ -37,7 +37,7 @@ show "Comprehensive Light Show" {
     
     @00:45.000
     # Strobe variation (no color - applies to existing fixtures) with crossfades
-    strobe_variation: strobe, frequency: 12, intensity: 0.9, up_time: 0.5s, down_time: 0.5s, hold_time: 4s, duration: 5s
+    strobe_variation: strobe, frequency: 12, up_time: 0.5s, down_time: 0.5s, hold_time: 4s, duration: 5s
     
     @00:50.000
     # Fade out (fades to 0% over 5s, persists)

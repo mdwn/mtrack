@@ -273,14 +273,9 @@ fn parse_venue_content(
                     "venue group `{name}` is no longer supported. Tag the fixtures \
                      instead — add a tag to each member, e.g. `tags [\"{name}\"]`, \
                      then declare a logical group under `dmx.lighting.groups` in \
-                     the player config:\n\
-                     \n\
-                     \x20   groups:\n\
-                     \x20     - name: {name}\n\
-                     \x20       constraints:\n\
-                     \x20         - AllOf: [\"{name}\"]\n\
-                     \n\
-                     Tags survive a venue change; venue groups did not."
+                     the player config:\n\n{}\n\
+                     Tags survive a venue change; venue groups did not.",
+                    migration_yaml(&name)
                 )
                 .into());
             }
@@ -288,6 +283,20 @@ fn parse_venue_content(
         }
     }
     Ok(())
+}
+
+/// The config the venue-group migration message tells the reader to write.
+///
+/// Extracted so a test can feed the *actual* advice to the loader rather than a
+/// copy of it. `groups` is a map keyed by name, and an earlier version of this
+/// message printed a sequence — following it produced a config that would not
+/// load, which is worse than the error it replaced. A test that parses its own
+/// hand-written string cannot catch that.
+pub(crate) fn migration_yaml(name: &str) -> String {
+    format!(
+        "    groups:\n      {name}:\n        name: {name}\n        \
+         constraints:\n          - AllOf: [\"{name}\"]\n"
+    )
 }
 
 pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<dyn Error>> {

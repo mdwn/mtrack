@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 use crate::audio::click_analysis::BeatGrid;
-use crate::lighting::effects::{BlendMode, EffectLayer};
+use crate::lighting::effects::{BlendMode, EffectLayer, EffectType};
 use crate::lighting::parser::LayerCommandType;
 use crate::lighting::parser::LightShow;
 
@@ -71,12 +71,66 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
     // Across all shows at once, for the same reason the stomp check is: a
     // `clear` in one show of a file ends effects in its siblings.
     effects_past_end_of_song(shows, ctx, &mut warnings);
+    parameters_the_effect_ignores(shows, &mut warnings);
     // Across all shows at once, not per show: `LightingTimeline` merges every
     // show in a file into one cue list and plays them together, so two shows
     // both driving `wash` on the background layer stomp each other exactly as
     // two cues in one show would. Checking them separately misses that.
     stomping_replace_effects(shows, &mut warnings);
     warnings
+}
+
+/// The keyword an author writes for an effect type.
+fn dsl_keyword(effect_type: &EffectType) -> &'static str {
+    match effect_type {
+        EffectType::Static { .. } => "static",
+        EffectType::ColorCycle { .. } => "cycle",
+        EffectType::Strobe { .. } => "strobe",
+        EffectType::Pulse { .. } => "pulse",
+        EffectType::Chase { .. } => "chase",
+        EffectType::Dimmer { .. } => "dimmer",
+        EffectType::Rainbow { .. } => "rainbow",
+    }
+}
+
+/// A parameter the effect type does not use.
+///
+/// The DSL accepts any parameter and each effect type takes what it recognises,
+/// so `rainbow ... direction: left_to_right` parses and does nothing — the
+/// author has written a setting that will never have an effect, and nothing
+/// says so. Non-fatal, because shows already carry these and rejecting them
+/// would break on upgrade.
+fn parameters_the_effect_ignores(shows: &[LightShow], out: &mut Vec<Warning>) {
+    let mut reported = HashSet::new();
+    for cue in shows.iter().flat_map(|show| show.cues.iter()) {
+        for effect in &cue.effects {
+            for name in &effect.ignored_parameters {
+                // The DSL keyword, not the Rust variant: `ColorCycle` would be
+                // reported as "colorcycle", which is not a word the author can
+                // have written.
+                let kind = dsl_keyword(&effect.effect_type);
+                // Once per (group, effect type, parameter): a show repeating
+                // the same mistake on forty cues has one problem, not forty —
+                // but the message names a group and a time, so two groups
+                // making the same mistake must not collapse into one warning
+                // pointing at whichever came first.
+                if !reported.insert((effect.groups.join(", "), kind, name.clone())) {
+                    continue;
+                }
+                out.push(Warning::new(
+                    "unused-parameter",
+                    format!(
+                        "`{}` on `{}` at {:.3}s is not a parameter {} uses, so it does \
+                         nothing — check the spelling, or the effect type",
+                        name,
+                        effect.groups.join(", "),
+                        cue.time.as_secs_f64(),
+                        kind,
+                    ),
+                ));
+            }
+        }
+    }
 }
 
 /// A group that resolves to no fixtures. Its cues parse and silently no-op, so
@@ -857,6 +911,216 @@ show "T" {
             lint_shows(&shows(source), &ctx).is_empty(),
             "the stop ends the bed long before the song does, but got: {:?}",
             lint_shows(&shows(source), &ctx)
+        );
+    }
+
+    /// The web UI's own table of per-effect parameters must match the engine.
+    ///
+    /// `EffectForm.svelte` keeps a `USED_PARAMS` map that decides which fields
+    /// survive an effect-type change. It was written by hand from what the
+    /// engine accepts, and nothing tied the two together — so a parameter added
+    /// to an effect, or removed from one, would leave the editor silently
+    /// dropping a real setting or carrying a dead one. Both are the failure this
+    /// branch exists to remove, so the table is read from the source and checked
+    /// rather than trusted.
+    #[test]
+    fn the_editors_parameter_table_matches_what_the_engine_accepts() {
+        let source =
+            std::fs::read_to_string("src/webui/svelte/src/components/lighting/EffectForm.svelte")
+                .expect("the effect form must be readable");
+
+        // From the object literal's opening brace, so the type annotation —
+        // `Record<EffectType, string[]>` — does not leak in with its own
+        // brackets and break the parse below.
+        let table = source
+            .split_once("const USED_PARAMS")
+            .and_then(|(_, rest)| rest.split_once('{'))
+            .and_then(|(_, body)| body.split_once("};"))
+            .map(|(body, _)| body.to_string())
+            .expect("USED_PARAMS must still be a literal this test can read");
+
+        // `kind: ["a", "b"]` across however many lines prettier wrapped it to.
+        let flattened: String = table.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut checked = 0;
+        for entry in flattened.split(']') {
+            let Some((kind, params)) = entry.split_once('[') else {
+                continue;
+            };
+            let kind = kind
+                .trim()
+                .trim_start_matches(',')
+                .trim()
+                .trim_end_matches(':')
+                .trim();
+            if kind.is_empty() {
+                continue;
+            }
+            for param in params.split(',') {
+                let param = param.trim().trim_matches('"');
+                if param.is_empty() {
+                    continue;
+                }
+                let value = sample_value(kind, param);
+                let source = format!(
+                    "show \"T\" {{\n    @00:00.000\n    wash: {kind} {param}: {value}, duration: 2s\n}}\n"
+                );
+                let parsed = crate::lighting::parser::parse_light_shows(&source)
+                    .unwrap_or_else(|e| panic!("`{kind} {param}: {value}` does not parse: {e}"));
+                let shows: Vec<_> = parsed.into_values().collect();
+                let unused: Vec<&str> = lint_shows(&shows, &LintContext::default())
+                    .iter()
+                    .filter(|w| w.kind == "unused-parameter" && w.message.contains(param))
+                    .map(|_| param)
+                    .collect();
+                assert!(
+                    unused.is_empty(),
+                    "the editor keeps `{param}` when an effect becomes `{kind}`, but {kind} \
+                     does not read it — the editor would carry a setting that does nothing"
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 25,
+            "only {checked} parameters were checked; the table was probably not parsed"
+        );
+    }
+
+    /// A value the parser accepts for a given parameter.
+    fn sample_value(kind: &str, param: &str) -> &'static str {
+        match param {
+            "duration" => "2s",
+            "direction" if kind == "chase" => "left_to_right",
+            "direction" => "forward",
+            "transition" => "fade",
+            "pattern" => "linear",
+            "curve" => "linear",
+            "speed" | "frequency" => "1",
+            _ => "0.5",
+        }
+    }
+
+    /// The shipped shows must not carry a parameter that does nothing.
+    ///
+    /// They carried nineteen: `fade`, `loop`, `duty`, `dimmer` on a cycle,
+    /// `intensity` on a strobe, `color` on pulse/chase/strobe, and the rainbow
+    /// `direction` that led to this check. Anyone copying an example inherited
+    /// settings that are silently ignored, which is how the habit spreads.
+    #[test]
+    fn the_shipped_examples_carry_no_parameter_that_does_nothing() {
+        fn shows_in(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    shows_in(&path, out);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("light") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        shows_in(std::path::Path::new("examples"), &mut files);
+        assert!(!files.is_empty(), "no example shows were found to check");
+
+        let mut offenders = Vec::new();
+        for path in files {
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            // Fixture-type and venue files live alongside the shows and are
+            // not shows, so a parse failure is expected for them — but a show
+            // that stops parsing must not drop silently out of this check.
+            let is_show = source.contains("show \"");
+            let parsed = match crate::lighting::parser::parse_light_shows(&source) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    assert!(
+                        !is_show,
+                        "{} declares a show but does not parse: {e}",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
+            let shows: Vec<_> = parsed.into_values().collect();
+            for warning in lint_shows(&shows, &LintContext::default()) {
+                if warning.kind == "unused-parameter" {
+                    offenders.push(format!("{}: {}", path.display(), warning.message));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "shipped examples carry parameters that do nothing:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn a_parameter_the_effect_does_not_use_is_reported() {
+        // `EffectType::Rainbow` has no direction. This parses, the direction is
+        // dropped, and the author has written a setting that will never do
+        // anything — which is what the web UI's own rainbow direction control
+        // used to produce before it was removed.
+        let source = r#"
+show "T" {
+    @00:00.000
+    wash: rainbow speed: 0.5, direction: left_to_right, duration: 4s
+}
+"#;
+        let warnings = lint_shows(&shows(source), &LintContext::default());
+        let unused: Vec<&Warning> = warnings
+            .iter()
+            .filter(|w| w.kind == "unused-parameter")
+            .collect();
+        assert_eq!(unused.len(), 1, "{warnings:?}");
+        assert!(
+            unused[0].message.contains("direction") && unused[0].message.contains("rainbow"),
+            "the parameter and the effect type both have to be named: {}",
+            unused[0].message
+        );
+    }
+
+    #[test]
+    fn a_parameter_the_effect_does_use_is_not_reported() {
+        // Guards against the check firing on every parameter, which would make
+        // it noise and get it ignored.
+        let source = r#"
+show "T" {
+    @00:00.000
+    wash: rainbow speed: 0.5, saturation: 80%, brightness: 90%, duration: 4s
+}
+"#;
+        let warnings = lint_shows(&shows(source), &LintContext::default());
+        assert!(
+            !warnings.iter().any(|w| w.kind == "unused-parameter"),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn the_same_mistake_on_many_cues_is_reported_once() {
+        let source = r#"
+show "T" {
+    @00:00.000
+    wash: rainbow speed: 0.5, direction: left_to_right, duration: 2s
+
+    @00:04.000
+    wash: rainbow speed: 0.5, direction: left_to_right, duration: 2s
+}
+"#;
+        let warnings = lint_shows(&shows(source), &LintContext::default());
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|w| w.kind == "unused-parameter")
+                .count(),
+            1,
+            "a repeated mistake is one problem, not one per cue: {warnings:?}"
         );
     }
 

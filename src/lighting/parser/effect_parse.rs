@@ -261,7 +261,7 @@ pub(crate) fn parse_effect_definition(
     }
 
     // Apply parameters to the effect type
-    let final_effect_type =
+    let (final_effect_type, ignored_parameters) =
         apply_parameters_to_effect_type(effect_type, &parameters, &color_parameters, ctx)?;
 
     // Validate that every effect has an explicit duration.
@@ -297,16 +297,27 @@ pub(crate) fn parse_effect_definition(
         hold_time,
         down_time,
         sequence_name: None, // Will be set when expanding sequences
+        ignored_parameters,
     })
 }
 
 /// Applies parsed parameters to effect types
+/// Applies the effect-specific parameters, and reports the ones the effect type
+/// does not use.
+///
+/// The common parameters (`layer`, `blend_mode`, the fade times, and `color` on
+/// a cycle) are consumed by the caller before this runs, so anything left
+/// unmatched here is a parameter that names nothing on this effect — like a
+/// `direction` on a rainbow, which parsed happily and did nothing. Returned
+/// rather than dropped so a lint can say so; rejecting outright would break
+/// shows that already carry one.
 pub(crate) fn apply_parameters_to_effect_type(
     mut effect_type: EffectType,
     parameters: &HashMap<String, String>,
     color_parameters: &[String],
     ctx: &ParseContext,
-) -> Result<EffectType, Box<dyn Error>> {
+) -> Result<(EffectType, Vec<String>), Box<dyn Error>> {
+    let mut ignored: Vec<String> = Vec::new();
     let tempo_map = &ctx.tempo_map;
     let cue_time = ctx.cue_time;
     let offset_secs = ctx.offset_secs;
@@ -343,9 +354,20 @@ pub(crate) fn apply_parameters_to_effect_type(
                             parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
                         *duration = dur;
                     }
-                    _ => {
-                        if let Ok(val) = value.parse::<f64>() {
+                    other => {
+                        // A bare number is a channel level, which `static`
+                        // accepts by name — that is how a fixture's own channels
+                        // are addressed. Anything else is not used by anything,
+                        // and `static` is where a typo is most likely, so it
+                        // must not be the one effect type the lint cannot see.
+                        // A percentage is as valid a channel level as a bare
+                        // float — `gobo: 50%` was dropped silently, and the
+                        // warning then blamed the name when the fault was the
+                        // `%`.
+                        if let Ok(val) = parse_percentage_to_f64(value) {
                             static_params.insert(key.clone(), val);
+                        } else {
+                            ignored.push(other.to_string());
                         }
                     }
                 }
@@ -400,7 +422,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                             parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
                         *duration = dur;
                     }
-                    _ => {}
+                    other => ignored.push(other.to_string()),
                 }
             }
         }
@@ -424,7 +446,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                             parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
                         *duration = dur;
                     }
-                    _ => {}
+                    other => ignored.push(other.to_string()),
                 }
             }
         }
@@ -460,7 +482,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                             parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
                         *duration = dur;
                     }
-                    _ => {}
+                    other => ignored.push(other.to_string()),
                 }
             }
         }
@@ -522,7 +544,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                             parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
                         *duration = dur;
                     }
-                    _ => {}
+                    other => ignored.push(other.to_string()),
                 }
             }
         }
@@ -559,7 +581,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                             other => return Err(format!("Invalid dimmer curve: '{}' (expected: linear, exponential, logarithmic, sine, cosine)", other).into()),
                         };
                     }
-                    _ => {}
+                    other => ignored.push(other.to_string()),
                 }
             }
         }
@@ -592,13 +614,14 @@ pub(crate) fn apply_parameters_to_effect_type(
                             parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
                         *duration = dur;
                     }
-                    _ => {}
+                    other => ignored.push(other.to_string()),
                 }
             }
         }
     }
 
-    Ok(effect_type)
+    ignored.sort();
+    Ok((effect_type, ignored))
 }
 
 #[cfg(test)]
@@ -714,7 +737,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("dimmer".to_string(), "50%".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Static { parameters, .. } = result {
             assert!((parameters["dimmer"] - 0.5).abs() < 1e-9);
         } else {
@@ -733,7 +758,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("intensity".to_string(), "22%".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Static { parameters, .. } = result {
             assert!((parameters["dimmer"] - 0.22).abs() < 1e-9);
             assert!(!parameters.contains_key("intensity"));
@@ -750,7 +777,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("color".to_string(), "#FF8000".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Static { parameters, .. } = result {
             assert!((parameters["red"] - 1.0).abs() < 1e-9);
             assert!((parameters["green"] - 128.0 / 255.0).abs() < 1e-2);
@@ -770,7 +799,9 @@ mod tests {
         params.insert("red".to_string(), "100%".to_string());
         params.insert("green".to_string(), "50%".to_string());
         params.insert("blue".to_string(), "0%".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Static { parameters, .. } = result {
             assert!((parameters["red"] - 1.0).abs() < 1e-9);
             assert!((parameters["green"] - 0.5).abs() < 1e-9);
@@ -788,7 +819,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("duration".to_string(), "2s".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Static { duration, .. } = result {
             assert_eq!(duration, Duration::from_secs(2));
         } else {
@@ -808,8 +841,9 @@ mod tests {
             duration: Duration::ZERO,
         };
         let colors = vec!["red".to_string(), "#0000FF".to_string()];
-        let result =
-            apply_parameters_to_effect_type(et, &HashMap::new(), &colors, &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &HashMap::new(), &colors, &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::ColorCycle { colors, .. } = result {
             assert_eq!(colors.len(), 2);
             assert_eq!(colors[0].r, 255);
@@ -830,7 +864,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("direction".to_string(), "backward".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::ColorCycle { direction, .. } = result {
             assert_eq!(direction, CycleDirection::Backward);
         } else {
@@ -849,7 +885,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("transition".to_string(), "crossfade".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::ColorCycle { transition, .. } = result {
             assert_eq!(transition, CycleTransition::Fade);
         } else {
@@ -867,7 +905,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("frequency".to_string(), "15.0".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Strobe { frequency, .. } = result {
             assert_eq!(frequency, TempoAwareFrequency::Fixed(15.0));
         } else {
@@ -883,7 +923,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("rate".to_string(), "20.0".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Strobe { frequency, .. } = result {
             assert_eq!(frequency, TempoAwareFrequency::Fixed(20.0));
         } else {
@@ -905,7 +947,9 @@ mod tests {
         params.insert("base_level".to_string(), "20%".to_string());
         params.insert("intensity".to_string(), "80%".to_string());
         params.insert("frequency".to_string(), "4.0".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Pulse {
             base_level,
             pulse_amplitude,
@@ -936,7 +980,9 @@ mod tests {
         params.insert("pattern".to_string(), "snake".to_string());
         params.insert("direction".to_string(), "clockwise".to_string());
         params.insert("transition".to_string(), "fade".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Chase {
             pattern,
             direction,
@@ -967,7 +1013,9 @@ mod tests {
         params.insert("end".to_string(), "75%".to_string());
         params.insert("duration".to_string(), "3s".to_string());
         params.insert("curve".to_string(), "exponential".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Dimmer {
             start_level,
             end_level,
@@ -1012,7 +1060,9 @@ mod tests {
         params.insert("saturation".to_string(), "80%".to_string());
         params.insert("brightness".to_string(), "60%".to_string());
         params.insert("speed".to_string(), "2.0".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Rainbow {
             speed,
             saturation,
@@ -1087,7 +1137,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("curve".to_string(), "logarithmic".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Dimmer { curve, .. } = result {
             assert!(matches!(curve, DimmerCurve::Logarithmic));
         } else {
@@ -1108,7 +1160,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("direction".to_string(), "pingpong".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::ColorCycle { direction, .. } = result {
             assert_eq!(direction, CycleDirection::PingPong);
         } else {
@@ -1129,7 +1183,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("direction".to_string(), "right_to_left".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Chase { direction, .. } = result {
             assert!(matches!(direction, ChaseDirection::RightToLeft));
         } else {
@@ -1150,7 +1206,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("pattern".to_string(), "random".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Chase { pattern, .. } = result {
             assert!(matches!(pattern, ChasePattern::Random));
         } else {
@@ -1188,7 +1246,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("transition".to_string(), "crossfade".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Chase { transition, .. } = result {
             assert_eq!(transition, CycleTransition::Fade);
         } else {
@@ -1222,7 +1282,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("custom_param".to_string(), "0.75".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Static { parameters, .. } = result {
             assert!((parameters["custom_param"] - 0.75).abs() < 1e-9);
         } else {
@@ -1243,7 +1305,9 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("start_level".to_string(), "30%".to_string());
         params.insert("end_level".to_string(), "90%".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Dimmer {
             start_level,
             end_level,
@@ -1269,7 +1333,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("duration".to_string(), "5s".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Pulse { duration, .. } = result {
             assert_eq!(duration, Duration::from_secs(5));
         } else {
@@ -1287,7 +1353,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("duration".to_string(), "3s".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Strobe { duration, .. } = result {
             assert_eq!(duration, Duration::from_secs(3));
         } else {
@@ -1308,7 +1376,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("speed".to_string(), "2.5".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::ColorCycle { speed, .. } = result {
             assert_eq!(speed, TempoAwareSpeed::Fixed(2.5));
         } else {
@@ -1329,7 +1399,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("speed".to_string(), "3.0".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Chase { speed, .. } = result {
             assert_eq!(speed, TempoAwareSpeed::Fixed(3.0));
         } else {
@@ -1423,7 +1495,9 @@ mod tests {
         };
         let mut params = HashMap::new();
         params.insert("pulse_amplitude".to_string(), "70%".to_string());
-        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
         if let EffectType::Pulse {
             pulse_amplitude, ..
         } = result

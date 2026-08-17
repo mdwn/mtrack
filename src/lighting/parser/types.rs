@@ -110,6 +110,13 @@ pub struct Effect {
     pub hold_time: Option<Duration>,
     pub down_time: Option<Duration>,
     pub sequence_name: Option<String>, // Track which sequence this effect came from (for stopping)
+    /// Parameters this effect type does not use, in the order they sort.
+    ///
+    /// A `direction` on a rainbow parses and does nothing — the DSL accepts any
+    /// parameter and each effect type takes what it recognises. Keeping the
+    /// leftovers lets a lint say so; rejecting them at parse time would break
+    /// shows that already carry one.
+    pub ignored_parameters: Vec<String>,
 }
 
 impl Effect {
@@ -177,6 +184,7 @@ mod tests {
             hold_time: None,
             down_time: None,
             sequence_name: None,
+            ignored_parameters: Vec::new(),
         }
     }
 
@@ -195,6 +203,7 @@ mod tests {
             hold_time: hold,
             down_time: down,
             sequence_name: None,
+            ignored_parameters: Vec::new(),
         }
     }
 

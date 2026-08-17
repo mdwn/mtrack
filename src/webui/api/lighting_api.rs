@@ -574,19 +574,49 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
 async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Response {
     // codeql[rust/path-injection] config_path is set at startup, not user input.
     let path = config_path.to_path_buf();
-    let names = tokio::task::spawn_blocking(move || {
+    // A parse failure is reported, not swallowed. `.ok()` here answered
+    // "no groups" for a config that does not load at all — the same silent
+    // empty list this fallback exists to remove, one layer down, and the reason
+    // a missing `dmx.universes` looked like a rig with nothing declared.
+    let loaded = tokio::task::spawn_blocking(move || {
         crate::config::Player::deserialize(&path)
-            .ok()
-            .and_then(|player| player.dmx().and_then(|dmx| dmx.lighting()).cloned())
-            .map(|lighting| {
-                let mut names: Vec<String> = lighting.groups().keys().cloned().collect();
-                names.sort();
-                names
+            .map(|player| {
+                player
+                    .dmx()
+                    .and_then(|dmx| dmx.lighting())
+                    .map(|lighting| {
+                        let mut names: Vec<String> = lighting.groups().keys().cloned().collect();
+                        names.sort();
+                        names
+                    })
+                    .unwrap_or_default()
             })
-            .unwrap_or_default()
+            .map_err(|e| e.to_string())
     })
-    .await
-    .unwrap_or_default();
+    .await;
+
+    let names = match loaded {
+        Ok(Ok(names)) => names,
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!(
+                        "no DMX engine is running, and the player config could not be read \
+                         to list the declared groups: {e}"
+                    )
+                })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("reading the player config failed: {e}")})),
+            )
+                .into_response();
+        }
+    };
 
     let groups: Vec<serde_json::Value> = names
         .into_iter()
@@ -909,6 +939,101 @@ mod test {
     use axum::body::Body;
     use axum::http::StatusCode;
     use tower::ServiceExt;
+
+    /// With no DMX device, the group names still come back — from the config.
+    ///
+    /// Authoring on a laptop is the normal case for editing a show, and the
+    /// groups are declared under `dmx.lighting.groups` in the player config, not
+    /// by the engine. Answering `{"groups": []}` there emptied the cue-target
+    /// autocomplete with no error to explain it, because the endpoint only read
+    /// them off a live engine.
+    #[tokio::test]
+    async fn lighting_groups_come_from_the_config_without_a_dmx_engine() {
+        let (state, dir) = test_state();
+        std::fs::write(
+            &state.config_path,
+            "songs: songs\ndmx:\n  universes:\n    - universe: 1\n      name: main\n  \
+             lighting:\n    groups:\n      front_wash:\n        \
+             name: front_wash\n        constraints:\n          - AllOf: [\"wash\"]\n      \
+             back_wash:\n        name: back_wash\n        constraints:\n          \
+             - AllOf: [\"back\"]\n",
+        )
+        .unwrap();
+        let _keep = dir;
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/groups")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        let names: Vec<&str> = parsed["groups"]
+            .as_array()
+            .expect("groups")
+            .iter()
+            .filter_map(|g| g["name"].as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["back_wash", "front_wash"],
+            "the declared groups must be listed even with no engine to resolve them"
+        );
+        // Flagged as unresolved: the names are knowable without an engine, the
+        // fixtures each resolves to are not, and a caller has to be able to tell
+        // "no fixtures" from "not asked yet".
+        assert_eq!(parsed["resolved"], serde_json::json!(false));
+        for group in parsed["groups"].as_array().expect("groups") {
+            assert!(group["fixtures"].as_array().expect("fixtures").is_empty());
+        }
+    }
+
+    /// A config that will not load is reported, not answered as "no groups".
+    ///
+    /// The fallback exists because an empty list was indistinguishable from a
+    /// rig with nothing declared. Swallowing a parse error with `.ok()` put that
+    /// exact ambiguity back one layer down — a missing `dmx.universes` read as
+    /// an empty autocomplete with no explanation.
+    #[tokio::test]
+    async fn a_config_that_does_not_load_is_reported_not_answered_empty() {
+        let (state, dir) = test_state();
+        // `dmx.universes` is required, so this parses as YAML and fails to load
+        // as config — the shape most likely to be hit by hand-editing.
+        std::fs::write(
+            &state.config_path,
+            "songs: songs\ndmx:\n  lighting:\n    groups:\n      wash:\n        name: wash\n",
+        )
+        .unwrap();
+        let _keep = dir;
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/groups")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        assert!(
+            parsed["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("could not be read")),
+            "the reason must reach the caller: {parsed}"
+        );
+    }
 
     #[tokio::test]
     async fn get_lighting_files_empty() {
