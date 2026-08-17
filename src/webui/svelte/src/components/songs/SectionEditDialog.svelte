@@ -15,9 +15,17 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import { SECTION_COLORS, sectionColor } from "../../lib/sectionColors";
+  import { beatsInMeasure, sigAtMeasure } from "../../lib/util/tempo";
+  import {
+    beatsInMeasure as gridBeatsInMeasure,
+    maxBeatIn,
+    type BeatGrid,
+  } from "../../lib/util/beatGrid";
+  import type { TempoConfig } from "../../lib/api/songs";
   import MarkerDialog from "./MarkerDialog.svelte";
-  import NumberStepper from "../NumberStepper.svelte";
-  import { maxBeatInMeasure, type BeatGrid } from "../../lib/util/beatGrid";
+  import PositionPicker, { type Position } from "./PositionPicker.svelte";
+  import UnitToggle from "./UnitToggle.svelte";
+  import PlayheadCapture from "./PlayheadCapture.svelte";
 
   interface SectionEntry {
     name: string;
@@ -33,10 +41,11 @@
     section: SectionEntry;
     /** The section's index, for the automatic palette color. */
     index: number;
-    /** The song's measure count, bounding the steppers. */
+    /** The song's measure count, bounding the pickers. */
     maxMeasure?: number;
-    /** Beat times, so the beat steppers can stop at the end of their
-     * measure and the two boundaries can be ordered by resolved time. */
+    /** The song's tempo map, for the meter of each measure. */
+    tempo?: TempoConfig | null;
+    /** Beat times, so a boundary can also be read and typed as a time. */
     beatGrid?: BeatGrid | null;
     /** Resolves a boundary to milliseconds — the same function the edge
      * drags order positions with. */
@@ -44,6 +53,8 @@
     /** The preview playhead as a boundary position (half-beat snapped),
      * when this song is loaded in the player. Enables "set here". */
     playheadPos?: { measure: number; beat: number } | null;
+    /** The same playhead in seconds, for the marker and the readout. */
+    playheadTime?: number | null;
     onchange: (patch: Partial<SectionEntry>) => void;
     ondelete: () => void;
     onclose: () => void;
@@ -53,65 +64,44 @@
     section,
     index,
     maxMeasure = 9999,
+    tempo = null,
     beatGrid = null,
     posToMs = null,
     playheadPos = null,
+    playheadTime = null,
     onchange,
     ondelete,
     onclose,
   }: Props = $props();
 
   let autoColor = $derived(sectionColor(undefined, index));
-  let length = $derived(section.end_measure - section.start_measure);
+  /** Both boundaries read out in the same unit — one toggle, not two. */
+  let unit = $state<"beat" | "time">("beat");
 
   /** "13" for a measure-line boundary, "13.4" with a beat offset. */
   function posLabel(measure: number, beat?: number): string {
     return beat && beat !== 1 ? `${measure}.${beat}` : `${measure}`;
   }
 
-  /** Beat 1 is the measure line — store that as "unset".
+  /** How many beats the boundary's measure holds.
    *
-   * A value that would invert the section is clamped to the last one that does
-   * not, rather than refused: the steppers are controlled, so a silent refusal
-   * reads as a broken button. An inverted range is what `Section::validate`
-   * rejects on save, which is the outcome being avoided. */
-  function setBeat(field: "start_beat" | "end_beat", beat: number) {
-    const measure =
-      section[field === "start_beat" ? "start_measure" : "end_measure"];
-    const ordered = (b: number) =>
-      field === "start_beat"
-        ? isBefore({ measure, beat: b }, endPos)
-        : isBefore(startPos, { measure, beat: b });
-
-    // Walk back by whole steps rather than computing the nearest legal value:
-    // the ordering test resolves through the grid, where beat 5 of a 4/4
-    // measure and beat 1 of the next are the same instant, so there is no
-    // arithmetic shortcut.
-    let candidate = beat;
-    while (candidate > 1 && !ordered(candidate)) {
-      candidate = Math.max(1, candidate - BEAT_STEP);
-    }
-    // Beat 1 is the measure line, which orders correctly against any
-    // well-formed section, so the walk terminates there at worst.
-    if (!ordered(candidate)) return;
-    onchange({ [field]: candidate === 1 ? undefined : candidate });
+   * A `tempo:` block is what the grid is built from, so its meter is the
+   * answer and carries the signature the ruler labels. Without one the grid
+   * comes from click analysis, where the tempo helper would answer 4 for a
+   * measure that holds three — and a beat past the measure is one the
+   * backend's `beat_time` refuses. */
+  function sectionBeatsIn(measure: number): number {
+    if (tempo) return beatsInMeasure(tempo, measure);
+    return (
+      gridBeatsInMeasure(beatGrid, measure) ?? beatsInMeasure(null, measure)
+    );
   }
-
-  /** How far the beat steppers go: the end of their own measure. Without a
-   * grid there is nothing to measure against, so they stay open. */
-  const BEAT_STEP = 0.5;
-  let maxStartBeat = $derived(
-    maxBeatInMeasure(beatGrid, section.start_measure, BEAT_STEP) ?? 32,
-  );
-  let maxEndBeat = $derived(
-    maxBeatInMeasure(beatGrid, section.end_measure, BEAT_STEP) ?? 32,
-  );
 
   /** Position ordering by resolved time, the way the edge drags do it.
    * Comparing (measure, beat) tuples instead would call m1 beat 5 earlier
-   * than m2 beat 1 when in 4/4 they are the same instant — the steppers no
-   * longer offer that, but a hand-written config still can. Falls back to
-   * the tuples when there is no grid to resolve against. */
+   * than m2 beat 1 when in 4/4 they are the same instant — the picker no
+   * longer offers that, but a hand-written config still can. Falls back to
+   * the tuples when there is nothing to resolve against. */
   function isBefore(
     a: { measure: number; beat: number },
     b: { measure: number; beat: number },
@@ -140,48 +130,71 @@
     playheadPos !== null && isBefore(startPos, playheadPos),
   );
 
+  /** Half beats: the granularity a section boundary is stored at. */
+  const BEAT_STEP = 0.5;
+
+  /** One step earlier (`delta` -1) or later (+1), rolling over measure lines
+   * the way the picker's transport does and stopping at the ends of the
+   * song, so walking always terminates. */
+  function stepped(pos: Position, delta: number): Position {
+    let { measure, beat } = pos;
+    beat += delta * BEAT_STEP;
+    while (beat >= sectionBeatsIn(measure) + 1 && measure < maxMeasure) {
+      beat -= sectionBeatsIn(measure);
+      measure += 1;
+    }
+    while (beat < 1 && measure > 1) {
+      measure -= 1;
+      beat += sectionBeatsIn(measure);
+    }
+    const highest = maxBeatIn(
+      beatGrid,
+      measure,
+      sectionBeatsIn(measure),
+      BEAT_STEP,
+    );
+    return { measure, beat: Math.max(1, Math.min(highest, beat)) };
+  }
+
+  /** Writes a boundary; beat 1 is the measure line, stored as "unset".
+   *
+   * A move that would invert the section lands on the closest position that
+   * would not, rather than being refused: the picker is controlled, so a
+   * silent refusal snaps the ruler back under the finger and reads as a dead
+   * control. An inverted range is what `Section::validate` rejects on save,
+   * and that is the outcome being avoided.
+   *
+   * The clamp walks out from the *other* boundary instead of computing a
+   * nearest legal beat, because ordering resolves through the grid — in 4/4,
+   * m5 beat 5 and m6 beat 1 are the same instant — so there is no arithmetic
+   * shortcut to "one step clear of it". */
+  function setBoundary(field: "start" | "end", pos: Position) {
+    const other = field === "start" ? endPos : startPos;
+    const delta = field === "start" ? -1 : 1;
+    const ordered = (p: Position) =>
+      field === "start" ? isBefore(p, other) : isBefore(other, p);
+
+    let target = pos;
+    if (!ordered(target)) {
+      target = stepped(other, delta);
+      while (!ordered(target)) {
+        const next = stepped(target, delta);
+        // The walk has run into measure 1 or the last measure; there is no
+        // position left that keeps the section forward.
+        if (next.measure === target.measure && next.beat === target.beat)
+          return;
+        target = next;
+      }
+    }
+    onchange({
+      [`${field}_measure`]: target.measure,
+      [`${field}_beat`]: target.beat === 1 ? undefined : target.beat,
+    });
+  }
+
   function captureBoundary(field: "start" | "end") {
     if (!playheadPos) return;
-    onchange({
-      [`${field}_measure`]: playheadPos.measure,
-      [`${field}_beat`]: playheadPos.beat === 1 ? undefined : playheadPos.beat,
-    });
-  }
-
-  /** Clamps a beat to what the destination measure actually holds. Carrying
-   * beat 4.5 into a 3/4 measure names a beat that does not exist. */
-  function clampBeat(
-    measure: number,
-    beat: number | undefined,
-  ): number | undefined {
-    if (beat === undefined || beat === 1) return undefined;
-    const max = maxBeatInMeasure(beatGrid, measure, BEAT_STEP);
-    if (max === null) return beat;
-    const clamped = Math.min(beat, max);
-    return clamped === 1 ? undefined : clamped;
-  }
-
-  /** Moving the start slides the whole section, like a body drag. */
-  function moveStart(start: number) {
-    const clamped = Math.max(1, Math.min(start, maxMeasure - length + 1));
-    onchange({
-      start_measure: clamped,
-      end_measure: clamped + length,
-      start_beat: clampBeat(clamped, section.start_beat),
-      end_beat: clampBeat(clamped + length, section.end_beat),
-    });
-  }
-
-  function setLength(measures: number) {
-    const clamped = Math.max(
-      1,
-      Math.min(measures, maxMeasure + 1 - section.start_measure),
-    );
-    const end = section.start_measure + clamped;
-    onchange({
-      end_measure: end,
-      end_beat: clampBeat(end, section.end_beat),
-    });
+    setBoundary(field, playheadPos);
   }
 </script>
 
@@ -206,80 +219,69 @@
   </div>
 
   <div class="dialog-section">
-    <span class="section-label">{$t("tempo.marker.position")}</span>
-    <div class="stepper-row">
-      <div class="labeled-stepper">
-        <span class="mini-label">{$t("sections.dialog.start")}</span>
-        <NumberStepper
-          value={section.start_measure}
-          min={1}
-          max={Math.max(1, maxMeasure - length + 1)}
-          ariaLabel={$t("sections.dialog.start")}
-          onchange={moveStart}
-        />
-      </div>
-      <div class="labeled-stepper">
-        <span class="mini-label">{$t("sections.dialog.length")}</span>
-        <NumberStepper
-          value={length}
-          min={1}
-          max={Math.max(1, maxMeasure + 1 - section.start_measure)}
-          ariaLabel={$t("sections.dialog.length")}
-          onchange={setLength}
-        />
-      </div>
+    <div class="position-head">
+      <span class="section-label">{$t("tempo.marker.position")}</span>
+      {#if beatGrid}
+        <UnitToggle {unit} onchange={(u) => (unit = u)} />
+      {/if}
     </div>
-    <div class="stepper-row">
-      <div class="labeled-stepper">
-        <span class="mini-label">{$t("sections.dialog.startBeat")}</span>
-        <NumberStepper
-          value={section.start_beat ?? 1}
-          min={1}
-          max={maxStartBeat}
-          step={BEAT_STEP}
-          decimals={1}
-          ariaLabel={$t("sections.dialog.startBeat")}
-          onchange={(v) => setBeat("start_beat", v)}
-        />
-      </div>
-      <div class="labeled-stepper">
-        <span class="mini-label">{$t("sections.dialog.endBeat")}</span>
-        <NumberStepper
-          value={section.end_beat ?? 1}
-          min={1}
-          max={maxEndBeat}
-          step={BEAT_STEP}
-          decimals={1}
-          ariaLabel={$t("sections.dialog.endBeat")}
-          onchange={(v) => setBeat("end_beat", v)}
-        />
-      </div>
+    <div class="labeled-picker">
+      <span class="mini-label">{$t("sections.dialog.startPos")}</span>
+      <PositionPicker
+        label={$t("sections.dialog.startPos")}
+        value={{ kind: "beat", ...startPos }}
+        step={0.5}
+        stores="beat"
+        bind:unit
+        showToggle={false}
+        {maxMeasure}
+        {beatGrid}
+        beatsIn={sectionBeatsIn}
+        sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
+        ghostTime={playheadTime}
+        onchange={(v) => v.kind === "beat" && setBoundary("start", v)}
+      />
+    </div>
+    <div class="labeled-picker">
+      <span class="mini-label">{$t("sections.dialog.endPos")}</span>
+      <PositionPicker
+        label={$t("sections.dialog.endPos")}
+        value={{ kind: "beat", ...endPos }}
+        step={0.5}
+        stores="beat"
+        bind:unit
+        showToggle={false}
+        {maxMeasure}
+        {beatGrid}
+        beatsIn={sectionBeatsIn}
+        sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
+        ghostTime={playheadTime}
+        onchange={(v) => v.kind === "beat" && setBoundary("end", v)}
+      />
     </div>
     <span class="beat-note">{$t("sections.dialog.beatNote")}</span>
-    {#if playheadPos}
-      <div class="stepper-row playhead-capture">
-        <span class="mini-label"
-          >{$t("sections.dialog.playheadAt", {
-            values: {
-              pos: `m${posLabel(playheadPos.measure, playheadPos.beat)}`,
-            },
-          })}</span
-        >
-        <button
-          type="button"
-          class="btn btn-sm"
-          disabled={!canCaptureStart}
-          onclick={() => captureBoundary("start")}
-          >{$t("sections.dialog.setStartHere")}</button
-        >
-        <button
-          type="button"
-          class="btn btn-sm"
-          disabled={!canCaptureEnd}
-          onclick={() => captureBoundary("end")}
-          >{$t("sections.dialog.setEndHere")}</button
-        >
-      </div>
+    {#if playheadPos && playheadTime !== null}
+      <PlayheadCapture
+        time={playheadTime}
+        position="m{posLabel(playheadPos.measure, playheadPos.beat)}"
+      >
+        {#snippet actions()}
+          <button
+            type="button"
+            class="btn btn-sm"
+            disabled={!canCaptureStart}
+            onclick={() => captureBoundary("start")}
+            >{$t("sections.dialog.setStartHere")}</button
+          >
+          <button
+            type="button"
+            class="btn btn-sm"
+            disabled={!canCaptureEnd}
+            onclick={() => captureBoundary("end")}
+            >{$t("sections.dialog.setEndHere")}</button
+          >
+        {/snippet}
+      </PlayheadCapture>
     {/if}
   </div>
 
@@ -346,28 +348,23 @@
     color: var(--text-dim);
   }
 
-  .playhead-capture {
-    margin-top: 10px;
-    align-items: center;
-  }
-
-  .playhead-capture .mini-label {
-    font-family: var(--mono);
-  }
   .name-input {
     font-size: 16px;
     min-height: 44px;
   }
-  .stepper-row {
+  .position-head {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 10px;
-    flex-wrap: wrap;
   }
-  .labeled-stepper {
+  .labeled-picker {
     display: flex;
     flex-direction: column;
     gap: 3px;
+  }
+  .labeled-picker + .labeled-picker {
+    margin-top: 10px;
   }
   .mini-label {
     font-size: 10px;

@@ -499,10 +499,14 @@ test.describe("Song Detail - Section Editor", () => {
       blockBox.y + blockBox.height / 2,
     );
 
-    // Move the start to beat 3 of measure 1; the range note follows.
-    const startBeat = page.getByRole("textbox", { name: "Start beat" });
-    await startBeat.fill("3");
-    await startBeat.press("Enter");
+    // Move the start to beat 3 of measure 1 by typing into the picker's
+    // readout; the range note follows.
+    await page.getByRole("button", { name: "Start: type a position" }).click();
+    const startPos = page.getByRole("textbox", {
+      name: "Start: type a position",
+    });
+    await startPos.fill("1.3");
+    await startPos.press("Enter");
     await expect(page.locator(".range-note")).toHaveText("m1.3–4");
     await page.getByRole("button", { name: "Done" }).click();
 
@@ -531,12 +535,14 @@ test.describe("Song Detail - Section Editor", () => {
 
     // Beat 5 of a 4/4 measure is the next measure's downbeat: the beat grid
     // is flat, so the backend would resolve it there while validation — which
-    // orders (measure, beat) pairs — still read it as measure 1. The field
+    // orders (measure, beat) pairs — still read it as measure 1. The picker
     // clamps to the last position that is genuinely inside the measure.
-    const startBeat = page.getByRole("textbox", { name: "Start beat" });
-    await startBeat.fill("5");
-    await startBeat.press("Enter");
-    await expect(startBeat).toHaveValue("4.5");
+    await page.getByRole("button", { name: "Start: type a position" }).click();
+    const startPos = page.getByRole("textbox", {
+      name: "Start: type a position",
+    });
+    await startPos.fill("1.5");
+    await startPos.press("Enter");
     await expect(page.locator(".range-note")).toHaveText("m1.4.5–4");
   });
 

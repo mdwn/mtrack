@@ -17,14 +17,14 @@
 // back as a 400 — so the timeline editor has to keep the array sorted no
 // matter which order the markers were authored in.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import { parse } from "yaml";
 import { SONGS } from "../mock-server/test-data";
 
 const SONG = "Test Song Beta";
-// aria-labels come from the i18n bundle; match them exactly so "Measure
-// (1-indexed)" does not also pick up "Beat within measure (optional)".
-const MEASURE = "Measure (1-indexed)";
+// The tempo dialog edits its position through the shared picker: click the
+// readout to turn it into a text field, then type "measure.beat".
+const MARKER_POS = "Marker: type a position";
 const ENC = encodeURIComponent(SONG);
 
 // One late tempo change, so anything added earlier has to sort ahead of it.
@@ -96,6 +96,19 @@ async function openSections(page: Page) {
   if (await fit.count()) await fit.click();
 }
 
+/** The position picker's readout, e.g. "m13 · b4". */
+async function readPosition(dialog: Locator): Promise<string> {
+  return ((await dialog.locator(".pp-readout").textContent()) ?? "").trim();
+}
+
+/** Types a "measure.beat" position into the picker's readout. */
+async function typePosition(dialog: Locator, value: string) {
+  await dialog.getByRole("button", { name: MARKER_POS, exact: true }).click();
+  const field = dialog.getByRole("textbox", { name: MARKER_POS, exact: true });
+  await field.fill(value);
+  await field.press("Enter");
+}
+
 /** Taps empty tempo-lane space at `fraction` of the song's length. */
 async function tapTempoLane(page: Page, fraction: number) {
   const lane = page.locator(".marker-lane").first().locator(".lane-content");
@@ -115,10 +128,8 @@ test.describe("Tempo marker ordering", () => {
     // change that is already in the map.
     await tapTempoLane(page, 0.25);
     const added = parseInt(
-      (await page
-        .locator(".marker-dialog")
-        .getByRole("textbox", { name: MEASURE, exact: true })
-        .inputValue()) || "0",
+      /m(\d+)/.exec(await readPosition(page.locator(".marker-dialog")))?.[1] ??
+        "0",
     );
     expect(added).toBeGreaterThan(1);
     expect(added).toBeLessThan(13);
@@ -140,18 +151,12 @@ test.describe("Tempo marker ordering", () => {
       dialog.getByRole("textbox", { name: "BPM", exact: true }),
     ).toHaveValue("120");
 
-    await dialog
-      .getByRole("textbox", { name: MEASURE, exact: true })
-      .fill("15");
-    await dialog
-      .getByRole("textbox", { name: MEASURE, exact: true })
-      .press("Enter");
+    await typePosition(dialog, "15");
+    await expect(dialog.locator(".pp-readout input")).toHaveCount(0);
 
     // Sorting moved it behind the measure-13 change; the dialog must follow
     // rather than silently start editing that one.
-    await expect(
-      dialog.getByRole("textbox", { name: MEASURE, exact: true }),
-    ).toHaveValue("15");
+    await expect(dialog.locator(".pp-readout")).toContainText("m15");
     await expect(
       dialog.getByRole("textbox", { name: "BPM", exact: true }),
     ).toHaveValue("120");
@@ -168,17 +173,19 @@ test.describe("Tempo marker ordering", () => {
     await openSections(page);
     await tapTempoLane(page, 0.25);
     const dialog = page.locator(".marker-dialog");
-    const measure = dialog.getByRole("textbox", { name: MEASURE, exact: true });
-    const before = await measure.inputValue();
+    const before = await readPosition(dialog);
 
-    await measure.fill("13");
-    await measure.press("Enter");
+    await typePosition(dialog, "13");
+    await expect(dialog.locator(".pp-readout input")).toHaveCount(0);
 
     // Refused: two changes on one beat are rejected by the backend the same
-    // way a reversed pair is.
-    await expect(measure).toHaveValue(before);
+    // way a reversed pair is, so the picker snaps back.
+    await expect(dialog.locator(".pp-readout")).toHaveText(before);
     await dialog.locator(".done-btn").click();
     const tempo = await saveAndReadTempo(page);
-    expect(tempo.changes).toHaveLength(2);
+    const measures = tempo.changes?.map((c) => c.measure) ?? [];
+    expect(measures).toHaveLength(2);
+    expect(new Set(measures).size).toBe(2);
+    expect(measures[1]).toBe(13);
   });
 });

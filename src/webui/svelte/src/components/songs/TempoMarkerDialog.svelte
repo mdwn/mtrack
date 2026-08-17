@@ -22,7 +22,12 @@
     SubdivisionValue,
   } from "../../lib/api/songs";
   import { fetchTempoGuess, type GuessedTempo } from "../../lib/api/songs";
-  import { positionTaken, sortTempoChanges } from "../../lib/util/tempo";
+  import {
+    beatsInMeasure,
+    positionTaken,
+    sigAtMeasure,
+    sortTempoChanges,
+  } from "../../lib/util/tempo";
   import { subdivisionIcon } from "../../lib/meter";
   import { sectionToConfigSnapped } from "../../lib/tempoConvert";
   import type { TempoSection } from "../../lib/lighting/types";
@@ -30,6 +35,9 @@
   import NumberStepper from "../NumberStepper.svelte";
   import AccentPads from "./AccentPads.svelte";
   import MarkerDialog from "./MarkerDialog.svelte";
+  import PositionPicker from "./PositionPicker.svelte";
+  import PlayheadCapture from "./PlayheadCapture.svelte";
+  import { positionAtTime } from "../../lib/util/beatGrid";
 
   /** A change marker position: measure/beat on the tempo map. */
   export interface MarkerPosition {
@@ -49,6 +57,10 @@
     songName?: string;
     hasMidi?: boolean;
     canGuess?: boolean;
+    /** The song's measure count, bounding the position picker. */
+    maxMeasure?: number;
+    /** The preview playhead in seconds, when this song is in the player. */
+    playheadTime?: number | null;
     /** The song's beat grid, for snapping time-anchored imports. */
     beatGrid?: { beats: number[]; measure_starts: number[] } | null;
     /** Light shows with their own tempo maps (import sources). */
@@ -68,6 +80,8 @@
     songName,
     hasMidi = false,
     canGuess = false,
+    maxMeasure = 9999,
+    playheadTime = null,
     beatGrid = null,
     lightShowTempos = [],
     ontempochange,
@@ -295,6 +309,27 @@
   }
 
   // --- Position / meter edits ---
+
+  /** The playhead's beat — a tempo change can only sit on one. */
+  let playheadBeat = $derived(
+    playheadTime === null ? null : positionAtTime(beatGrid, playheadTime),
+  );
+  let playheadTarget = $derived(
+    playheadBeat === null
+      ? null
+      : { measure: playheadBeat.measure, beat: Math.round(playheadBeat.beat) },
+  );
+  /** Refused for the same reason a manual move would be: something is there. */
+  let canCapture = $derived(
+    playheadTarget !== null &&
+      target !== "start" &&
+      !positionTaken(
+        tempo.changes ?? [],
+        playheadTarget.measure,
+        playheadTarget.beat,
+        tChangeIndex,
+      ),
+  );
 
   function moveTo(measure: number, beat: number) {
     if (target === "start") return;
@@ -663,30 +698,35 @@
   {:else}
     <div class="dialog-section">
       <span class="section-label">{$t("tempo.marker.position")}</span>
-      <div class="stepper-row">
-        <div class="labeled-stepper">
-          <span class="mini-label">{$t("pilot.measure")}</span>
-          <NumberStepper
-            value={target.measure}
-            min={1}
-            max={9999}
-            ariaLabel={$t("pilot.measure")}
-            onchange={(v) => moveTo(v, target.beat)}
-          />
-        </div>
-        {#if tChange}
-          <div class="labeled-stepper">
-            <span class="mini-label">{$t("pilot.beat")}</span>
-            <NumberStepper
-              value={target.beat}
-              min={1}
-              max={32}
-              ariaLabel={$t("pilot.beat")}
-              onchange={(v) => moveTo(target.measure, v)}
-            />
-          </div>
-        {/if}
-      </div>
+      <PositionPicker
+        label={$t("position.marker")}
+        value={{ kind: "beat", measure: target.measure, beat: target.beat }}
+        stores="beat"
+        {maxMeasure}
+        {beatGrid}
+        beatsIn={(m) => beatsInMeasure(tempo, m)}
+        sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
+        ghostTime={playheadTime}
+        onchange={(v) => v.kind === "beat" && moveTo(v.measure, v.beat)}
+      />
+      {#if playheadTime !== null && playheadTarget}
+        <PlayheadCapture
+          time={playheadTime}
+          position="m{playheadTarget.measure} · b{playheadTarget.beat}"
+        >
+          {#snippet actions()}
+            <button
+              type="button"
+              class="btn btn-sm"
+              disabled={!canCapture}
+              onclick={() =>
+                playheadTarget &&
+                moveTo(playheadTarget.measure, playheadTarget.beat)}
+              >{$t("position.usePlayhead")}</button
+            >
+          {/snippet}
+        </PlayheadCapture>
+      {/if}
     </div>
 
     <div class="dialog-section" class:section-off={!bpmOn}>
@@ -846,11 +886,6 @@
     color: var(--text-dim);
     text-transform: uppercase;
     letter-spacing: 0.5px;
-  }
-  .labeled-stepper {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
   }
   .stepper-row {
     display: flex;
