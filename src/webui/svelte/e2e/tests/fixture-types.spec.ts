@@ -26,6 +26,43 @@ test.describe("Fixture Types Management", () => {
     await page.locator(".sub-tab", { hasText: "Fixture Types" }).click();
   });
 
+  test("a fixture type file that will not parse is named, and the rest still list", async ({
+    page,
+  }) => {
+    // Same shape as the venue case: a directory is a set of independent files,
+    // so one that no longer parses must not empty the list — and must not go
+    // unmentioned either, or the only signal is a fixture type quietly missing.
+    await page.route("**/api/lighting/fixture-types*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          fixture_types: {
+            RGBW_Par: { name: "RGBW_Par", channels: {} },
+          },
+          errors: [
+            {
+              file: "broken.light",
+              error: "expected channel definition at line 4",
+            },
+          ],
+        }),
+      });
+    });
+    // Re-fetch through the panel's own Refresh rather than reloading the page,
+    // which would discard the navigation `beforeEach` performed.
+    await page.getByRole("button", { name: "Refresh" }).first().click();
+
+    // The good fixture type is still listed.
+    await expect(page.locator(".item-name")).toContainText("RGBW_Par");
+
+    // And the bad file is named, with the reason.
+    const errors = page.getByTestId("fixture-type-file-errors");
+    await expect(errors).toBeVisible();
+    await expect(errors).toContainText("broken.light");
+    await expect(errors).toContainText("expected channel definition");
+  });
+
   test("shows existing fixture type from mock data", async ({ page }) => {
     await expect(page.locator(".item-card")).toBeVisible();
     await expect(page.locator(".item-name")).toContainText("par");
