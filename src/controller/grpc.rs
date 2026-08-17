@@ -15,7 +15,7 @@ use std::{error::Error, io, net::SocketAddr, sync::Arc};
 
 use tokio::task::JoinHandle;
 use tonic::{transport::Server, Request, Response, Status};
-use tracing::{info, span, Level};
+use tracing::{info, span, warn, Level};
 
 use crate::{
     config,
@@ -140,6 +140,51 @@ impl PlayerServer {
         Ok(Response::new(PlayResponse {
             song: Some(song.to_proto()?),
         }))
+    }
+
+    /// Reloads the hardware so a config mutation takes effect, then builds the
+    /// response.
+    ///
+    /// The web UI's mutation endpoints have always reloaded; these had not, so
+    /// a client could change the audio device, receive a fresh checksum, and
+    /// find the running hardware unchanged until the process restarted. That
+    /// asymmetry is the same shape as the profile-file bug: the write is
+    /// acknowledged and quietly has no effect.
+    ///
+    /// Safe to do from inside a gRPC call because `start_controllers` leaves
+    /// controllers running when their config has not changed — otherwise this
+    /// would tear down the very transport carrying the response.
+    #[allow(clippy::result_large_err)]
+    async fn reload_and_respond(
+        &self,
+        snapshot: config::store::ConfigSnapshot,
+    ) -> Result<Response<UpdateConfigResponse>, Status> {
+        // Flattened immediately: `Box<dyn Error>` is not Send and must not live
+        // across the await that follows.
+        if let Err(e) = self
+            .player
+            .reload_hardware()
+            .await
+            .map_err(|e| e.to_string())
+        {
+            // Reported, not just logged. The most common cause is playback —
+            // `reload_hardware` refuses during it — and answering with a fresh
+            // checksum while nothing was applied is precisely the "acknowledged
+            // and quietly ineffective" behaviour this helper exists to end. The
+            // config *is* persisted at this point, so the message has to say so
+            // rather than implying the write was rolled back.
+            warn!("Hardware reload after config update failed: {}", e);
+            return Err(Status::failed_precondition(format!(
+                "the config was saved but the running hardware was not reloaded, so it \
+                 will not take effect until the next reload or restart: {e}"
+            )));
+        }
+        // Deliberately not `reload_controllers`: that forces a restart, which
+        // would tear down the transport carrying this response. The hardware
+        // reload above already restarts controllers when their config actually
+        // changed, and leaves them alone when it did not — so a caller is only
+        // disconnected by a change it made to the controllers themselves.
+        snapshot_to_update_response(snapshot)
     }
 
     /// Why the player declined to start, determined from its current state
@@ -466,7 +511,7 @@ impl PlayerService for PlayerServer {
             .update_audio(audio, &req.expected_checksum)
             .await
             .map_err(config_error_to_status)?;
-        snapshot_to_update_response(snapshot)
+        self.reload_and_respond(snapshot).await
     }
 
     async fn update_midi(
@@ -487,7 +532,7 @@ impl PlayerService for PlayerServer {
             .update_midi(midi, &req.expected_checksum)
             .await
             .map_err(config_error_to_status)?;
-        snapshot_to_update_response(snapshot)
+        self.reload_and_respond(snapshot).await
     }
 
     async fn update_dmx(
@@ -508,7 +553,7 @@ impl PlayerService for PlayerServer {
             .update_dmx(dmx, &req.expected_checksum)
             .await
             .map_err(config_error_to_status)?;
-        snapshot_to_update_response(snapshot)
+        self.reload_and_respond(snapshot).await
     }
 
     async fn update_controllers(
@@ -523,7 +568,7 @@ impl PlayerService for PlayerServer {
             .update_controllers(controllers, &req.expected_checksum)
             .await
             .map_err(config_error_to_status)?;
-        snapshot_to_update_response(snapshot)
+        self.reload_and_respond(snapshot).await
     }
 
     async fn add_profile(
@@ -538,7 +583,7 @@ impl PlayerService for PlayerServer {
             .add_profile(profile, &req.expected_checksum)
             .await
             .map_err(config_error_to_status)?;
-        snapshot_to_update_response(snapshot)
+        self.reload_and_respond(snapshot).await
     }
 
     async fn update_profile(
@@ -553,7 +598,7 @@ impl PlayerService for PlayerServer {
             .update_profile(req.index as usize, profile, &req.expected_checksum)
             .await
             .map_err(config_error_to_status)?;
-        snapshot_to_update_response(snapshot)
+        self.reload_and_respond(snapshot).await
     }
 
     async fn remove_profile(
@@ -566,7 +611,7 @@ impl PlayerService for PlayerServer {
             .remove_profile(req.index as usize, &req.expected_checksum)
             .await
             .map_err(config_error_to_status)?;
-        snapshot_to_update_response(snapshot)
+        self.reload_and_respond(snapshot).await
     }
 
     async fn loop_section(

@@ -151,6 +151,14 @@ async fn main() -> ExitCode {
         }
     }
 
+    // Recorded before anything prints a plan or runs: opt-in areas report
+    // themselves as not-running unless the filter asked for them, and both the
+    // listing and the run have to agree about that.
+    plan::set_selection(&options.filter);
+    if options.self_test {
+        plan::include_opt_in_areas();
+    }
+
     // Listing must not measure: discovery plays tones and sends MIDI, which is
     // not what "print the plan and exit" should do on a live rig.
     if options.list_only {

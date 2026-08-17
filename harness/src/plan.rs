@@ -95,6 +95,15 @@ pub struct Area {
     pub name: &'static str,
     pub description: &'static str,
     pub needs: &'static [Need],
+    /// Runs only when explicitly selected with `--only`.
+    ///
+    /// For areas whose cost is out of proportion to how often they change —
+    /// the trigger reload checks each start several players and sweep timing
+    /// delays, adding about a minute to a run that otherwise takes seconds per
+    /// check. They still print as not-run rather than vanishing, because a
+    /// suite that silently covers less than it appears to is the thing this
+    /// harness exists to avoid.
+    pub opt_in: bool,
 }
 
 /// Every area the suite knows about, in the order they are reported.
@@ -106,52 +115,82 @@ pub const AREAS: &[Area] = &[
         name: "startup",
         description: "config synthesis, device claim, song loading",
         needs: &[Need::AudioOut],
+        opt_in: false,
+    },
+    Area {
+        // Each check starts several players and sweeps timing delays, so this
+        // costs about a minute against seconds for everything else. It covers
+        // config-reload paths that change rarely, so it is opt-in.
+        name: "triggers",
+        description: "disabling triggers takes effect, and a cancelled reload strands nothing",
+        needs: &[Need::AudioOut],
+        opt_in: true,
     },
     Area {
         name: "devices",
         description: "device lists agree and are openable",
         needs: &[],
+        opt_in: false,
     },
     Area {
         name: "playback",
         description: "transport, clock, playlist navigation",
         needs: &[Need::AudioOut],
+        opt_in: false,
     },
     Area {
         name: "audio-routing",
         description: "tracks reach their mapped physical channels",
         needs: &[Need::AudioOut, Need::AudioLoopback],
+        opt_in: false,
     },
     Area {
         name: "midi-transmit",
         description: "notes and beat clock on the wire",
         needs: &[Need::MidiLoopback],
+        opt_in: false,
     },
     Area {
         name: "midi-config",
         description: "MIDI settings persist correctly",
         needs: &[Need::MidiOut],
+        opt_in: false,
     },
     Area {
         name: "subsystems",
         description: "subsystem presence, absence, and misconfiguration",
         needs: &[Need::AudioOut],
+        opt_in: false,
     },
     Area {
         name: "persistence",
         description: "config round-trips to disk and back",
         needs: &[],
+        opt_in: false,
     },
     Area {
         name: "lighting",
         description: "show creation, validation, cues, live effects",
         needs: &[Need::AudioOut],
+        opt_in: false,
     },
 ];
 
 /// The first unmet need of an area, if any.
 pub fn blocked_reason(area: &Area) -> Option<String> {
-    area.needs.iter().find_map(|need| need.unmet())
+    // Unmet hardware first: "you have no input device" is more useful than
+    // "you did not ask for it" when both are true.
+    if let Some(unmet) = area.needs.iter().find_map(|need| need.unmet()) {
+        return Some(unmet);
+    }
+    if area.opt_in && !was_selected(area) {
+        return Some(format!(
+            "opt-in: slow enough to skew a full run, so it runs only when asked for \
+             (--only {})",
+            area.name
+        ));
+    }
+    None
 }
 
 /// Why the named area cannot run, or `None` if it can.
@@ -160,6 +199,43 @@ pub fn blocked_reason_for(name: &str) -> Option<String> {
         .iter()
         .find(|a| a.name == name)
         .and_then(blocked_reason)
+}
+
+/// The `--only` filter, so opt-in areas can tell whether they were asked for.
+static SELECTION: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// Records the run's filter. Called once, before anything runs.
+pub fn set_selection(filter: &Option<String>) {
+    let _ = SELECTION.set(filter.clone());
+}
+
+/// Set when the run is a self-test, which must cover opt-in areas too.
+static INCLUDE_OPT_IN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Includes opt-in areas regardless of the filter.
+///
+/// `--self-test` exists to prove every check can fail. Letting opt-in areas sit
+/// it out would put the hole exactly where the slow, rarely-run checks are —
+/// the ones least likely to be noticed going vacuous.
+pub fn include_opt_in_areas() {
+    INCLUDE_OPT_IN.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether an opt-in area was named by the filter.
+fn was_selected(area: &Area) -> bool {
+    if INCLUDE_OPT_IN.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
+    match SELECTION.get().and_then(|f| f.as_deref()) {
+        // A filter naming the area, or one of its checks, counts as asking.
+        Some(needle) => {
+            area.name.contains(needle)
+                || crate::checks::all()
+                    .iter()
+                    .any(|c| c.area == area.name && c.name.contains(needle))
+        }
+        None => false,
+    }
 }
 
 /// Prints the plan before anything runs.

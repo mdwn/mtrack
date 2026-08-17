@@ -307,6 +307,15 @@ pub struct Player {
     /// Cancellation token for the current hardware init round. On reload,
     /// the old token is cancelled and a new one is created.
     init_cancel: Arc<parking_lot::Mutex<CancellationToken>>,
+    /// Serializes `reload_hardware` from start to spawn.
+    ///
+    /// The config is read before the cancellation token is replaced, and that
+    /// read awaits — so two concurrent reloads could interleave such that the
+    /// one holding the *older* config cancelled the newer round and spawned
+    /// last, leaving the rig built from a config the store had already
+    /// superseded. Serializing means the last reload to run is the one that
+    /// read the newest config.
+    reload_lock: Arc<tokio::sync::Mutex<()>>,
     /// Broadcast channel sender, stored so async init can wire DMX engine.
     broadcast_tx: Arc<parking_lot::Mutex<Option<tokio::sync::broadcast::Sender<String>>>>,
     /// Watch channel to signal hardware init completion.
@@ -324,6 +333,10 @@ pub struct Player {
     locked: Arc<AtomicBool>,
     /// Active controllers (gRPC, OSC, MIDI). Replaced on reload.
     controller: Arc<parking_lot::Mutex<Option<crate::controller::Controller>>>,
+    /// The controller config the running controllers were started from,
+    /// serialized. Lets a reload leave them alone when nothing about them
+    /// changed — see [`Player::start_controllers`].
+    controller_config: Arc<parking_lot::Mutex<Option<String>>>,
     /// Signal to break out of a song loop gracefully (not a hard cancel).
     /// Set by play()/next() when the current song is looping. The playback
     /// loop checks this flag and exits cleanly, allowing the cleanup task
@@ -450,12 +463,18 @@ impl Player {
         // Use send_modify() because send() is a no-op when no receivers exist yet.
         player.init_done_tx.send_modify(|v| *v = false);
 
-        // Spawn async hardware init.
+        // Spawn async hardware init, capturing the cancellation token now
+        // rather than letting the task read it when it is first polled — by
+        // then a reload may have replaced it, and the round would adopt its
+        // successor's token and never be cancelled.
         let init_player = player.clone();
         let config = config.clone();
         let bp = base_path.map(Path::to_path_buf);
+        let init_cancel = player.init_cancel.lock().clone();
         tokio::spawn(async move {
-            init_player.init_hardware_async(config, bp).await;
+            init_player
+                .init_hardware_async(config, bp, init_cancel)
+                .await;
         });
 
         // Spawn the low-rate transport-state poller. Holds a `Weak` so it
@@ -556,6 +575,7 @@ impl Player {
             config_store: Arc::new(parking_lot::Mutex::new(None)),
             default_metronome: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             init_cancel: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
+            reload_lock: Arc::new(tokio::sync::Mutex::new(())),
             broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
             init_done_tx: Arc::new(init_done_tx),
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
@@ -563,6 +583,7 @@ impl Player {
             gain_persist_task: Arc::new(parking_lot::Mutex::new(None)),
             locked: Arc::new(AtomicBool::new(true)),
             controller: Arc::new(parking_lot::Mutex::new(None)),
+            controller_config: Arc::new(parking_lot::Mutex::new(None)),
             loop_break: Arc::new(AtomicBool::new(false)),
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
