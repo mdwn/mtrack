@@ -233,21 +233,19 @@ pub async fn song_midi_notes_are_transmitted() -> CheckOutcome {
     let capture = MidiCapture::open(&listen)?;
     capture.clear();
 
-    // Anything arriving here is not ours: nothing has been asked to play yet.
-    // The recorded explanation for this check's ~50% failure is contention from
-    // another player, and that is testable rather than assumable — traffic on
-    // the wire before `play` is someone else's.
-    tokio::time::sleep(Duration::from_millis(2500)).await;
-    let before_play = capture.note_ons();
-    crate::outcome::record(format!(
-        "DIAGNOSTIC before play: {} note-on(s) {:?}",
-        before_play.len(),
-        before_play
-            .iter()
-            .filter_map(|n| n.note())
-            .collect::<Vec<_>>()
-    ));
-    capture.clear();
+    // Wait for the port to go quiet before capturing anything of ours.
+    //
+    // `clear` empties the harness buffer, not the driver queue, so a previous
+    // player's notes arrive after it and count as ours — which is what made
+    // this check fail about half the time (#378), and why it failed *faster*
+    // than it passed: the stale notes satisfied the expected count early.
+    let stale = capture.drain(Duration::from_millis(400)).await;
+    if !stale.is_empty() {
+        crate::outcome::record(format!(
+            "caveat: drained {} stale message(s) from the port before capturing",
+            stale.len()
+        ));
+    }
 
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
@@ -279,7 +277,7 @@ pub async fn song_midi_notes_are_transmitted() -> CheckOutcome {
             })
         })
         .collect();
-    crate::outcome::record(format!("DIAGNOSTIC timeline: {}", timeline.join(" ")));
+    crate::outcome::record(format!("note timeline: {}", timeline.join(" ")));
 
     check!(
         arrived,

@@ -152,6 +152,32 @@ impl MidiCapture {
             .clear();
     }
 
+    /// Waits for the port to go quiet, then clears.
+    ///
+    /// [`Self::clear`] empties this buffer, not the driver's queue — anything
+    /// already in flight arrives afterwards and is indistinguishable from
+    /// traffic the check itself caused. That is what made
+    /// `song_midi_notes_are_transmitted` fail about half the time (#378): a
+    /// previous player's notes landed after the clear and were counted as ours,
+    /// which is why the check failed *faster* than it passed, and why the
+    /// captured notes were the first four of the file twice.
+    ///
+    /// Returns what it discarded, so a caller can record whether there was
+    /// anything to drain rather than assuming.
+    pub async fn drain(&self, quiet_for: std::time::Duration) -> Vec<TimedMessage> {
+        let mut discarded = Vec::new();
+        loop {
+            let before = self.messages.lock().expect("poisoned").len();
+            tokio::time::sleep(quiet_for).await;
+            let mut guard = self.messages.lock().expect("poisoned");
+            if guard.len() == before {
+                discarded.extend(guard.drain(..));
+                return discarded;
+            }
+            discarded.extend(guard.drain(..));
+        }
+    }
+
     /// Timing clock pulses received.
     pub fn clock_pulses(&self) -> Vec<TimedMessage> {
         self.messages()
