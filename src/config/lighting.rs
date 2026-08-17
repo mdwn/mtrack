@@ -314,3 +314,40 @@ mod tests {
         assert!(lighting.directories().is_none());
     }
 }
+
+#[cfg(test)]
+mod migration_advice_tests {
+    /// Parses a `Lighting` block the way the loader does, via the `config`
+    /// crate rather than a serde_yaml dependency this crate does not carry.
+    fn parse(yaml: &str) -> Result<super::Lighting, config::ConfigError> {
+        config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()?
+            .try_deserialize()
+    }
+
+    /// The shape the venue-group migration message tells people to write must
+    /// actually load.
+    ///
+    /// `groups` is a map keyed by name, and the advice printed a sequence — so
+    /// following it produced a config that fails to deserialize, which is worse
+    /// than the error it was replacing.
+    #[test]
+    fn the_migration_advice_shape_deserializes() {
+        let yaml =
+            "groups:\n  wash:\n    name: wash\n    constraints:\n      - AllOf: [\"wash\"]\n";
+        let lighting: super::Lighting = parse(yaml).expect("the documented shape must load");
+        assert!(lighting.groups().contains_key("wash"));
+        assert_eq!(lighting.groups()["wash"].name(), "wash");
+    }
+
+    #[test]
+    fn a_sequence_of_groups_does_not_load() {
+        // Guards the advice against drifting back to a list.
+        let yaml = "groups:\n  - name: wash\n    constraints:\n      - AllOf: [\"wash\"]\n";
+        assert!(
+            parse(yaml).is_err(),
+            "a sequence must not silently load, or the advice cannot be checked"
+        );
+    }
+}

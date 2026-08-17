@@ -276,7 +276,8 @@ fn parse_venue_content(
                      the player config:\n\
                      \n\
                      \x20   groups:\n\
-                     \x20     - name: {name}\n\
+                     \x20     {name}:\n\
+                     \x20       name: {name}\n\
                      \x20       constraints:\n\
                      \x20         - AllOf: [\"{name}\"]\n\
                      \n\
