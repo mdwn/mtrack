@@ -37,6 +37,14 @@ ExecReload=/bin/kill -HUP $MAINPID
 # User and group. Create with:
 #   sudo useradd --system --no-create-home --shell /usr/sbin/nologin mtrack
 #   sudo usermod -aG audio mtrack
+#
+# That user also needs read/write access to your library and config directory —
+# the $MTRACK_PATH set in /etc/default/mtrack. mtrack writes configuration,
+# songs, playlists and lighting files there, and a freshly created system user
+# owns none of it. ProtectSystem=full below leaves the directory writable as far
+# as the sandbox is concerned, which is not the same as the user being allowed
+# to write it. Grant it with, e.g.:
+{{ CHOWN_HINT }}# (or add the mtrack user to a group that already owns the directory).
 User=mtrack
 Group=mtrack
 SupplementaryGroups=audio
@@ -51,6 +59,7 @@ CapabilityBoundingSet=CAP_SYS_NICE
 # while leaving other paths writable for the mtrack user.
 ProtectSystem=full
 PrivateTmp=true
+{{ READ_WRITE_PATHS }}
 
 # Kernel restrictions.
 ProtectKernelTunables=true
@@ -193,7 +202,12 @@ enum Commands {
         host_port: Option<String>,
     },
     /// Prints a systemd service definition to stdout.
-    Systemd {},
+    Systemd {
+        /// Optional path to your library/config directory. When given, the
+        /// generated unit names it in the permission hint and declares it as a
+        /// writable path.
+        path: Option<String>,
+    },
     /// Verifies the syntax of a light show file.
     VerifyLightShow {
         /// The path to the light show file to verify.
@@ -266,8 +280,36 @@ fn print_device_list<T: Display>(devices: Vec<T>, empty_msg: &str) {
 }
 
 /// Renders the systemd service template with the given executable path.
-fn render_systemd_service(executable_path: &str) -> String {
-    SYSTEMD_SERVICE.replace("{{ CURRENT_EXECUTABLE }}", executable_path)
+/// Renders the systemd unit, naming `library_path` where it is known.
+///
+/// Without a path the permission hint has to stay generic, because the unit
+/// takes the library from `$MTRACK_PATH` in `/etc/default/mtrack` and this
+/// command never sees that file. Given one, the hint becomes a command the
+/// operator can paste, and the unit declares `ReadWritePaths` — which is
+/// documentation under the current `ProtectSystem=full` and a requirement if
+/// the sandbox is ever tightened to `strict`.
+fn render_systemd_service(executable_path: &str, library_path: Option<&str>) -> String {
+    // Quoted, like `ExecStart`'s `"$MTRACK_PATH"`: a library under a path with
+    // a space in it would otherwise read as two arguments to `chown` and as two
+    // separate paths to `ReadWritePaths`.
+    let chown_hint = match library_path {
+        Some(path) => format!("#   sudo chown -R mtrack:mtrack \"{path}\"\n"),
+        None => "#   sudo chown -R mtrack:mtrack /path/to/library\n".to_string(),
+    };
+    let read_write_paths = match library_path {
+        // Blank line included so the rendered unit does not gain a stray one
+        // when there is nothing to declare.
+        None => String::new(),
+        Some(path) => format!(
+            "\n# The library must stay writable however the sandbox is tightened.\n\
+             ReadWritePaths=\"{path}\"\n"
+        ),
+    };
+    SYSTEMD_SERVICE
+        .replace("{{ CURRENT_EXECUTABLE }}", executable_path)
+        .replace("{{ CHOWN_HINT }}", &chown_hint)
+        .replace("{{ READ_WRITE_PATHS }}\n", &read_write_paths)
+        .replace("{{ READ_WRITE_PATHS }}", &read_write_paths)
 }
 
 pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
@@ -311,11 +353,11 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
         } => remote::switch_to_playlist(host_port, &playlist_name).await?,
         Commands::Status { host_port } => remote::status(host_port).await?,
         Commands::ActiveEffects { host_port } => remote::active_effects(host_port).await?,
-        Commands::Systemd {} => {
+        Commands::Systemd { path } => {
             let current_executable_path = env::current_exe()?;
             println!(
                 "{}",
-                render_systemd_service(&current_executable_path.to_string_lossy())
+                render_systemd_service(&current_executable_path.to_string_lossy(), path.as_deref())
             )
         }
         Commands::CalibrateTriggers {
@@ -404,14 +446,14 @@ mod tests {
 
         #[test]
         fn substitutes_executable_path() {
-            let result = render_systemd_service("/usr/local/bin/mtrack");
+            let result = render_systemd_service("/usr/local/bin/mtrack", None);
             assert!(result.contains("ExecStart=/usr/local/bin/mtrack start"));
             assert!(!result.contains("{{ CURRENT_EXECUTABLE }}"));
         }
 
         #[test]
         fn preserves_service_structure() {
-            let result = render_systemd_service("/usr/bin/mtrack");
+            let result = render_systemd_service("/usr/bin/mtrack", None);
             assert!(result.contains("[Unit]"));
             assert!(result.contains("[Service]"));
             assert!(result.contains("[Install]"));
@@ -420,15 +462,76 @@ mod tests {
 
         #[test]
         fn preserves_hardening_directives() {
-            let result = render_systemd_service("/usr/bin/mtrack");
+            let result = render_systemd_service("/usr/bin/mtrack", None);
             assert!(result.contains("ProtectSystem=full"));
             assert!(result.contains("NoNewPrivileges=true"));
             assert!(result.contains("MemoryDenyWriteExecute=true"));
         }
 
+        /// The unit has to say that the mtrack user needs access to the
+        /// library, whether or not the path is known.
+        ///
+        /// #351: the generated unit creates a system user and points at
+        /// `$MTRACK_PATH`, but a freshly created user owns none of that
+        /// directory. `ProtectSystem=full` leaves it writable as far as the
+        /// sandbox is concerned, which is a different thing from the user being
+        /// permitted to write it, and nothing pointed at permissions as the
+        /// cause when the service then failed.
+        #[test]
+        fn documents_the_library_permissions_without_a_path() {
+            let result = render_systemd_service("/usr/local/bin/mtrack", None);
+            assert!(result.contains("read/write access"));
+            assert!(
+                result.contains("sudo chown -R mtrack:mtrack /path/to/library"),
+                "the hint has to be pasteable even when the path is unknown"
+            );
+            assert!(
+                !result.contains("ReadWritePaths"),
+                "there is no path to declare, and an empty directive would be invalid"
+            );
+        }
+
+        #[test]
+        fn names_the_library_when_it_is_given() {
+            let result = render_systemd_service("/usr/local/bin/mtrack", Some("/srv/songs"));
+            assert!(result.contains("sudo chown -R mtrack:mtrack \"/srv/songs\""));
+            assert!(
+                result.contains("ReadWritePaths=\"/srv/songs\""),
+                "declaring it keeps the unit correct if the sandbox is ever tightened to strict"
+            );
+            assert!(
+                !result.contains("/path/to/library"),
+                "the placeholder must not survive alongside the real path"
+            );
+        }
+
+        /// A library path containing a space must not read as two paths.
+        ///
+        /// `ExecStart` already quotes `"$MTRACK_PATH"` for this reason; the
+        /// hint and the directive have the same problem — `chown` would take
+        /// two arguments and systemd two paths.
+        #[test]
+        fn quotes_a_library_path_with_spaces() {
+            let result = render_systemd_service("/usr/local/bin/mtrack", Some("/opt/my songs"));
+            assert!(result.contains("sudo chown -R mtrack:mtrack \"/opt/my songs\""));
+            assert!(result.contains("ReadWritePaths=\"/opt/my songs\""));
+        }
+
+        /// The template must not leak a placeholder into the rendered unit.
+        #[test]
+        fn leaves_no_placeholders_behind() {
+            for path in [None, Some("/srv/songs")] {
+                let result = render_systemd_service("/usr/local/bin/mtrack", path);
+                assert!(
+                    !result.contains("{{"),
+                    "an unrendered placeholder survived for {path:?}: {result}"
+                );
+            }
+        }
+
         #[test]
         fn handles_path_with_spaces() {
-            let result = render_systemd_service("/opt/my apps/mtrack");
+            let result = render_systemd_service("/opt/my apps/mtrack", None);
             assert!(result.contains("ExecStart=/opt/my apps/mtrack start"));
         }
 
@@ -436,7 +539,7 @@ mod tests {
         fn does_not_contain_protect_home() {
             // ProtectHome was removed because the project directory is often
             // under /home and mtrack needs write access to it.
-            let result = render_systemd_service("/usr/bin/mtrack");
+            let result = render_systemd_service("/usr/bin/mtrack", None);
             assert!(
                 !result.contains("ProtectHome"),
                 "ProtectHome should not be in the systemd template — the project \
@@ -446,7 +549,7 @@ mod tests {
 
         #[test]
         fn does_not_contain_protect_system_strict() {
-            let result = render_systemd_service("/usr/bin/mtrack");
+            let result = render_systemd_service("/usr/bin/mtrack", None);
             assert!(
                 !result.contains("ProtectSystem=strict"),
                 "ProtectSystem=strict prevents mtrack from writing to the project \
@@ -459,7 +562,7 @@ mod tests {
             // ProtectSystem=full makes /usr, /boot, /efi read-only but leaves
             // other paths writable so mtrack can write config, songs, playlists,
             // and lighting files to the project directory.
-            let result = render_systemd_service("/usr/bin/mtrack");
+            let result = render_systemd_service("/usr/bin/mtrack", None);
             assert!(
                 result.contains("ProtectSystem=full"),
                 "ProtectSystem must be 'full' (not 'strict') so the project \
@@ -474,7 +577,7 @@ mod tests {
         #[test]
         fn uses_environment_file() {
             // MTRACK_PATH is defined in /etc/default/mtrack
-            let result = render_systemd_service("/usr/bin/mtrack");
+            let result = render_systemd_service("/usr/bin/mtrack", None);
             assert!(result.contains("EnvironmentFile=-/etc/default/mtrack"));
             assert!(result.contains("\"$MTRACK_PATH\""));
         }
@@ -611,7 +714,7 @@ mod tests {
         #[test]
         fn parse_systemd_command() {
             let cli = Cli::try_parse_from(["mtrack", "systemd"]).unwrap();
-            assert!(matches!(cli.command, Commands::Systemd {}));
+            assert!(matches!(cli.command, Commands::Systemd { path: None }));
         }
 
         #[test]

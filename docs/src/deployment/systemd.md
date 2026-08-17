@@ -14,11 +14,29 @@ requires a specific group (e.g. `plugdev` or `dialout`), add that as well:
 $ sudo usermod -aG plugdev mtrack
 ```
 
-Next, generate and install the systemd service file:
+That user also needs read and write access to your project directory. `mtrack`
+writes configuration, songs, playlists and lighting files there, and the user you
+just created owns none of it:
 
 ```
-$ sudo mtrack systemd > /etc/systemd/system/mtrack.service
+$ sudo chown -R mtrack:mtrack /mnt/storage
 ```
+
+Add it to a group that already owns the directory instead, if you would rather
+not change the ownership. Skipping this step is the most common reason the
+service starts and then fails with permission errors that do not obviously point
+at permissions.
+
+Next, generate and install the systemd service file. Pass your project directory
+and the generated unit will name it in that reminder and declare it as a
+writable path:
+
+```
+$ sudo mtrack systemd /mnt/storage > /etc/systemd/system/mtrack.service
+```
+
+The path is optional — without it the unit is identical apart from a generic
+reminder in place of the specific one.
 
 The service expects that `mtrack` is available at the location `/usr/local/bin/mtrack`. It also
 expects you to define your project directory in `/etc/default/mtrack`. This file
