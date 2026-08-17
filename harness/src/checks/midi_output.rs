@@ -233,6 +233,22 @@ pub async fn song_midi_notes_are_transmitted() -> CheckOutcome {
     let capture = MidiCapture::open(&listen)?;
     capture.clear();
 
+    // Anything arriving here is not ours: nothing has been asked to play yet.
+    // The recorded explanation for this check's ~50% failure is contention from
+    // another player, and that is testable rather than assumable — traffic on
+    // the wire before `play` is someone else's.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let before_play = capture.note_ons();
+    crate::outcome::record(format!(
+        "DIAGNOSTIC before play: {} note-on(s) {:?}",
+        before_play.len(),
+        before_play
+            .iter()
+            .filter_map(|n| n.note())
+            .collect::<Vec<_>>()
+    ));
+    capture.clear();
+
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
 
