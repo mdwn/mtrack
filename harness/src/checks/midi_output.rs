@@ -246,6 +246,25 @@ pub async fn song_midi_notes_are_transmitted() -> CheckOutcome {
     client.grpc().stop(StopRequest {}).await?;
 
     let notes = capture.note_ons();
+    // The full timeline, with inter-note spacing. Two sources sending the same
+    // file put notes at roughly half the expected spacing; one source playing
+    // twice leaves a gap and then restarts. The failure signature — the first
+    // four notes twice, in half the time a clean pass takes — has to be one or
+    // the other, and these numbers say which.
+    let timeline: Vec<String> = notes
+        .iter()
+        .scan(None::<u64>, |prev, n| {
+            let delta = prev.map(|p| n.micros.saturating_sub(p));
+            *prev = Some(n.micros);
+            Some(match (n.note(), delta) {
+                (Some(note), Some(d)) => format!("{note}(+{}ms)", d / 1000),
+                (Some(note), None) => format!("{note}(first)"),
+                _ => "?".to_string(),
+            })
+        })
+        .collect();
+    crate::outcome::record(format!("DIAGNOSTIC timeline: {}", timeline.join(" ")));
+
     check!(
         arrived,
         "expected {expected_notes} note-on messages, captured {}: {:?}\n--- log ---\n{}",
