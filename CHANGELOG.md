@@ -495,11 +495,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `svelte-i18n` override resolves to, and nothing in the tree imports it. Everything else was a
   lockfile bump.
 
-  Two RustSec advisories remain open and cannot be closed from here: `lru` (RUSTSEC-2026-0253) is
-  patched in 0.18.2 but reached through `ratatui-core`, and `scc` (RUSTSEC-2026-0205) is patched in
-  3.8.4 but reached through the `serial_test` dev-dependency. Both are `unsound` informational
-  advisories rather than vulnerabilities, and both need the intermediate crate to widen its
-  requirement first.
+  The two remaining RustSec advisories are closed by moving the crates that pulled them in, both
+  within the requirements already declared. `ratatui` 0.30.0 to 0.30.2 takes `ratatui-core` to
+  0.1.2, which asks for `lru` 0.18 and so clears RUSTSEC-2026-0253 (use-after-free from a panic in
+  `LruCache::pop()`). `serial_test` 3.4.0 to 3.5.0 drops its `scc` dependency outright, which
+  removes `scc` and `sdd` from the tree and clears RUSTSEC-2026-0205 (double-free from a panicking
+  compare function in `Array::insert`). `cargo audit` now reports nothing at all.
+
+  Neither needed a manifest change: `ratatui = "0.30"` and `serial_test = "3.4.0"` already admit
+  the fixed releases. Bumping `lru` or `scc` on their own would not have worked, since Cargo
+  resolves a transitive crate against the requirement its parent declares — the parent has to move
+  first.
 
 ## [0.15.0] - 2026-07-20
 
