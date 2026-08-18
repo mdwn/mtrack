@@ -25,11 +25,7 @@ use super::super::safe_path::VerifiedRoot;
 /// typo into an empty directory, and writes outside the paths the generated
 /// systemd unit fences the service into.
 pub fn project_dir(state: &crate::webui::server::WebUiState) -> PathBuf {
-    state
-        .config_path
-        .parent()
-        .map(|parent| parent.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
+    crate::util::project_dir_of(&state.config_path)
 }
 
 /// Validates a resource name for use in file paths.

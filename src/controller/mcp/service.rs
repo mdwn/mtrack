@@ -3184,10 +3184,7 @@ impl McpServer {
         let songs = cfg.songs(&path);
         // Created only when it is inside the project. A `songs:` pointing
         // elsewhere is the operator's to set up -- see `create_dir_within`.
-        let project = path
-            .parent()
-            .map(|parent| parent.to_path_buf())
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let project = crate::util::project_dir_of(&path);
         crate::util::create_dir_within_async(songs.clone(), project)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
@@ -3195,8 +3192,9 @@ impl McpServer {
     }
 
     /// Resolves the configured lighting subdirectory (venues or fixture types)
-    /// to an absolute path. The directory is created if it doesn't yet exist,
-    /// so write tools work against fresh configs.
+    /// to an absolute path. The directory is created if it doesn't yet exist
+    /// *and* lies inside the project directory, so write tools work against
+    /// fresh configs without making directories wherever a config points.
     pub(crate) async fn resolve_lighting_dir(
         &self,
         kind: LightingDirKind,
@@ -3236,10 +3234,7 @@ impl McpServer {
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
             parent.join(rel_path)
         };
-        let project = config_path
-            .parent()
-            .map(|parent| parent.to_path_buf())
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let project = crate::util::project_dir_of(&config_path);
         crate::util::create_dir_within_async(dir.clone(), project)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;

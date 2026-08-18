@@ -190,16 +190,19 @@ pub async fn start(
     // asks the service to write outside the paths the generated systemd unit
     // fences it into.
     let songs_path = player_config.songs(player_path);
-    let project_dir = player_path.parent().unwrap_or_else(|| Path::new("."));
-    if !songs_path.is_dir() {
-        info!("Creating songs directory at {:?}", songs_path);
-    }
-    crate::util::create_dir_within(&songs_path, project_dir).map_err(|e| match e {
+    let project_dir = crate::util::project_dir_of(player_path);
+    let creating = !songs_path.is_dir();
+    crate::util::create_dir_within(&songs_path, &project_dir).map_err(|e| match e {
         crate::util::CreateWithinError::Io(io) => {
             annotate_write(crate::util::WriteTarget::Directory(&songs_path), io)
         }
         outside => Box::<dyn Error>::from(outside.to_string()),
     })?;
+    // Logged after the fact: announcing the creation first meant a refusal
+    // arrived immediately behind "Creating songs directory at ...".
+    if creating {
+        info!("Created songs directory at {:?}", songs_path);
+    }
 
     let default_metronome = player_config.metronome().is_some_and(|m| m.enabled);
     let songs = songs::get_all_songs_with_defaults(&songs_path, default_metronome)?;

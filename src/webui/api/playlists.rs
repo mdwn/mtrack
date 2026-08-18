@@ -124,8 +124,11 @@ pub(super) async fn put_playlist_by_name(
     let dir = playlists_dir.clone();
     let fp = file_path.clone();
     let yaml_owned = yaml;
+    // Created only when it is inside the project -- a `playlists_dir:` pointing
+    // elsewhere is the operator's to set up, like `songs` and the rest.
+    let project = super::helpers::project_dir(&state);
     super::helpers::spawn_blocking_io("write playlist", move || {
-        crate::util::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        crate::util::create_dir_within(&dir, &project).map_err(|e| e.to_string())?;
         config_io::staged_write(&fp, &yaml_owned)
     })
     .await?;

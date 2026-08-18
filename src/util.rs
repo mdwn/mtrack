@@ -530,29 +530,66 @@ fn is_within(path: &Path, root: &Path) -> bool {
     resolve_as_far_as_possible(path).starts_with(root)
 }
 
-/// `path` with its existing prefix canonicalized and the remainder appended.
+/// `path` with its existing prefix canonicalized and the remainder applied.
 fn resolve_as_far_as_possible(path: &Path) -> PathBuf {
-    let mut unresolved = Vec::new();
-    let mut cursor = path.to_path_buf();
-    loop {
-        if let Ok(canonical) = cursor.canonicalize() {
-            let mut resolved = canonical;
-            resolved.extend(unresolved.iter().rev());
-            return resolved;
-        }
-        let Some(name) = cursor.file_name().map(|name| name.to_os_string()) else {
-            // Ran out of path without finding anything that exists.
-            return path.to_path_buf();
-        };
-        unresolved.push(name);
-        match parent_of(&cursor) {
-            Some(parent) => cursor = parent.to_path_buf(),
-            None => return path.to_path_buf(),
+    // A relative path is relative to the process's directory, and comparing one
+    // against an absolute root answers "outside" for everything. `mtrack start
+    // mtrack.yaml` produces exactly that: a project of "." and a songs path of
+    // "songs", both of which mean the current directory.
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let path = path.as_path();
+
+    // The longest ancestor that exists, canonicalized. Any symlink must be in
+    // there, since a component that does not exist cannot be one.
+    let Some((prefix, canonical)) = path
+        .ancestors()
+        .find_map(|ancestor| ancestor.canonicalize().ok().map(|c| (ancestor, c)))
+    else {
+        return path.to_path_buf();
+    };
+
+    let Ok(rest) = path.strip_prefix(prefix) else {
+        return canonical;
+    };
+
+    // The remainder applied a component at a time. `..` has to be resolved
+    // here rather than left in place: `starts_with` compares components, so a
+    // path that spells its way back out -- `project/missing/../../escaped` --
+    // reads as inside the project while landing well outside it.
+    let mut resolved = canonical;
+    for component in rest.components() {
+        match component {
+            std::path::Component::Normal(part) => resolved.push(part),
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            // A leading `/` or `.` cannot move us out of the prefix.
+            _ => {}
         }
     }
+    resolved
 }
 
-/// [`create_dir_all`] for callers on a Tokio runtime, which keeps the
+/// The project directory implied by a config file's path: the directory holding
+/// it, and the only place mtrack creates directories on a config's behalf.
+///
+/// [`Path::parent`] answers `Some("")` rather than `None` for a bare filename,
+/// so a fallback written against `None` never fires and leaves an empty path
+/// behind — which canonicalizes to nothing and refuses every creation. That is
+/// reachable: `mtrack start mtrack.yaml` passes exactly such a path.
+pub fn project_dir_of(config_path: &Path) -> PathBuf {
+    parent_of(config_path)
+        .map(|parent| parent.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// [`create_dir_all`] for callers on a Tokio runtime, which keeps the/// [`create_dir_all`] for callers on a Tokio runtime, which keeps the
 /// filesystem work off the async worker.
 pub async fn create_dir_all_async(path: &Path) -> std::io::Result<()> {
     let path = path.to_path_buf();
@@ -1160,6 +1197,51 @@ mod write_failure_hint_tests {
 }
 
 #[cfg(test)]
+mod project_dir_of_tests {
+    use super::project_dir_of;
+    use std::path::{Path, PathBuf};
+
+    /// The case that broke `mtrack start mtrack.yaml`.
+    ///
+    /// `Path::parent` answers `Some("")` for a bare filename, so a fallback
+    /// written against `None` never fired and left an empty path. That
+    /// canonicalizes to nothing, which made every directory look outside the
+    /// project and refused creation with an error naming no project at all.
+    #[test]
+    fn a_bare_config_filename_means_the_current_directory() {
+        assert_eq!(project_dir_of(Path::new("mtrack.yaml")), PathBuf::from("."));
+    }
+
+    #[test]
+    fn a_config_in_a_directory_means_that_directory() {
+        assert_eq!(
+            project_dir_of(Path::new("/srv/mtrack/mtrack.yaml")),
+            PathBuf::from("/srv/mtrack")
+        );
+    }
+
+    #[test]
+    fn a_relative_config_keeps_its_directory() {
+        assert_eq!(
+            project_dir_of(Path::new("gig/mtrack.yaml")),
+            PathBuf::from("gig")
+        );
+    }
+
+    /// The project directory it yields has to be one `create_dir_within`
+    /// accepts, or the fix moves the failure rather than removing it.
+    #[test]
+    fn the_directory_it_yields_accepts_a_child() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let config = project.path().join("mtrack.yaml");
+
+        let resolved = project_dir_of(&config);
+        super::create_dir_within(&resolved.join("songs"), &resolved).expect("created");
+        assert!(project.path().join("songs").is_dir());
+    }
+}
+
+#[cfg(test)]
 mod create_dir_within_tests {
     use super::{create_dir_within, CreateWithinError};
     use std::path::Path;
@@ -1220,13 +1302,20 @@ mod create_dir_within_tests {
     }
 
     /// A path that merely spells its way back out is still out.
+    ///
+    /// The project is nested inside an outer temp directory so the escape has
+    /// somewhere contained to land: a test that escapes into /tmp litters a
+    /// shared path, and the leftover then fails the next run for the wrong
+    /// reason.
     #[test]
     fn a_traversal_out_of_the_project_is_refused() {
-        let project = tempfile::tempdir().expect("tempdir");
-        let escaped = project.path().join("../escaped-songs");
+        let outer = tempfile::tempdir().expect("tempdir");
+        let project = outer.path().join("project");
+        std::fs::create_dir(&project).expect("project dir");
+        let escaped = project.join("../escaped-songs");
 
-        assert!(is_outside(create_dir_within(&escaped, project.path())));
-        assert!(!escaped.exists());
+        assert!(is_outside(create_dir_within(&escaped, &project)));
+        assert!(!outer.path().join("escaped-songs").exists());
     }
 
     /// The restriction is on *creating*, not on using. An operator who set up
@@ -1270,6 +1359,50 @@ mod create_dir_within_tests {
 
         create_dir_within(&link.join("songs"), project.path()).expect("created");
         assert!(real.join("songs").is_dir());
+    }
+
+    /// `..` after a component that does not exist used to escape entirely.
+    ///
+    /// Resolution gave up at a path ending in `..` (whose `file_name()` is
+    /// `None`), returned the path unresolved, and `starts_with` then compared
+    /// it lexically -- where `/proj/new/../../escaped` is "inside" `/proj`.
+    /// The directory really was created out there.
+    #[test]
+    fn a_traversal_through_a_missing_component_is_refused() {
+        let outer = tempfile::tempdir().expect("tempdir");
+        let project = outer.path().join("project");
+        std::fs::create_dir(&project).expect("project dir");
+        let outside = project.join("missing/../../escaped-songs");
+
+        assert!(
+            is_outside(create_dir_within(&outside, &project)),
+            "escaped the project"
+        );
+        // Where the old code actually made it: the project's sibling.
+        let escaped = outer.path().join("escaped-songs");
+        assert!(!escaped.exists(), "created {} outside", escaped.display());
+    }
+
+    /// A relative path means "relative to the process's directory", and
+    /// comparing one against an absolute root answers "outside" for everything.
+    ///
+    /// `mtrack start mtrack.yaml` produces exactly that pair — a project of "."
+    /// and a songs path of "songs" — and refused to create it, which unit tests
+    /// of the pieces missed because only running the binary puts the two
+    /// together. Reads the current directory rather than changing it, which
+    /// would race the rest of the suite.
+    #[test]
+    fn a_relative_path_is_measured_against_the_current_directory() {
+        assert!(
+            super::is_within(Path::new("a-relative-name"), Path::new(".")),
+            "a relative name must be inside the current directory"
+        );
+
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        assert!(
+            !super::is_within(Path::new("a-relative-name"), elsewhere.path()),
+            "and outside an unrelated project"
+        );
     }
 
     /// Without a project directory there is nothing to be inside of, and
