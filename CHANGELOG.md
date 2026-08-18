@@ -476,6 +476,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   life of the process — a failure that, by construction, prints nothing at all. Enumeration paths
   now serialise on a single lock.
 
+### Security
+
+- **Dependency updates for the open advisories against `Cargo.lock` and the web UI's
+  `package-lock.json`**: `quinn-proto` 0.11.14 to 0.11.17 (RUSTSEC-2026-0185, remote memory
+  exhaustion from unbounded out-of-order stream reassembly), `vite` to 8.2.1 (a `server.fs.deny`
+  bypass via Windows alternate paths, and NTLMv2 hash disclosure through `launch-editor`'s UNC
+  handling), `postcss` to 8.5.26 (two arbitrary `.map` file disclosures through an
+  attacker-controlled `sourceMappingURL`), `brace-expansion` (three denial-of-service paths), and
+  `esbuild` 0.27.4 to 0.28.2 (arbitrary file read from the development server on Windows).
+
+  The same pass picked up advisories that were not yet alerting: `h2` 0.4.14 to 0.4.16
+  (RUSTSEC-2026-0258, unbounded empty DATA frames — this one reaches the gRPC and web UI server
+  mtrack actually runs), `crossbeam-epoch` 0.9.20, `anyhow` 1.0.104, the yanked `spin` 0.9.8, and
+  `nanoid` and `body-parser` on the JavaScript side.
+
+  Only `esbuild` needed a manifest change; it is a direct dependency solely to pin the version the
+  `svelte-i18n` override resolves to, and nothing in the tree imports it. Everything else was a
+  lockfile bump.
+
+  The two remaining RustSec advisories are closed by moving the crates that pulled them in, both
+  within the requirements already declared. `ratatui` 0.30.0 to 0.30.2 takes `ratatui-core` to
+  0.1.2, which asks for `lru` 0.18 and so clears RUSTSEC-2026-0253 (use-after-free from a panic in
+  `LruCache::pop()`). `serial_test` 3.4.0 to 3.5.0 drops its `scc` dependency outright, which
+  removes `scc` and `sdd` from the tree and clears RUSTSEC-2026-0205 (double-free from a panicking
+  compare function in `Array::insert`). `cargo audit` now reports nothing at all.
+
+  Neither needed a manifest change: `ratatui = "0.30"` and `serial_test = "3.4.0"` already admit
+  the fixed releases. Bumping `lru` or `scc` on their own would not have worked, since Cargo
+  resolves a transitive crate against the requirement its parent declares — the parent has to move
+  first.
+
 ## [0.15.0] - 2026-07-20
 
 ### Added
