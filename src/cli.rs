@@ -301,7 +301,10 @@ fn render_systemd_service(executable_path: &str, library_path: Option<&str>) -> 
         // when there is nothing to declare.
         None => String::new(),
         Some(path) => format!(
-            "\n# The library must stay writable however the sandbox is tightened.\n\
+            "\n# Declares the library writable. Not what permits the write today —\n\
+             # ProtectSystem=full already leaves it writable and the ownership\n\
+             # decides the rest — but it states the requirement, and becomes\n\
+             # necessary if the sandbox is ever tightened to strict.\n\
              # The leading `-` keeps a missing directory from failing the unit: \
              systemd\n# refuses to start a service whose ReadWritePaths does not \
              exist, and this\n# unit is generated before the library necessarily \

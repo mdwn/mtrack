@@ -35,8 +35,17 @@ writable path:
 $ sudo mtrack systemd /mnt/storage > /etc/systemd/system/mtrack.service
 ```
 
-The path is optional — without it the unit is identical apart from a generic
-reminder in place of the specific one.
+The path is optional. Without it the unit is the same except that the reminder
+stays generic and no `ReadWritePaths` is declared.
+
+That declaration is not what lets `mtrack` write. `ProtectSystem=full` already
+leaves everything outside `/usr`, `/boot` and `/efi` writable, so the service
+writes your project directory either way — what decides it is the ownership you
+set above. `ReadWritePaths` states the requirement in the unit, and would become
+necessary if the sandbox were ever tightened to `ProtectSystem=strict`.
+
+So if the service is failing on permissions, the `chown` is the fix, not
+regenerating the unit with a path.
 
 The service expects that `mtrack` is available at the location `/usr/local/bin/mtrack`. It also
 expects you to define your project directory in `/etc/default/mtrack`. This file
