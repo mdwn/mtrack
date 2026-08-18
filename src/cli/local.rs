@@ -201,15 +201,18 @@ pub async fn start(
     // configured path back would fail with a bare "No such file or directory".
     let songs_path =
         crate::util::create_dir_within(&configured_songs, &project_dir).map_err(|e| match e {
-            crate::util::CreateWithinError::Io(io) => {
-                annotate_write(crate::util::WriteTarget::Directory(&configured_songs), io)
+            // The resolved path, which is what create_dir_all ran on. Naming
+            // the configured spelling would advise adding a path to
+            // ReadWritePaths= that was never touched.
+            crate::util::CreateWithinError::Io { path, source } => {
+                annotate_write(crate::util::WriteTarget::Directory(&path), source)
             }
             refused => Box::<dyn Error>::from(refused.to_string()),
         })?;
     // Logged after the fact: announcing the creation first meant a refusal
     // arrived immediately behind "Creating songs directory at ...".
     if creating {
-        info!("Created songs directory at {:?}", songs_path);
+        info!("Created songs directory at {}", songs_path.display());
     }
 
     let default_metronome = player_config.metronome().is_some_and(|m| m.enabled);
@@ -523,7 +526,7 @@ pub fn verify(
 ) -> Result<(), Box<dyn Error>> {
     let config_path = Path::new(config);
     let player_config = config::Player::deserialize(config_path)?;
-    let songs_path = player_config.songs(config_path);
+    let songs_path = crate::util::resolved_dir(&player_config.songs(config_path));
     let songs = songs::get_all_songs(&songs_path)?;
 
     if songs.is_empty() {

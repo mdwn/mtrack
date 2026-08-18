@@ -447,8 +447,13 @@ pub fn create_dir_all(path: &Path) -> std::io::Result<()> {
 pub enum CreateWithinError {
     /// The directory is outside the project directory, so nothing was created.
     Outside {
-        /// The directory that was asked for.
+        /// The directory that was asked for, as it was configured.
         path: PathBuf,
+        /// Where that spelling actually lands. Reported alongside the spelling
+        /// because they differ whenever a symlink or a `..` is involved, and
+        /// naming only the spelling can tell an operator that a path plainly
+        /// inside the project is outside it.
+        resolved: PathBuf,
         /// The project directory it had to be inside of.
         project: PathBuf,
     },
@@ -462,13 +467,32 @@ pub enum CreateWithinError {
         symlink: bool,
     },
     /// It was inside the project, and creating it failed anyway.
-    Io(std::io::Error),
+    Io {
+        /// The path creation was attempted on — the resolved one, which is
+        /// what any advice about it has to name.
+        path: PathBuf,
+        /// What went wrong.
+        source: std::io::Error,
+    },
 }
 
 impl std::fmt::Display for CreateWithinError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CreateWithinError::Outside { path, project } => write!(
+            CreateWithinError::Outside {
+                path,
+                resolved,
+                project,
+            } if resolved != path => write!(
+                f,
+                "{} resolves to {}, which is outside the project directory \
+                 ({}), and mtrack only creates directories inside that. Create \
+                 it, or point the setting at a path inside the project.",
+                path.display(),
+                resolved.display(),
+                project.display(),
+            ),
+            CreateWithinError::Outside { path, project, .. } => write!(
                 f,
                 "{} does not exist, and mtrack only creates directories inside \
                  its project directory ({}). Create it, or point the setting at \
@@ -492,7 +516,7 @@ impl std::fmt::Display for CreateWithinError {
                  move what is there out of the way.",
                 path.display(),
             ),
-            CreateWithinError::Io(error) => write!(f, "{error}"),
+            CreateWithinError::Io { source, .. } => write!(f, "{source}"),
         }
     }
 }
@@ -500,28 +524,12 @@ impl std::fmt::Display for CreateWithinError {
 impl std::error::Error for CreateWithinError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            CreateWithinError::Io(error) => Some(error),
+            CreateWithinError::Io { source, .. } => Some(source),
             CreateWithinError::Outside { .. } | CreateWithinError::NotADirectory { .. } => None,
         }
     }
 }
 
-/// Creates `dir` if it is missing, but only when it lies inside `project`.
-///
-/// mtrack creates directories on behalf of a config that names them, and a
-/// config can name anywhere on the filesystem. Creating those wherever they
-/// point turns a typo into an empty directory and a puzzling "no songs found",
-/// and asks the service to write outside the very paths the generated systemd
-/// unit's `ProtectSystem=strict` exists to fence off.
-///
-/// A directory that already exists is accepted wherever it is: the restriction
-/// is on *creating* one, not on using a path the operator set up themselves.
-///
-/// Returns the directory that now exists, resolved. Callers must use it rather
-/// than the path they passed in: creation follows the resolved path, and a
-/// spelling like `songs/../real` is not equivalent to it — POSIX cannot resolve
-/// that spelling unless `songs` exists, which is exactly the stray intermediate
-/// this avoids making.
 /// A directory that [`create_dir_within`] made or accepted, resolved.
 ///
 /// A newtype rather than a bare `PathBuf` so the obligation is the compiler's
@@ -554,6 +562,22 @@ impl std::ops::Deref for CreatedDir {
     }
 }
 
+/// Creates `dir` if it is missing, but only when it lies inside `project`.
+///
+/// mtrack creates directories on behalf of a config that names them, and a
+/// config can name anywhere on the filesystem. Creating those wherever they
+/// point turns a typo into an empty directory and a puzzling "no songs found",
+/// and asks the service to write outside the very paths the generated systemd
+/// unit's `ProtectSystem=strict` exists to fence off.
+///
+/// A directory that already exists is accepted wherever it is: the restriction
+/// is on *creating* one, not on using a path the operator set up themselves.
+///
+/// Returns the directory that now exists, resolved. Callers must use it rather
+/// than the path they passed in: creation follows the resolved path, and a
+/// spelling like `songs/../real` is not equivalent to it — POSIX cannot resolve
+/// that spelling unless `songs` exists, which is exactly the stray intermediate
+/// this avoids making.
 pub fn create_dir_within(dir: &Path, project: &Path) -> Result<CreatedDir, CreateWithinError> {
     if dir.is_dir() {
         return Ok(CreatedDir(
@@ -585,6 +609,7 @@ pub fn create_dir_within(dir: &Path, project: &Path) -> Result<CreatedDir, Creat
     if !is_within(&resolved, project) {
         return Err(CreateWithinError::Outside {
             path: dir.to_path_buf(),
+            resolved,
             project: project.to_path_buf(),
         });
     }
@@ -594,7 +619,10 @@ pub fn create_dir_within(dir: &Path, project: &Path) -> Result<CreatedDir, Creat
     // `songs/../real`, and it re-walks components that were checked as
     // something else — a window in which one could have become a symlink out of
     // the project.
-    create_dir_all(&resolved).map_err(CreateWithinError::Io)?;
+    create_dir_all(&resolved).map_err(|source| CreateWithinError::Io {
+        path: resolved.clone(),
+        source,
+    })?;
     Ok(CreatedDir(resolved))
 }
 
@@ -606,7 +634,10 @@ pub async fn create_dir_within_async(
 ) -> Result<CreatedDir, CreateWithinError> {
     tokio::task::spawn_blocking(move || create_dir_within(&dir, &project))
         .await
-        .map_err(|e| CreateWithinError::Io(std::io::Error::other(e)))?
+        .map_err(|e| CreateWithinError::Io {
+            path: PathBuf::new(),
+            source: std::io::Error::other(e),
+        })?
 }
 
 /// The outcome of resolving a path as far as the filesystem allows.
@@ -682,6 +713,23 @@ fn resolve_as_far_as_possible(path: &Path) -> Resolved {
 /// `project/songs` is a symlink somewhere else.
 fn is_within(path: &Path, root: &Path) -> bool {
     root.canonicalize().is_ok_and(|root| path.starts_with(root))
+}
+
+/// A configured directory, resolved as far as the filesystem allows, for
+/// callers that only read it.
+///
+/// [`create_dir_within`] hands back what it made, but a reader has nothing to
+/// create and still needs the resolved path: the spelling in a config is not
+/// always usable now that the stray intermediate is no longer made, since POSIX
+/// cannot resolve `sub/../real` unless `sub` exists. Falls back to the path as
+/// given when nothing along it exists, which reads the same as before.
+pub fn resolved_dir(path: &Path) -> PathBuf {
+    match resolve_as_far_as_possible(path) {
+        Resolved::Path(resolved) => resolved,
+        // A link to nowhere resolves to nothing useful; hand back the original
+        // so the caller's own error names what the operator configured.
+        Resolved::Dangling(_) => path.to_path_buf(),
+    }
 }
 
 /// The project directory implied by a config file's path: the directory holding

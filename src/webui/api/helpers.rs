@@ -111,7 +111,7 @@ pub(crate) async fn ensure_configured_dir(
         Ok(Ok(created)) => Ok(created.into_path_buf()),
         Ok(Err(e)) => {
             let status = match e {
-                crate::util::CreateWithinError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                crate::util::CreateWithinError::Io { .. } => StatusCode::INTERNAL_SERVER_ERROR,
                 _ => StatusCode::BAD_REQUEST,
             };
             Err((status, Json(json!({"error": e.to_string()}))).into_response())

@@ -3270,7 +3270,11 @@ impl McpServer {
         let config_path = store.path().to_path_buf();
         let cfg = store.read_config().await;
 
-        let songs_path = cfg.songs(&config_path);
+        // Resolved, like songs_root_verified: the configured spelling is not
+        // always usable now that the stray intermediate is not created, and a
+        // rescan that fails here only logs a warning -- every write tool would
+        // report success while the player kept stale songs.
+        let songs_path = crate::util::resolved_dir(&cfg.songs(&config_path));
         let playlists_dir = cfg
             .playlists_dir(&config_path)
             .or_else(|| Some(crate::util::project_dir_of(&config_path).join("playlists")));
@@ -3366,7 +3370,9 @@ pub(crate) fn serde_yaml_from_str<T: for<'de> serde::Deserialize<'de>>(
 /// rather than a server fault. A genuine I/O failure stays internal.
 pub(crate) fn create_within_err(err: crate::util::CreateWithinError) -> McpError {
     match err {
-        crate::util::CreateWithinError::Io(_) => McpError::internal_error(err.to_string(), None),
+        crate::util::CreateWithinError::Io { .. } => {
+            McpError::internal_error(err.to_string(), None)
+        }
         _ => McpError::invalid_params(err.to_string(), None),
     }
 }

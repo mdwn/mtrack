@@ -231,10 +231,11 @@ async fn upload_sample_file(
 
     // Canonicalize the project root first, then build the samples path from
     // the canonical root so that all filesystem operations use a verified base.
-    let project_root = state
-        .config_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
+    // `project_dir_of`, not `parent()`: the latter answers Some("") for a bare
+    // filename, so the fallback never fires and the empty path fails to
+    // canonicalize -- a 500 for every sample upload whenever mtrack was started
+    // as `mtrack start mtrack.yaml`.
+    let project_root = crate::util::project_dir_of(&state.config_path);
     let root_canonical = project_root.canonicalize().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
