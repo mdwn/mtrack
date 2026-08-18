@@ -476,6 +476,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   life of the process — a failure that, by construction, prints nothing at all. Enumeration paths
   now serialise on a single lock.
 
+### Security
+
+- **Dependency updates for the open advisories against `Cargo.lock` and the web UI's
+  `package-lock.json`**: `quinn-proto` 0.11.14 to 0.11.17 (RUSTSEC-2026-0185, remote memory
+  exhaustion from unbounded out-of-order stream reassembly), `vite` to 8.2.1 (a `server.fs.deny`
+  bypass via Windows alternate paths, and NTLMv2 hash disclosure through `launch-editor`'s UNC
+  handling), `postcss` to 8.5.26 (two arbitrary `.map` file disclosures through an
+  attacker-controlled `sourceMappingURL`), `brace-expansion` (three denial-of-service paths), and
+  `esbuild` 0.27.4 to 0.28.2 (arbitrary file read from the development server on Windows).
+
+  The same pass picked up advisories that were not yet alerting: `h2` 0.4.14 to 0.4.16
+  (RUSTSEC-2026-0258, unbounded empty DATA frames — this one reaches the gRPC and web UI server
+  mtrack actually runs), `crossbeam-epoch` 0.9.20, `anyhow` 1.0.104, the yanked `spin` 0.9.8, and
+  `nanoid` and `body-parser` on the JavaScript side.
+
+  Only `esbuild` needed a manifest change; it is a direct dependency solely to pin the version the
+  `svelte-i18n` override resolves to, and nothing in the tree imports it. Everything else was a
+  lockfile bump.
+
+  Two RustSec advisories remain open and cannot be closed from here: `lru` (RUSTSEC-2026-0253) is
+  patched in 0.18.2 but reached through `ratatui-core`, and `scc` (RUSTSEC-2026-0205) is patched in
+  3.8.4 but reached through the `serial_test` dev-dependency. Both are `unsound` informational
+  advisories rather than vulnerabilities, and both need the intermediate crate to widen its
+  requirement first.
+
 ## [0.15.0] - 2026-07-20
 
 ### Added
