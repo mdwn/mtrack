@@ -678,16 +678,24 @@ mod tests {
         /// test catches that but only runs on main, so this asks systemd's own
         /// validator on every run instead.
         ///
-        /// Skipped where `systemd-analyze` is not installed.
+        /// Skipped where `systemd-analyze` is not installed, but never on Linux
+        /// CI, where its absence fails rather than quietly retiring the check.
         #[test]
         fn systemd_accepts_the_generated_unit() {
-            let Ok(probe) = std::process::Command::new("systemd-analyze")
+            let available = std::process::Command::new("systemd-analyze")
                 .arg("--version")
                 .output()
-            else {
-                return;
-            };
-            if !probe.status.success() {
+                .is_ok_and(|probe| probe.status.success());
+            if !available {
+                // A skip and a pass look identical in CI output, so on Linux CI
+                // -- where systemd-analyze is expected -- refuse to skip. Losing
+                // the tool there would otherwise retire this check silently.
+                assert!(
+                    !(cfg!(target_os = "linux") && std::env::var_os("CI").is_some()),
+                    "systemd-analyze is missing on Linux CI: the generated unit \
+                     is no longer being validated by systemd"
+                );
+                eprintln!("skipping: systemd-analyze is not installed");
                 return;
             }
 
