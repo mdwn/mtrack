@@ -88,10 +88,6 @@ pub(crate) fn resolve_resource_path(
     }
 }
 
-/// Wraps a blocking filesystem operation in `tokio::task::spawn_blocking`,
-/// mapping errors to HTTP responses.
-///
-/// Both the join error (task panic) and the inner result error are handled.
 /// Creates a configured directory, before anything canonicalizes it.
 ///
 /// Ordering matters: [`resolve_resource_path`] verifies the root by
@@ -128,6 +124,10 @@ pub(crate) async fn ensure_configured_dir(
     }
 }
 
+/// Wraps a blocking filesystem operation in `tokio::task::spawn_blocking`,
+/// mapping errors to HTTP responses.
+///
+/// Both the join error (task panic) and the inner result error are handled.
 pub(crate) async fn spawn_blocking_io<F, T, E>(
     label: &str,
     f: F,

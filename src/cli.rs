@@ -382,7 +382,16 @@ fn render_systemd_service(
     let requires_mounts_for = if checked.is_empty() {
         String::new()
     } else {
-        let paths = checked.join(" ");
+        // Quoted, exactly as ReadWritePaths= is. Unquoted, systemd splits the
+        // list on spaces: a perfectly ordinary "/media/usb/My Songs" becomes a
+        // wait on /media/usb/My and a rejection of Songs as non-absolute, so
+        // the ordering this exists to guarantee silently does not apply -- for
+        // the removable-media path it was added for.
+        let paths = checked
+            .iter()
+            .map(|p| format!("\"{p}\""))
+            .collect::<Vec<_>>()
+            .join(" ");
         format!(
             "\n\
 # Wait for whatever these paths live on before starting. Harmless for paths on\n\
@@ -392,6 +401,11 @@ fn render_systemd_service(
 # there, Restart=on-failure retries, and the default start limit is spent long\n\
 # before a slow mount lands -- leaving the unit failed for a drive that turned up\n\
 # a second later.\n\
+#\n\
+# systemd can only order against a mount it knows about: one declared in fstab\n\
+# or by a .mount unit. A drive mounted on demand by udisks2 has no such unit\n\
+# while it is unmounted, so nothing is waited for and the service starts anyway.\n\
+# Add an fstab entry for anything mtrack must not start without.\n\
 RequiresMountsFor={paths}\n"
         )
     };
@@ -781,7 +795,7 @@ mod tests {
             .unwrap();
 
             assert!(
-                unit.contains("RequiresMountsFor=/var/lib/mtrack /media/usb/songs"),
+                unit.contains(r#"RequiresMountsFor="/var/lib/mtrack" "/media/usb/songs""#),
                 "{unit}"
             );
             // It orders the unit, so it belongs in [Unit], not [Service].
@@ -790,6 +804,24 @@ mod tests {
             assert!(
                 requires < service,
                 "RequiresMountsFor must precede [Service]"
+            );
+        }
+
+        /// Unquoted, systemd splits the list on spaces: an ordinary
+        /// "/media/usb/My Songs" becomes a wait on /media/usb/My and a
+        /// rejection of Songs as non-absolute, so the ordering silently does
+        /// not apply — for the removable-media path it exists to serve.
+        #[test]
+        fn a_waited_for_path_with_a_space_stays_one_path() {
+            let unit = render_systemd_service(
+                "/usr/local/bin/mtrack",
+                &["/media/usb/My Songs".to_string()],
+            )
+            .unwrap();
+
+            assert!(
+                unit.contains(r#"RequiresMountsFor="/media/usb/My Songs""#),
+                "{unit}"
             );
         }
 

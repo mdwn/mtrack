@@ -530,13 +530,31 @@ pub fn create_dir_within(dir: &Path, project: &Path) -> Result<(), CreateWithinE
             symlink: occupant.file_type().is_symlink(),
         });
     }
-    if !is_within(dir, project) {
+
+    let resolved = match resolve_as_far_as_possible(dir) {
+        Resolved::Path(resolved) => resolved,
+        // A link to nowhere anywhere along the path, not merely at its end.
+        Resolved::Dangling(link) => {
+            return Err(CreateWithinError::NotADirectory {
+                path: link,
+                symlink: true,
+            })
+        }
+    };
+
+    if !is_within(&resolved, project) {
         return Err(CreateWithinError::Outside {
             path: dir.to_path_buf(),
             project: project.to_path_buf(),
         });
     }
-    create_dir_all(dir).map_err(CreateWithinError::Io)
+
+    // The resolved path, not the original. Creating the original walks the
+    // literal spelling: it would materialize a stray intermediate for a benign
+    // `songs/../real`, and it re-walks components that were checked as
+    // something else — a window in which one could have become a symlink out of
+    // the project.
+    create_dir_all(&resolved).map_err(CreateWithinError::Io)
 }
 
 /// [`create_dir_within`] for callers on a Tokio runtime, which keeps the
@@ -550,19 +568,15 @@ pub async fn create_dir_within_async(
         .map_err(|e| CreateWithinError::Io(std::io::Error::other(e)))?
 }
 
-/// Whether `path` lands inside `root` once the filesystem has its say.
-///
-/// Purely lexical comparison is not enough: `project/songs` is inside the
-/// project by spelling, and outside it if `project/songs` is a symlink
-/// somewhere else. This resolves as much of the path as exists — which is where
-/// any symlink must be, since a component that does not exist cannot be one —
-/// and appends the rest.
-fn is_within(path: &Path, root: &Path) -> bool {
-    let Ok(root) = root.canonicalize() else {
-        // No project directory to be inside of.
-        return false;
-    };
-    resolve_as_far_as_possible(path).starts_with(root)
+/// The outcome of resolving a path as far as the filesystem allows.
+#[derive(Debug)]
+enum Resolved {
+    /// Resolved to this absolute path.
+    Path(PathBuf),
+    /// A symlink along the way leads nowhere. Creating through it fails with
+    /// `File exists` deep inside `create_dir_all` and says nothing about the
+    /// link, for a path the operator can see is not there.
+    Dangling(PathBuf),
 }
 
 /// `path` resolved as far as the filesystem allows.
@@ -572,7 +586,7 @@ fn is_within(path: &Path, root: &Path) -> bool {
 /// remainder gets pushed literally, so a `..` can walk back into existing,
 /// symlinked territory — `project/missing/../link/songs` — and land outside
 /// the project while still reading as inside it.
-fn resolve_as_far_as_possible(path: &Path) -> PathBuf {
+fn resolve_as_far_as_possible(path: &Path) -> Resolved {
     // A relative path is relative to the process's directory, and comparing one
     // against an absolute root answers "outside" for everything. `mtrack start
     // mtrack.yaml` produces exactly that: a project of "." and a songs path of
@@ -592,8 +606,19 @@ fn resolve_as_far_as_possible(path: &Path) -> PathBuf {
                 resolved.push(part);
                 // Canonicalize the moment it exists, so a symlink is followed
                 // here rather than compared as though it were a directory.
-                if let Ok(canonical) = resolved.canonicalize() {
-                    resolved = canonical;
+                match resolved.canonicalize() {
+                    Ok(canonical) => resolved = canonical,
+                    Err(_) => {
+                        // Unresolvable but present means a link to nowhere.
+                        // Checked at every component, not just the last: an
+                        // unmounted drive is as likely to sit part way along
+                        // the path as at the end of it.
+                        if std::fs::symlink_metadata(&resolved)
+                            .is_ok_and(|meta| meta.file_type().is_symlink())
+                        {
+                            return Resolved::Dangling(resolved);
+                        }
+                    }
                 }
             }
             // Popping a canonical path is exact; popping one that still holds
@@ -605,10 +630,20 @@ fn resolve_as_far_as_possible(path: &Path) -> PathBuf {
             other => resolved.push(other.as_os_str()),
         }
     }
-    resolved
+    Resolved::Path(resolved)
 }
 
-/// The project directory implied by a config file's path: the directory holding
+/// Whether an already-resolved `path` lands inside `root`.
+///
+/// Takes the *resolved* path rather than resolving here, so the caller creates
+/// exactly what was checked. Purely lexical comparison would not do:
+/// `project/songs` is inside the project by spelling, and outside it if
+/// `project/songs` is a symlink somewhere else.
+fn is_within(path: &Path, root: &Path) -> bool {
+    root.canonicalize().is_ok_and(|root| path.starts_with(root))
+}
+
+/// The project directory implied by a config file/// The project directory implied by a config file's path: the directory holding
 /// it, and the only place mtrack creates directories on a config's behalf.
 ///
 /// [`Path::parent`] answers `Some("")` rather than `None` for a bare filename,
@@ -1390,6 +1425,44 @@ mod create_dir_within_tests {
         assert!(!message.contains("does not exist"), "{message}");
     }
 
+    /// A link to nowhere part way along the path is the same failure as one at
+    /// the end, and just as likely: an unmounted drive sits wherever the
+    /// operator mounted it, not necessarily at the leaf.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_leading_nowhere_mid_path_says_so_too() {
+        let project = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(
+            "/media/usb/lib-that-is-not-mounted",
+            project.path().join("lib"),
+        )
+        .expect("symlink");
+
+        // The dangling link is `lib`, not the leaf being asked for.
+        let through = project.path().join("lib/songs");
+        let message = create_dir_within(&through, project.path())
+            .expect_err("refused")
+            .to_string();
+        assert!(message.contains("is a symlink"), "{message}");
+        assert!(!message.contains("File exists"), "{message}");
+    }
+
+    /// Creation must use the path that was checked, not the spelling it came
+    /// in as — which would walk components already resolved to something else
+    /// and leave stray intermediates behind.
+    #[test]
+    fn a_benign_traversal_creates_no_stray_intermediate() {
+        let project = tempfile::tempdir().expect("tempdir");
+
+        create_dir_within(&project.path().join("songs/../real"), project.path()).expect("created");
+
+        assert!(project.path().join("real").is_dir(), "target not created");
+        assert!(
+            !project.path().join("songs").exists(),
+            "left a stray intermediate behind"
+        );
+    }
+
     /// A symlink that does lead to a directory is simply used, wherever it
     /// points — the same as any other existing directory.
     #[cfg(unix)]
@@ -1524,14 +1597,22 @@ mod create_dir_within_tests {
     /// would race the rest of the suite.
     #[test]
     fn a_relative_path_is_measured_against_the_current_directory() {
+        let super::Resolved::Path(resolved) =
+            super::resolve_as_far_as_possible(Path::new("a-relative-name"))
+        else {
+            panic!("expected a resolved path");
+        };
+
+        let cwd = std::env::current_dir().expect("cwd");
         assert!(
-            super::is_within(Path::new("a-relative-name"), Path::new(".")),
-            "a relative name must be inside the current directory"
+            super::is_within(&resolved, &cwd),
+            "a relative name must be inside the current directory: {}",
+            resolved.display()
         );
 
         let elsewhere = tempfile::tempdir().expect("tempdir");
         assert!(
-            !super::is_within(Path::new("a-relative-name"), elsewhere.path()),
+            !super::is_within(&resolved, elsewhere.path()),
             "and outside an unrelated project"
         );
     }

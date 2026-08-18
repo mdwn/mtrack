@@ -58,10 +58,14 @@ it did before. An entry you add by hand without that prefix is worse: the unit
 fails namespace setup and the service never starts, so there is no message
 explaining why.
 
-The generated unit also emits `RequiresMountsFor=` for these paths, so systemd starts mtrack only
-once whatever they live on is mounted. Without that, a library on a USB stick or network share is
+The generated unit also emits `RequiresMountsFor=` for these paths, so systemd waits for whatever
+they live on before starting mtrack. Without that, a library on a USB stick or network share is
 simply absent when the service starts, and `Restart=on-failure` exhausts the default start limit in
 a few seconds — leaving the unit failed for a drive that appeared a moment later.
+
+This works only for mounts systemd knows about: an fstab entry or a `.mount` unit. A drive mounted
+on demand by udisks2 has no unit while it is unmounted, so there is nothing to wait for and the
+service starts regardless. Give anything mtrack must not start without an fstab entry.
 
 These paths are baked into the unit when it is generated. They are not read from
 `$MTRACK_PATH`, so if you move your library later, regenerate the unit as well as
