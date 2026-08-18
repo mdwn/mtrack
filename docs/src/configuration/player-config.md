@@ -10,8 +10,8 @@ created automatically when mtrack starts, and can be edited through the web UI o
 **Directories outside the project are yours to create.** The *project directory* is simply the one
 holding this `mtrack.yaml` — wherever you put it, be that `/var/lib/mtrack`, `/home/pi/gig`, or a
 folder on a USB stick. mtrack makes a configured directory — `songs`, `profiles_dir`, the lighting
-directories — only when it resolves to somewhere inside that directory, and otherwise refuses with
-an error naming both paths.
+directories, `playlists_dir` — only when it resolves to somewhere inside that directory, and
+otherwise refuses with an error naming both paths.
 
 A directory that already exists is used wherever it lives, so pointing `songs` at
 `/mnt/song-storage` works exactly as before once that directory is there. Only creating one
@@ -22,7 +22,9 @@ elsewhere is refused, for two reasons:
 - On removable media, creating a directory under a mount point that is not currently mounted writes
   to the underlying disk instead. Everything appears to work until the drive is mounted, at which
   point the files vanish behind it. This is easy to hit on a Pi with songs on a USB stick or SD
-  card, and refusing to create the directory avoids it entirely.
+  card. Refusing to create the directory avoids it for any mount point outside the project — note
+  that a mount point *inside* the project, such as `songs: /var/lib/mtrack/usb`, is still mtrack's
+  to create and so is still exposed to this. Mount before starting mtrack if you rely on one.
 
 If you keep songs on a separate drive, create the directory once (`mkdir -p /media/usb/songs`) and
 mtrack will use it from then on.

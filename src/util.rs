@@ -456,6 +456,10 @@ pub enum CreateWithinError {
     NotADirectory {
         /// The path that is occupied.
         path: PathBuf,
+        /// Whether the occupant is a symlink that leads nowhere useful. Worth
+        /// distinguishing: a link to unmounted media is invisible to `exists`,
+        /// and is the removable-media case this rule exists to protect.
+        symlink: bool,
     },
     /// It was inside the project, and creating it failed anyway.
     Io(std::io::Error),
@@ -472,7 +476,17 @@ impl std::fmt::Display for CreateWithinError {
                 path.display(),
                 project.display(),
             ),
-            CreateWithinError::NotADirectory { path } => write!(
+            CreateWithinError::NotADirectory {
+                path,
+                symlink: true,
+            } => write!(
+                f,
+                "{} is a symlink that does not lead to a directory. Its target \
+                 may be missing, or on media that is not mounted — mount it, \
+                 repoint the link, or remove it.",
+                path.display(),
+            ),
+            CreateWithinError::NotADirectory { path, .. } => write!(
                 f,
                 "{} is not a directory. Point the setting at a directory, or \
                  move what is there out of the way.",
@@ -506,11 +520,14 @@ pub fn create_dir_within(dir: &Path, project: &Path) -> Result<(), CreateWithinE
     if dir.is_dir() {
         return Ok(());
     }
-    // Distinguished from "does not exist", which sent an operator looking for a
-    // path that is sitting right there as a file.
-    if dir.exists() {
+    // `symlink_metadata` rather than `exists`, which follows the link and so
+    // reports a dangling one as absent. Creation then fails deep inside
+    // `create_dir_all` with `File exists` for a path the operator can see is
+    // not there, saying nothing about the link.
+    if let Ok(occupant) = std::fs::symlink_metadata(dir) {
         return Err(CreateWithinError::NotADirectory {
             path: dir.to_path_buf(),
+            symlink: occupant.file_type().is_symlink(),
         });
     }
     if !is_within(dir, project) {
@@ -591,7 +608,7 @@ fn resolve_as_far_as_possible(path: &Path) -> PathBuf {
     resolved
 }
 
-/// The project directory implied by a config file/// The project directory implied by a config file's path: the directory holding
+/// The project directory implied by a config file's path: the directory holding
 /// it, and the only place mtrack creates directories on a config's behalf.
 ///
 /// [`Path::parent`] answers `Some("")` rather than `None` for a bare filename,
@@ -1348,6 +1365,42 @@ mod create_dir_within_tests {
         assert!(!message.contains("does not exist"), "{message}");
         // The file it named is left alone.
         assert!(occupied.is_file());
+    }
+
+    /// The removable-media case this rule exists to protect, and the one that
+    /// was reported worst: `songs -> /media/usb/songs` with the stick
+    /// unmounted. `exists()` follows the link and says nothing is there, so
+    /// creation used to run on and fail inside `create_dir_all` with `File
+    /// exists` — for a path the operator can see is absent, with no mention of
+    /// the link.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_leading_nowhere_says_so_rather_than_file_exists() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let dangling = project.path().join("songs");
+        std::os::unix::fs::symlink("/media/usb/songs-that-are-not-mounted", &dangling)
+            .expect("symlink");
+
+        let message = create_dir_within(&dangling, project.path())
+            .expect_err("refused")
+            .to_string();
+        assert!(message.contains("is a symlink"), "{message}");
+        assert!(message.contains("not mounted"), "{message}");
+        assert!(!message.contains("File exists"), "{message}");
+        assert!(!message.contains("does not exist"), "{message}");
+    }
+
+    /// A symlink that does lead to a directory is simply used, wherever it
+    /// points — the same as any other existing directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_leading_to_a_real_directory_is_accepted() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let link = project.path().join("songs");
+        std::os::unix::fs::symlink(elsewhere.path(), &link).expect("symlink");
+
+        create_dir_within(&link, project.path()).expect("accepted");
     }
 
     /// A file in the way outside the project is still reported as the file it

@@ -1117,7 +1117,7 @@ impl McpServer {
             let project = crate::util::project_dir_of(self.config_store()?.path());
             crate::util::create_dir_within_async(parent.to_path_buf(), project)
                 .await
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                .map_err(create_within_err)?;
         }
         staged_write_string(&path, &args.yaml).await?;
         // Rebuild the player's playlist set so `list_playlists` /
@@ -3186,7 +3186,7 @@ impl McpServer {
         let project = crate::util::project_dir_of(&path);
         crate::util::create_dir_within_async(songs.clone(), project)
             .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            .map_err(create_within_err)?;
         crate::webui::safe_path::VerifiedRoot::new(&songs).map_err(safepath_err)
     }
 
@@ -3227,16 +3227,12 @@ impl McpServer {
         let dir = if rel_path.is_absolute() {
             rel_path
         } else {
-            let parent = config_path
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| std::path::PathBuf::from("."));
-            parent.join(rel_path)
+            crate::util::project_dir_of(&config_path).join(rel_path)
         };
         let project = crate::util::project_dir_of(&config_path);
         crate::util::create_dir_within_async(dir.clone(), project)
             .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            .map_err(create_within_err)?;
         Ok(dir)
     }
 
@@ -3266,17 +3262,13 @@ impl McpServer {
         let songs_path = cfg.songs(&config_path);
         let playlists_dir = cfg
             .playlists_dir(&config_path)
-            .or_else(|| config_path.parent().map(|p| p.join("playlists")));
+            .or_else(|| Some(crate::util::project_dir_of(&config_path).join("playlists")));
 
         let legacy_playlist_path = cfg.playlist().map(|rel| {
             if rel.is_absolute() {
                 rel
             } else {
-                let parent = config_path
-                    .parent()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| std::path::PathBuf::from("."));
-                parent.join(rel)
+                crate::util::project_dir_of(&config_path).join(rel)
             }
         });
 
@@ -3316,11 +3308,7 @@ impl McpServer {
                 if rel.is_absolute() {
                     Ok(rel)
                 } else {
-                    let parent = config_path
-                        .parent()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_else(|| std::path::PathBuf::from("."));
-                    Ok(parent.join(rel))
+                    Ok(crate::util::project_dir_of(&config_path).join(rel))
                 }
             }
         }
@@ -3357,6 +3345,19 @@ pub(crate) fn serde_yaml_from_str<T: for<'de> serde::Deserialize<'de>>(
         .map_err(|e| McpError::invalid_params(format!("invalid YAML: {e}"), None))?;
     cfg.try_deserialize()
         .map_err(|e| McpError::invalid_params(format!("invalid payload: {e}"), None))
+}
+
+/// Wraps a [`crate::util::CreateWithinError`] as an MCP error.
+///
+/// `invalid_params` rather than `internal_error` for the two the operator can
+/// act on — a path outside the project, or one occupied by something that is
+/// not a directory — so a client presents them as a configuration problem
+/// rather than a server fault. A genuine I/O failure stays internal.
+pub(crate) fn create_within_err(err: crate::util::CreateWithinError) -> McpError {
+    match err {
+        crate::util::CreateWithinError::Io(_) => McpError::internal_error(err.to_string(), None),
+        _ => McpError::invalid_params(err.to_string(), None),
+    }
 }
 
 /// Wraps a [`SafePathError`] as an `invalid_params` MCP error.

@@ -165,12 +165,15 @@ pub async fn start(
             // anywhere in the directory tree are discoverable — including via
             // bulk import after startup.
             default_config.set_songs(".");
-            if let Some(parent) = player_path.parent() {
-                if !parent.exists() {
-                    crate::util::create_dir_all(parent).map_err(|e| {
-                        annotate_write(crate::util::WriteTarget::Directory(parent), e)
-                    })?;
-                }
+            // `project_dir_of` rather than `parent()`: the latter answers
+            // `Some("")` for a bare filename, the trap this branch sat directly
+            // above, and is harmless here only because std short-circuits an
+            // empty path.
+            let config_dir = crate::util::project_dir_of(player_path);
+            if !config_dir.exists() {
+                crate::util::create_dir_all(&config_dir).map_err(|e| {
+                    annotate_write(crate::util::WriteTarget::Directory(&config_dir), e)
+                })?;
             }
             let yaml = crate::util::to_yaml_string(&default_config)?;
             crate::util::write_file(player_path, yaml.as_bytes())
