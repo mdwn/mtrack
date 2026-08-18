@@ -13,11 +13,24 @@ callback thread and the MIDI beat clock thread, without requiring root.
 ever acquire. Without this capability, the beat clock will still function but may exhibit
 more timing jitter under heavy system load.
 
-**Filesystem restrictions**: `ProtectSystem=full` makes `/usr`, `/boot`, and `/efi`
-read-only while leaving other paths writable for the service user. This allows mtrack
-to write configuration, songs, playlists, and lighting files to the project directory.
-Logs are emitted to stdout/stderr and captured by journald. `PrivateTmp=true` provides
-an isolated temporary directory.
+**Filesystem restrictions**: generated with your writable directories —
+`mtrack systemd /mnt/storage` — the unit sets `ProtectSystem=strict`, making the
+whole filesystem read-only except `/dev`, `/proc` and `/sys`, and excepts exactly
+the directories you named with `ReadWritePaths`. Those are where mtrack writes
+configuration, songs, playlists and lighting files.
+
+Generated with no path it falls back to `ProtectSystem=full`, which makes `/usr`,
+`/boot` and `/efi` read-only and leaves everything else writable. That is weaker,
+and it is the fallback only because a unit that cannot name the directories to
+except cannot safely make the rest read-only.
+
+If a directory that mtrack writes is not listed — a `songs:` or `playlists_dir:`
+pointing outside the library, for instance — the service starts and then fails
+with `Read-only file system (os error 30)`. List every such directory when
+generating the unit.
+
+Logs are emitted to stdout/stderr and captured by journald. `PrivateTmp=true`
+provides an isolated temporary directory.
 
 **Kernel restrictions**: The service cannot modify kernel tunables (`ProtectKernelTunables`),
 load kernel modules (`ProtectKernelModules`), access the kernel log buffer

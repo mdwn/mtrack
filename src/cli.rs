@@ -37,6 +37,15 @@ ExecReload=/bin/kill -HUP $MAINPID
 # User and group. Create with:
 #   sudo useradd --system --no-create-home --shell /usr/sbin/nologin mtrack
 #   sudo usermod -aG audio mtrack
+#
+# That user also needs read/write access to your library and config directory —
+# the $MTRACK_PATH set in /etc/default/mtrack. mtrack writes configuration,
+# songs, playlists and lighting files there, and a freshly created system user
+# owns none of it. The sandbox settings below govern which paths this service may
+# write at all; they do not grant the user permission to write them, which is a
+# separate thing and the more common cause of a failed start. Grant it with,
+# e.g.:
+{{ CHOWN_HINT }}# (or add the mtrack user to a group that already owns the directory).
 User=mtrack
 Group=mtrack
 SupplementaryGroups=audio
@@ -45,12 +54,10 @@ SupplementaryGroups=audio
 AmbientCapabilities=CAP_SYS_NICE
 CapabilityBoundingSet=CAP_SYS_NICE
 
-# Filesystem restrictions. The filesystem is read-only except for the project
-# directory, which mtrack writes to for configuration, songs, playlists, and
-# lighting files. ProtectSystem=full makes /usr, /boot, and /efi read-only
-# while leaving other paths writable for the mtrack user.
-ProtectSystem=full
-PrivateTmp=true
+# Filesystem restrictions. mtrack writes configuration, songs, playlists and
+# lighting files to the project directory, and needs that one path writable.
+{{ PROTECT_SYSTEM }}PrivateTmp=true
+{{ READ_WRITE_PATHS }}
 
 # Kernel restrictions.
 ProtectKernelTunables=true
@@ -193,7 +200,13 @@ enum Commands {
         host_port: Option<String>,
     },
     /// Prints a systemd service definition to stdout.
-    Systemd {},
+    Systemd {
+        /// Directories the service must be able to write — your library, plus
+        /// any songs, playlists, profiles or samples directory configured
+        /// outside it. Given at least one, the unit is hardened with
+        /// ProtectSystem=strict and excepts exactly these paths.
+        paths: Vec<String>,
+    },
     /// Verifies the syntax of a light show file.
     VerifyLightShow {
         /// The path to the light show file to verify.
@@ -266,8 +279,106 @@ fn print_device_list<T: Display>(devices: Vec<T>, empty_msg: &str) {
 }
 
 /// Renders the systemd service template with the given executable path.
-fn render_systemd_service(executable_path: &str) -> String {
-    SYSTEMD_SERVICE.replace("{{ CURRENT_EXECUTABLE }}", executable_path)
+/// A path `systemd` will accept in `ReadWritePaths=`, or why it will not.
+///
+/// systemd does not fail on a bad value here — it logs and drops the assignment
+/// while leaving `ProtectSystem=strict` in force, so the service starts with
+/// nothing writable and dies on its first write with `Read-only file system
+/// (os error 30)`. That is the cryptic failure this whole change exists to
+/// remove, so a path that cannot work is refused at generation time instead.
+fn checked_writable_path(path: &str) -> Result<String, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("a writable path cannot be empty".to_string());
+    }
+    if !trimmed.starts_with('/') {
+        return Err(format!(
+            "`{trimmed}` is not absolute. systemd ignores a relative ReadWritePaths and \
+             leaves the filesystem read-only, so the service would start and then fail to \
+             write. Use the full path."
+        ));
+    }
+    if trimmed.trim_end_matches('/').is_empty() {
+        return Err(
+            "`/` would make the whole filesystem writable, which leaves ProtectSystem=strict \
+             doing nothing. Name the directories mtrack writes instead."
+                .to_string(),
+        );
+    }
+    if trimmed.contains('"') || trimmed.contains('\\') {
+        return Err(format!(
+            "`{trimmed}` contains a quote or backslash, which systemd unquotes into something \
+             else. Move the library somewhere without them."
+        ));
+    }
+    // `%` starts a specifier in a unit value: `/srv/100%cotton` becomes
+    // something else entirely, and with the leading `-` the resulting path
+    // silently does not exist. Doubling escapes it.
+    Ok(trimmed.replace('%', "%%"))
+}
+
+/// Renders the systemd unit, excepting `writable_paths` from the sandbox.
+///
+/// With at least one path the unit can name what must stay writable, so the
+/// filesystem is locked down with `ProtectSystem=strict`. With none it cannot,
+/// and `strict` would leave mtrack unable to write its own config — so it falls
+/// back to `full`, which is what the unit shipped before this.
+fn render_systemd_service(
+    executable_path: &str,
+    writable_paths: &[String],
+) -> Result<String, Box<dyn Error>> {
+    let checked: Vec<String> = writable_paths
+        .iter()
+        .map(|p| checked_writable_path(p))
+        .collect::<Result<_, _>>()?;
+
+    let chown_hint = match checked.first() {
+        Some(path) => format!("#   sudo chown -R mtrack:mtrack \"{path}\"\n"),
+        None => "#   sudo chown -R mtrack:mtrack /path/to/library\n".to_string(),
+    };
+
+    let protect_system = if checked.is_empty() {
+        "# /usr, /boot and /efi are read-only; other paths stay writable, since\n\
+         # this unit was generated without a library path and cannot name the one\n\
+         # directory to except. Regenerate as `mtrack systemd /your/library` to\n\
+         # get the stricter sandbox.\n\
+         ProtectSystem=full\n"
+            .to_string()
+    } else {
+        "# The whole filesystem is read-only except the paths named below.\n\
+         ProtectSystem=strict\n"
+            .to_string()
+    };
+
+    let read_write_paths = if checked.is_empty() {
+        String::new()
+    } else {
+        let declared = checked
+            .iter()
+            .map(|p| format!("ReadWritePaths=-\"{p}\"\n"))
+            .collect::<String>();
+        format!(
+            "\n# The paths excepted from ProtectSystem=strict above. Without these the\n\
+             # service cannot write its own configuration and fails on startup with\n\
+             # `Read-only file system (os error 30)`.\n\
+             #\n\
+             # These are baked in at generation time and are not read from\n\
+             # $MTRACK_PATH — keep them in step with it, and add any songs,\n\
+             # playlists, profiles or samples directory configured outside the\n\
+             # library, since mtrack writes to those too.\n\
+             #\n\
+             # The leading `-` keeps a directory that is missing at boot — an\n\
+             # unmounted drive, say — from failing the unit outright.\n\
+             {declared}"
+        )
+    };
+
+    Ok(SYSTEMD_SERVICE
+        .replace("{{ CURRENT_EXECUTABLE }}", executable_path)
+        .replace("{{ CHOWN_HINT }}", &chown_hint)
+        .replace("{{ PROTECT_SYSTEM }}", &protect_system)
+        .replace("{{ READ_WRITE_PATHS }}\n", &read_write_paths)
+        .replace("{{ READ_WRITE_PATHS }}", &read_write_paths))
 }
 
 pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
@@ -311,11 +422,11 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
         } => remote::switch_to_playlist(host_port, &playlist_name).await?,
         Commands::Status { host_port } => remote::status(host_port).await?,
         Commands::ActiveEffects { host_port } => remote::active_effects(host_port).await?,
-        Commands::Systemd {} => {
+        Commands::Systemd { paths } => {
             let current_executable_path = env::current_exe()?;
             println!(
                 "{}",
-                render_systemd_service(&current_executable_path.to_string_lossy())
+                render_systemd_service(&current_executable_path.to_string_lossy(), &paths)?
             )
         }
         Commands::CalibrateTriggers {
@@ -404,14 +515,14 @@ mod tests {
 
         #[test]
         fn substitutes_executable_path() {
-            let result = render_systemd_service("/usr/local/bin/mtrack");
+            let result = render_systemd_service("/usr/local/bin/mtrack", &[]).unwrap();
             assert!(result.contains("ExecStart=/usr/local/bin/mtrack start"));
             assert!(!result.contains("{{ CURRENT_EXECUTABLE }}"));
         }
 
         #[test]
         fn preserves_service_structure() {
-            let result = render_systemd_service("/usr/bin/mtrack");
+            let result = render_systemd_service("/usr/bin/mtrack", &[]).unwrap();
             assert!(result.contains("[Unit]"));
             assert!(result.contains("[Service]"));
             assert!(result.contains("[Install]"));
@@ -420,15 +531,227 @@ mod tests {
 
         #[test]
         fn preserves_hardening_directives() {
-            let result = render_systemd_service("/usr/bin/mtrack");
+            let result = render_systemd_service("/usr/bin/mtrack", &[]).unwrap();
             assert!(result.contains("ProtectSystem=full"));
             assert!(result.contains("NoNewPrivileges=true"));
             assert!(result.contains("MemoryDenyWriteExecute=true"));
         }
 
+        /// The unit has to say that the mtrack user needs access to the
+        /// library, whether or not the path is known.
+        ///
+        /// #351: the generated unit creates a system user and points at
+        /// `$MTRACK_PATH`, but a freshly created user owns none of that
+        /// directory. `ProtectSystem=full` leaves it writable as far as the
+        /// sandbox is concerned, which is a different thing from the user being
+        /// permitted to write it, and nothing pointed at permissions as the
+        /// cause when the service then failed.
+        #[test]
+        fn documents_the_library_permissions_without_a_path() {
+            let result = render_systemd_service("/usr/local/bin/mtrack", &[]).unwrap();
+            assert!(result.contains("read/write access"));
+            assert!(
+                result.contains("sudo chown -R mtrack:mtrack /path/to/library"),
+                "the hint has to be pasteable even when the path is unknown"
+            );
+            assert!(
+                !result.contains("ReadWritePaths"),
+                "there is no path to declare, and an empty directive would be invalid"
+            );
+        }
+
+        #[test]
+        fn names_the_library_when_it_is_given() {
+            let result =
+                render_systemd_service("/usr/local/bin/mtrack", &["/srv/songs".to_string()])
+                    .unwrap();
+            assert!(result.contains("sudo chown -R mtrack:mtrack \"/srv/songs\""));
+            assert!(
+                result.contains("ReadWritePaths=-\"/srv/songs\""),
+                "declaring it keeps the unit correct if the sandbox is ever tightened to strict"
+            );
+            assert!(
+                !result.contains("/path/to/library"),
+                "the placeholder must not survive alongside the real path"
+            );
+        }
+
+        /// A library path containing a space must not read as two paths.
+        ///
+        /// `ExecStart` already quotes `"$MTRACK_PATH"` for this reason; the
+        /// hint and the directive have the same problem — `chown` would take
+        /// two arguments and systemd two paths.
+        #[test]
+        fn quotes_a_library_path_with_spaces() {
+            let result =
+                render_systemd_service("/usr/local/bin/mtrack", &["/opt/my songs".to_string()])
+                    .unwrap();
+            assert!(result.contains("sudo chown -R mtrack:mtrack \"/opt/my songs\""));
+            assert!(result.contains("ReadWritePaths=-\"/opt/my songs\""));
+        }
+
+        /// A missing library directory must not stop the service starting.
+        ///
+        /// systemd refuses to start a unit whose `ReadWritePaths` does not
+        /// exist, and this unit is generated before the library necessarily
+        /// does — the deployment guide has the operator create the user, then
+        /// generate the unit. Without the leading `-` this change would have
+        /// introduced the same class of cryptic startup failure #351 is about.
+        #[test]
+        fn a_missing_library_does_not_fail_the_unit() {
+            let result =
+                render_systemd_service("/usr/local/bin/mtrack", &["/srv/songs".to_string()])
+                    .unwrap();
+            assert!(
+                result.contains("ReadWritePaths=-"),
+                "the directive has to tolerate a path that does not exist yet"
+            );
+        }
+
+        /// A path systemd would silently drop is refused at generation time.
+        ///
+        /// systemd does not fail on a bad `ReadWritePaths=`: it logs, drops the
+        /// assignment, and leaves `ProtectSystem=strict` in force — so the
+        /// service starts with nothing writable and dies on its first write.
+        /// Emitting such a unit would reintroduce the cryptic failure this
+        /// change removes. All three were confirmed against
+        /// `systemd-analyze verify`.
+        #[test]
+        fn refuses_a_path_systemd_would_drop() {
+            let relative = render_systemd_service("/usr/bin/mtrack", &["songs".to_string()]);
+            assert!(
+                relative.is_err(),
+                "a relative path is ignored by systemd, leaving the filesystem read-only"
+            );
+
+            let empty = render_systemd_service("/usr/bin/mtrack", &[String::new()]);
+            assert!(empty.is_err());
+
+            let root = render_systemd_service("/usr/bin/mtrack", &["/".to_string()]);
+            assert!(
+                root.is_err(),
+                "`/` makes everything writable, so strict would do nothing while reading as \
+                 hardened"
+            );
+        }
+
+        /// A `%` in a path is a systemd specifier and has to be escaped.
+        ///
+        /// `/srv/100%cotton` expands `%c` into something else, and with the
+        /// leading `-` the resulting path silently does not exist — strict with
+        /// no working exception.
+        #[test]
+        fn escapes_a_specifier_in_a_path() {
+            let result =
+                render_systemd_service("/usr/bin/mtrack", &["/srv/100%cotton".to_string()])
+                    .unwrap();
+            assert!(
+                result.contains("ReadWritePaths=-\"/srv/100%%cotton\""),
+                "the percent must be doubled or systemd rewrites the path: {result}"
+            );
+        }
+
+        /// Every writable directory is declared, not just the library.
+        ///
+        /// `songs`, `playlists_dir`, `profiles_dir` and `samples` are used as
+        /// given when absolute, so a library at /var/lib/mtrack with
+        /// `songs: /mnt/nas/songs` writes to both. Under strict, a directory
+        /// that is not named cannot be written.
+        #[test]
+        fn declares_every_writable_path() {
+            let result = render_systemd_service(
+                "/usr/bin/mtrack",
+                &["/var/lib/mtrack".to_string(), "/mnt/nas/songs".to_string()],
+            )
+            .unwrap();
+            assert!(result.contains("ReadWritePaths=-\"/var/lib/mtrack\""));
+            assert!(result.contains("ReadWritePaths=-\"/mnt/nas/songs\""));
+            assert!(sets_directive(&result, "ProtectSystem=strict"));
+        }
+
+        /// systemd itself must accept the unit we generate.
+        ///
+        /// The other tests here match strings, and every directive systemd
+        /// silently drops renders and passes them — a relative
+        /// `ReadWritePaths`, an unescaped `%` specifier — leaving
+        /// `ProtectSystem=strict` in force with nothing writable. The container
+        /// test catches that but only runs on main, so this asks systemd's own
+        /// validator on every run instead.
+        ///
+        /// Skipped where `systemd-analyze` is not installed, but never on Linux
+        /// CI, where its absence fails rather than quietly retiring the check.
+        #[test]
+        fn systemd_accepts_the_generated_unit() {
+            let available = std::process::Command::new("systemd-analyze")
+                .arg("--version")
+                .output()
+                .is_ok_and(|probe| probe.status.success());
+            if !available {
+                // A skip and a pass look identical in CI output, so on Linux CI
+                // -- where systemd-analyze is expected -- refuse to skip. Losing
+                // the tool there would otherwise retire this check silently.
+                assert!(
+                    !(cfg!(target_os = "linux") && std::env::var_os("CI").is_some()),
+                    "systemd-analyze is missing on Linux CI: the generated unit \
+                     is no longer being validated by systemd"
+                );
+                eprintln!("skipping: systemd-analyze is not installed");
+                return;
+            }
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let library = dir.path().join("library");
+            std::fs::create_dir(&library).expect("library");
+
+            for paths in [
+                vec![],
+                vec![library.to_string_lossy().into_owned()],
+                vec![
+                    library.to_string_lossy().into_owned(),
+                    dir.path().join("songs").to_string_lossy().into_owned(),
+                ],
+            ] {
+                // `/bin/sh` because it exists: an ExecStart that does not draws
+                // its own warning and says nothing about the sandbox.
+                let unit = render_systemd_service("/bin/sh", &paths).unwrap();
+                let path = dir.path().join("mtrack.service");
+                std::fs::write(&path, &unit).expect("write unit");
+
+                let output = std::process::Command::new("systemd-analyze")
+                    .arg("verify")
+                    .arg(&path)
+                    .output()
+                    .expect("systemd-analyze verify");
+                let complaints = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+
+                for directive in ["ReadWritePaths", "ProtectSystem", "Specifier"] {
+                    assert!(
+                        !complaints.contains(directive),
+                        "systemd objected to {directive} for {paths:?}: {complaints}"
+                    );
+                }
+            }
+        }
+
+        /// The template must not leak a placeholder into the rendered unit.
+        #[test]
+        fn leaves_no_placeholders_behind() {
+            for paths in [vec![], vec!["/srv/songs".to_string()]] {
+                let result = render_systemd_service("/usr/local/bin/mtrack", &paths).unwrap();
+                assert!(
+                    !result.contains("{{"),
+                    "an unrendered placeholder survived for {paths:?}: {result}"
+                );
+            }
+        }
+
         #[test]
         fn handles_path_with_spaces() {
-            let result = render_systemd_service("/opt/my apps/mtrack");
+            let result = render_systemd_service("/opt/my apps/mtrack", &[]).unwrap();
             assert!(result.contains("ExecStart=/opt/my apps/mtrack start"));
         }
 
@@ -436,7 +759,7 @@ mod tests {
         fn does_not_contain_protect_home() {
             // ProtectHome was removed because the project directory is often
             // under /home and mtrack needs write access to it.
-            let result = render_systemd_service("/usr/bin/mtrack");
+            let result = render_systemd_service("/usr/bin/mtrack", &[]).unwrap();
             assert!(
                 !result.contains("ProtectHome"),
                 "ProtectHome should not be in the systemd template — the project \
@@ -444,37 +767,86 @@ mod tests {
             );
         }
 
+        /// Whether the unit sets a directive, ignoring any comment that
+        /// mentions it. A substring search cannot tell the two apart, and the
+        /// generated unit deliberately names directives in its own prose.
+        fn sets_directive(unit: &str, directive: &str) -> bool {
+            unit.lines()
+                .any(|line| line.trim_start().starts_with(directive))
+        }
+
         #[test]
-        fn does_not_contain_protect_system_strict() {
-            let result = render_systemd_service("/usr/bin/mtrack");
+        fn does_not_contain_protect_system_strict_without_a_library_path() {
+            // Without a path the unit cannot name the directory to except, and
+            // `strict` would leave mtrack unable to write its own config: the
+            // service fails on startup with `Read-only file system (os error
+            // 30)`, verified in the container test.
+            let result = render_systemd_service("/usr/bin/mtrack", &[]).unwrap();
             assert!(
-                !result.contains("ProtectSystem=strict"),
-                "ProtectSystem=strict prevents mtrack from writing to the project \
-                 directory — use ProtectSystem=full instead"
+                !sets_directive(&result, "ProtectSystem=strict"),
+                "ProtectSystem=strict with no ReadWritePaths makes the project directory \
+                 read-only and the service fails to start"
             );
+        }
+
+        /// `strict` and a writable library must arrive together, always.
+        ///
+        /// Either alone is a broken unit: `strict` without the exception cannot
+        /// write the config, and this is the pairing the whole hardening rests
+        /// on, so it is asserted rather than left to the two branches agreeing
+        /// by construction.
+        #[test]
+        fn protect_system_strict_never_appears_without_a_writable_library() {
+            for paths in [
+                vec![],
+                vec!["/srv/songs".to_string()],
+                vec!["/opt/my songs".to_string()],
+            ] {
+                let result = render_systemd_service("/usr/bin/mtrack", &paths).unwrap();
+                if sets_directive(&result, "ProtectSystem=strict") {
+                    assert!(
+                        sets_directive(&result, "ReadWritePaths="),
+                        "strict without a writable path for {paths:?}: the service could not \
+                         write its own configuration"
+                    );
+                }
+                if sets_directive(&result, "ReadWritePaths=") {
+                    assert!(
+                        sets_directive(&result, "ProtectSystem=strict"),
+                        "a writable path was declared for {paths:?} but the filesystem was not \
+                         restricted, so the declaration does nothing"
+                    );
+                }
+            }
+        }
+
+        /// A library path buys the stricter sandbox.
+        #[test]
+        fn a_library_path_hardens_the_filesystem() {
+            let result =
+                render_systemd_service("/usr/bin/mtrack", &["/srv/songs".to_string()]).unwrap();
+            assert!(sets_directive(&result, "ProtectSystem=strict"));
+            assert!(!sets_directive(&result, "ProtectSystem=full"));
         }
 
         #[test]
         fn allows_write_access_to_project_dir() {
-            // ProtectSystem=full makes /usr, /boot, /efi read-only but leaves
-            // other paths writable so mtrack can write config, songs, playlists,
-            // and lighting files to the project directory.
-            let result = render_systemd_service("/usr/bin/mtrack");
+            // Without a library path: `full` makes /usr, /boot and /efi
+            // read-only and leaves everything else writable, so mtrack can
+            // still write config, songs, playlists and lighting files.
+            let result = render_systemd_service("/usr/bin/mtrack", &[]).unwrap();
             assert!(
-                result.contains("ProtectSystem=full"),
-                "ProtectSystem must be 'full' (not 'strict') so the project \
-                 directory remains writable"
+                sets_directive(&result, "ProtectSystem=full"),
+                "with no library path to except, ProtectSystem must stay 'full' or the \
+                 project directory becomes read-only"
             );
-            assert!(
-                !result.contains("ProtectSystem=strict"),
-                "ProtectSystem=strict would make the project directory read-only"
-            );
+            assert!(!sets_directive(&result, "ProtectSystem=strict"));
         }
 
         #[test]
         fn uses_environment_file() {
             // MTRACK_PATH is defined in /etc/default/mtrack
-            let result = render_systemd_service("/usr/bin/mtrack");
+            let result = render_systemd_service("/usr/bin/mtrack", &[]).unwrap();
             assert!(result.contains("EnvironmentFile=-/etc/default/mtrack"));
             assert!(result.contains("\"$MTRACK_PATH\""));
         }
@@ -611,7 +983,7 @@ mod tests {
         #[test]
         fn parse_systemd_command() {
             let cli = Cli::try_parse_from(["mtrack", "systemd"]).unwrap();
-            assert!(matches!(cli.command, Commands::Systemd {}));
+            assert!(matches!(cli.command, Commands::Systemd { ref paths } if paths.is_empty()));
         }
 
         #[test]
