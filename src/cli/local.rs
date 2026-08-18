@@ -291,7 +291,11 @@ pub async fn start(
                 state_rx: state_rx.clone(),
                 broadcast_tx,
                 config_path: player_path.to_path_buf(),
-                songs_path: player_config.songs(player_path),
+                // The directory that exists, not the configured spelling --
+                // which no longer resolves when it holds a `..`, and left every
+                // web UI songs endpoint answering "Root directory not found"
+                // while the player itself worked fine.
+                songs_path: songs_path.as_path().to_path_buf(),
                 playlists_dir: playlists_dir.clone(),
                 legacy_playlist_path: Some(legacy_playlist_path.clone()),
                 profiles_dir,

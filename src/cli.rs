@@ -26,12 +26,20 @@ use std::fmt::Display;
 const SYSTEMD_SERVICE: &str = r#"
 [Unit]
 Description=multitrack player
-# Paired with RestartSec=5 below: thirty attempts inside three minutes, so a
-# late mount has about two and a half minutes to turn up before the unit gives
-# up and stays failed for someone to look at.
+# A library on a USB stick, SD card or network share is simply not there yet
+# when this service would otherwise start, and mtrack will not create a
+# directory outside its project to paper over it. Paired with RestartSec=5
+# below, this gives a late mount about two and a half minutes to turn up.
+#
+# Deliberately not RequiresMountsFor=: that would wait for the mount, but it
+# also implies Requires=, so a drive that blinks out mid-set takes the player
+# down with it. For a machine playing a show, riding out a slow boot is worth
+# more than waiting for a mount that may never be slow. If you have a mount
+# that takes longer than the window below, add RequiresMountsFor= yourself,
+# knowing that cost.
 StartLimitIntervalSec=180
 StartLimitBurst=30
-{{ REQUIRES_MOUNTS_FOR }}
+
 [Service]
 Type=simple
 Restart=on-failure
@@ -384,47 +392,8 @@ fn render_systemd_service(
         )
     };
 
-    // Ordering, not permission. A path on removable media or a network mount is
-    // simply absent until its mount unit runs, and mtrack now refuses to create
-    // a directory outside its project rather than writing under the mount point.
-    // Starting first therefore fails, `Restart=on-failure` retries, and the
-    // default start limit is spent long before a slow mount lands — leaving the
-    // unit permanently failed for a drive that turned up a second later.
-    let requires_mounts_for = if checked.is_empty() {
-        String::new()
-    } else {
-        // Quoted, exactly as ReadWritePaths= is. Unquoted, systemd splits the
-        // list on spaces: a perfectly ordinary "/media/usb/My Songs" becomes a
-        // wait on /media/usb/My and a rejection of Songs as non-absolute, so
-        // the ordering this exists to guarantee silently does not apply -- for
-        // the removable-media path it was added for.
-        let paths = checked
-            .iter()
-            .map(|p| format!("\"{p}\""))
-            .collect::<Vec<_>>()
-            .join(" ");
-        format!(
-            "\n\
-# Wait for whatever these paths live on before starting. Harmless for paths on\n\
-# the root filesystem; the point is a library or songs directory on a USB stick,\n\
-# SD card or network share, which is not mounted yet when the service would\n\
-# otherwise start. Without this, mtrack refuses to create a directory that is not\n\
-# there, Restart=on-failure retries, and the default start limit is spent long\n\
-# before a slow mount lands -- leaving the unit failed for a drive that turned up\n\
-# a second later.\n\
-#\n\
-# systemd can only order against a mount it knows about: one declared in fstab\n\
-# or by a .mount unit. A drive mounted on demand by udisks2 has no such unit\n\
-# while it is unmounted, so nothing is waited for and the service starts anyway.\n\
-# Add an fstab entry for anything mtrack must not start without.\n\
-RequiresMountsFor={paths}\n"
-        )
-    };
-
     Ok(SYSTEMD_SERVICE
         .replace("{{ CURRENT_EXECUTABLE }}", executable_path)
-        .replace("{{ REQUIRES_MOUNTS_FOR }}\n", &requires_mounts_for)
-        .replace("{{ REQUIRES_MOUNTS_FOR }}", &requires_mounts_for)
         .replace("{{ CHOWN_HINT }}", &chown_hint)
         .replace("{{ PROTECT_SYSTEM }}", &protect_system)
         .replace("{{ READ_WRITE_PATHS }}\n", &read_write_paths)
@@ -787,55 +756,6 @@ mod tests {
             }
         }
 
-        /// A library on removable media is absent until its mount unit runs.
-        ///
-        /// mtrack refuses to create a directory outside its project rather than
-        /// writing under an unmounted mount point, so starting first now fails
-        /// outright; `Restart=on-failure` then spends the default start limit
-        /// in seconds and leaves the unit failed for a drive that appeared a
-        /// moment later. `RequiresMountsFor=` makes systemd wait instead.
-        #[test]
-        fn declared_paths_are_waited_for() {
-            let unit = render_systemd_service(
-                "/usr/local/bin/mtrack",
-                &[
-                    "/var/lib/mtrack".to_string(),
-                    "/media/usb/songs".to_string(),
-                ],
-            )
-            .unwrap();
-
-            assert!(
-                unit.contains(r#"RequiresMountsFor="/var/lib/mtrack" "/media/usb/songs""#),
-                "{unit}"
-            );
-            // It orders the unit, so it belongs in [Unit], not [Service].
-            let requires = unit.find("RequiresMountsFor=").expect("directive");
-            let service = unit.find("[Service]").expect("section");
-            assert!(
-                requires < service,
-                "RequiresMountsFor must precede [Service]"
-            );
-        }
-
-        /// Unquoted, systemd splits the list on spaces: an ordinary
-        /// "/media/usb/My Songs" becomes a wait on /media/usb/My and a
-        /// rejection of Songs as non-absolute, so the ordering silently does
-        /// not apply — for the removable-media path it exists to serve.
-        #[test]
-        fn a_waited_for_path_with_a_space_stays_one_path() {
-            let unit = render_systemd_service(
-                "/usr/local/bin/mtrack",
-                &["/media/usb/My Songs".to_string()],
-            )
-            .unwrap();
-
-            assert!(
-                unit.contains(r#"RequiresMountsFor="/media/usb/My Songs""#),
-                "{unit}"
-            );
-        }
-
         /// A drive that mounts late must not exhaust the start limit before it
         /// appears: the systemd defaults give up after five attempts in ten
         /// seconds, and a unit that has hit its limit stays failed even once
@@ -852,13 +772,6 @@ mod tests {
             let limit = unit.find("StartLimitIntervalSec=").expect("directive");
             let service = unit.find("[Service]").expect("section");
             assert!(limit < service, "start limits must precede [Service]");
-        }
-
-        /// Nothing to wait for when no path was named.
-        #[test]
-        fn no_paths_means_nothing_to_wait_for() {
-            let unit = render_systemd_service("/usr/local/bin/mtrack", &[]).unwrap();
-            assert!(!sets_directive(&unit, "RequiresMountsFor"), "{unit}");
         }
 
         /// The template must not leak a placeholder into the rendered unit.

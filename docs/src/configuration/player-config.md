@@ -31,9 +31,10 @@ elsewhere is refused, for two reasons:
   and mtrack writes to the underlying disk exactly as before. Nor does it help for a mount point
   *inside* the project, such as `songs: /var/lib/mtrack/usb`, which is still mtrack's to create.
 
-  If you rely on a mount, make systemd wait for it. A unit generated with those paths does this for
-  you — `mtrack systemd /var/lib/mtrack /media/usb/songs` emits a `RequiresMountsFor=` naming them,
-  so the service starts only once they are mounted.
+  If you rely on a mount, mount it before mtrack starts. The generated systemd unit retries for
+  about two and a half minutes, which covers a drive that appears a little after boot; see
+  [Running on Startup](../deployment/systemd.md) for why it waits that way rather than declaring a
+  dependency on the mount itself.
 
 If you keep songs on a separate drive, create the directory once (`mkdir -p /media/usb/songs`) and
 mtrack will use it from then on.

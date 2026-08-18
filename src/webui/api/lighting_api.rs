@@ -454,10 +454,11 @@ pub(super) async fn put_fixture_type(
             .into_response()
     })?;
 
-    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
     // The same helper the playlists and profiles writes use, so a refusal is
     // reported as the configuration problem it is rather than a server fault.
-    super::helpers::ensure_configured_dir(&dir, &state).await?;
+    // The file goes under the directory that was made, not the spelling.
+    let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
+    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
     let fp = file_path;
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write fixture type", move || {
@@ -744,8 +745,8 @@ pub(super) async fn put_venue(
             .into_response()
     })?;
 
+    let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
     let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
-    super::helpers::ensure_configured_dir(&dir, &state).await?;
     let fp = file_path;
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write venue", move || {

@@ -1110,15 +1110,23 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let _: crate::config::Playlist = serde_yaml_from_str(&args.yaml)?;
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
-        if let Some(parent) = path.parent() {
-            // Same rule as the web UI's playlist write and every other
-            // configured root: created only when it is inside the project. A
-            // `playlists_dir:` pointing elsewhere is the operator's to set up.
-            let project = crate::util::project_dir_of(self.config_store()?.path());
-            crate::util::create_dir_within_async(parent.to_path_buf(), project)
-                .await
-                .map_err(create_within_err)?;
-        }
+        // Same rule as the web UI's playlist write and every other configured
+        // root: created only when it is inside the project. A `playlists_dir:`
+        // pointing elsewhere is the operator's to set up.
+        //
+        // The file is then written under the directory that was made, not the
+        // spelling it was configured as -- those differ when the setting holds
+        // a `..`, and the spelling names a path that was never created.
+        let path = match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) => {
+                let project = crate::util::project_dir_of(self.config_store()?.path());
+                let created = crate::util::create_dir_within_async(parent.to_path_buf(), project)
+                    .await
+                    .map_err(create_within_err)?;
+                created.as_path().join(name)
+            }
+            _ => path,
+        };
         staged_write_string(&path, &args.yaml).await?;
         // Rebuild the player's playlist set so `list_playlists` /
         // `switch_playlist` see the new file without requiring a restart.
@@ -3184,10 +3192,13 @@ impl McpServer {
         // Created only when it is inside the project. A `songs:` pointing
         // elsewhere is the operator's to set up -- see `create_dir_within`.
         let project = crate::util::project_dir_of(&path);
-        crate::util::create_dir_within_async(songs.clone(), project)
+        let created = crate::util::create_dir_within_async(songs.clone(), project)
             .await
             .map_err(create_within_err)?;
-        crate::webui::safe_path::VerifiedRoot::new(&songs).map_err(safepath_err)
+        // The created path, not the configured spelling: VerifiedRoot
+        // canonicalizes, and a `..` spelling no longer resolves now that the
+        // stray intermediate is not made.
+        crate::webui::safe_path::VerifiedRoot::new(created.as_path()).map_err(safepath_err)
     }
 
     /// Resolves the configured lighting subdirectory (venues or fixture types)
@@ -3230,10 +3241,10 @@ impl McpServer {
             crate::util::project_dir_of(&config_path).join(rel_path)
         };
         let project = crate::util::project_dir_of(&config_path);
-        crate::util::create_dir_within_async(dir.clone(), project)
+        let created = crate::util::create_dir_within_async(dir.clone(), project)
             .await
             .map_err(create_within_err)?;
-        Ok(dir)
+        Ok(created.into_path_buf())
     }
 
     /// Resolves a single `.light` filename inside a lighting subdirectory,

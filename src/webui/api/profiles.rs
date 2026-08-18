@@ -201,7 +201,7 @@ pub(super) async fn put_profile(
     // fails if it is missing -- a creation after that call can never run.
     // Created only when it is inside the project: a `profiles_dir:` pointing
     // elsewhere is the operator's to set up.
-    super::helpers::ensure_configured_dir(&profiles_dir, &state).await?;
+    let profiles_dir = super::helpers::ensure_configured_dir(&profiles_dir, &state).await?;
 
     // codeql[rust/path-injection] filename is validated; path is verified via resolve_resource_path.
     let file_path = resolve_resource_path(&profiles_dir, &filename, "yaml")?;

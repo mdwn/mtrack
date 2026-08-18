@@ -522,9 +522,43 @@ impl std::error::Error for CreateWithinError {
 /// spelling like `songs/../real` is not equivalent to it — POSIX cannot resolve
 /// that spelling unless `songs` exists, which is exactly the stray intermediate
 /// this avoids making.
-pub fn create_dir_within(dir: &Path, project: &Path) -> Result<PathBuf, CreateWithinError> {
+/// A directory that [`create_dir_within`] made or accepted, resolved.
+///
+/// A newtype rather than a bare `PathBuf` so the obligation is the compiler's
+/// to enforce: the caller must use *this* path, because the spelling passed in
+/// may no longer resolve — creating deliberately leaves no stray intermediate
+/// behind, so `songs/../real` names a directory that was never made. Stating
+/// that in a doc comment was not enough; it was missed twice, once leaving
+/// every web UI songs endpoint answering "Root directory not found".
+#[must_use = "use this path rather than the one passed in, which may not resolve"]
+#[derive(Debug, Clone)]
+pub struct CreatedDir(PathBuf);
+
+impl CreatedDir {
+    /// The directory, borrowed.
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    /// The directory, owned.
+    pub fn into_path_buf(self) -> PathBuf {
+        self.0
+    }
+}
+
+impl std::ops::Deref for CreatedDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+pub fn create_dir_within(dir: &Path, project: &Path) -> Result<CreatedDir, CreateWithinError> {
     if dir.is_dir() {
-        return Ok(dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()));
+        return Ok(CreatedDir(
+            dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
+        ));
     }
     // `symlink_metadata` rather than `exists`, which follows the link and so
     // reports a dangling one as absent. Creation then fails deep inside
@@ -561,7 +595,7 @@ pub fn create_dir_within(dir: &Path, project: &Path) -> Result<PathBuf, CreateWi
     // something else — a window in which one could have become a symlink out of
     // the project.
     create_dir_all(&resolved).map_err(CreateWithinError::Io)?;
-    Ok(resolved)
+    Ok(CreatedDir(resolved))
 }
 
 /// [`create_dir_within`] for callers on a Tokio runtime, which keeps the
@@ -569,7 +603,7 @@ pub fn create_dir_within(dir: &Path, project: &Path) -> Result<PathBuf, CreateWi
 pub async fn create_dir_within_async(
     dir: PathBuf,
     project: PathBuf,
-) -> Result<PathBuf, CreateWithinError> {
+) -> Result<CreatedDir, CreateWithinError> {
     tokio::task::spawn_blocking(move || create_dir_within(&dir, &project))
         .await
         .map_err(|e| CreateWithinError::Io(std::io::Error::other(e)))?
@@ -1310,7 +1344,8 @@ mod project_dir_of_tests {
         let config = project.path().join("mtrack.yaml");
 
         let resolved = project_dir_of(&config);
-        super::create_dir_within(&resolved.join("songs"), &resolved).expect("created");
+        let _created =
+            super::create_dir_within(&resolved.join("songs"), &resolved).expect("created");
         assert!(project.path().join("songs").is_dir());
     }
 }
@@ -1318,9 +1353,9 @@ mod project_dir_of_tests {
 #[cfg(test)]
 mod create_dir_within_tests {
     use super::{create_dir_within, CreateWithinError};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
-    fn is_outside(result: Result<PathBuf, CreateWithinError>) -> bool {
+    fn is_outside(result: Result<super::CreatedDir, CreateWithinError>) -> bool {
         matches!(result, Err(CreateWithinError::Outside { .. }))
     }
 
@@ -1331,7 +1366,7 @@ mod create_dir_within_tests {
         let project = tempfile::tempdir().expect("tempdir");
         let songs = project.path().join("songs");
 
-        create_dir_within(&songs, project.path()).expect("created");
+        let _created = create_dir_within(&songs, project.path()).expect("created");
         assert!(songs.is_dir());
     }
 
@@ -1340,7 +1375,7 @@ mod create_dir_within_tests {
         let project = tempfile::tempdir().expect("tempdir");
         let nested = project.path().join("media/audio/songs");
 
-        create_dir_within(&nested, project.path()).expect("created");
+        let _created = create_dir_within(&nested, project.path()).expect("created");
         assert!(nested.is_dir());
     }
 
@@ -1484,7 +1519,7 @@ mod create_dir_within_tests {
             "the spelling resolves after all — this test proves nothing"
         );
         assert!(
-            std::fs::read_dir(&created).is_ok(),
+            std::fs::read_dir(created.as_path()).is_ok(),
             "cannot read what was made"
         );
     }
@@ -1499,7 +1534,10 @@ mod create_dir_within_tests {
         std::fs::create_dir(&songs).expect("songs");
 
         let returned = create_dir_within(&songs, project.path()).expect("accepted");
-        assert_eq!(returned, songs.canonicalize().expect("canonical"));
+        assert_eq!(
+            returned.as_path(),
+            songs.canonicalize().expect("canonical").as_path()
+        );
     }
 
     /// A symlink that does lead to a directory is simply used, wherever it
@@ -1512,7 +1550,7 @@ mod create_dir_within_tests {
         let link = project.path().join("songs");
         std::os::unix::fs::symlink(elsewhere.path(), &link).expect("symlink");
 
-        create_dir_within(&link, project.path()).expect("accepted");
+        let _created = create_dir_within(&link, project.path()).expect("accepted");
     }
 
     /// A file in the way outside the project is still reported as the file it
@@ -1538,7 +1576,7 @@ mod create_dir_within_tests {
         let project = tempfile::tempdir().expect("tempdir");
         let elsewhere = tempfile::tempdir().expect("tempdir");
 
-        create_dir_within(elsewhere.path(), project.path()).expect("accepted");
+        let _created = create_dir_within(elsewhere.path(), project.path()).expect("accepted");
     }
 
     /// Spelling is not containment. `project/songs` looks inside the project
@@ -1600,7 +1638,7 @@ mod create_dir_within_tests {
         let link = project.path().join("link");
         std::os::unix::fs::symlink(&real, &link).expect("symlink");
 
-        create_dir_within(&link.join("songs"), project.path()).expect("created");
+        let _created = create_dir_within(&link.join("songs"), project.path()).expect("created");
         assert!(real.join("songs").is_dir());
     }
 

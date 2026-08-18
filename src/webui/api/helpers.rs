@@ -101,14 +101,14 @@ pub(crate) fn resolve_resource_path(
 pub(crate) async fn ensure_configured_dir(
     dir: &std::path::Path,
     state: &crate::webui::server::WebUiState,
-) -> Result<(), axum::response::Response> {
+) -> Result<PathBuf, axum::response::Response> {
     let owned = dir.to_path_buf();
     let project = project_dir(state);
     let outcome =
         tokio::task::spawn_blocking(move || crate::util::create_dir_within(&owned, &project)).await;
 
     match outcome {
-        Ok(Ok(_created)) => Ok(()),
+        Ok(Ok(created)) => Ok(created.into_path_buf()),
         Ok(Err(e)) => {
             let status = match e {
                 crate::util::CreateWithinError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,

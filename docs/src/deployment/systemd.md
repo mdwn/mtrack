@@ -58,23 +58,24 @@ it did before. An entry you add by hand without that prefix is worse: the unit
 fails namespace setup and the service never starts, so there is no message
 explaining why.
 
-The generated unit also emits `RequiresMountsFor=` for these paths, so systemd waits for whatever
-they live on before starting mtrack. Without that, a library on a USB stick or network share is
-simply absent when the service starts, and `Restart=on-failure` exhausts the default start limit in
-a few seconds — leaving the unit failed for a drive that appeared a moment later.
+If your library lives on a drive that mounts late — a USB stick, SD card or network share — the
+generated unit retries for about two and a half minutes (`RestartSec=5` with a thirty-attempt,
+three-minute start limit) rather than giving up after the systemd default of five attempts in ten
+seconds.
 
-This works only for mounts systemd knows about: an fstab entry or a `.mount` unit. A drive mounted
-on demand by udisks2 has no unit while it is unmounted, so there is nothing to wait for and the
-service starts regardless. Give anything mtrack must not start without an fstab entry.
+It deliberately does *not* emit `RequiresMountsFor=`. That would make systemd wait for the mount,
+but it also implies `Requires=`, so a drive that blinks out mid-set would take the player down with
+it — a worse failure on a machine playing a show than a slow boot. If you have a mount that takes
+longer than the retry window, add `RequiresMountsFor=` to the unit yourself, knowing that cost.
 
 > **Upgrading an existing install: regenerate your unit.** mtrack no longer creates a configured
 > directory that lies outside the project — see
 > [Player Configuration](../configuration/player-config.md). If your `songs` (or `playlists_dir`,
 > `profiles_dir`, or a lighting directory) points outside the project and might be absent at boot,
 > because it lives on a drive that mounts late, startup now fails instead of quietly writing under
-> the mount point. A unit generated before this change has neither the `RequiresMountsFor=` that
-> waits for the drive nor the widened restart window that lets a late mount recover, so it can land
-> in a permanently failed state. Regenerate it:
+> the mount point. A unit generated before this change can land
+> in a permanently failed state -- it has neither the widened restart window that lets a late mount
+> recover nor this rule's clearer diagnostics. Regenerate it:
 >
 > ```
 > $ sudo mtrack systemd /mnt/storage /mnt/nas/songs > /etc/systemd/system/mtrack.service

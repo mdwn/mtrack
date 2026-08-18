@@ -120,7 +120,7 @@ pub(super) async fn put_playlist_by_name(
     // fails if it is missing -- a creation after that call can never run.
     // Created only when it is inside the project: a `playlists_dir:` pointing
     // elsewhere is the operator's to set up, like `songs` and the rest.
-    super::helpers::ensure_configured_dir(&playlists_dir, &state).await?;
+    let playlists_dir = super::helpers::ensure_configured_dir(&playlists_dir, &state).await?;
 
     // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
     // verified via canonicalize + starts_with containment in resolve_resource_path.
