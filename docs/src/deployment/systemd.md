@@ -27,25 +27,29 @@ not change the ownership. Skipping this step is the most common reason the
 service starts and then fails with permission errors that do not obviously point
 at permissions.
 
-Next, generate and install the systemd service file. Pass your project directory
-and the generated unit will name it in that reminder and declare it as a
-writable path:
+Next, generate and install the systemd service file. Pass your project
+directory:
 
 ```
 $ sudo mtrack systemd /mnt/storage > /etc/systemd/system/mtrack.service
 ```
 
-The path is optional. Without it the unit is the same except that the reminder
-stays generic and no `ReadWritePaths` is declared.
+Passing it buys you the stricter sandbox. The unit then sets
+`ProtectSystem=strict` — the whole filesystem read-only except `/dev`, `/proc`
+and `/sys` — and excepts your project directory with
+`ReadWritePaths`, which is the one path `mtrack` has to write.
 
-That declaration is not what lets `mtrack` write. `ProtectSystem=full` already
-leaves everything outside `/usr`, `/boot` and `/efi` writable, so the service
-writes your project directory either way — what decides it is the ownership you
-set above. `ReadWritePaths` states the requirement in the unit, and would become
-necessary if the sandbox were ever tightened to `ProtectSystem=strict`.
+The path is optional, and without it the unit falls back to
+`ProtectSystem=full`: `/usr`, `/boot` and `/efi` read-only, everything else
+writable. That is weaker, and it is the fallback only because a unit that cannot
+name the directory to except cannot safely make the rest read-only. A service
+generated that way still runs; it is simply less contained.
 
-So if the service is failing on permissions, the `chown` is the fix, not
-regenerating the unit with a path.
+Note that neither setting grants the `mtrack` user permission to write your
+library — that is the `chown` above, and it is required either way. If the
+service fails to start with `Read-only file system (os error 30)`, the sandbox
+is the cause; if it fails with a permission error naming a file, the ownership
+is.
 
 The service expects that `mtrack` is available at the location `/usr/local/bin/mtrack`. It also
 expects you to define your project directory in `/etc/default/mtrack`. This file

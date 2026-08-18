@@ -53,7 +53,12 @@ echo ""
 echo "--- Test: Service installation ---"
 
 check "service file exists" test -f /etc/systemd/system/mtrack.service
-check "service file uses ProtectSystem=full" grep -q "ProtectSystem=full" /etc/systemd/system/mtrack.service
+# Generated with a library path, so the sandbox is the strict one: the whole
+# filesystem read-only except the library named by ReadWritePaths. Without a
+# path the unit falls back to ProtectSystem=full, which is covered by the unit
+# tests — here the point is that strict actually starts and writes.
+check "service file uses ProtectSystem=strict" grep -q "^ProtectSystem=strict" /etc/systemd/system/mtrack.service
+check "service file does not fall back to ProtectSystem=full" bash -c '! grep -q "^ProtectSystem=full" /etc/systemd/system/mtrack.service' 
 check "service file does not contain ProtectHome" bash -c '! grep -q "ProtectHome" /etc/systemd/system/mtrack.service'
 check "environment file exists" test -f /etc/default/mtrack
 check "environment file sets MTRACK_PATH" grep -q "MTRACK_PATH=$MTRACK_PATH" /etc/default/mtrack

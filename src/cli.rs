@@ -41,9 +41,10 @@ ExecReload=/bin/kill -HUP $MAINPID
 # That user also needs read/write access to your library and config directory —
 # the $MTRACK_PATH set in /etc/default/mtrack. mtrack writes configuration,
 # songs, playlists and lighting files there, and a freshly created system user
-# owns none of it. ProtectSystem=full below leaves the directory writable as far
-# as the sandbox is concerned, which is not the same as the user being allowed
-# to write it. Grant it with, e.g.:
+# owns none of it. The sandbox settings below govern which paths this service may
+# write at all; they do not grant the user permission to write them, which is a
+# separate thing and the more common cause of a failed start. Grant it with,
+# e.g.:
 {{ CHOWN_HINT }}# (or add the mtrack user to a group that already owns the directory).
 User=mtrack
 Group=mtrack
@@ -53,12 +54,9 @@ SupplementaryGroups=audio
 AmbientCapabilities=CAP_SYS_NICE
 CapabilityBoundingSet=CAP_SYS_NICE
 
-# Filesystem restrictions. The filesystem is read-only except for the project
-# directory, which mtrack writes to for configuration, songs, playlists, and
-# lighting files. ProtectSystem=full makes /usr, /boot, and /efi read-only
-# while leaving other paths writable for the mtrack user.
-ProtectSystem=full
-PrivateTmp=true
+# Filesystem restrictions. mtrack writes configuration, songs, playlists and
+# lighting files to the project directory, and needs that one path writable.
+{{ PROTECT_SYSTEM }}PrivateTmp=true
 {{ READ_WRITE_PATHS }}
 
 # Kernel restrictions.
@@ -296,15 +294,30 @@ fn render_systemd_service(executable_path: &str, library_path: Option<&str>) -> 
         Some(path) => format!("#   sudo chown -R mtrack:mtrack \"{path}\"\n"),
         None => "#   sudo chown -R mtrack:mtrack /path/to/library\n".to_string(),
     };
+    // `strict` makes the whole filesystem read-only except /dev, /proc and /sys,
+    // so it is only safe when the unit can name the one directory that has to
+    // stay writable. Given a path we can, and the service is hardened as far as
+    // it goes; without one, `strict` would leave mtrack unable to write its own
+    // config and the service would fail on startup, so `full` remains.
+    let protect_system = match library_path {
+        Some(_) => "# The whole filesystem is read-only except the library named below.\n\
+                    ProtectSystem=strict\n"
+            .to_string(),
+        None => "# /usr, /boot and /efi are read-only; other paths stay writable, since\n\
+                 # this unit was generated without a library path and cannot name the one\n\
+                 # directory to except. Regenerate as `mtrack systemd /your/library` to\n\
+                 # get the stricter sandbox.\n\
+                 ProtectSystem=full\n"
+            .to_string(),
+    };
     let read_write_paths = match library_path {
         // Blank line included so the rendered unit does not gain a stray one
         // when there is nothing to declare.
         None => String::new(),
         Some(path) => format!(
-            "\n# Declares the library writable. Not what permits the write today —\n\
-             # ProtectSystem=full already leaves it writable and the ownership\n\
-             # decides the rest — but it states the requirement, and becomes\n\
-             # necessary if the sandbox is ever tightened to strict.\n\
+            "\n# The one path excepted from ProtectSystem=strict above. Without this\n\
+             # the service cannot write its own configuration and fails on\n\
+             # startup with `Read-only file system (os error 30)`.\n\
              # The leading `-` keeps a missing directory from failing the unit: \
              systemd\n# refuses to start a service whose ReadWritePaths does not \
              exist, and this\n# unit is generated before the library necessarily \
@@ -314,6 +327,7 @@ fn render_systemd_service(executable_path: &str, library_path: Option<&str>) -> 
     SYSTEMD_SERVICE
         .replace("{{ CURRENT_EXECUTABLE }}", executable_path)
         .replace("{{ CHOWN_HINT }}", &chown_hint)
+        .replace("{{ PROTECT_SYSTEM }}", &protect_system)
         .replace("{{ READ_WRITE_PATHS }}\n", &read_write_paths)
         .replace("{{ READ_WRITE_PATHS }}", &read_write_paths)
 }
@@ -569,31 +583,75 @@ mod tests {
             );
         }
 
+        /// Whether the unit sets a directive, ignoring any comment that
+        /// mentions it. A substring search cannot tell the two apart, and the
+        /// generated unit deliberately names directives in its own prose.
+        fn sets_directive(unit: &str, directive: &str) -> bool {
+            unit.lines()
+                .any(|line| line.trim_start().starts_with(directive))
+        }
+
         #[test]
-        fn does_not_contain_protect_system_strict() {
+        fn does_not_contain_protect_system_strict_without_a_library_path() {
+            // Without a path the unit cannot name the directory to except, and
+            // `strict` would leave mtrack unable to write its own config: the
+            // service fails on startup with `Read-only file system (os error
+            // 30)`, verified in the container test.
             let result = render_systemd_service("/usr/bin/mtrack", None);
             assert!(
-                !result.contains("ProtectSystem=strict"),
-                "ProtectSystem=strict prevents mtrack from writing to the project \
-                 directory — use ProtectSystem=full instead"
+                !sets_directive(&result, "ProtectSystem=strict"),
+                "ProtectSystem=strict with no ReadWritePaths makes the project directory \
+                 read-only and the service fails to start"
             );
+        }
+
+        /// `strict` and a writable library must arrive together, always.
+        ///
+        /// Either alone is a broken unit: `strict` without the exception cannot
+        /// write the config, and this is the pairing the whole hardening rests
+        /// on, so it is asserted rather than left to the two branches agreeing
+        /// by construction.
+        #[test]
+        fn protect_system_strict_never_appears_without_a_writable_library() {
+            for path in [None, Some("/srv/songs"), Some("/opt/my songs")] {
+                let result = render_systemd_service("/usr/bin/mtrack", path);
+                if sets_directive(&result, "ProtectSystem=strict") {
+                    assert!(
+                        sets_directive(&result, "ReadWritePaths="),
+                        "strict without a writable path for {path:?}: the service could not \
+                         write its own configuration"
+                    );
+                }
+                if sets_directive(&result, "ReadWritePaths=") {
+                    assert!(
+                        sets_directive(&result, "ProtectSystem=strict"),
+                        "a writable path was declared for {path:?} but the filesystem was not \
+                         restricted, so the declaration does nothing"
+                    );
+                }
+            }
+        }
+
+        /// A library path buys the stricter sandbox.
+        #[test]
+        fn a_library_path_hardens_the_filesystem() {
+            let result = render_systemd_service("/usr/bin/mtrack", Some("/srv/songs"));
+            assert!(sets_directive(&result, "ProtectSystem=strict"));
+            assert!(!sets_directive(&result, "ProtectSystem=full"));
         }
 
         #[test]
         fn allows_write_access_to_project_dir() {
-            // ProtectSystem=full makes /usr, /boot, /efi read-only but leaves
-            // other paths writable so mtrack can write config, songs, playlists,
-            // and lighting files to the project directory.
+            // Without a library path: `full` makes /usr, /boot and /efi
+            // read-only and leaves everything else writable, so mtrack can
+            // still write config, songs, playlists and lighting files.
             let result = render_systemd_service("/usr/bin/mtrack", None);
             assert!(
-                result.contains("ProtectSystem=full"),
-                "ProtectSystem must be 'full' (not 'strict') so the project \
-                 directory remains writable"
+                sets_directive(&result, "ProtectSystem=full"),
+                "with no library path to except, ProtectSystem must stay 'full' or the \
+                 project directory becomes read-only"
             );
-            assert!(
-                !result.contains("ProtectSystem=strict"),
-                "ProtectSystem=strict would make the project directory read-only"
-            );
+            assert!(!sets_directive(&result, "ProtectSystem=strict"));
         }
 
         #[test]
