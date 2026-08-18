@@ -108,7 +108,7 @@ pub(crate) async fn ensure_configured_dir(
         tokio::task::spawn_blocking(move || crate::util::create_dir_within(&owned, &project)).await;
 
     match outcome {
-        Ok(Ok(())) => Ok(()),
+        Ok(Ok(_created)) => Ok(()),
         Ok(Err(e)) => {
             let status = match e {
                 crate::util::CreateWithinError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,

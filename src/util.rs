@@ -516,9 +516,15 @@ impl std::error::Error for CreateWithinError {
 ///
 /// A directory that already exists is accepted wherever it is: the restriction
 /// is on *creating* one, not on using a path the operator set up themselves.
-pub fn create_dir_within(dir: &Path, project: &Path) -> Result<(), CreateWithinError> {
+///
+/// Returns the directory that now exists, resolved. Callers must use it rather
+/// than the path they passed in: creation follows the resolved path, and a
+/// spelling like `songs/../real` is not equivalent to it — POSIX cannot resolve
+/// that spelling unless `songs` exists, which is exactly the stray intermediate
+/// this avoids making.
+pub fn create_dir_within(dir: &Path, project: &Path) -> Result<PathBuf, CreateWithinError> {
     if dir.is_dir() {
-        return Ok(());
+        return Ok(dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()));
     }
     // `symlink_metadata` rather than `exists`, which follows the link and so
     // reports a dangling one as absent. Creation then fails deep inside
@@ -554,7 +560,8 @@ pub fn create_dir_within(dir: &Path, project: &Path) -> Result<(), CreateWithinE
     // `songs/../real`, and it re-walks components that were checked as
     // something else — a window in which one could have become a symlink out of
     // the project.
-    create_dir_all(&resolved).map_err(CreateWithinError::Io)
+    create_dir_all(&resolved).map_err(CreateWithinError::Io)?;
+    Ok(resolved)
 }
 
 /// [`create_dir_within`] for callers on a Tokio runtime, which keeps the
@@ -562,7 +569,7 @@ pub fn create_dir_within(dir: &Path, project: &Path) -> Result<(), CreateWithinE
 pub async fn create_dir_within_async(
     dir: PathBuf,
     project: PathBuf,
-) -> Result<(), CreateWithinError> {
+) -> Result<PathBuf, CreateWithinError> {
     tokio::task::spawn_blocking(move || create_dir_within(&dir, &project))
         .await
         .map_err(|e| CreateWithinError::Io(std::io::Error::other(e)))?
@@ -643,7 +650,7 @@ fn is_within(path: &Path, root: &Path) -> bool {
     root.canonicalize().is_ok_and(|root| path.starts_with(root))
 }
 
-/// The project directory implied by a config file/// The project directory implied by a config file's path: the directory holding
+/// The project directory implied by a config file's path: the directory holding
 /// it, and the only place mtrack creates directories on a config's behalf.
 ///
 /// [`Path::parent`] answers `Some("")` rather than `None` for a bare filename,
@@ -1311,9 +1318,9 @@ mod project_dir_of_tests {
 #[cfg(test)]
 mod create_dir_within_tests {
     use super::{create_dir_within, CreateWithinError};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
-    fn is_outside(result: Result<(), CreateWithinError>) -> bool {
+    fn is_outside(result: Result<PathBuf, CreateWithinError>) -> bool {
         matches!(result, Err(CreateWithinError::Outside { .. }))
     }
 
@@ -1447,20 +1454,52 @@ mod create_dir_within_tests {
         assert!(!message.contains("File exists"), "{message}");
     }
 
-    /// Creation must use the path that was checked, not the spelling it came
-    /// in as — which would walk components already resolved to something else
-    /// and leave stray intermediates behind.
+    /// Creation uses the path that was checked, not the spelling it came in as
+    /// — which would walk components already resolved to something else and
+    /// leave stray intermediates behind.
+    ///
+    /// The returned path is the point: POSIX cannot resolve `songs/../real`
+    /// unless `songs` exists, so a caller that kept its own spelling would be
+    /// told the directory was created and then fail to read it.
     #[test]
-    fn a_benign_traversal_creates_no_stray_intermediate() {
+    fn a_benign_traversal_returns_a_path_the_caller_can_use() {
         let project = tempfile::tempdir().expect("tempdir");
+        let configured = project.path().join("songs/../real");
 
-        create_dir_within(&project.path().join("songs/../real"), project.path()).expect("created");
+        let created = create_dir_within(&configured, project.path()).expect("created");
 
         assert!(project.path().join("real").is_dir(), "target not created");
         assert!(
             !project.path().join("songs").exists(),
             "left a stray intermediate behind"
         );
+        // The returned path resolves; the configured spelling does not.
+        assert!(
+            created.is_dir(),
+            "returned {} is unusable",
+            created.display()
+        );
+        assert!(
+            !configured.is_dir(),
+            "the spelling resolves after all — this test proves nothing"
+        );
+        assert!(
+            std::fs::read_dir(&created).is_ok(),
+            "cannot read what was made"
+        );
+    }
+
+    /// An existing directory also comes back resolved, so callers get the same
+    /// kind of path either way rather than one that depends on whether they
+    /// happened to be first.
+    #[test]
+    fn an_existing_directory_is_returned_resolved() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let songs = project.path().join("songs");
+        std::fs::create_dir(&songs).expect("songs");
+
+        let returned = create_dir_within(&songs, project.path()).expect("accepted");
+        assert_eq!(returned, songs.canonicalize().expect("canonical"));
     }
 
     /// A symlink that does lead to a directory is simply used, wherever it

@@ -67,6 +67,20 @@ This works only for mounts systemd knows about: an fstab entry or a `.mount` uni
 on demand by udisks2 has no unit while it is unmounted, so there is nothing to wait for and the
 service starts regardless. Give anything mtrack must not start without an fstab entry.
 
+> **Upgrading an existing install: regenerate your unit.** mtrack no longer creates a configured
+> directory that lies outside the project — see
+> [Player Configuration](../configuration/player-config.md). If your `songs` (or `playlists_dir`,
+> `profiles_dir`, or a lighting directory) points outside the project and might be absent at boot,
+> because it lives on a drive that mounts late, startup now fails instead of quietly writing under
+> the mount point. A unit generated before this change has neither the `RequiresMountsFor=` that
+> waits for the drive nor the widened restart window that lets a late mount recover, so it can land
+> in a permanently failed state. Regenerate it:
+>
+> ```
+> $ sudo mtrack systemd /mnt/storage /mnt/nas/songs > /etc/systemd/system/mtrack.service
+> $ sudo systemctl daemon-reload
+> ```
+
 These paths are baked into the unit when it is generated. They are not read from
 `$MTRACK_PATH`, so if you move your library later, regenerate the unit as well as
 editing `/etc/default/mtrack`.

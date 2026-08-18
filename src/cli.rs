@@ -26,10 +26,21 @@ use std::fmt::Display;
 const SYSTEMD_SERVICE: &str = r#"
 [Unit]
 Description=multitrack player
+# Paired with RestartSec=5 below: thirty attempts inside three minutes, so a
+# late mount has about two and a half minutes to turn up before the unit gives
+# up and stays failed for someone to look at.
+StartLimitIntervalSec=180
+StartLimitBurst=30
 {{ REQUIRES_MOUNTS_FOR }}
 [Service]
 Type=simple
 Restart=on-failure
+# Retry slowly and for long enough that a drive appearing late is recovered
+# from. The defaults give up after five attempts in ten seconds, which a USB
+# stick or network share can easily miss -- and a unit that has hit its start
+# limit stays failed even once the mount lands.
+RestartSec=5
+
 EnvironmentFile=-/etc/default/mtrack
 ExecStart={{ CURRENT_EXECUTABLE }} start "$MTRACK_PATH"
 ExecReload=/bin/kill -HUP $MAINPID
@@ -823,6 +834,24 @@ mod tests {
                 unit.contains(r#"RequiresMountsFor="/media/usb/My Songs""#),
                 "{unit}"
             );
+        }
+
+        /// A drive that mounts late must not exhaust the start limit before it
+        /// appears: the systemd defaults give up after five attempts in ten
+        /// seconds, and a unit that has hit its limit stays failed even once
+        /// the mount lands.
+        #[test]
+        fn a_late_mount_has_time_to_appear() {
+            let unit = render_systemd_service("/usr/local/bin/mtrack", &[]).unwrap();
+
+            assert!(sets_directive(&unit, "RestartSec="), "{unit}");
+            assert!(sets_directive(&unit, "StartLimitIntervalSec="), "{unit}");
+            assert!(sets_directive(&unit, "StartLimitBurst="), "{unit}");
+
+            // The limit directives order the unit and belong in [Unit].
+            let limit = unit.find("StartLimitIntervalSec=").expect("directive");
+            let service = unit.find("[Service]").expect("section");
+            assert!(limit < service, "start limits must precede [Service]");
         }
 
         /// Nothing to wait for when no path was named.

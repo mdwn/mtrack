@@ -192,15 +192,20 @@ pub async fn start(
     // turns a typo into an empty directory and a puzzling "no songs found", and
     // asks the service to write outside the paths the generated systemd unit
     // fences it into.
-    let songs_path = player_config.songs(player_path);
+    let configured_songs = player_config.songs(player_path);
     let project_dir = crate::util::project_dir_of(player_path);
-    let creating = !songs_path.is_dir();
-    crate::util::create_dir_within(&songs_path, &project_dir).map_err(|e| match e {
-        crate::util::CreateWithinError::Io(io) => {
-            annotate_write(crate::util::WriteTarget::Directory(&songs_path), io)
-        }
-        outside => Box::<dyn Error>::from(outside.to_string()),
-    })?;
+    let creating = !configured_songs.is_dir();
+    // The resolved directory, not the spelling it was configured as. Creation
+    // follows the resolved path, and `songs/../real` is not equivalent to it:
+    // POSIX cannot resolve that spelling unless `songs` exists, so reading the
+    // configured path back would fail with a bare "No such file or directory".
+    let songs_path =
+        crate::util::create_dir_within(&configured_songs, &project_dir).map_err(|e| match e {
+            crate::util::CreateWithinError::Io(io) => {
+                annotate_write(crate::util::WriteTarget::Directory(&configured_songs), io)
+            }
+            refused => Box::<dyn Error>::from(refused.to_string()),
+        })?;
     // Logged after the fact: announcing the creation first meant a refusal
     // arrived immediately behind "Creating songs directory at ...".
     if creating {
