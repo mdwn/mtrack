@@ -1111,14 +1111,13 @@ impl McpServer {
         let _: crate::config::Playlist = serde_yaml_from_str(&args.yaml)?;
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
         if let Some(parent) = path.parent() {
-            crate::util::create_dir_all_async(parent)
+            // Same rule as the web UI's playlist write and every other
+            // configured root: created only when it is inside the project. A
+            // `playlists_dir:` pointing elsewhere is the operator's to set up.
+            let project = crate::util::project_dir_of(self.config_store()?.path());
+            crate::util::create_dir_within_async(parent.to_path_buf(), project)
                 .await
-                .map_err(|e| {
-                    McpError::internal_error(
-                        format!("failed to create {}: {e}", parent.display()),
-                        None,
-                    )
-                })?;
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         }
         staged_write_string(&path, &args.yaml).await?;
         // Rebuild the player's playlist set so `list_playlists` /

@@ -279,6 +279,40 @@ echo ""
 echo "  What the operator sees:"
 echo "$blocked_log" | grep -A 4 "Error:" | tail -12 | sed 's/^/    /'
 
+echo ""
+echo "--- Test: A blocked directory names itself, not the library (#408) ---"
+
+# Restores the guard for WriteTarget::Directory, which nothing else covers end
+# to end. The other blocked-write case above fails on `mtrack.yaml` -- a *file*
+# -- whose parent happens to be the right answer either way, so a regression to
+# WriteTarget::File for the directory branch would pass the suite unnoticed.
+#
+# The decoy unit is still installed, so the library is read-only for the
+# service. Giving it a config it can read moves the failure past the config
+# write and onto creating the songs directory, which is inside the project and
+# therefore mtrack's to make -- if only it could write there.
+cat > "$MTRACK_PATH/mtrack.yaml" <<YAML
+songs: songs
+YAML
+chown mtrack:mtrack "$MTRACK_PATH/mtrack.yaml"
+rm -rf "$MTRACK_PATH/songs"
+
+dir_log="$(run_failing_start)"
+
+check "the blocked songs directory was the failure" \
+    bash -c 'grep -qi "read-only file system" <<< "$0"' "$dir_log"
+check "the advice names the songs directory itself" \
+    bash -c "grep -q 'Add $MTRACK_PATH/songs to ReadWritePaths=' <<< \"\$0\"" "$dir_log"
+# The regression itself: naming the parent is what WriteTarget::File would do.
+check "the advice does not name the library instead" \
+    bash -c "! grep -q 'Add $MTRACK_PATH to ReadWritePaths=' <<< \"\$0\"" "$dir_log"
+
+echo ""
+echo "  What the operator sees:"
+echo "$dir_log" | grep -A 2 "Error:" | tail -6 | sed 's/^/    /'
+
+rm -f "$MTRACK_PATH/mtrack.yaml"
+
 # Put the working unit back. Without this the case has to stay last forever,
 # and a second run of this script in the same container fails the installation
 # checks against the decoy unit it left behind.
