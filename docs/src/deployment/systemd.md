@@ -36,8 +36,23 @@ $ sudo mtrack systemd /mnt/storage > /etc/systemd/system/mtrack.service
 
 Passing it buys you the stricter sandbox. The unit then sets
 `ProtectSystem=strict` — the whole filesystem read-only except `/dev`, `/proc`
-and `/sys` — and excepts your project directory with
-`ReadWritePaths`, which is the one path `mtrack` has to write.
+and `/sys` — and excepts what you named with `ReadWritePaths`.
+
+**List every directory mtrack writes, not just the library.** `songs`,
+`playlists_dir`, `profiles_dir` and `samples` are used as given when they are
+absolute paths, so a config with `songs: /mnt/nas/songs` writes outside the
+project directory:
+
+```
+$ sudo mtrack systemd /mnt/storage /mnt/nas/songs > /etc/systemd/system/mtrack.service
+```
+
+A directory that is not listed is read-only, and the service fails on its first
+write there with `Read-only file system (os error 30)`.
+
+These paths are baked into the unit when it is generated. They are not read from
+`$MTRACK_PATH`, so if you move your library later, regenerate the unit as well as
+editing `/etc/default/mtrack`.
 
 The path is optional, and without it the unit falls back to
 `ProtectSystem=full`: `/usr`, `/boot` and `/efi` read-only, everything else
@@ -58,13 +73,6 @@ should contain one variable: `MTRACK_PATH`:
 ```
 # The project directory for mtrack (contains songs, config, playlists, lighting).
 MTRACK_PATH=/mnt/storage
-```
-
-Make sure the `mtrack` user has read **and write** access to the project directory so the
-web UI can manage configuration, songs, playlists, and lighting files:
-
-```
-$ sudo chown -R mtrack:mtrack /mnt/storage
 ```
 
 Once that's defined, you can start it with:

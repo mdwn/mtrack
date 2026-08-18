@@ -48,6 +48,16 @@ check() {
     fi
 }
 
+# Asserts a pattern is absent from a file that must exist.
+#
+# `! grep -q` alone reports success when the file is missing, because grep exits
+# 2 rather than 1 — so a build that stopped generating the unit produced one
+# honest failure and several spurious passes.
+absent_from() {
+    local pattern="$1" file="$2"
+    test -f "$file" && ! grep -q "$pattern" "$file"
+}
+
 echo "=== mtrack systemd integration test ==="
 echo ""
 echo "--- Test: Service installation ---"
@@ -58,8 +68,8 @@ check "service file exists" test -f /etc/systemd/system/mtrack.service
 # path the unit falls back to ProtectSystem=full, which is covered by the unit
 # tests — here the point is that strict actually starts and writes.
 check "service file uses ProtectSystem=strict" grep -q "^ProtectSystem=strict" /etc/systemd/system/mtrack.service
-check "service file does not fall back to ProtectSystem=full" bash -c '! grep -q "^ProtectSystem=full" /etc/systemd/system/mtrack.service' 
-check "service file does not contain ProtectHome" bash -c '! grep -q "ProtectHome" /etc/systemd/system/mtrack.service'
+check "service file does not fall back to ProtectSystem=full" absent_from "^ProtectSystem=full" /etc/systemd/system/mtrack.service 
+check "service file does not contain ProtectHome" absent_from "ProtectHome" /etc/systemd/system/mtrack.service
 check "environment file exists" test -f /etc/default/mtrack
 check "environment file sets MTRACK_PATH" grep -q "MTRACK_PATH=$MTRACK_PATH" /etc/default/mtrack
 
@@ -70,7 +80,7 @@ check "environment file sets MTRACK_PATH" grep -q "MTRACK_PATH=$MTRACK_PATH" /et
 check "service file documents the library permissions" grep -q "read/write access" /etc/systemd/system/mtrack.service
 check "service file names the library in the chown hint" grep -q "chown -R mtrack:mtrack \"$MTRACK_PATH\"" /etc/systemd/system/mtrack.service
 check "service file declares the library writable" grep -q "ReadWritePaths=-\"$MTRACK_PATH\"" /etc/systemd/system/mtrack.service
-check "service file has no unrendered placeholders" bash -c '! grep -q "{{" /etc/systemd/system/mtrack.service' 
+check "service file has no unrendered placeholders" absent_from "{{" /etc/systemd/system/mtrack.service 
 
 echo ""
 echo "--- Test: Service startup ---"
