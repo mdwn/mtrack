@@ -58,6 +58,25 @@ absent_from() {
     test -f "$file" && ! grep -q "$pattern" "$file"
 }
 
+# Starts the service for a failure case and returns only that attempt's journal.
+#
+# `reset-failed` because a phase that leaves the unit restart-looping trips
+# systemd's start limiter, and the next `systemctl start` is refused outright --
+# which reads as "the diagnostic is missing" when the service never ran at all.
+#
+# The cursor file because two phases sharing `tail -50` see each other's output,
+# so one phase's message satisfies the other's assertions.
+run_failing_start() {
+    systemctl reset-failed mtrack >/dev/null 2>&1 || true
+    journalctl -u mtrack --no-pager --cursor-file=/tmp/mtrack.cursor >/dev/null 2>&1 || true
+    # Expected to fail, and to keep failing: the point is what it says on the
+    # way down, so a non-zero exit must not end the script.
+    systemctl start mtrack >/dev/null 2>&1 || true
+    sleep 3
+    systemctl stop mtrack >/dev/null 2>&1 || true
+    journalctl -u mtrack --no-pager --cursor-file=/tmp/mtrack.cursor 2>&1
+}
+
 echo "=== mtrack systemd integration test ==="
 echo ""
 echo "--- Test: Service installation ---"
@@ -121,6 +140,140 @@ echo "--- Test: Service stop ---"
 
 systemctl stop mtrack
 check "service stopped cleanly" bash -c '! systemctl is-active mtrack'
+
+echo ""
+echo "--- Test: A write denied by ownership explains itself (#408) ---"
+
+# The other half of the advice, and the half that cannot be checked by reading
+# the code: it names the account the service runs as, taken from $USER, on the
+# belief that systemd sets it from the unit's User=. If that belief is wrong
+# every real deployment gets the vaguer wording instead of a command to run.
+#
+# The library stays writable by the unit -- this is ownership, not the sandbox --
+# so the library is handed to root and mtrack is left unable to create its
+# config in it.
+systemctl stop mtrack >/dev/null 2>&1 || true
+rm -f "$MTRACK_PATH/mtrack.yaml"
+chown -R root:root "$MTRACK_PATH"
+chmod 755 "$MTRACK_PATH"
+
+denied_log="$(run_failing_start)"
+
+# The control: if the write somehow succeeded there is no advice to assert.
+check "the ownership actually denied the write" \
+    bash -c 'grep -qi "permission denied" <<< "$0"' "$denied_log"
+check "the failure blames ownership rather than the sandbox" \
+    bash -c 'grep -q "owns nothing it did not create" <<< "$0"' "$denied_log"
+check "the failure names the service account, so systemd does set USER" \
+    bash -c "grep -q 'chown -R mtrack:mtrack $MTRACK_PATH' <<< \"\$0\"" "$denied_log"
+
+echo ""
+echo "  What the operator sees:"
+echo "$denied_log" | grep -A 2 "Error:" | tail -6 | sed 's/^/    /'
+
+# Hand it back, so the sandbox case below fails for its own reason.
+chown -R mtrack:mtrack "$MTRACK_PATH"
+
+echo ""
+echo "--- Test: A blocked directory names itself, not its parent (#408) ---"
+
+# The regression guard for the review's worst finding. `songs` is a directory,
+# and the advice used to name its *parent* -- so a blocked /var/lib/outside-songs
+# told the operator to unseal or chown /var/lib, handing a system account most
+# of the machine and defeating the sandbox this message exists to explain.
+#
+# A directory that failed to be created cannot be inspected to find out it was
+# meant to be one, which is why the caller has to say so; nothing but an
+# end-to-end run proves the caller actually does.
+OUTSIDE_SONGS=/var/lib/outside-songs
+rm -rf "$OUTSIDE_SONGS"
+
+# The unit here is the good one: the library is writable, and only the songs
+# directory is out of bounds.
+cat > "$MTRACK_PATH/mtrack.yaml" <<YAML
+songs: $OUTSIDE_SONGS
+YAML
+chown mtrack:mtrack "$MTRACK_PATH/mtrack.yaml"
+
+outside_log="$(run_failing_start)"
+
+check "the songs directory outside the sandbox was blocked" \
+    bash -c 'grep -qi "read-only file system" <<< "$0"' "$outside_log"
+check "the failure names the songs directory itself" \
+    bash -c "grep -q 'Add $OUTSIDE_SONGS to ReadWritePaths=' <<< \"\$0\"" "$outside_log"
+# The finding itself: /var/lib is the parent, and naming it is the bug.
+# systemd bind-mounts each ReadWritePaths= entry and cannot mount what is not
+# there, so an operator who pastes a missing path in gets a unit that fails
+# namespace setup and never starts -- no diagnostic at all, which is worse than
+# the failure they began with.
+check "the failure says to create the missing directory first" \
+    bash -c "grep -q 'Create $OUTSIDE_SONGS first' <<< \"\$0\"" "$outside_log"
+check "the failure does not name the parent directory" \
+    bash -c '! grep -q "Add /var/lib to ReadWritePaths=" <<< "$0"' "$outside_log"
+
+echo ""
+echo "  What the operator sees:"
+echo "$outside_log" | grep -A 2 "Error:" | tail -6 | sed 's/^/    /'
+
+rm -f "$MTRACK_PATH/mtrack.yaml"
+
+echo ""
+echo "--- Test: A blocked write explains itself (#408) ---"
+
+# Everything above proves the sandbox works when it is configured correctly.
+# This proves the *failure* is diagnosable, which is the part an operator
+# actually meets: a unit whose ReadWritePaths names some other directory leaves
+# the library read-only, and mtrack then dies on the first config write with
+# `Read-only file system (os error 30)` for a directory root owns outright.
+#
+# Runs last: it replaces the unit file.
+# Generated to a temp file and moved into place only on success. Redirecting
+# straight at the unit truncates it first, so a generator that failed for any
+# reason would leave an empty unit and the four checks below would report a
+# missing diagnostic rather than a unit that never generated.
+cp /etc/systemd/system/mtrack.service /tmp/mtrack.service.good
+if mtrack systemd /var/lib/decoy > /tmp/mtrack.service.decoy; then
+    mv /tmp/mtrack.service.decoy /etc/systemd/system/mtrack.service
+    systemctl daemon-reload
+    rm -f "$MTRACK_PATH/mtrack.yaml"
+else
+    fail "could not generate a unit for the blocked-write case"
+fi
+
+blocked_log="$(run_failing_start)"
+
+# The control: without it, a run where mtrack started *fine* would pass every
+# assertion below by never having failed at all.
+check "the misconfigured sandbox actually blocked the write" \
+    bash -c 'grep -qi "read-only file system" <<< "$0"' "$blocked_log"
+check "the failure names ReadWritePaths as the cause" \
+    bash -c 'grep -q "ReadWritePaths" <<< "$0"' "$blocked_log"
+check "the failure says permissions are not the cause" \
+    bash -c 'grep -q "permissions are not the cause" <<< "$0"' "$blocked_log"
+# Asserts the regenerate command, not just the path: the path alone appears in
+# unrelated INFO lines all over the journal, so that assertion passed with the
+# explanation removed entirely.
+check "the failure gives the fix, naming the blocked directory" \
+    bash -c "grep -q 'Add $MTRACK_PATH to ReadWritePaths=' <<< \"\$0\"" "$blocked_log"
+
+# Printed whether or not the checks passed: the assertions above match
+# substrings, and a mangled message -- newlines escaped, the path missing --
+# satisfies them while being no use to the operator who has to read it.
+echo ""
+echo "  What the operator sees:"
+echo "$blocked_log" | grep -A 4 "Error:" | tail -12 | sed 's/^/    /'
+
+# Put the working unit back. Without this the case has to stay last forever,
+# and a second run of this script in the same container fails the installation
+# checks against the decoy unit it left behind.
+mv /tmp/mtrack.service.good /etc/systemd/system/mtrack.service
+systemctl daemon-reload
+# The phases above deliberately leave the unit restart-looping, which trips
+# systemd's start limiter. Without clearing it the very next `systemctl start`
+# -- the one at the top of a second run -- is refused with "start request
+# repeated too quickly", failing the installation checks for a reason that has
+# nothing to do with the code under test.
+systemctl reset-failed mtrack >/dev/null 2>&1 || true
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

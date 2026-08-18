@@ -197,6 +197,193 @@ pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::remove_file(&staged)
 }
 
+/// Explains a write failure whose cause is not the file's own permissions.
+///
+/// The generated systemd unit runs mtrack under `ProtectSystem=strict` as a
+/// dedicated system user, and both of those produce failures that name the
+/// symptom and not the cause. A path the operator owns and can write from a
+/// shell reports a read-only filesystem, because it falls outside the unit's
+/// `ReadWritePaths=`; a library they just created reports permission denied,
+/// because the service user owns nothing it did not create. Neither points at
+/// the unit, which is not where anyone looks.
+///
+/// `None` when the error is anything else, or when nothing suggests we are
+/// running under systemd — outside a unit these two errors mean what they say.
+///
+/// `target` decides which directory the advice names, and callers must say
+/// which they have: see [`WriteTarget`].
+pub fn write_failure_hint(target: WriteTarget<'_>, error: &std::io::Error) -> Option<String> {
+    let env = HintEnv {
+        under_systemd: under_systemd(),
+        service_user: service_user(),
+        directory_exists: target.directory().is_dir(),
+    };
+    write_failure_hint_in(target, error, &env)
+}
+
+/// What a failed write was aiming at, which decides the directory the advice
+/// names.
+///
+/// Getting this from the path alone is not possible: a directory that failed to
+/// be *created* does not exist to be inspected, so `is_dir` says no and the
+/// advice ends up one level too high — telling an operator to `chown -R` or
+/// unseal `/var/lib` rather than their library.
+#[derive(Debug, Clone, Copy)]
+pub enum WriteTarget<'a> {
+    /// A file. Advice names the directory holding it, since `ReadWritePaths=`
+    /// is normally given one and chowning a lone file leaves its siblings
+    /// unwritable.
+    File(&'a Path),
+    /// A directory, named as-is.
+    Directory(&'a Path),
+}
+
+impl<'a> WriteTarget<'a> {
+    /// The path itself, for reporting what failed.
+    pub fn path(&self) -> &'a Path {
+        match self {
+            WriteTarget::File(path) | WriteTarget::Directory(path) => path,
+        }
+    }
+
+    /// The directory the advice should name.
+    fn directory(&self) -> &'a Path {
+        match self {
+            WriteTarget::File(path) => parent_of(path).unwrap_or(path),
+            WriteTarget::Directory(path) => path,
+        }
+    }
+}
+
+/// What the advice needs to know about the machine it is running on, gathered
+/// in one place so the wording can be tested without a real filesystem or
+/// process-global environment variables.
+struct HintEnv {
+    under_systemd: bool,
+    service_user: Option<String>,
+    /// Whether the directory the advice will name is actually there. A
+    /// directory that failed to be created is not, and most of the remediation
+    /// changes when that is the case.
+    directory_exists: bool,
+}
+
+/// Whether systemd started this process as a unit.
+///
+/// `INVOCATION_ID` is set by systemd for every service it starts, and is not
+/// inherited by anything an operator runs from a shell on the same machine.
+fn under_systemd() -> bool {
+    std::env::var_os("INVOCATION_ID").is_some()
+}
+
+/// The account the service is running as, when it can be known.
+///
+/// systemd sets `USER` from the unit's `User=`. Naming a specific account
+/// matters because `INVOCATION_ID` is set for *any* unit — a `systemd --user`
+/// service, or a hand-written one with a different `User=` — and telling
+/// somebody to `chown -R mtrack:mtrack` their own library is either an error
+/// about an unknown user or a way to hand it to a system account.
+fn service_user() -> Option<String> {
+    std::env::var("USER").ok().filter(|user| !user.is_empty())
+}
+
+/// [`write_failure_hint`] with its environment supplied.
+fn write_failure_hint_in(
+    target: WriteTarget<'_>,
+    error: &std::io::Error,
+    env: &HintEnv,
+) -> Option<String> {
+    if !env.under_systemd {
+        return None;
+    }
+
+    let dir = target.directory();
+    // Commands are only offered for an absolute path. `mtrack systemd` refuses
+    // a relative one, and a relative `chown` means something different in the
+    // operator's shell than it did in the service's working directory.
+    let actionable = dir.is_absolute();
+    let user = env.service_user.as_deref();
+
+    match error.kind() {
+        std::io::ErrorKind::ReadOnlyFilesystem => {
+            // Deliberately does not name `strict`: a unit generated without any
+            // path gets `ProtectSystem=full`, and sending its operator to grep
+            // for a directive their file does not contain wastes the one place
+            // this message had their attention.
+            let mut hint = format!(
+                "The systemd sandbox is blocking this write: the unit's \
+                 ProtectSystem= setting makes the filesystem read-only except \
+                 for the paths listed in ReadWritePaths=, and {} is not one of \
+                 them. The file's own permissions are not the cause — a \
+                 read-only mount refuses the write before they are consulted.",
+                dir.display(),
+            );
+            if actionable {
+                // Order matters. systemd bind-mounts each ReadWritePaths= entry,
+                // and cannot mount what is not there: an operator who pastes a
+                // missing path in gets a unit that fails namespace setup and
+                // never runs, which produces no diagnostic at all.
+                if !env.directory_exists {
+                    hint.push_str(&format!(
+                        " Create {} first — systemd cannot bind-mount a path \
+                         that does not exist, and an unprefixed ReadWritePaths= \
+                         entry naming a missing one fails the unit at startup.",
+                        dir.display(),
+                    ));
+                }
+                hint.push_str(&format!(
+                    " Add {} to ReadWritePaths= in the unit and run `systemctl \
+                     daemon-reload`, or regenerate the unit naming {} alongside \
+                     every path it already lists — `mtrack systemd` takes the \
+                     full set each time and drops any path left out.",
+                    dir.display(),
+                    dir.display(),
+                ));
+            }
+            Some(hint)
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            let mut hint = match user {
+                Some(user) => format!(
+                    "The service runs as {user}, which owns nothing it did not \
+                     create, so this is likely ownership rather than a missing \
+                     file."
+                ),
+                None => "The service runs as the account in the unit's User=, \
+                         which owns nothing it did not create, so this is \
+                         likely ownership rather than a missing file."
+                    .to_string(),
+            };
+            if actionable {
+                // A directory that could not be created cannot be chowned
+                // either -- `chown` on a missing path just reports that it is
+                // missing. What needs to be writable is the directory above it.
+                let grant = if env.directory_exists {
+                    dir
+                } else {
+                    hint.push_str(&format!(
+                        " {} does not exist and could not be created, so the \
+                         directory above it is the one that has to be writable.",
+                        dir.display(),
+                    ));
+                    parent_of(dir).unwrap_or(dir)
+                };
+                match user {
+                    Some(user) => hint.push_str(&format!(
+                        " `chown -R {user}:{user} {}` grants it.",
+                        grant.display()
+                    )),
+                    None => hint.push_str(&format!(
+                        " Granting that account ownership of {} fixes it.",
+                        grant.display()
+                    )),
+                }
+            }
+            Some(hint)
+        }
+        _ => None,
+    }
+}
+
 /// [`write_file`] for callers on a Tokio runtime, which keeps the filesystem
 /// work off the async worker.
 pub async fn write_file_async(path: &Path, contents: Vec<u8>) -> std::io::Result<()> {
@@ -619,5 +806,245 @@ mod test {
     fn kebab_case_trailing_leading_separators() {
         assert_eq!(super::to_kebab_case("_hello_"), "hello");
         assert_eq!(super::to_kebab_case("  spaced  "), "spaced");
+    }
+}
+
+#[cfg(test)]
+mod write_failure_hint_tests {
+    use super::{write_failure_hint_in, HintEnv, WriteTarget};
+    use std::io::{Error, ErrorKind};
+    use std::path::Path;
+
+    /// A machine where the named directory is there and the service is mtrack.
+    fn env() -> HintEnv {
+        HintEnv {
+            under_systemd: true,
+            service_user: Some("mtrack".to_string()),
+            directory_exists: true,
+        }
+    }
+
+    fn hint_for(target: WriteTarget<'_>, kind: ErrorKind, env: &HintEnv) -> Option<String> {
+        write_failure_hint_in(target, &Error::from(kind), env)
+    }
+
+    fn hint(kind: ErrorKind) -> Option<String> {
+        hint_for(
+            WriteTarget::File(Path::new("/srv/songs/mtrack.yaml")),
+            kind,
+            &env(),
+        )
+    }
+
+    /// The sandbox is the cause nobody looks for, so the advice has to name it
+    /// and say what to do about it.
+    #[test]
+    fn a_read_only_filesystem_under_systemd_blames_the_sandbox() {
+        let hint = hint(ErrorKind::ReadOnlyFilesystem).expect("a hint");
+        assert!(hint.contains("ReadWritePaths"), "{hint}");
+        // The directory, not the file: ReadWritePaths= is normally given one.
+        assert!(hint.contains("/srv/songs"), "{hint}");
+        assert!(!hint.contains("mtrack.yaml"), "{hint}");
+        assert!(hint.contains("permissions are not the cause"), "{hint}");
+    }
+
+    /// A directory that failed to be created is the thing to name. Taking its
+    /// parent instead told operators to `chown -R` or unseal `/var/lib`, which
+    /// hands a system account far more than it needs and defeats the sandbox
+    /// this advice exists to explain.
+    #[test]
+    fn a_directory_target_names_itself_not_its_parent() {
+        for kind in [ErrorKind::ReadOnlyFilesystem, ErrorKind::PermissionDenied] {
+            let hint = hint_for(
+                WriteTarget::Directory(Path::new("/var/lib/mtrack-songs")),
+                kind,
+                &env(),
+            )
+            .expect("a hint");
+            assert!(hint.contains("/var/lib/mtrack-songs"), "{kind:?}: {hint}");
+            assert!(!hint.contains("/var/lib "), "{kind:?}: {hint}");
+            assert!(!hint.contains("/var/lib`"), "{kind:?}: {hint}");
+        }
+    }
+
+    /// systemd bind-mounts every ReadWritePaths= entry and cannot mount what is
+    /// not there. An operator who pastes a missing path in gets a unit that
+    /// fails namespace setup and never starts — no diagnostic at all, which is
+    /// worse than the failure they began with.
+    #[test]
+    fn a_missing_directory_must_be_created_before_it_is_declared_writable() {
+        let missing = HintEnv {
+            directory_exists: false,
+            ..env()
+        };
+        let hint = hint_for(
+            WriteTarget::Directory(Path::new("/var/lib/outside-songs")),
+            ErrorKind::ReadOnlyFilesystem,
+            &missing,
+        )
+        .expect("a hint");
+        assert!(
+            hint.contains("Create /var/lib/outside-songs first"),
+            "{hint}"
+        );
+        // And still says what to do after creating it.
+        assert!(
+            hint.contains("Add /var/lib/outside-songs to ReadWritePaths="),
+            "{hint}"
+        );
+    }
+
+    /// `chown` on a path that does not exist reports only that it does not
+    /// exist. What has to be writable is the directory above it.
+    #[test]
+    fn a_missing_directory_is_granted_through_its_parent() {
+        let missing = HintEnv {
+            directory_exists: false,
+            ..env()
+        };
+        let hint = hint_for(
+            WriteTarget::Directory(Path::new("/var/lib/outside-songs")),
+            ErrorKind::PermissionDenied,
+            &missing,
+        )
+        .expect("a hint");
+        assert!(
+            hint.contains("does not exist and could not be created"),
+            "{hint}"
+        );
+        assert!(hint.contains("chown -R mtrack:mtrack /var/lib"), "{hint}");
+        // Not the missing directory itself, which chown would simply reject.
+        assert!(
+            !hint.contains("chown -R mtrack:mtrack /var/lib/outside-songs"),
+            "{hint}"
+        );
+    }
+
+    /// `mtrack systemd` takes the complete set of paths and drops any left out,
+    /// so advice to re-run it has to say so — following it verbatim otherwise
+    /// trades this block for a new one on the next start.
+    #[test]
+    fn regenerating_is_described_as_taking_every_path() {
+        let hint = hint(ErrorKind::ReadOnlyFilesystem).expect("a hint");
+        assert!(hint.contains("alongside"), "{hint}");
+        assert!(hint.contains("drops any path left out"), "{hint}");
+    }
+
+    /// The unit is only `ProtectSystem=strict` when it was generated with a
+    /// path; naming the value sends everyone else grepping for a line their
+    /// file does not have.
+    #[test]
+    fn the_sandbox_advice_does_not_assert_a_particular_protect_system() {
+        let hint = hint(ErrorKind::ReadOnlyFilesystem).expect("a hint");
+        assert!(hint.contains("ProtectSystem="), "{hint}");
+        assert!(!hint.contains("ProtectSystem=strict"), "{hint}");
+        assert!(!hint.contains("ProtectSystem=full"), "{hint}");
+    }
+
+    /// A denied write is an ownership problem, and pointing it at the sandbox
+    /// would send the operator to edit a unit that is already correct.
+    #[test]
+    fn permission_denied_under_systemd_blames_ownership_not_the_sandbox() {
+        let hint = hint(ErrorKind::PermissionDenied).expect("a hint");
+        assert!(hint.contains("chown -R mtrack:mtrack /srv/songs"), "{hint}");
+        assert!(!hint.contains("ReadWritePaths"), "{hint}");
+        assert!(!hint.contains("ProtectSystem"), "{hint}");
+    }
+
+    /// `INVOCATION_ID` is set for any unit, including a `systemd --user` one
+    /// running as somebody's own account. Prescribing `mtrack:mtrack` there is
+    /// either an error about an unknown user or a way to hand a personal
+    /// library to a system account.
+    #[test]
+    fn ownership_advice_names_the_account_the_service_runs_as() {
+        let alice = HintEnv {
+            service_user: Some("alice".to_string()),
+            ..env()
+        };
+        let hint = hint_for(
+            WriteTarget::Directory(Path::new("/home/alice/music")),
+            ErrorKind::PermissionDenied,
+            &alice,
+        )
+        .expect("a hint");
+        assert!(
+            hint.contains("chown -R alice:alice /home/alice/music"),
+            "{hint}"
+        );
+        assert!(!hint.contains("mtrack:mtrack"), "{hint}");
+    }
+
+    /// With no account to name, the advice still has to be true.
+    #[test]
+    fn ownership_advice_without_a_known_account_prescribes_no_command() {
+        let anonymous = HintEnv {
+            service_user: None,
+            ..env()
+        };
+        let hint = hint_for(
+            WriteTarget::Directory(Path::new("/srv/songs")),
+            ErrorKind::PermissionDenied,
+            &anonymous,
+        )
+        .expect("a hint");
+        assert!(hint.contains("User="), "{hint}");
+        assert!(!hint.contains("chown"), "{hint}");
+        assert!(hint.contains("/srv/songs"), "{hint}");
+    }
+
+    /// A relative path gets the explanation but no command: `mtrack systemd`
+    /// refuses one, and a relative `chown` means something different in the
+    /// operator's shell than it did in the service's working directory.
+    #[test]
+    fn a_relative_path_is_explained_but_gets_no_command_to_paste() {
+        for (kind, expected) in [
+            (ErrorKind::ReadOnlyFilesystem, "ReadWritePaths"),
+            (
+                ErrorKind::PermissionDenied,
+                "owns nothing it did not create",
+            ),
+        ] {
+            let hint = hint_for(WriteTarget::File(Path::new("mtrack.yaml")), kind, &env())
+                .expect("a hint");
+            // Still says what went wrong.
+            assert!(hint.contains(expected), "{kind:?}: {hint}");
+            // But offers nothing that would be rejected or misread on arrival.
+            assert!(!hint.contains("mtrack systemd"), "{kind:?}: {hint}");
+            assert!(!hint.contains("daemon-reload"), "{kind:?}: {hint}");
+            assert!(!hint.contains("chown"), "{kind:?}: {hint}");
+        }
+    }
+
+    /// Outside a unit these errors mean exactly what they say, and advice about
+    /// a systemd sandbox that is not running would be a false lead.
+    #[test]
+    fn nothing_is_offered_outside_systemd() {
+        let shell = HintEnv {
+            under_systemd: false,
+            ..env()
+        };
+        for kind in [ErrorKind::ReadOnlyFilesystem, ErrorKind::PermissionDenied] {
+            assert_eq!(
+                hint_for(
+                    WriteTarget::File(Path::new("/srv/songs/x.yaml")),
+                    kind,
+                    &shell
+                ),
+                None
+            );
+        }
+    }
+
+    /// Only the two failures the unit actually explains get an explanation.
+    #[test]
+    fn unrelated_failures_are_left_alone() {
+        for kind in [
+            ErrorKind::NotFound,
+            ErrorKind::AlreadyExists,
+            ErrorKind::StorageFull,
+            ErrorKind::InvalidInput,
+        ] {
+            assert_eq!(hint(kind), None, "{kind:?}");
+        }
     }
 }

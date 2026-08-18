@@ -113,6 +113,23 @@ pub fn playlist(repository_path: &str, playlist_path: &str) -> Result<(), Box<dy
     Ok(())
 }
 
+/// Turns a failed startup write into an error that names its likely cause.
+///
+/// This is the first write a fresh install makes, so it is where a service that
+/// cannot reach its own library gives up — and on its own it reports only
+/// `Read-only file system (os error 30)` for a directory the operator owns.
+fn annotate_write(target: crate::util::WriteTarget<'_>, error: std::io::Error) -> Box<dyn Error> {
+    // The path goes in whether or not there is a hint to add. Propagating the
+    // bare `io::Error` reached the operator as `Error: Read-only file system
+    // (os error 30)` in a restart loop, naming no file at all.
+    let mut message = format!("could not write {}: {error}", target.path().display());
+    if let Some(hint) = crate::util::write_failure_hint(target, &error) {
+        message.push_str("\n\n");
+        message.push_str(&hint);
+    }
+    message.into()
+}
+
 pub async fn start(
     path: &str,
     playlist_path: Option<String>,
@@ -150,11 +167,14 @@ pub async fn start(
             default_config.set_songs(".");
             if let Some(parent) = player_path.parent() {
                 if !parent.exists() {
-                    crate::util::create_dir_all(parent)?;
+                    crate::util::create_dir_all(parent).map_err(|e| {
+                        annotate_write(crate::util::WriteTarget::Directory(parent), e)
+                    })?;
                 }
             }
             let yaml = crate::util::to_yaml_string(&default_config)?;
-            crate::util::write_file(player_path, yaml.as_bytes())?;
+            crate::util::write_file(player_path, yaml.as_bytes())
+                .map_err(|e| annotate_write(crate::util::WriteTarget::File(player_path), e))?;
             default_config
         }
     };
@@ -168,7 +188,11 @@ pub async fn start(
     let songs_path = player_config.songs(player_path);
     if !songs_path.exists() {
         info!("Creating songs directory at {:?}", songs_path);
-        crate::util::create_dir_all(&songs_path)?;
+        // The library is not the only path a config can point at, and a `songs`
+        // directory somewhere else is exactly what the unit's ReadWritePaths
+        // will not cover unless it was named at generation time.
+        crate::util::create_dir_all(&songs_path)
+            .map_err(|e| annotate_write(crate::util::WriteTarget::Directory(&songs_path), e))?;
     }
 
     let default_metronome = player_config.metronome().is_some_and(|m| m.enabled);
