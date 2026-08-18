@@ -202,6 +202,12 @@ check "the songs directory outside the sandbox was blocked" \
 check "the failure names the songs directory itself" \
     bash -c "grep -q 'Add $OUTSIDE_SONGS to ReadWritePaths=' <<< \"\$0\"" "$outside_log"
 # The finding itself: /var/lib is the parent, and naming it is the bug.
+# systemd bind-mounts each ReadWritePaths= entry and cannot mount what is not
+# there, so an operator who pastes a missing path in gets a unit that fails
+# namespace setup and never starts -- no diagnostic at all, which is worse than
+# the failure they began with.
+check "the failure says to create the missing directory first" \
+    bash -c "grep -q 'Create $OUTSIDE_SONGS first' <<< \"\$0\"" "$outside_log"
 check "the failure does not name the parent directory" \
     bash -c '! grep -q "Add /var/lib to ReadWritePaths=" <<< "$0"' "$outside_log"
 
@@ -262,6 +268,12 @@ echo "$blocked_log" | grep -A 4 "Error:" | tail -12 | sed 's/^/    /'
 # checks against the decoy unit it left behind.
 mv /tmp/mtrack.service.good /etc/systemd/system/mtrack.service
 systemctl daemon-reload
+# The phases above deliberately leave the unit restart-looping, which trips
+# systemd's start limiter. Without clearing it the very next `systemctl start`
+# -- the one at the top of a second run -- is refused with "start request
+# repeated too quickly", failing the installation checks for a reason that has
+# nothing to do with the code under test.
+systemctl reset-failed mtrack >/dev/null 2>&1 || true
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

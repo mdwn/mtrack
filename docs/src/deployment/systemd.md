@@ -50,6 +50,14 @@ $ sudo mtrack systemd /mnt/storage /mnt/nas/songs > /etc/systemd/system/mtrack.s
 A directory that is not listed is read-only, and the service fails on its first
 write there with `Read-only file system (os error 30)`.
 
+**Create the directories before you name them.** systemd bind-mounts every
+`ReadWritePaths=` entry and cannot mount a path that does not exist. The
+generated unit prefixes each entry with `-`, so a missing one is skipped rather
+than fatal — but skipped means still read-only, and the service fails exactly as
+it did before. An entry you add by hand without that prefix is worse: the unit
+fails namespace setup and the service never starts, so there is no message
+explaining why.
+
 These paths are baked into the unit when it is generated. They are not read from
 `$MTRACK_PATH`, so if you move your library later, regenerate the unit as well as
 editing `/etc/default/mtrack`.
