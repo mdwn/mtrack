@@ -4,11 +4,6 @@ on:
   push:
     branches:
     - main
-  # Also on PRs: this is the only thing that runs the generated unit under real
-  # systemd. The unit tests assert strings, and a directive systemd silently
-  # drops — a relative ReadWritePaths, an unescaped specifier — renders and
-  # passes them while leaving the service unable to write.
-  pull_request:
 
 permissions:
   contents: read

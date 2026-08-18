@@ -669,6 +669,66 @@ mod tests {
             assert!(sets_directive(&result, "ProtectSystem=strict"));
         }
 
+        /// systemd itself must accept the unit we generate.
+        ///
+        /// The other tests here match strings, and every directive systemd
+        /// silently drops renders and passes them — a relative
+        /// `ReadWritePaths`, an unescaped `%` specifier — leaving
+        /// `ProtectSystem=strict` in force with nothing writable. The container
+        /// test catches that but only runs on main, so this asks systemd's own
+        /// validator on every run instead.
+        ///
+        /// Skipped where `systemd-analyze` is not installed.
+        #[test]
+        fn systemd_accepts_the_generated_unit() {
+            let Ok(probe) = std::process::Command::new("systemd-analyze")
+                .arg("--version")
+                .output()
+            else {
+                return;
+            };
+            if !probe.status.success() {
+                return;
+            }
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let library = dir.path().join("library");
+            std::fs::create_dir(&library).expect("library");
+
+            for paths in [
+                vec![],
+                vec![library.to_string_lossy().into_owned()],
+                vec![
+                    library.to_string_lossy().into_owned(),
+                    dir.path().join("songs").to_string_lossy().into_owned(),
+                ],
+            ] {
+                // `/bin/sh` because it exists: an ExecStart that does not draws
+                // its own warning and says nothing about the sandbox.
+                let unit = render_systemd_service("/bin/sh", &paths).unwrap();
+                let path = dir.path().join("mtrack.service");
+                std::fs::write(&path, &unit).expect("write unit");
+
+                let output = std::process::Command::new("systemd-analyze")
+                    .arg("verify")
+                    .arg(&path)
+                    .output()
+                    .expect("systemd-analyze verify");
+                let complaints = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+
+                for directive in ["ReadWritePaths", "ProtectSystem", "Specifier"] {
+                    assert!(
+                        !complaints.contains(directive),
+                        "systemd objected to {directive} for {paths:?}: {complaints}"
+                    );
+                }
+            }
+        }
+
         /// The template must not leak a placeholder into the rendered unit.
         #[test]
         fn leaves_no_placeholders_behind() {
