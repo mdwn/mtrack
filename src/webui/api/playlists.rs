@@ -116,19 +116,20 @@ pub(super) async fn put_playlist_by_name(
         }
     };
 
+    // Before `resolve_resource_path`, which canonicalizes the directory and
+    // fails if it is missing -- a creation after that call can never run.
+    // Created only when it is inside the project: a `playlists_dir:` pointing
+    // elsewhere is the operator's to set up, like `songs` and the rest.
+    super::helpers::ensure_configured_dir(&playlists_dir, &state).await?;
+
     // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
     // verified via canonicalize + starts_with containment in resolve_resource_path.
     let file_path = resolve_resource_path(&playlists_dir, &name, "yaml")?;
 
-    // Ensure directory exists and write atomically, off the async runtime.
-    let dir = playlists_dir.clone();
+    // Write atomically, off the async runtime.
     let fp = file_path.clone();
     let yaml_owned = yaml;
-    // Created only when it is inside the project -- a `playlists_dir:` pointing
-    // elsewhere is the operator's to set up, like `songs` and the rest.
-    let project = super::helpers::project_dir(&state);
     super::helpers::spawn_blocking_io("write playlist", move || {
-        crate::util::create_dir_within(&dir, &project).map_err(|e| e.to_string())?;
         config_io::staged_write(&fp, &yaml_owned)
     })
     .await?;

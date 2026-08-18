@@ -22,9 +22,18 @@ elsewhere is refused, for two reasons:
 - On removable media, creating a directory under a mount point that is not currently mounted writes
   to the underlying disk instead. Everything appears to work until the drive is mounted, at which
   point the files vanish behind it. This is easy to hit on a Pi with songs on a USB stick or SD
-  card. Refusing to create the directory avoids it for any mount point outside the project — note
-  that a mount point *inside* the project, such as `songs: /var/lib/mtrack/usb`, is still mtrack's
-  to create and so is still exposed to this. Mount before starting mtrack if you rely on one.
+  card.
+
+  Refusing to create covers only part of this, so it is worth being precise: it helps when the
+  configured directory itself is **missing** and outside the project. It does **not** help when the
+  directory exists but nothing is mounted on it — `songs: /mnt/songs` where `/mnt/songs` is an empty
+  directory awaiting a mount is accepted, because an existing directory is used wherever it lives,
+  and mtrack writes to the underlying disk exactly as before. Nor does it help for a mount point
+  *inside* the project, such as `songs: /var/lib/mtrack/usb`, which is still mtrack's to create.
+
+  If you rely on a mount, make systemd wait for it. A unit generated with those paths does this for
+  you — `mtrack systemd /var/lib/mtrack /media/usb/songs` emits a `RequiresMountsFor=` naming them,
+  so the service starts only once they are mounted.
 
 If you keep songs on a separate drive, create the directory once (`mkdir -p /media/usb/songs`) and
 mtrack will use it from then on.

@@ -92,6 +92,42 @@ pub(crate) fn resolve_resource_path(
 /// mapping errors to HTTP responses.
 ///
 /// Both the join error (task panic) and the inner result error are handled.
+/// Creates a configured directory, before anything canonicalizes it.
+///
+/// Ordering matters: [`resolve_resource_path`] verifies the root by
+/// canonicalizing it, which fails outright when the directory is not there. A
+/// creation placed after that call can never run — the request has already
+/// failed with "Root directory not found", which is also what a fresh install
+/// used to meet instead of having the directory made for it.
+///
+/// A path outside the project or blocked by a file is the operator's to fix, so
+/// it answers 400 rather than 500.
+pub(crate) async fn ensure_configured_dir(
+    dir: &std::path::Path,
+    state: &crate::webui::server::WebUiState,
+) -> Result<(), axum::response::Response> {
+    let owned = dir.to_path_buf();
+    let project = project_dir(state);
+    let outcome =
+        tokio::task::spawn_blocking(move || crate::util::create_dir_within(&owned, &project)).await;
+
+    match outcome {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+            let status = match e {
+                crate::util::CreateWithinError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            Err((status, Json(json!({"error": e.to_string()}))).into_response())
+        }
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to create directory: {e}")})),
+        )
+            .into_response()),
+    }
+}
+
 pub(crate) async fn spawn_blocking_io<F, T, E>(
     label: &str,
     f: F,
