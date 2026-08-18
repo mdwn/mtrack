@@ -3561,7 +3561,14 @@ pub(crate) async fn staged_write_string(
     })
     .await
     .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
-    .map_err(|e| McpError::internal_error(format!("write failed: {e}"), None))
+    .map_err(|e| {
+        let mut message = format!("write failed: {e}");
+        if let Some(hint) = crate::util::write_failure_hint(path, &e) {
+            message.push(' ');
+            message.push_str(&hint);
+        }
+        McpError::internal_error(message, None)
+    })
 }
 
 #[cfg(test)]

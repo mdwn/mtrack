@@ -113,6 +113,18 @@ pub fn playlist(repository_path: &str, playlist_path: &str) -> Result<(), Box<dy
     Ok(())
 }
 
+/// Turns a failed startup write into an error that names its likely cause.
+///
+/// This is the first write a fresh install makes, so it is where a service that
+/// cannot reach its own library gives up — and on its own it reports only
+/// `Read-only file system (os error 30)` for a directory the operator owns.
+fn annotate_write(path: &Path, error: std::io::Error) -> Box<dyn Error> {
+    match crate::util::write_failure_hint(path, &error) {
+        Some(hint) => format!("failed to write {}: {error}\n\n{hint}", path.display()).into(),
+        None => error.into(),
+    }
+}
+
 pub async fn start(
     path: &str,
     playlist_path: Option<String>,
@@ -150,11 +162,12 @@ pub async fn start(
             default_config.set_songs(".");
             if let Some(parent) = player_path.parent() {
                 if !parent.exists() {
-                    crate::util::create_dir_all(parent)?;
+                    crate::util::create_dir_all(parent).map_err(|e| annotate_write(parent, e))?;
                 }
             }
             let yaml = crate::util::to_yaml_string(&default_config)?;
-            crate::util::write_file(player_path, yaml.as_bytes())?;
+            crate::util::write_file(player_path, yaml.as_bytes())
+                .map_err(|e| annotate_write(player_path, e))?;
             default_config
         }
     };

@@ -123,6 +123,45 @@ systemctl stop mtrack
 check "service stopped cleanly" bash -c '! systemctl is-active mtrack'
 
 echo ""
+echo "--- Test: A blocked write explains itself (#408) ---"
+
+# Everything above proves the sandbox works when it is configured correctly.
+# This proves the *failure* is diagnosable, which is the part an operator
+# actually meets: a unit whose ReadWritePaths names some other directory leaves
+# the library read-only, and mtrack then dies on the first config write with
+# `Read-only file system (os error 30)` for a directory root owns outright.
+#
+# Runs last: it replaces the unit file.
+mtrack systemd /var/lib/decoy > /etc/systemd/system/mtrack.service
+systemctl daemon-reload
+rm -f "$MTRACK_PATH/mtrack.yaml"
+
+# Expected to fail, and to keep failing -- the point is what it says on the way
+# down, so don't let a non-zero exit end the script.
+systemctl start mtrack >/dev/null 2>&1 || true
+sleep 3
+systemctl stop mtrack >/dev/null 2>&1 || true
+
+blocked_log="$(journalctl -u mtrack --no-pager 2>&1 | tail -50)"
+
+# The control: without it, a run where mtrack started *fine* would pass every
+# assertion below by never having failed at all.
+check "the misconfigured sandbox actually blocked the write" \
+    bash -c 'grep -qi "read-only file system" <<< "$0"' "$blocked_log"
+check "the failure names ReadWritePaths as the cause" \
+    bash -c 'grep -q "ReadWritePaths" <<< "$0"' "$blocked_log"
+check "the failure says permissions are not the problem" \
+    bash -c 'grep -q "permissions are not the problem" <<< "$0"' "$blocked_log"
+check "the failure names the directory to add" \
+    bash -c "grep -q '$MTRACK_PATH' <<< \"\$0\"" "$blocked_log"
+
+if [ "$FAIL" -gt 0 ]; then
+    echo ""
+    echo "  Journal from the blocked-write phase:"
+    echo "$blocked_log" | tail -25 | sed 's/^/    /'
+fi
+
+echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
 if [ "$FAIL" -gt 0 ]; then

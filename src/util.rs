@@ -197,6 +197,67 @@ pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::remove_file(&staged)
 }
 
+/// Explains a write failure whose cause is not the file's own permissions.
+///
+/// The generated systemd unit runs mtrack under `ProtectSystem=strict` as a
+/// dedicated system user, and both of those produce failures that name the
+/// symptom and not the cause. A path the operator owns and can write from a
+/// shell reports a read-only filesystem, because it falls outside the unit's
+/// `ReadWritePaths=`; a library they just created reports permission denied,
+/// because the service user owns nothing it did not create. Neither points at
+/// the unit, which is not where anyone looks.
+///
+/// `None` when the error is anything else, or when nothing suggests we are
+/// running under systemd — outside a unit these two errors mean what they say.
+pub fn write_failure_hint(path: &Path, error: &std::io::Error) -> Option<String> {
+    write_failure_hint_under(path, error, under_systemd())
+}
+
+/// Whether systemd started this process as a unit.
+///
+/// `INVOCATION_ID` is set by systemd for every service it starts, and is not
+/// inherited by anything an operator runs from a shell on the same machine.
+fn under_systemd() -> bool {
+    std::env::var_os("INVOCATION_ID").is_some()
+}
+
+/// [`write_failure_hint`] with the systemd decision supplied, so the advice can
+/// be tested without a process-global environment variable.
+fn write_failure_hint_under(
+    path: &Path,
+    error: &std::io::Error,
+    under_systemd: bool,
+) -> Option<String> {
+    if !under_systemd {
+        return None;
+    }
+
+    // The suggestions below are about a directory: `ReadWritePaths=` is
+    // normally given one, and chowning a single file leaves its siblings
+    // unwritable.
+    let dir = parent_of(path).unwrap_or(path);
+
+    match error.kind() {
+        std::io::ErrorKind::ReadOnlyFilesystem => Some(format!(
+            "The systemd sandbox is blocking this write: ProtectSystem=strict \
+             makes the filesystem read-only except for the paths in \
+             ReadWritePaths=, and {} is not one of them. The file's own \
+             permissions are not the problem. Regenerate the unit with this \
+             path included (`mtrack systemd <library> {}`), or add it to \
+             ReadWritePaths= in the unit and run `systemctl daemon-reload`.",
+            dir.display(),
+            dir.display(),
+        )),
+        std::io::ErrorKind::PermissionDenied => Some(format!(
+            "The service runs as a dedicated user that owns nothing it did not \
+             create, so this may be an ownership problem rather than a missing \
+             file: `chown -R mtrack:mtrack {}` grants it.",
+            dir.display(),
+        )),
+        _ => None,
+    }
+}
+
 /// [`write_file`] for callers on a Tokio runtime, which keeps the filesystem
 /// work off the async worker.
 pub async fn write_file_async(path: &Path, contents: Vec<u8>) -> std::io::Result<()> {
@@ -619,5 +680,78 @@ mod test {
     fn kebab_case_trailing_leading_separators() {
         assert_eq!(super::to_kebab_case("_hello_"), "hello");
         assert_eq!(super::to_kebab_case("  spaced  "), "spaced");
+    }
+}
+
+#[cfg(test)]
+mod write_failure_hint_tests {
+    use super::write_failure_hint_under;
+    use std::io::{Error, ErrorKind};
+    use std::path::Path;
+
+    fn hint(kind: ErrorKind, under_systemd: bool) -> Option<String> {
+        write_failure_hint_under(
+            Path::new("/srv/songs/mtrack.yaml"),
+            &Error::from(kind),
+            under_systemd,
+        )
+    }
+
+    /// The sandbox is the cause nobody looks for, so the advice has to name it
+    /// and say what to do about it.
+    #[test]
+    fn a_read_only_filesystem_under_systemd_blames_the_sandbox() {
+        let hint = hint(ErrorKind::ReadOnlyFilesystem, true).expect("a hint");
+        assert!(hint.contains("ReadWritePaths"), "{hint}");
+        assert!(hint.contains("ProtectSystem=strict"), "{hint}");
+        // The directory, not the file: ReadWritePaths= is normally given one.
+        assert!(hint.contains("/srv/songs"), "{hint}");
+        assert!(!hint.contains("mtrack.yaml"), "{hint}");
+        // The operator's instinct is to check permissions, so say up front
+        // that permissions are not the problem.
+        assert!(hint.contains("permissions are not the problem"), "{hint}");
+    }
+
+    /// A denied write is an ownership problem, and pointing it at the sandbox
+    /// would send the operator to edit a unit that is already correct.
+    #[test]
+    fn permission_denied_under_systemd_blames_ownership_not_the_sandbox() {
+        let hint = hint(ErrorKind::PermissionDenied, true).expect("a hint");
+        assert!(hint.contains("chown -R mtrack:mtrack /srv/songs"), "{hint}");
+        assert!(!hint.contains("ReadWritePaths"), "{hint}");
+        assert!(!hint.contains("ProtectSystem"), "{hint}");
+    }
+
+    /// Outside a unit these errors mean exactly what they say, and advice about
+    /// a systemd sandbox that is not running would be a false lead.
+    #[test]
+    fn nothing_is_offered_outside_systemd() {
+        assert_eq!(hint(ErrorKind::ReadOnlyFilesystem, false), None);
+        assert_eq!(hint(ErrorKind::PermissionDenied, false), None);
+    }
+
+    /// Only the two failures the unit actually explains get an explanation.
+    #[test]
+    fn unrelated_failures_are_left_alone() {
+        for kind in [
+            ErrorKind::NotFound,
+            ErrorKind::AlreadyExists,
+            ErrorKind::StorageFull,
+            ErrorKind::InvalidInput,
+        ] {
+            assert_eq!(hint(kind, true), None, "{kind:?}");
+        }
+    }
+
+    /// A path with no parent must not panic or produce advice about "".
+    #[test]
+    fn a_path_without_a_parent_still_advises_something_usable() {
+        let hint = write_failure_hint_under(
+            Path::new("mtrack.yaml"),
+            &Error::from(ErrorKind::ReadOnlyFilesystem),
+            true,
+        )
+        .expect("a hint");
+        assert!(hint.contains("mtrack.yaml"), "{hint}");
     }
 }

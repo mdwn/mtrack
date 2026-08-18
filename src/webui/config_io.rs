@@ -21,8 +21,14 @@ use crate::util;
 /// recoverable copy if the write is interrupted. See [`crate::util::write_file`],
 /// which this wraps for callers that report errors as strings.
 pub fn staged_write(path: &Path, content: &str) -> Result<(), String> {
-    util::write_file(path, content.as_bytes())
-        .map_err(|e| format!("Failed to write {}: {}", path.display(), e))
+    util::write_file(path, content.as_bytes()).map_err(|e| {
+        let mut message = format!("Failed to write {}: {}", path.display(), e);
+        if let Some(hint) = util::write_failure_hint(path, &e) {
+            message.push_str("\n\n");
+            message.push_str(&hint);
+        }
+        message
+    })
 }
 
 /// Validates a player config YAML string by attempting to deserialize it.
