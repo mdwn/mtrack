@@ -181,7 +181,10 @@ pub async fn start(
     let songs_path = player_config.songs(player_path);
     if !songs_path.exists() {
         info!("Creating songs directory at {:?}", songs_path);
-        crate::util::create_dir_all(&songs_path)?;
+        // The library is not the only path a config can point at, and a `songs`
+        // directory somewhere else is exactly what the unit's ReadWritePaths
+        // will not cover unless it was named at generation time.
+        crate::util::create_dir_all(&songs_path).map_err(|e| annotate_write(&songs_path, e))?;
     }
 
     let default_metronome = player_config.metronome().is_some_and(|m| m.enabled);
