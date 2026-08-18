@@ -175,6 +175,43 @@ echo "$denied_log" | grep -A 2 "Error:" | tail -6 | sed 's/^/    /'
 chown -R mtrack:mtrack "$MTRACK_PATH"
 
 echo ""
+echo "--- Test: A blocked directory names itself, not its parent (#408) ---"
+
+# The regression guard for the review's worst finding. `songs` is a directory,
+# and the advice used to name its *parent* -- so a blocked /var/lib/outside-songs
+# told the operator to unseal or chown /var/lib, handing a system account most
+# of the machine and defeating the sandbox this message exists to explain.
+#
+# A directory that failed to be created cannot be inspected to find out it was
+# meant to be one, which is why the caller has to say so; nothing but an
+# end-to-end run proves the caller actually does.
+OUTSIDE_SONGS=/var/lib/outside-songs
+rm -rf "$OUTSIDE_SONGS"
+
+# The unit here is the good one: the library is writable, and only the songs
+# directory is out of bounds.
+cat > "$MTRACK_PATH/mtrack.yaml" <<YAML
+songs: $OUTSIDE_SONGS
+YAML
+chown mtrack:mtrack "$MTRACK_PATH/mtrack.yaml"
+
+outside_log="$(run_failing_start)"
+
+check "the songs directory outside the sandbox was blocked" \
+    bash -c 'grep -qi "read-only file system" <<< "$0"' "$outside_log"
+check "the failure names the songs directory itself" \
+    bash -c "grep -q 'Add $OUTSIDE_SONGS to ReadWritePaths=' <<< \"\$0\"" "$outside_log"
+# The finding itself: /var/lib is the parent, and naming it is the bug.
+check "the failure does not name the parent directory" \
+    bash -c '! grep -q "Add /var/lib to ReadWritePaths=" <<< "$0"' "$outside_log"
+
+echo ""
+echo "  What the operator sees:"
+echo "$outside_log" | grep -A 2 "Error:" | tail -6 | sed 's/^/    /'
+
+rm -f "$MTRACK_PATH/mtrack.yaml"
+
+echo ""
 echo "--- Test: A blocked write explains itself (#408) ---"
 
 # Everything above proves the sandbox works when it is configured correctly.
