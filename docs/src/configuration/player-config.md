@@ -7,13 +7,25 @@
 The player configuration file (`mtrack.yaml`) controls all of mtrack's runtime settings. It is
 created automatically when mtrack starts, and can be edited through the web UI or by hand.
 
-**Directories outside the project are yours to create.** mtrack makes a configured directory —
-`songs`, `profiles_dir`, the lighting directories — only when it resolves to somewhere inside the
-project directory, and refuses with an error naming the path otherwise. This keeps a typo from
-quietly becoming an empty directory and a puzzling "no songs found", and keeps the service from
-writing outside the paths a hardened [systemd unit](../deployment/systemd.md) confines it to. A
-directory that already exists is used wherever it lives, so pointing `songs` at `/mnt/song-storage`
-works exactly as before once that directory is there.
+**Directories outside the project are yours to create.** The *project directory* is simply the one
+holding this `mtrack.yaml` — wherever you put it, be that `/var/lib/mtrack`, `/home/pi/gig`, or a
+folder on a USB stick. mtrack makes a configured directory — `songs`, `profiles_dir`, the lighting
+directories — only when it resolves to somewhere inside that directory, and otherwise refuses with
+an error naming both paths.
+
+A directory that already exists is used wherever it lives, so pointing `songs` at
+`/mnt/song-storage` works exactly as before once that directory is there. Only creating one
+elsewhere is refused, for two reasons:
+
+- A typo would otherwise become an empty directory and a puzzling "no songs found" rather than an
+  error naming the path you actually typed.
+- On removable media, creating a directory under a mount point that is not currently mounted writes
+  to the underlying disk instead. Everything appears to work until the drive is mounted, at which
+  point the files vanish behind it. This is easy to hit on a Pi with songs on a USB stick or SD
+  card, and refusing to create the directory avoids it entirely.
+
+If you keep songs on a separate drive, create the directory once (`mkdir -p /media/usb/songs`) and
+mtrack will use it from then on.
 
 ```yaml
 # The directory where all of your songs are located, frequently referred to as the song repository.

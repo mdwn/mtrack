@@ -180,14 +180,27 @@ echo "--- Test: A songs directory outside the project is refused, not created --
 # mtrack used to create whatever `songs:` pointed at, anywhere on the
 # filesystem. That turned a typo into an empty directory and a puzzling "no
 # songs found", and asked the service to write outside the very paths
-# ProtectSystem=strict exists to fence it into -- so the sandbox diagnostic was
-# largely explaining a conflict mtrack created for itself.
+# ProtectSystem=strict exists to fence it into.
 #
-# It now creates only inside the project directory and refuses the rest. The
-# unit here is the good one: the library is writable, and the refusal is
-# mtrack's own decision rather than the sandbox's.
-OUTSIDE_SONGS=/var/lib/outside-songs
-rm -rf "$OUTSIDE_SONGS"
+# The target deliberately sits somewhere the sandbox *allows* writing: a
+# declared, service-owned directory outside the project. Pointing it anywhere
+# else proves nothing -- the sandbox blocks the write, the directory is absent
+# either way, and "it was not created" passes with this feature removed
+# entirely. Here the only thing standing between mtrack and that directory is
+# mtrack.
+OUTSIDE_PARENT=/var/lib/mtrack-extra
+OUTSIDE_SONGS="$OUTSIDE_PARENT/songs"
+rm -rf "$OUTSIDE_PARENT"
+mkdir -p "$OUTSIDE_PARENT"
+chown mtrack:mtrack "$OUTSIDE_PARENT"
+
+cp /etc/systemd/system/mtrack.service /tmp/mtrack.service.beforeoutside
+if mtrack systemd "$MTRACK_PATH" "$OUTSIDE_PARENT" > /tmp/mtrack.service.outside; then
+    mv /tmp/mtrack.service.outside /etc/systemd/system/mtrack.service
+    systemctl daemon-reload
+else
+    fail "could not generate a unit declaring $OUTSIDE_PARENT writable"
+fi
 
 cat > "$MTRACK_PATH/mtrack.yaml" <<YAML
 songs: $OUTSIDE_SONGS
@@ -202,11 +215,12 @@ check "the refusal explains the project-directory rule" \
     bash -c 'grep -q "only creates directories inside its project directory" <<< "$0"' "$outside_log"
 check "the refusal names the project directory" \
     bash -c "grep -q '($MTRACK_PATH)' <<< \"\$0\"" "$outside_log"
-# The behaviour itself, not just the wording: nothing was made out there.
+# The behaviour, not the wording. The sandbox would have allowed this one.
 check "the directory outside the project was not created" \
-    bash -c '! test -e /var/lib/outside-songs'
-# And it is a refusal rather than the sandbox tripping, which would mean mtrack
-# still tried to write outside its project.
+    bash -c '! test -e "$0"' "$OUTSIDE_SONGS"
+# And it is mtrack's refusal rather than the sandbox tripping -- which here
+# would mean the writable path was not declared and the check above proves
+# nothing.
 check "the refusal is mtrack's own, not a sandbox error" \
     bash -c '! grep -qi "read-only file system" <<< "$0"' "$outside_log"
 
@@ -215,6 +229,9 @@ echo "  What the operator sees:"
 echo "$outside_log" | grep -A 2 "Error:" | tail -6 | sed 's/^/    /'
 
 rm -f "$MTRACK_PATH/mtrack.yaml"
+rm -rf "$OUTSIDE_PARENT"
+mv /tmp/mtrack.service.beforeoutside /etc/systemd/system/mtrack.service
+systemctl daemon-reload
 
 echo ""
 echo "--- Test: A blocked write explains itself (#408) ---"
