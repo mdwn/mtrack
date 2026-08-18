@@ -119,10 +119,15 @@ pub fn playlist(repository_path: &str, playlist_path: &str) -> Result<(), Box<dy
 /// cannot reach its own library gives up — and on its own it reports only
 /// `Read-only file system (os error 30)` for a directory the operator owns.
 fn annotate_write(path: &Path, error: std::io::Error) -> Box<dyn Error> {
-    match crate::util::write_failure_hint(path, &error) {
-        Some(hint) => format!("failed to write {}: {error}\n\n{hint}", path.display()).into(),
-        None => error.into(),
+    // The path goes in whether or not there is a hint to add. Propagating the
+    // bare `io::Error` reached the operator as `Error: Read-only file system
+    // (os error 30)` in a restart loop, naming no file at all.
+    let mut message = format!("could not write {}: {error}", path.display());
+    if let Some(hint) = crate::util::write_failure_hint(path, &error) {
+        message.push_str("\n\n");
+        message.push_str(&hint);
     }
+    message.into()
 }
 
 pub async fn start(

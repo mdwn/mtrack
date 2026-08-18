@@ -64,7 +64,9 @@ Note that neither setting grants the `mtrack` user permission to write your
 library — that is the `chown` above, and it is required either way. If the
 service fails to start with `Read-only file system (os error 30)`, the sandbox
 is the cause; if it fails with a permission error naming a file, the ownership
-is.
+is. mtrack says which in the journal when systemd started it, along with the
+directory to add or to `chown`, so `journalctl -u mtrack` should tell you
+without needing this page.
 
 The service expects that `mtrack` is available at the location `/usr/local/bin/mtrack`. It also
 expects you to define your project directory in `/etc/default/mtrack`. This file

@@ -152,14 +152,18 @@ check "the failure names ReadWritePaths as the cause" \
     bash -c 'grep -q "ReadWritePaths" <<< "$0"' "$blocked_log"
 check "the failure says permissions are not the problem" \
     bash -c 'grep -q "permissions are not the problem" <<< "$0"' "$blocked_log"
-check "the failure names the directory to add" \
-    bash -c "grep -q '$MTRACK_PATH' <<< \"\$0\"" "$blocked_log"
+# Asserts the regenerate command, not just the path: the path alone appears in
+# unrelated INFO lines all over the journal, so that assertion passed with the
+# explanation removed entirely.
+check "the failure gives the command that fixes it" \
+    bash -c "grep -q 'mtrack systemd <library> $MTRACK_PATH' <<< \"\$0\"" "$blocked_log"
 
-if [ "$FAIL" -gt 0 ]; then
-    echo ""
-    echo "  Journal from the blocked-write phase:"
-    echo "$blocked_log" | tail -25 | sed 's/^/    /'
-fi
+# Printed whether or not the checks passed: the assertions above match
+# substrings, and a mangled message -- newlines escaped, the path missing --
+# satisfies them while being no use to the operator who has to read it.
+echo ""
+echo "  What the operator sees:"
+echo "$blocked_log" | grep -A 4 "Error:" | tail -12 | sed 's/^/    /'
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
