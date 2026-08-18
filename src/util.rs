@@ -354,28 +354,40 @@ fn write_failure_hint_in(
                     .to_string(),
             };
             if actionable {
-                // A directory that could not be created cannot be chowned
-                // either -- `chown` on a missing path just reports that it is
-                // missing. What needs to be writable is the directory above it.
-                let grant = if env.directory_exists {
-                    dir
+                if env.directory_exists {
+                    match user {
+                        Some(user) => hint.push_str(&format!(
+                            " `chown -R {user}:{user} {}` grants it.",
+                            dir.display()
+                        )),
+                        None => hint.push_str(&format!(
+                            " Granting that account ownership of {} fixes it.",
+                            dir.display()
+                        )),
+                    }
                 } else {
-                    hint.push_str(&format!(
-                        " {} does not exist and could not be created, so the \
-                         directory above it is the one that has to be writable.",
-                        dir.display(),
-                    ));
-                    parent_of(dir).unwrap_or(dir)
-                };
-                match user {
-                    Some(user) => hint.push_str(&format!(
-                        " `chown -R {user}:{user} {}` grants it.",
-                        grant.display()
-                    )),
-                    None => hint.push_str(&format!(
-                        " Granting that account ownership of {} fixes it.",
-                        grant.display()
-                    )),
+                    // A directory that could not be created cannot be chowned
+                    // either -- `chown` on a missing path just reports that it
+                    // is missing. Granting the *parent* instead hands the
+                    // account every sibling -- for a path one level under
+                    // /var/lib, most of the system's state. Create the
+                    // directory owned by the service, which touches nothing
+                    // beside it.
+                    match user {
+                        Some(user) => hint.push_str(&format!(
+                            " {} does not exist and could not be created. \
+                             `install -d -o {user} -g {user} {}` creates it \
+                             owned by the service without touching anything \
+                             beside it.",
+                            dir.display(),
+                            dir.display(),
+                        )),
+                        None => hint.push_str(&format!(
+                            " {} does not exist and could not be created; \
+                             create it and grant that account ownership of it.",
+                            dir.display(),
+                        )),
+                    }
                 }
             }
             Some(hint)
@@ -1198,9 +1210,11 @@ mod write_failure_hint_tests {
     }
 
     /// `chown` on a path that does not exist reports only that it does not
-    /// exist. What has to be writable is the directory above it.
+    /// exist, but granting the parent instead is the reviewed bug all over
+    /// again: `chown -R mtrack:mtrack /var/lib` hands a system account every
+    /// sibling. The advice creates the directory owned by the service instead.
     #[test]
-    fn a_missing_directory_is_granted_through_its_parent() {
+    fn a_missing_directory_is_created_for_the_service_not_granted_through_its_parent() {
         let missing = HintEnv {
             directory_exists: false,
             ..env()
@@ -1215,12 +1229,41 @@ mod write_failure_hint_tests {
             hint.contains("does not exist and could not be created"),
             "{hint}"
         );
-        assert!(hint.contains("chown -R mtrack:mtrack /var/lib"), "{hint}");
-        // Not the missing directory itself, which chown would simply reject.
         assert!(
-            !hint.contains("chown -R mtrack:mtrack /var/lib/outside-songs"),
+            hint.contains("install -d -o mtrack -g mtrack /var/lib/outside-songs"),
             "{hint}"
         );
+        // Neither chowning the missing directory, which chown would reject,
+        // nor its parent, which is the whole of /var/lib.
+        assert!(!hint.contains("chown"), "{hint}");
+        assert!(!hint.contains("/var/lib "), "{hint}");
+        assert!(!hint.contains("/var/lib`"), "{hint}");
+    }
+
+    /// The same missing directory with no account to name still says what to
+    /// do, without prescribing a command that needs a user to be true.
+    #[test]
+    fn a_missing_directory_without_a_known_account_still_says_create_it() {
+        let missing = HintEnv {
+            service_user: None,
+            directory_exists: false,
+            ..env()
+        };
+        let hint = hint_for(
+            WriteTarget::Directory(Path::new("/var/lib/outside-songs")),
+            ErrorKind::PermissionDenied,
+            &missing,
+        )
+        .expect("a hint");
+        assert!(
+            hint.contains("does not exist and could not be created"),
+            "{hint}"
+        );
+        assert!(hint.contains("/var/lib/outside-songs"), "{hint}");
+        assert!(!hint.contains("chown"), "{hint}");
+        assert!(!hint.contains("install"), "{hint}");
+        assert!(!hint.contains("/var/lib "), "{hint}");
+        assert!(!hint.contains("/var/lib`"), "{hint}");
     }
 
     /// `mtrack systemd` takes the complete set of paths and drops any left out,
@@ -1315,6 +1358,7 @@ mod write_failure_hint_tests {
             assert!(!hint.contains("mtrack systemd"), "{kind:?}: {hint}");
             assert!(!hint.contains("daemon-reload"), "{kind:?}: {hint}");
             assert!(!hint.contains("chown"), "{kind:?}: {hint}");
+            assert!(!hint.contains("install -d"), "{kind:?}: {hint}");
         }
     }
 
