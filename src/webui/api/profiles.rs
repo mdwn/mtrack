@@ -204,8 +204,11 @@ pub(super) async fn put_profile(
     let dir = profiles_dir;
     let fp = file_path;
     let yaml_owned = yaml;
+    // Created only when it is inside the project -- a `profiles_dir:` pointing
+    // elsewhere is the operator's to set up.
+    let project = super::helpers::project_dir(&state);
     spawn_blocking_io("write profile", move || {
-        crate::util::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        crate::util::create_dir_within(&dir, &project).map_err(|e| e.to_string())?;
         config_io::staged_write(&fp, &yaml_owned)
     })
     .await?;

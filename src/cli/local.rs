@@ -184,16 +184,22 @@ pub async fn start(
         player_path.to_path_buf(),
     ));
 
-    // Ensure songs directory exists
+    // Ensure songs directory exists, if it is ours to create. A `songs:` that
+    // points outside the project is the operator's to set up: creating it here
+    // turns a typo into an empty directory and a puzzling "no songs found", and
+    // asks the service to write outside the paths the generated systemd unit
+    // fences it into.
     let songs_path = player_config.songs(player_path);
-    if !songs_path.exists() {
+    let project_dir = player_path.parent().unwrap_or_else(|| Path::new("."));
+    if !songs_path.is_dir() {
         info!("Creating songs directory at {:?}", songs_path);
-        // The library is not the only path a config can point at, and a `songs`
-        // directory somewhere else is exactly what the unit's ReadWritePaths
-        // will not cover unless it was named at generation time.
-        crate::util::create_dir_all(&songs_path)
-            .map_err(|e| annotate_write(crate::util::WriteTarget::Directory(&songs_path), e))?;
     }
+    crate::util::create_dir_within(&songs_path, project_dir).map_err(|e| match e {
+        crate::util::CreateWithinError::Io(io) => {
+            annotate_write(crate::util::WriteTarget::Directory(&songs_path), io)
+        }
+        outside => Box::<dyn Error>::from(outside.to_string()),
+    })?;
 
     let default_metronome = player_config.metronome().is_some_and(|m| m.enabled);
     let songs = songs::get_all_songs_with_defaults(&songs_path, default_metronome)?;

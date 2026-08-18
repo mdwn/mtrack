@@ -175,21 +175,20 @@ echo "$denied_log" | grep -A 2 "Error:" | tail -6 | sed 's/^/    /'
 chown -R mtrack:mtrack "$MTRACK_PATH"
 
 echo ""
-echo "--- Test: A blocked directory names itself, not its parent (#408) ---"
+echo "--- Test: A songs directory outside the project is refused, not created ---"
 
-# The regression guard for the review's worst finding. `songs` is a directory,
-# and the advice used to name its *parent* -- so a blocked /var/lib/outside-songs
-# told the operator to unseal or chown /var/lib, handing a system account most
-# of the machine and defeating the sandbox this message exists to explain.
+# mtrack used to create whatever `songs:` pointed at, anywhere on the
+# filesystem. That turned a typo into an empty directory and a puzzling "no
+# songs found", and asked the service to write outside the very paths
+# ProtectSystem=strict exists to fence it into -- so the sandbox diagnostic was
+# largely explaining a conflict mtrack created for itself.
 #
-# A directory that failed to be created cannot be inspected to find out it was
-# meant to be one, which is why the caller has to say so; nothing but an
-# end-to-end run proves the caller actually does.
+# It now creates only inside the project directory and refuses the rest. The
+# unit here is the good one: the library is writable, and the refusal is
+# mtrack's own decision rather than the sandbox's.
 OUTSIDE_SONGS=/var/lib/outside-songs
 rm -rf "$OUTSIDE_SONGS"
 
-# The unit here is the good one: the library is writable, and only the songs
-# directory is out of bounds.
 cat > "$MTRACK_PATH/mtrack.yaml" <<YAML
 songs: $OUTSIDE_SONGS
 YAML
@@ -197,19 +196,19 @@ chown mtrack:mtrack "$MTRACK_PATH/mtrack.yaml"
 
 outside_log="$(run_failing_start)"
 
-check "the songs directory outside the sandbox was blocked" \
-    bash -c 'grep -qi "read-only file system" <<< "$0"' "$outside_log"
-check "the failure names the songs directory itself" \
-    bash -c "grep -q 'Add $OUTSIDE_SONGS to ReadWritePaths=' <<< \"\$0\"" "$outside_log"
-# The finding itself: /var/lib is the parent, and naming it is the bug.
-# systemd bind-mounts each ReadWritePaths= entry and cannot mount what is not
-# there, so an operator who pastes a missing path in gets a unit that fails
-# namespace setup and never starts -- no diagnostic at all, which is worse than
-# the failure they began with.
-check "the failure says to create the missing directory first" \
-    bash -c "grep -q 'Create $OUTSIDE_SONGS first' <<< \"\$0\"" "$outside_log"
-check "the failure does not name the parent directory" \
-    bash -c '! grep -q "Add /var/lib to ReadWritePaths=" <<< "$0"' "$outside_log"
+check "the refusal names the directory it would not create" \
+    bash -c "grep -q '$OUTSIDE_SONGS does not exist' <<< \"\$0\"" "$outside_log"
+check "the refusal explains the project-directory rule" \
+    bash -c 'grep -q "only creates directories inside its project directory" <<< "$0"' "$outside_log"
+check "the refusal names the project directory" \
+    bash -c "grep -q '($MTRACK_PATH)' <<< \"\$0\"" "$outside_log"
+# The behaviour itself, not just the wording: nothing was made out there.
+check "the directory outside the project was not created" \
+    bash -c '! test -e /var/lib/outside-songs'
+# And it is a refusal rather than the sandbox tripping, which would mean mtrack
+# still tried to write outside its project.
+check "the refusal is mtrack's own, not a sandbox error" \
+    bash -c '! grep -qi "read-only file system" <<< "$0"' "$outside_log"
 
 echo ""
 echo "  What the operator sees:"

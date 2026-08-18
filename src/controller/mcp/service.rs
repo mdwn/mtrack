@@ -3182,16 +3182,15 @@ impl McpServer {
         let path = store.path().to_path_buf();
         let cfg = store.read_config().await;
         let songs = cfg.songs(&path);
-        if !songs.exists() {
-            crate::util::create_dir_all_async(&songs)
-                .await
-                .map_err(|e| {
-                    McpError::internal_error(
-                        format!("failed to create songs dir {}: {e}", songs.display()),
-                        None,
-                    )
-                })?;
-        }
+        // Created only when it is inside the project. A `songs:` pointing
+        // elsewhere is the operator's to set up -- see `create_dir_within`.
+        let project = path
+            .parent()
+            .map(|parent| parent.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        crate::util::create_dir_within_async(songs.clone(), project)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         crate::webui::safe_path::VerifiedRoot::new(&songs).map_err(safepath_err)
     }
 
@@ -3237,14 +3236,13 @@ impl McpServer {
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
             parent.join(rel_path)
         };
-        if !dir.exists() {
-            crate::util::create_dir_all_async(&dir).await.map_err(|e| {
-                McpError::internal_error(
-                    format!("failed to create lighting dir {}: {e}", dir.display()),
-                    None,
-                )
-            })?;
-        }
+        let project = config_path
+            .parent()
+            .map(|parent| parent.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        crate::util::create_dir_within_async(dir.clone(), project)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         Ok(dir)
     }
 

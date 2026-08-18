@@ -7,9 +7,19 @@
 The player configuration file (`mtrack.yaml`) controls all of mtrack's runtime settings. It is
 created automatically when mtrack starts, and can be edited through the web UI or by hand.
 
+**Directories outside the project are yours to create.** mtrack makes a configured directory —
+`songs`, `profiles_dir`, the lighting directories — only when it resolves to somewhere inside the
+project directory, and refuses with an error naming the path otherwise. This keeps a typo from
+quietly becoming an empty directory and a puzzling "no songs found", and keeps the service from
+writing outside the paths a hardened [systemd unit](../deployment/systemd.md) confines it to. A
+directory that already exists is used wherever it lives, so pointing `songs` at `/mnt/song-storage`
+works exactly as before once that directory is there.
+
 ```yaml
 # The directory where all of your songs are located, frequently referred to as the song repository.
 # If the path is not absolute, it will be relative to the location of this file.
+# mtrack creates this directory for you only when it is inside the project directory (the one
+# holding this file). An absolute path elsewhere, like the one below, is yours to create.
 songs: /mnt/song-storage
 
 # The path to the playlist file.

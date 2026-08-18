@@ -458,8 +458,9 @@ pub(super) async fn put_fixture_type(
     let dir_owned = dir;
     let fp = file_path;
     let dsl_owned = dsl;
+    let project_owned = super::helpers::project_dir(&state);
     super::helpers::spawn_blocking_io("write fixture type", move || {
-        ensure_lighting_dir_sync(&dir_owned)?;
+        ensure_lighting_dir_sync(&dir_owned, &project_owned)?;
         config_io::staged_write(&fp, &dsl_owned)
     })
     .await?;
@@ -747,8 +748,9 @@ pub(super) async fn put_venue(
     let dir_owned = dir;
     let fp = file_path;
     let dsl_owned = dsl;
+    let project_owned = super::helpers::project_dir(&state);
     super::helpers::spawn_blocking_io("write venue", move || {
-        ensure_lighting_dir_sync(&dir_owned)?;
+        ensure_lighting_dir_sync(&dir_owned, &project_owned)?;
         config_io::staged_write(&fp, &dsl_owned)
     })
     .await?;
@@ -827,12 +829,15 @@ struct FileError {
 }
 
 /// Ensures a lighting directory exists (sync version for use inside spawn_blocking).
-fn ensure_lighting_dir_sync(dir: &std::path::Path) -> Result<(), String> {
-    if !dir.exists() {
-        crate::util::create_dir_all(dir)
-            .map_err(|e| format!("Failed to create directory: {}", e))?;
-    }
-    Ok(())
+///
+/// Created only when it is inside the project directory: a lighting path
+/// pointing elsewhere is the operator's to set up, and creating it here would
+/// write outside the paths the generated systemd unit fences the service into.
+fn ensure_lighting_dir_sync(
+    dir: &std::path::Path,
+    project: &std::path::Path,
+) -> Result<(), String> {
+    crate::util::create_dir_within(dir, project).map_err(|e| e.to_string())
 }
 
 /// Converts a name to a safe filename (lowercase, spaces to underscores).
@@ -1881,15 +1886,29 @@ show "test" {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("new_subdir");
         assert!(!sub.exists());
-        ensure_lighting_dir_sync(&sub).unwrap();
+        ensure_lighting_dir_sync(&sub, dir.path()).unwrap();
         assert!(sub.is_dir());
     }
 
     #[test]
     fn ensure_lighting_dir_existing_is_ok() {
         let dir = tempfile::tempdir().unwrap();
-        ensure_lighting_dir_sync(dir.path()).unwrap();
+        ensure_lighting_dir_sync(dir.path(), dir.path()).unwrap();
         assert!(dir.path().is_dir());
+    }
+
+    /// A `lighting:` pointing outside the project is the operator's to create.
+    /// Making it here writes outside the paths the generated systemd unit
+    /// fences the service into, and turns a typo into an empty directory.
+    #[test]
+    fn ensure_lighting_dir_refuses_to_create_outside_the_project() {
+        let project = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let outside = elsewhere.path().join("lighting");
+
+        let error = ensure_lighting_dir_sync(&outside, project.path()).expect_err("refused");
+        assert!(error.contains("project directory"), "{error}");
+        assert!(!outside.exists(), "it must not have been created anyway");
     }
 
     // -----------------------------------------------------------------------

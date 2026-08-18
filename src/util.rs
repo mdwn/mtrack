@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -440,6 +440,116 @@ pub fn create_dir_all(path: &Path) -> std::io::Result<()> {
         ownership.apply(&std::fs::File::open(dir)?, dir)?;
     }
     Ok(())
+}
+
+/// Why [`create_dir_within`] declined to create a directory.
+#[derive(Debug)]
+pub enum CreateWithinError {
+    /// The directory is outside the project directory, so nothing was created.
+    Outside {
+        /// The directory that was asked for.
+        path: PathBuf,
+        /// The project directory it had to be inside of.
+        project: PathBuf,
+    },
+    /// It was inside the project, and creating it failed anyway.
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for CreateWithinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CreateWithinError::Outside { path, project } => write!(
+                f,
+                "{} does not exist, and mtrack only creates directories inside \
+                 its project directory ({}). Create it, or point the setting at \
+                 a path inside the project.",
+                path.display(),
+                project.display(),
+            ),
+            CreateWithinError::Io(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for CreateWithinError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CreateWithinError::Io(error) => Some(error),
+            CreateWithinError::Outside { .. } => None,
+        }
+    }
+}
+
+/// Creates `dir` if it is missing, but only when it lies inside `project`.
+///
+/// mtrack creates directories on behalf of a config that names them, and a
+/// config can name anywhere on the filesystem. Creating those wherever they
+/// point turns a typo into an empty directory and a puzzling "no songs found",
+/// and asks the service to write outside the very paths the generated systemd
+/// unit's `ProtectSystem=strict` exists to fence off.
+///
+/// A directory that already exists is accepted wherever it is: the restriction
+/// is on *creating* one, not on using a path the operator set up themselves.
+pub fn create_dir_within(dir: &Path, project: &Path) -> Result<(), CreateWithinError> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    if !is_within(dir, project) {
+        return Err(CreateWithinError::Outside {
+            path: dir.to_path_buf(),
+            project: project.to_path_buf(),
+        });
+    }
+    create_dir_all(dir).map_err(CreateWithinError::Io)
+}
+
+/// [`create_dir_within`] for callers on a Tokio runtime, which keeps the
+/// filesystem work off the async worker.
+pub async fn create_dir_within_async(
+    dir: PathBuf,
+    project: PathBuf,
+) -> Result<(), CreateWithinError> {
+    tokio::task::spawn_blocking(move || create_dir_within(&dir, &project))
+        .await
+        .map_err(|e| CreateWithinError::Io(std::io::Error::other(e)))?
+}
+
+/// Whether `path` lands inside `root` once the filesystem has its say.
+///
+/// Purely lexical comparison is not enough: `project/songs` is inside the
+/// project by spelling, and outside it if `project/songs` is a symlink
+/// somewhere else. This resolves as much of the path as exists — which is where
+/// any symlink must be, since a component that does not exist cannot be one —
+/// and appends the rest.
+fn is_within(path: &Path, root: &Path) -> bool {
+    let Ok(root) = root.canonicalize() else {
+        // No project directory to be inside of.
+        return false;
+    };
+    resolve_as_far_as_possible(path).starts_with(root)
+}
+
+/// `path` with its existing prefix canonicalized and the remainder appended.
+fn resolve_as_far_as_possible(path: &Path) -> PathBuf {
+    let mut unresolved = Vec::new();
+    let mut cursor = path.to_path_buf();
+    loop {
+        if let Ok(canonical) = cursor.canonicalize() {
+            let mut resolved = canonical;
+            resolved.extend(unresolved.iter().rev());
+            return resolved;
+        }
+        let Some(name) = cursor.file_name().map(|name| name.to_os_string()) else {
+            // Ran out of path without finding anything that exists.
+            return path.to_path_buf();
+        };
+        unresolved.push(name);
+        match parent_of(&cursor) {
+            Some(parent) => cursor = parent.to_path_buf(),
+            None => return path.to_path_buf(),
+        }
+    }
 }
 
 /// [`create_dir_all`] for callers on a Tokio runtime, which keeps the
@@ -1046,5 +1156,132 @@ mod write_failure_hint_tests {
         ] {
             assert_eq!(hint(kind), None, "{kind:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod create_dir_within_tests {
+    use super::{create_dir_within, CreateWithinError};
+    use std::path::Path;
+
+    fn is_outside(result: Result<(), CreateWithinError>) -> bool {
+        matches!(result, Err(CreateWithinError::Outside { .. }))
+    }
+
+    /// The first-run case this keeps: a relative `songs:` resolves inside the
+    /// project, and mtrack still sets it up without being asked.
+    #[test]
+    fn a_directory_inside_the_project_is_created() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let songs = project.path().join("songs");
+
+        create_dir_within(&songs, project.path()).expect("created");
+        assert!(songs.is_dir());
+    }
+
+    #[test]
+    fn nested_directories_inside_the_project_are_created() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let nested = project.path().join("media/audio/songs");
+
+        create_dir_within(&nested, project.path()).expect("created");
+        assert!(nested.is_dir());
+    }
+
+    /// The case that motivated this: a typo in an absolute path used to become
+    /// an empty directory and a puzzling "no songs found".
+    #[test]
+    fn a_directory_outside_the_project_is_refused_not_created() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let outside = elsewhere.path().join("sonsg");
+
+        assert!(is_outside(create_dir_within(&outside, project.path())));
+        assert!(!outside.exists(), "it must not have been created anyway");
+    }
+
+    /// Naming the parent is what makes the message actionable.
+    #[test]
+    fn the_refusal_names_both_the_path_and_the_project() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let outside = elsewhere.path().join("songs");
+
+        let error = create_dir_within(&outside, project.path()).expect_err("refused");
+        let message = error.to_string();
+        assert!(
+            message.contains(&outside.display().to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains(&project.path().display().to_string()),
+            "{message}"
+        );
+    }
+
+    /// A path that merely spells its way back out is still out.
+    #[test]
+    fn a_traversal_out_of_the_project_is_refused() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let escaped = project.path().join("../escaped-songs");
+
+        assert!(is_outside(create_dir_within(&escaped, project.path())));
+        assert!(!escaped.exists());
+    }
+
+    /// The restriction is on *creating*, not on using. An operator who set up
+    /// /mnt/nas/songs themselves must keep working.
+    #[test]
+    fn an_existing_directory_outside_the_project_is_accepted() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+
+        create_dir_within(elsewhere.path(), project.path()).expect("accepted");
+    }
+
+    /// Spelling is not containment. `project/songs` looks inside the project
+    /// whatever it points at, so a lexical check would create the target of a
+    /// symlink that leaves it.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_leaving_the_project_is_refused() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+
+        let link = project.path().join("songs");
+        std::os::unix::fs::symlink(elsewhere.path(), &link).expect("symlink");
+
+        // Spelled inside the project, actually somewhere else entirely.
+        let through_link = link.join("inner");
+        assert!(is_outside(create_dir_within(&through_link, project.path())));
+        assert!(!elsewhere.path().join("inner").exists());
+    }
+
+    /// A symlink that stays inside the project is not the problem.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_staying_inside_the_project_is_allowed() {
+        let project = tempfile::tempdir().expect("tempdir");
+        let real = project.path().join("real");
+        std::fs::create_dir(&real).expect("real dir");
+
+        let link = project.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        create_dir_within(&link.join("songs"), project.path()).expect("created");
+        assert!(real.join("songs").is_dir());
+    }
+
+    /// Without a project directory there is nothing to be inside of, and
+    /// creating anywhere would be the old behaviour by another name.
+    #[test]
+    fn a_project_directory_that_does_not_exist_refuses_everything() {
+        let project = Path::new("/nonexistent-project-dir-for-tests");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+
+        assert!(is_outside(create_dir_within(
+            &elsewhere.path().join("songs"),
+            project
+        )));
     }
 }

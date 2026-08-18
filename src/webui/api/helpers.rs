@@ -18,6 +18,20 @@ use std::path::PathBuf;
 
 use super::super::safe_path::VerifiedRoot;
 
+/// The project directory: where mtrack.yaml lives.
+///
+/// The one place the server will create a directory on a config's behalf. A
+/// configured path outside it belongs to the operator — creating it turns a
+/// typo into an empty directory, and writes outside the paths the generated
+/// systemd unit fences the service into.
+pub fn project_dir(state: &crate::webui::server::WebUiState) -> PathBuf {
+    state
+        .config_path
+        .parent()
+        .map(|parent| parent.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 /// Validates a resource name for use in file paths.
 ///
 /// Rejects names that would be unsafe as filenames (empty, path traversal, etc.)
