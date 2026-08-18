@@ -18,6 +18,16 @@ use std::path::PathBuf;
 
 use super::super::safe_path::VerifiedRoot;
 
+/// The project directory: where mtrack.yaml lives.
+///
+/// The one place the server will create a directory on a config's behalf. A
+/// configured path outside it belongs to the operator — creating it turns a
+/// typo into an empty directory, and writes outside the paths the generated
+/// systemd unit fences the service into.
+pub fn project_dir(state: &crate::webui::server::WebUiState) -> PathBuf {
+    crate::util::project_dir_of(&state.config_path)
+}
+
 /// Validates a resource name for use in file paths.
 ///
 /// Rejects names that would be unsafe as filenames (empty, path traversal, etc.)
@@ -75,6 +85,42 @@ pub(crate) fn resolve_resource_path(
         Ok(safe.as_path().to_path_buf())
     } else {
         Ok(file_path)
+    }
+}
+
+/// Creates a configured directory, before anything canonicalizes it.
+///
+/// Ordering matters: [`resolve_resource_path`] verifies the root by
+/// canonicalizing it, which fails outright when the directory is not there. A
+/// creation placed after that call can never run — the request has already
+/// failed with "Root directory not found", which is also what a fresh install
+/// used to meet instead of having the directory made for it.
+///
+/// A path outside the project or blocked by a file is the operator's to fix, so
+/// it answers 400 rather than 500.
+pub(crate) async fn ensure_configured_dir(
+    dir: &std::path::Path,
+    state: &crate::webui::server::WebUiState,
+) -> Result<PathBuf, axum::response::Response> {
+    let owned = dir.to_path_buf();
+    let project = project_dir(state);
+    let outcome =
+        tokio::task::spawn_blocking(move || crate::util::create_dir_within(&owned, &project)).await;
+
+    match outcome {
+        Ok(Ok(created)) => Ok(created.into_path_buf()),
+        Ok(Err(e)) => {
+            let status = match e {
+                crate::util::CreateWithinError::Io { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            Err((status, Json(json!({"error": e.to_string()}))).into_response())
+        }
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to create directory: {e}")})),
+        )
+            .into_response()),
     }
 }
 

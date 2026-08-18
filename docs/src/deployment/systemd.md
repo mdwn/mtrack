@@ -58,6 +58,30 @@ it did before. An entry you add by hand without that prefix is worse: the unit
 fails namespace setup and the service never starts, so there is no message
 explaining why.
 
+If your library lives on a drive that mounts late — a USB stick, SD card or network share — the
+generated unit retries for about two and a half minutes (`RestartSec=5` with a thirty-attempt,
+three-minute start limit) rather than giving up after the systemd default of five attempts in ten
+seconds.
+
+It deliberately does *not* emit `RequiresMountsFor=`. That would make systemd wait for the mount,
+but it also implies `Requires=`, so a drive that blinks out mid-set would take the player down with
+it — a worse failure on a machine playing a show than a slow boot. If you have a mount that takes
+longer than the retry window, add `RequiresMountsFor=` to the unit yourself, knowing that cost.
+
+> **Upgrading an existing install: regenerate your unit.** mtrack no longer creates a configured
+> directory that lies outside the project — see
+> [Player Configuration](../configuration/player-config.md). If your `songs` (or `playlists_dir`,
+> `profiles_dir`, or a lighting directory) points outside the project and might be absent at boot,
+> because it lives on a drive that mounts late, startup now fails instead of quietly writing under
+> the mount point. A unit generated before this change can land
+> in a permanently failed state -- it has neither the widened restart window that lets a late mount
+> recover nor this rule's clearer diagnostics. Regenerate it:
+>
+> ```
+> $ sudo mtrack systemd /mnt/storage /mnt/nas/songs > /etc/systemd/system/mtrack.service
+> $ sudo systemctl daemon-reload
+> ```
+
 These paths are baked into the unit when it is generated. They are not read from
 `$MTRACK_PATH`, so if you move your library later, regenerate the unit as well as
 editing `/etc/default/mtrack`.

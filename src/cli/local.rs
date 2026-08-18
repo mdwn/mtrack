@@ -165,12 +165,15 @@ pub async fn start(
             // anywhere in the directory tree are discoverable — including via
             // bulk import after startup.
             default_config.set_songs(".");
-            if let Some(parent) = player_path.parent() {
-                if !parent.exists() {
-                    crate::util::create_dir_all(parent).map_err(|e| {
-                        annotate_write(crate::util::WriteTarget::Directory(parent), e)
-                    })?;
-                }
+            // `project_dir_of` rather than `parent()`: the latter answers
+            // `Some("")` for a bare filename, the trap this branch sat directly
+            // above, and is harmless here only because std short-circuits an
+            // empty path.
+            let config_dir = crate::util::project_dir_of(player_path);
+            if !config_dir.exists() {
+                crate::util::create_dir_all(&config_dir).map_err(|e| {
+                    annotate_write(crate::util::WriteTarget::Directory(&config_dir), e)
+                })?;
             }
             let yaml = crate::util::to_yaml_string(&default_config)?;
             crate::util::write_file(player_path, yaml.as_bytes())
@@ -184,15 +187,32 @@ pub async fn start(
         player_path.to_path_buf(),
     ));
 
-    // Ensure songs directory exists
-    let songs_path = player_config.songs(player_path);
-    if !songs_path.exists() {
-        info!("Creating songs directory at {:?}", songs_path);
-        // The library is not the only path a config can point at, and a `songs`
-        // directory somewhere else is exactly what the unit's ReadWritePaths
-        // will not cover unless it was named at generation time.
-        crate::util::create_dir_all(&songs_path)
-            .map_err(|e| annotate_write(crate::util::WriteTarget::Directory(&songs_path), e))?;
+    // Ensure songs directory exists, if it is ours to create. A `songs:` that
+    // points outside the project is the operator's to set up: creating it here
+    // turns a typo into an empty directory and a puzzling "no songs found", and
+    // asks the service to write outside the paths the generated systemd unit
+    // fences it into.
+    let configured_songs = player_config.songs(player_path);
+    let project_dir = crate::util::project_dir_of(player_path);
+    let creating = !configured_songs.is_dir();
+    // The resolved directory, not the spelling it was configured as. Creation
+    // follows the resolved path, and `songs/../real` is not equivalent to it:
+    // POSIX cannot resolve that spelling unless `songs` exists, so reading the
+    // configured path back would fail with a bare "No such file or directory".
+    let songs_path =
+        crate::util::create_dir_within(&configured_songs, &project_dir).map_err(|e| match e {
+            // The resolved path, which is what create_dir_all ran on. Naming
+            // the configured spelling would advise adding a path to
+            // ReadWritePaths= that was never touched.
+            crate::util::CreateWithinError::Io { path, source } => {
+                annotate_write(crate::util::WriteTarget::Directory(&path), source)
+            }
+            refused => Box::<dyn Error>::from(refused.to_string()),
+        })?;
+    // Logged after the fact: announcing the creation first meant a refusal
+    // arrived immediately behind "Creating songs directory at ...".
+    if creating {
+        info!("Created songs directory at {}", songs_path.display());
     }
 
     let default_metronome = player_config.metronome().is_some_and(|m| m.enabled);
@@ -274,7 +294,11 @@ pub async fn start(
                 state_rx: state_rx.clone(),
                 broadcast_tx,
                 config_path: player_path.to_path_buf(),
-                songs_path: player_config.songs(player_path),
+                // The directory that exists, not the configured spelling --
+                // which no longer resolves when it holds a `..`, and left every
+                // web UI songs endpoint answering "Root directory not found"
+                // while the player itself worked fine.
+                songs_path: songs_path.as_path().to_path_buf(),
                 playlists_dir: playlists_dir.clone(),
                 legacy_playlist_path: Some(legacy_playlist_path.clone()),
                 profiles_dir,
@@ -502,7 +526,7 @@ pub fn verify(
 ) -> Result<(), Box<dyn Error>> {
     let config_path = Path::new(config);
     let player_config = config::Player::deserialize(config_path)?;
-    let songs_path = player_config.songs(config_path);
+    let songs_path = crate::util::resolved_dir(&player_config.songs(config_path));
     let songs = songs::get_all_songs(&songs_path)?;
 
     if songs.is_empty() {

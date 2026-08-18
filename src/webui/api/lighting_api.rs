@@ -454,12 +454,14 @@ pub(super) async fn put_fixture_type(
             .into_response()
     })?;
 
+    // The same helper the playlists and profiles writes use, so a refusal is
+    // reported as the configuration problem it is rather than a server fault.
+    // The file goes under the directory that was made, not the spelling.
+    let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
     let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
-    let dir_owned = dir;
     let fp = file_path;
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write fixture type", move || {
-        ensure_lighting_dir_sync(&dir_owned)?;
         config_io::staged_write(&fp, &dsl_owned)
     })
     .await?;
@@ -743,12 +745,11 @@ pub(super) async fn put_venue(
             .into_response()
     })?;
 
+    let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
     let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
-    let dir_owned = dir;
     let fp = file_path;
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write venue", move || {
-        ensure_lighting_dir_sync(&dir_owned)?;
         config_io::staged_write(&fp, &dsl_owned)
     })
     .await?;
@@ -824,15 +825,6 @@ fn load_light_files_from_dir(
 struct FileError {
     file: String,
     error: String,
-}
-
-/// Ensures a lighting directory exists (sync version for use inside spawn_blocking).
-fn ensure_lighting_dir_sync(dir: &std::path::Path) -> Result<(), String> {
-    if !dir.exists() {
-        crate::util::create_dir_all(dir)
-            .map_err(|e| format!("Failed to create directory: {}", e))?;
-    }
-    Ok(())
 }
 
 /// Converts a name to a safe filename (lowercase, spaces to underscores).
@@ -1870,26 +1862,6 @@ show "test" {
         })
         .unwrap();
         assert_eq!(count, 0);
-    }
-
-    // -----------------------------------------------------------------------
-    // Unit tests: ensure_lighting_dir
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn ensure_lighting_dir_creates_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let sub = dir.path().join("new_subdir");
-        assert!(!sub.exists());
-        ensure_lighting_dir_sync(&sub).unwrap();
-        assert!(sub.is_dir());
-    }
-
-    #[test]
-    fn ensure_lighting_dir_existing_is_ok() {
-        let dir = tempfile::tempdir().unwrap();
-        ensure_lighting_dir_sync(dir.path()).unwrap();
-        assert!(dir.path().is_dir());
     }
 
     // -----------------------------------------------------------------------

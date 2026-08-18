@@ -197,15 +197,19 @@ pub(super) async fn put_profile(
             .into_response()
     })?;
 
+    // Before `resolve_resource_path`, which canonicalizes the directory and
+    // fails if it is missing -- a creation after that call can never run.
+    // Created only when it is inside the project: a `profiles_dir:` pointing
+    // elsewhere is the operator's to set up.
+    let profiles_dir = super::helpers::ensure_configured_dir(&profiles_dir, &state).await?;
+
     // codeql[rust/path-injection] filename is validated; path is verified via resolve_resource_path.
     let file_path = resolve_resource_path(&profiles_dir, &filename, "yaml")?;
 
-    // Write directory and file off the async runtime.
-    let dir = profiles_dir;
+    // Write the file off the async runtime.
     let fp = file_path;
     let yaml_owned = yaml;
     spawn_blocking_io("write profile", move || {
-        crate::util::create_dir_all(&dir).map_err(|e| e.to_string())?;
         config_io::staged_write(&fp, &yaml_owned)
     })
     .await?;

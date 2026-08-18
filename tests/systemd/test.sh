@@ -175,21 +175,33 @@ echo "$denied_log" | grep -A 2 "Error:" | tail -6 | sed 's/^/    /'
 chown -R mtrack:mtrack "$MTRACK_PATH"
 
 echo ""
-echo "--- Test: A blocked directory names itself, not its parent (#408) ---"
+echo "--- Test: A songs directory outside the project is refused, not created ---"
 
-# The regression guard for the review's worst finding. `songs` is a directory,
-# and the advice used to name its *parent* -- so a blocked /var/lib/outside-songs
-# told the operator to unseal or chown /var/lib, handing a system account most
-# of the machine and defeating the sandbox this message exists to explain.
+# mtrack used to create whatever `songs:` pointed at, anywhere on the
+# filesystem. That turned a typo into an empty directory and a puzzling "no
+# songs found", and asked the service to write outside the very paths
+# ProtectSystem=strict exists to fence it into.
 #
-# A directory that failed to be created cannot be inspected to find out it was
-# meant to be one, which is why the caller has to say so; nothing but an
-# end-to-end run proves the caller actually does.
-OUTSIDE_SONGS=/var/lib/outside-songs
-rm -rf "$OUTSIDE_SONGS"
+# The target deliberately sits somewhere the sandbox *allows* writing: a
+# declared, service-owned directory outside the project. Pointing it anywhere
+# else proves nothing -- the sandbox blocks the write, the directory is absent
+# either way, and "it was not created" passes with this feature removed
+# entirely. Here the only thing standing between mtrack and that directory is
+# mtrack.
+OUTSIDE_PARENT=/var/lib/mtrack-extra
+OUTSIDE_SONGS="$OUTSIDE_PARENT/songs"
+rm -rf "$OUTSIDE_PARENT"
+mkdir -p "$OUTSIDE_PARENT"
+chown mtrack:mtrack "$OUTSIDE_PARENT"
 
-# The unit here is the good one: the library is writable, and only the songs
-# directory is out of bounds.
+cp /etc/systemd/system/mtrack.service /tmp/mtrack.service.beforeoutside
+if mtrack systemd "$MTRACK_PATH" "$OUTSIDE_PARENT" > /tmp/mtrack.service.outside; then
+    mv /tmp/mtrack.service.outside /etc/systemd/system/mtrack.service
+    systemctl daemon-reload
+else
+    fail "could not generate a unit declaring $OUTSIDE_PARENT writable"
+fi
+
 cat > "$MTRACK_PATH/mtrack.yaml" <<YAML
 songs: $OUTSIDE_SONGS
 YAML
@@ -197,25 +209,29 @@ chown mtrack:mtrack "$MTRACK_PATH/mtrack.yaml"
 
 outside_log="$(run_failing_start)"
 
-check "the songs directory outside the sandbox was blocked" \
-    bash -c 'grep -qi "read-only file system" <<< "$0"' "$outside_log"
-check "the failure names the songs directory itself" \
-    bash -c "grep -q 'Add $OUTSIDE_SONGS to ReadWritePaths=' <<< \"\$0\"" "$outside_log"
-# The finding itself: /var/lib is the parent, and naming it is the bug.
-# systemd bind-mounts each ReadWritePaths= entry and cannot mount what is not
-# there, so an operator who pastes a missing path in gets a unit that fails
-# namespace setup and never starts -- no diagnostic at all, which is worse than
-# the failure they began with.
-check "the failure says to create the missing directory first" \
-    bash -c "grep -q 'Create $OUTSIDE_SONGS first' <<< \"\$0\"" "$outside_log"
-check "the failure does not name the parent directory" \
-    bash -c '! grep -q "Add /var/lib to ReadWritePaths=" <<< "$0"' "$outside_log"
+check "the refusal names the directory it would not create" \
+    bash -c "grep -q '$OUTSIDE_SONGS does not exist' <<< \"\$0\"" "$outside_log"
+check "the refusal explains the project-directory rule" \
+    bash -c 'grep -q "only creates directories inside its project directory" <<< "$0"' "$outside_log"
+check "the refusal names the project directory" \
+    bash -c "grep -q '($MTRACK_PATH)' <<< \"\$0\"" "$outside_log"
+# The behaviour, not the wording. The sandbox would have allowed this one.
+check "the directory outside the project was not created" \
+    bash -c '! test -e "$0"' "$OUTSIDE_SONGS"
+# And it is mtrack's refusal rather than the sandbox tripping -- which here
+# would mean the writable path was not declared and the check above proves
+# nothing.
+check "the refusal is mtrack's own, not a sandbox error" \
+    bash -c '! grep -qi "read-only file system" <<< "$0"' "$outside_log"
 
 echo ""
 echo "  What the operator sees:"
 echo "$outside_log" | grep -A 2 "Error:" | tail -6 | sed 's/^/    /'
 
 rm -f "$MTRACK_PATH/mtrack.yaml"
+rm -rf "$OUTSIDE_PARENT"
+mv /tmp/mtrack.service.beforeoutside /etc/systemd/system/mtrack.service
+systemctl daemon-reload
 
 echo ""
 echo "--- Test: A blocked write explains itself (#408) ---"
@@ -262,6 +278,40 @@ check "the failure gives the fix, naming the blocked directory" \
 echo ""
 echo "  What the operator sees:"
 echo "$blocked_log" | grep -A 4 "Error:" | tail -12 | sed 's/^/    /'
+
+echo ""
+echo "--- Test: A blocked directory names itself, not the library (#408) ---"
+
+# Restores the guard for WriteTarget::Directory, which nothing else covers end
+# to end. The other blocked-write case above fails on `mtrack.yaml` -- a *file*
+# -- whose parent happens to be the right answer either way, so a regression to
+# WriteTarget::File for the directory branch would pass the suite unnoticed.
+#
+# The decoy unit is still installed, so the library is read-only for the
+# service. Giving it a config it can read moves the failure past the config
+# write and onto creating the songs directory, which is inside the project and
+# therefore mtrack's to make -- if only it could write there.
+cat > "$MTRACK_PATH/mtrack.yaml" <<YAML
+songs: songs
+YAML
+chown mtrack:mtrack "$MTRACK_PATH/mtrack.yaml"
+rm -rf "$MTRACK_PATH/songs"
+
+dir_log="$(run_failing_start)"
+
+check "the blocked songs directory was the failure" \
+    bash -c 'grep -qi "read-only file system" <<< "$0"' "$dir_log"
+check "the advice names the songs directory itself" \
+    bash -c "grep -q 'Add $MTRACK_PATH/songs to ReadWritePaths=' <<< \"\$0\"" "$dir_log"
+# The regression itself: naming the parent is what WriteTarget::File would do.
+check "the advice does not name the library instead" \
+    bash -c "! grep -q 'Add $MTRACK_PATH to ReadWritePaths=' <<< \"\$0\"" "$dir_log"
+
+echo ""
+echo "  What the operator sees:"
+echo "$dir_log" | grep -A 2 "Error:" | tail -6 | sed 's/^/    /'
+
+rm -f "$MTRACK_PATH/mtrack.yaml"
 
 # Put the working unit back. Without this the case has to stay last forever,
 # and a second run of this script in the same container fails the installation

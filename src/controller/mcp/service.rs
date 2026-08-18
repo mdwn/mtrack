@@ -1110,16 +1110,23 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let _: crate::config::Playlist = serde_yaml_from_str(&args.yaml)?;
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
-        if let Some(parent) = path.parent() {
-            crate::util::create_dir_all_async(parent)
-                .await
-                .map_err(|e| {
-                    McpError::internal_error(
-                        format!("failed to create {}: {e}", parent.display()),
-                        None,
-                    )
-                })?;
-        }
+        // Same rule as the web UI's playlist write and every other configured
+        // root: created only when it is inside the project. A `playlists_dir:`
+        // pointing elsewhere is the operator's to set up.
+        //
+        // The file is then written under the directory that was made, not the
+        // spelling it was configured as -- those differ when the setting holds
+        // a `..`, and the spelling names a path that was never created.
+        let path = match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) => {
+                let project = crate::util::project_dir_of(self.config_store()?.path());
+                let created = crate::util::create_dir_within_async(parent.to_path_buf(), project)
+                    .await
+                    .map_err(create_within_err)?;
+                created.as_path().join(name)
+            }
+            _ => path,
+        };
         staged_write_string(&path, &args.yaml).await?;
         // Rebuild the player's playlist set so `list_playlists` /
         // `switch_playlist` see the new file without requiring a restart.
@@ -3182,22 +3189,22 @@ impl McpServer {
         let path = store.path().to_path_buf();
         let cfg = store.read_config().await;
         let songs = cfg.songs(&path);
-        if !songs.exists() {
-            crate::util::create_dir_all_async(&songs)
-                .await
-                .map_err(|e| {
-                    McpError::internal_error(
-                        format!("failed to create songs dir {}: {e}", songs.display()),
-                        None,
-                    )
-                })?;
-        }
-        crate::webui::safe_path::VerifiedRoot::new(&songs).map_err(safepath_err)
+        // Created only when it is inside the project. A `songs:` pointing
+        // elsewhere is the operator's to set up -- see `create_dir_within`.
+        let project = crate::util::project_dir_of(&path);
+        let created = crate::util::create_dir_within_async(songs.clone(), project)
+            .await
+            .map_err(create_within_err)?;
+        // The created path, not the configured spelling: VerifiedRoot
+        // canonicalizes, and a `..` spelling no longer resolves now that the
+        // stray intermediate is not made.
+        crate::webui::safe_path::VerifiedRoot::new(created.as_path()).map_err(safepath_err)
     }
 
     /// Resolves the configured lighting subdirectory (venues or fixture types)
-    /// to an absolute path. The directory is created if it doesn't yet exist,
-    /// so write tools work against fresh configs.
+    /// to an absolute path. The directory is created if it doesn't yet exist
+    /// *and* lies inside the project directory, so write tools work against
+    /// fresh configs without making directories wherever a config points.
     pub(crate) async fn resolve_lighting_dir(
         &self,
         kind: LightingDirKind,
@@ -3231,21 +3238,13 @@ impl McpServer {
         let dir = if rel_path.is_absolute() {
             rel_path
         } else {
-            let parent = config_path
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| std::path::PathBuf::from("."));
-            parent.join(rel_path)
+            crate::util::project_dir_of(&config_path).join(rel_path)
         };
-        if !dir.exists() {
-            crate::util::create_dir_all_async(&dir).await.map_err(|e| {
-                McpError::internal_error(
-                    format!("failed to create lighting dir {}: {e}", dir.display()),
-                    None,
-                )
-            })?;
-        }
-        Ok(dir)
+        let project = crate::util::project_dir_of(&config_path);
+        let created = crate::util::create_dir_within_async(dir.clone(), project)
+            .await
+            .map_err(create_within_err)?;
+        Ok(created.into_path_buf())
     }
 
     /// Resolves a single `.light` filename inside a lighting subdirectory,
@@ -3271,20 +3270,20 @@ impl McpServer {
         let config_path = store.path().to_path_buf();
         let cfg = store.read_config().await;
 
-        let songs_path = cfg.songs(&config_path);
+        // Resolved, like songs_root_verified: the configured spelling is not
+        // always usable now that the stray intermediate is not created, and a
+        // rescan that fails here only logs a warning -- every write tool would
+        // report success while the player kept stale songs.
+        let songs_path = crate::util::resolved_dir(&cfg.songs(&config_path));
         let playlists_dir = cfg
             .playlists_dir(&config_path)
-            .or_else(|| config_path.parent().map(|p| p.join("playlists")));
+            .or_else(|| Some(crate::util::project_dir_of(&config_path).join("playlists")));
 
         let legacy_playlist_path = cfg.playlist().map(|rel| {
             if rel.is_absolute() {
                 rel
             } else {
-                let parent = config_path
-                    .parent()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| std::path::PathBuf::from("."));
-                parent.join(rel)
+                crate::util::project_dir_of(&config_path).join(rel)
             }
         });
 
@@ -3324,11 +3323,7 @@ impl McpServer {
                 if rel.is_absolute() {
                     Ok(rel)
                 } else {
-                    let parent = config_path
-                        .parent()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_else(|| std::path::PathBuf::from("."));
-                    Ok(parent.join(rel))
+                    Ok(crate::util::project_dir_of(&config_path).join(rel))
                 }
             }
         }
@@ -3365,6 +3360,21 @@ pub(crate) fn serde_yaml_from_str<T: for<'de> serde::Deserialize<'de>>(
         .map_err(|e| McpError::invalid_params(format!("invalid YAML: {e}"), None))?;
     cfg.try_deserialize()
         .map_err(|e| McpError::invalid_params(format!("invalid payload: {e}"), None))
+}
+
+/// Wraps a [`crate::util::CreateWithinError`] as an MCP error.
+///
+/// `invalid_params` rather than `internal_error` for the two the operator can
+/// act on — a path outside the project, or one occupied by something that is
+/// not a directory — so a client presents them as a configuration problem
+/// rather than a server fault. A genuine I/O failure stays internal.
+pub(crate) fn create_within_err(err: crate::util::CreateWithinError) -> McpError {
+    match err {
+        crate::util::CreateWithinError::Io { .. } => {
+            McpError::internal_error(err.to_string(), None)
+        }
+        _ => McpError::invalid_params(err.to_string(), None),
+    }
 }
 
 /// Wraps a [`SafePathError`] as an `invalid_params` MCP error.

@@ -7,9 +7,43 @@
 The player configuration file (`mtrack.yaml`) controls all of mtrack's runtime settings. It is
 created automatically when mtrack starts, and can be edited through the web UI or by hand.
 
+**Directories outside the project are yours to create.** The *project directory* is simply the one
+holding this `mtrack.yaml` — wherever you put it, be that `/var/lib/mtrack`, `/home/pi/gig`, or a
+folder on a USB stick. mtrack makes a configured directory — `songs`, `profiles_dir`, the lighting
+directories, `playlists_dir` — only when it resolves to somewhere inside that directory, and
+otherwise refuses with an error naming both paths.
+
+A directory that already exists is used wherever it lives, so pointing `songs` at
+`/mnt/song-storage` works exactly as before once that directory is there. Only creating one
+elsewhere is refused, for two reasons:
+
+- A typo would otherwise become an empty directory and a puzzling "no songs found" rather than an
+  error naming the path you actually typed.
+- On removable media, creating a directory under a mount point that is not currently mounted writes
+  to the underlying disk instead. Everything appears to work until the drive is mounted, at which
+  point the files vanish behind it. This is easy to hit on a Pi with songs on a USB stick or SD
+  card.
+
+  Refusing to create covers only part of this, so it is worth being precise: it helps when the
+  configured directory itself is **missing** and outside the project. It does **not** help when the
+  directory exists but nothing is mounted on it — `songs: /mnt/songs` where `/mnt/songs` is an empty
+  directory awaiting a mount is accepted, because an existing directory is used wherever it lives,
+  and mtrack writes to the underlying disk exactly as before. Nor does it help for a mount point
+  *inside* the project, such as `songs: /var/lib/mtrack/usb`, which is still mtrack's to create.
+
+  If you rely on a mount, mount it before mtrack starts. The generated systemd unit retries for
+  about two and a half minutes, which covers a drive that appears a little after boot; see
+  [Running on Startup](../deployment/systemd.md) for why it waits that way rather than declaring a
+  dependency on the mount itself.
+
+If you keep songs on a separate drive, create the directory once (`mkdir -p /media/usb/songs`) and
+mtrack will use it from then on.
+
 ```yaml
 # The directory where all of your songs are located, frequently referred to as the song repository.
 # If the path is not absolute, it will be relative to the location of this file.
+# mtrack creates this directory for you only when it is inside the project directory (the one
+# holding this file). An absolute path elsewhere, like the one below, is yours to create.
 songs: /mnt/song-storage
 
 # The path to the playlist file.

@@ -26,10 +26,29 @@ use std::fmt::Display;
 const SYSTEMD_SERVICE: &str = r#"
 [Unit]
 Description=multitrack player
+# A library on a USB stick, SD card or network share is simply not there yet
+# when this service would otherwise start, and mtrack will not create a
+# directory outside its project to paper over it. Paired with RestartSec=5
+# below, this gives a late mount about two and a half minutes to turn up.
+#
+# Deliberately not RequiresMountsFor=: that would wait for the mount, but it
+# also implies Requires=, so a drive that blinks out mid-set takes the player
+# down with it. For a machine playing a show, riding out a slow boot is worth
+# more than waiting for a mount that may never be slow. If you have a mount
+# that takes longer than the window below, add RequiresMountsFor= yourself,
+# knowing that cost.
+StartLimitIntervalSec=180
+StartLimitBurst=30
 
 [Service]
 Type=simple
 Restart=on-failure
+# Retry slowly and for long enough that a drive appearing late is recovered
+# from. The defaults give up after five attempts in ten seconds, which a USB
+# stick or network share can easily miss -- and a unit that has hit its start
+# limit stays failed even once the mount lands.
+RestartSec=5
+
 EnvironmentFile=-/etc/default/mtrack
 ExecStart={{ CURRENT_EXECUTABLE }} start "$MTRACK_PATH"
 ExecReload=/bin/kill -HUP $MAINPID
@@ -735,6 +754,24 @@ mod tests {
                     );
                 }
             }
+        }
+
+        /// A drive that mounts late must not exhaust the start limit before it
+        /// appears: the systemd defaults give up after five attempts in ten
+        /// seconds, and a unit that has hit its limit stays failed even once
+        /// the mount lands.
+        #[test]
+        fn a_late_mount_has_time_to_appear() {
+            let unit = render_systemd_service("/usr/local/bin/mtrack", &[]).unwrap();
+
+            assert!(sets_directive(&unit, "RestartSec="), "{unit}");
+            assert!(sets_directive(&unit, "StartLimitIntervalSec="), "{unit}");
+            assert!(sets_directive(&unit, "StartLimitBurst="), "{unit}");
+
+            // The limit directives order the unit and belong in [Unit].
+            let limit = unit.find("StartLimitIntervalSec=").expect("directive");
+            let service = unit.find("[Service]").expect("section");
+            assert!(limit < service, "start limits must precede [Service]");
         }
 
         /// The template must not leak a placeholder into the rendered unit.
