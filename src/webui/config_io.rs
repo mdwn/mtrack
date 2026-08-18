@@ -23,7 +23,7 @@ use crate::util;
 pub fn staged_write(path: &Path, content: &str) -> Result<(), String> {
     util::write_file(path, content.as_bytes()).map_err(|e| {
         let mut message = format!("Failed to write {}: {}", path.display(), e);
-        if let Some(hint) = util::write_failure_hint(path, &e) {
+        if let Some(hint) = util::write_failure_hint(util::WriteTarget::File(path), &e) {
             message.push_str("\n\n");
             message.push_str(&hint);
         }
