@@ -493,8 +493,15 @@ pub(super) async fn put_fixture_type(
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write fixture type", move || {
         config_io::staged_write(&fp, &dsl_owned)?;
+        // The save above is durable; failing to clean up the legacy twin
+        // must not surface as a failed save. It is logged, and the read
+        // paths prefer the typed file over a lingering twin anyway.
         if legacy.is_file() {
-            std::fs::remove_file(&legacy).map_err(|e| e.to_string())?;
+            if let Err(e) = std::fs::remove_file(&legacy) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(file = %legacy.display(), error = %e, "Failed to remove legacy .light twin after save");
+                }
+            }
         }
         Ok::<_, String>(())
     })
@@ -531,12 +538,16 @@ pub(super) async fn delete_fixture_type(
         )
             .into_response());
     }
-    // Delete both spellings: leaving a legacy twin behind would silently
-    // resurrect the fixture type on the next load.
+    // Delete both spellings, legacy first: if a removal fails midway, the
+    // typed file is still present, so a lingering legacy twin can't silently
+    // resurrect the fixture type on the next load. Already-gone files are
+    // fine — a concurrent delete got there first.
     super::helpers::spawn_blocking_io("delete fixture type", move || {
-        for path in [&typed, &legacy] {
-            if path.is_file() {
-                std::fs::remove_file(path)?;
+        for path in [&legacy, &typed] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
             }
         }
         Ok::<_, std::io::Error>(())
@@ -799,8 +810,15 @@ pub(super) async fn put_venue(
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write venue", move || {
         config_io::staged_write(&fp, &dsl_owned)?;
+        // The save above is durable; failing to clean up the legacy twin
+        // must not surface as a failed save. It is logged, and the read
+        // paths prefer the typed file over a lingering twin anyway.
         if legacy.is_file() {
-            std::fs::remove_file(&legacy).map_err(|e| e.to_string())?;
+            if let Err(e) = std::fs::remove_file(&legacy) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(file = %legacy.display(), error = %e, "Failed to remove legacy .light twin after save");
+                }
+            }
         }
         Ok::<_, String>(())
     })
@@ -833,12 +851,16 @@ pub(super) async fn delete_venue(
         )
             .into_response());
     }
-    // Delete both spellings: leaving a legacy twin behind would silently
-    // resurrect the venue on the next load.
+    // Delete both spellings, legacy first: if a removal fails midway, the
+    // typed file is still present, so a lingering legacy twin can't silently
+    // resurrect the venue on the next load. Already-gone files are fine — a
+    // concurrent delete got there first.
     super::helpers::spawn_blocking_io("delete venue", move || {
-        for path in [&typed, &legacy] {
-            if path.is_file() {
-                std::fs::remove_file(path)?;
+        for path in [&legacy, &typed] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
             }
         }
         Ok::<_, std::io::Error>(())
@@ -859,31 +881,43 @@ pub(super) async fn delete_venue(
 
 /// Reads all lighting DSL files with the given extensions from a directory,
 /// calling the processor for each.
+///
+/// Files are processed in reverse `extensions` priority (and sorted by name
+/// within an extension), so with `&[typed, legacy]` a legacy file is seen
+/// first and a same-named typed definition deterministically wins any merge
+/// the caller does — not whatever order `read_dir` happens to yield.
 fn load_light_files_from_dir(
     dir: &std::path::Path,
     extensions: &[&str],
     mut processor: impl FnMut(&str) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<Vec<FileError>, Box<dyn std::error::Error>> {
     let mut errors = Vec::new();
+    let mut files: Vec<(usize, std::path::PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file()
-            && path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| extensions.contains(&e))
-        {
-            let content = std::fs::read_to_string(&path)?;
-            // Per-file, not fatal: a directory is a set of independent files,
-            // and one that no longer parses must not hide the rest. The caller
-            // reports them so the UI can say which file and why.
-            if let Err(e) = processor(&content) {
-                errors.push(FileError {
-                    file: crate::util::filename_display(&path).to_string(),
-                    error: e.to_string(),
-                });
-            }
+        if !path.is_file() {
+            continue;
+        }
+        let priority = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(|e| extensions.iter().position(|ext| *ext == e));
+        if let Some(priority) = priority {
+            files.push((priority, path));
+        }
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    for (_, path) in files {
+        let content = std::fs::read_to_string(&path)?;
+        // Per-file, not fatal: a directory is a set of independent files,
+        // and one that no longer parses must not hide the rest. The caller
+        // reports them so the UI can say which file and why.
+        if let Err(e) = processor(&content) {
+            errors.push(FileError {
+                file: crate::util::filename_display(&path).to_string(),
+                error: e.to_string(),
+            });
         }
     }
     Ok(errors)

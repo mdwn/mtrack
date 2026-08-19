@@ -134,20 +134,17 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
         }
     }
 
-    let mut fixture_type = FixtureType::from_channel_defs(name, channel_defs);
-    // v1 strobe fields, when present, take effect on top of anything the
-    // structured channels derived; a v1-only file then gets its function
-    // synthesized so the structured view carries the same information.
-    if max_strobe_frequency.is_some() {
-        fixture_type.max_strobe_frequency = max_strobe_frequency;
-    }
-    if min_strobe_frequency.is_some() {
-        fixture_type.min_strobe_frequency = min_strobe_frequency;
-    }
-    if strobe_dmx_offset.is_some() {
-        fixture_type.strobe_dmx_offset = strobe_dmx_offset;
-    }
-    fixture_type.normalize_legacy_strobe();
+    // from_parts is the single normalization point: explicit v1 strobe
+    // fields win over function-derived values, and a full v1 set gets its
+    // strobe function synthesized. A file may mix v1 and v2 syntax during
+    // the migration window, so the parser hands everything over at once.
+    let mut fixture_type = FixtureType::from_parts(
+        name,
+        channel_defs,
+        max_strobe_frequency,
+        min_strobe_frequency,
+        strobe_dmx_offset,
+    );
     if let Some(source) = source {
         fixture_type.set_source(source);
     }
@@ -183,6 +180,11 @@ fn parse_fixture_content(
             }
             Rule::channel_def => {
                 let (name, def) = parse_channel_def(content_pair)?;
+                // A silent last-one-wins here would hide a typo'd rig file;
+                // the map form predates this check and keeps its behavior.
+                if channel_defs.contains_key(&name) {
+                    return Err(format!("channel \"{name}\" is declared more than once").into());
+                }
                 channel_defs.insert(name, def);
             }
             Rule::movement_block => {
@@ -313,6 +315,13 @@ fn parse_channel_def(pair: Pair<Rule>) -> Result<(String, ChannelDef), Box<dyn E
     }
     if def.offset == 0 {
         return Err(format!("channel \"{name}\" requires a 1-based offset").into());
+    }
+    if def.fine == Some(def.offset) {
+        return Err(format!(
+            "channel \"{name}\": fine byte can't share offset {} with the coarse byte",
+            def.offset
+        )
+        .into());
     }
     Ok((name, def))
 }
@@ -923,6 +932,25 @@ venue "Main" {
         assert_eq!(ft.movement().max_pan_speed, Some(240.0));
         assert_eq!(ft.movement().max_tilt_speed, Some(200.0));
         assert!(ft.channels().is_empty());
+    }
+
+    #[test]
+    fn fixture_type_v2_duplicate_channel_rejected() {
+        let content = r#"fixture_type "Bad" {
+    channel "red" @ 1
+    channel "red" @ 2
+}"#;
+        let err = parse_fixture_types(content).unwrap_err().to_string();
+        assert!(err.contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn fixture_type_v2_fine_sharing_coarse_offset_rejected() {
+        let content = r#"fixture_type "Bad" {
+    channel "pan" @ 2 fine 2
+}"#;
+        let err = parse_fixture_types(content).unwrap_err().to_string();
+        assert!(err.contains("fine byte"), "{err}");
     }
 
     #[test]

@@ -119,9 +119,17 @@ impl MigrationPlan {
             std::fs::write(&self.config_path, yaml)?;
         }
 
-        // Delete files (after successful copy).
-        for path in &self.files_to_delete {
-            std::fs::remove_file(path)?;
+        // Delete files (after successful copy). Deduped and tolerant of
+        // already-gone files: by this point the config has been rewritten,
+        // so aborting here would strand a half-applied migration over a
+        // file that is already in the desired state.
+        let to_delete: std::collections::BTreeSet<_> = self.files_to_delete.iter().collect();
+        for path in to_delete {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
         }
 
         Ok(())
@@ -439,6 +447,10 @@ fn migrate_lighting_files(
             .to_string()
     };
 
+    // Every file this step schedules, so the venue pass can't reprocess a
+    // file the fixture-type pass already claimed.
+    let mut scheduled: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
     for dir in &fixture_type_dirs {
         for path in collect_light_files(dir) {
             let Ok(content) = std::fs::read_to_string(&path) else {
@@ -476,6 +488,7 @@ fn migrate_lighting_files(
                     format!("Rename {} → {}", rel(&path), rel(&new_path)),
                 );
                 plan.files_to_copy.push((path.clone(), new_path));
+                scheduled.insert(path.clone());
                 plan.files_to_delete.push(path);
                 continue;
             }
@@ -488,27 +501,69 @@ fn migrate_lighting_files(
                 .collect::<Vec<_>>()
                 .join("\n\n")
                 + "\n";
+            // The rewrite is generated from the parsed model, so authored
+            // text the model doesn't carry is lost. Say so in the report —
+            // the dry-run is where someone can still decide to keep a copy.
+            let has_comments = content.lines().any(|line| {
+                let trimmed = line.trim_start();
+                trimmed.starts_with('#') || trimmed.starts_with("//")
+            });
+            let dropped = match (has_comments, content.contains("special_cases")) {
+                (true, true) => " (drops comments and special_cases)",
+                (true, false) => " (drops comments)",
+                (false, true) => " (drops special_cases)",
+                (false, false) => "",
+            };
             plan.add_action(
                 "Lighting",
-                format!("Rewrite {} → {} (v2 syntax)", rel(&path), rel(&new_path)),
+                format!(
+                    "Rewrite {} → {} (v2 syntax){dropped}",
+                    rel(&path),
+                    rel(&new_path)
+                ),
             );
             plan.files_to_write.push((new_path, body));
+            scheduled.insert(path.clone());
             plan.files_to_delete.push(path);
         }
     }
 
     for dir in &venue_dirs {
         for path in collect_light_files(dir) {
+            // A directory configured as both fixture_types and venues would
+            // otherwise process each file twice: rewritten to .fixture above
+            // AND renamed to .venue here, double-scheduling the delete.
+            if scheduled.contains(&path) {
+                plan.add_action(
+                    "Lighting",
+                    format!(
+                        "Warning: {} already handled as a fixture type file \
+                         (fixture_types and venues share a directory)",
+                        rel(&path)
+                    ),
+                );
+                continue;
+            }
             let Ok(content) = std::fs::read_to_string(&path) else {
                 plan.add_action("Lighting", format!("Warning: cannot read {}", rel(&path)));
                 continue;
             };
-            if parse_venues(&content).is_err() {
-                plan.add_action(
-                    "Lighting",
-                    format!("Warning: {} does not parse; leaving it alone", rel(&path)),
-                );
-                continue;
+            match parse_venues(&content) {
+                Ok(venues) if !venues.is_empty() => {}
+                Ok(_) => {
+                    plan.add_action(
+                        "Lighting",
+                        format!("Warning: {} has no venues; leaving it alone", rel(&path)),
+                    );
+                    continue;
+                }
+                Err(_) => {
+                    plan.add_action(
+                        "Lighting",
+                        format!("Warning: {} does not parse; leaving it alone", rel(&path)),
+                    );
+                    continue;
+                }
             }
             let new_path = path.with_extension("venue");
             plan.add_action(
@@ -516,6 +571,7 @@ fn migrate_lighting_files(
                 format!("Rename {} → {}", rel(&path), rel(&new_path)),
             );
             plan.files_to_copy.push((path.clone(), new_path));
+            scheduled.insert(path.clone());
             plan.files_to_delete.push(path);
         }
     }
@@ -748,6 +804,58 @@ profiles:
         let venue = std::fs::read_to_string(&venue_path).unwrap();
         assert!(venue.contains("# The house rig."), "{venue}");
         assert!(venue.contains("fixture \"B1\" Brick @ 1:1"), "{venue}");
+    }
+
+    #[test]
+    fn test_migrate_lighting_shared_directory_does_not_double_process() {
+        // fixture_types and venues pointing at the SAME directory used to
+        // schedule each file twice (rewrite to .fixture AND rename to
+        // .venue), double-scheduling the delete — apply() then crashed on
+        // the second remove, after the config had already been rewritten.
+        let (dir, _config_path) = setup_migration(
+            r#"
+songs: songs
+profiles:
+  - audio:
+      device: device-a
+      track_mappings:
+        drums: [1]
+    dmx:
+      universes:
+        - universe: 1
+          name: main
+      lighting:
+        directories:
+          fixture_types: lighting/shared
+          venues: lighting/shared
+"#,
+            &[
+                (
+                    "lighting/shared/brick.light",
+                    "fixture_type \"Brick\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n",
+                ),
+                (
+                    "lighting/shared/club.light",
+                    "venue \"club\" {\n  fixture \"B1\" Brick @ 1:1\n}\n",
+                ),
+            ],
+        );
+
+        migrate(dir.path().to_str().unwrap(), true).unwrap();
+
+        let shared = dir.path().join("lighting/shared");
+        assert!(shared.join("brick.fixture").exists());
+        assert!(
+            !shared.join("brick.venue").exists(),
+            "a fixture-type file must not be renamed to .venue"
+        );
+        assert!(shared.join("club.venue").exists());
+        assert!(
+            !shared.join("club.fixture").exists(),
+            "a venue file must not become a .fixture"
+        );
+        assert!(!shared.join("brick.light").exists());
+        assert!(!shared.join("club.light").exists());
     }
 
     #[test]

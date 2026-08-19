@@ -240,8 +240,9 @@ fixture_type_content = {
 }
 
 // v2 structured channel: a one-liner with an optional block when the channel
-// has structure (functions). `channels`/`channel_map` above must stay first in
-// the alternatives so their longer keywords aren't nibbled by "channel".
+// has structure (functions). Alternation order with `channels`/`channel_map`
+// doesn't matter for correctness — pest's ordered choice fully backtracks a
+// failed alternative — the grouping above is just keyword-family order.
 channel_def = { "channel" ~ string ~ "@" ~ number_value ~ channel_fine? ~ channel_range? ~ channel_block? }
 
 channel_fine = { "fine" ~ number_value }

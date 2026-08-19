@@ -124,6 +124,40 @@ const STROBE_CHANNEL: &str = "strobe";
 /// The function name used for the variable-strobe range.
 const STROBE_FUNCTION: &str = "strobe";
 
+/// The v1 fixture type surface: a plain channel offset map plus the three
+/// standalone strobe fields. Conversion into [`FixtureType`] is the single
+/// normalization point — there is no manual step to forget.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FixtureTypeV1 {
+    /// The name of the fixture type.
+    pub name: String,
+    /// Channel name → 1-based offset.
+    pub channels: HashMap<String, u16>,
+    /// Maximum strobe frequency in Hz (if known).
+    pub max_strobe_frequency: Option<f64>,
+    /// Minimum strobe frequency in Hz (if known).
+    pub min_strobe_frequency: Option<f64>,
+    /// First DMX value where variable strobe begins (if known).
+    pub strobe_dmx_offset: Option<u8>,
+}
+
+impl From<FixtureTypeV1> for FixtureType {
+    fn from(v1: FixtureTypeV1) -> FixtureType {
+        let channel_defs = v1
+            .channels
+            .into_iter()
+            .map(|(name, offset)| (name, ChannelDef::at(offset)))
+            .collect();
+        FixtureType::from_parts(
+            v1.name,
+            channel_defs,
+            v1.max_strobe_frequency,
+            v1.min_strobe_frequency,
+            v1.strobe_dmx_offset,
+        )
+    }
+}
+
 /// A fixture type definition.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FixtureType {
@@ -143,41 +177,54 @@ pub struct FixtureType {
     /// Movement limits, if configured.
     movement: MovementLimits,
 
-    /// Maximum strobe frequency in Hz (if supported).
-    pub max_strobe_frequency: Option<f64>,
+    /// Maximum strobe frequency in Hz (if supported). Derived from the
+    /// strobe channel's function when one exists; private so a fixture type
+    /// can only be built through the normalizing constructors.
+    max_strobe_frequency: Option<f64>,
 
     /// Minimum strobe frequency in Hz (bottom of variable strobe range).
-    pub min_strobe_frequency: Option<f64>,
+    min_strobe_frequency: Option<f64>,
 
     /// First DMX value where variable strobe begins.
-    pub strobe_dmx_offset: Option<u8>,
+    strobe_dmx_offset: Option<u8>,
 }
 
 impl FixtureType {
-    /// Creates a new fixture type from plain channel offsets — the v1 shape.
+    /// Creates a new fixture type from plain channel offsets — the v1 shape
+    /// without strobe fields. For the full v1 surface, convert a
+    /// [`FixtureTypeV1`] with `.into()`.
     pub fn new(name: String, channels: HashMap<String, u16>) -> FixtureType {
-        let channel_defs = channels
-            .iter()
-            .map(|(name, offset)| (name.clone(), ChannelDef::at(*offset)))
-            .collect();
-        FixtureType {
+        FixtureTypeV1 {
             name,
-            channel_defs,
             channels,
-            source: None,
-            movement: MovementLimits::default(),
-            max_strobe_frequency: None,
-            min_strobe_frequency: None,
-            strobe_dmx_offset: None,
+            ..FixtureTypeV1::default()
         }
+        .into()
     }
 
     /// Creates a new fixture type from structured channel definitions. The
-    /// legacy strobe fields are derived from the strobe channel's variable
+    /// v1 strobe fields are derived from the strobe channel's variable
     /// strobe function so v1 consumers see the same values either way.
     pub fn from_channel_defs(
         name: String,
         channel_defs: HashMap<String, ChannelDef>,
+    ) -> FixtureType {
+        FixtureType::from_parts(name, channel_defs, None, None, None)
+    }
+
+    /// The single normalization point every constructor funnels through.
+    ///
+    /// Explicit v1 strobe fields win over values derived from a strobe
+    /// function; when all three are present and the strobe channel carries no
+    /// function yet, one is synthesized so the structured view and the v1
+    /// view always agree. The parser uses this directly because a file may
+    /// mix v1 and v2 syntax during the migration window.
+    pub(crate) fn from_parts(
+        name: String,
+        channel_defs: HashMap<String, ChannelDef>,
+        max_strobe_frequency: Option<f64>,
+        min_strobe_frequency: Option<f64>,
+        strobe_dmx_offset: Option<u8>,
     ) -> FixtureType {
         let channels = channel_defs
             .iter()
@@ -194,11 +241,21 @@ impl FixtureType {
             strobe_dmx_offset: None,
         };
         fixture_type.derive_strobe_fields();
+        if max_strobe_frequency.is_some() {
+            fixture_type.max_strobe_frequency = max_strobe_frequency;
+        }
+        if min_strobe_frequency.is_some() {
+            fixture_type.min_strobe_frequency = min_strobe_frequency;
+        }
+        if strobe_dmx_offset.is_some() {
+            fixture_type.strobe_dmx_offset = strobe_dmx_offset;
+        }
+        fixture_type.synthesize_strobe_function();
         fixture_type
     }
 
-    /// Fills the legacy strobe fields from the strobe channel's variable
-    /// strobe function, if one is declared with a frequency range.
+    /// Fills the v1 strobe fields from the strobe channel's variable strobe
+    /// function, if one is declared with a frequency range.
     fn derive_strobe_fields(&mut self) {
         let Some(def) = self.channel_defs.get(STROBE_CHANNEL) else {
             return;
@@ -220,9 +277,10 @@ impl FixtureType {
     }
 
     /// Synthesizes a variable-strobe function on the strobe channel from the
-    /// legacy strobe fields. Used when normalizing a v1 definition so the
-    /// structured view carries the same information as the fields.
-    pub fn normalize_legacy_strobe(&mut self) {
+    /// v1 strobe fields, so a v1 definition's structured view carries the
+    /// same information as its fields. Requires all three fields and a
+    /// strobe channel; partial fields stay fields (see Display).
+    fn synthesize_strobe_function(&mut self) {
         let (Some(offset), Some(min), Some(max)) = (
             self.strobe_dmx_offset,
             self.min_strobe_frequency,
@@ -329,19 +387,15 @@ impl fmt::Display for FixtureType {
         writeln!(f)?;
         writeln!(f, "  channels: {}", self.footprint())?;
 
-        // Emit v2 channel lines, ordered by offset for stable output. A v1
-        // definition that only set the legacy strobe fields is normalized
-        // into a function first so nothing is lost in the rewrite.
-        let mut this = self.clone();
-        this.normalize_legacy_strobe();
-        // Normalization needs all three fields and a strobe channel; a
+        // Emit v2 channel lines, ordered by offset for stable output.
+        // Construction normalized full v1 strobe fields into a function; a
         // partial set (e.g. only max_strobe_frequency) can't be expressed as
         // a function and must survive the rewrite as explicit fields.
-        let strobe_in_functions = this
+        let strobe_in_functions = self
             .channel_defs
             .get(STROBE_CHANNEL)
             .is_some_and(|def| def.functions.iter().any(|f| f.name == STROBE_FUNCTION));
-        let mut entries: Vec<_> = this.channel_defs.iter().collect();
+        let mut entries: Vec<_> = self.channel_defs.iter().collect();
         entries.sort_by_key(|(name, def)| (def.offset, name.as_str()));
         for (name, def) in entries {
             write!(f, "  channel \"{name}\" @ {}", def.offset)?;
@@ -604,10 +658,14 @@ mod tests {
 
     #[test]
     fn fixture_type_strobe_fields() {
-        let mut ft = FixtureType::new("Strobe".to_string(), HashMap::new());
-        ft.max_strobe_frequency = Some(25.0);
-        ft.min_strobe_frequency = Some(1.0);
-        ft.strobe_dmx_offset = Some(128);
+        let ft: FixtureType = FixtureTypeV1 {
+            name: "Strobe".to_string(),
+            max_strobe_frequency: Some(25.0),
+            min_strobe_frequency: Some(1.0),
+            strobe_dmx_offset: Some(128),
+            ..FixtureTypeV1::default()
+        }
+        .into();
         assert_eq!(ft.max_strobe_frequency(), Some(25.0));
         assert_eq!(ft.min_strobe_frequency(), Some(1.0));
         assert_eq!(ft.strobe_dmx_offset(), Some(128));
@@ -652,14 +710,19 @@ mod tests {
     }
 
     #[test]
-    fn fixture_type_normalize_legacy_strobe() {
+    fn fixture_type_v1_conversion_synthesizes_strobe_function() {
+        // From<FixtureTypeV1> is the single normalization point — no manual
+        // step: the strobe function appears as part of the conversion.
         let mut channels = HashMap::new();
         channels.insert("strobe".to_string(), 4);
-        let mut ft = FixtureType::new("Brick".to_string(), channels);
-        ft.max_strobe_frequency = Some(25.0);
-        ft.min_strobe_frequency = Some(0.4);
-        ft.strobe_dmx_offset = Some(7);
-        ft.normalize_legacy_strobe();
+        let ft: FixtureType = FixtureTypeV1 {
+            name: "Brick".to_string(),
+            channels,
+            max_strobe_frequency: Some(25.0),
+            min_strobe_frequency: Some(0.4),
+            strobe_dmx_offset: Some(7),
+        }
+        .into();
 
         let def = ft.channel_defs().get("strobe").unwrap();
         assert_eq!(def.functions.len(), 1);
@@ -747,10 +810,14 @@ mod tests {
         let mut channels = HashMap::new();
         channels.insert("red".to_string(), 1);
         channels.insert("strobe".to_string(), 4);
-        let mut ft = FixtureType::new("Brick".to_string(), channels);
-        ft.max_strobe_frequency = Some(25.0);
-        ft.min_strobe_frequency = Some(0.4);
-        ft.strobe_dmx_offset = Some(7);
+        let ft: FixtureType = FixtureTypeV1 {
+            name: "Brick".to_string(),
+            channels,
+            max_strobe_frequency: Some(25.0),
+            min_strobe_frequency: Some(0.4),
+            strobe_dmx_offset: Some(7),
+        }
+        .into();
         let output = ft.to_string();
         assert!(
             output.contains("functions: { \"strobe\": 7..255 -> 0.4hz..25hz }"),
@@ -766,8 +833,13 @@ mod tests {
         let mut channels = HashMap::new();
         channels.insert("dimmer".to_string(), 1);
         channels.insert("strobe".to_string(), 2);
-        let mut ft = FixtureType::new("Strobe".to_string(), channels);
-        ft.max_strobe_frequency = Some(20.0);
+        let ft: FixtureType = FixtureTypeV1 {
+            name: "Strobe".to_string(),
+            channels,
+            max_strobe_frequency: Some(20.0),
+            ..FixtureTypeV1::default()
+        }
+        .into();
         let output = ft.to_string();
         assert!(output.contains("max_strobe_frequency: 20"), "{output}");
         assert!(!output.contains("functions"), "{output}");

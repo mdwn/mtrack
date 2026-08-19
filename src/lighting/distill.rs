@@ -54,11 +54,20 @@ impl DistillCache {
     }
 
     /// Computes the cache key for an expansion. Everything that can change
-    /// the expanded result participates: archive bytes, mode, distiller
-    /// version, and the overrides fingerprint (the textual form of the
-    /// referential fixture's own body).
-    pub fn key(archive_bytes: &[u8], mode: &str, overrides_fingerprint: &str) -> String {
+    /// the expanded result participates: the referring fixture type's name
+    /// (the expansion carries it — two refs to the same GDTF+mode must not
+    /// share an entry), archive bytes, mode, distiller version, and the
+    /// overrides fingerprint (the textual form of the referential fixture's
+    /// own body).
+    pub fn key(
+        fixture_name: &str,
+        archive_bytes: &[u8],
+        mode: &str,
+        overrides_fingerprint: &str,
+    ) -> String {
         let mut hasher = Sha256::new();
+        hasher.update(fixture_name.as_bytes());
+        hasher.update([0u8]);
         hasher.update(archive_bytes);
         hasher.update([0u8]);
         hasher.update(mode.as_bytes());
@@ -88,14 +97,16 @@ impl DistillCache {
         }
     }
 
-    /// Writes an expansion. The write is atomic (temp file + rename) so a
-    /// crash mid-write can't leave a truncated entry behind.
+    /// Writes an expansion. The write is atomic (unique temp file + rename),
+    /// so a crash mid-write can't leave a truncated entry behind and two
+    /// concurrent fills of the same key (a parallel prewarm) can't tear each
+    /// other's writes — last rename wins with identical content.
     pub fn put(&self, key: &str, fixture_type: &FixtureType) -> Result<(), Box<dyn Error>> {
         std::fs::create_dir_all(&self.dir)?;
         let path = self.entry_path(key);
-        let tmp = self.dir.join(format!("{key}.json.tmp"));
-        std::fs::write(&tmp, serde_json::to_string_pretty(fixture_type)?)?;
-        std::fs::rename(&tmp, &path)?;
+        let mut tmp = tempfile::NamedTempFile::new_in(&self.dir)?;
+        std::io::Write::write_all(&mut tmp, serde_json::to_string_pretty(fixture_type)?.as_bytes())?;
+        tmp.persist(&path)?;
         Ok(())
     }
 
@@ -125,30 +136,33 @@ mod tests {
         let mut channels = HashMap::new();
         channels.insert("red".to_string(), 1);
         channels.insert("strobe".to_string(), 4);
-        let mut ft = FixtureType::new("Brick".to_string(), channels);
-        ft.max_strobe_frequency = Some(25.0);
-        ft.min_strobe_frequency = Some(0.4);
-        ft.strobe_dmx_offset = Some(7);
-        ft.normalize_legacy_strobe();
-        ft
+        crate::lighting::types::FixtureTypeV1 {
+            name: "Brick".to_string(),
+            channels,
+            max_strobe_frequency: Some(25.0),
+            min_strobe_frequency: Some(0.4),
+            strobe_dmx_offset: Some(7),
+        }
+        .into()
     }
 
     #[test]
     fn key_changes_with_each_input() {
-        let base = DistillCache::key(b"archive", "Mode 1", "");
-        assert_ne!(base, DistillCache::key(b"archive2", "Mode 1", ""));
-        assert_ne!(base, DistillCache::key(b"archive", "Mode 2", ""));
-        assert_ne!(base, DistillCache::key(b"archive", "Mode 1", "overrides"));
+        let base = DistillCache::key("Brick", b"archive", "Mode 1", "");
+        assert_ne!(base, DistillCache::key("Brick2", b"archive", "Mode 1", ""));
+        assert_ne!(base, DistillCache::key("Brick", b"archive2", "Mode 1", ""));
+        assert_ne!(base, DistillCache::key("Brick", b"archive", "Mode 2", ""));
+        assert_ne!(base, DistillCache::key("Brick", b"archive", "Mode 1", "overrides"));
         // Same inputs, same key.
-        assert_eq!(base, DistillCache::key(b"archive", "Mode 1", ""));
+        assert_eq!(base, DistillCache::key("Brick", b"archive", "Mode 1", ""));
     }
 
     #[test]
     fn key_separates_fields() {
         // The separator prevents boundary ambiguity: ("ab", "c") != ("a", "bc").
         assert_ne!(
-            DistillCache::key(b"ab", "c", ""),
-            DistillCache::key(b"a", "bc", "")
+            DistillCache::key("n", b"ab", "c", ""),
+            DistillCache::key("n", b"a", "bc", "")
         );
     }
 
@@ -156,7 +170,7 @@ mod tests {
     fn miss_then_fill_then_hit() {
         let dir = tempfile::tempdir().unwrap();
         let cache = DistillCache::new(dir.path().join("cache"));
-        let key = DistillCache::key(b"archive", "Mode 1", "");
+        let key = DistillCache::key("Brick", b"archive", "Mode 1", "");
 
         assert!(cache.get(&key).is_none());
 
@@ -186,7 +200,7 @@ mod tests {
     fn corrupt_entry_is_discarded_and_refilled() {
         let dir = tempfile::tempdir().unwrap();
         let cache = DistillCache::new(dir.path().to_path_buf());
-        let key = DistillCache::key(b"archive", "Mode 1", "");
+        let key = DistillCache::key("Brick", b"archive", "Mode 1", "");
 
         std::fs::write(dir.path().join(format!("{key}.json")), "not json").unwrap();
         assert!(cache.get(&key).is_none());
@@ -200,7 +214,7 @@ mod tests {
     fn fill_error_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let cache = DistillCache::new(dir.path().join("cache"));
-        let key = DistillCache::key(b"archive", "Mode 1", "");
+        let key = DistillCache::key("Brick", b"archive", "Mode 1", "");
 
         let result = cache.get_or_fill(&key, || Err("distiller exploded".into()));
         assert!(result.is_err());
