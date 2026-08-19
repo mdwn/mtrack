@@ -12,7 +12,13 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 // Main file rule - can contain any combination of fixture types, venues, light shows, sequences, and tempo
-file = { SOI ~ (fixture_type | venue | light_show | sequence | tempo)* ~ EOI }
+file = { SOI ~ version_decl? ~ (fixture_type | venue | light_show | sequence | tempo)* ~ EOI }
+
+// Optional file-format version, declared once at the top of a file. Versions
+// mark breakages, not expansions: a file without a marker is version 2
+// forever (the version at which the marker was introduced), and only a
+// future format break mints version 3. Additive syntax never bumps it.
+version_decl = { "version" ~ ":" ~ number_value }
 
 // Light show rules
 // Allow optional show names so a single unnamed show per file is valid.

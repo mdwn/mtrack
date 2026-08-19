@@ -3,7 +3,8 @@
 The lighting DSL describes four kinds of content, split by file extension:
 **fixture types** (`.fixture`), **venues** (`.venue`), and **light shows** and
 **sequences** (`.light`). Comments use `#` or `//` to end of line. Whitespace
-is insignificant.
+is insignificant. A file may open with `version: 2` — the format version,
+bumped only on breaking changes; files without the line are version 2.
 
 When generating a show for a song, you usually only write a `show "..." { … }`
 block. Fixture types and venues are defined once for the whole rig and live in

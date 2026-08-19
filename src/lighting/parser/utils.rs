@@ -21,6 +21,42 @@ use super::grammar::Rule;
 use pest::iterators::Pair;
 
 /// Parses a percentage string (e.g., "50%") to f64 (e.g., 0.5)
+/// The DSL file-format version this mtrack reads and writes.
+///
+/// Versions mark breakages, not expansions: additive syntax never bumps
+/// this. A file with no `version:` declaration is version 2 forever — the
+/// version at which the marker was introduced — so a future breaking format
+/// must declare itself, and an older mtrack fails with a precise error
+/// instead of a confusing parse failure.
+pub const DSL_VERSION: u32 = 2;
+
+/// Validates a file-level `version:` declaration against [`DSL_VERSION`].
+pub(crate) fn check_dsl_version(pair: Pair<Rule>) -> Result<(), Box<dyn Error>> {
+    let text = pair
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::number_value)
+        .map(|p| p.as_str().trim().to_string())
+        .unwrap_or_default();
+    let declared: u32 = text
+        .parse()
+        .map_err(|_| format!("version must be a whole number, got \"{text}\""))?;
+    if declared > DSL_VERSION {
+        return Err(format!(
+            "this file declares version {declared}, but this mtrack supports up to \
+             version {DSL_VERSION} — upgrade mtrack to use it"
+        )
+        .into());
+    }
+    if declared < DSL_VERSION {
+        return Err(format!(
+            "version {declared} is not a valid declaration: the marker was introduced \
+             at version {DSL_VERSION}, and files without one are version {DSL_VERSION}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 pub(crate) fn parse_percentage_to_f64(value: &str) -> Result<f64, Box<dyn Error>> {
     let value = value.trim();
     if value.ends_with('%') {

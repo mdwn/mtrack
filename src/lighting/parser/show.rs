@@ -101,6 +101,9 @@ pub fn parse_light_shows_with_tempo(
             _ => {
                 for inner_pair in pair.into_inner() {
                     match inner_pair.as_rule() {
+                        Rule::version_decl => {
+                            super::utils::check_dsl_version(inner_pair)?;
+                        }
                         Rule::tempo => {
                             global_tempo = Some(parse_tempo_definition(inner_pair)?);
                         }

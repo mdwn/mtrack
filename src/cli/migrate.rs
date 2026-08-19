@@ -495,12 +495,18 @@ fn migrate_lighting_files(
 
             let mut names: Vec<_> = types.keys().cloned().collect();
             names.sort();
-            let body = names
-                .iter()
-                .map(|name| types[name].to_string())
-                .collect::<Vec<_>>()
-                .join("\n\n")
-                + "\n";
+            // Generated files declare their version explicitly. Absence also
+            // means version 2, but machine-written files don't need to save
+            // the keystrokes, and the declaration documents the convention.
+            let body = format!(
+                "version: {}\n\n{}\n",
+                crate::lighting::parser::DSL_VERSION,
+                names
+                    .iter()
+                    .map(|name| types[name].to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            );
             // The rewrite is generated from the parsed model, so authored
             // text the model doesn't carry is lost. Say so in the report —
             // the dry-run is where someone can still decide to keep a copy.

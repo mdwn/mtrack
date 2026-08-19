@@ -111,6 +111,14 @@ fixture_type "House-Blinder" {
 }
 ```
 
+**Format versioning policy:** lighting DSL files may declare `version: 2` at
+the top. Versions mark breakages, not expansions — additive syntax never bumps
+the version, and changing the meaning of existing syntax is forbidden (new
+meaning requires new syntax). A file without a declaration is version 2
+forever (the version at which the marker was introduced); a future breaking
+format must declare its version, so an older mtrack rejects it with an
+"upgrade mtrack" error rather than a parse failure.
+
 Canonical channel names (`red`, `dimmer`, `pan`, `ct`, …) are produced by the distiller from
 GDTF's standardized attributes (`ColorAdd_R`, `Dimmer`, `Pan`, `CTC`), making the distiller
 the normalizer — multi-user configs stop diverging on spelling. Debuggability:

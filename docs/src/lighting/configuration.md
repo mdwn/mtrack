@@ -54,6 +54,22 @@ dmx:
       venues: "lighting/venues"
 ```
 
+## File versions
+
+Lighting DSL files may declare a format version at the top of the file:
+
+```light
+version: 2
+```
+
+Versions mark **breakages, not expansions** — new syntax additions never bump
+the version. A file without a declaration is version 2 (the version at which
+the marker was introduced), so today the line is optional and purely
+documentary; `mtrack migrate` writes it into generated files. If a future
+format break mints version 3, those files must declare it, and an older
+mtrack will refuse them with a clear "upgrade mtrack" error instead of a
+parse failure.
+
 ## Fixture Type Definitions (`lighting/fixture_types/*.fixture`)
 
 Each channel is declared on its own line: a name, its 1-based DMX offset, an

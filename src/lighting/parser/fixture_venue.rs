@@ -47,6 +47,9 @@ pub fn parse_fixture_types(content: &str) -> Result<HashMap<String, FixtureType>
     for pair in pairs {
         for inner_pair in pair.into_inner() {
             match inner_pair.as_rule() {
+                Rule::version_decl => {
+                    super::utils::check_dsl_version(inner_pair)?;
+                }
                 Rule::fixture_type => {
                     let fixture_type = parse_fixture_type_definition(inner_pair)
                         .map_err(|e| format!("Failed to parse fixture type definition: {}", e))?;
@@ -86,6 +89,9 @@ pub fn parse_venues(content: &str) -> Result<HashMap<String, Venue>, Box<dyn Err
     for pair in pairs {
         for inner_pair in pair.into_inner() {
             match inner_pair.as_rule() {
+                Rule::version_decl => {
+                    super::utils::check_dsl_version(inner_pair)?;
+                }
                 Rule::venue => {
                     let venue = parse_venue_definition(inner_pair)
                         .map_err(|e| format!("Failed to parse venue definition: {}", e))?;
@@ -1007,6 +1013,67 @@ venue "Main" {
             original.min_strobe_frequency()
         );
         assert_eq!(roundtrip.strobe_dmx_offset(), original.strobe_dmx_offset());
+    }
+
+    // ── file version declarations ────────────────────────────────
+
+    #[test]
+    fn version_2_accepted() {
+        let content = r#"version: 2
+
+fixture_type "Par" {
+    channel "red" @ 1
+}"#;
+        let result = parse_fixture_types(content).unwrap();
+        assert!(result.contains_key("Par"));
+
+        let content = r#"version: 2
+venue "Club" {
+    fixture "P1" Par @ 1:1
+}"#;
+        assert!(parse_venues(content).unwrap().contains_key("Club"));
+    }
+
+    #[test]
+    fn version_from_the_future_is_a_precise_error() {
+        let content = r#"version: 3
+fixture_type "Par" {
+    channel "red" @ 1
+}"#;
+        let err = parse_fixture_types(content).unwrap_err().to_string();
+        assert!(err.contains("upgrade mtrack"), "{err}");
+        assert!(err.contains("version 3"), "{err}");
+    }
+
+    #[test]
+    fn version_below_the_marker_is_rejected() {
+        // The marker was introduced at version 2; unmarked files ARE version
+        // 2, so nothing can legitimately declare an older one.
+        let content = r#"version: 1
+venue "Club" { }"#;
+        let err = parse_venues(content).unwrap_err().to_string();
+        assert!(err.contains("version 1"), "{err}");
+    }
+
+    #[test]
+    fn version_checked_in_show_files_too() {
+        let content = r#"version: 3
+show "S" {
+    @00:01.000
+    front: static dimmer: 50%, duration: 2s
+}"#;
+        let err = crate::lighting::parser::parse_light_shows(content)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("upgrade mtrack"), "{err}");
+    }
+
+    #[test]
+    fn version_must_be_integral() {
+        let content = r#"version: 2.5
+fixture_type "Par" { channel "red" @ 1 }"#;
+        let err = parse_fixture_types(content).unwrap_err().to_string();
+        assert!(err.contains("whole number"), "{err}");
     }
 
     // ── v2 venues ────────────────────────────────────────────────
