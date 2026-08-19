@@ -227,13 +227,53 @@ tempo_transition_snap = { "snap" }
 COMMENT = _{ ("//" | "#") ~ (!"\n" ~ ANY)* }
 
 // Fixture type rules
-fixture_type = { "fixture_type" ~ fixture_type_name ~ "{" ~ fixture_type_content ~ "}" }
+fixture_type = { "fixture_type" ~ fixture_type_name ~ gdtf_source? ~ "{" ~ fixture_type_content ~ "}" }
 
 fixture_type_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
+// Referential fixture types pin the GDTF archive + mode they are distilled
+// from; the file itself carries only overrides and additions.
+gdtf_source = { "from" ~ "gdtf" ~ "(" ~ string ~ "," ~ "mode" ~ string ~ ")" }
+
 fixture_type_content = {
-    (channels | channel_map | max_strobe_frequency | min_strobe_frequency | strobe_dmx_offset | special_cases)*
+    (channels | channel_map | channel_def | movement_block | max_strobe_frequency | min_strobe_frequency | strobe_dmx_offset | special_cases)*
 }
+
+// v2 structured channel: a one-liner with an optional block when the channel
+// has structure (functions). `channels`/`channel_map` above must stay first in
+// the alternatives so their longer keywords aren't nibbled by "channel".
+channel_def = { "channel" ~ string ~ "@" ~ number_value ~ channel_fine? ~ channel_range? ~ channel_block? }
+
+channel_fine = { "fine" ~ number_value }
+
+channel_range = { "range" ~ ":" ~ phys_range }
+
+channel_block = { "{" ~ (channel_functions | channel_range)* ~ "}" }
+
+channel_functions = { "functions" ~ ":" ~ "{" ~ function_entry ~ ("," ~ function_entry)* ~ "}" }
+
+function_entry = { string ~ ":" ~ dmx_range ~ ("->" ~ phys_range)? }
+
+dmx_range = { number_value ~ ".." ~ number_value }
+
+phys_range = { phys_value ~ ".." ~ phys_value }
+
+// Atomic: the unit suffix must sit directly on the number ("-270deg"), and
+// the Rust side splits it back apart.
+phys_value = @{ signed_number ~ phys_unit }
+
+phys_unit = { "deg" | "hz" }
+
+signed_number = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+
+// Movement limits — not in GDTF; measured or configured per fixture.
+movement_block = { "movement" ~ "{" ~ movement_param* ~ "}" }
+
+movement_param = { movement_param_name ~ ":" ~ speed_value }
+
+movement_param_name = { "max_pan_speed" | "max_tilt_speed" }
+
+speed_value = @{ signed_number ~ "deg/s" }
 
 channels = { "channels" ~ ":" ~ number_value }
 
@@ -262,13 +302,24 @@ special_case = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 // Venue rules - support both simple and complex formats
 venue = { "venue" ~ string ~ "{" ~ venue_content ~ "}" }
 
-venue_content = { (fixture | group)* }
+venue_content = { (fixture | group | focus)* }
 
 // The type may be quoted. `identifier` is atomic, so a type whose declared
 // name is not a bare word — `fixture_type "Moving Head"` — has no other way to
 // be referenced. It used to work only because a non-atomic `identifier`
 // silently swallowed the space.
-fixture = { "fixture" ~ string ~ (string | identifier) ~ "@" ~ universe_num ~ ":" ~ address_num ~ tags? }
+fixture = { "fixture" ~ string ~ (string | identifier) ~ "@" ~ universe_num ~ ":" ~ address_num ~ tags? ~ fixture_position? ~ fixture_rotation? }
+
+// Stage coordinates: meters (degrees for rotations), right-handed Z-up,
+// origin at downstage-center on the deck.
+fixture_position = { "position" ~ vec3 }
+
+fixture_rotation = { "rotation" ~ vec3 }
+
+vec3 = { "(" ~ signed_number ~ "," ~ signed_number ~ "," ~ signed_number ~ ")" }
+
+// A named focus point: shows reference the name, the venue binds coordinates.
+focus = { "focus" ~ string ~ vec3 }
 
 universe_num = { ASCII_DIGIT+ }
 address_num = { ASCII_DIGIT+ }
