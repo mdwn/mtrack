@@ -120,7 +120,7 @@ test("song-detail", async ({ page }) => {
 test("song-sections", async ({ page }) => {
   const song = await pickSong(page, (s) => (s.sections?.length ?? 0) > 1);
   await page.goto(`/#/songs/${encodeURIComponent(song)}/sections`);
-  await expect(page.locator(".tab.active")).toContainText("Sections");
+  await expect(page.locator(".tab.active")).toContainText("Timeline");
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(DOCS_IMAGES, "song-sections.png") });
 });
@@ -184,30 +184,38 @@ test("bulk-import-result", async ({ page }) => {
   const importPath =
     process.env.MTRACK_IMPORT_PATH ?? (await pickImportParent(page));
 
-  await page.goto("/#/songs");
-  await page.getByRole("button", { name: /import from filesystem/i }).click();
-  await expect(page.locator(".entry-list .entry").first()).toBeVisible({
-    timeout: 5000,
-  });
+  // Bulk import is a config change, and a live player starts locked
+  // (the server answers 423 while locked). Unlock for the shot, and
+  // restore the lock afterwards so the instance is left as found.
+  await page.request.put("/api/lock", { data: { locked: false } });
+  try {
+    await page.goto("/#/songs");
+    await page.getByRole("button", { name: /import from filesystem/i }).click();
+    await expect(page.locator(".entry-list .entry").first()).toBeVisible({
+      timeout: 5000,
+    });
 
-  // Type the path and hit Enter to navigate.
-  const pathInput = page.locator(".path-input");
-  await pathInput.fill(importPath);
-  await pathInput.press("Enter");
-  await expect(page.locator(".entry-list .entry.dir").first()).toBeVisible({
-    timeout: 5000,
-  });
+    // Type the path and hit Enter to navigate.
+    const pathInput = page.locator(".path-input");
+    await pathInput.fill(importPath);
+    await pathInput.press("Enter");
+    await expect(page.locator(".entry-list .entry.dir").first()).toBeVisible({
+      timeout: 5000,
+    });
 
-  // Trigger bulk import and wait for the result step.
-  await page
-    .getByRole("button", { name: /import all subdirectories/i })
-    .click();
-  await expect(page.locator(".bulk-result")).toBeVisible({ timeout: 30000 });
-  // Let the result list render fully.
-  await page.waitForTimeout(400);
-  await page.screenshot({
-    path: path.join(DOCS_IMAGES, "bulk-import-result.png"),
-  });
+    // Trigger bulk import and wait for the result step.
+    await page
+      .getByRole("button", { name: /import all subdirectories/i })
+      .click();
+    await expect(page.locator(".bulk-result")).toBeVisible({ timeout: 30000 });
+    // Let the result list render fully.
+    await page.waitForTimeout(400);
+    await page.screenshot({
+      path: path.join(DOCS_IMAGES, "bulk-import-result.png"),
+    });
+  } finally {
+    await page.request.put("/api/lock", { data: { locked: true } });
+  }
 });
 
 interface BrowseEntry {
