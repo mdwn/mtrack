@@ -20,7 +20,7 @@ use tracing::{error, info};
 
 use crate::audio::format::{SampleFormat, TargetFormat};
 use crate::audio::health::{has_output_signal, OutputHealth};
-use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
+use crate::audio::mixer::{AudioMixer, PreparedSource};
 use crate::thread_priority::{
     callback_thread_priority, env_flag, promote_to_realtime, rt_audio_enabled,
 };
@@ -47,7 +47,7 @@ pub(crate) trait OutputStreamFactory: Send + 'static {
     fn build_stream(
         &self,
         mixer: AudioMixer,
-        source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+        source_rx: crossbeam_channel::Receiver<PreparedSource>,
         num_channels: u16,
         error_notify: CondvarNotify,
         health: Arc<OutputHealth>,
@@ -132,7 +132,7 @@ impl OutputStreamFactory for CpalOutputStreamFactory {
     fn build_stream(
         &self,
         mixer: AudioMixer,
-        source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+        source_rx: crossbeam_channel::Receiver<PreparedSource>,
         num_channels: u16,
         error_notify: CondvarNotify,
         health: Arc<OutputHealth>,
@@ -200,7 +200,7 @@ impl CpalOutputStreamFactory {
         &self,
         device: &cpal::Device,
         mixer: AudioMixer,
-        source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+        source_rx: crossbeam_channel::Receiver<PreparedSource>,
         num_channels: u16,
         error_notify: CondvarNotify,
         health: Arc<OutputHealth>,
@@ -331,10 +331,10 @@ fn error_handler(
 /// Drains pending sources from the channel and adds them to the mixer.
 pub(super) fn drain_pending_sources(
     mixer: &AudioMixer,
-    source_rx: &crossbeam_channel::Receiver<MixerActiveSource>,
+    source_rx: &crossbeam_channel::Receiver<PreparedSource>,
 ) {
     while let Ok(new_source) = source_rx.try_recv() {
-        mixer.add_source(new_source);
+        mixer.push_prepared(new_source);
     }
 }
 
@@ -353,7 +353,7 @@ pub(super) struct CallbackInstruments<'a> {
 pub(super) fn process_f32_callback(
     data: &mut [f32],
     mixer: &AudioMixer,
-    source_rx: &crossbeam_channel::Receiver<MixerActiveSource>,
+    source_rx: &crossbeam_channel::Receiver<PreparedSource>,
     num_channels: u16,
     instruments: CallbackInstruments<'_>,
 ) {
@@ -375,7 +375,7 @@ pub(super) fn process_f32_callback(
 pub(super) fn process_int_callback<T: cpal::Sample + cpal::FromSample<f32>>(
     data: &mut [T],
     mixer: &AudioMixer,
-    source_rx: &crossbeam_channel::Receiver<MixerActiveSource>,
+    source_rx: &crossbeam_channel::Receiver<PreparedSource>,
     num_channels: u16,
     temp_buffer: &mut [f32],
     instruments: CallbackInstruments<'_>,
@@ -410,7 +410,7 @@ pub(super) fn process_int_callback<T: cpal::Sample + cpal::FromSample<f32>>(
 /// Direct mixer callback for f32 output - no intermediate ring buffer
 fn create_direct_f32_callback(
     mixer: AudioMixer,
-    source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+    source_rx: crossbeam_channel::Receiver<PreparedSource>,
     num_channels: u16,
     health: Arc<OutputHealth>,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
@@ -440,7 +440,7 @@ fn create_direct_f32_callback(
 /// so the temp buffer is pre-allocated and never resized in the callback.
 fn create_direct_int_callback<T: cpal::Sample + cpal::FromSample<f32> + std::fmt::Debug>(
     mixer: AudioMixer,
-    source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+    source_rx: crossbeam_channel::Receiver<PreparedSource>,
     num_channels: u16,
     max_samples: usize,
     health: Arc<OutputHealth>,
@@ -477,7 +477,7 @@ pub(super) mod test {
 
     use super::super::CondvarNotify;
     use super::*;
-    use crate::audio::mixer::AudioMixer;
+    use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
     use crate::playsync::CancelHandle;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -550,7 +550,7 @@ pub(super) mod test {
         fn build_stream(
             &self,
             _mixer: AudioMixer,
-            _source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+            _source_rx: crossbeam_channel::Receiver<PreparedSource>,
             _num_channels: u16,
             _error_notify: CondvarNotify,
             _health: Arc<OutputHealth>,
@@ -569,7 +569,7 @@ pub(super) mod test {
         fn build_stream(
             &self,
             _mixer: AudioMixer,
-            _source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+            _source_rx: crossbeam_channel::Receiver<PreparedSource>,
             _num_channels: u16,
             _error_notify: CondvarNotify,
             _health: Arc<OutputHealth>,
@@ -643,7 +643,7 @@ pub(super) mod test {
         fn build_stream(
             &self,
             _mixer: AudioMixer,
-            _source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+            _source_rx: crossbeam_channel::Receiver<PreparedSource>,
             _num_channels: u16,
             error_notify: CondvarNotify,
             _health: Arc<OutputHealth>,
@@ -668,7 +668,7 @@ pub(super) mod test {
     mod process_callbacks {
         use super::*;
 
-        fn setup(channels: u16) -> (AudioMixer, crossbeam_channel::Receiver<MixerActiveSource>) {
+        fn setup(channels: u16) -> (AudioMixer, crossbeam_channel::Receiver<PreparedSource>) {
             let (tx, rx) = crossbeam_channel::bounded(64);
             let mixer = AudioMixer::new(channels, 44100);
 
@@ -685,9 +685,11 @@ pub(super) mod test {
             let samples: Vec<f32> = (0..4 * channels as usize)
                 .map(|i| (i + 1) as f32 * 0.1)
                 .collect();
-            let source =
+            let mut source =
                 make_active_source(make_test_source(samples, channels, labels), track_mappings);
-            tx.send(source).unwrap();
+            mixer.prepare_source(&mut source);
+            tx.send(std::sync::Arc::new(parking_lot::Mutex::new(source)))
+                .unwrap();
 
             (mixer, rx)
         }
@@ -751,7 +753,7 @@ pub(super) mod test {
         /// facts and leaves the verdict to a caller that knows the playback state.
         #[test]
         fn f32_callback_idle_is_alive_but_silent() {
-            let (_tx, rx) = crossbeam_channel::bounded::<MixerActiveSource>(64);
+            let (_tx, rx) = crossbeam_channel::bounded::<PreparedSource>(64);
             let mixer = AudioMixer::new(2, 44100);
             let (mut profiler, health) = (CallbackProfiler::new(false), OutputHealth::new());
             let mut output = vec![1.0f32; 8];
@@ -797,7 +799,7 @@ pub(super) mod test {
 
         #[test]
         fn f32_callback_produces_silence_with_no_sources() {
-            let (_tx, rx) = crossbeam_channel::bounded::<MixerActiveSource>(64);
+            let (_tx, rx) = crossbeam_channel::bounded::<PreparedSource>(64);
             let mixer = AudioMixer::new(2, 44100);
             let (mut profiler, health) = (CallbackProfiler::new(false), OutputHealth::new());
             let mut output = vec![1.0f32; 8];
@@ -890,11 +892,13 @@ pub(super) mod test {
             for _ in 0..2 {
                 let mut mappings = HashMap::new();
                 mappings.insert("ch0".to_string(), vec![1]);
-                let source = make_active_source(
+                let mut source = make_active_source(
                     make_test_source(vec![0.5; 4], 1, vec![vec!["ch0".to_string()]]),
                     mappings,
                 );
-                tx.send(source).unwrap();
+                mixer.prepare_source(&mut source);
+                tx.send(std::sync::Arc::new(parking_lot::Mutex::new(source)))
+                    .unwrap();
             }
 
             let (mut profiler, health) = (CallbackProfiler::new(false), OutputHealth::new());

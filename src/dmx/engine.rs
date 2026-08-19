@@ -448,11 +448,16 @@ impl Engine {
         let mut effect_engine = match self.effect_engine.try_lock_for(Duration::from_secs(2)) {
             Some(guard) => guard,
             None => {
+                // Skip this tick rather than falling back to a blocking
+                // acquire: blocking here wedges the whole 44Hz loop behind
+                // the stuck holder, freezing lighting entirely. Skipping
+                // keeps the loop alive so output resumes the moment the
+                // lock frees up.
                 error!(
                     "effect_engine lock blocked for >2s in update_effects — \
-                     another holder is not releasing it"
+                     another holder is not releasing it; skipping this tick"
                 );
-                self.effect_engine.lock()
+                return Ok(());
             }
         };
         let commands = effect_engine.update(dt, Some(song_time))?;

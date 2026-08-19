@@ -47,6 +47,32 @@ async fn main() {
             .init();
     }
 
+    // A panicking background task otherwise dies with output only on stderr —
+    // invisible headless under systemd journal filtering and in the web UI log
+    // stream. Log it through tracing first, then let the default hook (or the
+    // TUI's terminal-restoring hook, which chains onto this one) run.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        tracing::error!("Thread panicked: {panic_info}");
+        default_hook(panic_info);
+    }));
+
+    // Rayon's global pool (waveform generation) aborts the process if a job
+    // panics and no handler is installed. Install one before first use so a
+    // panic there logs and ends that job instead of ending playback.
+    if let Err(e) = rayon::ThreadPoolBuilder::new()
+        .panic_handler(|payload| {
+            tracing::error!(
+                "Panic in rayon global thread pool: {}",
+                mtrack::util::panic_message(payload.as_ref())
+            )
+        })
+        .build_global()
+    {
+        // Already initialized elsewhere; nothing to do.
+        tracing::debug!("Global rayon pool already initialized: {e}");
+    }
+
     if let Err(e) = cli::run(tui_mode).await {
         eprintln!("Error: {}", e);
         std::process::exit(1);

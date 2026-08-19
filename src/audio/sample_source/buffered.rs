@@ -38,9 +38,18 @@ impl BufferFillPool {
     /// Creates a new pool with the given number of worker threads.
     pub fn new(num_threads: usize) -> Result<Self, String> {
         let threads = num_threads.max(1);
+        // Without a panic handler, rayon aborts the whole process when a job
+        // panics. Fill tasks catch their own unwinds; this is the backstop
+        // that keeps a panic from ever ending playback of the rest of the mix.
         let pool = ThreadPoolBuilder::new()
             .num_threads(threads)
             .thread_name(|i| format!("mtrack-buffer-fill-{i}"))
+            .panic_handler(|payload| {
+                tracing::error!(
+                    "Panic in audio buffer fill pool: {}",
+                    crate::util::panic_message(payload.as_ref())
+                );
+            })
             .build()
             .map_err(|e| e.to_string())?;
         Ok(Self { pool })
@@ -228,87 +237,130 @@ impl BufferedSampleSource {
         warmup_signal: Option<Arc<WarmupSignal>>,
     ) {
         pool.spawn(move || {
-            let mut producer = match producer_slot.lock().unwrap().take() {
-                Some(p) => p,
-                None => {
-                    // The debounce on `refill_in_progress` should make this
-                    // unreachable. Bail safely if we ever hit it.
-                    refill_in_progress.store(false, Ordering::Release);
-                    if let Some(sig) = warmup_signal {
-                        sig.signal();
-                    }
-                    return;
-                }
-            };
-
-            let mut local_frame = vec![0.0f32; channels];
-            let mut samples_written: usize = 0;
-            let mut warmup_signalled = warmup_signal.is_none();
-
-            loop {
-                // Need at least one frame's worth of free slots to write.
-                if producer.slots() < channels {
-                    break;
-                }
-
-                // Decode one frame outside the producer's critical path.
-                let done = {
-                    let mut g = inner.lock().unwrap();
-                    match g.next_frame(&mut local_frame[..]) {
-                        Ok(Some(_)) => false,
-                        Ok(None) => true,
-                        Err(e) => {
-                            // A decode error permanently ends just this source
-                            // while the rest of the mix continues — make sure
-                            // that leaves a trace in the logs.
-                            tracing::warn!("Audio source ended early due to decode error: {}", e);
-                            true
-                        }
-                    }
-                };
-
-                if done {
-                    finished_flag.store(true, Ordering::Release);
-                    break;
-                }
-
-                // Push one frame into the ring. `push` is the simple safe
-                // single‑item API; for typical channel counts (1–8) the
-                // per‑push atomic overhead is negligible relative to decode
-                // work.
-                let mut pushed_full_frame = true;
-                for &sample in &local_frame[..channels] {
-                    if producer.push(sample).is_err() {
-                        // Ring filled mid‑frame; should not happen because we
-                        // checked slots() >= channels above, but be defensive.
-                        pushed_full_frame = false;
-                        break;
-                    }
-                }
-                if !pushed_full_frame {
-                    break;
-                }
-                samples_written += channels;
-
-                if !warmup_signalled && samples_written >= warmup_min_samples {
-                    if let Some(sig) = warmup_signal.as_ref() {
-                        sig.signal();
-                    }
-                    warmup_signalled = true;
-                }
-            }
-
-            *producer_slot.lock().unwrap() = Some(producer);
-            refill_in_progress.store(false, Ordering::Release);
-
-            // If the source ended before we hit the warmup threshold, unblock
-            // the constructor anyway.
-            if !warmup_signalled {
-                if let Some(sig) = warmup_signal {
+            // A decoder panic (symphonia/rubato on a malformed file) must end
+            // only this source, not the process: catch the unwind, mark the
+            // source finished so no further fill task is spawned for it, and
+            // release `refill_in_progress` so the flag can never latch. The
+            // producer is lost on that path, which is fine — the source is
+            // finished.
+            let refill_flag = refill_in_progress.clone();
+            let finished = finished_flag.clone();
+            let warmup = warmup_signal.clone();
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                Self::run_fill_task(
+                    inner,
+                    producer_slot,
+                    refill_in_progress,
+                    finished_flag,
+                    channels,
+                    warmup_min_samples,
+                    warmup_signal,
+                );
+            }));
+            if let Err(payload) = unwound {
+                tracing::error!(
+                    "Audio fill task panicked ({}); ending this source early while the rest of the mix continues",
+                    crate::util::panic_message(payload.as_ref())
+                );
+                finished.store(true, Ordering::Release);
+                refill_flag.store(false, Ordering::Release);
+                if let Some(sig) = warmup {
                     sig.signal();
                 }
             }
         });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_fill_task(
+        inner: Arc<Mutex<Box<dyn ChannelMappedSampleSource + Send + Sync>>>,
+        producer_slot: Arc<Mutex<Option<Producer<f32>>>>,
+        refill_in_progress: Arc<AtomicBool>,
+        finished_flag: Arc<AtomicBool>,
+        channels: usize,
+        warmup_min_samples: usize,
+        warmup_signal: Option<Arc<WarmupSignal>>,
+    ) {
+        let mut producer = match producer_slot.lock().unwrap().take() {
+            Some(p) => p,
+            None => {
+                // The debounce on `refill_in_progress` should make this
+                // unreachable. Bail safely if we ever hit it.
+                refill_in_progress.store(false, Ordering::Release);
+                if let Some(sig) = warmup_signal {
+                    sig.signal();
+                }
+                return;
+            }
+        };
+
+        let mut local_frame = vec![0.0f32; channels];
+        let mut samples_written: usize = 0;
+        let mut warmup_signalled = warmup_signal.is_none();
+
+        loop {
+            // Need at least one frame's worth of free slots to write.
+            if producer.slots() < channels {
+                break;
+            }
+
+            // Decode one frame outside the producer's critical path.
+            let done = {
+                let mut g = inner.lock().unwrap();
+                match g.next_frame(&mut local_frame[..]) {
+                    Ok(Some(_)) => false,
+                    Ok(None) => true,
+                    Err(e) => {
+                        // A decode error permanently ends just this source
+                        // while the rest of the mix continues — make sure
+                        // that leaves a trace in the logs.
+                        tracing::warn!("Audio source ended early due to decode error: {}", e);
+                        true
+                    }
+                }
+            };
+
+            if done {
+                finished_flag.store(true, Ordering::Release);
+                break;
+            }
+
+            // Push one frame into the ring. `push` is the simple safe
+            // single‑item API; for typical channel counts (1–8) the
+            // per‑push atomic overhead is negligible relative to decode
+            // work.
+            let mut pushed_full_frame = true;
+            for &sample in &local_frame[..channels] {
+                if producer.push(sample).is_err() {
+                    // Ring filled mid‑frame; should not happen because we
+                    // checked slots() >= channels above, but be defensive.
+                    pushed_full_frame = false;
+                    break;
+                }
+            }
+            if !pushed_full_frame {
+                break;
+            }
+            samples_written += channels;
+
+            if !warmup_signalled && samples_written >= warmup_min_samples {
+                if let Some(sig) = warmup_signal.as_ref() {
+                    sig.signal();
+                }
+                warmup_signalled = true;
+            }
+        }
+
+        *producer_slot.lock().unwrap() = Some(producer);
+        refill_in_progress.store(false, Ordering::Release);
+
+        // If the source ended before we hit the warmup threshold, unblock
+        // the constructor anyway.
+        if !warmup_signalled {
+            if let Some(sig) = warmup_signal {
+                sig.signal();
+            }
+        }
     }
 }
 

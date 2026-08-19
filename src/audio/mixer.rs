@@ -33,6 +33,10 @@ thread_local! {
     static SOURCES_SCRATCH: RefCell<Vec<Arc<Mutex<ActiveSource>>>> = const { RefCell::new(Vec::new()) };
 }
 
+/// A source that has been through `prepare_source` and can be inserted by the
+/// audio callback without further allocation-heavy work.
+pub type PreparedSource = Arc<Mutex<ActiveSource>>;
+
 /// Core audio mixing logic that's independent of any audio backend
 #[derive(Clone)]
 pub struct AudioMixer {
@@ -218,8 +222,10 @@ impl AudioMixer {
         (channel_mappings, gain)
     }
 
-    /// Adds a new audio source to the mixer
-    pub fn add_source(&self, mut source: ActiveSource) {
+    /// Prepares a source for mixing: caches its channel count and precomputes
+    /// its channel mappings. Allocation-heavy — call this on the producer
+    /// thread, never in the audio callback.
+    pub fn prepare_source(&self, source: &mut ActiveSource) {
         // Cache source channel count (avoids repeated trait calls)
         if source.cached_source_channel_count == 0 {
             source.cached_source_channel_count = source.source.source_channel_count();
@@ -233,9 +239,19 @@ impl AudioMixer {
         );
         source.channel_mappings = channel_mappings;
         source.gain = gain;
+    }
 
-        let mut sources = self.active_sources.write();
-        sources.push(Arc::new(Mutex::new(source)));
+    /// Inserts an already-prepared source. The one Vec push is the only
+    /// allocation, so this is what the audio callback's drain uses.
+    pub fn push_prepared(&self, source: Arc<Mutex<ActiveSource>>) {
+        self.active_sources.write().push(source);
+    }
+
+    /// Adds a new audio source to the mixer. Prepare + insert in one call,
+    /// for callers not on the audio callback (tests, direct use).
+    pub fn add_source(&self, mut source: ActiveSource) {
+        self.prepare_source(&mut source);
+        self.push_prepared(Arc::new(Mutex::new(source)));
     }
 
     /// Removes sources by ID.
