@@ -3,9 +3,7 @@
 
 fixture_type "Strobe" {
   channels: 2
-  channel_map: {
-    "dimmer": 1,
-    "strobe_rate": 2
-  }
+  channel "dimmer" @ 1
+  channel "strobe_rate" @ 2
   max_strobe_frequency: 25.0
 }

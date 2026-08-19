@@ -54,77 +54,74 @@ dmx:
       venues: "lighting/venues"
 ```
 
-## Fixture Type Definitions (`lighting/fixture_types/`)
+## Fixture Type Definitions (`lighting/fixture_types/*.fixture`)
+
+Each channel is declared on its own line: a name, its 1-based DMX offset, an
+optional `fine` byte for 16-bit channels, and an optional block when the
+channel has structure (DMX-range functions with physical values).
 
 ```light
 # RGBW Par Can fixture type definition
 fixture_type "RGBW_Par" {
   channels: 4
-  channel_map: {
-    "dimmer": 1,
-    "red": 2,
-    "green": 3,
-    "blue": 4
-  }
-  special_cases: ["RGB", "Dimmer"]
+  channel "dimmer" @ 1
+  channel "red" @ 2
+  channel "green" @ 3
+  channel "blue" @ 4
 }
 
 # RGB + Strobe fixture (e.g. Astera PixelBrick in 4-channel RGBS mode)
 fixture_type "Astera-PixelBrick" {
   channels: 4
-  channel_map: {
-    "red": 1,
-    "green": 2,
-    "blue": 3,
-    "strobe": 4
+  channel "red" @ 1
+  channel "green" @ 2
+  channel "blue" @ 3
+  channel "strobe" @ 4 {
+    functions: { "off": 0..6, "strobe": 7..255 -> 0.4hz..25hz }
   }
-  max_strobe_frequency: 25.0
-  min_strobe_frequency: 0.4
-  strobe_dmx_offset: 7
 }
 
 # Moving Head fixture type definition
 fixture_type "MovingHead" {
   channels: 16
-  channel_map: {
-    "dimmer": 1,
-    "pan": 2,
-    "pan_fine": 3,
-    "tilt": 4,
-    "tilt_fine": 5,
-    "color_wheel": 6,
-    "gobo_wheel": 7,
-    "gobo_rotation": 8,
-    "focus": 9,
-    "zoom": 10,
-    "iris": 11,
-    "frost": 12,
-    "prism": 13,
-    "effects": 14,
-    "strobe": 15,
-    "control": 16
-  }
-  special_cases: ["MovingHead", "Spot", "Dimmer", "Strobe"]
+  channel "dimmer" @ 1
+  channel "pan" @ 2 fine 3
+  channel "tilt" @ 4 fine 5
+  channel "color_wheel" @ 6
+  channel "gobo_wheel" @ 7
+  channel "gobo_rotation" @ 8
+  channel "focus" @ 9
+  channel "zoom" @ 10
+  channel "iris" @ 11
+  channel "frost" @ 12
+  channel "prism" @ 13
+  channel "effects" @ 14
+  channel "strobe" @ 15
+  channel "control" @ 16
+  max_strobe_frequency: 20.0
 }
 ```
 
+> **Migrating from `.light` fixture files:** the older `channel_map:` syntax and
+> the `.light` extension still load, with a deprecation warning. Run
+> `mtrack migrate` to rewrite fixture type files into the form above (and rename
+> venue files to `.venue`); support for the old form will be removed.
+
 **Strobe frequency range:**
 
-Fixtures with a dedicated strobe channel can specify their supported frequency range and DMX
-offset. This is important because many LED fixtures map the DMX strobe channel linearly to
-*period* (1/frequency) rather than frequency, so a simple linear frequency-to-DMX mapping
-produces incorrect results. `mtrack` uses period-linear interpolation to match this behavior.
+Fixtures with a dedicated strobe channel declare their variable-strobe DMX range
+and frequency range as a `strobe` function, as in the PixelBrick example above:
+`"strobe": 7..255 -> 0.4hz..25hz` means DMX values 7–255 map to 0.4–25 Hz. A
+fixture where only the maximum frequency is known can instead set the standalone
+`max_strobe_frequency:` field (default 20.0), as in the MovingHead example.
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `max_strobe_frequency` | 20.0 | Maximum strobe frequency in Hz |
-| `min_strobe_frequency` | 0.0 | Minimum strobe frequency in Hz |
-| `strobe_dmx_offset` | 0 | First DMX value where variable strobe begins (values below this are typically "off" or reserved) |
+This matters because many LED fixtures map the DMX strobe channel linearly to
+*period* (1/frequency) rather than frequency, so a simple linear frequency-to-DMX
+mapping produces incorrect results. `mtrack` uses period-linear interpolation to
+match this behavior. At 10 Hz, the PixelBrick receives DMX 248 (period-linear),
+not 103 (frequency-linear).
 
-For example, the Astera PixelBrick's strobe channel uses DMX values 7–255 for 0.4–25 Hz. At
-10 Hz, `mtrack` sends DMX 248 (period-linear), not 103 (frequency-linear).
-
-## Venue Definitions (`lighting/venues/`)
+## Venue Definitions (`lighting/venues/*.venue`)
 
 ```light
 # Main Stage venue definition
@@ -156,6 +153,25 @@ venue "small_club" {
 
   # Single strobe
   fixture "Strobe1" Strobe @ 1:29 tags ["strobe", "front"]
+}
+```
+
+**Positions and focus points (optional):**
+
+Fixtures can carry a stage position (meters) and mounting rotation (degrees), and
+a venue can bind named focus points to stage coordinates. Coordinates are
+right-handed Z-up with the origin at downstage-center on the deck: +x stage-left,
++y upstage, +z up. A venue without positions still plays; these exist for the
+stage view and for upcoming movement features.
+
+```light
+venue "kellys-basement" {
+  fixture "Spot1" MovingHead @ 1:1
+    tags ["spot", "rear"]
+    position (-2.0, 3.5, 4.2) rotation (0, 0, 180)
+
+  focus "drummer" (0.0, 2.8, 1.4)
+  focus "center-stage" (0.0, 1.5, 1.7)
 }
 ```
 

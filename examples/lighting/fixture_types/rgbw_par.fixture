@@ -3,10 +3,8 @@
 
 fixture_type "RGBW_Par" {
   channels: 4
-  channel_map: {
-    "dimmer": 1,
-    "red": 2,
-    "green": 3,
-    "blue": 4
-  }
+  channel "dimmer" @ 1
+  channel "red" @ 2
+  channel "green" @ 3
+  channel "blue" @ 4
 }

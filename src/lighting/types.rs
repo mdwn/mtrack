@@ -334,6 +334,13 @@ impl fmt::Display for FixtureType {
         // into a function first so nothing is lost in the rewrite.
         let mut this = self.clone();
         this.normalize_legacy_strobe();
+        // Normalization needs all three fields and a strobe channel; a
+        // partial set (e.g. only max_strobe_frequency) can't be expressed as
+        // a function and must survive the rewrite as explicit fields.
+        let strobe_in_functions = this
+            .channel_defs
+            .get(STROBE_CHANNEL)
+            .is_some_and(|def| def.functions.iter().any(|f| f.name == STROBE_FUNCTION));
         let mut entries: Vec<_> = this.channel_defs.iter().collect();
         entries.sort_by_key(|(name, def)| (def.offset, name.as_str()));
         for (name, def) in entries {
@@ -364,6 +371,17 @@ impl fmt::Display for FixtureType {
                     .collect();
                 writeln!(f, "    functions: {{ {} }}", functions.join(", "))?;
                 writeln!(f, "  }}")?;
+            }
+        }
+        if !strobe_in_functions {
+            if let Some(v) = self.max_strobe_frequency {
+                writeln!(f, "  max_strobe_frequency: {}", format_number(v))?;
+            }
+            if let Some(v) = self.min_strobe_frequency {
+                writeln!(f, "  min_strobe_frequency: {}", format_number(v))?;
+            }
+            if let Some(v) = self.strobe_dmx_offset {
+                writeln!(f, "  strobe_dmx_offset: {v}")?;
             }
         }
         if !self.movement.is_empty() {
@@ -739,6 +757,20 @@ mod tests {
             "{output}"
         );
         assert!(!output.contains("max_strobe_frequency"), "{output}");
+    }
+
+    #[test]
+    fn fixture_type_display_partial_strobe_fields_survive() {
+        // Only max_strobe_frequency is known — it can't become a function
+        // (no offset, no min), so the rewrite must keep the explicit field.
+        let mut channels = HashMap::new();
+        channels.insert("dimmer".to_string(), 1);
+        channels.insert("strobe".to_string(), 2);
+        let mut ft = FixtureType::new("Strobe".to_string(), channels);
+        ft.max_strobe_frequency = Some(20.0);
+        let output = ft.to_string();
+        assert!(output.contains("max_strobe_frequency: 20"), "{output}");
+        assert!(!output.contains("functions"), "{output}");
     }
 
     // ── Fixture ────────────────────────────────────────────────────

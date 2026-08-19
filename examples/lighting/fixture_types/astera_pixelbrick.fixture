@@ -4,13 +4,10 @@
 
 fixture_type "Astera-PixelBrick" {
   channels: 4
-  channel_map: {
-    "red": 1,
-    "green": 2,
-    "blue": 3,
-    "strobe": 4
+  channel "red" @ 1
+  channel "green" @ 2
+  channel "blue" @ 3
+  channel "strobe" @ 4 {
+    functions: { "off": 0..6, "strobe": 7..255 -> 0.4hz..25hz }
   }
-  max_strobe_frequency: 25.0
-  min_strobe_frequency: 0.4
-  strobe_dmx_offset: 7
 }

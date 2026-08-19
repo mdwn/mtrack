@@ -1,8 +1,9 @@
 # mtrack lighting DSL — quick reference
 
-`.light` files describe four kinds of content: **fixture types**, **venues**,
-**light shows**, and **sequences**. A single file can contain any combination.
-Comments use `#` or `//` to end of line. Whitespace is insignificant.
+The lighting DSL describes four kinds of content, split by file extension:
+**fixture types** (`.fixture`), **venues** (`.venue`), and **light shows** and
+**sequences** (`.light`). Comments use `#` or `//` to end of line. Whitespace
+is insignificant.
 
 When generating a show for a song, you usually only write a `show "..." { … }`
 block. Fixture types and venues are defined once for the whole rig and live in
@@ -220,19 +221,45 @@ to see what's actually resolvable in the current venue before authoring cues.
 
 ## Fixture type (rarely written from MCP)
 
+Fixture types live in `.fixture` files. Each channel is a one-liner (name,
+1-based offset, optional `fine` byte), with an optional block for DMX-range
+functions carrying physical values:
+
 ```
 fixture_type "RGBW_Par" {
-    channels: 6
-    channel_map: { "red": 1, "green": 2, "blue": 3, "white": 4, "dimmer": 5 }
+    channels: 5
+    channel "red" @ 1
+    channel "green" @ 2
+    channel "blue" @ 3
+    channel "white" @ 4
+    channel "dimmer" @ 5
+}
+
+fixture_type "Brick" {
+    channels: 4
+    channel "red" @ 1
+    channel "green" @ 2
+    channel "blue" @ 3
+    channel "strobe" @ 4 {
+        functions: { "off": 0..6, "strobe": 7..255 -> 0.4hz..25hz }
+    }
 }
 ```
 
+The older `channel_map: { "red": 1, … }` form (in `.light` files) still parses
+during the migration window; `mtrack migrate` rewrites it.
+
 ## Venue (rarely written from MCP)
+
+Venues live in `.venue` files. Fixtures may optionally carry a stage
+`position` (meters) and `rotation` (degrees), and a venue may bind named
+`focus` points — coordinates are right-handed Z-up, origin downstage-center.
 
 ```
 venue "main_stage" {
     fixture "Wash1" RGBW_Par @ 1:1 tags ["wash", "front"]
-    fixture "Wash2" RGBW_Par @ 1:7 tags ["wash", "front"]
+    fixture "Wash2" RGBW_Par @ 1:7 tags ["wash", "front"] position (-2.0, 3.5, 4.2)
+    focus "drummer" (0.0, 2.8, 1.4)
 }
 ```
 
