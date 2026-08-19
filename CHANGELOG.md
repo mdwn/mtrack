@@ -246,6 +246,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measures the computed colours of these elements in both themes and holds them to the WCAG
   contrast floors, so the next one fails CI instead of waiting to be noticed.
 
+  The same test scans the source for every custom property referenced with a fallback and
+  fails if one was never defined, which is the trap underneath all of the above. That scan
+  immediately found one more: the timeline's position picker asked for `--font-mono`, which
+  does not exist — the token is `--mono` — so its numerals had been rendering in the
+  browser's generic monospace rather than JetBrains Mono.
+
 - **Software audio devices no longer advertise a channel count they cannot honour**: `alsa:default`
   and `alsa:pulse` were listed as 32-channel devices. That number is what ALSA's plugin advertises,
   not a width any hardware promised, and picking one of those for a 32-channel show would have

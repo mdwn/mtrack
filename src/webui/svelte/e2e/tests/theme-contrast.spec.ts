@@ -28,6 +28,11 @@
 // hint ticks) are held to the 3:1 non-text floor.
 
 import { test, expect, type Page } from "@playwright/test";
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let testCounter = 0;
 
@@ -375,25 +380,61 @@ for (const theme of THEMES) {
   });
 }
 
-test("no component pins a colour through an undefined custom property", async ({
-  page,
-}) => {
+test("every custom property referenced with a fallback is defined", () => {
   // `var(--token, #literal)` on a token that was never defined resolves to
-  // the literal in both themes — the theme switch cannot reach it. Assert
-  // the tokens these components name actually exist.
-  await page.goto("/#/");
-  const tokens = [
-    "--nc-amber-400",
-    "--nc-amber-fg",
-    "--nc-ink",
-    "--nc-error",
-    "--accent",
-    "--nc-fg-1",
-    "--nc-bg-1",
-  ];
-  const missing = await page.evaluate((names) => {
-    const root = getComputedStyle(document.documentElement);
-    return names.filter((n) => !root.getPropertyValue(n).trim());
-  }, tokens);
-  expect(missing).toEqual([]);
+  // the literal in *both* themes, so the theme switch cannot reach it. That
+  // is how the amber, warning and error colours above came to be pinned to
+  // one theme, and nothing in the toolchain says a word about it: it is
+  // valid CSS that renders.
+  //
+  // This walks the source rather than the rendered page, because the page
+  // only proves the tokens on screen at that moment; a component nobody
+  // navigated to can carry the same bug indefinitely.
+  const root = path.resolve(__dirname, "..", "..", "src");
+
+  function walk(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) return walk(p);
+      return /\.(svelte|css|ts)$/.test(e.name) ? [p] : [];
+    });
+  }
+
+  const defined = new Set<string>();
+  const referenced = new Map<string, Set<string>>();
+
+  for (const file of walk(root)) {
+    const text = readFileSync(file, "utf8");
+    // Declared in a stylesheet: `--token: value`.
+    for (const m of text.matchAll(/(--[A-Za-z0-9_-]+)\s*:/g)) {
+      defined.add(m[1]);
+    }
+    // Declared on an element by Svelte (`style:--token={…}`) or set
+    // imperatively (`el.style.setProperty("--token", …)`). Both are as real
+    // as a stylesheet declaration; the value just arrives at runtime.
+    for (const m of text.matchAll(/style:(--[A-Za-z0-9_-]+)/g)) {
+      defined.add(m[1]);
+    }
+    for (const m of text.matchAll(/setProperty\(\s*["'`](--[A-Za-z0-9_-]+)/g)) {
+      defined.add(m[1]);
+    }
+    // Referenced *with a fallback* — the only form that can fail silently.
+    for (const m of text.matchAll(/var\(\s*(--[A-Za-z0-9_-]+)\s*,/g)) {
+      const rel = path.relative(root, file);
+      referenced.set(m[1], (referenced.get(m[1]) ?? new Set()).add(rel));
+    }
+  }
+
+  // Pre-existing offenders in the calibration wizard, which this change does
+  // not touch. `--bg-base` pins that panel to a dark navy in both themes and
+  // wants fixing on its own; listing them here keeps this test a guard
+  // against new ones rather than a permanently red check.
+  const known = new Set(["--bg-base", "--danger"]);
+
+  const undefinedTokens = [...referenced.entries()]
+    .filter(([token]) => !defined.has(token) && !known.has(token))
+    .map(([token, files]) => `${token} (${[...files].sort().join(", ")})`)
+    .sort();
+
+  expect(undefinedTokens).toEqual([]);
 });

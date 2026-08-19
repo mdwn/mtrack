@@ -702,7 +702,7 @@
     background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 8px;
-    font-family: var(--font-mono, ui-monospace, monospace);
+    font-family: var(--mono);
     font-variant-numeric: tabular-nums;
     font-size: 15px;
     cursor: text;
