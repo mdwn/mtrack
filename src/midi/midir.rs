@@ -25,7 +25,7 @@ use std::{
 
 use midir::{MidiInput, MidiInputConnection, MidiInputPort, MidiOutput, MidiOutputPort};
 use midly::live::LiveEvent;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{error::TrySendError, Sender};
 use tracing::{debug, error, info, span, warn, Level};
 
 use crate::{
@@ -154,11 +154,22 @@ impl super::Device for Device {
                         );
                     }
                 }
-                if let Err(e) = sender.blocking_send(Vec::from(raw_event)) {
-                    error!(
-                        err = format!("{:?}", e),
-                        "Error sending MIDI event to receiver."
-                    );
+                // This closure runs on the MIDI driver's input thread: it must
+                // never block. If the consumer stalls (it awaits player calls),
+                // a blocking send here would wedge the driver thread and with
+                // it all incoming MIDI. Dropping an event under backpressure is
+                // the lesser harm.
+                match sender.try_send(Vec::from(raw_event)) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_)) => {
+                        warn!("MIDI control channel full; dropping incoming event");
+                    }
+                    Err(e @ TrySendError::Closed(_)) => {
+                        error!(
+                            err = format!("{:?}", e),
+                            "Error sending MIDI event to receiver."
+                        );
+                    }
                 }
             },
             (),

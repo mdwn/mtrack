@@ -28,7 +28,7 @@ extern crate mtrack;
 
 use clap::Parser;
 use mtrack::audio;
-use mtrack::audio::mixer::ActiveSource;
+use mtrack::audio::mixer::{ActiveSource, AudioMixer, PreparedSource};
 use mtrack::audio::sample_source::{ChannelMappedSource, LoopingSampleSource};
 use mtrack::config;
 use mtrack::playsync::CancelHandle;
@@ -36,6 +36,13 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::atomic::AtomicBool;
+
+/// Mirrors the production producer path: prepare on this thread so the audio
+/// callback only inserts.
+fn prepare_for_send(mixer: &AudioMixer, mut source: ActiveSource) -> PreparedSource {
+    mixer.prepare_source(&mut source);
+    std::sync::Arc::new(Mutex::new(source))
+}
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::Subscriber;
@@ -438,6 +445,7 @@ fn run_scenario(
     let source_tx = device
         .source_sender()
         .ok_or("Device does not support source_sender")?;
+    let mixer = device.mixer().ok_or("Device does not support mixer")?;
 
     // Use 2 channels (stereo)
     let channels = 2u16;
@@ -450,7 +458,7 @@ fn run_scenario(
         let sine_buffer = generate_sine_buffer(freq, sample_rate, channels);
         let (active_source, _is_finished, cancel_handle) =
             create_looping_source(&sine_buffer, channels, sample_rate, volume);
-        source_tx.send(active_source)?;
+        source_tx.send(prepare_for_send(&mixer, active_source))?;
         cancel_handles.push(cancel_handle);
     }
 
@@ -523,6 +531,7 @@ fn run_ramp_scenario(
     let source_tx = device
         .source_sender()
         .ok_or("Device does not support source_sender")?;
+    let mixer = device.mixer().ok_or("Device does not support mixer")?;
 
     let channels = 2u16;
     let budget_us = compute_budget_us(buffer_size, sample_rate);
@@ -539,7 +548,7 @@ fn run_ramp_scenario(
             let sine_buffer = generate_sine_buffer(freq, sample_rate, channels);
             let (active_source, _is_finished, cancel_handle) =
                 create_looping_source(&sine_buffer, channels, sample_rate, volume);
-            source_tx.send(active_source)?;
+            source_tx.send(prepare_for_send(&mixer, active_source))?;
             cancel_handles.push(cancel_handle);
         }
         current_sources += to_add;
@@ -619,6 +628,7 @@ fn run_churn_scenario(
     let source_tx = device
         .source_sender()
         .ok_or("Device does not support source_sender")?;
+    let mixer = device.mixer().ok_or("Device does not support mixer")?;
 
     let channels = 2u16;
     let budget_us = compute_budget_us(buffer_size, sample_rate);
@@ -638,7 +648,7 @@ fn run_churn_scenario(
             let sine_buffer = generate_sine_buffer(freq, sample_rate, channels);
             let (active_source, _is_finished, cancel_handle) =
                 create_looping_source(&sine_buffer, channels, sample_rate, 0.05);
-            if source_tx.send(active_source).is_ok() {
+            if source_tx.send(prepare_for_send(&mixer, active_source)).is_ok() {
                 cancel_handles.push((cancel_handle, now));
                 sources_created += 1;
             }

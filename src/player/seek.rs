@@ -19,6 +19,11 @@ use tracing::{info, warn};
 
 use super::{Player, ReactiveLoopState};
 
+/// How long a seek waits for the previous playback to wind down before
+/// abandoning it. Normal wind-down is well under a second; this only fires
+/// when a playback thread failed to observe cancellation.
+const SEEK_WINDDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
 impl Player {
     /// Seeks to an absolute position within the current song.
     ///
@@ -76,9 +81,30 @@ impl Player {
 
         // Wait for all subsystems to wind down (play_files joins its audio/
         // MIDI/DMX threads before completing) so the restart can't race
-        // shutdown of the previous playback.
-        if let Err(e) = handles.join.await {
-            warn!(err = %e, "Error waiting for playback to wind down during seek");
+        // shutdown of the previous playback. The wait is bounded: this runs
+        // with the join lock held, and an unbounded await here would wedge
+        // every control call (play/stop/next/is_playing and the web UI
+        // poller) behind a playback thread that failed to observe
+        // cancellation. On timeout the handle is dropped — detaching the
+        // wind-down like stop() does — and the seek reports failure rather
+        // than restarting on top of a device that may still be held.
+        match tokio::time::timeout(SEEK_WINDDOWN_TIMEOUT, handles.join).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                warn!(err = %e, "Error waiting for playback to wind down during seek");
+            }
+            Err(_) => {
+                warn!(
+                    timeout = ?SEEK_WINDDOWN_TIMEOUT,
+                    "Playback did not wind down in time during seek; abandoning it"
+                );
+                return Err(format!(
+                    "Seek aborted: previous playback did not wind down within {:?}. \
+                     Stop and play to recover.",
+                    SEEK_WINDDOWN_TIMEOUT
+                )
+                .into());
+            }
         }
 
         // Restart at the target position under the same join lock.

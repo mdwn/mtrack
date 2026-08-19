@@ -51,7 +51,7 @@ pub fn next_source_id() -> u64 {
 }
 
 /// Type alias for the channel sender used to add sources to the mixer.
-pub type SourceSender = crossbeam_channel::Sender<mixer::ActiveSource>;
+pub type SourceSender = crossbeam_channel::Sender<mixer::PreparedSource>;
 
 /// Typed errors for the audio subsystem.
 #[derive(Debug, thiserror::Error)]

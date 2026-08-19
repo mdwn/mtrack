@@ -114,7 +114,10 @@ impl Driver {
 
 impl super::Driver for Driver {
     fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>> {
-        let (midi_events_tx, mut midi_events_rx) = mpsc::channel::<Vec<u8>>(10);
+        // Deep enough to absorb a footswitch burst or an unfiltered clock
+        // stream while the consumer awaits player calls; the producer side
+        // drops (never blocks) when this fills.
+        let (midi_events_tx, mut midi_events_rx) = mpsc::channel::<Vec<u8>>(256);
         let player = self.player.clone();
         let device = self.midi_device.clone();
         let events = MidiEvents {

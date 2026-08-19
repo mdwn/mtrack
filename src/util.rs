@@ -19,6 +19,18 @@ use serde::Serialize;
 use yaml_rust2::{Yaml, YamlEmitter};
 
 /// Extracts a displayable file name from a path, returning a fallback if the name is unreadable.
+/// Extracts the human-readable message from a panic payload, as delivered to
+/// `std::panic::set_hook` callbacks and rayon `panic_handler`s. Panic payloads
+/// are `&str` for `panic!("literal")` and `String` for `panic!("{x}")`;
+/// anything else has no portable message.
+pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("<non-string panic payload>")
+}
+
 pub fn filename_display(path: &Path) -> &str {
     path.file_name()
         .and_then(|f| f.to_str())

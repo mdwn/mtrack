@@ -341,7 +341,13 @@ impl SampleEngine {
             gain_envelope: None,
         };
 
-        if let Err(e) = self.source_tx.send(active_source) {
+        // Prepare on this thread so the audio callback's drain only inserts.
+        let mut active_source = active_source;
+        self.mixer.prepare_source(&mut active_source);
+        if let Err(e) = self
+            .source_tx
+            .send(std::sync::Arc::new(parking_lot::Mutex::new(active_source)))
+        {
             error!(error = %e, "Failed to send sample to mixer");
         }
 

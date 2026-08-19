@@ -33,7 +33,7 @@ const STREAM_FLAPPING_UNDER: Duration = Duration::from_secs(1);
 /// second, and the point is to tell the operator once, not to fill the journal.
 const FLAP_WARN_INTERVAL: Duration = Duration::from_secs(10);
 
-use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
+use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer, PreparedSource};
 
 use crate::audio::health::{OutputHealth, OutputHealthSnapshot};
 
@@ -45,9 +45,9 @@ pub(super) struct OutputManager {
     /// The core audio mixer
     pub(super) mixer: AudioMixer,
     /// Channel for receiving new audio sources to play.
-    pub(super) source_tx: crossbeam_channel::Sender<MixerActiveSource>,
+    pub(super) source_tx: crossbeam_channel::Sender<PreparedSource>,
     /// Channel receiver for processing new sources.
-    source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+    source_rx: crossbeam_channel::Receiver<PreparedSource>,
     /// Handle to the output thread (keeps it alive).
     output_thread: Option<thread::JoinHandle<()>>,
     /// Shared shutdown signal: set to true and notify condvar to stop the output thread.
@@ -120,9 +120,13 @@ impl OutputManager {
         Ok(manager)
     }
 
-    /// Adds a new audio source to be played.
-    pub(super) fn add_source(&self, source: MixerActiveSource) -> Result<(), Box<dyn Error>> {
-        self.source_tx.send(source)?;
+    /// Adds a new audio source to be played. The allocation-heavy preparation
+    /// (channel-mapping precompute) happens here on the caller's thread; the
+    /// audio callback receives a ready-to-insert source and only pushes it.
+    pub(super) fn add_source(&self, mut source: MixerActiveSource) -> Result<(), Box<dyn Error>> {
+        self.mixer.prepare_source(&mut source);
+        self.source_tx
+            .send(std::sync::Arc::new(parking_lot::Mutex::new(source)))?;
         Ok(())
     }
 
