@@ -5,28 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Removed
-
-- **Venue-defined groups**: a `venue "..." { … }` block no longer accepts
-  `group "name" = Fixture1, Fixture2`. Tag the fixtures instead and declare a
-  logical group under `dmx.lighting.groups` that selects on the tag — that is
-  what every shipped example, and the documented three-layer model, has done
-  since tags were introduced one release after venue groups landed. Tags
-  survive a venue change; venue groups did not.
-
-  A venue still using one now fails to load with a message naming the group and
-  the migration. Nothing else changes: logical groups, constraints, and tags are
-  untouched.
-
-  This was not a live feature in practice. No shipped venue has ever declared a
-  group, they were absent from the documentation, they were a last-resort
-  fallback behind logical groups during resolution, and the web UI's venue
-  editor could neither create them nor preserve them — saving a venue there
-  silently dropped any it had. A venue could not hold more than one until it was
-  fixed days before this removal, which is how long the feature had gone
-  unexercised.
+## [0.16.0] - 2026-08-19
 
 ### Added
 
@@ -208,6 +187,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It still cannot prove sound reached the room. A device can accept every buffer and produce
   nothing, and nothing host-side can see that.
 
+- **The status page says when audio is open but not playing out**: the audio subsystem reports
+  `connected` from the moment a device handle exists, and keeps reporting it while the interface
+  is physically unplugged — verified on the test rig, where pulling a USB interface mid-song left
+  it green for the entire outage. `audio_output` now carries a one-word verdict — `healthy`,
+  `recovering`, `stalled` or `never_started` — alongside the facts behind it, and the status page
+  colours the audio row from that rather than from handle presence. A stalled callback reads
+  "Open, but not playing out" in red; a stream being rebuilt reads "Reconnecting to the interface"
+  in amber, because something is wrong but it is being worked on.
+
+  Three pieces of history come with it, shown under the audio row, since none is visible at any
+  single instant: a count of streams rebuilt after a backend error — the only way to notice a rig
+  quietly recovering from a flaky cable several times a set — a count of buffer underruns, and the
+  last error the backend reported, retained after recovery because that is the thing worth reading
+  afterwards. Underruns are counted apart from errors on purpose: cpal reports every XRUN through
+  the same callback and then recovers on its own, so folding them together would bury a cable fault
+  under routine glitches and overwrite its message.
+
+  `never_started` is deliberately not shown as a fault: it is the ordinary state between opening a
+  device and its first callback, and flagging it would make every start look broken.
+
+- **MIDI beat clock tempo persistence**: a new `persist_tempo` option under the MIDI player
+  config keeps the beat clock free-running at the last known tempo once a song stops, until the
+  next song starts. When a song ends (or is stopped), mtrack sends `Stop` and then keeps
+  emitting Timing Clock messages at that song's final tempo, so downstream gear (tempo-synced
+  delays, LFOs, arpeggiators, tempo displays) holds the tempo through the gap between songs
+  instead of drifting or resetting. Defaults to off, preserving the previous behavior where the
+  clock goes silent once a song stops. Only meaningful when `beat_clock` is enabled.
+
 ### Changed
 
 - **Upgraded to cpal 0.18.1**, which also required midir 0.11: cpal 0.18 moves ALSA onto
@@ -220,6 +227,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   One audible difference: an ALSA POLLERR used to reach mtrack as a stream failure and force a
   full device reopen, around 29ms, in place of a glitch of about one. cpal 0.18 classifies it as
   an xrun and recovers in place, so it now costs the glitch alone.
+
+- **Beat clock is now an always-on engine**: when `beat_clock` is enabled, a single device-owned
+  clock thread owns the MIDI clock output for the device's lifetime. Songs retune it by handing
+  it their tempo schedule instead of each spawning (and tearing down) their own clock thread and
+  connection. This removes the per-song thread churn and the brief window where two producers
+  could contend for the port, and makes `persist_tempo` a natural property of the engine's
+  between-song state. Behavior with `persist_tempo` off is unchanged (Start, clocks, Stop, then
+  silent).
+
+- **mtrack creates directories only inside its project (#410)**: a `songs:` or
+  `profiles_dir` pointing at a path that does not exist used to be created
+  wherever it pointed, anywhere on the filesystem. Creation is now refused
+  outside the project directory (wherever `mtrack.yaml` lives), with an error
+  saying to create the directory or point the setting inside the project. A
+  directory that already exists is used as-is, wherever it is.
+
+### Removed
+
+- **Venue-defined groups**: a `venue "..." { … }` block no longer accepts
+  `group "name" = Fixture1, Fixture2`. Tag the fixtures instead and declare a
+  logical group under `dmx.lighting.groups` that selects on the tag — that is
+  what every shipped example, and the documented three-layer model, has done
+  since tags were introduced one release after venue groups landed. Tags
+  survive a venue change; venue groups did not.
+
+  A venue still using one now fails to load with a message naming the group and
+  the migration. Nothing else changes: logical groups, constraints, and tags are
+  untouched.
+
+  This was not a live feature in practice. No shipped venue has ever declared a
+  group, they were absent from the documentation, they were a last-resort
+  fallback behind logical groups during resolution, and the web UI's venue
+  editor could neither create them nor preserve them — saving a venue there
+  silently dropped any it had. A venue could not hold more than one until it was
+  fixed days before this removal, which is how long the feature had gone
+  unexercised.
 
 ### Fixed
 
@@ -308,48 +351,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   what was expected instead of reporting an untagged-enum mismatch. The web UI can reach `default`
   as well as `min`, and its tooltip no longer says that leaving the field empty gives you the
   backend default — an empty field uses the decode buffer size, which is a different thing.
-
-### Added
-
-- **The status page says when audio is open but not playing out**: the audio subsystem reports
-  `connected` from the moment a device handle exists, and keeps reporting it while the interface
-  is physically unplugged — verified on the test rig, where pulling a USB interface mid-song left
-  it green for the entire outage. `audio_output` now carries a one-word verdict — `healthy`,
-  `recovering`, `stalled` or `never_started` — alongside the facts behind it, and the status page
-  colours the audio row from that rather than from handle presence. A stalled callback reads
-  "Open, but not playing out" in red; a stream being rebuilt reads "Reconnecting to the interface"
-  in amber, because something is wrong but it is being worked on.
-
-  Three pieces of history come with it, shown under the audio row, since none is visible at any
-  single instant: a count of streams rebuilt after a backend error — the only way to notice a rig
-  quietly recovering from a flaky cable several times a set — a count of buffer underruns, and the
-  last error the backend reported, retained after recovery because that is the thing worth reading
-  afterwards. Underruns are counted apart from errors on purpose: cpal reports every XRUN through
-  the same callback and then recovers on its own, so folding them together would bury a cable fault
-  under routine glitches and overwrite its message.
-
-  `never_started` is deliberately not shown as a fault: it is the ordinary state between opening a
-  device and its first callback, and flagging it would make every start look broken.
-
-- **MIDI beat clock tempo persistence**: a new `persist_tempo` option under the MIDI player
-  config keeps the beat clock free-running at the last known tempo once a song stops, until the
-  next song starts. When a song ends (or is stopped), mtrack sends `Stop` and then keeps
-  emitting Timing Clock messages at that song's final tempo, so downstream gear (tempo-synced
-  delays, LFOs, arpeggiators, tempo displays) holds the tempo through the gap between songs
-  instead of drifting or resetting. Defaults to off, preserving the previous behavior where the
-  clock goes silent once a song stops. Only meaningful when `beat_clock` is enabled.
-
-### Changed
-
-- **Beat clock is now an always-on engine**: when `beat_clock` is enabled, a single device-owned
-  clock thread owns the MIDI clock output for the device's lifetime. Songs retune it by handing
-  it their tempo schedule instead of each spawning (and tearing down) their own clock thread and
-  connection. This removes the per-song thread churn and the brief window where two producers
-  could contend for the port, and makes `persist_tempo` a natural property of the engine's
-  between-song state. Behavior with `persist_tempo` off is unchanged (Start, clocks, Stop, then
-  silent).
-
-### Fixed
 
 - **Selecting an audio device from the web UI no longer fails with "no device found"**
   ([#357](https://github.com/mdwn/mtrack/issues/357)): opening a device searched a list built by
@@ -504,6 +505,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   threads doing that at once interleave the save and restore and the real stdout is lost for the
   life of the process — a failure that, by construction, prints nothing at all. Enumeration paths
   now serialise on a single lock.
+
+- **Playback paths survive faults that used to end the show (#415)**: a decoder
+  panic on a malformed audio file aborted the whole process (rayon's no-handler
+  behavior); it now ends just that source while the rest of the mix continues,
+  and panics are logged through tracing so a headless rig records them at all.
+  A seek whose previous playback failed to wind down wedged every control call
+  forever while audio kept playing; the wait is now bounded and the seek
+  reports failure instead. The MIDI input callback could block the driver's
+  input thread behind a stalled consumer; it now drops under backpressure
+  (with a warning) instead of wedging incoming MIDI. A stuck effects-engine
+  lock froze the 44Hz lighting loop; it now skips ticks until the lock frees.
+  And song start no longer allocates inside the audio callback — channel-map
+  precompute happens on the producer thread.
+
+- **The generated systemd unit covers the service user's access to the library
+  (#407)**: the unit created a dedicated system user and said nothing about
+  that user reading or writing the project directory, which mtrack rewrites
+  routinely (config, songs, playlists, lighting). The generated unit and its
+  instructions now grant and explain that access instead of leaving the
+  service to fail on permissions with nothing pointing at the cause.
+
+- **A write blocked by the systemd sandbox now explains itself (#409)**: with
+  `ProtectSystem=strict`, a config whose directories live outside the unit's
+  `ReadWritePaths=` failed with a bare `Read-only file system (os error 30)`
+  and a restart loop. The error now names the path it could not write and
+  points at the unit's sandbox settings.
+
+- **Permission advice no longer suggests handing the service a parent
+  directory (#411)**: the missing-directory hint climbed to the nearest
+  existing parent and suggested `chown -R` on it — up to and including
+  `/var/lib` — which grants the service account every sibling. It now advises
+  creating the missing directory itself, owned by the service user.
 
 ### Security
 
