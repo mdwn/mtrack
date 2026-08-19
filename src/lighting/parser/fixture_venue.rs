@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use super::super::types::{Fixture, FixtureType, Venue};
+use super::super::types::{Fixture, FixtureType, FixtureTypeV1, Venue};
 use super::error::get_error_context;
 use super::grammar::{LightingParser, Rule};
 use pest::iterators::Pair;
@@ -125,11 +125,17 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
         }
     }
 
-    let mut fixture_type = FixtureType::new(name, channels);
-    fixture_type.max_strobe_frequency = max_strobe_frequency;
-    fixture_type.min_strobe_frequency = min_strobe_frequency;
-    fixture_type.strobe_dmx_offset = strobe_dmx_offset;
-    Ok(fixture_type)
+    // The parser produces the v1 surface; From<FixtureTypeV1> is the single
+    // normalization point into the internal model — no field pokes, no
+    // manual step to forget.
+    Ok(FixtureTypeV1 {
+        name,
+        channels,
+        max_strobe_frequency,
+        min_strobe_frequency,
+        strobe_dmx_offset,
+    }
+    .into())
 }
 
 fn parse_fixture_content(
@@ -448,6 +454,40 @@ fixture_type "TypeB" {
         let result = parse_fixture_types(content).unwrap();
         assert_eq!(result.len(), 1);
         assert!(result.contains_key("RGBW"));
+    }
+
+    #[test]
+    fn fixture_type_strobe_fields_without_strobe_channel() {
+        // Fields with no "strobe" channel to attach to stay plain fields —
+        // through the real grammar, not just the Rust constructors.
+        let content = r#"fixture_type "Blinder" {
+    channels: 1
+    channel_map: {
+        "dimmer": 1
+    }
+    max_strobe_frequency: 25.0
+    min_strobe_frequency: 0.5
+    strobe_dmx_offset: 10
+}"#;
+        let result = parse_fixture_types(content).unwrap();
+        let ft = result.get("Blinder").unwrap();
+        assert_eq!(ft.max_strobe_frequency(), Some(25.0));
+        assert_eq!(ft.min_strobe_frequency(), Some(0.5));
+        assert_eq!(ft.strobe_dmx_offset(), Some(10));
+        assert!(ft.channel_defs().get("strobe").is_none());
+    }
+
+    #[test]
+    fn fixture_type_without_channel_map() {
+        // The grammar allows a fixture type with no channel_map at all.
+        let content = r#"fixture_type "Fieldsy" {
+    channels: 2
+    max_strobe_frequency: 20.0
+}"#;
+        let result = parse_fixture_types(content).unwrap();
+        let ft = result.get("Fieldsy").unwrap();
+        assert!(ft.channels().is_empty());
+        assert_eq!(ft.max_strobe_frequency(), Some(20.0));
     }
 
     #[test]

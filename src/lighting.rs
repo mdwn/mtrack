@@ -16,6 +16,7 @@ pub mod analyze;
 #[cfg(test)]
 mod consistency_tests;
 pub mod diff;
+pub mod distill;
 pub mod effects;
 pub mod engine;
 pub mod evaluate;
