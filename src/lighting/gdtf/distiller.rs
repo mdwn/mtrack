@@ -93,11 +93,13 @@ pub fn distill(
         // A channel attached to a GeometryReference is one instance of a
         // repeated cell — a pixel bar or multi-head mode. mtrack's model
         // has no instancing; a flattened import would be wrong, so the
-        // whole mode is refused rather than half-imported.
+        // whole mode is refused rather than half-imported. GDTF also
+        // permits references for plain geometry reuse, so this check can
+        // over-trigger on exotic files; the refusal names the geometry so
+        // a human holding the fixture can judge.
         if description
             .geometry_reference_names
-            .iter()
-            .any(|name| *name == channel.geometry)
+            .contains(&channel.geometry)
         {
             return Err(GdtfError::new(format!(
                 "mode \"{}\" is multi-instance (channel on geometry reference \"{}\"); \
@@ -144,9 +146,10 @@ pub fn distill(
         };
         if channel_defs.contains_key(&name) {
             return Err(GdtfError::new(format!(
-                "mode \"{}\" maps two channels to \"{name}\" — it appears to be \
-                 multi-instance, which is not supported; pick a non-pixel mode",
-                mode.name
+                "mode \"{}\": two channels map to the name \"{name}\" \
+                 (second from GDTF attribute \"{}\") — an instanced (pixel) mode \
+                 or an attribute collision; neither can be represented",
+                mode.name, logical.attribute
             )));
         }
 
@@ -162,6 +165,13 @@ pub fn distill(
         }
 
         def.range = channel_range(&logical.attribute, channel);
+        if def.range.is_none() && (logical.attribute == "Pan" || logical.attribute == "Tilt") {
+            warnings.push(format!(
+                "channel \"{name}\": no {} function carries a physical range; \
+                 the channel has no degree mapping",
+                logical.attribute
+            ));
+        }
         def.functions = convert_functions(&name, channel, &mut warnings);
 
         channel_defs.insert(name, def);
@@ -181,14 +191,23 @@ fn canonical_channel_name(attribute: &str) -> Option<&'static str> {
         "ColorAdd_R" => "red",
         "ColorAdd_G" => "green",
         "ColorAdd_B" => "blue",
-        "ColorAdd_W" | "ColorAdd_WW" | "ColorAdd_CW" => "white",
+        "ColorAdd_W" => "white",
+        // Warm/cool white are distinct channels on tunable-white fixtures;
+        // collapsing them onto "white" made two channels collide and
+        // hard-refused legitimate fixtures. They keep distinct names (the
+        // engine's white capability keys on "white" alone — refining that
+        // is color-work territory).
+        "ColorAdd_WW" => "warm_white",
+        "ColorAdd_CW" => "cool_white",
         "ColorAdd_UV" => "uv",
         "Pan" => "pan",
         "Tilt" => "tilt",
         "Zoom" => "zoom",
         "Focus1" => "focus",
         "Gobo1" => "gobo",
-        "CTC" | "CTO" | "CTB" => "ct",
+        "CTC" => "ct",
+        "CTO" => "cto",
+        "CTB" => "ctb",
         "Prism1" => "prism",
         "Frost1" => "frost",
         "Iris" => "iris",
@@ -247,6 +266,24 @@ fn convert_functions(
         })
         .collect();
     starts.sort_by_key(|(from, _)| *from);
+    // Two functions sharing a start would mint an inverted (unmatchable)
+    // range for the earlier one. The sort is stable, so on a tie the later
+    // document-order function wins — kept, loudly; the earlier is dropped.
+    let mut deduped: Vec<(u8, &super::description::Function)> = Vec::with_capacity(starts.len());
+    for (from, function) in starts {
+        if let Some((last_from, dropped)) = deduped.last().copied() {
+            if last_from == from {
+                warnings.push(format!(
+                    "channel \"{channel_name}\": functions \"{}\" and \"{}\" both start \
+                     at DMX {from}; keeping the later one",
+                    dropped.name, function.name
+                ));
+                deduped.pop();
+            }
+        }
+        deduped.push((from, function));
+    }
+    let starts = deduped;
 
     let mut converted = Vec::with_capacity(starts.len());
     for (i, (dmx_from, function)) in starts.iter().enumerate() {
@@ -478,7 +515,112 @@ mod tests {
         let err = distill(&description, "Twin Mode", "Twin")
             .unwrap_err()
             .to_string();
-        assert!(err.contains("maps two channels to \"red\""), "{err}");
+        assert!(err.contains("map to the name \"red\""), "{err}");
+        // A name collision must NOT claim to be multi-instance — that
+        // diagnosis once hard-refused legitimate tunable-white fixtures.
+        assert!(!err.contains("multi-instance"), "{err}");
+    }
+
+    #[test]
+    fn tunable_white_fixtures_distill_cleanly() {
+        // Warm white + cool white are distinct channels on any tunable-white
+        // fixture; collapsing both onto "white" used to refuse the mode.
+        let xml = r#"<GDTF><FixtureType Name="Tunable" Manufacturer="m">
+  <DMXModes>
+    <DMXMode Name="CCT Mode" Geometry="Base">
+      <DMXChannels>
+        <DMXChannel Offset="1" Geometry="Base">
+          <LogicalChannel Attribute="ColorAdd_WW">
+            <ChannelFunction Name="WW" Attribute="ColorAdd_WW" DMXFrom="0/1"/>
+          </LogicalChannel>
+        </DMXChannel>
+        <DMXChannel Offset="2" Geometry="Base">
+          <LogicalChannel Attribute="ColorAdd_CW">
+            <ChannelFunction Name="CW" Attribute="ColorAdd_CW" DMXFrom="0/1"/>
+          </LogicalChannel>
+        </DMXChannel>
+      </DMXChannels>
+    </DMXMode>
+  </DMXModes>
+</FixtureType></GDTF>"#;
+        let description = parse_description(xml).unwrap();
+        let distilled = distill(&description, "CCT Mode", "Tunable").unwrap();
+        assert_eq!(
+            distilled.fixture_type.channels().get("warm_white"),
+            Some(&1)
+        );
+        assert_eq!(
+            distilled.fixture_type.channels().get("cool_white"),
+            Some(&2)
+        );
+    }
+
+    #[test]
+    fn tied_function_starts_keep_the_later_one_loudly() {
+        // Two functions sharing a DMXFrom used to mint an inverted
+        // (unmatchable) range for the earlier one.
+        let xml = r#"<GDTF><FixtureType Name="Tie" Manufacturer="m">
+  <DMXModes>
+    <DMXMode Name="Tie Mode" Geometry="Base">
+      <DMXChannels>
+        <DMXChannel Offset="1" Geometry="Base">
+          <LogicalChannel Attribute="Shutter1">
+            <ChannelFunction Name="Open" Attribute="Shutter1" DMXFrom="0/1"/>
+            <ChannelFunction Name="Old Strobe" Attribute="Shutter1" DMXFrom="7/1"/>
+            <ChannelFunction Name="Variable Strobe" Attribute="Shutter1Strobe" DMXFrom="7/1" PhysicalFrom="1" PhysicalTo="10"/>
+          </LogicalChannel>
+        </DMXChannel>
+      </DMXChannels>
+    </DMXMode>
+  </DMXModes>
+</FixtureType></GDTF>"#;
+        let description = parse_description(xml).unwrap();
+        let distilled = distill(&description, "Tie Mode", "Tie").unwrap();
+        let strobe = &distilled.fixture_type.channel_defs()["strobe"];
+        assert_eq!(strobe.functions.len(), 2, "{:?}", strobe.functions);
+        for func in &strobe.functions {
+            assert!(func.dmx_from <= func.dmx_to, "inverted range: {func:?}");
+        }
+        // The later document-order function won the tie...
+        assert_eq!(strobe.functions[1].name, "strobe");
+        assert_eq!(strobe.functions[1].dmx_from, 7);
+        // ...and the drop was loud.
+        assert!(
+            distilled
+                .warnings
+                .iter()
+                .any(|w| w.contains("both start at DMX 7")),
+            "{:?}",
+            distilled.warnings
+        );
+    }
+
+    #[test]
+    fn pan_without_a_degree_range_warns() {
+        let xml = r#"<GDTF><FixtureType Name="P" Manufacturer="m">
+  <DMXModes>
+    <DMXMode Name="M" Geometry="Base">
+      <DMXChannels>
+        <DMXChannel Offset="1" Geometry="Base">
+          <LogicalChannel Attribute="Pan">
+            <ChannelFunction Name="Pan 1" Attribute="Pan" DMXFrom="0/1"/>
+          </LogicalChannel>
+        </DMXChannel>
+      </DMXChannels>
+    </DMXMode>
+  </DMXModes>
+</FixtureType></GDTF>"#;
+        let description = parse_description(xml).unwrap();
+        let distilled = distill(&description, "M", "P").unwrap();
+        assert!(distilled.fixture_type.channel_defs()["pan"].range.is_none());
+        assert!(
+            distilled
+                .warnings
+                .iter()
+                .any(|w| w.contains("no degree mapping")),
+            "{:?}",
+            distilled.warnings
+        );
     }
 
     #[test]

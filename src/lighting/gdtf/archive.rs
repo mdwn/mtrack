@@ -38,8 +38,19 @@ const MAX_ARCHIVE_ENTRIES: usize = 4096;
 /// petabyte claims un-decompressed.
 const MAX_DESCRIPTION_BYTES: u64 = 64 * 1024 * 1024;
 
+/// The largest whole archive accepted. Real manufacturer files run 1–10 MB
+/// (description + thumbnails + 3D models); the cap bounds the central
+/// directory parse and everything after it.
+const MAX_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
+
 /// Reads `description.xml` out of a GDTF archive held in memory.
 pub fn read_description_xml(bytes: &[u8]) -> Result<String, GdtfError> {
+    if bytes.len() > MAX_ARCHIVE_BYTES {
+        return Err(GdtfError::new(format!(
+            "archive is {} bytes; refusing more than {MAX_ARCHIVE_BYTES}",
+            bytes.len()
+        )));
+    }
     let mut archive = ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| GdtfError::new(format!("not a readable GDTF archive: {e}")))?;
 

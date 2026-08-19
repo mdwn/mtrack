@@ -115,12 +115,16 @@ fn every_corpus_file_parses_and_every_mode_distills_or_refuses() {
                         path.display(),
                         summary.name
                     );
-                    assert_eq!(
-                        distilled.fixture_type.footprint(),
-                        summary.footprint,
-                        "{}: mode {:?} footprint drifted between summary and distillation",
+                    // A skipped channel (no logical channel) still counts in
+                    // the summary's raw footprint, so distillation can only
+                    // shrink it, never exceed it.
+                    assert!(
+                        distilled.fixture_type.footprint() <= summary.footprint,
+                        "{}: mode {:?} distilled footprint {} exceeds the summary's {}",
                         path.display(),
-                        summary.name
+                        summary.name,
+                        distilled.fixture_type.footprint(),
+                        summary.footprint
                     );
                     for warning in &distilled.warnings {
                         println!("  [{}] {warning}", summary.name);

@@ -110,8 +110,19 @@ impl DmxValue {
     }
 }
 
+/// The largest description accepted here. The archive layer enforces its
+/// own cap; this one exists so a future direct caller (pasted XML, say)
+/// can't bypass it.
+const MAX_XML_BYTES: usize = 64 * 1024 * 1024;
+
 /// Parses `description.xml` content into the consumed subset.
 pub fn parse_description(xml: &str) -> Result<Description, GdtfError> {
+    if xml.len() > MAX_XML_BYTES {
+        return Err(GdtfError::new(format!(
+            "description.xml is {} bytes; refusing more than {MAX_XML_BYTES}",
+            xml.len()
+        )));
+    }
     let mut reader = Reader::from_str(xml);
 
     let mut description = Description {
@@ -482,6 +493,22 @@ pub(super) mod tests {
         xml.push_str("</GDTF>");
         let err = parse_description(&xml).unwrap_err().to_string();
         assert!(err.contains("nests deeper"), "{err}");
+    }
+
+    #[test]
+    fn custom_entities_are_never_expanded() {
+        // The module doc claims no DTD/entity expansion; back it up. A
+        // custom entity in an attribute must surface as a parse error, not
+        // an expansion.
+        let xml = r#"<?xml version="1.0"?>
+<!DOCTYPE GDTF [<!ENTITY boom "expanded">]>
+<GDTF><FixtureType Name="&boom;" Manufacturer="m"/></GDTF>"#;
+        match parse_description(xml) {
+            Err(_) => {}
+            Ok(description) => {
+                assert_ne!(description.name, "expanded", "entity was expanded");
+            }
+        }
     }
 
     #[test]
