@@ -457,6 +457,40 @@ fixture_type "TypeB" {
     }
 
     #[test]
+    fn fixture_type_strobe_fields_without_strobe_channel() {
+        // Fields with no "strobe" channel to attach to stay plain fields —
+        // through the real grammar, not just the Rust constructors.
+        let content = r#"fixture_type "Blinder" {
+    channels: 1
+    channel_map: {
+        "dimmer": 1
+    }
+    max_strobe_frequency: 25.0
+    min_strobe_frequency: 0.5
+    strobe_dmx_offset: 10
+}"#;
+        let result = parse_fixture_types(content).unwrap();
+        let ft = result.get("Blinder").unwrap();
+        assert_eq!(ft.max_strobe_frequency(), Some(25.0));
+        assert_eq!(ft.min_strobe_frequency(), Some(0.5));
+        assert_eq!(ft.strobe_dmx_offset(), Some(10));
+        assert!(ft.channel_defs().get("strobe").is_none());
+    }
+
+    #[test]
+    fn fixture_type_without_channel_map() {
+        // The grammar allows a fixture type with no channel_map at all.
+        let content = r#"fixture_type "Fieldsy" {
+    channels: 2
+    max_strobe_frequency: 20.0
+}"#;
+        let result = parse_fixture_types(content).unwrap();
+        let ft = result.get("Fieldsy").unwrap();
+        assert!(ft.channels().is_empty());
+        assert_eq!(ft.max_strobe_frequency(), Some(20.0));
+    }
+
+    #[test]
     fn fixture_type_empty_input() {
         let result = parse_fixture_types("").unwrap();
         assert!(result.is_empty());

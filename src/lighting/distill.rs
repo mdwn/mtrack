@@ -138,7 +138,16 @@ impl DistillCache {
     /// corrupt cache files are deleted and refilled, never trusted.
     pub fn get(&self, key: &str) -> Option<FixtureType> {
         let path = self.entry_path(key);
-        let content = std::fs::read_to_string(&path).ok()?;
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                // A miss the fill path will repair — but an unreadable
+                // entry (permissions, IO) is not a normal miss, so say so.
+                warn!(file = %path.display(), error = %e, "Failed to read expansion cache entry");
+                return None;
+            }
+        };
         match serde_json::from_str::<CacheEntry>(&content) {
             Ok(entry) => Some(entry.into()),
             Err(e) => {
@@ -247,6 +256,60 @@ mod tests {
         assert_eq!(cached.max_strobe_frequency(), Some(25.0));
         let strobe = cached.channel_defs().get("strobe").unwrap();
         assert_eq!(strobe.functions.len(), 1);
+    }
+
+    #[test]
+    fn round_trip_preserves_every_field_class() {
+        // Source, movement, fine/range channels, and *partial* strobe
+        // fields must all survive put→get — the entry rebuilds through the
+        // normalizing constructor, so anything it drops is lost silently.
+        let mut defs = HashMap::new();
+        defs.insert(
+            "pan".to_string(),
+            ChannelDef {
+                offset: 1,
+                fine: Some(2),
+                range: Some(crate::lighting::types::PhysicalRange {
+                    from: -270.0,
+                    to: 270.0,
+                    unit: crate::lighting::types::PhysicalUnit::Degrees,
+                }),
+                functions: Vec::new(),
+            },
+        );
+        defs.insert("strobe".to_string(), ChannelDef::at(3));
+        let mut original = FixtureType::from_parts(
+            "Esprite".to_string(),
+            defs,
+            Some(20.0), // partial: only max is known
+            None,
+            None,
+        );
+        original.set_source(GdtfSource {
+            path: "library/esprite.gdtf".to_string(),
+            mode: "Mode 1".to_string(),
+        });
+        original.set_movement(MovementLimits {
+            max_pan_speed: Some(240.0),
+            max_tilt_speed: Some(200.0),
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DistillCache::new(dir.path().to_path_buf());
+        let key = DistillCache::key("Esprite", b"archive", "Mode 1", "overrides");
+        cache.put(&key, &original).unwrap();
+        let restored = cache.get(&key).expect("cached entry");
+
+        assert_eq!(restored.name(), "Esprite");
+        assert_eq!(restored.channel_defs(), original.channel_defs());
+        assert_eq!(restored.max_strobe_frequency(), Some(20.0));
+        assert_eq!(restored.min_strobe_frequency(), None);
+        assert_eq!(restored.strobe_dmx_offset(), None);
+        assert_eq!(restored.source(), original.source());
+        assert_eq!(restored.movement(), original.movement());
+        let pan = restored.channel_defs().get("pan").unwrap();
+        assert_eq!(pan.fine, Some(2));
+        assert!(pan.range.is_some());
     }
 
     #[test]

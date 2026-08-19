@@ -247,7 +247,7 @@ impl FixtureType {
         if strobe_dmx_offset.is_some() {
             fixture_type.strobe_dmx_offset = strobe_dmx_offset;
         }
-        fixture_type.synthesize_strobe_function();
+        fixture_type.reconcile_strobe_function();
         fixture_type
     }
 
@@ -273,11 +273,16 @@ impl FixtureType {
         self.max_strobe_frequency = Some(physical.from.max(physical.to));
     }
 
-    /// Synthesizes a variable-strobe function on the strobe channel from the
-    /// v1 strobe fields, so a v1 definition's structured view carries the
-    /// same information as its fields. Requires all three fields and a
-    /// strobe channel; partial fields stay fields.
-    fn synthesize_strobe_function(&mut self) {
+    /// Makes the strobe channel's variable-strobe function agree with the
+    /// v1 strobe fields, so the structured view and the field view carry
+    /// the same information. Explicit fields have already won by the time
+    /// this runs, so a disagreeing function is *rewritten*, not skipped —
+    /// skipping would leave the two views the constructors promise agree
+    /// silently diverged. An agreeing function is left untouched (its
+    /// dmx_to and physical orientation may carry intent the fields can't
+    /// express). Requires all three fields and a strobe channel; partial
+    /// fields stay fields.
+    fn reconcile_strobe_function(&mut self) {
         let (Some(offset), Some(min), Some(max)) = (
             self.strobe_dmx_offset,
             self.min_strobe_frequency,
@@ -288,7 +293,30 @@ impl FixtureType {
         let Some(def) = self.channel_defs.get_mut(STROBE_CHANNEL) else {
             return;
         };
-        if def.functions.iter().any(|f| f.name == STROBE_FUNCTION) {
+        if let Some(func) = def
+            .functions
+            .iter_mut()
+            .find(|f| f.name == STROBE_FUNCTION)
+        {
+            let agrees = func.dmx_from == offset
+                && func.physical.is_some_and(|p| {
+                    p.unit == PhysicalUnit::Hertz
+                        && p.from.min(p.to) == min
+                        && p.from.max(p.to) == max
+                });
+            if !agrees {
+                func.dmx_from = offset;
+                // An override can push the start past the old end; the
+                // fields carry no end of their own, so open the range up.
+                if func.dmx_to < offset {
+                    func.dmx_to = u8::MAX;
+                }
+                func.physical = Some(PhysicalRange {
+                    from: min,
+                    to: max,
+                    unit: PhysicalUnit::Hertz,
+                });
+            }
             return;
         }
         def.functions.push(ChannelFunction {
@@ -706,6 +734,90 @@ mod tests {
             ],
             "serialized surface changed: {json}"
         );
+    }
+
+    #[test]
+    fn from_parts_rewrites_a_disagreeing_strobe_function() {
+        // Explicit fields win — and the function must follow, or the two
+        // views the constructors promise agree would silently diverge.
+        // This is the P1a override path: a .fixture override's strobe
+        // fields on top of a GDTF-distilled function.
+        let mut defs = HashMap::new();
+        defs.insert(
+            "strobe".to_string(),
+            ChannelDef {
+                offset: 4,
+                fine: None,
+                range: None,
+                functions: vec![ChannelFunction {
+                    name: "strobe".to_string(),
+                    dmx_from: 7,
+                    dmx_to: 200,
+                    physical: Some(PhysicalRange {
+                        from: 0.4,
+                        to: 25.0,
+                        unit: PhysicalUnit::Hertz,
+                    }),
+                }],
+            },
+        );
+        let ft = FixtureType::from_parts(
+            "Brick".to_string(),
+            defs,
+            Some(99.0),
+            Some(50.0),
+            Some(210),
+        );
+
+        // The getters carry the explicit values...
+        assert_eq!(ft.max_strobe_frequency(), Some(99.0));
+        assert_eq!(ft.min_strobe_frequency(), Some(50.0));
+        assert_eq!(ft.strobe_dmx_offset(), Some(210));
+        // ...and the function was rewritten to agree.
+        let func = &ft.channel_defs().get("strobe").unwrap().functions[0];
+        assert_eq!(func.dmx_from, 210);
+        // The override pushed the start past the old end (200), so the
+        // range opened up rather than inverting.
+        assert_eq!(func.dmx_to, u8::MAX);
+        let physical = func.physical.unwrap();
+        assert_eq!((physical.from, physical.to), (50.0, 99.0));
+    }
+
+    #[test]
+    fn from_parts_leaves_an_agreeing_strobe_function_untouched() {
+        // Agreement is checked orientation-insensitively: a descending
+        // physical range and a custom dmx_to carry intent the fields can't
+        // express, and must survive.
+        let mut defs = HashMap::new();
+        defs.insert(
+            "strobe".to_string(),
+            ChannelDef {
+                offset: 4,
+                fine: None,
+                range: None,
+                functions: vec![ChannelFunction {
+                    name: "strobe".to_string(),
+                    dmx_from: 7,
+                    dmx_to: 200,
+                    physical: Some(PhysicalRange {
+                        from: 25.0,
+                        to: 0.4,
+                        unit: PhysicalUnit::Hertz,
+                    }),
+                }],
+            },
+        );
+        let ft = FixtureType::from_parts(
+            "Brick".to_string(),
+            defs,
+            Some(25.0),
+            Some(0.4),
+            Some(7),
+        );
+        let func = &ft.channel_defs().get("strobe").unwrap().functions[0];
+        assert_eq!(func.dmx_to, 200);
+        let physical = func.physical.unwrap();
+        assert_eq!((physical.from, physical.to), (25.0, 0.4));
     }
 
     // ── Fixture ────────────────────────────────────────────────────
