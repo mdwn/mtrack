@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use super::super::types::{Fixture, FixtureType, Venue};
+use super::super::types::{Fixture, FixtureType, FixtureTypeV1, Venue};
 use super::error::get_error_context;
 use super::grammar::{LightingParser, Rule};
 use pest::iterators::Pair;
@@ -125,11 +125,17 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
         }
     }
 
-    let mut fixture_type = FixtureType::new(name, channels);
-    fixture_type.max_strobe_frequency = max_strobe_frequency;
-    fixture_type.min_strobe_frequency = min_strobe_frequency;
-    fixture_type.strobe_dmx_offset = strobe_dmx_offset;
-    Ok(fixture_type)
+    // The parser produces the v1 surface; From<FixtureTypeV1> is the single
+    // normalization point into the internal model — no field pokes, no
+    // manual step to forget.
+    Ok(FixtureTypeV1 {
+        name,
+        channels,
+        max_strobe_frequency,
+        min_strobe_frequency,
+        strobe_dmx_offset,
+    }
+    .into())
 }
 
 fn parse_fixture_content(
