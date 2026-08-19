@@ -12,6 +12,10 @@ repository = "https://github.com/mdwn/mtrack"
 readme = "README.md"
 keywords = ["audio"]
 categories = ["multimedia", "multimedia::audio"]
+# NOTE: include globs match the FILESYSTEM, not git — untracked and even
+# gitignored files are packaged if they match. Keep dev-only trees under
+# src/webui/svelte explicitly excluded so a `cargo publish` from a working
+# machine can't sweep in local state (e.g. .claude/, Playwright output).
 include = [
     "build.rs",
     "Cargo.toml",
@@ -21,6 +25,10 @@ include = [
     "!src/webui/svelte/node_modules/**",
     "!src/webui/svelte/src/**",
     "!src/webui/svelte/.svelte-kit/**",
+    "!src/webui/svelte/.claude/**",
+    "!src/webui/svelte/e2e/**",
+    "!src/webui/svelte/test-results/**",
+    "!src/webui/svelte/playwright-report/**",
 ]
 
 [package.metadata.binstall]

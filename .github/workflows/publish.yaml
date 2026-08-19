@@ -14,6 +14,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
+    # A tag whose version was never bumped in Cargo.toml used to fail only at
+    # `cargo publish` ("version already uploaded") — after the GitHub release
+    # already existed. Fail the whole pipeline up front instead.
+    - name: Verify tag matches crate version
+      run: |
+        CRATE_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+        if [ "v${CRATE_VERSION}" != "${GITHUB_REF_NAME}" ]; then
+          echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${CRATE_VERSION}." >&2
+          echo "Bump the version (and Cargo.lock) before tagging." >&2
+          exit 1
+        fi
     - name: Install system dependencies
       run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
@@ -31,11 +42,14 @@ jobs:
     - name: Run publish
       env:
         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      run: cargo publish --allow-dirty
+      run: cargo publish --locked --allow-dirty
 
-  # Creates a release on Github.
+  # Creates a release on Github. Gated on the crates.io publish so a bad tag
+  # (wrong version, packaging failure) doesn't leave a half-made release to
+  # clean up.
   release:
     name: Create a GitHub release
+    needs: publish
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -1,9 +1,11 @@
 name: Notify site of new release
 
+# Same tag pattern as publish.yaml: a tag like v0.16 or v0.16.0-rc1 must not
+# tell the site about a release the publish workflow never made.
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
 
 permissions:
   contents: read
@@ -13,8 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Dispatch to site repo
+        # --fail-with-body: an expired SITE_DISPATCH_TOKEN returns 401, and
+        # without it this step stays green while the docs site silently keeps
+        # serving the previous release.
         run: |
-          curl -X POST \
+          curl --fail-with-body -sS -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.SITE_DISPATCH_TOKEN }}" \
             https://api.github.com/repos/nonchord/site/dispatches \
