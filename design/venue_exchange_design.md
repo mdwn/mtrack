@@ -1,6 +1,10 @@
 # Venue Exchange: GDTF/MVR Import, Fixture Model v2, and Physical-Unit Movement
 
-*Design doc, draft 4 — 2026-08-19.*
+*Design doc, draft 5 — 2026-08-19. Draft 5 revises the file-format story
+after implementation review: the extension identifies the DSL generation (v1
+`.light` files are never renamed or migrated), the intermediary model is
+machine-only, the DSL is scoped to the datasheet-typable subset, and every
+DSL construct ships in the same phase as its consumer.*
 
 mtrack shows already target roles — tags and logical groups — rather than fixtures, and a
 show plays across multiple venues today. What doesn't scale is everything underneath: every
@@ -38,11 +42,14 @@ OFL import (possible later addition for hobbyist gear; not in scope here).
 | MVR parser | Own implementation | No Rust crate exists. Simpler format; reuses our GDTF machinery for embedded fixtures. |
 | Fixture sourcing | GDTF-sourced fixtures are *referential*: a thin `.fixture` file names the GDTF + mode (+ overrides); the expanded channel table is an ephemeral cache, never committed | Fixture data is a manufacturer fact — a fat distilled copy can only drift from its source. The cache pattern (hash-keyed, regenerated on change) is the waveform-cache model mtrack already has. |
 | Venue sourcing | MVR import *seeds* an owned `.venue` file | Venues are authored, not derived: tags, focus points, and position tweaks are human judgment layered on the import. |
-| File extensions | `.fixture` for fixture types, `.venue` for venues; `.light` remains for shows | Extension encodes content type; editors and the webui route on it. Loader accepts legacy `.light` fixture/venue files during migration, then support is removed. |
+| File extensions | `.fixture`/`.venue` identify the **v2 DSL**; v1 fixture/venue definitions stay in `.light` files, valid forever beside them | The extension *is* the version marker (versions mark breakages, not expansions). Nothing renames, migrates, or deprecates v1 files, and there is no in-file version field. |
 | GDTF/MVR export | Deferred (phase 2+) | Nothing in v1 depends on it; model stays exportable. |
 | Visualizer | 2D top-down in phase 1; real 3D simulation in phase 2 | Positions/orientations/beam data and glTF assets are retained from import day one so 3D is additive, not a re-import. |
 | Position abstraction | Named focus points, bound per-venue | The positional analog of tags: shows say `focus "drummer"`; venues supply coordinates. |
-| Legacy path | MIDI-to-DMX layer untouched | It's the working fallback while this lands; v1 fixture_type syntax migrates then gets removed (shed-legacy policy). |
+| Legacy path | MIDI-to-DMX layer untouched | It's the working fallback while this lands. |
+| Intermediary | The serde model and its cache are **machine-only** — never hand-edited, never a user-facing format | GDTF and the DSL are the two sources; both compile into the intermediary. Letting users hand-craft a compilation target forfeits its derived/rebuildable property. |
+| DSL scope | The DSL models the **datasheet-typable** subset of what the engine consumes | Asset-class data — 3D meshes, geometry trees, gobo images, spectral/emitter data — is GDTF-only; no text format can carry it, and everything downstream degrades gracefully without it (generic body, cone from beam angle, sRGB-ish color). |
+| Syntax delivery | Every DSL construct ships in the same phase as its engine consumer | Defined-but-inert syntax invites files that look configured but aren't, and freezes grammar shape before a consumer exists to pressure-test it. |
 
 ## 3. Architecture
 
@@ -116,8 +123,12 @@ GDTF's standardized attributes (`ColorAdd_R`, `Dimmer`, `Pan`, `CTC`), making th
 the normalizer — multi-user configs stop diverging on spelling. Debuggability:
 `mtrack lighting expand <fixture>` (and the webui detail view) dumps the resolved model,
 since a referential fixture's runtime truth isn't otherwise a text file you can read. v1
-`.light` fixture files (`channel_map` + three strobe fields) migrate to native-form
-`.fixture` with a one-time rewrite; v1 syntax and extension support are then removed.
+`.light` fixture files (`channel_map` + three strobe fields) stay valid, unrenamed and
+unmigrated, loading beside v2 files; internally both normalize through one conversion
+point (`From<FixtureTypeV1>`). "Detach to native" renders control data as DSL and is
+lossy w.r.t. GDTF asset data (which has no textual form) — it says so loudly. The
+syntax shown in this section is the v2 target across phases; each construct lands
+with its consumer (§13), never ahead of it.
 
 ### 4.2 Venues: `.venue` files and focus points
 
@@ -295,9 +306,9 @@ existing group-resolution lint:
 - **Property tests:** pointing math round-trips (aim → pan/tilt → direction), 16-bit fanout
   monotonicity (no coarse-byte jumps across fine rollover), physical-range interpolation
   against channel-function tables.
-- **Migration:** v1 `.light` → `.fixture`/`.venue` migration produces byte-identical DMX for
-  all existing example shows (phase-0 exit criterion). A referential PixelBrick
-  (`from gdtf(...)`) resolves identically to its native-form equivalent.
+- **Equivalence:** a v1 definition and its v2 rendering produce identical channel maps
+  and strobe parameters — existing v1 configs produce byte-identical DMX. A referential
+  PixelBrick (`from gdtf(...)`) resolves identically to its native-form equivalent.
 - **Cache correctness:** expansion regenerates on archive hash, mode, distiller-version, or
   override change — and only then; cold-cache startup fills loudly and deterministically.
 - **Harness:** a DMX frame-capture sink joins the audio loopback — hardware e2e checks
@@ -310,15 +321,17 @@ existing group-resolution lint:
 
 | Phase | Scope | Exit criterion | Size |
 |---|---|---|---|
-| P0 | `.fixture`/`.venue` v2 DSL + loader + expansion cache plumbing + v1 `.light` migration; no engine behavior change | Existing shows produce byte-identical DMX from migrated files | S–M |
-| P1a | GDTF parser + distiller, CLI + webui import, corpus + fuzzing, security hardening | PixelBrick distills byte-identical; a 16-ch+ mover distills with only expected warnings | M |
-| P1b | MVR import, positions, focus points, positional 2D StageView, lint expansion | A real venue MVR imports to a playable venue; show lint runs against it | M |
-| P1c | Physical-value pipeline, 16-bit fanout, movement effects, slew model, harness DMX sink | A movement show authored on one venue plays correctly on a second imported venue | L |
+| P0 | Internal only: rich fixture model (v1 view derived, `From<FixtureTypeV1>` conversion) + expansion cache plumbing; no grammar, no new extensions, no user-facing surface | Existing v1 configs produce byte-identical DMX; cache fill/hit/corruption covered | S |
+| P1a | GDTF parser + distiller, CLI + webui import, corpus + fuzzing, security hardening. **Introduces** the `.fixture` extension and referential syntax (`from gdtf(...)`, `movement`) — born working | PixelBrick distills byte-identical; a 16-ch+ mover distills with only expected warnings | M |
+| P1b | MVR import, positions, focus points, positional 2D StageView, lint expansion. **Introduces** the `.venue` extension and `position`/`rotation`/`focus` syntax | A real venue MVR imports to a playable venue; show lint runs against it | M |
+| P1c | Physical-value pipeline, 16-bit fanout, movement effects, slew model, harness DMX sink. **Introduces** rich channel syntax (`fine`, `range:`, function tables) for hand-authored fixtures | A movement show authored on one venue plays correctly on a second imported venue | L |
 | P2 | 3D simulation (glTF, beam rendering); GDTF/MVR export; optionally OFL import | Show playable against a 3D venue never visited | L–XL |
 
 Each phase ships independently; P1a is already useful alone (import replaces hand
-transcription). The legacy MIDI-to-DMX path stays untouched throughout as the working
-fallback.
+transcription). Grammar follows the same rule as everything else here: a DSL construct
+is introduced by the phase whose engine work consumes it, never earlier — so at no
+point does syntax exist that parses but does nothing. The legacy MIDI-to-DMX path
+stays untouched throughout as the working fallback.
 
 ## 14. Resolved questions
 
@@ -328,7 +341,8 @@ Open in draft 2; all resolved by draft 4.
    downstage-center on the deck, +x stage-left, +y upstage. MVR (right-handed Z-up,
    *millimeters*, author-chosen origin) is converted at import with a re-origin step (§6).
 2. **v2 DSL grammar** — hybrid: name-keyed channel one-liners, optional block only where a
-   channel has structure (§4.1). Simple fixtures stay as terse as v1.
+   channel has structure (§4.1). Simple fixtures stay as terse as v1. The v1 grammar is
+   frozen, not deprecated: `.light` fixture/venue files remain valid indefinitely.
 3. **Corpus licensing** — sidestepped via the two-tier corpus (§12): committed synthetic
    files we author are the CI backbone; real manufacturer files are a bring-your-own local
    corpus, never fetched by CI (vendor URLs rot and block non-browser clients — brittle by
@@ -347,3 +361,7 @@ Open in draft 2; all resolved by draft 4.
 6. **Mode identity in MVR** — fallback chain: exact → normalized (warn) → unique-footprint
    (warn) → error with candidates (§6).
 7. **Cache scope** — per-project `lighting/.cache/`.
+8. **Format versioning** — no in-file version field. The extension is the version marker,
+   and versions mark breakages, not expansions: additive syntax never mints a new
+   generation, and changing the meaning of existing syntax is forbidden (new meaning
+   requires new syntax). A v3 would arrive as a new extension, if it ever exists.
