@@ -125,8 +125,15 @@ impl LightingSystem {
             if path.is_dir() {
                 // Recursively load subdirectories
                 self.load_fixture_types_directory(&path)?;
+            } else if path.extension().is_some_and(|ext| ext == "fixture") {
+                self.load_fixture_types_file(&path)?;
             } else if path.extension().is_some_and(|ext| ext == "light") {
-                // Load .light files
+                // Legacy extension, still loaded during the migration window.
+                warn!(
+                    file = %path.display(),
+                    "Fixture type files now use the .fixture extension; \
+                     run `mtrack migrate` to rename (.light support will be removed)"
+                );
                 self.load_fixture_types_file(&path)?;
             }
         }
@@ -146,8 +153,15 @@ impl LightingSystem {
             if path.is_dir() {
                 // Recursively load subdirectories
                 self.load_venues_directory(&path)?;
+            } else if path.extension().is_some_and(|ext| ext == "venue") {
+                self.load_venue_file(&path)?;
             } else if path.extension().is_some_and(|ext| ext == "light") {
-                // Load .light files
+                // Legacy extension, still loaded during the migration window.
+                warn!(
+                    file = %path.display(),
+                    "Venue files now use the .venue extension; \
+                     run `mtrack migrate` to rename (.light support will be removed)"
+                );
                 self.load_venue_file(&path)?;
             }
         }
@@ -162,6 +176,19 @@ impl LightingSystem {
         match parse_fixture_types(&content) {
             Ok(types) => {
                 for (name, fixture_type) in types {
+                    // Referential types need the GDTF distiller, which lands
+                    // with the importer (P1b of the venue-exchange design).
+                    // Registering the un-expanded override shell would patch
+                    // a fixture with no channels, so skip it — loudly.
+                    if let Some(source) = fixture_type.source() {
+                        warn!(
+                            fixture_type = name,
+                            gdtf = source.path,
+                            mode = source.mode,
+                            "GDTF-sourced fixture types are not supported yet; skipping"
+                        );
+                        continue;
+                    }
                     info!(fixture_type = name, "Loading fixture type");
                     self.fixture_types.insert(name, fixture_type);
                 }
@@ -519,6 +546,83 @@ mod tests {
         assert!(
             !system.venues.contains_key("old"),
             "the legacy file genuinely does not parse"
+        );
+    }
+
+    #[test]
+    fn new_extensions_load_and_legacy_light_still_loads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ft_dir = dir.path().join("fixture_types");
+        let venue_dir = dir.path().join("venues");
+        std::fs::create_dir_all(&ft_dir).expect("mkdir");
+        std::fs::create_dir_all(&venue_dir).expect("mkdir");
+
+        std::fs::write(
+            ft_dir.join("par.fixture"),
+            "fixture_type \"Par\" {\n  channel \"red\" @ 1\n}\n",
+        )
+        .expect("write");
+        std::fs::write(
+            ft_dir.join("legacy.light"),
+            "fixture_type \"Old\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n",
+        )
+        .expect("write");
+        std::fs::write(
+            ft_dir.join("notes.txt"),
+            "fixture_type \"Ignored\" { channel \"red\" @ 1 }\n",
+        )
+        .expect("write");
+        std::fs::write(
+            venue_dir.join("club.venue"),
+            "venue \"club\" {\n  fixture \"P1\" Par @ 1:1\n  focus \"drummer\" (0, 2.8, 1.4)\n}\n",
+        )
+        .expect("write");
+
+        let mut system = LightingSystem::new();
+        system
+            .load_fixture_types_directory(&ft_dir)
+            .expect("fixture types load");
+        system
+            .load_venues_directory(&venue_dir)
+            .expect("venues load");
+
+        assert!(system.fixture_types.contains_key("Par"));
+        assert!(
+            system.fixture_types.contains_key("Old"),
+            "legacy .light files still load during the migration window"
+        );
+        assert!(
+            !system.fixture_types.contains_key("Ignored"),
+            "unrelated extensions are not lighting files"
+        );
+        let venue = system.venues.get("club").expect("venue loaded");
+        assert_eq!(venue.focus_points().get("drummer"), Some(&[0.0, 2.8, 1.4]));
+    }
+
+    #[test]
+    fn referential_fixture_type_is_skipped_loudly() {
+        // Until the GDTF distiller lands (P1a), a referential type must not
+        // register: its override shell has no channels, and patching a venue
+        // with it would silently emit nothing.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("esprite.fixture"),
+            "fixture_type \"Esprite\"\n  from gdtf(\"library/esprite.gdtf\", mode \"Mode 1\")\n{\n  movement { max_pan_speed: 240deg/s }\n}\n\nfixture_type \"Par\" {\n  channel \"red\" @ 1\n}\n",
+        )
+        .expect("write");
+
+        let mut system = LightingSystem::new();
+        system
+            .load_fixture_types_directory(dir.path())
+            .expect("directory loads");
+
+        assert!(
+            !system.fixture_types.contains_key("Esprite"),
+            "referential types must not register before the distiller exists"
+        );
+        assert!(
+            system.fixture_types.contains_key("Par"),
+            "a sibling native type in the same file still loads"
         );
     }
 
