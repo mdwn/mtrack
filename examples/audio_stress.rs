@@ -648,7 +648,10 @@ fn run_churn_scenario(
             let sine_buffer = generate_sine_buffer(freq, sample_rate, channels);
             let (active_source, _is_finished, cancel_handle) =
                 create_looping_source(&sine_buffer, channels, sample_rate, 0.05);
-            if source_tx.send(prepare_for_send(&mixer, active_source)).is_ok() {
+            if source_tx
+                .send(prepare_for_send(&mixer, active_source))
+                .is_ok()
+            {
                 cancel_handles.push((cancel_handle, now));
                 sources_created += 1;
             }
