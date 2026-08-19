@@ -6,11 +6,13 @@ after implementation review: the extension identifies the DSL generation (v1
 machine-only, the DSL is scoped to the datasheet-typable subset, and every
 DSL construct ships in the same phase as its consumer.*
 
-> **Terminology:** "v1 DSL" and "v2 DSL" refer to exactly one thing in this
-> document — the two generations of *fixture/venue definition syntax*,
-> identified by file extension (`.light` vs `.fixture`/`.venue`). Show files
-> are neither versioned nor touched by this design. Feature scope is named by
-> phase (P0–P2), never by version number.
+> **Terminology:** today there is exactly one fixture/venue definition
+> syntax — the `.light` DSL. This document calls it "v1" only to contrast it
+> with the **planned** extended syntax ("v2") that phases P1a–P1c will
+> introduce under the `.fixture`/`.venue` extensions; until those phases
+> ship, no v2 DSL exists. Show files are neither versioned nor touched by
+> this design. Feature scope is named by phase (P0–P2), never by version
+> number.
 
 mtrack shows already target roles — tags and logical groups — rather than fixtures, and a
 show plays across multiple venues today. What doesn't scale is everything underneath: every
@@ -48,7 +50,7 @@ OFL import (possible later addition for hobbyist gear; not in scope here).
 | MVR parser | Own implementation | No Rust crate exists. Simpler format; reuses our GDTF machinery for embedded fixtures. |
 | Fixture sourcing | GDTF-sourced fixtures are *referential*: a thin `.fixture` file names the GDTF + mode (+ overrides); the expanded channel table is an ephemeral cache, never committed | Fixture data is a manufacturer fact — a fat distilled copy can only drift from its source. The cache pattern (hash-keyed, regenerated on change) is the waveform-cache model mtrack already has. |
 | Venue sourcing | MVR import *seeds* an owned `.venue` file | Venues are authored, not derived: tags, focus points, and position tweaks are human judgment layered on the import. |
-| File extensions | `.fixture`/`.venue` identify the **v2 DSL**; v1 fixture/venue definitions stay in `.light` files, valid beside them | The extension *is* the version marker (versions mark breakages, not expansions). This design renames, migrates, and deprecates nothing, and there is no in-file version field. No v1 removal is scheduled — retiring v1 someday is a legitimate future decision, but it would be its own design, with its own migration story. |
+| File extensions | `.fixture`/`.venue` will identify the planned v2 DSL as P1a–P1c introduce its constructs; existing definitions stay in `.light` files, valid beside them | The extension *is* the version marker (versions mark breakages, not expansions). This design renames, migrates, and deprecates nothing, and there is no in-file version field. No v1 removal is scheduled — retiring v1 someday is a legitimate future decision, but it would be its own design, with its own migration story. |
 | GDTF/MVR export | Deferred (phase 2+) | Nothing in the initial phases depends on it; model stays exportable. |
 | Visualizer | 2D top-down in phase 1; real 3D simulation in phase 2 | Positions/orientations/beam data and glTF assets are retained from import day one so 3D is additive, not a re-import. |
 | Position abstraction | Named focus points, bound per-venue | The positional analog of tags: shows say `focus "drummer"`; venues supply coordinates. |
@@ -128,13 +130,14 @@ Canonical channel names (`red`, `dimmer`, `pan`, `ct`, …) are produced by the 
 GDTF's standardized attributes (`ColorAdd_R`, `Dimmer`, `Pan`, `CTC`), making the distiller
 the normalizer — multi-user configs stop diverging on spelling. Debuggability:
 `mtrack lighting expand <fixture>` (and the webui detail view) dumps the resolved model,
-since a referential fixture's runtime truth isn't otherwise a text file you can read. v1
-`.light` fixture files (`channel_map` + three strobe fields) stay valid, unrenamed and
-unmigrated, loading beside v2 files; internally both normalize through one conversion
-point (`From<FixtureTypeV1>`). "Detach to native" renders control data as DSL and is
-lossy w.r.t. GDTF asset data (which has no textual form) — it says so loudly. The
-syntax shown in this section is the v2 target across phases; each construct lands
-with its consumer (§13), never ahead of it.
+since a referential fixture's runtime truth isn't otherwise a text file you can read.
+Existing `.light` fixture files (`channel_map` + three strobe fields) stay valid,
+unrenamed and unmigrated, and will load beside v2 files once those exist; internally
+both normalize through one conversion point (`From<FixtureTypeV1>`). "Detach to
+native" renders control data as DSL and is lossy w.r.t. GDTF asset data (which has no
+textual form) — it says so loudly. **None of the syntax shown in this section exists
+yet**: it is the v2 target, and each construct lands with its consumer (§13), never
+ahead of it.
 
 ### 4.2 Venues: `.venue` files and focus points
 
@@ -347,9 +350,10 @@ Open in draft 2; all resolved by draft 4.
 1. **Coordinate convention** — stage-relative: meters, right-handed Z-up, origin at
    downstage-center on the deck, +x stage-left, +y upstage. MVR (right-handed Z-up,
    *millimeters*, author-chosen origin) is converted at import with a re-origin step (§6).
-2. **v2 DSL grammar** — hybrid: name-keyed channel one-liners, optional block only where a
-   channel has structure (§4.1). Simple fixtures stay as terse as v1. The v1 grammar is
-   frozen, not deprecated: `.light` fixture/venue files remain valid, and no removal is
+2. **v2 DSL grammar (planned, not shipped)** — hybrid: name-keyed channel one-liners,
+   optional block only where a channel has structure (§4.1); constructs ship with their
+   consumers (P1a–P1c). Simple fixtures stay as terse as v1. The v1 grammar is frozen,
+   not deprecated: `.light` fixture/venue files remain valid, and no removal is
    scheduled. Retiring v1 is out of scope here — if it ever happens, it arrives as its
    own design with its own migration story.
 3. **Corpus licensing** — sidestepped via the two-tier corpus (§12): committed synthetic
