@@ -157,7 +157,7 @@
     background: var(--nc-pink-400);
   }
   .beat-flash--half {
-    background: var(--nc-amber-400, #f2b544);
+    background: var(--nc-amber-400);
   }
   .beat-flash--off {
     animation: none;
@@ -204,7 +204,7 @@
     background: var(--nc-pink-400);
   }
   .beat-dot--half.beat-dot--active {
-    background: var(--nc-amber-400, #f2b544);
+    background: var(--nc-amber-400);
   }
   .beat-dot--silent.beat-dot--active {
     background: transparent;

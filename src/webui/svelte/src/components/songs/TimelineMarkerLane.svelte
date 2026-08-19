@@ -112,7 +112,7 @@
     flex: 1;
     position: relative;
     overflow: hidden;
-    background: rgba(255, 255, 255, 0.02);
+    background: color-mix(in srgb, var(--nc-fg-1) 2%, transparent);
     cursor: copy;
   }
   .lane-empty-hint {

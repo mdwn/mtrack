@@ -57,6 +57,18 @@
   --nc-cyan-600: #1f8faf;
   --nc-cyan-700: #166a82;
 
+  /* Amber ramp — the "live / attention" hue. The 400 is the brand amber
+     that --nc-warn has always been; the darker steps exist so amber can be
+     used as *text* on a light surface, where the 400 is only 1.8:1. */
+  --nc-amber-50: #fef7e9;
+  --nc-amber-100: #fdedcd;
+  --nc-amber-200: #fadb9c;
+  --nc-amber-300: #f6c86e;
+  --nc-amber-400: #f2b544;
+  --nc-amber-500: #c98d1c;
+  --nc-amber-600: #8a5f0e;
+  --nc-amber-700: #6f4c0a;
+
   /* Warm neutral ramp (UI grays — keyed off ink) */
   --nc-gray-50: #f7f6f6;
   --nc-gray-100: #efeeee;
@@ -70,7 +82,7 @@
   --nc-gray-900: #141112;
 
   --nc-success: #4dc08a;
-  --nc-warn: #f2b544;
+  --nc-warn: var(--nc-amber-400);
   --nc-error: #e84b4b;
 
   /* ---- Semantic (light, default) ---- */
@@ -83,6 +95,10 @@
   --nc-fg-4: var(--nc-gray-400);
   --nc-border-1: var(--nc-gray-200);
   --nc-border-2: var(--nc-gray-300);
+
+  /* Amber that stays legible as text/hairlines on the current surface.
+     Fills that carry --nc-ink on top (badges) keep using --nc-amber-400. */
+  --nc-amber-fg: var(--nc-amber-600);
 
   --card-bg: #ffffff;
   --card-border: var(--nc-border-1);
@@ -202,6 +218,8 @@
   --nc-fg-4: #5c5453;
   --nc-border-1: #3a3334;
   --nc-border-2: #4a4243;
+
+  --nc-amber-fg: var(--nc-amber-400);
 
   --card-bg: #231f20;
   --card-border: #3a3334;

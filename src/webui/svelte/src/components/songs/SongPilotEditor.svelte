@@ -351,7 +351,7 @@
     cursor: pointer;
   }
   .delete-btn:hover {
-    color: var(--error, #e84b4b);
+    color: var(--nc-error);
   }
   .hint-text {
     font-size: 12px;

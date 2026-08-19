@@ -824,7 +824,7 @@
     width: 2px;
     height: 6px;
     margin-left: -1px;
-    background: var(--nc-amber-400, #f2b544);
+    background: var(--nc-amber-fg);
     border-radius: 1px;
     z-index: 3;
     pointer-events: none;
@@ -847,7 +847,7 @@
     transition: color var(--nc-dur-fast) var(--nc-ease);
   }
   .playback-card__hint-label--live {
-    color: var(--nc-amber-400, #f2b544);
+    color: var(--nc-amber-fg);
     font-weight: 600;
   }
 

@@ -1004,7 +1004,7 @@
     font-variant-numeric: tabular-nums;
   }
   .playhead-info__pos {
-    color: var(--nc-amber-400, #f2b544);
+    color: var(--nc-amber-fg);
     font-weight: 600;
   }
   .toolbar-controls {
@@ -1045,14 +1045,14 @@
     bottom: 0;
     left: 6px;
     width: 2px;
-    background: var(--nc-amber-400, #f2b544);
-    box-shadow: 0 0 6px rgba(242, 181, 68, 0.5);
+    background: var(--nc-amber-fg);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--nc-amber-fg) 50%, transparent);
   }
   .playhead--dragging::before,
   .playhead:focus-visible::before {
     width: 3px;
     left: 5.5px;
-    box-shadow: 0 0 10px rgba(242, 181, 68, 0.8);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--nc-amber-fg) 80%, transparent);
   }
   .playhead:focus-visible {
     outline: none;
@@ -1064,13 +1064,13 @@
     font-size: 10px;
     padding: 1px 6px;
     border-radius: 6px;
-    background: var(--nc-amber-400, #f2b544);
-    color: var(--nc-ink, #111);
+    background: var(--nc-amber-fg);
+    color: var(--nc-bg-1);
     font-weight: 600;
     white-space: nowrap;
   }
   .preview-btn--live {
-    color: var(--nc-amber-400, #f2b544);
+    color: var(--nc-amber-fg);
   }
   .scroll-spacer {
     height: 0;

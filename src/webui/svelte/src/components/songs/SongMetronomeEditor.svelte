@@ -370,7 +370,7 @@
     font-weight: 600;
   }
   .no-grid-warning {
-    color: var(--warning, #e8a54b);
+    color: var(--nc-amber-fg);
     font-size: 12px;
   }
   .metronome-body {
