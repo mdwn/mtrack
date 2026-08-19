@@ -223,6 +223,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The new timeline, metronome and pilot UI works in light mode**: several colours added
+  alongside this release's timeline and metronome work were written against the dark theme
+  only — either as literals, or as `var(--token, #fallback)` naming a token that was never
+  defined, which resolves to the fallback in *both* themes, so the theme switch could not
+  reach them.
+
+  The worst was the drag-to-create ghost on the section bar: a white fill and a white dashed
+  border on a white bar, a contrast ratio of exactly 1.00. Dragging out a new section in light
+  mode drew nothing at all — the element was there, at full opacity, the same colour as what
+  was behind it, so the gesture gave no feedback until the section already existed.
+
+  The rest were amber on white at 1.8:1: the live pilot cue on the player card, the timeline's
+  playhead readout and its drag pill, the live preview-transport button, the pilot hint ticks
+  on the scrub bar, and the metronome's missing-beat-grid warning. The pilot cue was the one
+  that mattered on stage — highlighting it made it *less* legible than the grey cues beside it,
+  which sit at 5.15:1.
+
+  There is now an amber ramp whose darker steps can carry text on a light surface, and an
+  `--nc-amber-fg` that resolves to a dark step in light mode and the bright brand amber in
+  dark. Fills that carry ink text on top of them are unchanged. `theme-contrast.spec.ts`
+  measures the computed colours of these elements in both themes and holds them to the WCAG
+  contrast floors, so the next one fails CI instead of waiting to be noticed.
+
+  The same test scans the source for every custom property referenced with a fallback and
+  fails if one was never defined, which is the trap underneath all of the above. That scan
+  immediately found one more: the timeline's position picker asked for `--font-mono`, which
+  does not exist — the token is `--mono` — so its numerals had been rendering in the
+  browser's generic monospace rather than JetBrains Mono.
+
 - **Software audio devices no longer advertise a channel count they cannot honour**: `alsa:default`
   and `alsa:pulse` were listed as 32-channel devices. That number is what ALSA's plugin advertises,
   not a width any hardware promised, and picking one of those for a 32-channel show would have
