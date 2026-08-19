@@ -262,6 +262,32 @@ const DEFAULT_FIXTURE_TYPES_DIR: &str = "lighting/fixture_types";
 /// Default directory for venue definitions, relative to project root.
 const DEFAULT_VENUES_DIR: &str = "lighting/venues";
 
+/// The extension fixture type files are written with.
+const FIXTURE_TYPE_EXT: &str = "fixture";
+
+/// The extension venue files are written with.
+const VENUE_EXT: &str = "venue";
+
+/// The extension all lighting DSL files used before content-typed extensions;
+/// still read during the migration window.
+const LEGACY_LIGHT_EXT: &str = "light";
+
+/// The path a named lighting file is read from: the typed extension when that
+/// file exists (or nothing exists yet), falling back to a legacy `.light`
+/// file during the migration window.
+fn existing_typed_path(dir: &std::path::Path, name: &str, ext: &str) -> std::path::PathBuf {
+    let sanitized = sanitize_filename(name);
+    let typed = dir.join(format!("{sanitized}.{ext}"));
+    if typed.is_file() {
+        return typed;
+    }
+    let legacy = dir.join(format!("{sanitized}.{LEGACY_LIGHT_EXT}"));
+    if legacy.is_file() {
+        return legacy;
+    }
+    typed
+}
+
 /// Resolves a lighting directory path relative to the project root.
 /// Uses the provided override (from query param) or falls back to the default.
 /// Returns an error response if the project root cannot be canonicalized or the
@@ -333,17 +359,18 @@ pub(super) async fn get_fixture_types(
     }
     let all = super::helpers::spawn_blocking_io("load fixture types", move || {
         let mut all = std::collections::HashMap::new();
-        let errors =
-            load_light_files_from_dir(&dir, |content| match lighting::parser::parse_fixture_types(
-                content,
-            ) {
+        let errors = load_light_files_from_dir(
+            &dir,
+            &[FIXTURE_TYPE_EXT, LEGACY_LIGHT_EXT],
+            |content| match lighting::parser::parse_fixture_types(content) {
                 Ok(types) => {
                     all.extend(types);
                     Ok(())
                 }
                 Err(e) => Err(e),
-            })
-            .map_err(|e| e.to_string())?;
+            },
+        )
+        .map_err(|e| e.to_string())?;
         Ok::<_, String>((all, errors))
     })
     .await?;
@@ -367,7 +394,7 @@ pub(super) async fn get_fixture_type(
         query.dir.as_deref(),
         DEFAULT_FIXTURE_TYPES_DIR,
     )?;
-    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
+    let file_path = existing_typed_path(&dir, &name, FIXTURE_TYPE_EXT);
     if !file_path.is_file() {
         return Err((
             StatusCode::NOT_FOUND,
@@ -458,11 +485,18 @@ pub(super) async fn put_fixture_type(
     // reported as the configuration problem it is rather than a server fault.
     // The file goes under the directory that was made, not the spelling.
     let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
-    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
-    let fp = file_path;
+    let sanitized = sanitize_filename(&name);
+    let fp = dir.join(format!("{sanitized}.{FIXTURE_TYPE_EXT}"));
+    // A save migrates: the typed file is written and any legacy .light file
+    // for the same name is removed, so the loader never sees both.
+    let legacy = dir.join(format!("{sanitized}.{LEGACY_LIGHT_EXT}"));
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write fixture type", move || {
-        config_io::staged_write(&fp, &dsl_owned)
+        config_io::staged_write(&fp, &dsl_owned)?;
+        if legacy.is_file() {
+            std::fs::remove_file(&legacy).map_err(|e| e.to_string())?;
+        }
+        Ok::<_, String>(())
     })
     .await?;
 
@@ -487,17 +521,27 @@ pub(super) async fn delete_fixture_type(
         query.dir.as_deref(),
         DEFAULT_FIXTURE_TYPES_DIR,
     )?;
-    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
-    if !file_path.is_file() {
+    let sanitized = sanitize_filename(&name);
+    let typed = dir.join(format!("{sanitized}.{FIXTURE_TYPE_EXT}"));
+    let legacy = dir.join(format!("{sanitized}.{LEGACY_LIGHT_EXT}"));
+    if !typed.is_file() && !legacy.is_file() {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("Fixture type not found: {}", name)})),
         )
             .into_response());
     }
-    let fp = file_path;
-    super::helpers::spawn_blocking_io("delete fixture type", move || std::fs::remove_file(&fp))
-        .await?;
+    // Delete both spellings: leaving a legacy twin behind would silently
+    // resurrect the fixture type on the next load.
+    super::helpers::spawn_blocking_io("delete fixture type", move || {
+        for path in [&typed, &legacy] {
+            if path.is_file() {
+                std::fs::remove_file(path)?;
+            }
+        }
+        Ok::<_, std::io::Error>(())
+    })
+    .await?;
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
@@ -641,17 +685,18 @@ pub(super) async fn get_venues(
     }
     let all = super::helpers::spawn_blocking_io("load venues", move || {
         let mut all = std::collections::HashMap::new();
-        let errors =
-            load_light_files_from_dir(&dir, |content| {
-                match lighting::parser::parse_venues(content) {
-                    Ok(venues) => {
-                        all.extend(venues);
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
+        let errors = load_light_files_from_dir(
+            &dir,
+            &[VENUE_EXT, LEGACY_LIGHT_EXT],
+            |content| match lighting::parser::parse_venues(content) {
+                Ok(venues) => {
+                    all.extend(venues);
+                    Ok(())
                 }
-            })
-            .map_err(|e| e.to_string())?;
+                Err(e) => Err(e),
+            },
+        )
+        .map_err(|e| e.to_string())?;
         Ok::<_, String>((all, errors))
     })
     .await?;
@@ -671,7 +716,7 @@ pub(super) async fn get_venue(
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
     let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
-    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
+    let file_path = existing_typed_path(&dir, &name, VENUE_EXT);
     if !file_path.is_file() {
         return Err((
             StatusCode::NOT_FOUND,
@@ -746,11 +791,18 @@ pub(super) async fn put_venue(
     })?;
 
     let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
-    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
-    let fp = file_path;
+    let sanitized = sanitize_filename(&name);
+    let fp = dir.join(format!("{sanitized}.{VENUE_EXT}"));
+    // A save migrates: the typed file is written and any legacy .light file
+    // for the same name is removed, so the loader never sees both.
+    let legacy = dir.join(format!("{sanitized}.{LEGACY_LIGHT_EXT}"));
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write venue", move || {
-        config_io::staged_write(&fp, &dsl_owned)
+        config_io::staged_write(&fp, &dsl_owned)?;
+        if legacy.is_file() {
+            std::fs::remove_file(&legacy).map_err(|e| e.to_string())?;
+        }
+        Ok::<_, String>(())
     })
     .await?;
 
@@ -771,16 +823,27 @@ pub(super) async fn delete_venue(
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
     let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
-    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
-    if !file_path.is_file() {
+    let sanitized = sanitize_filename(&name);
+    let typed = dir.join(format!("{sanitized}.{VENUE_EXT}"));
+    let legacy = dir.join(format!("{sanitized}.{LEGACY_LIGHT_EXT}"));
+    if !typed.is_file() && !legacy.is_file() {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("Venue not found: {}", name)})),
         )
             .into_response());
     }
-    let fp = file_path;
-    super::helpers::spawn_blocking_io("delete venue", move || std::fs::remove_file(&fp)).await?;
+    // Delete both spellings: leaving a legacy twin behind would silently
+    // resurrect the venue on the next load.
+    super::helpers::spawn_blocking_io("delete venue", move || {
+        for path in [&typed, &legacy] {
+            if path.is_file() {
+                std::fs::remove_file(path)?;
+            }
+        }
+        Ok::<_, std::io::Error>(())
+    })
+    .await?;
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
@@ -794,16 +857,23 @@ pub(super) async fn delete_venue(
 // Lighting helpers
 // ---------------------------------------------------------------------------
 
-/// Reads all .light files from a directory, calling the processor for each.
+/// Reads all lighting DSL files with the given extensions from a directory,
+/// calling the processor for each.
 fn load_light_files_from_dir(
     dir: &std::path::Path,
+    extensions: &[&str],
     mut processor: impl FnMut(&str) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<Vec<FileError>, Box<dyn std::error::Error>> {
     let mut errors = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("light") {
+        if path.is_file()
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| extensions.contains(&e))
+        {
             let content = std::fs::read_to_string(&path)?;
             // Per-file, not fatal: a directory is a set of independent files,
             // and one that no longer parses must not hide the rest. The caller
@@ -1841,22 +1911,27 @@ show "test" {
     fn load_light_files_from_dir_processes_light_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.light"), sample_fixture_type_dsl("TypeA")).unwrap();
+        std::fs::write(
+            dir.path().join("c.fixture"),
+            sample_fixture_type_dsl("TypeC"),
+        )
+        .unwrap();
         std::fs::write(dir.path().join("b.txt"), "not a light file").unwrap();
 
         let mut count = 0;
-        load_light_files_from_dir(dir.path(), |_content| {
+        load_light_files_from_dir(dir.path(), &[FIXTURE_TYPE_EXT, LEGACY_LIGHT_EXT], |_content| {
             count += 1;
             Ok(())
         })
         .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
     }
 
     #[test]
     fn load_light_files_from_dir_empty() {
         let dir = tempfile::tempdir().unwrap();
         let mut count = 0;
-        load_light_files_from_dir(dir.path(), |_content| {
+        load_light_files_from_dir(dir.path(), &[FIXTURE_TYPE_EXT, LEGACY_LIGHT_EXT], |_content| {
             count += 1;
             Ok(())
         })
@@ -2020,8 +2095,48 @@ show "test" {
         assert_eq!(parsed["name"], "MyFixture");
 
         // Verify file was created.
-        let file_path = _dir.path().join(rel).join("myfixture.light");
+        let file_path = _dir.path().join(rel).join("myfixture.fixture");
         assert!(file_path.exists());
+    }
+
+    #[tokio::test]
+    async fn fixture_type_legacy_light_reads_and_save_migrates() {
+        let (state, _dir) = test_state();
+        let rel = "ft_legacy";
+        let dir = _dir.path().join(rel);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A pre-migration file under the legacy extension.
+        std::fs::write(dir.join("oldpar.light"), sample_fixture_type_dsl("OldPar")).unwrap();
+        let app = router().with_state(state);
+
+        // GET falls back to the legacy file during the migration window.
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/fixture-types/OldPar?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // PUT writes the typed extension and removes the legacy twin, so the
+        // loader never sees both.
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/fixture-types/OldPar?dir={}", rel))
+                    .body(Body::from(sample_fixture_type_dsl("OldPar")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(dir.join("oldpar.fixture").exists());
+        assert!(!dir.join("oldpar.light").exists());
     }
 
     #[tokio::test]
@@ -2055,7 +2170,7 @@ show "test" {
         assert_eq!(parsed["status"], "saved");
 
         // Verify the file was created and contains valid DSL.
-        let file_path = _dir.path().join(rel).join("jsonfixture.light");
+        let file_path = _dir.path().join(rel).join("jsonfixture.fixture");
         assert!(file_path.exists());
         let content = std::fs::read_to_string(&file_path).unwrap();
         let types = lighting::parser::parse_fixture_types(&content).unwrap();
@@ -2321,7 +2436,7 @@ show "test" {
         assert_eq!(parsed["name"], "MyVenue");
 
         // Verify file was created.
-        let file_path = _dir.path().join(rel).join("myvenue.light");
+        let file_path = _dir.path().join(rel).join("myvenue.venue");
         assert!(file_path.exists());
     }
 
@@ -2365,7 +2480,7 @@ show "test" {
         assert_eq!(parsed["status"], "saved");
 
         // Verify the file was created and contains valid DSL.
-        let file_path = _dir.path().join(rel).join("jsonvenue.light");
+        let file_path = _dir.path().join(rel).join("jsonvenue.venue");
         assert!(file_path.exists());
         let content = std::fs::read_to_string(&file_path).unwrap();
         let venues = lighting::parser::parse_venues(&content).unwrap();

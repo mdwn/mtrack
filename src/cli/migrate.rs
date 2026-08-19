@@ -150,6 +150,12 @@ pub fn migrate(path: &str, apply: bool) -> Result<(), Box<dyn Error>> {
     // Step C: Inline fixtures → venue file
     migrate_fixtures(&raw_player, &mut player, &config_dir, &mut plan);
 
+    // Step E: Lighting DSL files → content-typed extensions
+    // (.fixture/.venue), rewriting fixture types to the v2 syntax. Runs
+    // before step A for the same reason step C does: it reads lighting
+    // config from profiles, which step A clears.
+    migrate_lighting_files(&mut player, &config_dir, &mut plan);
+
     // Step A: Profiles → profiles_dir
     migrate_profiles(&raw_player, &mut player, &config_dir, &mut plan);
 
@@ -331,7 +337,7 @@ fn migrate_fixtures(
     };
 
     let venues_dir = config_dir.join("lighting").join("venues");
-    let venue_path = venues_dir.join("inline_migrated.light");
+    let venue_path = venues_dir.join("inline_migrated.venue");
 
     plan.dirs_to_create.push(venues_dir);
 
@@ -350,7 +356,7 @@ fn migrate_fixtures(
     plan.add_action(
         "Lighting",
         format!(
-            "Write lighting/venues/inline_migrated.light ({} fixtures)",
+            "Write lighting/venues/inline_migrated.venue ({} fixtures)",
             fixtures.len()
         ),
     );
@@ -383,6 +389,155 @@ fn migrate_fixtures(
         }
         lighting.clear_inline_fixtures();
     }
+}
+
+/// Step E: Rename lighting DSL files to their content-typed extensions.
+///
+/// Fixture type files are parsed and rewritten in the v2 syntax (structured
+/// `channel` lines; legacy strobe fields become a strobe function) under the
+/// `.fixture` extension. Venue files keep their content byte-for-byte — v1
+/// venue syntax is valid v2, so a rename to `.venue` preserves comments.
+/// Files that don't parse are left alone and called out, never renamed into
+/// a state the loader would misread.
+fn migrate_lighting_files(
+    player: &mut config::Player,
+    config_dir: &Path,
+    plan: &mut MigrationPlan,
+) {
+    use crate::lighting::parser::{parse_fixture_types, parse_venues};
+    use std::collections::BTreeSet;
+
+    let mut fixture_type_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut venue_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+    {
+        let mut collect = |lighting: &config::Lighting| {
+            if let Some(dirs) = lighting.directories() {
+                if let Some(dir) = dirs.fixture_types() {
+                    fixture_type_dirs.insert(config_dir.join(dir));
+                }
+                if let Some(dir) = dirs.venues() {
+                    venue_dirs.insert(config_dir.join(dir));
+                }
+            }
+        };
+        if let Some(profiles) = player.profiles_mut().as_ref() {
+            for profile in profiles {
+                if let Some(lighting) = profile.dmx().and_then(|d| d.lighting()) {
+                    collect(lighting);
+                }
+            }
+        }
+        if let Some(lighting) = player.dmx().and_then(|d| d.lighting()) {
+            collect(lighting);
+        }
+    }
+
+    let rel = |path: &Path| {
+        path.strip_prefix(config_dir)
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    };
+
+    for dir in &fixture_type_dirs {
+        for path in collect_light_files(dir) {
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                plan.add_action("Lighting", format!("Warning: cannot read {}", rel(&path)));
+                continue;
+            };
+            let new_path = path.with_extension("fixture");
+            let types = match parse_fixture_types(&content) {
+                Ok(types) if !types.is_empty() => types,
+                Ok(_) => {
+                    plan.add_action(
+                        "Lighting",
+                        format!(
+                            "Warning: {} has no fixture types; leaving it alone",
+                            rel(&path)
+                        ),
+                    );
+                    continue;
+                }
+                Err(_) => {
+                    plan.add_action(
+                        "Lighting",
+                        format!("Warning: {} does not parse; leaving it alone", rel(&path)),
+                    );
+                    continue;
+                }
+            };
+            // A file that also declares venues would lose them in a
+            // types-only rewrite; rename it untouched instead (v1 syntax
+            // still parses).
+            let has_venues = parse_venues(&content).map(|v| !v.is_empty()).unwrap_or(true);
+            if has_venues {
+                plan.add_action(
+                    "Lighting",
+                    format!("Rename {} → {}", rel(&path), rel(&new_path)),
+                );
+                plan.files_to_copy.push((path.clone(), new_path));
+                plan.files_to_delete.push(path);
+                continue;
+            }
+
+            let mut names: Vec<_> = types.keys().cloned().collect();
+            names.sort();
+            let body = names
+                .iter()
+                .map(|name| types[name].to_string())
+                .collect::<Vec<_>>()
+                .join("\n\n")
+                + "\n";
+            plan.add_action(
+                "Lighting",
+                format!("Rewrite {} → {} (v2 syntax)", rel(&path), rel(&new_path)),
+            );
+            plan.files_to_write.push((new_path, body));
+            plan.files_to_delete.push(path);
+        }
+    }
+
+    for dir in &venue_dirs {
+        for path in collect_light_files(dir) {
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                plan.add_action("Lighting", format!("Warning: cannot read {}", rel(&path)));
+                continue;
+            };
+            if parse_venues(&content).is_err() {
+                plan.add_action(
+                    "Lighting",
+                    format!("Warning: {} does not parse; leaving it alone", rel(&path)),
+                );
+                continue;
+            }
+            let new_path = path.with_extension("venue");
+            plan.add_action(
+                "Lighting",
+                format!("Rename {} → {}", rel(&path), rel(&new_path)),
+            );
+            plan.files_to_copy.push((path.clone(), new_path));
+            plan.files_to_delete.push(path);
+        }
+    }
+}
+
+/// Recursively collects .light files under a directory, sorted for stable
+/// migration reports.
+fn collect_light_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return files;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(collect_light_files(&path));
+        } else if path.extension().is_some_and(|ext| ext == "light") {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files
 }
 
 /// Step D: Clear legacy top-level fields (they've already been normalized into profiles).
@@ -512,13 +667,87 @@ profiles:
         migrate(dir.path().to_str().unwrap(), true).unwrap();
 
         // Venue file should exist.
-        let venue_path = dir.path().join("lighting/venues/inline_migrated.light");
+        let venue_path = dir.path().join("lighting/venues/inline_migrated.venue");
         assert!(venue_path.exists());
 
         let venue = std::fs::read_to_string(&venue_path).unwrap();
         assert!(venue.contains("venue \"inline_migrated\""));
         assert!(venue.contains("fixture \"mover1\" MovingHead @ 1:10"));
         assert!(venue.contains("fixture \"par1\" GenericPar @ 1:1"));
+    }
+
+    #[test]
+    fn test_migrate_lighting_files_to_typed_extensions() {
+        let (dir, _config_path) = setup_migration(
+            r#"
+songs: songs
+profiles:
+  - audio:
+      device: device-a
+      track_mappings:
+        drums: [1]
+    dmx:
+      universes:
+        - universe: 1
+          name: main
+      lighting:
+        directories:
+          fixture_types: lighting/fixture_types
+          venues: lighting/venues
+"#,
+            &[
+                (
+                    "lighting/fixture_types/brick.light",
+                    "fixture_type \"Brick\" {\n  channels: 4\n  channel_map: {\n    \"red\": 1,\n    \"green\": 2,\n    \"blue\": 3,\n    \"strobe\": 4\n  }\n  max_strobe_frequency: 25.0\n  min_strobe_frequency: 0.4\n  strobe_dmx_offset: 7\n}\n",
+                ),
+                (
+                    "lighting/fixture_types/broken.light",
+                    "fixture_type \"Broken\" {\n",
+                ),
+                (
+                    "lighting/venues/club.light",
+                    "# The house rig.\nvenue \"club\" {\n  fixture \"B1\" Brick @ 1:1 tags [\"wash\"]\n}\n",
+                ),
+            ],
+        );
+
+        migrate(dir.path().to_str().unwrap(), true).unwrap();
+
+        // Fixture type files are rewritten to v2 syntax under .fixture.
+        let fixture_path = dir.path().join("lighting/fixture_types/brick.fixture");
+        assert!(fixture_path.exists());
+        assert!(!dir
+            .path()
+            .join("lighting/fixture_types/brick.light")
+            .exists());
+        let fixture = std::fs::read_to_string(&fixture_path).unwrap();
+        assert!(fixture.contains("channel \"red\" @ 1"), "{fixture}");
+        assert!(
+            fixture.contains("functions: { \"strobe\": 7..255 -> 0.4hz..25hz }"),
+            "{fixture}"
+        );
+        assert!(!fixture.contains("channel_map"), "{fixture}");
+
+        // The rewrite must parse and preserve the fixture's meaning.
+        let reparsed = crate::lighting::parser::parse_fixture_types(&fixture).unwrap();
+        let brick = reparsed.get("Brick").unwrap();
+        assert_eq!(brick.channels().get("strobe"), Some(&4));
+        assert_eq!(brick.strobe_dmx_offset(), Some(7));
+        assert_eq!(brick.max_strobe_frequency(), Some(25.0));
+
+        // A file that doesn't parse is left alone.
+        assert!(dir
+            .path()
+            .join("lighting/fixture_types/broken.light")
+            .exists());
+
+        // Venue files are renamed byte-for-byte, comments intact.
+        let venue_path = dir.path().join("lighting/venues/club.venue");
+        assert!(venue_path.exists());
+        assert!(!dir.path().join("lighting/venues/club.light").exists());
+        let venue = std::fs::read_to_string(&venue_path).unwrap();
+        assert!(venue.contains("# The house rig."), "{venue}");
+        assert!(venue.contains("fixture \"B1\" Brick @ 1:1"), "{venue}");
     }
 
     #[test]
@@ -804,7 +1033,7 @@ dmx:
         migrate(dir.path().to_str().unwrap(), true).unwrap();
 
         // Venue file should be created from legacy dmx fixtures.
-        let venue_path = dir.path().join("lighting/venues/inline_migrated.light");
+        let venue_path = dir.path().join("lighting/venues/inline_migrated.venue");
         assert!(venue_path.exists());
 
         let venue = std::fs::read_to_string(&venue_path).unwrap();
@@ -841,7 +1070,7 @@ profiles:
         // Venue file should still be written to the default location.
         assert!(dir
             .path()
-            .join("lighting/venues/inline_migrated.light")
+            .join("lighting/venues/inline_migrated.venue")
             .exists());
 
         // The profile file should preserve the existing custom venues dir
@@ -934,7 +1163,7 @@ dmx:
         // Venue file created.
         assert!(dir
             .path()
-            .join("lighting/venues/inline_migrated.light")
+            .join("lighting/venues/inline_migrated.venue")
             .exists());
 
         // Config rewritten with directory pointers.
@@ -1185,7 +1414,7 @@ profiles:
         // Venue file created.
         assert!(dir
             .path()
-            .join("lighting/venues/inline_migrated.light")
+            .join("lighting/venues/inline_migrated.venue")
             .exists());
     }
 
@@ -1457,7 +1686,7 @@ profiles:
         // Venue file created.
         assert!(dir
             .path()
-            .join("lighting/venues/inline_migrated.light")
+            .join("lighting/venues/inline_migrated.venue")
             .exists());
 
         // Both profile files should have fixtures cleared.
@@ -1557,7 +1786,7 @@ profiles:
         migrate(dir.path().to_str().unwrap(), true).unwrap();
 
         let venue =
-            std::fs::read_to_string(dir.path().join("lighting/venues/inline_migrated.light"))
+            std::fs::read_to_string(dir.path().join("lighting/venues/inline_migrated.venue"))
                 .unwrap();
 
         // Verify sorted order: alpha < middle < zebra.

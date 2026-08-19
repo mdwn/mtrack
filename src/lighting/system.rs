@@ -177,7 +177,7 @@ impl LightingSystem {
             Ok(types) => {
                 for (name, fixture_type) in types {
                     // Referential types need the GDTF distiller, which lands
-                    // with the importer (P1b of the venue-exchange design).
+                    // with the importer (P1a of the venue-exchange design).
                     // Registering the un-expanded override shell would patch
                     // a fixture with no channels, so skip it — loudly.
                     if let Some(source) = fixture_type.source() {
