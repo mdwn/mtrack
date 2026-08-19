@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+# Supersede stale runs on force-push/re-push; only cancel in-flight runs for
+# PRs so a main push always runs to completion.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Build the code and verify that Cargo.lock is up to date.
   build:
@@ -178,6 +184,24 @@ jobs:
         tool: licensure
     - name: Check for licenses
       run: licensure --check -p
+
+  # Cheap pre-release hygiene: prove the docs book builds and that the crate
+  # manifest's include list still parses and packages. Both are otherwise
+  # exercised for the first time by the tag-triggered publish pipeline, where
+  # a failure is expensive to unwind.
+  release-hygiene:
+    name: Docs build and crate packaging
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: mdbook
+    - name: Build docs book
+      run: mdbook build docs
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Verify crate packaging file list
+      run: cargo package --list --allow-dirty > /dev/null
 
   # Verify changelog is in keep-a-changelog format.
   verify-changelog:

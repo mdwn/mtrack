@@ -10,3 +10,4 @@ src/webui/svelte/src/gen/
 src/webui/svelte/playwright-report/
 src/webui/svelte/test-results/
 docs/book/
+.playwright-mcp/
