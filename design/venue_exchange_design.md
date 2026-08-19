@@ -2,7 +2,7 @@
 
 *Design doc, draft 5 — 2026-08-19. Draft 5 revises the file-format story
 after implementation review: the extension identifies the DSL generation (v1
-`.light` files are never renamed or migrated), the intermediary model is
+`.light` files are not renamed or migrated), the intermediary model is
 machine-only, the DSL is scoped to the datasheet-typable subset, and every
 DSL construct ships in the same phase as its consumer.*
 
@@ -42,7 +42,7 @@ OFL import (possible later addition for hobbyist gear; not in scope here).
 | MVR parser | Own implementation | No Rust crate exists. Simpler format; reuses our GDTF machinery for embedded fixtures. |
 | Fixture sourcing | GDTF-sourced fixtures are *referential*: a thin `.fixture` file names the GDTF + mode (+ overrides); the expanded channel table is an ephemeral cache, never committed | Fixture data is a manufacturer fact — a fat distilled copy can only drift from its source. The cache pattern (hash-keyed, regenerated on change) is the waveform-cache model mtrack already has. |
 | Venue sourcing | MVR import *seeds* an owned `.venue` file | Venues are authored, not derived: tags, focus points, and position tweaks are human judgment layered on the import. |
-| File extensions | `.fixture`/`.venue` identify the **v2 DSL**; v1 fixture/venue definitions stay in `.light` files, valid forever beside them | The extension *is* the version marker (versions mark breakages, not expansions). Nothing renames, migrates, or deprecates v1 files, and there is no in-file version field. |
+| File extensions | `.fixture`/`.venue` identify the **v2 DSL**; v1 fixture/venue definitions stay in `.light` files, valid beside them | The extension *is* the version marker (versions mark breakages, not expansions). This design renames, migrates, and deprecates nothing, and there is no in-file version field. No v1 removal is scheduled — retiring v1 someday is a legitimate future decision, but it would be its own design, with its own migration story. |
 | GDTF/MVR export | Deferred (phase 2+) | Nothing in v1 depends on it; model stays exportable. |
 | Visualizer | 2D top-down in phase 1; real 3D simulation in phase 2 | Positions/orientations/beam data and glTF assets are retained from import day one so 3D is additive, not a re-import. |
 | Position abstraction | Named focus points, bound per-venue | The positional analog of tags: shows say `focus "drummer"`; venues supply coordinates. |
@@ -342,7 +342,9 @@ Open in draft 2; all resolved by draft 4.
    *millimeters*, author-chosen origin) is converted at import with a re-origin step (§6).
 2. **v2 DSL grammar** — hybrid: name-keyed channel one-liners, optional block only where a
    channel has structure (§4.1). Simple fixtures stay as terse as v1. The v1 grammar is
-   frozen, not deprecated: `.light` fixture/venue files remain valid indefinitely.
+   frozen, not deprecated: `.light` fixture/venue files remain valid, and no removal is
+   scheduled. Retiring v1 is out of scope here — if it ever happens, it arrives as its
+   own design with its own migration story.
 3. **Corpus licensing** — sidestepped via the two-tier corpus (§12): committed synthetic
    files we author are the CI backbone; real manufacturer files are a bring-your-own local
    corpus, never fetched by CI (vendor URLs rot and block non-browser clients — brittle by
