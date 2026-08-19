@@ -3,6 +3,15 @@ on:
   push:
     tags:
     - 'v*.*.*'
+  # Rebuild and upload binaries for an existing release without re-tagging —
+  # for when a binary job fails after the crates.io publish and GitHub
+  # release have already succeeded.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to build binaries for (e.g. v0.16.0)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,6 +20,7 @@ jobs:
   # Publishes mtrack to crates.io.
   publish:
     name: Publish to crates.io
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
@@ -50,6 +60,7 @@ jobs:
   release:
     name: Create a GitHub release
     needs: publish
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -69,6 +80,11 @@ jobs:
   build-binaries:
     name: Build binary (${{ matrix.target }})
     needs: release
+    # On a tag push this still requires the release to exist; on a manual
+    # dispatch the release already exists and the skipped needs is fine.
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release.result == 'success') }}
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -88,9 +104,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - name: Install Linux system dependencies
+        # protoc comes from setup-protoc below, not apt: ubuntu-22.04 ships
+        # protoc 3.12, which rejects the proto3 optional fields our protos
+        # use ("--experimental_allow_proto3_optional was not set") — the
+        # failure that broke the v0.16.0 Linux binaries.
         if: matrix.platform == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev
+      - name: Install protoc
+        if: matrix.platform == 'linux'
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "29.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install macOS system dependencies
         if: matrix.platform == 'macos'
         run: brew install pkg-config protobuf
@@ -116,7 +144,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           STAGE="mtrack-${VERSION}-${{ matrix.target }}"
           mkdir "$STAGE"
           cp "target/${{ matrix.target }}/release/mtrack" "$STAGE/"
@@ -130,4 +158,4 @@ jobs:
       - name: Upload to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${GITHUB_REF_NAME}" mtrack-*.tar.gz mtrack-*.tar.gz.sha256 --clobber
+        run: gh release upload "${RELEASE_TAG}" mtrack-*.tar.gz mtrack-*.tar.gz.sha256 --clobber
