@@ -29,6 +29,7 @@ include = [
     "!src/webui/svelte/e2e/**",
     "!src/webui/svelte/test-results/**",
     "!src/webui/svelte/playwright-report/**",
+    "!src/webui/svelte/.playwright-mcp/**",
 ]
 
 [package.metadata.binstall]
