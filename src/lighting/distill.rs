@@ -214,7 +214,10 @@ mod tests {
         assert_ne!(base, DistillCache::key("Brick2", b"archive", "Mode 1", ""));
         assert_ne!(base, DistillCache::key("Brick", b"archive2", "Mode 1", ""));
         assert_ne!(base, DistillCache::key("Brick", b"archive", "Mode 2", ""));
-        assert_ne!(base, DistillCache::key("Brick", b"archive", "Mode 1", "overrides"));
+        assert_ne!(
+            base,
+            DistillCache::key("Brick", b"archive", "Mode 1", "overrides")
+        );
         // Same inputs, same key.
         assert_eq!(base, DistillCache::key("Brick", b"archive", "Mode 1", ""));
     }
@@ -321,7 +324,9 @@ mod tests {
         std::fs::write(dir.path().join(format!("{key}.json")), "not json").unwrap();
         assert!(cache.get(&key).is_none());
         // The corrupt entry is gone, so a fill lands cleanly.
-        let filled = cache.get_or_fill(&key, || Ok(sample_fixture_type())).unwrap();
+        let filled = cache
+            .get_or_fill(&key, || Ok(sample_fixture_type()))
+            .unwrap();
         assert_eq!(filled.name(), "Brick");
         assert!(cache.get(&key).is_some());
     }

@@ -293,11 +293,7 @@ impl FixtureType {
         let Some(def) = self.channel_defs.get_mut(STROBE_CHANNEL) else {
             return;
         };
-        if let Some(func) = def
-            .functions
-            .iter_mut()
-            .find(|f| f.name == STROBE_FUNCTION)
-        {
+        if let Some(func) = def.functions.iter_mut().find(|f| f.name == STROBE_FUNCTION) {
             let agrees = func.dmx_from == offset
                 && func.physical.is_some_and(|p| {
                     p.unit == PhysicalUnit::Hertz
@@ -761,13 +757,8 @@ mod tests {
                 }],
             },
         );
-        let ft = FixtureType::from_parts(
-            "Brick".to_string(),
-            defs,
-            Some(99.0),
-            Some(50.0),
-            Some(210),
-        );
+        let ft =
+            FixtureType::from_parts("Brick".to_string(), defs, Some(99.0), Some(50.0), Some(210));
 
         // The getters carry the explicit values...
         assert_eq!(ft.max_strobe_frequency(), Some(99.0));
@@ -807,13 +798,7 @@ mod tests {
                 }],
             },
         );
-        let ft = FixtureType::from_parts(
-            "Brick".to_string(),
-            defs,
-            Some(25.0),
-            Some(0.4),
-            Some(7),
-        );
+        let ft = FixtureType::from_parts("Brick".to_string(), defs, Some(25.0), Some(0.4), Some(7));
         let func = &ft.channel_defs().get("strobe").unwrap().functions[0];
         assert_eq!(func.dmx_to, 200);
         let physical = func.physical.unwrap();
