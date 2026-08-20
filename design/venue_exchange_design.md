@@ -243,6 +243,12 @@ layer:
    (44 Hz is ample; 8-bit quantization was the real smoothness problem). Configured
    `max_pan_speed` clamps output; lint flags cues that demand more than the fixture can do.
 
+Positions also give chase *direction* real meaning: today `left_to_right`
+orders fixtures by their position in the resolved group list, which has no
+spatial (or cross-universe) significance. Once venues carry positions, chase
+ordering resolves from them, with list order as the fallback for
+position-less venues.
+
 **Pointing math (tier 2, not tier 3):** fixture position + mounting rotation + pan/tilt
 ranges → spherical solve for "aim at (x,y,z)". No geometry-tree kinematics; a page of
 trigonometry, property-tested (§12). Fixtures with unattainable targets (out of range) clamp
@@ -298,6 +304,9 @@ existing group-resolution lint:
 - Movement feasibility: cue requires more than `max_*_speed`, or target outside pan/tilt
   range from a fixture's position.
 - Positional effects against a venue without positions.
+- Universe coverage: the venue patches fixtures on universes the active
+  profile configures no output for (today this is reported loudly at venue
+  registration and on first drop; lint makes it a pre-show answer).
 - Import hygiene: fixture_types whose source GDTF has a newer revision in the library.
 
 ## 12. Testing
