@@ -227,13 +227,26 @@ tempo_transition_snap = { "snap" }
 COMMENT = _{ ("//" | "#") ~ (!"\n" ~ ANY)* }
 
 // Fixture type rules
-fixture_type = { "fixture_type" ~ fixture_type_name ~ "{" ~ fixture_type_content ~ "}" }
+fixture_type = { "fixture_type" ~ fixture_type_name ~ gdtf_source? ~ "{" ~ fixture_type_content ~ "}" }
 
 fixture_type_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
+// Referential fixture types pin the GDTF archive + mode they are distilled
+// from; the file body carries only human additions (movement limits).
+gdtf_source = { "from" ~ "gdtf" ~ "(" ~ string ~ "," ~ "mode" ~ string ~ ")" }
+
 fixture_type_content = {
-    (channels | channel_map | max_strobe_frequency | min_strobe_frequency | strobe_dmx_offset | special_cases)*
+    (channels | channel_map | movement_block | max_strobe_frequency | min_strobe_frequency | strobe_dmx_offset | special_cases)*
 }
+
+// Movement limits — not in GDTF; measured or taken from the datasheet.
+movement_block = { "movement" ~ "{" ~ movement_param* ~ "}" }
+
+movement_param = { movement_param_name ~ ":" ~ speed_value }
+
+movement_param_name = { "max_pan_speed" | "max_tilt_speed" }
+
+speed_value = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ "deg/s" }
 
 channels = { "channels" ~ ":" ~ number_value }
 

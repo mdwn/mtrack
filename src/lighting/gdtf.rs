@@ -35,6 +35,11 @@ mod archive;
 mod description;
 mod distiller;
 
+#[cfg(test)]
+pub(crate) use archive::tests::build_zip;
+#[cfg(test)]
+pub(crate) use description::tests::SYNTHETIC_DESCRIPTION;
+
 pub use archive::read_description_xml;
 pub use description::{parse_description, Description};
 pub use distiller::{distill, mode_summaries, Distilled, ModeSummary};

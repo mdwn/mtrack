@@ -365,7 +365,7 @@ pub(super) mod tests {
     /// A PixelBrick-shaped synthetic description: two modes, a virtual
     /// dimmer, a strobe channel with function ranges, and a 16-bit mover
     /// mode. Structure mirrors the real Astera PB15 file.
-    pub(in super::super) const SYNTHETIC_DESCRIPTION: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+    pub(crate) const SYNTHETIC_DESCRIPTION: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <GDTF DataVersion="1.2">
   <FixtureType Name="Synth Brick" ShortName="Brick" Manufacturer="mtrack synthetic">
     <AttributeDefinitions/>

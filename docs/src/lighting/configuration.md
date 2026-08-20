@@ -108,6 +108,43 @@ fixture_type "MovingHead" {
 }
 ```
 
+### GDTF-referential fixture types (`*.fixture`)
+
+Instead of hand-transcribing a channel map from a manual, a fixture type can
+reference a manufacturer [GDTF](https://gdtf-share.com/) file — most
+manufacturers publish them — and mtrack distills the chosen DMX mode into the
+same model a hand-written definition produces:
+
+```light
+# lighting/fixture_types/pb15_pixelbrick.fixture
+fixture_type "PB15 PixelBrick"
+  from gdtf("lighting/library/pb15.gdtf", mode "8: RGBS")
+{
+  # Optional overrides — data not in GDTF, e.g. measured movement limits:
+  # movement { max_pan_speed: 240deg/s }
+}
+```
+
+The easiest way to create one is the import command, which lists an
+archive's modes, copies it into `lighting/library/`, writes the `.fixture`
+file, and verifies it loads:
+
+```sh
+mtrack import-gdtf downloaded.gdtf                 # list the modes
+mtrack import-gdtf downloaded.gdtf --mode "8: RGBS"
+```
+
+Notes:
+
+- The GDTF archive is part of your project (`lighting/library/`) — commit
+  it. Expansions live in `lighting/.cache/`, which is rebuildable and should
+  be gitignored.
+- A referential fixture's channels come from the GDTF; the `.fixture` body
+  carries only overrides. Anything the distiller can't represent (wheels,
+  pixel/matrix modes) is skipped or refused with a clear message.
+- `.fixture` and `.light` fixture files load side by side; nothing renames
+  or migrates.
+
 **Strobe frequency range:**
 
 Fixtures with a dedicated strobe channel can specify their supported frequency range and DMX

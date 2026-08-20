@@ -599,6 +599,135 @@ pub fn verify(
     Ok(())
 }
 
+/// Imports a GDTF archive: with no mode, lists the archive's modes; with a
+/// mode, delegates to the shared importer (also behind the MCP tool), which
+/// copies the archive into the project library, writes a GDTF-referential
+/// `.fixture` definition, and warms the expansion cache through the same
+/// code path the player's loader takes.
+pub fn import_gdtf(
+    gdtf_path: &str,
+    mode: Option<&str>,
+    name: Option<&str>,
+    project: &str,
+    fixture_types_dir: &str,
+) -> Result<(), Box<dyn Error>> {
+    use crate::lighting::gdtf;
+
+    let Some(mode) = mode else {
+        // Mode selection is human input: list what the archive offers.
+        let bytes = std::fs::read(gdtf_path)
+            .map_err(|e| format!("cannot read GDTF archive {gdtf_path}: {e}"))?;
+        let description = gdtf::parse_archive(&bytes)?;
+        println!(
+            "\"{}\" by {} — {} modes:",
+            description.name,
+            description.manufacturer,
+            description.modes.len()
+        );
+        for summary in gdtf::mode_summaries(&description) {
+            println!(
+                "  {:40} {:>3} channels, footprint {}",
+                format!("\"{}\"", summary.name),
+                summary.channel_count,
+                summary.footprint
+            );
+        }
+        println!("\nRe-run with --mode <name> to import one.");
+        return Ok(());
+    };
+
+    let report = crate::lighting::import::import_gdtf(
+        Path::new(gdtf_path),
+        mode,
+        name,
+        Path::new(project),
+        fixture_types_dir,
+    )?;
+
+    println!(
+        "Imported \"{}\" (mode \"{}\"):",
+        report.type_name, report.mode
+    );
+    println!(
+        "  archive: {}{}",
+        report.archive,
+        if report.replaced_archive {
+            " (replaced existing)"
+        } else {
+            ""
+        }
+    );
+    println!("  fixture: {}", report.fixture_file);
+    for (offset, channel) in &report.channels {
+        println!("  channel {offset}: {channel}");
+    }
+    if report.warnings.is_empty() {
+        println!("  no distillation warnings");
+    } else {
+        println!("  {} warning(s):", report.warnings.len());
+        for warning in &report.warnings {
+            println!("    {warning}");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod import_gdtf_tests {
+    use super::*;
+
+    fn write_synthetic_gdtf(dir: &Path) -> PathBuf {
+        let path = dir.join("synth.gdtf");
+        std::fs::write(
+            &path,
+            crate::lighting::gdtf::build_zip(&[(
+                "description.xml",
+                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+            )]),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn listing_modes_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let gdtf = write_synthetic_gdtf(dir.path());
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        import_gdtf(
+            gdtf.to_str().unwrap(),
+            None,
+            None,
+            project.to_str().unwrap(),
+            "lighting/fixture_types",
+        )
+        .unwrap();
+        assert!(!project.join("lighting").exists(), "listing must not write");
+    }
+
+    #[test]
+    fn importing_delegates_to_the_shared_importer() {
+        let dir = tempfile::tempdir().unwrap();
+        let gdtf = write_synthetic_gdtf(dir.path());
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        import_gdtf(
+            gdtf.to_str().unwrap(),
+            Some("8: RGBS"),
+            Some("Brick"),
+            project.to_str().unwrap(),
+            "lighting/fixture_types",
+        )
+        .unwrap();
+        assert!(project
+            .join("lighting/fixture_types/brick.fixture")
+            .exists());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

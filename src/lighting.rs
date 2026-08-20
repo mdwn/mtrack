@@ -21,6 +21,7 @@ pub mod effects;
 pub mod engine;
 pub mod evaluate;
 pub mod gdtf;
+pub mod import;
 #[cfg(test)]
 mod layering_tests;
 pub mod lint;
