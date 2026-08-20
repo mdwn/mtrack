@@ -105,7 +105,7 @@ pub(super) mod tests {
     use super::*;
 
     /// Builds an in-memory zip with the given entries.
-    pub(in super::super) fn build_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    pub(crate) fn build_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut cursor = Cursor::new(Vec::new());
         {
             let mut writer = zip::ZipWriter::new(&mut cursor);

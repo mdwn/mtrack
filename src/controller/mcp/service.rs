@@ -320,6 +320,22 @@ pub struct SongLightingArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListGdtfModesArgs {
+    /// Path to a .gdtf archive, relative to the project directory.
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ImportGdtfArgs {
+    /// Path to a .gdtf archive, relative to the project directory.
+    pub path: String,
+    /// The DMX mode to distill (see list_gdtf_modes).
+    pub mode: String,
+    /// Name for the fixture type; defaults to the GDTF's fixture name.
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteSongLightingArgs {
     /// Song name as listed by `list_songs`.
     pub song: String,
@@ -1718,6 +1734,86 @@ impl McpServer {
             })
             .collect();
         Ok(ok_json(json!({ "fixture_types": types })))
+    }
+
+    /// Resolves a caller-supplied project-relative path, refusing anything
+    /// that escapes the project directory.
+    fn resolve_in_project(&self, relative: &str) -> Result<std::path::PathBuf, McpError> {
+        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let candidate = project.join(relative);
+        let canonical = candidate.canonicalize().map_err(|e| {
+            McpError::invalid_params(format!("cannot resolve {relative}: {e}"), None)
+        })?;
+        let canonical_project = project.canonicalize().map_err(|e| {
+            McpError::internal_error(format!("cannot resolve project dir: {e}"), None)
+        })?;
+        if !canonical.starts_with(&canonical_project) {
+            return Err(McpError::invalid_params(
+                format!("{relative} escapes the project directory"),
+                None,
+            ));
+        }
+        Ok(canonical)
+    }
+
+    #[tool(description = "List the DMX modes of a GDTF fixture archive, with \
+        channel counts and DMX footprints. Mode selection is the one human \
+        input a GDTF import needs; pick against the venue's patch sheet.")]
+    async fn list_gdtf_modes(
+        &self,
+        Parameters(args): Parameters<ListGdtfModesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let path = self.resolve_in_project(&args.path)?;
+        let bytes = tokio::fs::read(&path).await.map_err(|e| {
+            McpError::invalid_params(format!("cannot read {}: {e}", args.path), None)
+        })?;
+        let description = crate::lighting::gdtf::parse_archive(&bytes)
+            .map_err(|e| McpError::invalid_params(format!("not a parseable GDTF: {e}"), None))?;
+        let modes: Vec<Value> = crate::lighting::gdtf::mode_summaries(&description)
+            .into_iter()
+            .map(|summary| {
+                json!({
+                    "name": summary.name,
+                    "channel_count": summary.channel_count,
+                    "footprint": summary.footprint,
+                })
+            })
+            .collect();
+        Ok(ok_json(json!({
+            "fixture": description.name,
+            "manufacturer": description.manufacturer,
+            "modes": modes,
+        })))
+    }
+
+    #[tool(description = "Import one mode of a GDTF fixture archive: copies \
+        the archive into lighting/library/, writes a GDTF-referential \
+        .fixture definition, and warms the expansion cache through the same \
+        path the player loads with. Returns the resolved channels and every \
+        distillation warning. The archive must already be inside the \
+        project directory (download it there first).")]
+    async fn import_gdtf(
+        &self,
+        Parameters(args): Parameters<ImportGdtfArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let path = self.resolve_in_project(&args.path)?;
+        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let report = tokio::task::spawn_blocking(move || {
+            crate::lighting::import::import_gdtf(
+                &path,
+                &args.mode,
+                args.name.as_deref(),
+                &project,
+                "lighting/fixture_types",
+            )
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("import task failed: {e}"), None))?
+        .map_err(|e| McpError::invalid_params(e, None))?;
+        Ok(ok_json(serde_json::to_value(&report).map_err(|e| {
+            McpError::internal_error(format!("report serialization failed: {e}"), None)
+        })?))
     }
 
     #[tool(description = "Read a lighting `.light` file referenced by a song. \

@@ -18,6 +18,8 @@ use std::path::Path;
 
 use tracing::{info, warn};
 
+use super::distill::DistillCache;
+use super::gdtf;
 use super::parser::{parse_fixture_types, parse_venues};
 use super::types::{Fixture, FixtureType, Venue};
 use crate::config::lighting::{GroupConstraint, LogicalGroup};
@@ -100,7 +102,7 @@ impl LightingSystem {
         if let Some(dirs) = config.directories() {
             if let Some(fixture_types_dir) = dirs.fixture_types() {
                 let path = base_path.join(fixture_types_dir);
-                self.load_fixture_types_directory(&path)?;
+                self.load_fixture_types_directory(&path, base_path)?;
             }
 
             if let Some(venues_dir) = dirs.venues() {
@@ -113,7 +115,11 @@ impl LightingSystem {
     }
 
     /// Loads fixture types from a directory.
-    fn load_fixture_types_directory(&mut self, dir: &Path) -> Result<(), Box<dyn Error>> {
+    fn load_fixture_types_directory(
+        &mut self,
+        dir: &Path,
+        base_path: &Path,
+    ) -> Result<(), Box<dyn Error>> {
         if !dir.exists() {
             return Ok(()); // Directory doesn't exist, skip
         }
@@ -124,10 +130,14 @@ impl LightingSystem {
 
             if path.is_dir() {
                 // Recursively load subdirectories
-                self.load_fixture_types_directory(&path)?;
-            } else if path.extension().is_some_and(|ext| ext == "light") {
-                // Load .light files
-                self.load_fixture_types_file(&path)?;
+                self.load_fixture_types_directory(&path, base_path)?;
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext == "fixture" || ext == "light")
+            {
+                // .fixture files carry GDTF-referential definitions; .light
+                // files are the existing DSL. Peers, not a migration.
+                self.load_fixture_types_file(&path, base_path)?;
             }
         }
         Ok(())
@@ -155,14 +165,45 @@ impl LightingSystem {
     }
 
     /// Loads fixture types from a file.
-    fn load_fixture_types_file(&mut self, path: &Path) -> Result<(), Box<dyn Error>> {
+    fn load_fixture_types_file(
+        &mut self,
+        path: &Path,
+        base_path: &Path,
+    ) -> Result<(), Box<dyn Error>> {
         let content = std::fs::read_to_string(path)?;
 
         // Parse fixture types from DSL content
         match parse_fixture_types(&content) {
             Ok(types) => {
                 for (name, fixture_type) in types {
-                    info!(fixture_type = name, "Loading fixture type");
+                    let fixture_type = if fixture_type.source().is_some() {
+                        // Referential: expand through the distill cache. A
+                        // failure skips the type loudly — registering an
+                        // empty shell would patch fixtures that emit nothing.
+                        match Self::expand_referential(&name, &fixture_type, base_path) {
+                            Ok(expanded) => {
+                                info!(
+                                    fixture_type = name,
+                                    channels = expanded.channels().len(),
+                                    "Loaded GDTF-referential fixture type"
+                                );
+                                expanded
+                            }
+                            Err(e) => {
+                                warn!(
+                                    fixture_type = name,
+                                    file = %path.display(),
+                                    error = %e,
+                                    "Failed to expand GDTF-referential fixture type; \
+                                     skipping — fixtures of this type will not light"
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        info!(fixture_type = name, "Loading fixture type");
+                        fixture_type
+                    };
                     self.fixture_types.insert(name, fixture_type);
                 }
             }
@@ -172,6 +213,71 @@ impl LightingSystem {
         }
 
         Ok(())
+    }
+
+    /// Expands a GDTF-referential fixture type through the per-project
+    /// distill cache (`lighting/.cache/`, hash-keyed, rebuildable). Parsing
+    /// the archive happens only on a cold cache — at load time, never
+    /// mid-show — and the fill is logged loudly.
+    pub(crate) fn expand_referential(
+        name: &str,
+        fixture_type: &FixtureType,
+        base_path: &Path,
+    ) -> Result<FixtureType, Box<dyn Error>> {
+        let source = fixture_type.source().expect("caller checked source");
+
+        // A bare-filename config path can yield an empty base_path; plain
+        // joins tolerate it but canonicalize() does not. Defense in depth —
+        // the call sites normalize too.
+        let base_path = if base_path.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            base_path
+        };
+
+        // The archive must live inside the project: a .fixture file is
+        // config, but keeping references project-relative means a rig
+        // directory stays self-contained (and a stray absolute path can't
+        // wander the filesystem).
+        let archive_path = base_path.join(&source.path);
+        let canonical = archive_path
+            .canonicalize()
+            .map_err(|e| format!("cannot read GDTF archive {}: {e}", archive_path.display()))?;
+        let canonical_base = base_path.canonicalize()?;
+        if !canonical.starts_with(&canonical_base) {
+            return Err(format!(
+                "GDTF archive path {} escapes the project directory",
+                source.path
+            )
+            .into());
+        }
+
+        let bytes = std::fs::read(&canonical)
+            .map_err(|e| format!("cannot read GDTF archive {}: {e}", canonical.display()))?;
+        // Everything that can change the expansion participates in the key;
+        // movement is the only override today, so it is the fingerprint.
+        let fingerprint = format!("{:?}", fixture_type.movement());
+        let key = DistillCache::key(name, &bytes, &source.mode, &fingerprint);
+        let cache = DistillCache::new(base_path.join("lighting").join(".cache"));
+        cache.get_or_fill(&key, || {
+            info!(
+                fixture_type = name,
+                gdtf = %source.path,
+                mode = %source.mode,
+                "Expansion cache is cold — distilling GDTF"
+            );
+            let description = gdtf::parse_archive(&bytes)?;
+            let distilled = gdtf::distill(&description, &source.mode, name)?;
+            // Distillation warnings surface on the cold fill; the import
+            // command is the place they're reported interactively.
+            for warning in &distilled.warnings {
+                warn!(fixture_type = name, "GDTF distillation: {warning}");
+            }
+            let mut expanded = distilled.fixture_type;
+            expanded.set_source(source.clone());
+            expanded.set_movement(*fixture_type.movement());
+            Ok(expanded)
+        })
     }
 
     /// Loads venues from a file.
@@ -520,6 +626,110 @@ mod tests {
             !system.venues.contains_key("old"),
             "the legacy file genuinely does not parse"
         );
+    }
+
+    #[test]
+    fn referential_fixture_types_expand_through_the_cache() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path();
+        let library = base.join("lighting/library");
+        let ft_dir = base.join("lighting/fixture_types");
+        std::fs::create_dir_all(&library).expect("mkdir");
+        std::fs::create_dir_all(&ft_dir).expect("mkdir");
+        std::fs::write(
+            library.join("synth.gdtf"),
+            crate::lighting::gdtf::build_zip(&[(
+                "description.xml",
+                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+            )]),
+        )
+        .expect("write gdtf");
+        std::fs::write(
+            ft_dir.join("brick.fixture"),
+            "fixture_type \"Brick\"\n  from gdtf(\"lighting/library/synth.gdtf\", mode \"8: RGBS\")\n{\n  movement { max_pan_speed: 240.0deg/s }\n}\n",
+        )
+        .expect("write fixture");
+
+        let mut system = LightingSystem::new();
+        system
+            .load_fixture_types_directory(&ft_dir, base)
+            .expect("loads");
+
+        let brick = system.fixture_types.get("Brick").expect("expanded");
+        assert_eq!(brick.channels().get("red"), Some(&1));
+        assert_eq!(brick.channels().get("strobe"), Some(&4));
+        assert_eq!(brick.strobe_dmx_offset(), Some(7));
+        assert_eq!(brick.max_strobe_frequency(), Some(25.0));
+        assert_eq!(brick.movement().max_pan_speed, Some(240.0));
+        assert_eq!(
+            brick.source().map(|s| s.mode.as_str()),
+            Some("8: RGBS"),
+            "the expansion keeps its provenance"
+        );
+
+        // The expansion landed in the per-project cache (hit/miss/corruption
+        // mechanics are unit-tested on DistillCache itself; the key covers
+        // the archive bytes, so a changed archive is a fresh distillation
+        // by design).
+        let cache_entries = std::fs::read_dir(base.join("lighting/.cache"))
+            .expect("cache dir")
+            .count();
+        assert_eq!(cache_entries, 1);
+
+        // A reload with the same inputs resolves to the same single entry.
+        let mut reloaded = LightingSystem::new();
+        reloaded
+            .load_fixture_types_directory(&ft_dir, base)
+            .expect("loads");
+        assert!(reloaded.fixture_types.contains_key("Brick"));
+        let cache_entries = std::fs::read_dir(base.join("lighting/.cache"))
+            .expect("cache dir")
+            .count();
+        assert_eq!(cache_entries, 1);
+    }
+
+    #[test]
+    fn referential_failures_skip_loudly_and_natives_still_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path();
+        let ft_dir = base.join("lighting/fixture_types");
+        std::fs::create_dir_all(&ft_dir).expect("mkdir");
+        std::fs::write(
+            ft_dir.join("mixed.fixture"),
+            "fixture_type \"Ghost\"\n  from gdtf(\"lighting/library/missing.gdtf\", mode \"X\")\n{ }\n\nfixture_type \"Par\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n",
+        )
+        .expect("write");
+
+        let mut system = LightingSystem::new();
+        system
+            .load_fixture_types_directory(&ft_dir, base)
+            .expect("loads");
+        assert!(
+            !system.fixture_types.contains_key("Ghost"),
+            "a failed expansion must not register an empty shell"
+        );
+        assert!(system.fixture_types.contains_key("Par"));
+    }
+
+    #[test]
+    fn referential_archive_paths_cannot_escape_the_project() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path().join("project");
+        let ft_dir = base.join("lighting/fixture_types");
+        std::fs::create_dir_all(&ft_dir).expect("mkdir");
+        // A real file outside the project the reference tries to reach.
+        std::fs::write(dir.path().join("outside.gdtf"), b"whatever").expect("write");
+        std::fs::write(
+            ft_dir.join("evil.fixture"),
+            "fixture_type \"Evil\"\n  from gdtf(\"../outside.gdtf\", mode \"X\")\n{ }\n",
+        )
+        .expect("write");
+
+        let mut system = LightingSystem::new();
+        system
+            .load_fixture_types_directory(&ft_dir, &base)
+            .expect("loads");
+        assert!(!system.fixture_types.contains_key("Evil"));
     }
 
     #[test]

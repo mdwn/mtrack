@@ -636,6 +636,114 @@ async fn build_standalone_player(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_gdtf_import_flow() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+
+    // An agent downloads the archive into the project first; simulate that.
+    std::fs::create_dir_all(fixture.root.join("incoming"))?;
+    std::fs::write(
+        fixture.root.join("incoming/synth.gdtf"),
+        crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+        )]),
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    assert!(controller.statuses().iter().all(|s| s.status == "running"));
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // --- list_gdtf_modes surfaces the mode-picking input.
+    let modes = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            10,
+            "list_gdtf_modes",
+            json!({"path": "incoming/synth.gdtf"}),
+        )
+        .await,
+    );
+    assert_eq!(modes["fixture"], "Synth Brick");
+    let mode_names: Vec<&str> = modes["modes"]
+        .as_array()
+        .expect("modes array")
+        .iter()
+        .filter_map(|m| m["name"].as_str())
+        .collect();
+    assert!(mode_names.contains(&"8: RGBS"), "{mode_names:?}");
+
+    // --- a path escaping the project is refused.
+    let escape = call_tool(
+        &client,
+        &url,
+        &session,
+        11,
+        "list_gdtf_modes",
+        json!({"path": "../x.gdtf"}),
+    )
+    .await;
+    assert!(
+        escape["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("escapes")
+            || escape["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("cannot resolve"),
+        "{escape}"
+    );
+
+    // --- import_gdtf writes the library archive, the .fixture ref, and the
+    // cache, and reports channels + warnings.
+    let report = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            12,
+            "import_gdtf",
+            json!({"path": "incoming/synth.gdtf", "mode": "8: RGBS", "name": "Brick"}),
+        )
+        .await,
+    );
+    assert_eq!(report["type_name"], "Brick");
+    assert_eq!(
+        report["fixture_file"],
+        "lighting/fixture_types/brick.fixture"
+    );
+    assert!(fixture.root.join("lighting/library/synth.gdtf").exists());
+    assert!(fixture
+        .root
+        .join("lighting/fixture_types/brick.fixture")
+        .exists());
+    assert!(fixture.root.join("lighting/.cache").is_dir());
+    let warnings = report["warnings"].as_array().expect("warnings");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap_or_default().contains("virtual channel")),
+        "{warnings:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;

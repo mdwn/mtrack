@@ -227,6 +227,22 @@ fixture_type "RGBW_Par" {
 }
 ```
 
+Fixture types can also reference a manufacturer GDTF archive (`.fixture`
+files) instead of hand-written channel maps:
+
+```
+fixture_type "PB15 PixelBrick"
+  from gdtf("lighting/library/pb15.gdtf", mode "8: RGBS")
+{
+}
+```
+
+Prefer the MCP import flow over writing these by hand: download the GDTF
+into the project, call `list_gdtf_modes` to pick the mode against the
+venue's patch sheet, then `import_gdtf` — it copies the archive into
+`lighting/library/`, writes the `.fixture` file, and returns the resolved
+channels plus every distillation warning.
+
 ## Venue (rarely written from MCP)
 
 ```

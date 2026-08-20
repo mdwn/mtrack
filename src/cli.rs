@@ -222,9 +222,30 @@ enum Commands {
     Systemd {
         /// Directories the service must be able to write — your library, plus
         /// any songs, playlists, profiles or samples directory configured
-        /// outside it. Given at least one, the unit is hardened with
-        /// ProtectSystem=strict and excepts exactly these paths.
+        /// outside it (and lighting/.cache if you use GDTF-referential
+        /// fixtures — the expansion cache is rebuilt, not committed). Given
+        /// at least one, the unit is hardened with ProtectSystem=strict and
+        /// excepts exactly these paths.
         paths: Vec<String>,
+    },
+    /// Imports a GDTF fixture file: lists its modes, or (with --mode)
+    /// copies the archive into the project library and writes a
+    /// GDTF-referential .fixture definition.
+    ImportGdtf {
+        /// Path to the .gdtf archive to import.
+        gdtf_path: String,
+        /// The DMX mode to distill. Omit to list the archive's modes.
+        #[arg(short, long)]
+        mode: Option<String>,
+        /// Name for the fixture type (defaults to the GDTF's fixture name).
+        #[arg(short, long)]
+        name: Option<String>,
+        /// Project directory the import writes into.
+        #[arg(short, long, default_value = ".")]
+        project: String,
+        /// Fixture types directory, relative to the project.
+        #[arg(long, default_value = "lighting/fixture_types")]
+        fixture_types_dir: String,
     },
     /// Verifies the syntax of a light show file.
     VerifyLightShow {
@@ -460,6 +481,19 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
             duration,
             sample_format,
             bits_per_sample,
+        )?,
+        Commands::ImportGdtf {
+            gdtf_path,
+            mode,
+            name,
+            project,
+            fixture_types_dir,
+        } => local::import_gdtf(
+            &gdtf_path,
+            mode.as_deref(),
+            name.as_deref(),
+            &project,
+            &fixture_types_dir,
         )?,
         Commands::VerifyLightShow { show_path, config } => {
             local::verify_light_show(&show_path, config.as_deref())?
