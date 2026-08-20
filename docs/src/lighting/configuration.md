@@ -159,6 +159,23 @@ venue "small_club" {
 }
 ```
 
+**Multiple universes:**
+
+Fixtures may be patched on any universe (`@ universe:address`), and a single
+venue may span several. Shows never reference universes — they target logical
+groups — so the same show drives a one-universe rig and a four-universe house
+patch alike. Every universe a venue references must have an output configured
+under `dmx.universes` in the active profile; fixtures patched on an
+unconfigured universe are reported at venue registration (and again, once, if
+a show drives them) and will not light.
+
+```light
+venue "warehouse" {
+  fixture "Wash1" RGBW_Par @ 1:1 tags ["wash", "front"]
+  fixture "Wash3" RGBW_Par @ 2:1 tags ["wash", "back"]
+}
+```
+
 ## Song Lighting Definitions
 
 Lighting shows are defined in separate `.light` files using the DSL format. Songs reference these files:

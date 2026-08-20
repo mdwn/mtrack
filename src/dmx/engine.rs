@@ -92,6 +92,10 @@ pub struct Engine {
     pub(super) playback_delay: Duration,
     pub(super) universes: HashMap<u16, Universe>,
     pub(super) universe_name_to_id: HashMap<String, u16>,
+    /// Universe IDs already warned about for having no configured output —
+    /// the effects loop runs at 44Hz, so the drop warning fires once per
+    /// universe, not once per tick.
+    warned_missing_universes: Mutex<HashSet<u16>>,
     pub(super) cancel_handle: CancelHandle,
     pub(super) client_handle: Option<JoinHandle<()>>,
     pub(super) join_handles: Vec<JoinHandle<()>>,
@@ -212,6 +216,7 @@ impl Engine {
             playback_delay: config.playback_delay()?,
             universes: universes.into_iter().collect(),
             universe_name_to_id,
+            warned_missing_universes: Mutex::new(HashSet::new()),
             cancel_handle,
             client_handle: Some(client_handle),
             join_handles,
@@ -479,6 +484,15 @@ impl Engine {
             // Direct lookup by universe ID - no name mapping needed
             if let Some(universe) = self.universes.get(&universe_id) {
                 universe.update_effect_commands(commands);
+            } else if self.warned_missing_universes.lock().insert(universe_id) {
+                // A venue can patch fixtures on a universe this profile has
+                // no output for; dropping their light silently is how a rig
+                // stays dark at a gig with no clue why. Once per universe.
+                error!(
+                    universe = universe_id,
+                    dropped_commands = commands.len(),
+                    "Dropping DMX for universe {universe_id}: the venue patches fixtures                      there, but this profile configures no such universe under dmx.universes"
+                );
             }
         }
 
@@ -500,6 +514,19 @@ impl Engine {
         if let Some(lighting_system) = &self.lighting_system {
             let lighting_system = lighting_system.lock();
             let fixture_infos = lighting_system.get_current_venue_fixtures()?;
+
+            // Say up front — once, at registration — which parts of the venue
+            // this profile cannot drive, naming the fixtures. The per-tick
+            // drop warning in update_effects is the backstop, not the report.
+            self.warned_missing_universes.lock().clear();
+            for (universe, fixtures) in unconfigured_universes(&fixture_infos, &self.universes) {
+                warn!(
+                    universe,
+                    fixtures = fixtures.join(", "),
+                    "Venue fixtures are patched on universe {universe}, but this profile                      configures no such universe under dmx.universes — they will not light"
+                );
+            }
+
             let mut effect_engine = self.effect_engine.lock();
             let mut midi_dmx_store = self.midi_dmx_store.write();
 
@@ -635,6 +662,78 @@ impl Drop for Engine {
         {
             error!("Error joining handle");
         }
+    }
+}
+
+/// Groups fixtures by the universes `configured` has no entry for:
+/// universe → fixture names, both sorted for stable reporting. Generic over
+/// the map's value so tests don't need to construct output threads.
+fn unconfigured_universes<V>(
+    fixture_infos: &[crate::lighting::effects::FixtureInfo],
+    configured: &HashMap<u16, V>,
+) -> std::collections::BTreeMap<u16, Vec<String>> {
+    let mut gaps: std::collections::BTreeMap<u16, Vec<String>> = Default::default();
+    for fixture_info in fixture_infos {
+        if !configured.contains_key(&fixture_info.universe) {
+            gaps.entry(fixture_info.universe)
+                .or_default()
+                .push(fixture_info.name.clone());
+        }
+    }
+    for fixtures in gaps.values_mut() {
+        fixtures.sort();
+    }
+    gaps
+}
+
+#[cfg(test)]
+mod universe_gap_tests {
+    use std::collections::HashMap;
+
+    use super::unconfigured_universes;
+    use crate::lighting::effects::FixtureInfo;
+
+    fn fixture(name: &str, universe: u16) -> FixtureInfo {
+        let mut channels = HashMap::new();
+        channels.insert("dimmer".to_string(), 1);
+        FixtureInfo::new(
+            name.to_string(),
+            universe,
+            1,
+            "Par".to_string(),
+            channels,
+            None,
+        )
+    }
+
+    #[test]
+    fn reports_only_unconfigured_universes_with_sorted_fixtures() {
+        let fixtures = vec![
+            fixture("Wash1", 1),
+            fixture("Truss2", 9),
+            fixture("Truss1", 9),
+            fixture("Side1", 4),
+        ];
+        let mut configured = HashMap::new();
+        configured.insert(1u16, ());
+
+        let gaps = unconfigured_universes(&fixtures, &configured);
+        assert_eq!(gaps.len(), 2);
+        assert_eq!(gaps[&4], vec!["Side1".to_string()]);
+        assert_eq!(
+            gaps[&9],
+            vec!["Truss1".to_string(), "Truss2".to_string()],
+            "fixture names sort for stable reports"
+        );
+        assert!(!gaps.contains_key(&1));
+    }
+
+    #[test]
+    fn a_fully_configured_venue_reports_nothing() {
+        let fixtures = vec![fixture("Wash1", 1)];
+        let mut configured = HashMap::new();
+        configured.insert(1u16, ());
+        assert!(unconfigured_universes(&fixtures, &configured).is_empty());
     }
 }
 
