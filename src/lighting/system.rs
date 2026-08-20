@@ -226,6 +226,15 @@ impl LightingSystem {
     ) -> Result<FixtureType, Box<dyn Error>> {
         let source = fixture_type.source().expect("caller checked source");
 
+        // A bare-filename config path can yield an empty base_path; plain
+        // joins tolerate it but canonicalize() does not. Defense in depth —
+        // the call sites normalize too.
+        let base_path = if base_path.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            base_path
+        };
+
         // The archive must live inside the project: a .fixture file is
         // config, but keeping references project-relative means a rig
         // directory stays self-contained (and a stray absolute path can't

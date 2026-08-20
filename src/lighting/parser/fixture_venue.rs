@@ -131,16 +131,30 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
         }
     }
 
-    // A referential fixture type carries only human additions; its channels
-    // come from the GDTF. Letting a channel_map ride along would silently
-    // lose whichever side the loader didn't pick.
-    if source.is_some() && !channels.is_empty() {
-        return Err(format!(
-            "fixture type \"{name}\" declares `from gdtf(...)` and a channel map; \
-             a referential fixture's channels come from the GDTF — remove the \
-             channel_map (or drop the gdtf reference to define it natively)"
-        )
-        .into());
+    // A referential fixture type carries only human additions (movement);
+    // its channels and strobe parameters come from the GDTF. Letting either
+    // ride along would silently lose whichever side the loader didn't pick.
+    if source.is_some() {
+        if !channels.is_empty() {
+            return Err(format!(
+                "fixture type \"{name}\" declares `from gdtf(...)` and a channel map; \
+                 a referential fixture's channels come from the GDTF — remove the \
+                 channel_map (or drop the gdtf reference to define it natively)"
+            )
+            .into());
+        }
+        if max_strobe_frequency.is_some()
+            || min_strobe_frequency.is_some()
+            || strobe_dmx_offset.is_some()
+        {
+            return Err(format!(
+                "fixture type \"{name}\" declares `from gdtf(...)` and strobe fields; \
+                 a referential fixture's strobe parameters come from the GDTF's \
+                 strobe function — remove the strobe fields (or drop the gdtf \
+                 reference to define the fixture natively)"
+            )
+            .into());
+        }
     }
 
     // The parser produces the v1 surface; From<FixtureTypeV1> is the single
@@ -175,6 +189,7 @@ fn parse_gdtf_source(pair: Pair<Rule>) -> Result<GdtfSource, Box<dyn Error>> {
 
 fn parse_movement_block(pair: Pair<Rule>) -> Result<MovementLimits, Box<dyn Error>> {
     let mut movement = MovementLimits::default();
+    let mut seen: Vec<String> = Vec::new();
     for param in pair
         .into_inner()
         .filter(|p| p.as_rule() == Rule::movement_param)
@@ -198,6 +213,10 @@ fn parse_movement_block(pair: Pair<Rule>) -> Result<MovementLimits, Box<dyn Erro
                 _ => {}
             }
         }
+        if seen.contains(&name) {
+            return Err(format!("movement declares \"{name}\" more than once").into());
+        }
+        seen.push(name.clone());
         match name.as_str() {
             "max_pan_speed" => movement.max_pan_speed = value,
             "max_tilt_speed" => movement.max_tilt_speed = value,
@@ -579,6 +598,78 @@ fixture_type "TypeB" {
     #[test]
     fn fixture_type_invalid_syntax() {
         let content = "fixture_type {";
+        assert!(parse_fixture_types(content).is_err());
+    }
+
+    // ── referential fixture types ────────────────────────────────
+
+    #[test]
+    fn referential_fixture_type_parses_with_movement() {
+        let content = r#"fixture_type "Brick"
+  from gdtf("lighting/library/pb15.gdtf", mode "8: RGBS")
+{
+  movement { max_pan_speed: 240.0deg/s max_tilt_speed: 200deg/s }
+}"#;
+        let result = parse_fixture_types(content).unwrap();
+        let ft = result.get("Brick").unwrap();
+        let source = ft.source().unwrap();
+        assert_eq!(source.path, "lighting/library/pb15.gdtf");
+        assert_eq!(source.mode, "8: RGBS");
+        assert_eq!(ft.movement().max_pan_speed, Some(240.0));
+        assert_eq!(ft.movement().max_tilt_speed, Some(200.0));
+        assert!(ft.channels().is_empty());
+    }
+
+    #[test]
+    fn referential_with_channel_map_is_rejected() {
+        let content = r#"fixture_type "Brick"
+  from gdtf("x.gdtf", mode "M")
+{
+  channel_map: { "red": 1 }
+}"#;
+        let err = parse_fixture_types(content).unwrap_err().to_string();
+        assert!(err.contains("channels come from the GDTF"), "{err}");
+    }
+
+    #[test]
+    fn referential_with_strobe_fields_is_rejected() {
+        // Silently dropping these was worse than refusing: the file looked
+        // configured while the override never applied.
+        let content = r#"fixture_type "Brick"
+  from gdtf("x.gdtf", mode "M")
+{
+  max_strobe_frequency: 999.0
+}"#;
+        let err = parse_fixture_types(content).unwrap_err().to_string();
+        assert!(
+            err.contains("strobe parameters come from the GDTF"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn duplicate_movement_params_are_rejected() {
+        let content = r#"fixture_type "M" {
+  movement { max_pan_speed: 100deg/s max_pan_speed: 200deg/s }
+}"#;
+        let err = parse_fixture_types(content).unwrap_err().to_string();
+        assert!(err.contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn empty_movement_block_is_fine() {
+        let content = r#"fixture_type "M" {
+  movement { }
+}"#;
+        let ft = parse_fixture_types(content).unwrap();
+        assert!(ft.get("M").unwrap().movement().is_empty());
+    }
+
+    #[test]
+    fn speed_without_unit_is_a_parse_error() {
+        let content = r#"fixture_type "M" {
+  movement { max_pan_speed: 240 }
+}"#;
         assert!(parse_fixture_types(content).is_err());
     }
 

@@ -144,6 +144,11 @@ Notes:
   pixel/matrix modes) is skipped or refused with a clear message.
 - `.fixture` and `.light` fixture files load side by side; nothing renames
   or migrates.
+- On a hardened deployment (`mtrack systemd` with `ProtectSystem=strict`),
+  `lighting/.cache/` must be writable — pass your project directory (or at
+  least the cache path) to `mtrack systemd` so it lands in
+  `ReadWritePaths=`. Referential fixtures cannot expand on a fully
+  read-only filesystem, since the cache is rebuilt rather than committed.
 
 **Strobe frequency range:**
 

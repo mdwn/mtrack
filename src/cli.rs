@@ -222,8 +222,10 @@ enum Commands {
     Systemd {
         /// Directories the service must be able to write — your library, plus
         /// any songs, playlists, profiles or samples directory configured
-        /// outside it. Given at least one, the unit is hardened with
-        /// ProtectSystem=strict and excepts exactly these paths.
+        /// outside it (and lighting/.cache if you use GDTF-referential
+        /// fixtures — the expansion cache is rebuilt, not committed). Given
+        /// at least one, the unit is hardened with ProtectSystem=strict and
+        /// excepts exactly these paths.
         paths: Vec<String>,
     },
     /// Imports a GDTF fixture file: lists its modes, or (with --mode)

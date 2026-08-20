@@ -262,11 +262,16 @@ pub async fn start(
             .join("playlist.yaml")
     });
 
+    // `.parent()` answers `Some("")` for a bare config filename, which is
+    // harmless for plain joins but fails the first consumer that
+    // canonicalizes it (GDTF-referential fixture expansion). Normalize to a
+    // real directory the same way the bootstrap path above does.
+    let project_dir = crate::util::project_dir_of(player_path);
     let player = crate::player::Player::new(
         playlists,
         active_playlist,
         &player_config,
-        player_path.parent(),
+        Some(project_dir.as_path()),
     )?;
     player.set_config_store(config_store);
     player.set_default_metronome(default_metronome);
