@@ -12,3 +12,4 @@ src/webui/svelte/test-results/
 docs/book/
 .playwright-mcp/
 tests/gdtf-corpus/
+tests/mvr-corpus/

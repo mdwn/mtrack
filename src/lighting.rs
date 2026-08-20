@@ -25,6 +25,7 @@ pub mod import;
 #[cfg(test)]
 mod layering_tests;
 pub mod lint;
+pub mod mvr;
 pub mod parser;
 pub mod system;
 // Tempo lives at the crate root (shared with the metronome and song config);
