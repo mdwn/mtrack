@@ -25,6 +25,142 @@ use super::super::config_io;
 use super::super::server::WebUiState;
 use crate::lighting;
 
+/// The canonical project root the lighting endpoints write into.
+#[allow(clippy::result_large_err)]
+fn project_root(
+    config_path: &std::path::Path,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    let canonical = config_path.canonicalize().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to resolve config path"})),
+        )
+            .into_response()
+    })?;
+    Ok(canonical
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf())
+}
+
+/// Pulls the first uploaded file out of a multipart body: (file name, bytes).
+async fn first_multipart_file(
+    multipart: &mut axum::extract::Multipart,
+) -> Result<(String, Vec<u8>), axum::response::Response> {
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("Failed to read multipart field: {}", e)})),
+        )
+            .into_response()
+    })? {
+        let Some(filename) = field.file_name().map(|f| f.to_string()) else {
+            continue;
+        };
+        // The name becomes a library path component; keep only the final
+        // component of whatever the browser sent.
+        let filename = std::path::Path::new(&filename)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if filename.is_empty() {
+            continue;
+        }
+        let bytes = field.bytes().await.map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("Failed to read file data: {}", e)})),
+            )
+                .into_response()
+        })?;
+        return Ok((filename, bytes.to_vec()));
+    }
+    Err((
+        StatusCode::BAD_REQUEST,
+        Json(json!({"error": "No file uploaded"})),
+    )
+        .into_response())
+}
+
+/// POST /api/lighting/gdtf/inspect — parses an uploaded GDTF archive and
+/// returns its modes, for the mode picker. Writes nothing.
+pub(super) async fn inspect_gdtf(mut multipart: axum::extract::Multipart) -> impl IntoResponse {
+    let (_, bytes) = first_multipart_file(&mut multipart).await?;
+    let description = lighting::gdtf::parse_archive(&bytes).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("Not a parseable GDTF: {}", e)})),
+        )
+            .into_response()
+    })?;
+    let modes: Vec<serde_json::Value> = lighting::gdtf::mode_summaries(&description)
+        .into_iter()
+        .map(|summary| {
+            json!({
+                "name": summary.name,
+                "channel_count": summary.channel_count,
+                "footprint": summary.footprint,
+            })
+        })
+        .collect();
+    Ok::<_, axum::response::Response>(
+        (
+            StatusCode::OK,
+            Json(json!({
+                "fixture": description.name,
+                "manufacturer": description.manufacturer,
+                "modes": modes,
+            })),
+        )
+            .into_response(),
+    )
+}
+
+/// Query parameters for the GDTF import endpoint.
+#[derive(serde::Deserialize)]
+pub(super) struct GdtfImportQuery {
+    mode: String,
+    name: Option<String>,
+}
+
+/// POST /api/lighting/gdtf/import?mode=...&name=... — imports one mode of an
+/// uploaded GDTF archive through the shared importer (the same one behind
+/// the CLI and MCP): archive into lighting/library/, a referential .fixture
+/// definition, and a warmed expansion cache. Returns the import report.
+pub(super) async fn import_gdtf(
+    State(state): State<WebUiState>,
+    Query(query): Query<GdtfImportQuery>,
+    mut multipart: axum::extract::Multipart,
+) -> impl IntoResponse {
+    let (filename, bytes) = first_multipart_file(&mut multipart).await?;
+    let project = project_root(&state.config_path)?;
+    // The inner Result survives spawn_blocking_io so an import refusal (bad
+    // mode, name collision, archive conflict) surfaces as the caller error
+    // it is, not a 500.
+    let report = super::helpers::spawn_blocking_io("import gdtf", move || {
+        Ok::<_, String>(
+            lighting::import::import_gdtf_bytes(
+                &bytes,
+                &filename,
+                &query.mode,
+                query.name.as_deref(),
+                &project,
+                DEFAULT_FIXTURE_TYPES_DIR,
+            )
+            .map_err(|e| e.to_string()),
+        )
+    })
+    .await?
+    .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response())?;
+    Ok::<_, axum::response::Response>(
+        (
+            StatusCode::OK,
+            Json(serde_json::to_value(&report).unwrap_or_default()),
+        )
+            .into_response(),
+    )
+}
+
 /// GET /api/lighting — lists available .light files from the songs directory.
 pub(super) async fn get_lighting_files(State(state): State<WebUiState>) -> impl IntoResponse {
     let songs_path = state.songs_path.clone();
@@ -2022,6 +2158,118 @@ show "test" {
         // Verify file was created.
         let file_path = _dir.path().join(rel).join("myfixture.light");
         assert!(file_path.exists());
+    }
+
+    fn multipart_body(filename: &str, bytes: &[u8]) -> (String, Vec<u8>) {
+        let boundary = "mtrack-test-boundary";
+        let mut body = Vec::new();
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n")
+                .as_bytes(),
+        );
+        body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        (format!("multipart/form-data; boundary={boundary}"), body)
+    }
+
+    fn synthetic_gdtf_bytes() -> Vec<u8> {
+        crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+        )])
+    }
+
+    #[tokio::test]
+    async fn inspect_gdtf_lists_modes_and_writes_nothing() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        let (content_type, body) = multipart_body("synth.gdtf", &synthetic_gdtf_bytes());
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/lighting/gdtf/inspect")
+                    .header("content-type", content_type)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(parsed["fixture"], "Synth Brick");
+        assert!(
+            parsed["modes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["name"] == "8: RGBS"),
+            "{parsed}"
+        );
+        assert!(
+            !dir.path().join("lighting").exists(),
+            "inspect must not write"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_gdtf_writes_and_reports_through_the_shared_importer() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        // A traversal-shaped filename must land as its final component only.
+        let (content_type, body) = multipart_body("../synth.gdtf", &synthetic_gdtf_bytes());
+
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/lighting/gdtf/import?mode=8%3A%20RGBS&name=Brick")
+                    .header("content-type", content_type)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(parsed["type_name"], "Brick");
+        assert!(dir.path().join("lighting/library/synth.gdtf").exists());
+        assert!(
+            !dir.path().parent().unwrap().join("synth.gdtf").exists(),
+            "traversal filename must not escape the library"
+        );
+        assert!(dir
+            .path()
+            .join("lighting/fixture_types/brick.fixture")
+            .exists());
+        assert!(dir.path().join("lighting/.cache").is_dir());
+
+        // A bad mode is the caller's error, not a server fault.
+        let (content_type, body) = multipart_body("synth.gdtf", &synthetic_gdtf_bytes());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/lighting/gdtf/import?mode=Nope")
+                    .header("content-type", content_type)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        assert!(
+            parsed["error"].as_str().unwrap().contains("no mode named"),
+            "{parsed}"
+        );
     }
 
     #[tokio::test]

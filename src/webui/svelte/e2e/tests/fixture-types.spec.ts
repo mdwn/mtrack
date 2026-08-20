@@ -134,3 +134,61 @@ test.describe("Fixture Types Management", () => {
     await expect(page.locator(".editor-form")).not.toBeVisible();
   });
 });
+
+test.describe("GDTF Import", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/#/config");
+    await page.locator(".profile-row", { hasText: "test-host" }).click();
+    await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
+    await page.locator(".tab", { hasText: "Lighting" }).click();
+    await page.getByRole("button", { name: "Enable Lighting" }).click();
+    await page.locator(".sub-tab", { hasText: "Fixture Types" }).click();
+  });
+
+  test("import flows from file pick through mode choice to a report", async ({
+    page,
+  }) => {
+    // Pick a file; the inspect response drives the mode picker.
+    const chooser = page.getByTestId("import-gdtf");
+    await expect(chooser).toBeVisible();
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "pb15.gdtf",
+      mimeType: "application/octet-stream",
+      buffer: Buffer.from("not inspected by the mock"),
+    });
+
+    const picker = page.getByTestId("gdtf-mode-picker");
+    await expect(picker).toBeVisible();
+    await expect(picker).toContainText("PB15 PixelBrick");
+    // Mode selection is the human input: both modes are offered.
+    await expect(picker.locator("option")).toHaveCount(2);
+    await picker.locator("select").selectOption("8: RGBS");
+
+    await page.getByTestId("gdtf-import-confirm").click();
+
+    // The report shows what was written and what the distiller skipped.
+    const report = page.getByTestId("gdtf-report");
+    await expect(report).toBeVisible();
+    await expect(report).toContainText(
+      "lighting/fixture_types/pb15_pixelbrick.fixture",
+    );
+    await expect(report).toContainText("channel 4: strobe");
+    await expect(report).toContainText("virtual channel");
+  });
+
+  test("an unparseable upload surfaces the error", async ({ page }) => {
+    await page.route("**/api/lighting/gdtf/inspect", async (route) => {
+      await route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Not a parseable GDTF: not a zip" }),
+      });
+    });
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "junk.gdtf",
+      mimeType: "application/octet-stream",
+      buffer: Buffer.from("junk"),
+    });
+    await expect(page.getByTestId("gdtf-error")).toContainText("not a zip");
+  });
+});

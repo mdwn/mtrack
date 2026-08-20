@@ -285,6 +285,34 @@ app.delete("/api/lighting/fixture-types/:name", (_req, res) => {
   res.json({ status: "deleted" });
 });
 
+app.post("/api/lighting/gdtf/inspect", (_req, res) => {
+  res.json({
+    fixture: "PB15 PixelBrick",
+    manufacturer: "Astera LED Technology",
+    modes: [
+      { name: "1: RGB", channel_count: 4, footprint: 3 },
+      { name: "8: RGBS", channel_count: 5, footprint: 4 },
+    ],
+  });
+});
+
+app.post("/api/lighting/gdtf/import", (req, res) => {
+  res.json({
+    type_name: (req.query.name as string) || "PB15 PixelBrick",
+    mode: req.query.mode,
+    archive: "lighting/library/pb15.gdtf",
+    replaced_archive: false,
+    fixture_file: "lighting/fixture_types/pb15_pixelbrick.fixture",
+    channels: [
+      [1, "red"],
+      [2, "green"],
+      [3, "blue"],
+      [4, "strobe"],
+    ],
+    warnings: ["skipped virtual channel (no DMX offset): Dimmer"],
+  });
+});
+
 app.get("/api/lighting/venues", (_req, res) => {
   res.json({
     venues: {

@@ -18,6 +18,7 @@ import {
   put,
   del,
   uploadFile,
+  uploadFiles,
   putText,
   postText,
   apiError,
@@ -351,6 +352,50 @@ export async function fetchFixtureTypes(dir?: string): Promise<{
     fixtureTypes: data.fixture_types ?? {},
     errors: data.errors ?? [],
   };
+}
+
+export interface GdtfModeSummary {
+  name: string;
+  channel_count: number;
+  footprint: number;
+}
+
+export interface GdtfInspection {
+  fixture: string;
+  manufacturer: string;
+  modes: GdtfModeSummary[];
+}
+
+export interface GdtfImportReport {
+  type_name: string;
+  mode: string;
+  archive: string;
+  replaced_archive: boolean;
+  fixture_file: string;
+  channels: [number, string][];
+  warnings: string[];
+}
+
+/** Parses an uploaded GDTF archive and returns its modes. Writes nothing. */
+export async function inspectGdtf(file: File): Promise<GdtfInspection> {
+  const res = await uploadFiles("/lighting/gdtf/inspect", [file]);
+  if (!res.ok) throw await apiError(res, "Failed to inspect GDTF");
+  return res.json();
+}
+
+/** Imports one mode of a GDTF archive: the archive lands in
+ * lighting/library/, a referential .fixture definition is written, and the
+ * expansion cache is warmed. Returns the import report. */
+export async function importGdtf(
+  file: File,
+  mode: string,
+  name?: string,
+): Promise<GdtfImportReport> {
+  const params = new URLSearchParams({ mode });
+  if (name) params.set("name", name);
+  const res = await uploadFiles(`/lighting/gdtf/import?${params}`, [file]);
+  if (!res.ok) throw await apiError(res, "Failed to import GDTF");
+  return res.json();
 }
 
 export async function fetchFixtureType(
