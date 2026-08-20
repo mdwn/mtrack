@@ -26,3 +26,17 @@ path = "fuzz_targets/gdtf_description.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "mvr_archive"
+path = "fuzz_targets/mvr_archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mvr_scene"
+path = "fuzz_targets/mvr_scene.rs"
+test = false
+doc = false
+bench = false
