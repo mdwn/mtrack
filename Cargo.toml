@@ -1,5 +1,6 @@
 [workspace]
 members = ["harness"]
+exclude = ["fuzz"]
 
 [package]
 name = "mtrack"
@@ -102,6 +103,8 @@ notify = "8"
 notify-debouncer-mini = "0.7"
 futures-util = "0.3"
 tempfile = "3.26.0"
+quick-xml = "0.41.0"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 criterion = "0.7"

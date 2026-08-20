@@ -20,6 +20,7 @@ pub mod distill;
 pub mod effects;
 pub mod engine;
 pub mod evaluate;
+pub mod gdtf;
 #[cfg(test)]
 mod layering_tests;
 pub mod lint;

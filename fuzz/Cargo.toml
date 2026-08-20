@@ -1,0 +1,28 @@
+[package]
+name = "mtrack-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.mtrack]
+path = ".."
+
+[[bin]]
+name = "gdtf_archive"
+path = "fuzz_targets/gdtf_archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gdtf_description"
+path = "fuzz_targets/gdtf_description.rs"
+test = false
+doc = false
+bench = false
