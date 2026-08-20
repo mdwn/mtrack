@@ -84,6 +84,13 @@ pub fn router() -> Router<WebUiState> {
         .route("/samples/upload/{filename}", put(upload_sample_file))
         .layer(axum::extract::DefaultBodyLimit::disable());
 
+    // GDTF uploads get a bounded raise instead of a disable: the archive
+    // layer refuses anything past 256MB anyway, so the transport should too.
+    let gdtf_routes = Router::new()
+        .route("/lighting/gdtf/inspect", post(lighting_api::inspect_gdtf))
+        .route("/lighting/gdtf/import", post(lighting_api::import_gdtf))
+        .layer(axum::extract::DefaultBodyLimit::max(272 * 1024 * 1024));
+
     // All other routes use the default body limit.
     Router::new()
         .route(
@@ -186,6 +193,7 @@ pub fn router() -> Router<WebUiState> {
                 .delete(lighting_api::delete_venue),
         )
         .merge(upload_routes)
+        .merge(gdtf_routes)
 }
 
 /// Validates that a filename has a supported audio extension (for sample uploads).

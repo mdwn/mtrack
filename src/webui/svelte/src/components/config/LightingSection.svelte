@@ -22,8 +22,12 @@
     fetchVenues,
     saveVenue,
     deleteVenue,
+    inspectGdtf,
+    importGdtf,
     type FixtureTypeData,
     type VenueData,
+    type GdtfInspection,
+    type GdtfImportReport,
   } from "../../lib/api/config";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -169,6 +173,65 @@
     editFtMinStrobe = "";
     editFtStrobeDmxOffset = "";
     isNewFt = true;
+  }
+
+  // GDTF import flow: pick a file → inspect (modes) → pick a mode → import.
+  let gdtfFileInput = $state<HTMLInputElement | null>(null);
+  let gdtfFile = $state<File | null>(null);
+  let gdtfInspection = $state<GdtfInspection | null>(null);
+  let gdtfMode = $state("");
+  let gdtfName = $state("");
+  let gdtfBusy = $state(false);
+  let gdtfError = $state("");
+  let gdtfReport = $state<GdtfImportReport | null>(null);
+
+  function resetGdtf() {
+    gdtfFile = null;
+    gdtfInspection = null;
+    gdtfMode = "";
+    gdtfName = "";
+    gdtfError = "";
+    gdtfReport = null;
+  }
+
+  async function onGdtfFileChosen(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    resetGdtf();
+    gdtfFile = file;
+    gdtfBusy = true;
+    try {
+      gdtfInspection = await inspectGdtf(file);
+      gdtfMode = gdtfInspection.modes[0]?.name ?? "";
+      gdtfName = gdtfInspection.fixture;
+    } catch (err) {
+      gdtfError = err instanceof Error ? err.message : String(err);
+      gdtfFile = null;
+    } finally {
+      gdtfBusy = false;
+    }
+  }
+
+  async function runGdtfImport() {
+    if (!gdtfFile || !gdtfMode) return;
+    gdtfBusy = true;
+    gdtfError = "";
+    try {
+      gdtfReport = await importGdtf(
+        gdtfFile,
+        gdtfMode,
+        gdtfName.trim() || undefined,
+      );
+      gdtfInspection = null;
+      gdtfFile = null;
+      await loadFixtureTypes();
+    } catch (err) {
+      gdtfError = err instanceof Error ? err.message : String(err);
+    } finally {
+      gdtfBusy = false;
+    }
   }
 
   function cancelEditFt() {
@@ -705,11 +768,98 @@
             <button class="btn" onclick={loadFixtureTypes} disabled={ftLoading}
               >{$t("common.refresh")}</button
             >
+            <button
+              class="btn"
+              data-testid="import-gdtf"
+              onclick={() => gdtfFileInput?.click()}
+              >{$t("lighting.importGdtf")}</button
+            >
             <button class="btn btn-primary" onclick={startNewFt}
               >{$t("lighting.newFixtureType")}</button
             >
+            <input
+              type="file"
+              accept=".gdtf"
+              style="display: none"
+              bind:this={gdtfFileInput}
+              onchange={onGdtfFileChosen}
+            />
           </div>
         </div>
+        {#if gdtfError}
+          <div class="file-errors" data-testid="gdtf-error">{gdtfError}</div>
+        {/if}
+        {#if gdtfInspection}
+          <div class="editor-form" data-testid="gdtf-mode-picker">
+            <div class="editor-header">
+              <h4 class="editor-title">
+                {gdtfInspection.fixture} — {gdtfInspection.manufacturer}
+              </h4>
+              <div class="editor-actions">
+                <button class="btn" onclick={resetGdtf}
+                  >{$t("common.cancel")}</button
+                >
+                <button
+                  class="btn btn-primary"
+                  data-testid="gdtf-import-confirm"
+                  onclick={runGdtfImport}
+                  disabled={gdtfBusy || !gdtfMode}
+                >
+                  {gdtfBusy ? $t("common.saving") : $t("lighting.importGdtf")}
+                </button>
+              </div>
+            </div>
+            <div class="field">
+              <label for="gdtf-mode">{$t("lighting.gdtfMode")}</label>
+              <select id="gdtf-mode" class="input" bind:value={gdtfMode}>
+                {#each gdtfInspection.modes as mode (mode.name)}
+                  <option value={mode.name}>
+                    {mode.name} ({mode.channel_count} ch, footprint {mode.footprint})
+                  </option>
+                {/each}
+              </select>
+            </div>
+            <div class="field">
+              <label for="gdtf-name">{$t("lighting.name")}</label>
+              <input
+                id="gdtf-name"
+                class="input"
+                bind:value={gdtfName}
+                placeholder={gdtfInspection.fixture}
+              />
+            </div>
+          </div>
+        {/if}
+        {#if gdtfReport}
+          <div class="editor-form" data-testid="gdtf-report">
+            <div class="editor-header">
+              <h4 class="editor-title">
+                {$t("lighting.gdtfImported", {
+                  values: { name: gdtfReport.type_name },
+                })}
+              </h4>
+              <div class="editor-actions">
+                <button class="btn" onclick={resetGdtf}
+                  >{$t("common.close")}</button
+                >
+              </div>
+            </div>
+            <div class="field-hint">{gdtfReport.fixture_file}</div>
+            <ul>
+              {#each gdtfReport.channels as [offset, channel] (offset)}
+                <li>channel {offset}: {channel}</li>
+              {/each}
+            </ul>
+            {#if gdtfReport.warnings.length > 0}
+              <div class="field-hint">{$t("lighting.gdtfWarnings")}</div>
+              <ul class="file-errors">
+                {#each gdtfReport.warnings as warning (warning)}
+                  <li>{warning}</li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
         {#if ftFileErrors.length > 0}
           <ul class="file-errors" data-testid="fixture-type-file-errors">
             {#each ftFileErrors as fe (fe.file)}

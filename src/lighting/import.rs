@@ -101,7 +101,33 @@ pub fn import_gdtf(
 ) -> Result<GdtfImport, Box<dyn Error>> {
     let bytes = std::fs::read(gdtf_path)
         .map_err(|e| format!("cannot read GDTF archive {}: {e}", gdtf_path.display()))?;
-    let description = gdtf::parse_archive(&bytes)?;
+    let archive_file_name = gdtf_path
+        .file_name()
+        .ok_or("GDTF path has no file name")?
+        .to_string_lossy()
+        .into_owned();
+    import_gdtf_bytes(
+        &bytes,
+        &archive_file_name,
+        mode,
+        name,
+        project,
+        fixture_types_dir,
+    )
+}
+
+/// [`import_gdtf`] over in-memory bytes — the shape uploads arrive in.
+/// `archive_file_name` names the archive inside `lighting/library/` and must
+/// be a bare file name.
+pub fn import_gdtf_bytes(
+    bytes: &[u8],
+    archive_file_name: &str,
+    mode: &str,
+    name: Option<&str>,
+    project: &Path,
+    fixture_types_dir: &str,
+) -> Result<GdtfImport, Box<dyn Error>> {
+    let description = gdtf::parse_archive(bytes)?;
     let type_name = name.unwrap_or(&description.name).to_string();
 
     // Distill up front so a bad mode or an unsupported (pixel) mode fails
@@ -109,11 +135,14 @@ pub fn import_gdtf(
     let distilled = gdtf::distill(&description, mode, &type_name)?;
 
     // Every check runs before anything is written: a refused import must
-    // leave the project exactly as it found it.
-    let archive_file_name: PathBuf = gdtf_path
-        .file_name()
-        .ok_or("GDTF path has no file name")?
-        .into();
+    // leave the project exactly as it found it. The archive name becomes a
+    // path component, so it must be exactly one.
+    if Path::new(archive_file_name).file_name() != Some(std::ffi::OsStr::new(archive_file_name)) {
+        return Err(
+            format!("archive file name \"{archive_file_name}\" is not a bare file name").into(),
+        );
+    }
+    let archive_file_name = PathBuf::from(archive_file_name);
     let library_dir = project.join("lighting/library");
     let library_path = library_dir.join(&archive_file_name);
     let library_rel = format!("lighting/library/{}", archive_file_name.display());
@@ -135,7 +164,7 @@ pub fn import_gdtf(
     if library_path.exists() {
         let existing = std::fs::read(&library_path)
             .map_err(|e| format!("cannot read existing {}: {e}", library_path.display()))?;
-        if existing != bytes {
+        if existing != *bytes {
             return Err(format!(
                 "{library_rel} already exists with different content — other fixture \
                  types may reference it; rename the source file (the library filename \
@@ -148,7 +177,7 @@ pub fn import_gdtf(
 
     create_dir(&library_dir)?;
     if !replaced_archive {
-        write(&library_path, &bytes)?;
+        write(&library_path, bytes)?;
     }
     create_dir(&fixture_dir)?;
     let definition = format!(
