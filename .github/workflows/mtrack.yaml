@@ -122,6 +122,43 @@ jobs:
         token: ${{ secrets.CODECOV_TOKEN }}
         slug: mdwn/mtrack
 
+  # Installs the Debian package and checks what its maintainer scripts did.
+  #
+  # This is the only coverage the packaging has: the jobs that build and publish
+  # it live in publish.yaml, which runs on tags, so a broken postinst would
+  # otherwise surface during a release rather than on the change that broke it.
+  #
+  # Unlike the systemd integration test, this runs on pull requests -- it costs a
+  # debug build against a cache the other jobs have already warmed, not a
+  # container image.
+  test-deb:
+    name: Debian package test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - name: Install system dependencies
+      run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: "cargo"
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Cache node modules
+      uses: actions/cache@v5
+      with:
+        path: src/webui/svelte/node_modules
+        key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: node-modules-${{ runner.os }}-
+    - name: Build frontend
+      run: make build-ui
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-deb
+    - name: Build and test the Debian package
+      run: make test-deb
+
   # Lint, format-check, and type-check the Svelte frontend.
   frontend:
     name: Frontend checks

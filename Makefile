@@ -15,7 +15,7 @@ ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-systemd lint lint-ui lint-rust fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-systemd deb test-deb lint lint-ui lint-rust fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -63,6 +63,32 @@ test: test-ui
 ## Run Playwright UI tests (mock server)
 test-ui:
 	cd $(SVELTE_DIR) && npx playwright test --project=mock
+
+## Build the Debian package (expects a binary at target/release/mtrack)
+deb:
+	cargo deb --no-build --no-strip
+
+## Directory the package test builds in. Deliberately not the normal target/:
+## the test stages a debug binary where cargo-deb expects a release one, and
+## doing that under target/release would leave a debug binary that cargo, which
+## fingerprints against its own database rather than the file, may then decline
+## to rebuild -- handing someone a debug binary labelled release.
+DEB_TEST_TARGET_DIR := $(ROOT_DIR)/target/deb-test
+
+## Test the Debian package: install it and check the maintainer scripts
+##
+## Destructive -- installs, reinstalls and purges mtrack on this machine and
+## creates the mtrack system user. Meant for CI and throwaway containers.
+test-deb: build-ui
+	@command -v cargo-deb >/dev/null || { echo "cargo-deb not found: cargo install cargo-deb"; exit 1; }
+	@# A debug binary is fine here: nothing under test depends on optimisation,
+	@# only on the binary being a real mtrack that can render its own unit.
+	CARGO_TARGET_DIR=$(DEB_TEST_TARGET_DIR) cargo build --bin mtrack --manifest-path $(ROOT_DIR)/Cargo.toml
+	mkdir -p $(DEB_TEST_TARGET_DIR)/release
+	install -m 755 $(DEB_TEST_TARGET_DIR)/debug/mtrack $(DEB_TEST_TARGET_DIR)/release/mtrack
+	CARGO_TARGET_DIR=$(DEB_TEST_TARGET_DIR) cargo deb --no-build --no-strip --fast \
+		--output $(DEB_TEST_TARGET_DIR)/debian/
+	$(ROOT_DIR)/tests/packaging/test.sh $$(ls -t $(DEB_TEST_TARGET_DIR)/debian/mtrack_*.deb | head -1)
 
 ## Run systemd integration test (requires Docker)
 test-systemd:
