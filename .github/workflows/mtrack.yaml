@@ -89,6 +89,24 @@ jobs:
     - name: Run rustfmt
       run: make fmt-rust-check
 
+  # Lints every shell script in the repo, the Debian maintainer scripts
+  # included. Those run as root on a user's machine at install time, which is
+  # the least forgiving place to leave a quoting mistake.
+  #
+  # shellcheck is installed rather than taken from the runner image, which
+  # carries an older version: a lint gate that moves under you flags things
+  # nobody changed and misses things nobody added.
+  shellcheck:
+    name: Shell script lint
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: shellcheck
+    - name: Lint shell scripts
+      run: make lint-shell
+
   # Make sure the tests pass.
   test:
     name: Run tests

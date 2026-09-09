@@ -15,7 +15,7 @@ ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-systemd deb test-deb lint lint-ui lint-rust fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-systemd deb test-deb lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -105,11 +105,26 @@ test-systemd:
 	  docker exec $$cid /test.sh
 
 ## Lint everything
-lint: lint-ui lint-rust
+lint: lint-ui lint-rust lint-shell
 
 ## Lint the Svelte frontend
 lint-ui:
 	cd $(SVELTE_DIR) && npm run lint && npm run check
+
+## Lint shell scripts
+lint-shell:
+	@command -v shellcheck >/dev/null || { \
+		echo "shellcheck not found -- see https://www.shellcheck.net/ for install options"; \
+		exit 1; \
+	}
+	@# Discovered rather than listed, so a script added later is linted without
+	@# anyone remembering to add it here. The Debian maintainer scripts carry no
+	@# extension and so are missed by the *.sh glob; everything in
+	@# packaging/debian is shell except the conffile shipped as /etc/default.
+	shellcheck $$(find $(ROOT_DIR) -name '*.sh' \
+		-not -path '*/node_modules/*' -not -path '*/target/*' -not -path '*/.git/*' \
+		| sort) \
+		$$(find $(ROOT_DIR)/packaging/debian -type f ! -name default | sort)
 
 ## Lint the Rust code
 lint-rust:

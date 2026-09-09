@@ -22,6 +22,11 @@
 #
 # This script is run via `docker exec` while systemd is PID 1.
 
+# Assertions are written as `check "..." bash -c '... "$0" ...' "$arg"`, where
+# $0 is bash -c's positional parameter and must NOT be expanded by this shell.
+# The single quotes are the point, so shellcheck's warning about them is not.
+# shellcheck disable=SC2016
+
 set -uo pipefail
 
 MTRACK_PATH="${MTRACK_PATH:-/var/lib/mtrack}"

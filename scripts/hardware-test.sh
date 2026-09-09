@@ -90,7 +90,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-cd "$PROJECT_ROOT"
+cd "$PROJECT_ROOT" || { echo "Cannot enter $PROJECT_ROOT" >&2; exit 1; }
 
 if [[ "$SKIP_BUILD" != "true" ]]; then
     echo "=== Building mtrack and the harness ==="
