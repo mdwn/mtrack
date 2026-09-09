@@ -89,6 +89,24 @@ jobs:
     - name: Run rustfmt
       run: make fmt-rust-check
 
+  # Lints every shell script in the repo, the Debian maintainer scripts
+  # included. Those run as root on a user's machine at install time, which is
+  # the least forgiving place to leave a quoting mistake.
+  #
+  # shellcheck is installed rather than taken from the runner image, which
+  # carries an older version: a lint gate that moves under you flags things
+  # nobody changed and misses things nobody added.
+  shellcheck:
+    name: Shell script lint
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: shellcheck
+    - name: Lint shell scripts
+      run: make lint-shell
+
   # Make sure the tests pass.
   test:
     name: Run tests
@@ -121,6 +139,43 @@ jobs:
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         slug: mdwn/mtrack
+
+  # Installs the Debian package and checks what its maintainer scripts did.
+  #
+  # This is the only coverage the packaging has: the jobs that build and publish
+  # it live in publish.yaml, which runs on tags, so a broken postinst would
+  # otherwise surface during a release rather than on the change that broke it.
+  #
+  # Unlike the systemd integration test, this runs on pull requests -- it costs a
+  # debug build against a cache the other jobs have already warmed, not a
+  # container image.
+  test-deb:
+    name: Debian package test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - name: Install system dependencies
+      run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: "cargo"
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Cache node modules
+      uses: actions/cache@v5
+      with:
+        path: src/webui/svelte/node_modules
+        key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: node-modules-${{ runner.os }}-
+    - name: Build frontend
+      run: make build-ui
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-deb
+    - name: Build and test the Debian package
+      run: make test-deb
 
   # Lint, format-check, and type-check the Svelte frontend.
   frontend:

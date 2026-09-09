@@ -33,6 +33,40 @@ include = [
     "!src/webui/svelte/.playwright-mcp/**",
 ]
 
+[package.metadata.deb]
+# Depends are hand-written, NOT `$auto`. dpkg-shlibdeps emits *versioned*
+# dependencies (e.g. `libasound2 (>= 1.0.16)`), and libasound2t64 -- the
+# time_t rename shipped from Debian trixie and Ubuntu noble onward -- only
+# carries `Provides: libasound2 (= <version>)`. A versioned Provides satisfies
+# an unversioned Depends but not a versioned one, so an auto-generated deb
+# builds cleanly on bookworm and then refuses to install on trixie. The
+# alternation below resolves to whichever name the target release actually
+# ships, on both sides of the rename.
+depends = "libasound2t64 | libasound2, libudev1"
+# olad is a separate daemon; mtrack speaks to it over TCP and only for DMX
+# output, so lighting users need it and everyone else does not.
+recommends = "ola"
+# Headless discovery (mtrack.local) for a machine with no monitor. Suggested
+# rather than recommended so a desktop install does not pull in mDNS uninvited.
+suggests = "avahi-daemon"
+section = "sound"
+priority = "optional"
+maintainer = "Michael Wilson <mike@mdwn.dev>"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+mtrack is a multitrack audio, MIDI, and lighting player for live performances. \
+It runs on small devices like the Raspberry Pi and is designed to be controlled \
+remotely -- from your feet, a phone, or any device with a browser -- so you never \
+have to babysit a computer on stage."""
+maintainer-scripts = "packaging/debian"
+conf-files = ["/etc/default/mtrack"]
+assets = [
+    ["target/release/mtrack", "usr/bin/", "755"],
+    ["packaging/debian/default", "etc/default/mtrack", "644"],
+    ["README.md", "usr/share/doc/mtrack/README.md", "644"],
+    ["CHANGELOG.md", "usr/share/doc/mtrack/CHANGELOG.md", "644"],
+]
+
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.tar.gz"
 pkg-fmt = "tgz"

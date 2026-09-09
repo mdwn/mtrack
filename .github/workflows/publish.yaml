@@ -159,3 +159,139 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${RELEASE_TAG}" mtrack-*.tar.gz mtrack-*.tar.gz.sha256 --clobber
+
+  # Builds Debian packages and attaches them to the release. The .deb is what
+  # the Raspberry Pi image installs and what `apt upgrade` later replaces, so it
+  # carries the service account, the /etc/default/mtrack defaults and the
+  # systemd unit that `mtrack systemd` renders on the target.
+  #
+  # It repackages the binaries the previous job already published rather than
+  # rebuilding them, so a tarball and a .deb of the same version contain byte
+  # identical binaries -- there is no "which build is this" question to answer
+  # when someone reports a bug. That also means one cheap amd64 runner can emit
+  # both architectures: nothing here executes the packaged binary.
+  build-debs:
+    name: Build Debian packages
+    needs: build-binaries
+    if: ${{ !cancelled() && needs.build-binaries.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "cargo-deb"
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+      - name: Stage the published binaries
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            asset="mtrack-${VERSION}-${target}.tar.gz"
+            gh release download "$RELEASE_TAG" --pattern "$asset" --dir dl
+            tar xzf "dl/${asset}" -C dl
+            mkdir -p "target/${target}/release"
+            install -m 755 "dl/mtrack-${VERSION}-${target}/mtrack" \
+                           "target/${target}/release/mtrack"
+          done
+      - name: Build packages
+        run: |
+          set -euo pipefail
+          mkdir -p debs
+          # --no-strip is load bearing twice over: the host strip cannot touch an
+          # aarch64 binary, and stripping at all would make the packaged binary
+          # differ from the one in the published tarball.
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            cargo deb --no-build --no-strip --target "$target" --output debs/
+          done
+          ls -l debs/
+      - name: Upload to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${RELEASE_TAG}" debs/*.deb --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debs
+          path: debs/*.deb
+          retention-days: 1
+
+  # Regenerates the apt archive and syncs it to R2.
+  #
+  # Skipped entirely until the repository variable APT_R2_BUCKET is set, so the
+  # .deb above is useful on its own -- installable straight from the release
+  # page -- without anyone having to own a signing key first.
+  #
+  # Required to enable:
+  #   vars.APT_R2_BUCKET       R2 bucket name
+  #   vars.APT_R2_ENDPOINT     https://<account-id>.r2.cloudflarestorage.com
+  #   secrets.APT_R2_ACCESS_KEY_ID / APT_R2_SECRET_ACCESS_KEY
+  #   secrets.APT_GPG_PRIVATE_KEY   ASCII-armoured signing key
+  #   secrets.APT_GPG_KEY_ID        fingerprint of that key
+  publish-apt:
+    name: Publish apt repository
+    needs: build-debs
+    if: ${{ !cancelled() && needs.build-debs.result == 'success' && vars.APT_R2_BUCKET != '' }}
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.APT_R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.APT_R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_ENDPOINT_URL: ${{ vars.APT_R2_ENDPOINT }}
+      # R2 does not implement the CRC32 integrity headers that aws-cli started
+      # sending by default, and rejects them with "Header
+      # 'x-amz-checksum-algorithm' with value 'CRC32' not implemented".
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      BUCKET: ${{ vars.APT_R2_BUCKET }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: debs
+          path: debs
+      - name: Install archive tooling
+        run: sudo apt-get update && sudo apt-get install -y apt-utils
+      - name: Import the signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+      - name: Fetch the existing pool
+        # The pool is cumulative: without this, regenerating the indices would
+        # drop every previously published version and take `apt install
+        # mtrack=<older>` -- the rollback path -- with it.
+        run: |
+          set -euo pipefail
+          mkdir -p repo/pool
+          aws s3 sync "s3://${BUCKET}/pool" repo/pool
+      - name: Build the archive
+        run: |
+          set -euo pipefail
+          ./scripts/build-apt-repo.sh \
+            --debs debs \
+            --out repo \
+            --sign "${{ secrets.APT_GPG_KEY_ID }}"
+      - name: Publish the pool
+        # Packages before indices, always. An index that names a .deb the store
+        # does not have yet is a hard failure for anyone who runs `apt upgrade`
+        # in the window between the two syncs; the reverse order is merely stale.
+        # No --delete: the pool only ever grows.
+        run: |
+          set -euo pipefail
+          aws s3 sync repo/pool "s3://${BUCKET}/pool" \
+            --cache-control "public, max-age=31536000, immutable"
+      - name: Publish the indices
+        # --delete here because the indices are regenerated wholesale and a
+        # dropped architecture should stop being advertised.
+        run: |
+          set -euo pipefail
+          aws s3 sync repo/dists "s3://${BUCKET}/dists" --delete \
+            --cache-control "public, max-age=300"

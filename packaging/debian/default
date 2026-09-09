@@ -1,0 +1,19 @@
+# The project directory for mtrack (contains songs, config, playlists, lighting).
+#
+# Changing this does NOT by itself change what the service may write. The paths
+# excepted from the systemd sandbox are baked into
+# /etc/systemd/system/mtrack.service when it is generated, and are not read from
+# this file at runtime. After changing MTRACK_PATH, regenerate the unit so the
+# two agree:
+#
+#   sudo mtrack systemd /new/path > /etc/systemd/system/mtrack.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl restart mtrack
+#
+# List every directory mtrack writes, not just the library -- an absolute
+# `songs`, `playlists_dir`, `profiles_dir` or `samples` in your config is used
+# as given and needs naming too:
+#
+#   sudo mtrack systemd /new/path /mnt/nas/songs > /etc/systemd/system/mtrack.service
+#
+MTRACK_PATH=/var/lib/mtrack

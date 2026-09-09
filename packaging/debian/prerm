@@ -1,0 +1,36 @@
+#!/bin/sh
+# Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+#
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        if [ -d /run/systemd/system ]; then
+            systemctl stop mtrack.service >/dev/null 2>&1 || true
+            systemctl disable mtrack.service >/dev/null 2>&1 || true
+        fi
+        ;;
+
+    upgrade|failed-upgrade)
+        # Left running deliberately. postinst try-restarts it against the new
+        # binary, so an upgrade costs a restart rather than a stop and a start.
+        ;;
+
+    *)
+        echo "prerm called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

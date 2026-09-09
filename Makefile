@@ -15,7 +15,7 @@ ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-systemd lint lint-ui lint-rust fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-systemd deb test-deb lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -64,6 +64,32 @@ test: test-ui
 test-ui:
 	cd $(SVELTE_DIR) && npx playwright test --project=mock
 
+## Build the Debian package (expects a binary at target/release/mtrack)
+deb:
+	cargo deb --no-build --no-strip
+
+## Directory the package test builds in. Deliberately not the normal target/:
+## the test stages a debug binary where cargo-deb expects a release one, and
+## doing that under target/release would leave a debug binary that cargo, which
+## fingerprints against its own database rather than the file, may then decline
+## to rebuild -- handing someone a debug binary labelled release.
+DEB_TEST_TARGET_DIR := $(ROOT_DIR)/target/deb-test
+
+## Test the Debian package: install it and check the maintainer scripts
+##
+## Destructive -- installs, reinstalls and purges mtrack on this machine and
+## creates the mtrack system user. Meant for CI and throwaway containers.
+test-deb: build-ui
+	@command -v cargo-deb >/dev/null || { echo "cargo-deb not found: cargo install cargo-deb"; exit 1; }
+	@# A debug binary is fine here: nothing under test depends on optimisation,
+	@# only on the binary being a real mtrack that can render its own unit.
+	CARGO_TARGET_DIR=$(DEB_TEST_TARGET_DIR) cargo build --bin mtrack --manifest-path $(ROOT_DIR)/Cargo.toml
+	mkdir -p $(DEB_TEST_TARGET_DIR)/release
+	install -m 755 $(DEB_TEST_TARGET_DIR)/debug/mtrack $(DEB_TEST_TARGET_DIR)/release/mtrack
+	CARGO_TARGET_DIR=$(DEB_TEST_TARGET_DIR) cargo deb --no-build --no-strip --fast \
+		--output $(DEB_TEST_TARGET_DIR)/debian/
+	$(ROOT_DIR)/tests/packaging/test.sh $$(ls -t $(DEB_TEST_TARGET_DIR)/debian/mtrack_*.deb | head -1)
+
 ## Run systemd integration test (requires Docker)
 test-systemd:
 	DOCKER_BUILDKIT=1 docker build -f $(ROOT_DIR)/tests/systemd/Dockerfile -t mtrack-systemd-test $(ROOT_DIR)
@@ -79,11 +105,26 @@ test-systemd:
 	  docker exec $$cid /test.sh
 
 ## Lint everything
-lint: lint-ui lint-rust
+lint: lint-ui lint-rust lint-shell
 
 ## Lint the Svelte frontend
 lint-ui:
 	cd $(SVELTE_DIR) && npm run lint && npm run check
+
+## Lint shell scripts
+lint-shell:
+	@command -v shellcheck >/dev/null || { \
+		echo "shellcheck not found -- see https://www.shellcheck.net/ for install options"; \
+		exit 1; \
+	}
+	@# Discovered rather than listed, so a script added later is linted without
+	@# anyone remembering to add it here. The Debian maintainer scripts carry no
+	@# extension and so are missed by the *.sh glob; everything in
+	@# packaging/debian is shell except the conffile shipped as /etc/default.
+	shellcheck $$(find $(ROOT_DIR) -name '*.sh' \
+		-not -path '*/node_modules/*' -not -path '*/target/*' -not -path '*/.git/*' \
+		| sort) \
+		$$(find $(ROOT_DIR)/packaging/debian -type f ! -name default | sort)
 
 ## Lint the Rust code
 lint-rust:

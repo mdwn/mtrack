@@ -1,5 +1,14 @@
 # Running on Startup
 
+> **Installing from the `.deb` does all of this for you.** The package creates
+> the service account, creates and chowns `/var/lib/mtrack`, generates this unit
+> against the installed binary, and enables the service — and re-renders the unit
+> on every upgrade. See
+> [Installation](../getting-started/installation.md#debian-ubuntu-and-raspberry-pi-os-packages).
+> The rest of this page is the manual path, and is worth reading either way for
+> what the unit is doing and why.
+
+
 To have `mtrack` start when the system starts, first create a dedicated system user for the service:
 
 ```
