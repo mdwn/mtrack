@@ -95,7 +95,6 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
 WantedBy=multi-user.target
-Alias=mtrack.service
 "#;
 
 #[derive(Parser)]
@@ -610,6 +609,27 @@ mod tests {
             assert!(
                 !result.contains("ReadWritePaths"),
                 "there is no path to declare, and an empty directive would be invalid"
+            );
+        }
+
+        /// `Alias=mtrack.service` on a unit whose file *is* mtrack.service made
+        /// systemd try to create the alias symlink over the unit itself.
+        /// `systemctl enable mtrack` then printed "Failed to enable unit, file
+        /// /etc/systemd/system/mtrack.service already exists" and exited 1 --
+        /// after creating the WantedBy symlink, so it had in fact worked. That
+        /// is the exact sequence the deployment guide tells operators to run,
+        /// and an exit 1 aborts any `set -e` caller that automates it, an image
+        /// build among them.
+        #[test]
+        fn does_not_alias_the_unit_to_its_own_name() {
+            let result = render_systemd_service("/usr/local/bin/mtrack", &[]).unwrap();
+            assert!(
+                !result.contains("Alias="),
+                "an alias to the unit's own name collides with the unit file and fails enable"
+            );
+            assert!(
+                result.contains("WantedBy=multi-user.target"),
+                "the unit still has to be enableable"
             );
         }
 
