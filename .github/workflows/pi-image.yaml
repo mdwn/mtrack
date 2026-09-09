@@ -1,0 +1,108 @@
+name: Raspberry Pi image
+
+# Kept out of publish.yaml on purpose. An image build is tens of minutes and
+# tens of gigabytes, and a failure here should not sit in the middle of the
+# chain that publishes the crate, the release and the binaries.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build an image for (e.g. v0.16.0)'
+        required: true
+        type: string
+      pi_gen_ref:
+        description: 'pi-gen ref to build with'
+        required: false
+        default: 'master'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-image:
+    name: Build the Raspberry Pi image
+    # Native arm64. pi-gen runs the target's own binaries in a chroot, and on an
+    # x86 runner that means qemu-user-static and binfmt registration; here it
+    # means nothing at all.
+    runs-on: ubuntu-22.04-arm
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+      PI_GEN_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.pi_gen_ref || 'master' }}
+    steps:
+      - name: Checkout mtrack
+        uses: actions/checkout@v6
+        with:
+          path: mtrack
+
+      - name: Free up disk space
+        # A Lite build plus its per-stage rootfs copies needs more room than a
+        # hosted runner has spare. The toolchains removed here are of no use to
+        # a debootstrap.
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/lib/jvm || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Fetch the released package
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          gh release download "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "mtrack_*_arm64.deb" --dir "$GITHUB_WORKSPACE/deb"
+          ls -l "$GITHUB_WORKSPACE/deb"
+          echo "MTRACK_DEB=$(ls "$GITHUB_WORKSPACE"/deb/mtrack_*_arm64.deb)" >> "$GITHUB_ENV"
+
+      - name: Checkout pi-gen
+        uses: actions/checkout@v6
+        with:
+          repository: RPi-Distro/pi-gen
+          ref: ${{ env.PI_GEN_REF }}
+          path: pi-gen
+
+      - name: Configure the build
+        run: |
+          set -euo pipefail
+          cd pi-gen
+          cp "$GITHUB_WORKSPACE/mtrack/packaging/pi-gen/config" ./config
+          # Lite only: no desktop stages, and no image from stage2 -- the only
+          # image we want is the one our stage exports.
+          touch ./stage3/SKIP ./stage4/SKIP ./stage5/SKIP
+          touch ./stage2/SKIP_IMAGES ./stage4/SKIP_IMAGES ./stage5/SKIP_IMAGES
+          echo "MTRACK_STAGE_DIR=$GITHUB_WORKSPACE/mtrack/packaging/pi-gen/stage-mtrack" >> "$GITHUB_ENV"
+
+      - name: Build the image
+        run: |
+          set -euo pipefail
+          cd pi-gen
+          sudo --preserve-env=MTRACK_DEB,MTRACK_STAGE_DIR ./build.sh
+
+      - name: Name the artifact after the release
+        id: artifact
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          built="$(ls pi-gen/deploy/*.img.xz | head -1)"
+          out="mtrack-${VERSION}-raspberrypi-arm64.img.xz"
+          mv "$built" "$out"
+          sha256sum "$out" > "$out.sha256"
+          ls -lh "$out"
+          echo "image=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            "${{ steps.artifact.outputs.image }}" \
+            "${{ steps.artifact.outputs.image }}.sha256" --clobber

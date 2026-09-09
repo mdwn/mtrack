@@ -1,0 +1,55 @@
+# Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# Sourced by pi-gen's build.sh rather than executed, so it carries no shebang.
+# shellcheck shell=bash
+#
+# Every assignment here is read by the sourcing script, never by this file.
+# shellcheck disable=SC2034
+# pi-gen configuration for the mtrack image. Copied into a pi-gen checkout as
+# ./config; see packaging/pi-gen/README.md.
+
+IMG_NAME='mtrack'
+PI_GEN_RELEASE='mtrack multitrack player'
+
+# Raspberry Pi OS release to build against. pi-gen's package sets differ per
+# release, so building an older one means checking out the matching pi-gen
+# branch as well -- the README covers it.
+RELEASE="${RELEASE:-trixie}"
+
+# The whole point of shipping avahi: this is what answers to mtrack.local.
+TARGET_HOSTNAME='mtrack'
+
+# Lite plus our stage. Nothing here wants a desktop, and stage2 must not export
+# an image of its own -- the workflow drops SKIP/SKIP_IMAGES files to arrange
+# that. MTRACK_STAGE_DIR is an absolute path into this repo, which pi-gen
+# supports for stages outside its own tree.
+STAGE_LIST="stage0 stage1 stage2 ${MTRACK_STAGE_DIR:?MTRACK_STAGE_DIR must point at packaging/pi-gen/stage-mtrack}"
+
+DEPLOY_COMPRESSION='xz'
+COMPRESSION_LEVEL=6
+
+# On a machine with no monitor, ssh is the recovery path. It is only useful
+# once an account exists, which is the next comment's business.
+ENABLE_SSH=1
+
+# Deliberately no FIRST_USER_PASS, and DISABLE_FIRST_BOOT_USER_RENAME left off.
+# pi-gen then leaves the account locked and runs the setup wizard on first
+# boot, so this image ships with no default credentials for anyone to guess.
+# The headless path is Raspberry Pi Imager's customisation, which writes the
+# username, password, wifi and ssh keys onto the boot partition before the card
+# is ever booted; the README says so, because a reader who does not know that
+# will conclude the image is broken.
+
+# Likewise no WPA_COUNTRY: wifi stays rfkill'd until a country is set, and
+# Imager sets it. Hardcoding one here would be wrong everywhere but there.

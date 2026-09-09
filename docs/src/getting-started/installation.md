@@ -26,6 +26,29 @@ will fetch the same release binaries:
 $ cargo binstall mtrack
 ```
 
+## Raspberry Pi image
+
+For a Raspberry Pi, the least work is a pre-built image: Raspberry Pi OS Lite
+with mtrack installed, running on boot, and reachable at
+`http://mtrack.local:8080`. It also carries `avahi` for that name to resolve and
+`olad` for DMX output.
+
+Download `mtrack-<version>-raspberrypi-arm64.img.xz` from the
+[latest release](https://github.com/mdwn/mtrack/releases/latest) and flash it
+with [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
+
+**Use Imager's customisation dialog.** The image ships no default username or
+password, so the settings you enter there — username, password, wifi and its
+country, ssh keys — are what make the Pi reachable. Skip it and the first boot
+wants a keyboard and a monitor to run the setup wizard.
+
+Your songs live in `/var/lib/mtrack` on the card. To keep them on a USB drive
+instead, edit `/etc/default/mtrack` and regenerate the unit; that file explains
+how inline.
+
+The image is 64-bit, so it needs a Pi 3 or newer. On anything older, or on
+32-bit Raspberry Pi OS, install from source with cargo.
+
 ## Debian, Ubuntu and Raspberry Pi OS packages
 
 On a Debian-derived system a `.deb` is the least fiddly option, and the one to
