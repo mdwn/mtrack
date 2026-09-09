@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **GDTF fixture import (#422, #423, #425, #426)**: fixture types can be built from a
+  manufacturer's GDTF archive instead of a hand-written channel map. A type references one with
+  `from gdtf("lighting/library/x.gdtf", mode "8: RGBS")` in a `.fixture` file — which loads beside
+  `.light` as a peer — carrying only overrides in its body. A referential type that declares its
+  own `channel_map` is a parse error: its channels come from the archive.
+
+  Import from wherever you work. `mtrack import-gdtf <file>` lists an archive's modes and `--mode`
+  imports one; `list_gdtf_modes` and `import_gdtf` expose the same flow over MCP; and the web UI's
+  fixture-types tab takes an upload, offers a mode picker showing each mode's channel count and
+  footprint, and reports the written files, the resolved channels and every distillation warning.
+  All three go through one importer, and nothing is written until the chosen mode distills.
+
+  Distilled modes are cached per project under `lighting/.cache/`, keyed on the archive bytes, the
+  mode, the distiller version and any overrides. A cold cache fills loudly at load rather than
+  mid-show. Commit the archive and gitignore the cache — and note that `lighting/.cache` must be
+  writable under `ProtectSystem=strict`, or referential fixtures cannot expand.
+
+  A mode that would import as something other than what it is refuses rather than half-importing:
+  pixel and matrix modes are rejected with a reason, and an archive or fixture name that collides
+  with one already in the library says what collided and leaves the project untouched. Both
+  untrusted-input layers — the zip archive and the description XML — carry hard size and nesting
+  caps and have cargo-fuzz targets.
+
+- **Debian packages**: `sudo apt install ./mtrack_<version>_arm64.deb` on Debian, Ubuntu or
+  Raspberry Pi OS installs the binary, creates the `mtrack` service account, creates and chowns the
+  project directory, generates the systemd unit and enables the service — the whole of the
+  deployment guide's manual setup, done for you. Because `/etc/default/mtrack` is in place before
+  the unit is rendered, the unit gets `ProtectSystem=strict` and a matching
+  `ReadWritePaths` by default, rather than the weaker pathless fallback that forgetting the
+  argument leaves you with.
+
+  An upgrade re-renders the unit against the new binary, which is the "regenerate your unit" step
+  the deployment guide otherwise has to ask for. A unit you have edited yourself is kept, and the
+  upgrade prints what it would have written instead.
+
+  Purging keeps `/var/lib/mtrack` and the account that owns it — a purge should not take a band's
+  set with it. Packages are attached to each release; an apt archive for `apt upgrade` is wired up
+  behind the `APT_R2_BUCKET` repository variable and dormant until it is set.
+
+### Changed
+
+- **Venue universes the active profile cannot drive are now reported (#424)**: a venue can patch
+  fixtures onto universes the profile configures no output for, and the engine used to drop their
+  DMX silently — three quarters of a four-universe house rig staying dark at a gig with nothing to
+  explain it. Venue registration now reports each unconfigured universe once, naming the fixtures
+  patched there, and the effects loop's routing warns once per universe — not once per 44Hz tick —
+  if commands are dropped anyway.
+
+  The rule this makes visible: shows never mention universes, and every universe a venue references
+  needs an output under `dmx.universes`. A multi-universe example venue and the documentation cover
+  it.
+
 ## [0.16.0] - 2026-08-19
 
 ### Added
