@@ -1,6 +1,7 @@
 change_in_place: true
 excludes:
   - \.gitignore
+  - ^packaging/debian/default$
   - .*lock
   - \.git/.*
   - \.licensure\.yml
@@ -85,6 +86,7 @@ comments:
     files:
       - ^Makefile$
       - \.sh$
+      - ^packaging/debian/(postinst|prerm|postrm)$
       - \.toml$
       - Dockerfile
       - \.dockerignore$
