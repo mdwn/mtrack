@@ -17,6 +17,18 @@ on:
         required: false
         default: 'master'
         type: string
+  # The image is only as correct as the package it installs and the unit that
+  # package renders, so a change to either has to be able to prove it still
+  # produces a bootable image. packaging/debian is in here rather than just
+  # packaging/pi-gen because the stage leans on postinst behaviour -- it enables
+  # the service precisely because postinst declines to in a chroot -- and
+  # src/cli.rs is in here because it holds the unit template, which has broken
+  # `systemctl enable` before.
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'src/cli.rs'
+      - '.github/workflows/pi-image.yaml'
 
 permissions:
   contents: write
@@ -31,6 +43,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
       PI_GEN_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.pi_gen_ref || 'master' }}
+      IS_PR: ${{ github.event_name == 'pull_request' }}
     steps:
       - name: Checkout mtrack
         uses: actions/checkout@v6
@@ -49,17 +62,88 @@ jobs:
           sudo apt-get clean
           df -h /
 
+      # ---- Where the package comes from -----------------------------------
+      # A pull request has no release to draw from, and drawing from the last
+      # one would test the previous version's package rather than this change's.
+      # So a PR builds the package it is about to install, and only a PR does:
+      # an image that gets published must carry the binary the release
+      # published, not one built here.
+
+      - name: Install build dependencies (pull requests only)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev pkg-config \
+                                  libssl-dev protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: github.event_name == 'pull_request'
+      - uses: Swatinem/rust-cache@v2
+        if: github.event_name == 'pull_request'
+        with:
+          workspaces: mtrack
+          shared-key: "pi-image"
+      - uses: actions/setup-node@v4
+        if: github.event_name == 'pull_request'
+        with:
+          node-version: '22'
+      - uses: taiki-e/install-action@v2
+        if: github.event_name == 'pull_request'
+        with:
+          tool: cargo-deb
+      - name: Package it
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          cd mtrack
+          # A release build rather than a debug one. Nothing in the image build
+          # runs mtrack beyond asking it to print its own unit, so optimisation
+          # is irrelevant -- but a debug binary is an order of magnitude larger,
+          # and disk is the scarcest thing on this runner.
+          make build-ui
+          cargo build --release --locked --bin mtrack
+          cargo deb --no-build --no-strip --output "$GITHUB_WORKSPACE/deb/"
+          echo "MTRACK_DEB=$(ls "$GITHUB_WORKSPACE"/deb/mtrack_*_arm64.deb)" >> "$GITHUB_ENV"
+          echo "DEB_PROVENANCE=built-from-source" >> "$GITHUB_ENV"
+          # The package is extracted; the build tree that produced it is several
+          # gigabytes of no further use, and pi-gen is about to want all of it.
+          # This does cost the compilation cache -- rust-cache saves in a
+          # post-job step, so a target directory deleted here is never stored,
+          # and every run compiles cold. Running out of disk fails the job
+          # outright, while a cold build only makes it slower, so the disk wins.
+          # The registry cache still restores, which saves the downloads.
+          rm -rf target
+          df -h /
+
       - name: Fetch the released package
+        if: github.event_name != 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          VERSION="${RELEASE_TAG#v}"
           gh release download "$RELEASE_TAG" \
             --repo "${{ github.repository }}" \
             --pattern "mtrack_*_arm64.deb" --dir "$GITHUB_WORKSPACE/deb"
           ls -l "$GITHUB_WORKSPACE/deb"
           echo "MTRACK_DEB=$(ls "$GITHUB_WORKSPACE"/deb/mtrack_*_arm64.deb)" >> "$GITHUB_ENV"
+          echo "DEB_PROVENANCE=from-release" >> "$GITHUB_ENV"
+
+      - name: Refuse to publish a source-built image
+        # The two steps above are mutually exclusive by their conditions, so
+        # this should be unreachable. It is here so that stays true: an edit
+        # that lets a source build leak into a published image fails here rather
+        # than shipping a card with a binary nobody can trace to a release.
+        run: |
+          set -euo pipefail
+          echo "package provenance: ${DEB_PROVENANCE:-unset}"
+          if [ "${IS_PR}" != "true" ] && [ "${DEB_PROVENANCE}" != "from-release" ]; then
+            echo "This run publishes to a release but the package was not taken" >&2
+            echo "from one (provenance: ${DEB_PROVENANCE:-unset})." >&2
+            exit 1
+          fi
+
+      # ---- The image -------------------------------------------------------
 
       - name: Checkout pi-gen
         uses: actions/checkout@v6
@@ -85,11 +169,15 @@ jobs:
           cd pi-gen
           sudo --preserve-env=MTRACK_DEB,MTRACK_STAGE_DIR ./build.sh
 
-      - name: Name the artifact after the release
+      - name: Name the artifact
         id: artifact
         run: |
           set -euo pipefail
-          VERSION="${RELEASE_TAG#v}"
+          if [ "${IS_PR}" = "true" ]; then
+            VERSION="pr${{ github.event.pull_request.number }}"
+          else
+            VERSION="${RELEASE_TAG#v}"
+          fi
           built="$(ls pi-gen/deploy/*.img.xz | head -1)"
           out="mtrack-${VERSION}-raspberrypi-arm64.img.xz"
           mv "$built" "$out"
@@ -97,7 +185,18 @@ jobs:
           ls -lh "$out"
           echo "image=$out" >> "$GITHUB_OUTPUT"
 
+      - name: Upload the image for inspection (pull requests)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: raspberrypi-image
+          path: |
+            ${{ steps.artifact.outputs.image }}
+            ${{ steps.artifact.outputs.image }}.sha256
+          retention-days: 7
+
       - name: Upload to the release
+        if: github.event_name != 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

@@ -41,7 +41,19 @@ at boot.
 ## Building
 
 CI builds this on every published release (`.github/workflows/pi-image.yaml`),
-on a native arm64 runner so pi-gen's chroot needs no emulation. To build by
+on a native arm64 runner so pi-gen's chroot needs no emulation.
+
+It also builds on pull requests that touch `packaging/`, `src/cli.rs` or the
+workflow itself, and attaches the image as a run artifact. Those three paths are
+the ones that can break an image without touching the stage: the stage leans on
+the package's `postinst` behaviour, and `src/cli.rs` holds the unit template.
+
+A pull request has no release to draw a package from, and taking the last
+release's would test the previous version rather than the change in hand, so a
+pull request builds the package it is about to install. Only a pull request
+does: a run that uploads to a release refuses to proceed unless the package came
+from that release, so an image on the downloads page always carries a binary you
+can trace back to a published artifact. To build by
 hand you want an arm64 machine for the same reason; on x86 you additionally need
 `qemu-user-static` and binfmt registration, which pi-gen's README covers.
 
