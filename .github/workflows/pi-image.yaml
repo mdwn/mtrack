@@ -215,6 +215,12 @@ jobs:
           else
             VERSION="${RELEASE_TAG#v}"
           fi
+          # build.sh runs under sudo, so deploy/ and everything in it belongs to
+          # root and this step does not: moving the image out of that directory
+          # needs write permission on the directory itself. Take ownership once
+          # here rather than sudo-ing each of the steps that follow, which also
+          # lets upload-artifact read it.
+          sudo chown -R "$(id -u):$(id -g)" pi-gen/deploy
           built="$(ls pi-gen/deploy/*.img.xz | head -1)"
           out="mtrack-${VERSION}-raspberrypi-arm64.img.xz"
           mv "$built" "$out"
