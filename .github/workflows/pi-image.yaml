@@ -74,8 +74,21 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev pkg-config \
-                                  libssl-dev protobuf-compiler
+          sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev
+
+      - name: Install protoc (pull requests only)
+        # Deliberately not apt's protobuf-compiler, exactly as in publish.yaml:
+        # ubuntu-22.04 ships protoc 3.12, which refuses the proto3 optional
+        # fields our protos use ("--experimental_allow_proto3_optional was not
+        # set"). That is the failure that broke the v0.16.0 Linux binaries, and
+        # it broke this job's first run too. The runner is 22.04 on purpose --
+        # it matches the glibc floor the released binaries are built against --
+        # so protoc has to come from somewhere newer than its archive.
+        if: github.event_name == 'pull_request'
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "29.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: dtolnay/rust-toolchain@stable
         if: github.event_name == 'pull_request'
@@ -88,6 +101,13 @@ jobs:
         if: github.event_name == 'pull_request'
         with:
           node-version: '22'
+      - name: Cache node modules
+        if: github.event_name == 'pull_request'
+        uses: actions/cache@v5
+        with:
+          path: mtrack/src/webui/svelte/node_modules
+          key: node-modules-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mtrack/**/package-lock.json') }}
+          restore-keys: node-modules-${{ runner.os }}-${{ runner.arch }}-
       - uses: taiki-e/install-action@v2
         if: github.event_name == 'pull_request'
         with:
