@@ -24,7 +24,8 @@ PI_GEN_RELEASE='mtrack multitrack player'
 
 # Raspberry Pi OS release to build against. pi-gen's package sets differ per
 # release, so building an older one means checking out the matching pi-gen
-# branch as well -- the README covers it.
+# branch as well -- and it has to stay one of the arm64 branches, since ARCH is
+# selected by branch rather than by anything settable here. The README covers it.
 RELEASE="${RELEASE:-trixie}"
 
 # The whole point of shipping avahi: this is what answers to mtrack.local.

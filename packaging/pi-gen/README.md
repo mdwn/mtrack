@@ -58,7 +58,10 @@ hand you want an arm64 machine for the same reason; on x86 you additionally need
 `qemu-user-static` and binfmt registration, which pi-gen's README covers.
 
 ```
-$ git clone https://github.com/RPi-Distro/pi-gen
+$ sudo apt install coreutils quilt parted qemu-user-binfmt debootstrap zerofree \
+    zip dosfstools e2fsprogs libarchive-tools libcap2-bin grep rsync xz-utils \
+    file git curl bc gpg pigz xxd arch-test bmap-tools kmod
+$ git clone -b arm64 https://github.com/RPi-Distro/pi-gen
 $ cd pi-gen
 $ cp /path/to/mtrack/packaging/pi-gen/config ./config
 $ touch ./stage3/SKIP ./stage4/SKIP ./stage5/SKIP
@@ -77,13 +80,25 @@ binary the release published. `STAGE_LIST` in the config points at
 tree, so the stage lives in this repo and is never copied into a pi-gen
 checkout.
 
+### Why the `arm64` branch
+
+Not a preference -- it is the only way to ask for a 64-bit image. pi-gen's
+`master` runs `export ARCH=armhf` unconditionally, *after* it sources `config`,
+so setting `ARCH` there is overwritten. The architecture is selected by branch,
+and `arm64` is otherwise the same tree with the same `trixie` default.
+
+Building `master` here would produce a 32-bit image that then refuses the arm64
+package, which is why the stage checks the package's architecture up front
+rather than letting it surface as a dpkg error inside the chroot.
+
 ### Targeting an older Raspberry Pi OS
 
 `RELEASE` defaults to `trixie`. pi-gen's package sets differ per release, so
-building an older one means checking out the matching pi-gen branch too:
+building an older one means checking out the matching branch too -- and it has
+to stay an arm64 one:
 
 ```
-$ git checkout bookworm      # in the pi-gen clone
+$ git checkout bookworm-arm64      # in the pi-gen clone
 $ RELEASE=bookworm sudo --preserve-env=... ./build.sh
 ```
 

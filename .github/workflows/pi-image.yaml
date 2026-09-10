@@ -13,9 +13,9 @@ on:
         required: true
         type: string
       pi_gen_ref:
-        description: 'pi-gen ref to build with'
+        description: 'pi-gen ref to build with (must be an arm64 branch)'
         required: false
-        default: 'master'
+        default: 'arm64'
         type: string
   # The image is only as correct as the package it installs and the unit that
   # package renders, so a change to either has to be able to prove it still
@@ -42,7 +42,11 @@ jobs:
     runs-on: ubuntu-22.04-arm
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
-      PI_GEN_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.pi_gen_ref || 'master' }}
+      # pi-gen's master branch sets `export ARCH=armhf` unconditionally, *after*
+      # sourcing config, so a 64-bit image cannot be asked for -- it is selected
+      # by branch. The arm64 branch is the same tree with ARCH=arm64 and the
+      # same trixie default.
+      PI_GEN_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.pi_gen_ref || 'arm64' }}
       IS_PR: ${{ github.event_name == 'pull_request' }}
     steps:
       - name: Checkout mtrack
@@ -171,6 +175,19 @@ jobs:
           repository: RPi-Distro/pi-gen
           ref: ${{ env.PI_GEN_REF }}
           path: pi-gen
+
+      - name: Install pi-gen's dependencies
+        # From pi-gen's README. Its build.sh checks these up front and stops
+        # before doing any work if one is missing, so this is not optional.
+        # qemu is in the list because pi-gen's `depends` asks for it
+        # unconditionally; a native build never invokes it.
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            coreutils quilt parted qemu-user-binfmt debootstrap zerofree zip \
+            dosfstools e2fsprogs libarchive-tools libcap2-bin grep rsync \
+            xz-utils file git curl bc gpg pigz xxd arch-test bmap-tools kmod
 
       - name: Configure the build
         run: |
