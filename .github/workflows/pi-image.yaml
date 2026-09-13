@@ -228,6 +228,15 @@ jobs:
           ls -lh "$out"
           echo "image=$out" >> "$GITHUB_OUTPUT"
 
+      - name: Inspect the image
+        # Between "the build succeeded" and "the card works" sits an image that
+        # contains mtrack and boots to nothing running -- which is what happens
+        # if the stage ever stops enabling the service, since the package's
+        # postinst declines to in a chroot. This mounts the root filesystem and
+        # checks what the stage was supposed to leave there. It proves nothing
+        # about booting; that still needs a Pi.
+        run: ./mtrack/tests/pi-image/test.sh "${{ steps.artifact.outputs.image }}"
+
       - name: Upload the image for inspection (pull requests)
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v6

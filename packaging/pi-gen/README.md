@@ -106,6 +106,27 @@ The package installs on either. Its dependencies name
 `libasound2t64 | libasound2` precisely so that the same `.deb` resolves on both
 sides of the time_t rename — verified on both.
 
+## Checking a built image
+
+`tests/pi-image/test.sh` mounts an image's root filesystem and checks what the
+stage should have left there — the binary and its architecture, the generated
+unit and its sandbox, **the enable symlink**, the service account and its group,
+the project directory's ownership, avahi, the hostname, and olad's SysV link. CI
+runs it on every image it builds; by hand:
+
+```
+$ make test-pi-image IMAGE=mtrack-0.16.0-raspberrypi-arm64.img.xz
+```
+
+The enable symlink is the reason this exists. The package's `postinst` declines
+to enable the service in a chroot, so the stage does it; if that step is ever
+lost, the image still builds, still contains mtrack, and boots to nothing
+listening. Nothing else in the pipeline would notice.
+
+It proves nothing about booting. Whether the card comes up, whether audio
+reaches an interface, whether a DMX dongle works — those need a Pi, and no
+amount of inspection substitutes.
+
 ## What this does not do yet
 
 - **32-bit (`armhf`)** is not covered; mtrack publishes arm64 and amd64 only.

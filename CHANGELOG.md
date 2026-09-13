@@ -73,6 +73,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   needs an output under `dmx.universes`. A multi-universe example venue and the documentation cover
   it.
 
+### Added
+
+- **Built Raspberry Pi images are checked before they are published**: a new inspection step mounts
+  the image's root filesystem and asserts what the pi-gen stage should have left there — the arm64
+  binary, the generated unit and its strict sandbox, the service account and its `audio` membership,
+  the project directory's ownership, avahi, the hostname, and olad's SysV link.
+
+  It exists for one case in particular: the package's `postinst` deliberately does not enable the
+  service in a chroot, so the stage enables it instead, and if that step is ever lost the image
+  still builds, still contains mtrack, and boots to nothing listening. Nothing else in the pipeline
+  would catch that.
+
+  It says nothing about whether the card boots or whether audio and DMX work; those still need
+  hardware.
+
 ### Fixed
 
 - **CI no longer runs actions on a deprecated Node**: GitHub is removing the Node 20 runtime that
