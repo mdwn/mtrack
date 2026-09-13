@@ -107,7 +107,7 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
       - name: Install Linux system dependencies
-        # protoc comes from setup-protoc below, not apt: ubuntu-22.04 ships
+        # protoc comes from the script below, not apt: ubuntu-22.04 ships
         # protoc 3.12, which rejects the proto3 optional fields our protos
         # use ("--experimental_allow_proto3_optional was not set") — the
         # failure that broke the v0.16.0 Linux binaries.
@@ -115,10 +115,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev
       - name: Install protoc
         if: matrix.platform == 'linux'
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "29.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/install-protoc.sh
       - name: Install macOS system dependencies
         if: matrix.platform == 'macos'
         run: brew install pkg-config protobuf

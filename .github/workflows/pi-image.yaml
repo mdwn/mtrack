@@ -89,10 +89,7 @@ jobs:
         # it matches the glibc floor the released binaries are built against --
         # so protoc has to come from somewhere newer than its archive.
         if: github.event_name == 'pull_request'
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "29.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        run: ./mtrack/scripts/install-protoc.sh
 
       - uses: dtolnay/rust-toolchain@stable
         if: github.event_name == 'pull_request'
