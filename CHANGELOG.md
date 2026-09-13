@@ -75,6 +75,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CI no longer runs actions on a deprecated Node**: GitHub is removing the Node 20 runtime that
+  `actions/setup-node@v4`, `actions/upload-artifact@v4` and `actions/download-artifact@v4` declare;
+  runners had already begun forcing them onto Node 24 and warning about it. They move to the first
+  major of each that targets Node 24 -- v5, v6 and v7 respectively -- rather than to the newest,
+  which keeps the change to what the deprecation actually requires. Every input this repository
+  uses is unchanged across the bump.
+
+  `actions/checkout` and `actions/cache` were already on Node 24 and are untouched.
+  `arduino/setup-protoc@v3` still declares Node 20 and has no newer release, so one warning
+  remains until it does.
+
+
 - **`systemctl enable mtrack` no longer reports a failure it did not have**: the generated unit
   carried `Alias=mtrack.service` while being installed as `mtrack.service`, so systemd tried to
   create the alias symlink over the unit file itself. Enabling the service printed
