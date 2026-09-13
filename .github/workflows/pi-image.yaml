@@ -50,7 +50,7 @@ jobs:
       IS_PR: ${{ github.event_name == 'pull_request' }}
     steps:
       - name: Checkout mtrack
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: mtrack
 
@@ -101,13 +101,13 @@ jobs:
         with:
           workspaces: mtrack
           shared-key: "pi-image"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: github.event_name == 'pull_request'
         with:
           node-version: '22'
       - name: Cache node modules
         if: github.event_name == 'pull_request'
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: mtrack/src/webui/svelte/node_modules
           key: node-modules-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mtrack/**/package-lock.json') }}
@@ -170,7 +170,7 @@ jobs:
       # ---- The image -------------------------------------------------------
 
       - name: Checkout pi-gen
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: RPi-Distro/pi-gen
           ref: ${{ env.PI_GEN_REF }}
@@ -228,9 +228,18 @@ jobs:
           ls -lh "$out"
           echo "image=$out" >> "$GITHUB_OUTPUT"
 
+      - name: Inspect the image
+        # Between "the build succeeded" and "the card works" sits an image that
+        # contains mtrack and boots to nothing running -- which is what happens
+        # if the stage ever stops enabling the service, since the package's
+        # postinst declines to in a chroot. This mounts the root filesystem and
+        # checks what the stage was supposed to leave there. It proves nothing
+        # about booting; that still needs a Pi.
+        run: ./mtrack/tests/pi-image/test.sh "${{ steps.artifact.outputs.image }}"
+
       - name: Upload the image for inspection (pull requests)
         if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: raspberrypi-image
           path: |

@@ -15,7 +15,7 @@ ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-systemd deb test-deb lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-systemd deb test-deb test-pi-image lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -103,6 +103,17 @@ test-systemd:
 	    sleep 1; \
 	  done; \
 	  docker exec $$cid /test.sh
+
+## Inspect a built Raspberry Pi image
+##
+## Mounts the image's root filesystem and checks what the pi-gen stage should
+## have left there. Needs root (or sudo) to mount. Does not boot anything --
+## whether the card actually comes up still needs a Pi.
+##
+##   make test-pi-image IMAGE=path/to/mtrack-x.y.z-raspberrypi-arm64.img.xz
+test-pi-image:
+	@test -n "$(IMAGE)" || { echo "set IMAGE=<path to .img or .img.xz>"; exit 1; }
+	$(ROOT_DIR)/tests/pi-image/test.sh "$(IMAGE)"
 
 ## Lint everything
 lint: lint-ui lint-rust lint-shell

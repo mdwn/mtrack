@@ -73,7 +73,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   needs an output under `dmx.universes`. A multi-universe example venue and the documentation cover
   it.
 
+### Added
+
+- **Built Raspberry Pi images are checked before they are published**: a new inspection step mounts
+  the image's root filesystem and asserts what the pi-gen stage should have left there — the arm64
+  binary, the generated unit and its strict sandbox, the service account and its `audio` membership,
+  the project directory's ownership, avahi, the hostname, and olad's SysV link.
+
+  It exists for one case in particular: the package's `postinst` deliberately does not enable the
+  service in a chroot, so the stage enables it instead, and if that step is ever lost the image
+  still builds, still contains mtrack, and boots to nothing listening. Nothing else in the pipeline
+  would catch that.
+
+  It says nothing about whether the card boots or whether audio and DMX work; those still need
+  hardware.
+
 ### Fixed
+
+- **CI actions are up to date, and off the deprecated Node 20 runtime**: GitHub is removing the
+  Node 20 runtime that several pinned actions declared, and runners had already begun forcing them
+  onto Node 24 and warning about it. Every action with a newer release moves to it:
+  `checkout` v6→v7, `setup-node` v4→v7, `cache` v5→v6, `upload-artifact` v4→v7,
+  `download-artifact` v4→v8, `setup-buildx-action` v3→v4, `build-push-action` v6→v7 and
+  `codecov-action` v5→v7.
+
+  `setup-buildx-action` and `build-push-action` were also still on Node 20. They are used only by
+  the systemd integration test, which runs on pushes to `main` rather than on pull requests, so
+  their warnings never appeared in a pull request's logs.
+
+  Every input this repository passes was checked against the new version of each action and is
+  unchanged. `Swatinem/rust-cache`, `taiki-e/install-action` and `ffurrer2/extract-release-notes`
+  were already on their newest major. `arduino/setup-protoc@v3` still declares Node 20 and has no
+  newer release, so one warning remains until it does.
+
 
 - **`systemctl enable mtrack` no longer reports a failure it did not have**: the generated unit
   carried `Alias=mtrack.service` while being installed as `mtrack.service`, so systemd tried to

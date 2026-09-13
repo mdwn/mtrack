@@ -22,17 +22,17 @@ jobs:
     name: Build mtrack
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - name: Install system dependencies
       run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo"
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v7
       with:
         node-version: '22'
-    - uses: actions/cache@v5
+    - uses: actions/cache@v6
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -55,7 +55,7 @@ jobs:
     name: Lint mtrack
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - name: Install system dependencies
       run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
@@ -64,10 +64,10 @@ jobs:
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo"
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v7
       with:
         node-version: '22'
-    - uses: actions/cache@v5
+    - uses: actions/cache@v6
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -82,7 +82,7 @@ jobs:
     name: Run rustfmt
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: rustfmt
@@ -100,7 +100,7 @@ jobs:
     name: Shell script lint
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - uses: taiki-e/install-action@v2
       with:
         tool: shellcheck
@@ -112,17 +112,17 @@ jobs:
     name: Run tests
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - name: Install system dependencies
       run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo-tarpaulin"
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v7
       with:
         node-version: '22'
-    - uses: actions/cache@v5
+    - uses: actions/cache@v6
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -135,7 +135,7 @@ jobs:
     - name: Test mtrack
       run: cargo tarpaulin --skip-clean --all-features --timeout 120 --out xml
     - name: Upload coverage reports to Codecov
-      uses: codecov/codecov-action@v5
+      uses: codecov/codecov-action@v7
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         slug: mdwn/mtrack
@@ -153,18 +153,18 @@ jobs:
     name: Debian package test
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - name: Install system dependencies
       run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo"
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v7
       with:
         node-version: '22'
     - name: Cache node modules
-      uses: actions/cache@v5
+      uses: actions/cache@v6
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -182,11 +182,11 @@ jobs:
     name: Frontend checks
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
-    - uses: actions/setup-node@v4
+    - uses: actions/checkout@v7
+    - uses: actions/setup-node@v7
       with:
         node-version: '22'
-    - uses: actions/cache@v5
+    - uses: actions/cache@v6
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -203,11 +203,11 @@ jobs:
     name: Playwright E2E tests
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
-    - uses: actions/setup-node@v4
+    - uses: actions/checkout@v7
+    - uses: actions/setup-node@v7
       with:
         node-version: '22'
-    - uses: actions/cache@v5
+    - uses: actions/cache@v6
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -220,7 +220,7 @@ jobs:
       run: cd src/webui/svelte && npx playwright install-deps chromium
     - name: Run Playwright tests
       run: make test-ui
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       if: ${{ !cancelled() }}
       with:
         name: playwright-report
@@ -232,7 +232,7 @@ jobs:
     name: Ensure license headers
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - uses: dtolnay/rust-toolchain@stable
     - uses: taiki-e/install-action@v2
       with:
@@ -248,7 +248,7 @@ jobs:
     name: Docs build and crate packaging
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - uses: taiki-e/install-action@v2
       with:
         tool: mdbook
@@ -264,7 +264,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       # We'll run the extract release notes action and drop the results on the floor.
       # If extract-release-notes can successfully extract release notes, we'll
       # consider this success for now.

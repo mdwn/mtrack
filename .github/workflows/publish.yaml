@@ -23,7 +23,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     # A tag whose version was never bumped in Cargo.toml used to fail only at
     # `cargo publish` ("version already uploaded") — after the GitHub release
     # already existed. Fail the whole pipeline up front instead.
@@ -38,11 +38,11 @@ jobs:
     - name: Install system dependencies
       run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v7
       with:
         node-version: '22'
     - name: Cache node modules
-      uses: actions/cache@v5
+      uses: actions/cache@v6
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Extract release notes
         id: extract-release-notes
         uses: ffurrer2/extract-release-notes@v3
@@ -103,7 +103,7 @@ jobs:
             platform: macos
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG }}
       - name: Install Linux system dependencies
@@ -128,10 +128,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "release-${{ matrix.target }}"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: src/webui/svelte/node_modules
           key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -178,7 +178,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
       - uses: dtolnay/rust-toolchain@stable
@@ -216,7 +216,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${RELEASE_TAG}" debs/*.deb --clobber
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: debs
           path: debs/*.deb
@@ -251,8 +251,8 @@ jobs:
       AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
       BUCKET: ${{ vars.APT_R2_BUCKET }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: debs
           path: debs
