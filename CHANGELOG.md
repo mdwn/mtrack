@@ -88,7 +88,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It says nothing about whether the card boots or whether audio and DMX work; those still need
   hardware.
 
-### Fixed
+### Changed
+
+- **protoc is installed directly rather than through a third-party action**: `arduino/setup-protoc`
+  supplied a protoc newer than ubuntu-22.04's, which ships 3.12 and refuses the proto3 `optional`
+  fields in the player protos. The action is unmaintained -- its last release was January 2026's
+  predecessor, its default branch has been untouched since September 2024, and every ref still
+  declares the deprecated Node 20 runtime, so it was the only remaining source of that deprecation
+  warning and will not be fixed.
+
+  `scripts/install-protoc.sh` fetches the upstream release zip instead, extracting both `protoc`
+  and the bundled well-known types -- the player protos import `google/protobuf/duration.proto`,
+  which comes from there. The version is now pinned rather than floating on `29.x`, so the protoc
+  that compiles a release is a fact rather than whatever was newest that day.
+
 
 - **CI actions are up to date, and off the deprecated Node 20 runtime**: GitHub is removing the
   Node 20 runtime that several pinned actions declared, and runners had already begun forcing them
