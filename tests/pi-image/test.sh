@@ -47,8 +47,12 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 failures=0
+# Both on stdout, deliberately. Splitting ok and fail across stdout and stderr
+# lets the log collector interleave them, and the run that found the bug above
+# printed its summary line in the middle of the check list. The exit code is
+# what reports the verdict; this output is for a human reading the log in order.
 ok()   { echo "    ok  $*"; }
-fail() { echo "  FAIL  $*" >&2; failures=$((failures + 1)); }
+fail() { echo "  FAIL  $*"; failures=$((failures + 1)); }
 
 have() { # have <description> <path-relative-to-rootfs>
     if $SUDO test -e "$MNT/$2"; then ok "$1"; else fail "$1 (missing /$2)"; fi
@@ -163,9 +167,19 @@ else
     fail "mtrack user not in audio group (ALSA and MIDI would be inaccessible)"
 fi
 have "project directory created" var/lib/mtrack
-owner="$($SUDO stat -c %U "$MNT/var/lib/mtrack" 2>/dev/null || echo '?')"
-if [ "$owner" = "mtrack" ]; then ok "project directory owned by mtrack"
-else fail "project directory owned by '$owner', not mtrack"; fi
+# stat -c %U resolves the numeric owner through the HOST's passwd database
+# rather than the image's, so on a machine where that uid belongs to some other
+# account it reports a correct image as wrong -- on a GitHub runner it came back
+# as 'systemd-timesync'. Same mistake as -e on the enable symlinks: asking the
+# host a question only the image can answer. Compare the raw uid against the one
+# the image's own /etc/passwd gives mtrack.
+want_uid="$($SUDO grep '^mtrack:' "$MNT/etc/passwd" 2>/dev/null | cut -d: -f3 || true)"
+have_uid="$($SUDO stat -c %u "$MNT/var/lib/mtrack" 2>/dev/null || echo '?')"
+if [ -n "$want_uid" ] && [ "$have_uid" = "$want_uid" ]; then
+    ok "project directory owned by mtrack (uid $want_uid)"
+else
+    fail "project directory is uid '$have_uid'; the image's mtrack user is uid '${want_uid:-unknown}'"
+fi
 
 echo
 echo "== discovery and lighting =="
@@ -181,6 +195,6 @@ echo
 if [ "$failures" -eq 0 ]; then
     echo "All image checks passed."
 else
-    echo "$failures image check(s) failed." >&2
+    echo "$failures image check(s) failed."
     exit 1
 fi
