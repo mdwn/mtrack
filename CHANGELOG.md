@@ -90,16 +90,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **CI no longer runs actions on a deprecated Node**: GitHub is removing the Node 20 runtime that
-  `actions/setup-node@v4`, `actions/upload-artifact@v4` and `actions/download-artifact@v4` declare;
-  runners had already begun forcing them onto Node 24 and warning about it. They move to the first
-  major of each that targets Node 24 -- v5, v6 and v7 respectively -- rather than to the newest,
-  which keeps the change to what the deprecation actually requires. Every input this repository
-  uses is unchanged across the bump.
+- **CI actions are up to date, and off the deprecated Node 20 runtime**: GitHub is removing the
+  Node 20 runtime that several pinned actions declared, and runners had already begun forcing them
+  onto Node 24 and warning about it. Every action with a newer release moves to it:
+  `checkout` v6→v7, `setup-node` v4→v7, `cache` v5→v6, `upload-artifact` v4→v7,
+  `download-artifact` v4→v8, `setup-buildx-action` v3→v4, `build-push-action` v6→v7 and
+  `codecov-action` v5→v7.
 
-  `actions/checkout` and `actions/cache` were already on Node 24 and are untouched.
-  `arduino/setup-protoc@v3` still declares Node 20 and has no newer release, so one warning
-  remains until it does.
+  `setup-buildx-action` and `build-push-action` were also still on Node 20. They are used only by
+  the systemd integration test, which runs on pushes to `main` rather than on pull requests, so
+  their warnings never appeared in a pull request's logs.
+
+  Every input this repository passes was checked against the new version of each action and is
+  unchanged. `Swatinem/rust-cache`, `taiki-e/install-action` and `ffurrer2/extract-release-notes`
+  were already on their newest major. `arduino/setup-protoc@v3` still declares Node 20 and has no
+  newer release, so one warning remains until it does.
 
 
 - **`systemctl enable mtrack` no longer reports a failure it did not have**: the generated unit
