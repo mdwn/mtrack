@@ -2,6 +2,7 @@ change_in_place: true
 excludes:
   - \.gitignore
   - ^packaging/debian/default$
+  - ^packaging/pi-gen/stage-mtrack/.*/[0-9]+-packages(-nr)?$
   - .*lock
   - \.git/.*
   - \.licensure\.yml
@@ -87,6 +88,7 @@ comments:
       - ^Makefile$
       - \.sh$
       - ^packaging/debian/(postinst|prerm|postrm)$
+      - ^packaging/pi-gen/(config|stage-mtrack/EXPORT_IMAGE)$
       - \.toml$
       - Dockerfile
       - \.dockerignore$

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Raspberry Pi image**: a flashable Raspberry Pi OS Lite image with mtrack installed and running
+  on boot, built as a pi-gen stage and attached to each release. It carries `avahi` so the player
+  answers at `http://mtrack.local:8080` on a machine with no monitor, and `olad` for DMX output.
+
+  The image ships no default username or password: pi-gen leaves the account locked and runs the
+  setup wizard on first boot, so the headless path is Raspberry Pi Imager's customisation dialog,
+  which writes the username, wifi and ssh keys to the boot partition before the card is booted.
+
+  Not covered yet: 32-bit Raspberry Pi OS, a library on a USB drive rather than the card, a wifi
+  hotspot fallback, and `apt upgrade` on a running Pi, which waits on the apt archive.
+
+
 - **GDTF fixture import (#422, #423, #425, #426)**: fixture types can be built from a
   manufacturer's GDTF archive instead of a hand-written channel map. A type references one with
   `from gdtf("lighting/library/x.gdtf", mode "8: RGBS")` in a `.fixture` file — which loads beside
@@ -60,6 +72,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The rule this makes visible: shows never mention universes, and every universe a venue references
   needs an output under `dmx.universes`. A multi-universe example venue and the documentation cover
   it.
+
+### Fixed
+
+- **`systemctl enable mtrack` no longer reports a failure it did not have**: the generated unit
+  carried `Alias=mtrack.service` while being installed as `mtrack.service`, so systemd tried to
+  create the alias symlink over the unit file itself. Enabling the service printed
+  `Failed to enable unit, file /etc/systemd/system/mtrack.service already exists` and exited 1 --
+  after creating the `WantedBy` symlink, so it had in fact worked. That is the exact sequence the
+  deployment guide tells operators to run.
+
+  The nonzero exit is what bites: it aborts any `set -e` caller automating the install. An alias
+  to a unit's own name conveys nothing, so it is gone rather than worked around. Regenerate your
+  unit to pick this up, or let the Debian package do it on the next upgrade.
 
 ## [0.16.0] - 2026-08-19
 

@@ -118,13 +118,18 @@ lint-shell:
 		exit 1; \
 	}
 	@# Discovered rather than listed, so a script added later is linted without
-	@# anyone remembering to add it here. The Debian maintainer scripts carry no
-	@# extension and so are missed by the *.sh glob; everything in
-	@# packaging/debian is shell except the conffile shipped as /etc/default.
+	@# anyone remembering to add it here. Plenty of shell under packaging/ carries
+	@# no extension and so is missed by the *.sh glob -- the Debian maintainer
+	@# scripts, pi-gen's sourced config and EXPORT_IMAGE. What is excluded is the
+	@# data: the conffile shipped as /etc/default, and pi-gen's package lists,
+	@# which are fed to apt a line at a time.
 	shellcheck $$(find $(ROOT_DIR) -name '*.sh' \
 		-not -path '*/node_modules/*' -not -path '*/target/*' -not -path '*/.git/*' \
 		| sort) \
-		$$(find $(ROOT_DIR)/packaging/debian -type f ! -name default | sort)
+		$$(find $(ROOT_DIR)/packaging -type f \
+			! -name '*.sh' ! -name '*.md' ! -name default \
+			! -name '*-packages' ! -name '*-packages-nr' \
+			| sort)
 
 ## Lint the Rust code
 lint-rust:
