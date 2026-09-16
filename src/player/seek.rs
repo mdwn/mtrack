@@ -25,6 +25,21 @@ use super::{Player, ReactiveLoopState};
 const SEEK_WINDDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Player {
+    /// Pauses playback and stores the exact song position for the next play.
+    ///
+    /// The playback engine has stop and position-based start primitives rather
+    /// than a native paused state. Capture elapsed first, stop all synchronized
+    /// subsystems, then persist that position through the normal stopped seek
+    /// path so the next `play()` resumes from it.
+    pub async fn pause(&self) -> Result<Option<Duration>, Box<dyn Error>> {
+        let Some(position) = self.elapsed().await? else {
+            return Ok(None);
+        };
+        self.stop().await;
+        self.seek_to(position).await?;
+        Ok(Some(position))
+    }
+
     /// Seeks to an absolute position within the current song.
     ///
     /// While playing, this is restart-based: the audio fades out briefly,

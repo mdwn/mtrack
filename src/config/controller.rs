@@ -26,6 +26,9 @@ pub const DEFAULT_MCP_BIND_ADDRESS: &str = "127.0.0.1";
 fn default_osc_play() -> String {
     "/mtrack/play".to_string()
 }
+fn default_osc_pause() -> String {
+    "/mtrack/pause".to_string()
+}
 fn default_osc_prev() -> String {
     "/mtrack/prev".to_string()
 }
@@ -327,6 +330,9 @@ pub struct OscController {
     /// The OSC address to look for to play the current song in the playlist.
     #[serde(default = "default_osc_play")]
     play: String,
+    /// The OSC address to pause playback while preserving the current position.
+    #[serde(default = "default_osc_pause")]
+    pause: String,
     /// The OSC address to look for to move the playlist to the previous item.
     #[serde(default = "default_osc_prev")]
     prev: String,
@@ -403,6 +409,7 @@ impl Default for OscController {
             port: DEFAULT_OSC_PORT,
             broadcast_addresses: Vec::new(),
             play: default_osc_play(),
+            pause: default_osc_pause(),
             prev: default_osc_prev(),
             next: default_osc_next(),
             stop: default_osc_stop(),
@@ -444,6 +451,11 @@ impl OscController {
     /// Gets the play OSC address.
     pub fn play(&self) -> &str {
         &self.play
+    }
+
+    /// Gets the pause OSC address.
+    pub fn pause(&self) -> &str {
+        &self.pause
     }
 
     /// Gets the prev OSC address.
@@ -666,6 +678,7 @@ mod test {
         assert_eq!(osc.port(), DEFAULT_OSC_PORT);
         assert!(osc.broadcast_addresses().is_empty());
         assert_eq!(osc.play(), "/mtrack/play");
+        assert_eq!(osc.pause(), "/mtrack/pause");
         assert_eq!(osc.prev(), "/mtrack/prev");
         assert_eq!(osc.next(), "/mtrack/next");
         assert_eq!(osc.stop(), "/mtrack/stop");

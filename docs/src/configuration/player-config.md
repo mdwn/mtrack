@@ -197,6 +197,8 @@ controllers:
   # Maps player events to arbitrary OSC events. If not specified, these
   # below are the defaults. None of these events require any arguments.
   play: /mtrack/play
+  # Pause preserves the current position; the next play resumes from it.
+  pause: /mtrack/pause
   prev: /mtrack/prev
   next: /mtrack/next
   stop: /mtrack/stop

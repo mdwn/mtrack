@@ -49,6 +49,7 @@ const STATUS_PLAYING: &str = "Playing";
 #[derive(Debug, PartialEq)]
 enum OscAction {
     Play,
+    Pause,
     Prev,
     Next,
     Stop,
@@ -79,6 +80,8 @@ pub struct Driver {
 pub(super) struct OscEvents {
     /// The OSC address to look for to play the current song in the playlist.
     play: Matcher,
+    /// The OSC address to pause playback while preserving position.
+    pause: Matcher,
     /// The OSC address to look for to move the playlist to the previous item.
     prev: Matcher,
     /// The OSC address to look for to move the playlist to the next item.
@@ -139,6 +142,7 @@ impl Driver {
             broadcast_addresses,
             osc_events: Arc::new(OscEvents {
                 play: Matcher::new(config.play())?,
+                pause: Matcher::new(config.pause())?,
                 prev: Matcher::new(config.prev())?,
                 next: Matcher::new(config.next())?,
                 stop: Matcher::new(config.stop())?,
@@ -421,6 +425,11 @@ impl Driver {
                     error!(err = e.as_ref(), "Failed to play song: {}", e);
                 }
             }
+            OscAction::Pause => {
+                if let Err(e) = player.pause().await {
+                    error!(err = e.as_ref(), "Failed to pause song: {}", e);
+                }
+            }
             OscAction::Prev => {
                 player.prev().await;
             }
@@ -534,6 +543,8 @@ fn classify_message(osc_events: &OscEvents, addr: &str) -> Result<OscAction, Box
     let address = OscAddress::new(addr.to_string())?;
     if osc_events.play.match_address(&address) {
         Ok(OscAction::Play)
+    } else if osc_events.pause.match_address(&address) {
+        Ok(OscAction::Pause)
     } else if osc_events.prev.match_address(&address) {
         Ok(OscAction::Prev)
     } else if osc_events.next.match_address(&address) {
@@ -1159,6 +1170,7 @@ mod test {
         let config = config::OscController::new();
         OscEvents {
             play: Matcher::new(config.play()).unwrap(),
+            pause: Matcher::new(config.pause()).unwrap(),
             prev: Matcher::new(config.prev()).unwrap(),
             next: Matcher::new(config.next()).unwrap(),
             stop: Matcher::new(config.stop()).unwrap(),
@@ -1190,6 +1202,15 @@ mod test {
             assert_eq!(
                 classify_message(&events, "/mtrack/play").unwrap(),
                 OscAction::Play
+            );
+        }
+
+        #[test]
+        fn recognizes_pause() {
+            let events = make_default_osc_events();
+            assert_eq!(
+                classify_message(&events, "/mtrack/pause").unwrap(),
+                OscAction::Pause
             );
         }
 
