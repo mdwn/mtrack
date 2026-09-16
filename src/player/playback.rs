@@ -456,7 +456,11 @@ impl Player {
         let play_handles = match join.take() {
             Some(handles) => handles,
             None => {
-                info!("Player is not active, nothing to stop.");
+                // A paused or stopped seek is represented as a pending start
+                // while no playback task is active. Stop must still reset that
+                // position so the next play begins at zero.
+                self.clear_pending_start();
+                info!("Player is not active, cleared any preserved position.");
                 return None;
             }
         };
@@ -501,7 +505,12 @@ impl Player {
             .unwrap_or(false)
     }
 
-    /// Gets the elapsed time from the play start time.
+    /// Gets the current playback position.
+    ///
+    /// While playing, this is derived from the transport clock. While paused,
+    /// the preserved pending start is returned so status clients keep showing
+    /// the paused position. A normal stop clears both and therefore reports no
+    /// elapsed position.
     pub async fn elapsed(&self) -> Result<Option<Duration>, Box<dyn Error>> {
         let play_start_time = self.play_start_time.lock().await;
         Ok(match *play_start_time {
@@ -510,7 +519,7 @@ impl Player {
                 let consumed = *self.loop_time_consumed.lock();
                 Some(raw.saturating_sub(consumed))
             }
-            None => None,
+            None => self.pending_start(),
         })
     }
 
