@@ -197,6 +197,8 @@ controllers:
   # Maps player events to arbitrary OSC events. If not specified, these
   # below are the defaults. None of these events require any arguments.
   play: /mtrack/play
+  # Pause preserves the current position; the next play resumes from it.
+  pause: /mtrack/pause
   prev: /mtrack/prev
   next: /mtrack/next
   stop: /mtrack/stop
@@ -221,6 +223,11 @@ controllers:
   # The duration of the time elapsed since a song was playing and the
   # total duration of the song. Contains a single string argument.
   playlist_current_song_elapsed: /mtrack/playlist/current_song/elapsed
+
+  # Numeric playback progress followed by zero or more section triples:
+  # elapsed seconds, duration seconds, then repeating name/start/end values.
+  # Designed for dynamic TouchOSC and other timeline displays.
+  timeline: /mtrack/timeline
 
   # Section loop control paths.
   section_ack: /mtrack/section_ack

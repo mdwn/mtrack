@@ -41,6 +41,19 @@ use crate::{config, player::Player, util};
 /// This is the all hosts multicast address.
 const BROADCAST_SLEEP_DURATION: Duration = Duration::from_millis(500);
 
+/// Aborts a child task when the owning controller task is cancelled.
+///
+/// Tokio does not automatically cancel tasks spawned by a parent task. Without
+/// this guard, restarting controllers leaves the old UDP task alive and holding
+/// the OSC port while its channel receiver has already been dropped.
+struct AbortOnDrop<T>(JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Player status strings.
 const STATUS_STOPPED: &str = "Stopped";
 const STATUS_PLAYING: &str = "Playing";
@@ -49,6 +62,7 @@ const STATUS_PLAYING: &str = "Playing";
 #[derive(Debug, PartialEq)]
 enum OscAction {
     Play,
+    Pause,
     Prev,
     Next,
     Stop,
@@ -79,6 +93,8 @@ pub struct Driver {
 pub(super) struct OscEvents {
     /// The OSC address to look for to play the current song in the playlist.
     play: Matcher,
+    /// The OSC address to pause playback while preserving position.
+    pause: Matcher,
     /// The OSC address to look for to move the playlist to the previous item.
     prev: Matcher,
     /// The OSC address to look for to move the playlist to the next item.
@@ -116,6 +132,8 @@ pub(super) struct OscEvents {
     playlist_current_song: String,
     /// The OSC address to use to broadcast the currently playing song elapsed time.
     playlist_current_song_elapsed: String,
+    /// The OSC address to broadcast numeric progress and section boundaries.
+    timeline: String,
 }
 
 impl Driver {
@@ -137,6 +155,7 @@ impl Driver {
             broadcast_addresses,
             osc_events: Arc::new(OscEvents {
                 play: Matcher::new(config.play())?,
+                pause: Matcher::new(config.pause())?,
                 prev: Matcher::new(config.prev())?,
                 next: Matcher::new(config.next())?,
                 stop: Matcher::new(config.stop())?,
@@ -155,6 +174,7 @@ impl Driver {
                 playlist_current: config.playlist_current().to_string(),
                 playlist_current_song: config.playlist_current_song().to_string(),
                 playlist_current_song_elapsed: config.playlist_current_song_elapsed().to_string(),
+                timeline: config.timeline().to_string(),
             }),
         }))
     }
@@ -194,30 +214,30 @@ impl super::Driver for Driver {
             let connected_clients: Arc<Mutex<HashSet<SocketAddr>>> =
                 Arc::new(Mutex::new(HashSet::new()));
 
-            tokio::spawn(Self::handle_udp_comms(
+            let _udp_task = AbortOnDrop(tokio::spawn(Self::handle_udp_comms(
                 socket,
                 broadcast_addresses,
                 connected_clients.clone(),
                 rx_sender,
                 tx_receiver,
-            ));
+            )));
 
             // Start the broadcast async task.
-            {
+            let _broadcast_task = {
                 let player = player.clone();
                 let tx_sender = tx_sender.clone();
                 let osc_events = osc_events.clone();
 
                 info!("Starting broadcast loop");
-                tokio::spawn(async move {
+                AbortOnDrop(tokio::spawn(async move {
                     loop {
                         if let Err(e) = Self::broadcast(&player, &osc_events, &tx_sender).await {
                             error!(err = e, "Error broadcasting player status");
                         }
                         tokio::time::sleep(BROADCAST_SLEEP_DURATION).await;
                     }
-                });
-            }
+                }))
+            };
 
             loop {
                 let packet = rx_receiver.recv().await;
@@ -312,6 +332,7 @@ impl Driver {
         };
         let is_playing = player.is_playing().await;
         let elapsed = player.elapsed().await?;
+        let elapsed_duration = elapsed.unwrap_or_default();
         let status_string = if is_playing {
             STATUS_PLAYING
         } else {
@@ -319,7 +340,7 @@ impl Driver {
         };
         let duration_string = format!(
             "{}/{}",
-            util::duration_minutes_seconds(elapsed.unwrap_or_default()),
+            util::duration_minutes_seconds(elapsed_duration),
             util::duration_minutes_seconds(song.duration())
         );
         let playlist_songs: Vec<String> = playlist.songs().to_vec();
@@ -340,6 +361,25 @@ impl Driver {
             &playlist_songs,
             audio_health,
         );
+
+        let section_timings = song
+            .sections()
+            .iter()
+            .filter_map(|section| {
+                song.resolve_section(&section.name)
+                    .map(|(start, end)| SectionTiming {
+                        name: section.name.clone(),
+                        start_seconds: start.as_secs_f64(),
+                        end_seconds: end.as_secs_f64(),
+                    })
+            })
+            .collect::<Vec<_>>();
+        packets.push(build_timeline_packet(
+            &osc_events.timeline,
+            elapsed_duration.as_secs_f64(),
+            song.duration().as_secs_f64(),
+            &section_timings,
+        ));
 
         // Per-track gain feedback (motorized faders / TouchOSC). Tracks whose
         // names can't form a valid OSC address segment are skipped.
@@ -396,6 +436,11 @@ impl Driver {
             OscAction::Play => {
                 if let Err(e) = player.play().await {
                     error!(err = e.as_ref(), "Failed to play song: {}", e);
+                }
+            }
+            OscAction::Pause => {
+                if let Err(e) = player.pause().await {
+                    error!(err = e.as_ref(), "Failed to pause song: {}", e);
                 }
             }
             OscAction::Prev => {
@@ -511,6 +556,8 @@ fn classify_message(osc_events: &OscEvents, addr: &str) -> Result<OscAction, Box
     let address = OscAddress::new(addr.to_string())?;
     if osc_events.play.match_address(&address) {
         Ok(OscAction::Play)
+    } else if osc_events.pause.match_address(&address) {
+        Ok(OscAction::Pause)
     } else if osc_events.prev.match_address(&address) {
         Ok(OscAction::Prev)
     } else if osc_events.next.match_address(&address) {
@@ -584,6 +631,39 @@ fn format_playlist_content(songs: &[String]) -> String {
         .map(|(i, song)| format!("{}. {}", i + 1, song))
         .collect::<Vec<String>>()
         .join("\n")
+}
+
+#[derive(Debug, PartialEq)]
+struct SectionTiming {
+    name: String,
+    start_seconds: f64,
+    end_seconds: f64,
+}
+
+/// Builds one compact, self-describing timeline packet for remote surfaces.
+///
+/// Arguments are elapsed seconds, total duration seconds, followed by repeating
+/// `(section name, start seconds, end seconds)` triples. Keeping this numeric
+/// avoids forcing controllers to parse the legacy `m:ss/m:ss` display string.
+fn build_timeline_packet(
+    address: &str,
+    elapsed_seconds: f64,
+    duration_seconds: f64,
+    sections: &[SectionTiming],
+) -> OscPacket {
+    let mut args = vec![
+        OscType::Double(elapsed_seconds),
+        OscType::Double(duration_seconds),
+    ];
+    for section in sections {
+        args.push(OscType::String(section.name.clone()));
+        args.push(OscType::Double(section.start_seconds));
+        args.push(OscType::Double(section.end_seconds));
+    }
+    OscPacket::Message(OscMessage {
+        addr: address.to_string(),
+        args,
+    })
 }
 
 /// Builds the set of broadcast OSC packets from player state data.
@@ -777,7 +857,7 @@ mod test {
         let mut buf: Vec<OscPacket> = Vec::new();
         tx_receiver.recv_many(&mut buf, 10).await;
 
-        assert_eq!(buf.len(), 4);
+        assert_eq!(buf.len(), 5);
         assert_eq!(
             buf[0],
             OscPacket::Message(OscMessage {
@@ -806,6 +886,13 @@ mod test {
                 args: vec![OscType::String(
                     "1. Song 1\n2. Song 3\n3. Song 5\n4. Song 7\n5. Song 9".to_string()
                 )],
+            })
+        );
+        assert_eq!(
+            buf[4],
+            OscPacket::Message(OscMessage {
+                addr: driver.osc_events.timeline.clone(),
+                args: vec![OscType::Double(0.0), OscType::Double(20.0)],
             })
         );
 
@@ -1087,7 +1174,8 @@ mod test {
     }
 
     use super::{
-        build_broadcast_packets, classify_message, format_playlist_content, OscAction, OscEvents,
+        build_broadcast_packets, build_timeline_packet, classify_message, format_playlist_content,
+        OscAction, OscEvents, SectionTiming,
     };
     use rosc::address::Matcher;
 
@@ -1095,6 +1183,7 @@ mod test {
         let config = config::OscController::new();
         OscEvents {
             play: Matcher::new(config.play()).unwrap(),
+            pause: Matcher::new(config.pause()).unwrap(),
             prev: Matcher::new(config.prev()).unwrap(),
             next: Matcher::new(config.next()).unwrap(),
             stop: Matcher::new(config.stop()).unwrap(),
@@ -1113,6 +1202,7 @@ mod test {
             playlist_current: config.playlist_current().to_string(),
             playlist_current_song: config.playlist_current_song().to_string(),
             playlist_current_song_elapsed: config.playlist_current_song_elapsed().to_string(),
+            timeline: config.timeline().to_string(),
         }
     }
 
@@ -1125,6 +1215,15 @@ mod test {
             assert_eq!(
                 classify_message(&events, "/mtrack/play").unwrap(),
                 OscAction::Play
+            );
+        }
+
+        #[test]
+        fn recognizes_pause() {
+            let events = make_default_osc_events();
+            assert_eq!(
+                classify_message(&events, "/mtrack/pause").unwrap(),
+                OscAction::Pause
             );
         }
 
@@ -1559,6 +1658,24 @@ mod test {
         );
 
         handle.abort();
+        let aborted = handle
+            .await
+            .expect_err("OSC monitor task should be cancelled");
+        assert!(aborted.is_cancelled());
+
+        let rebound = timeout(Duration::from_secs(1), async {
+            loop {
+                match UdpSocket::bind(format!("127.0.0.1:{}", port)).await {
+                    Ok(socket) => break socket,
+                    Err(_) => tokio::task::yield_now().await,
+                }
+            }
+        })
+        .await;
+        assert!(
+            rebound.is_ok(),
+            "OSC socket was leaked after aborting monitor_events"
+        );
         Ok(())
     }
 
@@ -1635,9 +1752,44 @@ mod test {
     }
 
     mod build_broadcast_packets_tests {
-        use super::{build_broadcast_packets, make_default_osc_events};
+        use super::{
+            build_broadcast_packets, build_timeline_packet, make_default_osc_events, SectionTiming,
+        };
         use crate::controller::osc::{STATUS_PLAYING, STATUS_STOPPED};
         use rosc::{OscMessage, OscPacket, OscType};
+
+        #[test]
+        fn timeline_packet_carries_numeric_progress_and_all_song_sections() {
+            let sections = vec![
+                SectionTiming {
+                    name: "Intro".to_string(),
+                    start_seconds: 0.0,
+                    end_seconds: 12.5,
+                },
+                SectionTiming {
+                    name: "Odd chorus".to_string(),
+                    start_seconds: 12.5,
+                    end_seconds: 42.0,
+                },
+            ];
+
+            assert_eq!(
+                build_timeline_packet("/mtrack/timeline", 18.25, 240.0, &sections),
+                OscPacket::Message(OscMessage {
+                    addr: "/mtrack/timeline".to_string(),
+                    args: vec![
+                        OscType::Double(18.25),
+                        OscType::Double(240.0),
+                        OscType::String("Intro".to_string()),
+                        OscType::Double(0.0),
+                        OscType::Double(12.5),
+                        OscType::String("Odd chorus".to_string()),
+                        OscType::Double(12.5),
+                        OscType::Double(42.0),
+                    ],
+                })
+            );
+        }
 
         #[test]
         fn returns_four_packets() {

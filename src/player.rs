@@ -1706,6 +1706,57 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_pause_stops_and_preserves_position_for_resume() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let paused_at = player.pause().await?.expect("playing song should pause");
+        eventually(|| !device.is_playing(), "Song never paused");
+        assert_eq!(player.pending_start(), Some(paused_at));
+        assert_eq!(
+            player.elapsed().await?,
+            Some(paused_at),
+            "paused position should remain visible to OSC and browser status"
+        );
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never resumed");
+        let resumed_at = elapsed_eventually(&player).await?;
+        assert!(resumed_at >= paused_at);
+
+        player.stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_stop_after_pause_resets_preserved_position() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        player.pause().await?;
+        eventually(|| !device.is_playing(), "Song never paused");
+        assert!(player.elapsed().await?.is_some());
+
+        player.stop().await;
+        assert_eq!(player.pending_start(), None);
+        assert_eq!(player.elapsed().await?, None);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_play_from_nonzero_start() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
         let binding = player
