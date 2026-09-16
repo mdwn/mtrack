@@ -77,6 +77,9 @@ fn default_osc_playlist_current_song() -> String {
 fn default_osc_playlist_current_song_elapsed() -> String {
     "/mtrack/playlist/current_song/elapsed".to_string()
 }
+fn default_osc_timeline() -> String {
+    "/mtrack/timeline".to_string()
+}
 
 /// Allows users to specify various controllers.
 #[derive(Deserialize, Serialize, Clone)]
@@ -384,6 +387,10 @@ pub struct OscController {
     /// The OSC address to broadcast to display the current song elapsed duration.
     #[serde(default = "default_osc_playlist_current_song_elapsed")]
     playlist_current_song_elapsed: String,
+    /// The OSC address to broadcast numeric playback progress and the current
+    /// song's dynamically named section boundaries.
+    #[serde(default = "default_osc_timeline")]
+    timeline: String,
 }
 
 fn default_osc_port() -> u16 {
@@ -413,6 +420,7 @@ impl Default for OscController {
             playlist_current: default_osc_playlist_current(),
             playlist_current_song: default_osc_playlist_current_song(),
             playlist_current_song_elapsed: default_osc_playlist_current_song_elapsed(),
+            timeline: default_osc_timeline(),
         }
     }
 }
@@ -521,6 +529,11 @@ impl OscController {
     /// Gets the playlist current song elapsed OSC address.
     pub fn playlist_current_song_elapsed(&self) -> &str {
         &self.playlist_current_song_elapsed
+    }
+
+    /// Gets the numeric playback timeline and section-boundary OSC address.
+    pub fn timeline(&self) -> &str {
+        &self.timeline
     }
 }
 
@@ -666,6 +679,7 @@ mod test {
             osc.playlist_current_song_elapsed(),
             "/mtrack/playlist/current_song/elapsed"
         );
+        assert_eq!(osc.timeline(), "/mtrack/timeline");
     }
 
     #[test]

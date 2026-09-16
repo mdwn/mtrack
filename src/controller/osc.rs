@@ -116,6 +116,8 @@ pub(super) struct OscEvents {
     playlist_current_song: String,
     /// The OSC address to use to broadcast the currently playing song elapsed time.
     playlist_current_song_elapsed: String,
+    /// The OSC address to broadcast numeric progress and section boundaries.
+    timeline: String,
 }
 
 impl Driver {
@@ -155,6 +157,7 @@ impl Driver {
                 playlist_current: config.playlist_current().to_string(),
                 playlist_current_song: config.playlist_current_song().to_string(),
                 playlist_current_song_elapsed: config.playlist_current_song_elapsed().to_string(),
+                timeline: config.timeline().to_string(),
             }),
         }))
     }
@@ -312,6 +315,7 @@ impl Driver {
         };
         let is_playing = player.is_playing().await;
         let elapsed = player.elapsed().await?;
+        let elapsed_duration = elapsed.unwrap_or_default();
         let status_string = if is_playing {
             STATUS_PLAYING
         } else {
@@ -319,7 +323,7 @@ impl Driver {
         };
         let duration_string = format!(
             "{}/{}",
-            util::duration_minutes_seconds(elapsed.unwrap_or_default()),
+            util::duration_minutes_seconds(elapsed_duration),
             util::duration_minutes_seconds(song.duration())
         );
         let playlist_songs: Vec<String> = playlist.songs().to_vec();
@@ -340,6 +344,25 @@ impl Driver {
             &playlist_songs,
             audio_health,
         );
+
+        let section_timings = song
+            .sections()
+            .iter()
+            .filter_map(|section| {
+                song.resolve_section(&section.name)
+                    .map(|(start, end)| SectionTiming {
+                        name: section.name.clone(),
+                        start_seconds: start.as_secs_f64(),
+                        end_seconds: end.as_secs_f64(),
+                    })
+            })
+            .collect::<Vec<_>>();
+        packets.push(build_timeline_packet(
+            &osc_events.timeline,
+            elapsed_duration.as_secs_f64(),
+            song.duration().as_secs_f64(),
+            &section_timings,
+        ));
 
         // Per-track gain feedback (motorized faders / TouchOSC). Tracks whose
         // names can't form a valid OSC address segment are skipped.
@@ -586,6 +609,39 @@ fn format_playlist_content(songs: &[String]) -> String {
         .join("\n")
 }
 
+#[derive(Debug, PartialEq)]
+struct SectionTiming {
+    name: String,
+    start_seconds: f64,
+    end_seconds: f64,
+}
+
+/// Builds one compact, self-describing timeline packet for remote surfaces.
+///
+/// Arguments are elapsed seconds, total duration seconds, followed by repeating
+/// `(section name, start seconds, end seconds)` triples. Keeping this numeric
+/// avoids forcing controllers to parse the legacy `m:ss/m:ss` display string.
+fn build_timeline_packet(
+    address: &str,
+    elapsed_seconds: f64,
+    duration_seconds: f64,
+    sections: &[SectionTiming],
+) -> OscPacket {
+    let mut args = vec![
+        OscType::Double(elapsed_seconds),
+        OscType::Double(duration_seconds),
+    ];
+    for section in sections {
+        args.push(OscType::String(section.name.clone()));
+        args.push(OscType::Double(section.start_seconds));
+        args.push(OscType::Double(section.end_seconds));
+    }
+    OscPacket::Message(OscMessage {
+        addr: address.to_string(),
+        args,
+    })
+}
+
 /// Builds the set of broadcast OSC packets from player state data.
 fn build_broadcast_packets(
     osc_events: &OscEvents,
@@ -777,7 +833,7 @@ mod test {
         let mut buf: Vec<OscPacket> = Vec::new();
         tx_receiver.recv_many(&mut buf, 10).await;
 
-        assert_eq!(buf.len(), 4);
+        assert_eq!(buf.len(), 5);
         assert_eq!(
             buf[0],
             OscPacket::Message(OscMessage {
@@ -806,6 +862,13 @@ mod test {
                 args: vec![OscType::String(
                     "1. Song 1\n2. Song 3\n3. Song 5\n4. Song 7\n5. Song 9".to_string()
                 )],
+            })
+        );
+        assert_eq!(
+            buf[4],
+            OscPacket::Message(OscMessage {
+                addr: driver.osc_events.timeline.clone(),
+                args: vec![OscType::Double(0.0), OscType::Double(20.0)],
             })
         );
 
@@ -1087,7 +1150,8 @@ mod test {
     }
 
     use super::{
-        build_broadcast_packets, classify_message, format_playlist_content, OscAction, OscEvents,
+        build_broadcast_packets, build_timeline_packet, classify_message, format_playlist_content,
+        OscAction, OscEvents, SectionTiming,
     };
     use rosc::address::Matcher;
 
@@ -1113,6 +1177,7 @@ mod test {
             playlist_current: config.playlist_current().to_string(),
             playlist_current_song: config.playlist_current_song().to_string(),
             playlist_current_song_elapsed: config.playlist_current_song_elapsed().to_string(),
+            timeline: config.timeline().to_string(),
         }
     }
 
@@ -1635,9 +1700,44 @@ mod test {
     }
 
     mod build_broadcast_packets_tests {
-        use super::{build_broadcast_packets, make_default_osc_events};
+        use super::{
+            build_broadcast_packets, build_timeline_packet, make_default_osc_events, SectionTiming,
+        };
         use crate::controller::osc::{STATUS_PLAYING, STATUS_STOPPED};
         use rosc::{OscMessage, OscPacket, OscType};
+
+        #[test]
+        fn timeline_packet_carries_numeric_progress_and_all_song_sections() {
+            let sections = vec![
+                SectionTiming {
+                    name: "Intro".to_string(),
+                    start_seconds: 0.0,
+                    end_seconds: 12.5,
+                },
+                SectionTiming {
+                    name: "Odd chorus".to_string(),
+                    start_seconds: 12.5,
+                    end_seconds: 42.0,
+                },
+            ];
+
+            assert_eq!(
+                build_timeline_packet("/mtrack/timeline", 18.25, 240.0, &sections),
+                OscPacket::Message(OscMessage {
+                    addr: "/mtrack/timeline".to_string(),
+                    args: vec![
+                        OscType::Double(18.25),
+                        OscType::Double(240.0),
+                        OscType::String("Intro".to_string()),
+                        OscType::Double(0.0),
+                        OscType::Double(12.5),
+                        OscType::String("Odd chorus".to_string()),
+                        OscType::Double(12.5),
+                        OscType::Double(42.0),
+                    ],
+                })
+            );
+        }
 
         #[test]
         fn returns_four_packets() {

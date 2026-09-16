@@ -222,6 +222,11 @@ controllers:
   # total duration of the song. Contains a single string argument.
   playlist_current_song_elapsed: /mtrack/playlist/current_song/elapsed
 
+  # Numeric playback progress followed by zero or more section triples:
+  # elapsed seconds, duration seconds, then repeating name/start/end values.
+  # Designed for dynamic TouchOSC and other timeline displays.
+  timeline: /mtrack/timeline
+
   # Section loop control paths.
   section_ack: /mtrack/section_ack
   stop_section_loop: /mtrack/stop_section_loop
