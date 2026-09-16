@@ -41,6 +41,19 @@ use crate::{config, player::Player, util};
 /// This is the all hosts multicast address.
 const BROADCAST_SLEEP_DURATION: Duration = Duration::from_millis(500);
 
+/// Aborts a child task when the owning controller task is cancelled.
+///
+/// Tokio does not automatically cancel tasks spawned by a parent task. Without
+/// this guard, restarting controllers leaves the old UDP task alive and holding
+/// the OSC port while its channel receiver has already been dropped.
+struct AbortOnDrop<T>(JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Player status strings.
 const STATUS_STOPPED: &str = "Stopped";
 const STATUS_PLAYING: &str = "Playing";
@@ -201,30 +214,30 @@ impl super::Driver for Driver {
             let connected_clients: Arc<Mutex<HashSet<SocketAddr>>> =
                 Arc::new(Mutex::new(HashSet::new()));
 
-            tokio::spawn(Self::handle_udp_comms(
+            let _udp_task = AbortOnDrop(tokio::spawn(Self::handle_udp_comms(
                 socket,
                 broadcast_addresses,
                 connected_clients.clone(),
                 rx_sender,
                 tx_receiver,
-            ));
+            )));
 
             // Start the broadcast async task.
-            {
+            let _broadcast_task = {
                 let player = player.clone();
                 let tx_sender = tx_sender.clone();
                 let osc_events = osc_events.clone();
 
                 info!("Starting broadcast loop");
-                tokio::spawn(async move {
+                AbortOnDrop(tokio::spawn(async move {
                     loop {
                         if let Err(e) = Self::broadcast(&player, &osc_events, &tx_sender).await {
                             error!(err = e, "Error broadcasting player status");
                         }
                         tokio::time::sleep(BROADCAST_SLEEP_DURATION).await;
                     }
-                });
-            }
+                }))
+            };
 
             loop {
                 let packet = rx_receiver.recv().await;
@@ -1645,6 +1658,24 @@ mod test {
         );
 
         handle.abort();
+        let aborted = handle
+            .await
+            .expect_err("OSC monitor task should be cancelled");
+        assert!(aborted.is_cancelled());
+
+        let rebound = timeout(Duration::from_secs(1), async {
+            loop {
+                match UdpSocket::bind(format!("127.0.0.1:{}", port)).await {
+                    Ok(socket) => break socket,
+                    Err(_) => tokio::task::yield_now().await,
+                }
+            }
+        })
+        .await;
+        assert!(
+            rebound.is_ok(),
+            "OSC socket was leaked after aborting monitor_events"
+        );
         Ok(())
     }
 
