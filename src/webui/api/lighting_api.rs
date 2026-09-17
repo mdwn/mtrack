@@ -493,6 +493,10 @@ pub(super) async fn get_fixture_types(
     }
     let all = super::helpers::spawn_blocking_io("load fixture types", move || {
         let mut all = std::collections::HashMap::new();
+        // `.fixture` files are deliberately not listed here: this CRUD
+        // edits channel maps, and saving a GDTF-referential type through
+        // it would detach it from its archive. Their editor (resolved
+        // read-only view + overrides) is a later slice.
         let errors = load_light_files_from_dir(&dir, &["light"], |content| {
             match lighting::parser::parse_fixture_types(content) {
                 Ok(types) => {

@@ -346,3 +346,12 @@ fn the_venue_display_form_round_trips_through_the_parser() {
         "a bare-word type stays bare"
     );
 }
+
+#[test]
+fn a_hash_inside_a_quoted_name_is_not_a_comment() {
+    let content = "venue \"v\" {\n  fixture \"Truss #3\" \"Par #1\" @ 1:1 tags [\"a\"]\n}\n";
+    let venue = &parse_venues(content).expect("parses")["v"];
+    let fixture = &venue.fixtures()["Truss #3"];
+    assert_eq!(fixture.fixture_type(), "Par #1");
+    assert_eq!(fixture.tags(), ["a"]);
+}

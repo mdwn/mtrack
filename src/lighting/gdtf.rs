@@ -99,23 +99,32 @@ pub fn match_mode(description: &Description, requested: &str) -> Result<ModeMatc
         .modes
         .iter()
         .filter(|m| normalize_mode_name(&m.name) == wanted);
+    let candidates = || {
+        description
+            .modes
+            .iter()
+            .map(|m| format!("\"{}\"", m.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     match (folded.next(), folded.next()) {
         (Some(mode), None) => Ok(ModeMatch {
             name: mode.name.clone(),
             normalized: true,
         }),
-        _ => {
-            let candidates: Vec<String> = description
-                .modes
-                .iter()
-                .map(|m| format!("\"{}\"", m.name))
-                .collect();
-            Err(GdtfError::new(format!(
-                "GDTF \"{}\" has no mode matching \"{requested}\"; its modes are: {}",
-                description.name,
-                candidates.join(", ")
-            )))
-        }
+        (Some(first), Some(second)) => Err(GdtfError::new(format!(
+            "GDTF \"{}\": mode \"{requested}\" is ambiguous — it could be \"{}\" or \"{}\"; \
+             name one exactly. Its modes are: {}",
+            description.name,
+            first.name,
+            second.name,
+            candidates()
+        ))),
+        _ => Err(GdtfError::new(format!(
+            "GDTF \"{}\" has no mode matching \"{requested}\"; its modes are: {}",
+            description.name,
+            candidates()
+        ))),
     }
 }
 

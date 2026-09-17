@@ -631,7 +631,7 @@ pub fn import_mvr(
     mvr_path: &str,
     write: bool,
     name: Option<String>,
-    origin: &str,
+    origin: Option<&str>,
     project: &str,
     fixture_types_dir: String,
     venues_dir: String,
@@ -640,7 +640,7 @@ pub fn import_mvr(
 
     let options = MvrImportOptions {
         name,
-        origin_mm: parse_origin_mm(origin)?,
+        origin_mm: origin.map(parse_origin_mm).transpose()?,
         fixture_types_dir,
         venues_dir,
     };

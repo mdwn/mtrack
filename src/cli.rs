@@ -260,9 +260,10 @@ enum Commands {
         #[arg(short, long)]
         name: Option<String>,
         /// The MVR-space point, in millimeters, that becomes the stage
-        /// origin (downstage-center on the deck), as "x,y,z".
-        #[arg(long, default_value = "0,0,0")]
-        origin: String,
+        /// origin (downstage-center on the deck), as "x,y,z". Defaults to
+        /// the venue's recorded origin on a re-import, else 0,0,0.
+        #[arg(long)]
+        origin: Option<String>,
         /// Project directory the import writes into.
         #[arg(short, long, default_value = ".")]
         project: String,
@@ -533,7 +534,7 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
             &mvr_path,
             write,
             name,
-            &origin,
+            origin.as_deref(),
             &project,
             fixture_types_dir,
             venues_dir,

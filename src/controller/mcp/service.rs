@@ -342,7 +342,8 @@ pub struct ImportMvrArgs {
     /// Name for the venue; defaults to the archive's file stem.
     pub name: Option<String>,
     /// The MVR-space point, in millimeters, that becomes the stage origin
-    /// (downstage-center on the deck). Defaults to the MVR's own origin.
+    /// (downstage-center on the deck). Omitted, a re-import keeps the
+    /// venue's recorded origin and a fresh seed uses the MVR's own.
     pub origin_mm: Option<[f64; 3]>,
 }
 
@@ -1830,7 +1831,7 @@ impl McpServer {
     fn mvr_options(&self, args: &ImportMvrArgs) -> crate::lighting::import::MvrImportOptions {
         crate::lighting::import::MvrImportOptions {
             name: args.name.clone(),
-            origin_mm: args.origin_mm.unwrap_or([0.0; 3]),
+            origin_mm: args.origin_mm,
             ..crate::lighting::import::MvrImportOptions::default()
         }
     }
