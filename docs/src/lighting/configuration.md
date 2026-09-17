@@ -218,6 +218,71 @@ venue "warehouse" {
 }
 ```
 
+### Venue files with positions (`*.venue`)
+
+A venue can also say where its fixtures hang and name the points on stage a
+show may aim at. Files using this syntax take the `.venue` extension and load
+beside `.light` venues as peers; nothing renames or migrates.
+
+```light
+# lighting/venues/kellys_basement.venue
+venue "kellys-basement" {
+  # Coordinates: meters, right-handed Z-up, origin downstage-center on the
+  # deck, +x stage-left, +y upstage. Rotation: degrees about X, Y, Z in order.
+  fixture "Spot1" MovingHead @ 1:1 tags ["spot", "rear"]
+    position (-2.0, 3.5, 4.2) rotation (0, 0, 180)
+  fixture "Wash1" RGBW_Par @ 1:40 tags ["wash", "front"] position (1.5, 0.5, 3.0)
+
+  # Named stage points — the positional analog of tags.
+  focus "drummer" (0.0, 2.8, 1.4)
+  focus "center-stage" (0.0, 1.5, 1.7)
+}
+```
+
+Position and rotation are optional per fixture, and a venue without them
+still plays; it just cannot resolve positional effects or draw a meaningful
+stage plot.
+
+#### Importing a venue's MVR
+
+Venues and pre-viz tools exchange rigs as [MVR](https://gdtf.eu/mvr/) files:
+a patch list with the referenced GDTF archives embedded. `mtrack import-mvr`
+seeds a `.venue` from one, importing every embedded GDTF as a referential
+`.fixture` on the way:
+
+```sh
+mtrack import-mvr kellys.mvr                          # report only, nothing written
+mtrack import-mvr kellys.mvr --origin 0,-3500,0 --write
+```
+
+An MVR's origin is wherever the console author put it, so `--origin` names
+the MVR-space point, in millimeters, that becomes downstage-center. The bare
+form prints every fixture's position so you can pick it; a wrong guess is
+corrected by re-running the import with a better one.
+
+The seeded file is yours: tags start empty (shows target tags, not fixture
+names), the console's focus-point names are there to rename, and positions
+can be corrected by hand. It records where it came from:
+
+```light
+venue "kellys" {
+  imported from mvr("lighting/library/kellys.mvr") origin (0, -3.5, 0)
+  fixture "Spot 1" "Robe Esprite" @ 1:1 position (-2, 3.5, 4.2) rotation (0, 0, 180)  # layer "Front Truss"
+  focus "FocusPoint 1" (0, 2.8, 1.4)
+}
+```
+
+That line is provenance, not a reference — the player never opens the MVR.
+When the venue sends a revised file, re-running the import **merges** it:
+rig facts (types, patch, positions) come from the new MVR, your tags and
+focus names stay, fixtures the venue removed are dropped and reported with
+their tags, and fixtures you added by hand are kept. A hand-written venue of
+the same name is never overwritten. A patched fixture whose GDTF is missing
+or whose mode cannot be matched is never silently dropped either: it becomes
+a `# TODO` line in the venue file carrying everything the MVR knew about it.
+
+The same flow is available over MCP as `inspect_mvr` and `import_mvr`.
+
 ## Song Lighting Definitions
 
 Lighting shows are defined in separate `.light` files using the DSL format. Songs reference these files:

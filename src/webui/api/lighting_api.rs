@@ -398,6 +398,30 @@ const DEFAULT_FIXTURE_TYPES_DIR: &str = "lighting/fixture_types";
 /// Default directory for venue definitions, relative to project root.
 const DEFAULT_VENUES_DIR: &str = "lighting/venues";
 
+/// Venue files: `.venue` (positions, focus points, MVR provenance) and the
+/// v1 `.light`, loaded as peers.
+const VENUE_EXTENSIONS: &[&str] = &["light", "venue"];
+
+/// The file a venue of this name lives in, if one exists: `.venue` first,
+/// then `.light`.
+fn existing_venue_file(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    let stem = sanitize_filename(name);
+    ["venue", "light"]
+        .iter()
+        .map(|extension| dir.join(format!("{stem}.{extension}")))
+        .find(|path| path.is_file())
+}
+
+/// Whether a venue uses syntax only `.venue` files carry.
+fn needs_venue_extension(venue: &lighting::types::Venue) -> bool {
+    venue.source().is_some()
+        || !venue.focus_points().is_empty()
+        || venue
+            .fixtures()
+            .values()
+            .any(|f| f.position().is_some() || f.rotation().is_some())
+}
+
 /// Resolves a lighting directory path relative to the project root.
 /// Uses the provided override (from query param) or falls back to the default.
 /// Returns an error response if the project root cannot be canonicalized or the
@@ -469,17 +493,16 @@ pub(super) async fn get_fixture_types(
     }
     let all = super::helpers::spawn_blocking_io("load fixture types", move || {
         let mut all = std::collections::HashMap::new();
-        let errors =
-            load_light_files_from_dir(&dir, |content| match lighting::parser::parse_fixture_types(
-                content,
-            ) {
+        let errors = load_light_files_from_dir(&dir, &["light"], |content| {
+            match lighting::parser::parse_fixture_types(content) {
                 Ok(types) => {
                     all.extend(types);
                     Ok(())
                 }
                 Err(e) => Err(e),
-            })
-            .map_err(|e| e.to_string())?;
+            }
+        })
+        .map_err(|e| e.to_string())?;
         Ok::<_, String>((all, errors))
     })
     .await?;
@@ -777,17 +800,16 @@ pub(super) async fn get_venues(
     }
     let all = super::helpers::spawn_blocking_io("load venues", move || {
         let mut all = std::collections::HashMap::new();
-        let errors =
-            load_light_files_from_dir(&dir, |content| {
-                match lighting::parser::parse_venues(content) {
-                    Ok(venues) => {
-                        all.extend(venues);
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
+        let errors = load_light_files_from_dir(&dir, VENUE_EXTENSIONS, |content| {
+            match lighting::parser::parse_venues(content) {
+                Ok(venues) => {
+                    all.extend(venues);
+                    Ok(())
                 }
-            })
-            .map_err(|e| e.to_string())?;
+                Err(e) => Err(e),
+            }
+        })
+        .map_err(|e| e.to_string())?;
         Ok::<_, String>((all, errors))
     })
     .await?;
@@ -807,14 +829,13 @@ pub(super) async fn get_venue(
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
     let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
-    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
-    if !file_path.is_file() {
+    let Some(file_path) = existing_venue_file(&dir, &name) else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("Venue not found: {}", name)})),
         )
             .into_response());
-    }
+    };
     let fp = file_path.clone();
     let content =
         super::helpers::spawn_blocking_io("read venue file", move || std::fs::read_to_string(&fp))
@@ -873,20 +894,39 @@ pub(super) async fn put_venue(
     };
 
     // Validate the DSL parses correctly
-    lighting::parser::parse_venues(&dsl).map_err(|e| {
+    let venues = lighting::parser::parse_venues(&dsl).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": format!("Invalid venue DSL: {}", e)})),
         )
             .into_response()
     })?;
+    let typed = venues.values().any(needs_venue_extension);
 
     let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
-    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
+    // The extension is the version marker: a venue using positions, focus
+    // points or MVR provenance is a `.venue`; anything else stays `.light`.
+    // An existing file keeps its extension unless the content outgrows it,
+    // in which case the `.light` twin is retired after the durable write.
+    let stem = sanitize_filename(&name);
+    let existing = existing_venue_file(&dir, &name);
+    let file_path = match &existing {
+        Some(path) if !typed || path.extension().is_some_and(|e| e == "venue") => path.clone(),
+        _ => dir.join(format!("{stem}.{}", if typed { "venue" } else { "light" })),
+    };
+    let stale_twin = existing.filter(|path| path != &file_path);
     let fp = file_path;
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write venue", move || {
-        config_io::staged_write(&fp, &dsl_owned)
+        config_io::staged_write(&fp, &dsl_owned)?;
+        if let Some(twin) = stale_twin {
+            // Best effort: the save is durable already, and a leftover
+            // `.light` twin surfaces as a duplicate venue name at load.
+            if let Err(e) = std::fs::remove_file(&twin) {
+                tracing::warn!(file = %twin.display(), error = %e, "could not retire the venue's .light twin");
+            }
+        }
+        Ok::<(), String>(())
     })
     .await?;
 
@@ -907,14 +947,13 @@ pub(super) async fn delete_venue(
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
     let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
-    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
-    if !file_path.is_file() {
+    let Some(file_path) = existing_venue_file(&dir, &name) else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("Venue not found: {}", name)})),
         )
             .into_response());
-    }
+    };
     let fp = file_path;
     super::helpers::spawn_blocking_io("delete venue", move || std::fs::remove_file(&fp)).await?;
     Ok::<_, axum::response::Response>(
@@ -933,13 +972,15 @@ pub(super) async fn delete_venue(
 /// Reads all .light files from a directory, calling the processor for each.
 fn load_light_files_from_dir(
     dir: &std::path::Path,
+    extensions: &[&str],
     mut processor: impl FnMut(&str) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<Vec<FileError>, Box<dyn std::error::Error>> {
     let mut errors = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("light") {
+        let extension = path.extension().and_then(|e| e.to_str());
+        if path.is_file() && extension.is_some_and(|e| extensions.contains(&e)) {
             let content = std::fs::read_to_string(&path)?;
             // Per-file, not fatal: a directory is a set of independent files,
             // and one that no longer parses must not hide the rest. The caller
@@ -1013,13 +1054,35 @@ fn fixture_type_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<Stri
 
 /// Converts a JSON venue definition to DSL format.
 fn venue_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<String, String> {
+    use lighting::types::{Fixture, Vec3, Venue, VenueSource};
+
+    fn vec3(value: &serde_json::Value, what: &str) -> Result<Vec3, String> {
+        let items = value
+            .as_array()
+            .filter(|a| a.len() == 3)
+            .ok_or_else(|| format!("{what} must be [x, y, z]"))?;
+        let mut out = [0.0; 3];
+        for (slot, item) in out.iter_mut().zip(items) {
+            *slot = item
+                .as_f64()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| format!("{what} must be [x, y, z] numbers"))?;
+        }
+        Ok(out)
+    }
+    fn optional_vec3(fix: &serde_json::Value, key: &str) -> Result<Option<Vec3>, String> {
+        match fix.get(key) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(value) => vec3(value, key).map(Some),
+        }
+    }
+
     let fixtures = json
         .get("fixtures")
         .and_then(|v| v.as_array())
         .ok_or("Missing 'fixtures' array")?;
 
-    let mut dsl = format!("venue \"{name}\" {{\n");
-
+    let mut by_name = std::collections::HashMap::new();
     for fix in fixtures {
         let fix_name = fix
             .get("name")
@@ -1037,26 +1100,55 @@ fn venue_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<String, Str
             .get("start_channel")
             .and_then(|v| v.as_u64())
             .ok_or("Fixture missing 'start_channel'")?;
-
-        dsl.push_str(&format!(
-            "  fixture \"{fix_name}\" {fix_type} @ {universe}:{start_channel}"
-        ));
-
-        if let Some(tags) = fix.get("tags").and_then(|v| v.as_array()) {
-            let tag_strs: Vec<String> = tags
-                .iter()
-                .filter_map(|t| t.as_str())
-                .map(|t| format!("\"{t}\""))
-                .collect();
-            if !tag_strs.is_empty() {
-                dsl.push_str(&format!(" tags [{}]", tag_strs.join(", ")));
-            }
+        let tags: Vec<String> = fix
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|tags| {
+                tags.iter()
+                    .filter_map(|t| t.as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let fixture = Fixture::new(
+            fix_name.to_string(),
+            fix_type.to_string(),
+            u16::try_from(universe).map_err(|_| "Fixture 'universe' out of range")?,
+            u16::try_from(start_channel).map_err(|_| "Fixture 'start_channel' out of range")?,
+            tags,
+        )
+        .with_position(optional_vec3(fix, "position")?)
+        .with_rotation(optional_vec3(fix, "rotation")?);
+        if by_name.insert(fix_name.to_string(), fixture).is_some() {
+            return Err(format!("Fixture '{fix_name}' listed more than once"));
         }
-        dsl.push('\n');
     }
 
-    dsl.push_str("}\n");
-    Ok(dsl)
+    let mut focus_points = std::collections::BTreeMap::new();
+    if let Some(points) = json.get("focus_points").and_then(|v| v.as_object()) {
+        for (focus_name, point) in points {
+            focus_points.insert(focus_name.clone(), vec3(point, "focus point")?);
+        }
+    }
+    let source = match json.get("source") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(source) => Some(VenueSource {
+            mvr: source
+                .get("mvr")
+                .and_then(|v| v.as_str())
+                .ok_or("source missing 'mvr'")?
+                .to_string(),
+            origin: match source.get("origin") {
+                None | Some(serde_json::Value::Null) => [0.0; 3],
+                Some(origin) => vec3(origin, "source origin")?,
+            },
+        }),
+    };
+
+    let venue = Venue::new(name.to_string(), by_name)
+        .with_focus_points(focus_points)
+        .with_source(source);
+    Ok(format!("{venue}\n"))
 }
 
 #[cfg(test)]
@@ -1980,7 +2072,7 @@ show "test" {
         std::fs::write(dir.path().join("b.txt"), "not a light file").unwrap();
 
         let mut count = 0;
-        load_light_files_from_dir(dir.path(), |_content| {
+        load_light_files_from_dir(dir.path(), &["light"], |_content| {
             count += 1;
             Ok(())
         })
@@ -1992,7 +2084,7 @@ show "test" {
     fn load_light_files_from_dir_empty() {
         let dir = tempfile::tempdir().unwrap();
         let mut count = 0;
-        load_light_files_from_dir(dir.path(), |_content| {
+        load_light_files_from_dir(dir.path(), &["light"], |_content| {
             count += 1;
             Ok(())
         })
@@ -2618,6 +2710,112 @@ show "test" {
         let content = std::fs::read_to_string(&file_path).unwrap();
         let venues = lighting::parser::parse_venues(&content).unwrap();
         assert!(venues.contains_key("JSONVenue"));
+    }
+
+    #[tokio::test]
+    async fn put_venue_json_with_geometry_lands_in_a_venue_file() {
+        let (state, _dir) = test_state();
+        let rel = "v_put_geometry";
+        let app = router().with_state(state);
+
+        // First a plain venue: it is a .light.
+        let plain = serde_json::json!({
+            "fixtures": [{"name": "Spot1", "fixture_type": "GenericPar", "universe": 1, "start_channel": 1}]
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/venues/Geo?dir={}", rel))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&plain).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(_dir.path().join(rel).join("geo.light").exists());
+
+        // Then the same venue gains a position and a focus point: it moves
+        // to .venue and the .light twin is retired.
+        let geometry = serde_json::json!({
+            "fixtures": [{
+                "name": "Spot1", "fixture_type": "GenericPar", "universe": 1, "start_channel": 1,
+                "tags": ["spot"], "position": [-2.0, 3.5, 4.2], "rotation": [0, 0, 180]
+            }],
+            "focus_points": {"drummer": [0.0, 2.8, 1.4]},
+            "source": {"mvr": "lighting/library/geo.mvr", "origin": [0, -3.5, 0]}
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/venues/Geo?dir={}", rel))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&geometry).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let venue_path = _dir.path().join(rel).join("geo.venue");
+        assert!(venue_path.exists());
+        assert!(!_dir.path().join(rel).join("geo.light").exists());
+        let content = std::fs::read_to_string(&venue_path).unwrap();
+        let venue = &lighting::parser::parse_venues(&content).unwrap()["Geo"];
+        assert_eq!(venue.fixtures()["Spot1"].position(), Some([-2.0, 3.5, 4.2]));
+        assert_eq!(venue.focus_points()["drummer"], [0.0, 2.8, 1.4]);
+        assert_eq!(venue.source().unwrap().mvr, "lighting/library/geo.mvr");
+
+        // GET resolves the .venue and its JSON carries the geometry back.
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/venues/Geo?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(
+            body["venue"]["fixtures"]["Spot1"]["position"],
+            serde_json::json!([-2.0, 3.5, 4.2])
+        );
+        assert_eq!(
+            body["venue"]["focus_points"]["drummer"],
+            serde_json::json!([0.0, 2.8, 1.4])
+        );
+
+        // The listing sees it, and DELETE finds it.
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/venues?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert!(body["venues"]["Geo"].is_object(), "{body}");
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/lighting/venues/Geo?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!venue_path.exists());
     }
 
     #[tokio::test]

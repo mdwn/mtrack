@@ -44,6 +44,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untrusted-input layers — the zip archive and the description XML — carry hard size and nesting
   caps and have cargo-fuzz targets.
 
+- **Venue positions, focus points and MVR import (#433, this change)**: venues can say where
+  their fixtures hang — `position (x, y, z)` and `rotation (rx, ry, rz)` per fixture, in meters
+  and degrees from a downstage-center origin — and name the stage points a show may aim at with
+  `focus "drummer" (0, 2.8, 1.4)`. Files using this syntax take the `.venue` extension and load
+  beside `.light` venues as peers; nothing renames or migrates. The web UI, MCP venue tools and
+  the loader all see both.
+
+  `mtrack import-mvr <file>` seeds a `.venue` from the MVR a venue sends, importing every embedded
+  GDTF as a referential `.fixture` on the way; `--origin x,y,z` (millimeters) picks the point that
+  becomes downstage-center, and the bare form reports the whole plan without writing. The seeded
+  file records `imported from mvr(...)` as provenance, not a reference — the player never opens the
+  MVR — and re-running the import merges a revised MVR into it: rig facts from the new file, tags
+  and focus names kept, fixtures the venue removed dropped and reported, hand additions kept. A
+  hand-written venue is never overwritten, and a patched fixture whose GDTF or mode cannot be
+  resolved becomes a `# TODO` line rather than vanishing. `inspect_mvr` and `import_mvr` expose the
+  same flow over MCP.
+
 - **Debian packages**: `sudo apt install ./mtrack_<version>_arm64.deb` on Debian, Ubuntu or
   Raspberry Pi OS installs the binary, creates the `mtrack` service account, creates and chowns the
   project directory, generates the systemd unit and enables the service — the whole of the

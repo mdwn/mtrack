@@ -71,3 +71,88 @@ pub fn parse_archive(bytes: &[u8]) -> Result<Description, GdtfError> {
     let xml = read_description_xml(bytes)?;
     parse_description(&xml)
 }
+
+/// How a requested mode name was matched against a description.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModeMatch {
+    /// The mode's name as the GDTF spells it — what a `.fixture` file pins.
+    pub name: String,
+    /// Whether the match needed normalization (case, whitespace,
+    /// punctuation) — a console-export drift worth reporting.
+    pub normalized: bool,
+}
+
+/// Finds the mode a reference names. The spec requires an exact name, but
+/// console exports drift: a normalized comparison (case, whitespace and
+/// punctuation folded) is tried second and reported as such. Anything else
+/// is an error listing the candidates — mode selection is human input, and
+/// guessing wrong silently patches the wrong personality.
+pub fn match_mode(description: &Description, requested: &str) -> Result<ModeMatch, GdtfError> {
+    if let Some(mode) = description.modes.iter().find(|m| m.name == requested) {
+        return Ok(ModeMatch {
+            name: mode.name.clone(),
+            normalized: false,
+        });
+    }
+    let wanted = normalize_mode_name(requested);
+    let mut folded = description
+        .modes
+        .iter()
+        .filter(|m| normalize_mode_name(&m.name) == wanted);
+    match (folded.next(), folded.next()) {
+        (Some(mode), None) => Ok(ModeMatch {
+            name: mode.name.clone(),
+            normalized: true,
+        }),
+        _ => {
+            let candidates: Vec<String> = description
+                .modes
+                .iter()
+                .map(|m| format!("\"{}\"", m.name))
+                .collect();
+            Err(GdtfError::new(format!(
+                "GDTF \"{}\" has no mode matching \"{requested}\"; its modes are: {}",
+                description.name,
+                candidates.join(", ")
+            )))
+        }
+    }
+}
+
+/// Folds case, whitespace and punctuation so "8: RGBS" and "8 rgbs" agree.
+fn normalize_mode_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+#[cfg(test)]
+mod match_tests {
+    use super::*;
+
+    fn description() -> Description {
+        let xml = read_description_xml(&build_zip(&[(
+            "description.xml",
+            SYNTHETIC_DESCRIPTION.as_bytes(),
+        )]))
+        .unwrap();
+        parse_description(&xml).unwrap()
+    }
+
+    #[test]
+    fn exact_then_normalized_then_error() {
+        let description = description();
+        let exact = match_mode(&description, "8: RGBS").unwrap();
+        assert_eq!(exact.name, "8: RGBS");
+        assert!(!exact.normalized);
+
+        let drifted = match_mode(&description, "8 rgbs").unwrap();
+        assert_eq!(drifted.name, "8: RGBS");
+        assert!(drifted.normalized);
+
+        let err = match_mode(&description, "Nope").unwrap_err().to_string();
+        assert!(err.contains("no mode matching \"Nope\""), "{err}");
+        assert!(err.contains("\"8: RGBS\""), "candidates are listed: {err}");
+    }
+}

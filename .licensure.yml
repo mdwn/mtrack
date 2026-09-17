@@ -23,6 +23,8 @@ excludes:
   - lcov.info
   - .*\.tosc
   - .*\.light
+  - .*\.fixture
+  - .*\.venue
   - .*/node_modules/.*
   - .*/dist/.*
   - .*/gen/.*

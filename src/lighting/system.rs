@@ -156,8 +156,13 @@ impl LightingSystem {
             if path.is_dir() {
                 // Recursively load subdirectories
                 self.load_venues_directory(&path)?;
-            } else if path.extension().is_some_and(|ext| ext == "light") {
-                // Load .light files
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext == "venue" || ext == "light")
+            {
+                // .venue files carry positions, focus points and MVR
+                // provenance; .light files are the existing DSL. Peers, not
+                // a migration.
                 self.load_venue_file(&path)?;
             }
         }

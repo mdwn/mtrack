@@ -246,6 +246,33 @@ enum Commands {
         #[arg(long, default_value = "lighting/fixture_types")]
         fixture_types_dir: String,
     },
+    /// Imports an MVR venue file: reports what the import would do, or
+    /// (with --write) copies the MVR and its embedded GDTFs into the
+    /// project library, writes a .fixture per referenced type, and seeds
+    /// a .venue file — or merges a revised MVR into one seeded earlier.
+    ImportMvr {
+        /// Path to the .mvr archive to import.
+        mvr_path: String,
+        /// Perform the import. Without it, only the plan is printed.
+        #[arg(long)]
+        write: bool,
+        /// Name for the venue (defaults to the archive's file stem).
+        #[arg(short, long)]
+        name: Option<String>,
+        /// The MVR-space point, in millimeters, that becomes the stage
+        /// origin (downstage-center on the deck), as "x,y,z".
+        #[arg(long, default_value = "0,0,0")]
+        origin: String,
+        /// Project directory the import writes into.
+        #[arg(short, long, default_value = ".")]
+        project: String,
+        /// Fixture types directory, relative to the project.
+        #[arg(long, default_value = "lighting/fixture_types")]
+        fixture_types_dir: String,
+        /// Venues directory, relative to the project.
+        #[arg(long, default_value = "lighting/venues")]
+        venues_dir: String,
+    },
     /// Verifies the syntax of a light show file.
     VerifyLightShow {
         /// The path to the light show file to verify.
@@ -493,6 +520,23 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
             name.as_deref(),
             &project,
             &fixture_types_dir,
+        )?,
+        Commands::ImportMvr {
+            mvr_path,
+            write,
+            name,
+            origin,
+            project,
+            fixture_types_dir,
+            venues_dir,
+        } => local::import_mvr(
+            &mvr_path,
+            write,
+            name,
+            &origin,
+            &project,
+            fixture_types_dir,
+            venues_dir,
         )?,
         Commands::VerifyLightShow { show_path, config } => {
             local::verify_light_show(&show_path, config.as_deref())?

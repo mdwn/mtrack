@@ -164,6 +164,18 @@ reference focus names, venues bind coordinates. Position/rotation are optional â
 without them still plays; it just can't resolve positional effects or draw a meaningful
 stage view, and lint says so.
 
+**Seeded, not referential (settled in P1b).** "Isn't the MVR effectively the venue?" â€”
+it is the venue's *rig facts*, not the venue: tags, focus names and the stage origin are
+the band's, and every fixture line needs them, so a `from mvr(...)` reference would not be
+thin the way `from gdtf(...)` is, and would buy runtime overlay semantics for nothing.
+Provenance is therefore a body statement, `imported from mvr("lighting/library/x.mvr")
+origin (x, y, z)`, that the loader ignores. The MVR is copied into the library so re-import
+can tell three things apart: a fixture in both MVRs (rig facts updated, tags kept), one the
+venue removed (dropped, reported with its tags), and one only the `.venue` has (a hand
+addition, kept). Focus points merge by name, or by position when the band renamed the
+console's name. Hand-written venues of the same name are never overwritten. MVR focus
+point objects are read and seeded; the console's names are there to rename.
+
 ## 5. GDTF parser (owned)
 
 quick-xml over the extracted `description.xml`, into a spec-shaped object model, then

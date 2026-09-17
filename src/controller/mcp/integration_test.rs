@@ -744,6 +744,125 @@ async fn mcp_gdtf_import_flow() -> Result<(), Box<dyn Error>> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_mvr_import_flow() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+
+    // The venue emails its MVR; the agent drops it into the project.
+    let gdtf = crate::lighting::gdtf::build_zip(&[(
+        "description.xml",
+        crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+    )]);
+    let scene = r#"<GeneralSceneDescription verMajor="1" verMinor="6"><Scene><Layers>
+<Layer name="Front Truss"><ChildList>
+<Fixture name="Brick 1"><Matrix>{1,0,0}{0,1,0}{0,0,1}{-2000,3500,4200}</Matrix>
+<GDTFSpec>Astera_PB15.gdtf</GDTFSpec><GDTFMode>8: RGBS</GDTFMode>
+<Addresses><Address break="0">1.1</Address></Addresses></Fixture>
+<FocusPoint name="Drummer"><Matrix>{1,0,0}{0,1,0}{0,0,1}{0,6300,1400}</Matrix></FocusPoint>
+</ChildList></Layer></Layers></Scene></GeneralSceneDescription>"#;
+    std::fs::create_dir_all(fixture.root.join("incoming"))?;
+    std::fs::write(
+        fixture.root.join("incoming/kellys.mvr"),
+        crate::lighting::gdtf::build_zip(&[
+            ("GeneralSceneDescription.xml", scene.as_bytes()),
+            ("Astera_PB15.gdtf", gdtf.as_slice()),
+        ]),
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    assert!(controller.statuses().iter().all(|s| s.status == "running"));
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // --- inspect_mvr resolves everything and writes nothing.
+    let plan = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            10,
+            "inspect_mvr",
+            json!({"path": "incoming/kellys.mvr", "origin_mm": [0, -3500, 0]}),
+        )
+        .await,
+    );
+    assert_eq!(plan["venue_name"], "kellys");
+    assert_eq!(plan["merge"], false);
+    assert_eq!(plan["fixture_types"][0]["name"], "Synth Brick");
+    assert_eq!(plan["fixtures"][0]["position"], json!([-2.0, 7.0, 4.2]));
+    assert_eq!(plan["focus_points"][0]["name"], "Drummer");
+    assert!(!fixture.root.join("lighting/library").exists());
+
+    // --- import_mvr writes the library, the .fixture and the .venue.
+    let report = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            11,
+            "import_mvr",
+            json!({"path": "incoming/kellys.mvr", "origin_mm": [0, -3500, 0]}),
+        )
+        .await,
+    );
+    assert_eq!(report["venue_file"], "lighting/venues/kellys.venue");
+    let written: Vec<&str> = report["written"]
+        .as_array()
+        .expect("written")
+        .iter()
+        .filter_map(|w| w.as_str())
+        .collect();
+    assert!(
+        written.contains(&"lighting/library/kellys.mvr"),
+        "{written:?}"
+    );
+    assert!(
+        written.contains(&"lighting/fixture_types/synth_brick.fixture"),
+        "{written:?}"
+    );
+    let venue_text = std::fs::read_to_string(fixture.root.join("lighting/venues/kellys.venue"))?;
+    assert!(
+        venue_text.contains("focus \"Drummer\" (0, 9.8, 1.4)"),
+        "{venue_text}"
+    );
+
+    // --- the venue file tools see the .venue peer.
+    let files =
+        tool_json(&call_tool(&client, &url, &session, 12, "list_venue_files", json!({})).await);
+    let names: Vec<&str> = files["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .filter_map(|f| f.as_str())
+        .collect();
+    assert!(names.contains(&"kellys.venue"), "{names:?}");
+    let read = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            13,
+            "read_venue",
+            json!({"file": "kellys.venue"}),
+        )
+        .await,
+    );
+    assert_eq!(read["source"], venue_text);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;

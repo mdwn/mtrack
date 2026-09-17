@@ -37,8 +37,11 @@
 mod archive;
 mod scene;
 
+#[cfg(test)]
+pub(crate) use scene::tests::SYNTHETIC_SCENE;
+
 pub use archive::{list_gdtf_entries, read_gdtf_entry, read_scene_xml};
-pub use scene::{parse_scene, Matrix, MvrFixture, Scene};
+pub use scene::{parse_scene, Matrix, MvrFixture, MvrFocusPoint, Scene};
 
 use std::error::Error;
 use std::fmt;
@@ -68,9 +71,59 @@ pub fn parse_archive(bytes: &[u8]) -> Result<Scene, MvrError> {
     parse_scene(&xml)
 }
 
+/// Finds the embedded entry a fixture's `GDTFSpec` names. Console exports
+/// drift from the spec here too: the reference may omit the `.gdtf`
+/// extension, or the entry may sit under a path prefix.
+pub fn resolve_gdtf_entry<'a>(entries: &'a [String], spec: &str) -> Option<&'a str> {
+    let spec = spec.trim();
+    let basename = spec.rsplit('/').next().unwrap_or(spec);
+    entries
+        .iter()
+        .find(|name| name.as_str() == spec)
+        .or_else(|| {
+            entries.iter().find(|name| {
+                let entry_base = name.rsplit('/').next().unwrap_or(name);
+                entry_base == basename
+                    || entry_base.strip_suffix(".gdtf") == Some(basename)
+                    || entry_base.eq_ignore_ascii_case(basename)
+                    || entry_base
+                        .strip_suffix(".gdtf")
+                        .is_some_and(|stem| stem.eq_ignore_ascii_case(basename))
+            })
+        })
+        .map(|s| s.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gdtf_references_resolve_tolerantly() {
+        let entries = vec![
+            "Astera_PB15.gdtf".to_string(),
+            "fixtures/Robe@Esprite.gdtf".to_string(),
+        ];
+        assert_eq!(
+            resolve_gdtf_entry(&entries, "Astera_PB15.gdtf"),
+            Some("Astera_PB15.gdtf")
+        );
+        assert_eq!(
+            resolve_gdtf_entry(&entries, "Astera_PB15"),
+            Some("Astera_PB15.gdtf"),
+            "a missing extension still resolves"
+        );
+        assert_eq!(
+            resolve_gdtf_entry(&entries, "Robe@Esprite.gdtf"),
+            Some("fixtures/Robe@Esprite.gdtf"),
+            "a path prefix on the entry is tolerated"
+        );
+        assert_eq!(
+            resolve_gdtf_entry(&entries, "astera_pb15"),
+            Some("Astera_PB15.gdtf")
+        );
+        assert_eq!(resolve_gdtf_entry(&entries, "Nope"), None);
+    }
 
     /// The full exchange chain: an MVR embedding a GDTF, walked the way the
     /// importer will — scene → spec reference → embedded archive → distilled
