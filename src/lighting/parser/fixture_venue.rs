@@ -167,6 +167,25 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
             )
             .into());
         }
+        // The engine's strobe path keys on a channel named "strobe" with a
+        // function named "strobe": a hertz function anywhere else parses
+        // and then silently does nothing, which is worse than a refusal.
+        for (channel, def) in &rich_defs {
+            for function in &def.functions {
+                let hertz = function
+                    .physical
+                    .is_some_and(|p| p.unit == PhysicalUnit::Hertz);
+                if hertz && (channel != "strobe" || function.name != "strobe") {
+                    return Err(format!(
+                        "fixture type \"{name}\": the hertz function \"{}\" on channel \
+                         \"{channel}\" would never drive a strobe — the engine looks for \
+                         `channel \"strobe\" ... {{ function \"strobe\" ... }}`; rename them",
+                        function.name
+                    )
+                    .into());
+                }
+            }
+        }
         let mut fixture_type = FixtureType::from_channel_defs(name, rich_defs);
         fixture_type.set_movement(movement);
         return Ok(fixture_type);
@@ -374,6 +393,18 @@ fn parse_channel_def(pair: Pair<Rule>) -> Result<(String, ChannelDef), Box<dyn E
                 function.name, function.dmx_from, function.dmx_to
             )
             .into());
+        }
+    }
+    for (i, a) in def.functions.iter().enumerate() {
+        for b in &def.functions[i + 1..] {
+            if a.dmx_from <= b.dmx_to && b.dmx_from <= a.dmx_to {
+                return Err(format!(
+                    "channel \"{name}\": functions \"{}\" ({}..{}) and \"{}\" ({}..{}) overlap; \
+                     each DMX value belongs to one function",
+                    a.name, a.dmx_from, a.dmx_to, b.name, b.dmx_from, b.dmx_to
+                )
+                .into());
+            }
         }
     }
     Ok((name, def))

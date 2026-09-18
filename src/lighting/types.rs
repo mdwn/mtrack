@@ -408,13 +408,22 @@ impl FixtureType {
     }
 }
 
-/// A physical value as the DSL writes it: `270deg`, `0.5hz`.
+/// A physical value as the DSL writes it: `270deg`, `0.5hz`. Six decimals
+/// with trailing zeros trimmed — a strobe rate can be well under a
+/// millihertz, which the coordinate formatter's three would round away.
 fn fmt_physical(value: f64, unit: PhysicalUnit) -> String {
     let unit = match unit {
         PhysicalUnit::Degrees => "deg",
         PhysicalUnit::Hertz => "hz",
     };
-    format!("{}{unit}", fmt_coord(value))
+    let mut text = format!("{value:.6}");
+    if text.contains('.') {
+        text = text.trim_end_matches('0').trim_end_matches('.').to_string();
+    }
+    if text == "-0" {
+        text = "0".to_string();
+    }
+    format!("{text}{unit}")
 }
 
 impl fmt::Display for FixtureType {
@@ -909,6 +918,9 @@ mod tests {
     }
 
     #[test]
+    // The v1 form is what a plain type renders as, byte for byte: the
+    // rich form (fine, range, functions) exists since P1c-3 but only a
+    // type that needs it uses it.
     fn fixture_type_display_is_unchanged_v1_form() {
         // The Display output must stay exactly what today's grammar
         // round-trips — the rich model has no DSL rendering yet.

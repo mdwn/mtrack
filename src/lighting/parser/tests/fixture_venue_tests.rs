@@ -434,6 +434,21 @@ fn the_rich_form_round_trips_through_display() {
         types["Cheap Mover"].channel_defs()
     );
 
+    // Physical values keep their precision: a sub-millihertz strobe rate and
+    // a fractional tilt range survive the trip.
+    let precise = parse_fixture_types(
+        "fixture_type \"P\" {\n  channel \"tilt\" @ 1 range -12.3456deg..98.7deg\n  channel \"strobe\" @ 2 {\n    function \"strobe\" 1..255 0.0005hz..25hz\n  }\n}\n",
+    )
+    .unwrap();
+    let rendered = precise["P"].to_string();
+    assert!(
+        rendered.contains("range -12.3456deg..98.7deg"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("1..255 0.0005hz..25hz"), "{rendered}");
+    let again = parse_fixture_types(&rendered).unwrap();
+    assert_eq!(again["P"].channel_defs(), precise["P"].channel_defs());
+
     // A plain type still renders in the v1 form.
     let plain = parse_fixture_types(
         "fixture_type \"Par\" {\n  channels: 3\n  channel_map: {\"red\": 1, \"green\": 2, \"blue\": 3}\n  max_strobe_frequency: 20.0\n}\n",
@@ -477,6 +492,14 @@ fn rich_channels_do_not_mix_with_the_v1_forms_or_a_gdtf_reference() {
         (
             "fixture_type \"X\" {\n  channel \"s\" @ 1 {\n    function \"a\" 200..100\n  }\n}",
             "runs backwards",
+        ),
+        (
+            "fixture_type \"X\" {\n  channel \"s\" @ 1 {\n    function \"open\" 0..255\n    function \"strobe\" 16..255 1hz..20hz\n  }\n}",
+            "overlap",
+        ),
+        (
+            "fixture_type \"X\" {\n  channel \"shutter\" @ 1 {\n    function \"flicker\" 16..255 1hz..20hz\n  }\n}",
+            "would never drive a strobe",
         ),
     ] {
         let err = parse_fixture_types(source).expect_err(source).to_string();

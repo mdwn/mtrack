@@ -198,8 +198,10 @@ The v1 strobe fields are not needed — the strobe function carries the same fac
 type uses either `channel` lines or a `channel_map`, not both.
 
 The rich form is the v2 DSL and lives in `.fixture` files only; a `.light` fixture file
-keeps the v1 grammar and the loader skips, loudly, a `.light` file that uses it. Both forms
-stay valid forever, and the web UI renders whichever form a type needs.
+keeps the v1 grammar, the loader skips, loudly, a `.light` file that uses it, and the web
+UI's fixture-type editor (which writes `.light`) refuses to save it. Both forms stay valid
+forever. Rich and referential `.fixture` types are edited by hand or written by import
+today; the web UI lists and edits v1 types only.
 
 ## Venue Definitions (`lighting/venues/`)
 
