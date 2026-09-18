@@ -46,8 +46,13 @@
   const FIXTURE_RADIUS = 22;
   const GLOW_RADIUS = 50;
   const PADDING = 60;
-  const FOCUS_RADIUS = 9;
-  const TRAY_HEIGHT = 2 * FIXTURE_RADIUS + 36;
+  // The plot wants the room the tag layout spends on margins: smaller
+  // discs, a tighter inset, and label allowances inside the plot.
+  const GEO_RADIUS = 15;
+  const GEO_GLOW = 34;
+  const GEO_INSET = 28;
+  const FOCUS_RADIUS = 8;
+  const TRAY_HEIGHT = 2 * GEO_RADIUS + 34;
   /** Trim height a fixture dragged onto the plot is hung at, meters. */
   const DEFAULT_TRIM_M = 3;
 
@@ -132,12 +137,13 @@
     }
 
     // The plot fills the stage rectangle, less a tray along the bottom for
-    // fixtures the venue has not placed yet.
+    // fixtures the venue has not placed yet. The fit rectangle is inset by
+    // a disc plus a label so nothing is drawn against the edge.
     const stage: Rect = {
-      x: PADDING - 20,
-      y: PADDING - 20,
-      w: w - 2 * PADDING + 40,
-      h: h - 2 * PADDING + 40,
+      x: GEO_INSET,
+      y: GEO_INSET,
+      w: w - 2 * GEO_INSET,
+      h: h - 2 * GEO_INSET,
     };
     const anyUnplaced = Object.values(fixtures).some((f) => f.position == null);
     trayRect = anyUnplaced
@@ -148,18 +154,19 @@
           h: TRAY_HEIGHT,
         }
       : null;
+    const label = GEO_RADIUS + 18;
     plotRect = {
-      x: stage.x + FIXTURE_RADIUS + 8,
-      y: stage.y + 22,
-      w: stage.w - 2 * (FIXTURE_RADIUS + 8),
-      h: stage.h - 22 - 18 - (trayRect ? trayRect.h : 0),
+      x: stage.x + label,
+      y: stage.y + label,
+      w: stage.w - 2 * label,
+      h: stage.h - label - (label + 14) - (trayRect ? trayRect.h : 0),
     };
     frame = fitFrame(fixtures, points, plotRect);
     const laid = positionalLayout(fixtures, frame);
     unplaced = laid.unplaced;
     layoutPositions = {
       ...laid.placed,
-      ...(trayRect ? trayLayout(unplaced, trayRect, FIXTURE_RADIUS) : {}),
+      ...(trayRect ? trayLayout(unplaced, trayRect, GEO_RADIUS) : {}),
     };
     focusPositions = {};
     for (const [name, point] of Object.entries(points)) {
@@ -202,25 +209,37 @@
     if (!ctx || !frame) return;
     // Meter grid, the centerline a touch stronger, the audience edge
     // labeled so the picture reads the right way up.
+    // Grid lines run the width of the stage rectangle, one per meter, so
+    // the deck reads as a floor and not a chart.
+    const gridTop = GEO_INSET;
+    const gridBottom = (trayRect ? trayRect.y : h - GEO_INSET) - 16;
     ctx.save();
     ctx.beginPath();
-    ctx.rect(plotRect.x, plotRect.y, plotRect.w, plotRect.h);
+    ctx.rect(GEO_INSET, gridTop, w - 2 * GEO_INSET, gridBottom - gridTop);
     ctx.clip();
     ctx.lineWidth = 1;
-    for (let x = Math.ceil(frame.minX); x <= Math.floor(frame.maxX); x++) {
+    for (
+      let x = Math.ceil(frame.minX) - 2;
+      x <= Math.floor(frame.maxX) + 2;
+      x++
+    ) {
       const px = toPx(frame, [x, 0]).x;
       ctx.strokeStyle = x === 0 ? colors.axis : colors.grid;
       ctx.beginPath();
-      ctx.moveTo(px, plotRect.y);
-      ctx.lineTo(px, plotRect.y + plotRect.h);
+      ctx.moveTo(px, gridTop);
+      ctx.lineTo(px, gridBottom);
       ctx.stroke();
     }
-    for (let y = Math.ceil(frame.minY); y <= Math.floor(frame.maxY); y++) {
+    for (
+      let y = Math.ceil(frame.minY) - 2;
+      y <= Math.floor(frame.maxY) + 2;
+      y++
+    ) {
       const py = toPx(frame, [0, y]).y;
       ctx.strokeStyle = y === 0 ? colors.axis : colors.grid;
       ctx.beginPath();
-      ctx.moveTo(plotRect.x, py);
-      ctx.lineTo(plotRect.x + plotRect.w, py);
+      ctx.moveTo(GEO_INSET, py);
+      ctx.lineTo(w - GEO_INSET, py);
       ctx.stroke();
     }
     ctx.restore();
@@ -228,9 +247,7 @@
     ctx.fillStyle = colors.caption;
     ctx.font = "bold 10px monospace";
     ctx.textAlign = "center";
-    const captionY =
-      (trayRect ? trayRect.y : PADDING - 20 + h - 2 * PADDING + 40) - 6;
-    ctx.fillText(get(t)("stage.audience"), w / 2, captionY);
+    ctx.fillText(get(t)("stage.audience"), w / 2, gridBottom + 11);
     if (trayRect) {
       ctx.strokeStyle = colors.grid;
       ctx.setLineDash([4, 4]);
@@ -262,26 +279,22 @@
     const focusFill = isDark ? "#d9a441" : "#b8801f";
 
     // Stage outline
+    const inset = frame ? GEO_INSET : PADDING - 20;
     ctx.fillStyle = stageFill;
-    ctx.fillRect(
-      PADDING - 20,
-      PADDING - 20,
-      w - 2 * PADDING + 40,
-      h - 2 * PADDING + 40,
-    );
+    ctx.fillRect(inset, inset, w - 2 * inset, h - 2 * inset);
     ctx.strokeStyle = stageStroke;
     ctx.lineWidth = 1;
-    ctx.strokeRect(
-      PADDING - 20,
-      PADDING - 20,
-      w - 2 * PADDING + 40,
-      h - 2 * PADDING + 40,
-    );
+    ctx.strokeRect(inset, inset, w - 2 * inset, h - 2 * inset);
 
-    ctx.fillStyle = stageCaption;
-    ctx.font = "12px monospace";
-    ctx.textAlign = "center";
-    ctx.fillText(get(t)("stage.label"), w / 2, PADDING - 6);
+    if (!frame) {
+      ctx.fillStyle = stageCaption;
+      ctx.font = "12px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(get(t)("stage.label"), w / 2, PADDING - 6);
+    }
+
+    const radius = frame ? GEO_RADIUS : FIXTURE_RADIUS;
+    const glow = frame ? GEO_GLOW : GLOW_RADIUS;
 
     if (frame) {
       drawPlotChrome(w, h, {
@@ -326,10 +339,10 @@
         const gradient = ctx.createRadialGradient(
           pos.x,
           pos.y,
-          FIXTURE_RADIUS,
+          radius,
           pos.x,
           pos.y,
-          GLOW_RADIUS,
+          glow,
         );
         gradient.addColorStop(
           0,
@@ -338,7 +351,7 @@
         gradient.addColorStop(1, "rgba(0,0,0,0)");
         ctx.fillStyle = gradient;
         ctx.beginPath();
-        ctx.arc(pos.x, pos.y, GLOW_RADIUS, 0, Math.PI * 2);
+        ctx.arc(pos.x, pos.y, glow, 0, Math.PI * 2);
         ctx.fill();
       }
 
@@ -348,7 +361,7 @@
       ctx.lineWidth = 1.5;
       if (isUnplaced) ctx.setLineDash([4, 3]);
       ctx.beginPath();
-      ctx.arc(pos.x, pos.y, FIXTURE_RADIUS, 0, Math.PI * 2);
+      ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
       ctx.setLineDash([]);
@@ -359,14 +372,8 @@
         ctx.strokeStyle = fixtureStroke;
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(
-          pos.x + dir.x * FIXTURE_RADIUS,
-          pos.y + dir.y * FIXTURE_RADIUS,
-        );
-        ctx.lineTo(
-          pos.x + dir.x * (FIXTURE_RADIUS + 8),
-          pos.y + dir.y * (FIXTURE_RADIUS + 8),
-        );
+        ctx.moveTo(pos.x + dir.x * radius, pos.y + dir.y * radius);
+        ctx.lineTo(pos.x + dir.x * (radius + 8), pos.y + dir.y * (radius + 8));
         ctx.stroke();
       }
 
@@ -374,7 +381,7 @@
       ctx.fillStyle = fixtureLabel;
       ctx.font = "11px monospace";
       ctx.textAlign = "center";
-      ctx.fillText(name, pos.x, pos.y + FIXTURE_RADIUS + 14);
+      ctx.fillText(name, pos.x, pos.y + radius + 14);
     }
 
     // Focus points: diamond pins the show can aim at.
@@ -392,8 +399,8 @@
       ctx.stroke();
       ctx.fillStyle = focusFill;
       ctx.font = "bold 10px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(name, pos.x, pos.y - FOCUS_RADIUS - 4);
+      ctx.textAlign = "left";
+      ctx.fillText(name, pos.x + FOCUS_RADIUS + 4, pos.y + 4);
     }
   }
 
@@ -412,11 +419,12 @@
         return { kind: "focus", name };
       }
     }
+    const radius = frame ? GEO_RADIUS : FIXTURE_RADIUS;
     for (const name of Object.keys(layoutPositions)) {
       const pos = layoutPositions[name];
       const dx = cx - pos.x;
       const dy = cy - pos.y;
-      if (dx * dx + dy * dy <= FIXTURE_RADIUS * FIXTURE_RADIUS) {
+      if (dx * dx + dy * dy <= radius * radius) {
         return {
           kind: "fixture",
           name,
