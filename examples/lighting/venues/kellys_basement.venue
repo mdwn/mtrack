@@ -1,0 +1,18 @@
+# A venue that says where its fixtures hang. Coordinates are meters,
+# right-handed Z-up, origin downstage-center on the deck, +x stage-left,
+# +y upstage. Rotation is degrees about X, Y, Z, applied in that order.
+venue "kellys_basement" {
+  # Two movers on the rear truss, hung facing downstage.
+  fixture "Mover1" MovingHead @ 1:37 tags ["moving_head", "spot", "premium"]
+    position (-2.0, 3.5, 4.2) rotation (0, 0, 180)
+  fixture "Mover2" MovingHead @ 1:53 tags ["moving_head", "spot", "premium"]
+    position (2.0, 3.5, 4.2) rotation (0, 0, 180)
+
+  # Front wash on the downstage pipe.
+  fixture "Wash1" RGBW_Par @ 1:1 tags ["wash", "front", "rgb"] position (-1.5, 0.5, 3.0)
+  fixture "Wash2" RGBW_Par @ 1:7 tags ["wash", "front", "rgb"] position (1.5, 0.5, 3.0)
+
+  # Named stage points a show can aim at — the positional analog of tags.
+  focus "drummer" (0.0, 2.8, 1.4)
+  focus "center-stage" (0.0, 1.5, 1.7)
+}

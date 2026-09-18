@@ -230,3 +230,128 @@ fn a_fixture_type_whose_name_is_not_a_bare_word_can_be_quoted() {
     let venues = parse_venues(bare).expect("a bare type parses");
     assert_eq!(venues["v"].fixtures()["M1"].fixture_type(), "MovingHead");
 }
+
+// ── .venue syntax: provenance, positions, focus points ───────────
+
+#[test]
+fn a_venue_carries_positions_rotations_and_focus_points() {
+    let content = r#"venue "kellys-basement" {
+  imported from mvr("lighting/library/kellys.mvr") origin (0, -3.5, 0)
+  fixture "Spot1" "Robe Esprite" @ 1:1 tags ["spot", "rear"] position (-2.0, 3.5, 4.2) rotation (0, 0, 180)
+  fixture "Wash1" RGBW_Par @ 1:40 position (1, 1, 1)
+  fixture "Old1" RGBW_Par @ 1:60
+  focus "drummer" (0.0, 2.8, 1.4)
+  focus "center-stage" (0, 1.5, 1.7)
+}"#;
+    let venues = parse_venues(content).expect("parses");
+    let venue = &venues["kellys-basement"];
+
+    let source = venue.source().expect("provenance");
+    assert_eq!(source.mvr, "lighting/library/kellys.mvr");
+    assert_eq!(source.origin, [0.0, -3.5, 0.0]);
+
+    let spot = &venue.fixtures()["Spot1"];
+    assert_eq!(spot.fixture_type(), "Robe Esprite");
+    assert_eq!(spot.tags(), ["spot", "rear"]);
+    assert_eq!(spot.position(), Some([-2.0, 3.5, 4.2]));
+    assert_eq!(spot.rotation(), Some([0.0, 0.0, 180.0]));
+
+    let wash = &venue.fixtures()["Wash1"];
+    assert!(wash.tags().is_empty());
+    assert_eq!(wash.position(), Some([1.0, 1.0, 1.0]));
+    assert_eq!(wash.rotation(), None);
+
+    // A v1-shaped line is still a fixture without geometry.
+    let old = &venue.fixtures()["Old1"];
+    assert_eq!(old.position(), None);
+
+    assert_eq!(venue.focus_points()["drummer"], [0.0, 2.8, 1.4]);
+    assert_eq!(venue.focus_points()["center-stage"], [0.0, 1.5, 1.7]);
+}
+
+#[test]
+fn fixture_attributes_may_come_in_any_order_but_only_once() {
+    let any_order = "venue \"v\" {\n  fixture \"A\" T @ 1:1 position (1, 2, 3) tags [\"x\"]\n}\n";
+    let venue = &parse_venues(any_order).expect("parses")["v"];
+    assert_eq!(venue.fixtures()["A"].position(), Some([1.0, 2.0, 3.0]));
+    assert_eq!(venue.fixtures()["A"].tags(), ["x"]);
+
+    for attribute in ["tags [\"x\"]", "position (1, 2, 3)", "rotation (0, 0, 1)"] {
+        let twice =
+            format!("venue \"v\" {{\n  fixture \"A\" T @ 1:1 {attribute} {attribute}\n}}\n");
+        let err = parse_venues(&twice).expect_err("a duplicate attribute is refused");
+        assert!(err.to_string().contains("more than once"), "{err}");
+    }
+}
+
+#[test]
+fn duplicate_fixture_and_focus_names_are_refused() {
+    let fixtures = "venue \"v\" {\n  fixture \"A\" T @ 1:1\n  fixture \"A\" T @ 1:5\n}\n";
+    let err = parse_venues(fixtures).expect_err("duplicate fixture");
+    assert!(
+        err.to_string().contains("fixture \"A\" more than once"),
+        "{err}"
+    );
+
+    let focus = "venue \"v\" {\n  focus \"d\" (0, 0, 0)\n  focus \"d\" (1, 1, 1)\n}\n";
+    let err = parse_venues(focus).expect_err("duplicate focus");
+    assert!(
+        err.to_string().contains("focus point \"d\" more than once"),
+        "{err}"
+    );
+
+    let source =
+        "venue \"v\" {\n  imported from mvr(\"a.mvr\")\n  imported from mvr(\"b.mvr\")\n}\n";
+    let err = parse_venues(source).expect_err("duplicate source");
+    assert!(err.to_string().contains("more than once"), "{err}");
+}
+
+#[test]
+fn an_import_without_an_origin_defaults_to_zero() {
+    let content = "venue \"v\" {\n  imported from mvr(\"lighting/library/v.mvr\")\n}\n";
+    let venue = &parse_venues(content).expect("parses")["v"];
+    assert_eq!(venue.source().unwrap().origin, [0.0, 0.0, 0.0]);
+}
+
+#[test]
+fn the_venue_display_form_round_trips_through_the_parser() {
+    let content = r#"venue "v" {
+  imported from mvr("lighting/library/v.mvr") origin (0.5, -3.25, 0)
+  fixture "Spot1" "Robe Esprite" @ 1:1 tags ["spot"] position (-2, 3.5, 4.2) rotation (0, 0, 180)
+  fixture "Wash1" RGBW_Par @ 1:40 position (1.0005, -0.0004, 1)
+  focus "drummer" (0, 2.8, 1.4)
+}"#;
+    let venue = &parse_venues(content).expect("parses")["v"];
+    let rendered = venue.to_string();
+    let again = &parse_venues(&rendered).expect("the rendered form parses")["v"];
+
+    assert_eq!(again.source(), venue.source());
+    assert_eq!(again.focus_points(), venue.focus_points());
+    assert_eq!(
+        again.fixtures()["Spot1"].to_string(),
+        venue.fixtures()["Spot1"].to_string()
+    );
+    // Coordinates are written to millimeter precision, without negative zero.
+    assert_eq!(
+        again.fixtures()["Wash1"].position(),
+        Some([1.001, 0.0, 1.0])
+    );
+    assert!(rendered.contains("position (1.001, 0, 1)"), "{rendered}");
+    assert!(
+        rendered.contains("\"Robe Esprite\""),
+        "a type with a space is quoted"
+    );
+    assert!(
+        rendered.contains(" RGBW_Par @"),
+        "a bare-word type stays bare"
+    );
+}
+
+#[test]
+fn a_hash_inside_a_quoted_name_is_not_a_comment() {
+    let content = "venue \"v\" {\n  fixture \"Truss #3\" \"Par #1\" @ 1:1 tags [\"a\"]\n}\n";
+    let venue = &parse_venues(content).expect("parses")["v"];
+    let fixture = &venue.fixtures()["Truss #3"];
+    assert_eq!(fixture.fixture_type(), "Par #1");
+    assert_eq!(fixture.tags(), ["a"]);
+}

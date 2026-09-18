@@ -12,10 +12,12 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 
-use super::super::types::{Fixture, FixtureType, FixtureTypeV1, GdtfSource, MovementLimits, Venue};
+use super::super::types::{
+    Fixture, FixtureType, FixtureTypeV1, GdtfSource, MovementLimits, Vec3, Venue, VenueSource,
+};
 use super::error::get_error_context;
 use super::grammar::{LightingParser, Rule};
 use pest::iterators::Pair;
@@ -326,7 +328,7 @@ fn extract_string(pair: Pair<Rule>) -> String {
 
 fn parse_venue_definition(pair: Pair<Rule>) -> Result<Venue, Box<dyn Error>> {
     let mut name = String::new();
-    let mut fixtures = HashMap::new();
+    let mut body = VenueBody::default();
 
     for pair in pair.into_inner() {
         match pair.as_rule() {
@@ -334,7 +336,7 @@ fn parse_venue_definition(pair: Pair<Rule>) -> Result<Venue, Box<dyn Error>> {
                 name = extract_string(pair);
             }
             Rule::venue_content => {
-                parse_venue_content(pair, &mut fixtures)?;
+                parse_venue_content(pair, &mut body)?;
             }
             _ => {}
         }
@@ -344,18 +346,107 @@ fn parse_venue_definition(pair: Pair<Rule>) -> Result<Venue, Box<dyn Error>> {
         return Err("Venue name is required".into());
     }
 
-    Ok(Venue::new(name, fixtures))
+    Ok(Venue::new(name, body.fixtures)
+        .with_focus_points(body.focus_points)
+        .with_source(body.source))
 }
 
-fn parse_venue_content(
-    pair: Pair<Rule>,
-    fixtures: &mut HashMap<String, Fixture>,
-) -> Result<(), Box<dyn Error>> {
+/// What a venue body accumulates while parsing.
+#[derive(Default)]
+struct VenueBody {
+    fixtures: HashMap<String, Fixture>,
+    focus_points: BTreeMap<String, Vec3>,
+    source: Option<VenueSource>,
+}
+
+/// Parses a `(x, y, z)` triple.
+fn parse_vec3(pair: Pair<Rule>) -> Result<Vec3, Box<dyn Error>> {
+    let mut values = [0.0; 3];
+    let mut count = 0;
+    for inner in pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::signed_number)
+    {
+        if count == 3 {
+            break;
+        }
+        values[count] = inner
+            .as_str()
+            .trim()
+            .parse::<f64>()
+            .map_err(|e| format!("Invalid coordinate \"{}\": {e}", inner.as_str()))?;
+        count += 1;
+    }
+    if count != 3 {
+        return Err("a coordinate triple needs exactly three numbers".into());
+    }
+    Ok(values)
+}
+
+fn parse_venue_source(pair: Pair<Rule>) -> Result<VenueSource, Box<dyn Error>> {
+    let mut mvr = None;
+    let mut origin = [0.0; 3];
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::string => mvr = Some(extract_string(inner)),
+            Rule::venue_origin => {
+                let vec = inner
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::vec3)
+                    .ok_or("origin requires a coordinate triple")?;
+                origin = parse_vec3(vec)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(VenueSource {
+        mvr: mvr.ok_or("mvr import requires an archive path")?,
+        origin,
+    })
+}
+
+fn parse_venue_content(pair: Pair<Rule>, body: &mut VenueBody) -> Result<(), Box<dyn Error>> {
     for content_pair in pair.into_inner() {
         match content_pair.as_rule() {
             Rule::fixture => {
                 let fixture = parse_fixture_definition(content_pair)?;
-                fixtures.insert(fixture.name().to_string(), fixture);
+                if body.fixtures.contains_key(fixture.name()) {
+                    return Err(format!(
+                        "venue declares fixture \"{}\" more than once",
+                        fixture.name()
+                    )
+                    .into());
+                }
+                body.fixtures.insert(fixture.name().to_string(), fixture);
+            }
+            Rule::focus_point => {
+                let mut name = String::new();
+                let mut point = None;
+                for inner in content_pair.into_inner() {
+                    match inner.as_rule() {
+                        Rule::string => name = extract_string(inner),
+                        Rule::vec3 => point = Some(parse_vec3(inner)?),
+                        _ => {}
+                    }
+                }
+                if name.is_empty() {
+                    return Err("focus point name is required".into());
+                }
+                if body.focus_points.contains_key(&name) {
+                    return Err(
+                        format!("venue declares focus point \"{name}\" more than once").into(),
+                    );
+                }
+                body.focus_points.insert(
+                    name,
+                    point.ok_or("focus point requires a coordinate triple")?,
+                );
+            }
+            Rule::venue_source => {
+                if body.source.is_some() {
+                    return Err("venue declares `imported from mvr(...)` more than once".into());
+                }
+                body.source = Some(parse_venue_source(content_pair)?);
             }
             // `group` still parses so this can say what to do about it. Venue
             // groups were superseded by fixture tags one release after they
@@ -402,7 +493,9 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
     let mut fixture_type = String::new();
     let mut universe = 0u16;
     let mut start_channel = 0u16;
-    let mut tags = Vec::new();
+    let mut tags: Option<Vec<String>> = None;
+    let mut position = None;
+    let mut rotation = None;
 
     for pair in pair.into_inner() {
         match pair.as_rule() {
@@ -422,7 +515,22 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
                 start_channel = pair.as_str().trim().parse()?;
             }
             Rule::tags => {
-                tags = parse_tags(pair);
+                if tags.is_some() {
+                    return Err(duplicate_attribute(name.as_deref(), "tags"));
+                }
+                tags = Some(parse_tags(pair));
+            }
+            Rule::position => {
+                if position.is_some() {
+                    return Err(duplicate_attribute(name.as_deref(), "position"));
+                }
+                position = Some(parse_vec3(single_vec3(pair)?)?);
+            }
+            Rule::rotation => {
+                if rotation.is_some() {
+                    return Err(duplicate_attribute(name.as_deref(), "rotation"));
+                }
+                rotation = Some(parse_vec3(single_vec3(pair)?)?);
             }
             _ => {}
         }
@@ -433,8 +541,25 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
         fixture_type,
         universe,
         start_channel,
-        tags,
-    ))
+        tags.unwrap_or_default(),
+    )
+    .with_position(position)
+    .with_rotation(rotation))
+}
+
+fn duplicate_attribute(fixture: Option<&str>, attribute: &str) -> Box<dyn Error> {
+    format!(
+        "fixture \"{}\" declares `{attribute}` more than once",
+        fixture.unwrap_or_default()
+    )
+    .into()
+}
+
+/// The `vec3` inside a `position`/`rotation` attribute.
+fn single_vec3(pair: Pair<Rule>) -> Result<Pair<Rule>, Box<dyn Error>> {
+    pair.into_inner()
+        .find(|p| p.as_rule() == Rule::vec3)
+        .ok_or_else(|| "coordinate triple required".into())
 }
 
 fn parse_tags(pair: Pair<Rule>) -> Vec<String> {

@@ -33,12 +33,24 @@ use super::MvrError;
 const MAX_DEPTH: usize = 64;
 
 /// The parsed subset of an MVR scene.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Scene {
     /// The patched fixtures, in document order.
     pub fixtures: Vec<MvrFixture>,
+    /// The scene's focus points, in document order.
+    pub focus_points: Vec<MvrFocusPoint>,
     /// Per-value parse degradations — what was dropped and why.
     pub warnings: Vec<String>,
+}
+
+/// A focus point as MVR states it: a named transform fixtures can aim at.
+#[derive(Debug, Default)]
+pub struct MvrFocusPoint {
+    /// The focus point's name.
+    pub name: String,
+    /// Its transform, when present and parseable; the translation is the
+    /// point.
+    pub matrix: Option<Matrix>,
 }
 
 /// A 4x3 MVR transform: three basis vectors and a translation, expressed in
@@ -51,6 +63,51 @@ pub struct Matrix {
     /// The translation — the fixture's position in millimeters.
     pub o: [f64; 3],
 }
+
+impl Matrix {
+    /// The rotation the basis vectors encode, as degrees about the X, Y and
+    /// Z axes applied in that order (the venue DSL's `rotation`), with
+    /// whether the basis was orthonormal. A scaled basis (a mesh scale
+    /// riding along) is normalized; a sheared one is reported so the
+    /// import can say the rotation is approximate.
+    pub fn rotation_degrees(&self) -> (Vec3, bool) {
+        let mut u = self.u;
+        let mut v = self.v;
+        let mut w = self.w;
+        let mut exact = true;
+        for axis in [&mut u, &mut v, &mut w] {
+            let length = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+            if length > 1e-9 {
+                for c in axis.iter_mut() {
+                    *c /= length;
+                }
+            } else {
+                exact = false;
+            }
+        }
+        let dot = |a: &Vec3, b: &Vec3| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        if dot(&u, &v).abs() > 1e-3 || dot(&v, &w).abs() > 1e-3 || dot(&u, &w).abs() > 1e-3 {
+            exact = false;
+        }
+        // R = Rz·Ry·Rx with columns u, v, w (the local axes in scene space).
+        let r11 = u[0];
+        let r21 = u[1];
+        let r31 = u[2];
+        let r32 = v[2];
+        let r33 = w[2];
+        let ry = (-r31).clamp(-1.0, 1.0).asin();
+        let (rx, rz) = if ry.cos().abs() > 1e-6 {
+            (r32.atan2(r33), r21.atan2(r11))
+        } else {
+            // Gimbal lock: fold the whole rotation into X.
+            ((-v[0]).atan2(v[1]), 0.0)
+        };
+        ([rx.to_degrees(), ry.to_degrees(), rz.to_degrees()], exact)
+    }
+}
+
+/// A scene-space triple.
+pub type Vec3 = [f64; 3];
 
 /// A patched fixture as MVR states it.
 #[derive(Debug, Default)]
@@ -71,34 +128,39 @@ pub struct MvrFixture {
     pub matrix: Option<Matrix>,
 }
 
-/// Which text-bearing leaf inside a Fixture the walk is in.
+/// Which text-bearing leaf the walk is in.
 #[derive(Clone, Copy, PartialEq)]
 enum TextTarget {
     GdtfSpec,
     GdtfMode,
     Address,
+    /// A Fixture's transform.
     Matrix,
+    /// A FocusPoint's transform.
+    FocusMatrix,
+}
+
+/// The walk's mutable state.
+#[derive(Default)]
+struct Walk {
+    scene: Scene,
+    layer_stack: Vec<String>,
+    current: Option<MvrFixture>,
+    current_focus: Option<MvrFocusPoint>,
+    /// Fixtures can in principle nest under group objects that are
+    /// themselves inside a Fixture's subtree; count depth so only the
+    /// outermost Fixture element opens/closes the current fixture.
+    fixture_depth: usize,
+    text_target: Option<TextTarget>,
+    text_buffer: String,
+    saw_root: bool,
 }
 
 /// Parses `GeneralSceneDescription.xml` content into the consumed subset.
 pub fn parse_scene(xml: &str) -> Result<Scene, MvrError> {
     let mut reader = Reader::from_str(xml);
-
-    let mut scene = Scene {
-        fixtures: Vec::new(),
-        warnings: Vec::new(),
-    };
-
+    let mut walk = Walk::default();
     let mut stack: Vec<String> = Vec::new();
-    let mut layer_stack: Vec<String> = Vec::new();
-    let mut current: Option<MvrFixture> = None;
-    // Fixtures can in principle nest under group objects that are themselves
-    // inside a Fixture's subtree; count depth so only the outermost Fixture
-    // element opens/closes the current fixture.
-    let mut fixture_depth = 0usize;
-    let mut text_target: Option<TextTarget> = None;
-    let mut text_buffer = String::new();
-    let mut saw_root = false;
 
     loop {
         let event = reader
@@ -107,17 +169,7 @@ pub fn parse_scene(xml: &str) -> Result<Scene, MvrError> {
         match event {
             Event::Start(ref element) => {
                 let name = element_name(element)?;
-                open_element(
-                    element,
-                    &name,
-                    &mut scene,
-                    &mut layer_stack,
-                    &mut current,
-                    &mut fixture_depth,
-                    &mut text_target,
-                    &mut text_buffer,
-                    &mut saw_root,
-                )?;
+                walk.open(element, &name)?;
                 stack.push(name);
                 if stack.len() > MAX_DEPTH {
                     return Err(MvrError::new(format!(
@@ -127,46 +179,20 @@ pub fn parse_scene(xml: &str) -> Result<Scene, MvrError> {
             }
             Event::Empty(ref element) => {
                 let name = element_name(element)?;
-                open_element(
-                    element,
-                    &name,
-                    &mut scene,
-                    &mut layer_stack,
-                    &mut current,
-                    &mut fixture_depth,
-                    &mut text_target,
-                    &mut text_buffer,
-                    &mut saw_root,
-                )?;
-                close_element(
-                    &name,
-                    &mut scene,
-                    &mut layer_stack,
-                    &mut current,
-                    &mut fixture_depth,
-                    &mut text_target,
-                    &text_buffer,
-                );
+                walk.open(element, &name)?;
+                walk.close(&name);
             }
             Event::Text(ref text) => {
-                if text_target.is_some() {
+                if walk.text_target.is_some() {
                     let value = text
                         .xml_content(quick_xml::XmlVersion::Implicit1_0)
                         .map_err(|e| MvrError::new(format!("malformed XML text: {e}")))?;
-                    text_buffer.push_str(&value);
+                    walk.text_buffer.push_str(&value);
                 }
             }
             Event::End(_) => {
                 if let Some(name) = stack.pop() {
-                    close_element(
-                        &name,
-                        &mut scene,
-                        &mut layer_stack,
-                        &mut current,
-                        &mut fixture_depth,
-                        &mut text_target,
-                        &text_buffer,
-                    );
+                    walk.close(&name);
                 }
             }
             Event::Eof => break,
@@ -174,12 +200,12 @@ pub fn parse_scene(xml: &str) -> Result<Scene, MvrError> {
         }
     }
 
-    if !saw_root {
+    if !walk.saw_root {
         return Err(MvrError::new(
             "scene description has no GeneralSceneDescription element",
         ));
     }
-    Ok(scene)
+    Ok(walk.scene)
 }
 
 fn element_name(element: &BytesStart<'_>) -> Result<String, MvrError> {
@@ -202,102 +228,113 @@ fn attr(element: &BytesStart<'_>, name: &str) -> Result<Option<String>, MvrError
     Ok(None)
 }
 
-// ptr_arg: the buffer is cleared here (a String operation), not just read.
-#[allow(clippy::too_many_arguments, clippy::ptr_arg)]
-fn open_element(
-    element: &BytesStart<'_>,
-    name: &str,
-    scene: &mut Scene,
-    layer_stack: &mut Vec<String>,
-    current: &mut Option<MvrFixture>,
-    fixture_depth: &mut usize,
-    text_target: &mut Option<TextTarget>,
-    text_buffer: &mut String,
-    saw_root: &mut bool,
-) -> Result<(), MvrError> {
-    match name {
-        "GeneralSceneDescription" => *saw_root = true,
-        "Layer" => {
-            layer_stack.push(attr(element, "name")?.unwrap_or_default());
-        }
-        "Fixture" => {
-            if current.is_some() {
-                *fixture_depth += 1;
-                scene
-                    .warnings
-                    .push("a Fixture nested inside another Fixture was ignored".to_string());
-            } else {
-                *current = Some(MvrFixture {
+impl Walk {
+    fn open(&mut self, element: &BytesStart<'_>, name: &str) -> Result<(), MvrError> {
+        match name {
+            "GeneralSceneDescription" => self.saw_root = true,
+            "Layer" => {
+                self.layer_stack
+                    .push(attr(element, "name")?.unwrap_or_default());
+            }
+            "Fixture" => {
+                if self.current.is_some() {
+                    self.fixture_depth += 1;
+                    self.scene
+                        .warnings
+                        .push("a Fixture nested inside another Fixture was ignored".to_string());
+                } else {
+                    self.current = Some(MvrFixture {
+                        name: attr(element, "name")?.unwrap_or_default(),
+                        layer: self.layer_stack.last().cloned().unwrap_or_default(),
+                        ..MvrFixture::default()
+                    });
+                    self.fixture_depth = 0;
+                }
+            }
+            "FocusPoint" if self.current.is_none() && self.current_focus.is_none() => {
+                self.current_focus = Some(MvrFocusPoint {
                     name: attr(element, "name")?.unwrap_or_default(),
-                    layer: layer_stack.last().cloned().unwrap_or_default(),
-                    ..MvrFixture::default()
+                    matrix: None,
                 });
-                *fixture_depth = 0;
             }
+            "GDTFSpec" | "GDTFMode" | "Address" | "Matrix" if self.current.is_some() => {
+                self.text_target = Some(match name {
+                    "GDTFSpec" => TextTarget::GdtfSpec,
+                    "GDTFMode" => TextTarget::GdtfMode,
+                    "Address" => TextTarget::Address,
+                    _ => TextTarget::Matrix,
+                });
+                self.text_buffer.clear();
+            }
+            "Matrix" if self.current_focus.is_some() => {
+                self.text_target = Some(TextTarget::FocusMatrix);
+                self.text_buffer.clear();
+            }
+            _ => {}
         }
-        "GDTFSpec" | "GDTFMode" | "Address" | "Matrix" if current.is_some() => {
-            *text_target = Some(match name {
-                "GDTFSpec" => TextTarget::GdtfSpec,
-                "GDTFMode" => TextTarget::GdtfMode,
-                "Address" => TextTarget::Address,
-                _ => TextTarget::Matrix,
-            });
-            text_buffer.clear();
-        }
-        _ => {}
+        Ok(())
     }
-    Ok(())
-}
 
-fn close_element(
-    name: &str,
-    scene: &mut Scene,
-    layer_stack: &mut Vec<String>,
-    current: &mut Option<MvrFixture>,
-    fixture_depth: &mut usize,
-    text_target: &mut Option<TextTarget>,
-    text_buffer: &str,
-) {
-    match name {
-        "Layer" => {
-            layer_stack.pop();
-        }
-        "Fixture" => {
-            if *fixture_depth > 0 {
-                *fixture_depth -= 1;
-            } else if let Some(fixture) = current.take() {
-                scene.fixtures.push(fixture);
+    fn close(&mut self, name: &str) {
+        match name {
+            "Layer" => {
+                self.layer_stack.pop();
             }
-        }
-        "GDTFSpec" | "GDTFMode" | "Address" | "Matrix" => {
-            let Some(target) = text_target.take() else {
-                return;
-            };
-            let Some(fixture) = current.as_mut() else {
-                return;
-            };
-            let text = text_buffer.trim().to_string();
-            match target {
-                TextTarget::GdtfSpec if !text.is_empty() => fixture.gdtf_spec = Some(text),
-                TextTarget::GdtfMode if !text.is_empty() => fixture.gdtf_mode = Some(text),
-                TextTarget::Address => match parse_address(&text) {
-                    Some(address) => fixture.addresses.push(address),
-                    None => scene.warnings.push(format!(
-                        "fixture \"{}\": unparseable address \"{text}\"; dropped",
-                        fixture.name
-                    )),
-                },
-                TextTarget::Matrix => match parse_matrix(&text) {
-                    Some(matrix) => fixture.matrix = Some(matrix),
-                    None => scene.warnings.push(format!(
-                        "fixture \"{}\": unparseable matrix \"{text}\"; position dropped",
-                        fixture.name
-                    )),
-                },
-                _ => {}
+            "Fixture" => {
+                if self.fixture_depth > 0 {
+                    self.fixture_depth -= 1;
+                } else if let Some(fixture) = self.current.take() {
+                    self.scene.fixtures.push(fixture);
+                }
             }
+            "FocusPoint" => {
+                if let Some(focus) = self.current_focus.take() {
+                    self.scene.focus_points.push(focus);
+                }
+            }
+            "GDTFSpec" | "GDTFMode" | "Address" | "Matrix" => {
+                let Some(target) = self.text_target.take() else {
+                    return;
+                };
+                let text = self.text_buffer.trim().to_string();
+                if target == TextTarget::FocusMatrix {
+                    let Some(focus) = self.current_focus.as_mut() else {
+                        return;
+                    };
+                    match parse_matrix(&text) {
+                        Some(matrix) => focus.matrix = Some(matrix),
+                        None => self.scene.warnings.push(format!(
+                            "focus point \"{}\": unparseable matrix \"{text}\"; dropped",
+                            focus.name
+                        )),
+                    }
+                    return;
+                }
+                let Some(fixture) = self.current.as_mut() else {
+                    return;
+                };
+                match target {
+                    TextTarget::GdtfSpec if !text.is_empty() => fixture.gdtf_spec = Some(text),
+                    TextTarget::GdtfMode if !text.is_empty() => fixture.gdtf_mode = Some(text),
+                    TextTarget::Address => match parse_address(&text) {
+                        Some(address) => fixture.addresses.push(address),
+                        None => self.scene.warnings.push(format!(
+                            "fixture \"{}\": unparseable address \"{text}\"; dropped",
+                            fixture.name
+                        )),
+                    },
+                    TextTarget::Matrix => match parse_matrix(&text) {
+                        Some(matrix) => fixture.matrix = Some(matrix),
+                        None => self.scene.warnings.push(format!(
+                            "fixture \"{}\": unparseable matrix \"{text}\"; position dropped",
+                            fixture.name
+                        )),
+                    },
+                    _ => {}
+                }
+            }
+            _ => {}
         }
-        _ => {}
     }
 }
 
@@ -382,6 +419,9 @@ pub(super) mod tests {
           <SceneObject name="Truss A">
             <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,6000}</Matrix>
           </SceneObject>
+          <FocusPoint name="Drummer" uuid="cccc">
+            <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,2800,1400}</Matrix>
+          </FocusPoint>
         </ChildList>
       </Layer>
       <Layer name="Back Wall">
@@ -429,6 +469,23 @@ pub(super) mod tests {
         // Absolute 513 is universe 2, address 1.
         assert_eq!(mover.addresses, vec![(2, 1), (2, 100)]);
         assert!(mover.matrix.is_none());
+
+        assert_eq!(scene.focus_points.len(), 1);
+        let drummer = &scene.focus_points[0];
+        assert_eq!(drummer.name, "Drummer");
+        assert_eq!(drummer.matrix.unwrap().o, [0.0, 2800.0, 1400.0]);
+    }
+
+    #[test]
+    fn a_focus_point_with_a_bad_matrix_degrades_with_a_warning() {
+        let xml = r#"<GeneralSceneDescription><Scene><Layers><Layer name="L"><ChildList>
+<FocusPoint name="F"><Matrix>nope</Matrix></FocusPoint>
+</ChildList></Layer></Layers></Scene></GeneralSceneDescription>"#;
+        let scene = parse_scene(xml).unwrap();
+        assert_eq!(scene.focus_points.len(), 1);
+        assert!(scene.focus_points[0].matrix.is_none());
+        assert_eq!(scene.warnings.len(), 1, "{:?}", scene.warnings);
+        assert!(scene.warnings[0].contains("focus point \"F\""));
     }
 
     #[test]
@@ -470,6 +527,55 @@ pub(super) mod tests {
         assert!(parse_matrix("{1,0,0,0}{0,1,0}{0,0,1}{0,0,0}").is_none());
         assert!(parse_matrix("{1,0,0}{0,1,0}{0,0,1}{0,0,inf}").is_none());
         assert!(parse_matrix("").is_none());
+    }
+
+    #[test]
+    fn rotations_come_out_in_degrees() {
+        let identity = Matrix {
+            u: [1.0, 0.0, 0.0],
+            v: [0.0, 1.0, 0.0],
+            w: [0.0, 0.0, 1.0],
+            o: [0.0; 3],
+        };
+        let (angles, exact) = identity.rotation_degrees();
+        assert!(exact);
+        assert!(angles.iter().all(|a| a.abs() < 1e-9), "{angles:?}");
+
+        // Yawed 180° about Z: local x points at -x, local y at -y.
+        let about_face = Matrix {
+            u: [-1.0, 0.0, 0.0],
+            v: [0.0, -1.0, 0.0],
+            w: [0.0, 0.0, 1.0],
+            o: [0.0; 3],
+        };
+        let (angles, exact) = about_face.rotation_degrees();
+        assert!(exact);
+        assert!((angles[2].abs() - 180.0).abs() < 1e-9, "{angles:?}");
+        assert!(
+            angles[0].abs() < 1e-9 && angles[1].abs() < 1e-9,
+            "{angles:?}"
+        );
+
+        // Tilted 90° about X (a downward-hung fixture), scaled by 2: the
+        // scale is normalized away, the tilt survives.
+        let hung = Matrix {
+            u: [2.0, 0.0, 0.0],
+            v: [0.0, 0.0, 2.0],
+            w: [0.0, -2.0, 0.0],
+            o: [0.0; 3],
+        };
+        let (angles, exact) = hung.rotation_degrees();
+        assert!(exact, "uniform scale is not shear");
+        assert!((angles[0] - 90.0).abs() < 1e-9, "{angles:?}");
+
+        // Sheared: reported as approximate rather than trusted.
+        let sheared = Matrix {
+            u: [1.0, 0.5, 0.0],
+            v: [0.0, 1.0, 0.0],
+            w: [0.0, 0.0, 1.0],
+            o: [0.0; 3],
+        };
+        assert!(!sheared.rotation_degrees().1);
     }
 
     #[test]

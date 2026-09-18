@@ -609,6 +609,162 @@ pub fn verify(
 /// copies the archive into the project library, writes a GDTF-referential
 /// `.fixture` definition, and warms the expansion cache through the same
 /// code path the player's loader takes.
+/// Parses an "x,y,z" origin in millimeters.
+pub(crate) fn parse_origin_mm(text: &str) -> Result<[f64; 3], Box<dyn Error>> {
+    let parts: Vec<&str> = text.split(',').map(str::trim).collect();
+    if parts.len() != 3 {
+        return Err(format!("origin \"{text}\" must be three comma-separated numbers (mm)").into());
+    }
+    let mut origin = [0.0; 3];
+    for (slot, part) in origin.iter_mut().zip(parts) {
+        *slot = part
+            .parse::<f64>()
+            .map_err(|e| format!("origin component \"{part}\": {e}"))?;
+        if !slot.is_finite() {
+            return Err(format!("origin component \"{part}\" is not finite").into());
+        }
+    }
+    Ok(origin)
+}
+
+pub fn import_mvr(
+    mvr_path: &str,
+    write: bool,
+    name: Option<String>,
+    origin: Option<&str>,
+    project: &str,
+    fixture_types_dir: String,
+    venues_dir: String,
+) -> Result<(), Box<dyn Error>> {
+    use crate::lighting::import::{import_mvr, inspect_mvr, MvrImportOptions, MvrPlan};
+
+    let options = MvrImportOptions {
+        name,
+        origin_mm: origin.map(parse_origin_mm).transpose()?,
+        fixture_types_dir,
+        venues_dir,
+    };
+
+    fn print_plan(plan: &MvrPlan) {
+        println!(
+            "Venue \"{}\" → {}{}",
+            plan.venue_name,
+            plan.venue_file,
+            if plan.merge {
+                " (merging into the existing venue)"
+            } else {
+                ""
+            }
+        );
+        println!("  archive: {}", plan.archive);
+        println!(
+            "  origin: {} (MVR space, meters)",
+            crate::lighting::types::fmt_vec3(&plan.origin)
+        );
+        println!("  fixture types:");
+        for ft in &plan.fixture_types {
+            println!(
+                "    {:40} {} mode \"{}\"{}",
+                format!("\"{}\"", ft.name),
+                ft.archive,
+                ft.mode,
+                if ft.existing { " (existing)" } else { "" }
+            );
+        }
+        println!("  fixtures:");
+        for fixture in &plan.fixtures {
+            let patch = fixture
+                .patch
+                .map(|(u, a)| format!("{u}:{a}"))
+                .unwrap_or_else(|| "unpatched".to_string());
+            let position = fixture
+                .position
+                .map(|p| crate::lighting::types::fmt_vec3(&p))
+                .unwrap_or_else(|| "no position".to_string());
+            match &fixture.todo {
+                Some(reason) => println!(
+                    "    TODO {:24} @ {patch:8} {position}: {reason}",
+                    format!("\"{}\"", fixture.name)
+                ),
+                None => println!(
+                    "    {:29} @ {patch:8} {position} {}{}",
+                    format!("\"{}\"", fixture.name),
+                    fixture.fixture_type.as_deref().unwrap_or_default(),
+                    fixture
+                        .change
+                        .as_deref()
+                        .map(|c| format!("  [{c}]"))
+                        .unwrap_or_default()
+                ),
+            }
+        }
+        for removed in &plan.removed_fixtures {
+            println!(
+                "    REMOVED \"{}\" (the venue removed it; tags were {:?})",
+                removed.name, removed.tags
+            );
+        }
+        for kept in &plan.kept_fixtures {
+            println!("    KEPT \"{kept}\" (not in the MVR; yours)");
+        }
+        if !plan.focus_points.is_empty()
+            || !plan.kept_focus_points.is_empty()
+            || !plan.removed_focus_points.is_empty()
+        {
+            println!("  focus points:");
+            for focus in &plan.focus_points {
+                println!(
+                    "    {:29} {}{}",
+                    format!("\"{}\"", focus.name),
+                    crate::lighting::types::fmt_vec3(&focus.point),
+                    focus
+                        .change
+                        .as_deref()
+                        .map(|c| format!("  [{c}]"))
+                        .unwrap_or_default()
+                );
+            }
+            for kept in &plan.kept_focus_points {
+                println!("    KEPT \"{kept}\"");
+            }
+            for removed in &plan.removed_focus_points {
+                println!("    REMOVED \"{removed}\"");
+            }
+        }
+        if plan.warnings.is_empty() {
+            println!("  no warnings");
+        } else {
+            println!("  {} warning(s):", plan.warnings.len());
+            for warning in &plan.warnings {
+                println!("    {warning}");
+            }
+        }
+    }
+
+    if !write {
+        let plan = inspect_mvr(Path::new(mvr_path), &options, Path::new(project))?;
+        print_plan(&plan);
+        println!("\nNothing written. Re-run with --write to import.");
+        return Ok(());
+    }
+
+    let report = import_mvr(Path::new(mvr_path), &options, Path::new(project))?;
+    print_plan(&report.plan);
+    println!("  written:");
+    for file in &report.written {
+        println!("    {file}");
+    }
+    for (type_name, warnings) in &report.distillation_warnings {
+        if !warnings.is_empty() {
+            println!("  \"{type_name}\" distillation warning(s):");
+            for warning in warnings {
+                println!("    {warning}");
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn import_gdtf(
     gdtf_path: &str,
     mode: Option<&str>,

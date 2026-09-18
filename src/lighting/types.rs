@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -419,7 +419,7 @@ impl fmt::Display for FixtureType {
 }
 
 /// A fixture definition.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Fixture {
     /// The name of the fixture.
     name: String,
@@ -435,7 +435,18 @@ pub struct Fixture {
 
     /// Tags/roles/capabilities associated with this fixture.
     tags: Vec<String>,
+
+    /// Where the fixture hangs, in stage coordinates (see [`Vec3`]).
+    position: Option<Vec3>,
+
+    /// How it is mounted: degrees about the stage X, Y and Z axes, applied
+    /// in that order. Meaningless without a position.
+    rotation: Option<Vec3>,
 }
+
+/// A stage-space triple: meters, right-handed Z-up, origin downstage-center
+/// on the deck, +x stage-left, +y upstage, +z up. (For a rotation, degrees.)
+pub type Vec3 = [f64; 3];
 
 impl Fixture {
     /// Creates a new fixture.
@@ -452,7 +463,31 @@ impl Fixture {
             universe,
             start_channel,
             tags,
+            position: None,
+            rotation: None,
         }
+    }
+
+    /// Places the fixture.
+    pub fn with_position(mut self, position: Option<Vec3>) -> Fixture {
+        self.position = position;
+        self
+    }
+
+    /// Orients the fixture.
+    pub fn with_rotation(mut self, rotation: Option<Vec3>) -> Fixture {
+        self.rotation = rotation;
+        self
+    }
+
+    /// Gets the position, if the venue places this fixture.
+    pub fn position(&self) -> Option<Vec3> {
+        self.position
+    }
+
+    /// Gets the mounting rotation, if the venue states one.
+    pub fn rotation(&self) -> Option<Vec3> {
+        self.rotation
     }
 
     /// Gets the name.
@@ -481,20 +516,55 @@ impl Fixture {
     }
 }
 
+/// Where a venue was seeded from. Provenance, not a reference: the loader
+/// never opens the MVR, and everything in the venue file is the user's to
+/// edit. Re-import reads it to merge a revised MVR rather than replace.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VenueSource {
+    /// The MVR archive, relative to the project directory.
+    pub mvr: String,
+    /// The MVR-space point (meters) that became the stage origin — the
+    /// re-origin choice made at import, reapplied on re-import.
+    pub origin: Vec3,
+}
+
 /// A venue definition.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Venue {
     /// The name of the venue.
     name: String,
 
     /// The fixtures in the venue.
     fixtures: HashMap<String, Fixture>,
+
+    /// Named stage points shows can aim at, the positional analog of tags.
+    focus_points: BTreeMap<String, Vec3>,
+
+    /// The MVR this venue was seeded from, if any.
+    source: Option<VenueSource>,
 }
 
 impl Venue {
     /// Creates a new venue.
     pub fn new(name: String, fixtures: HashMap<String, Fixture>) -> Venue {
-        Venue { name, fixtures }
+        Venue {
+            name,
+            fixtures,
+            focus_points: BTreeMap::new(),
+            source: None,
+        }
+    }
+
+    /// Binds the venue's focus points.
+    pub fn with_focus_points(mut self, focus_points: BTreeMap<String, Vec3>) -> Venue {
+        self.focus_points = focus_points;
+        self
+    }
+
+    /// Records where the venue was seeded from.
+    pub fn with_source(mut self, source: Option<VenueSource>) -> Venue {
+        self.source = source;
+        self
     }
 
     /// Gets the name.
@@ -506,24 +576,104 @@ impl Venue {
     pub fn fixtures(&self) -> &HashMap<String, Fixture> {
         &self.fixtures
     }
+
+    /// Gets the focus points.
+    pub fn focus_points(&self) -> &BTreeMap<String, Vec3> {
+        &self.focus_points
+    }
+
+    /// Gets the import provenance, if the venue was seeded from an MVR.
+    pub fn source(&self) -> Option<&VenueSource> {
+        self.source.as_ref()
+    }
+
+    /// The fixtures sorted by patch, the order the DSL form lists them in.
+    pub fn fixtures_by_patch(&self) -> Vec<&Fixture> {
+        let mut fixtures: Vec<_> = self.fixtures.values().collect();
+        fixtures.sort_by(|a, b| {
+            (a.universe, a.start_channel, &a.name).cmp(&(b.universe, b.start_channel, &b.name))
+        });
+        fixtures
+    }
+}
+
+/// A coordinate as the DSL writes it: millimeter precision, no exponent, no
+/// negative zero — the grammar's `signed_number` reads it back exactly.
+pub fn fmt_coord(value: f64) -> String {
+    let rounded = (value * 1000.0).round() / 1000.0;
+    if rounded == 0.0 || !rounded.is_finite() {
+        "0".to_string()
+    } else {
+        format!("{rounded}")
+    }
+}
+
+/// A stage triple in DSL form.
+pub fn fmt_vec3(v: &Vec3) -> String {
+    format!(
+        "({}, {}, {})",
+        fmt_coord(v[0]),
+        fmt_coord(v[1]),
+        fmt_coord(v[2])
+    )
+}
+
+/// A fixture-type reference as the DSL accepts it: bare when it is an
+/// identifier, quoted otherwise ("Astera PixelBrick").
+fn fmt_type_reference(name: &str) -> String {
+    let mut chars = name.chars();
+    let bare = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if bare {
+        name.to_string()
+    } else {
+        format!("\"{name}\"")
+    }
+}
+
+impl fmt::Display for Fixture {
+    /// One venue line, without the leading indent or trailing newline.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "fixture \"{}\" {} @ {}:{}",
+            self.name,
+            fmt_type_reference(&self.fixture_type),
+            self.universe,
+            self.start_channel
+        )?;
+        if !self.tags.is_empty() {
+            let tags: Vec<String> = self.tags.iter().map(|t| format!("\"{t}\"")).collect();
+            write!(f, " tags [{}]", tags.join(", "))?;
+        }
+        if let Some(position) = &self.position {
+            write!(f, " position {}", fmt_vec3(position))?;
+        }
+        if let Some(rotation) = &self.rotation {
+            write!(f, " rotation {}", fmt_vec3(rotation))?;
+        }
+        Ok(())
+    }
 }
 
 impl fmt::Display for Venue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "venue \"{}\" {{", self.name)?;
-        let mut fixtures: Vec<_> = self.fixtures.values().collect();
-        fixtures.sort_by_key(|fix| (fix.universe, fix.start_channel));
-        for fix in &fixtures {
-            write!(
+        if let Some(source) = &self.source {
+            writeln!(
                 f,
-                "  fixture \"{}\" {} @ {}:{}",
-                fix.name, fix.fixture_type, fix.universe, fix.start_channel
+                "  imported from mvr(\"{}\") origin {}",
+                source.mvr,
+                fmt_vec3(&source.origin)
             )?;
-            if !fix.tags.is_empty() {
-                let tags: Vec<String> = fix.tags.iter().map(|t| format!("\"{t}\"")).collect();
-                write!(f, " tags [{}]", tags.join(", "))?;
-            }
-            writeln!(f)?;
+        }
+        for fix in self.fixtures_by_patch() {
+            writeln!(f, "  {fix}")?;
+        }
+        for (name, point) in &self.focus_points {
+            writeln!(f, "  focus \"{name}\" {}", fmt_vec3(point))?;
         }
         write!(f, "}}")
     }

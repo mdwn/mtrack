@@ -177,7 +177,10 @@ time_value = { number_value }
 
 time_unit = @{ "measures" | "measure" | "beats" | "beat" | "ms" | "s" }
 
-string = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+// Atomic so nothing is implicitly skipped inside the quotes: a non-atomic
+// rule let `#` start a COMMENT mid-string, so a name like "Truss #3"
+// swallowed the rest of its line.
+string = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 // Atomic for the same reason bare_identifier is: without it pest inserts
 // implicit WHITESPACE inside the trailing repetition, so a venue's
@@ -229,7 +232,7 @@ COMMENT = _{ ("//" | "#") ~ (!"\n" ~ ANY)* }
 // Fixture type rules
 fixture_type = { "fixture_type" ~ fixture_type_name ~ gdtf_source? ~ "{" ~ fixture_type_content ~ "}" }
 
-fixture_type_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+fixture_type_name = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 // Referential fixture types pin the GDTF archive + mode they are distilled
 // from; the file body carries only human additions (movement limits).
@@ -275,13 +278,35 @@ special_case = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 // Venue rules - support both simple and complex formats
 venue = { "venue" ~ string ~ "{" ~ venue_content ~ "}" }
 
-venue_content = { (fixture | group)* }
+// Provenance and geometry are body statements, not a header reference: an
+// MVR *seeds* a venue (the tags and focus names are yours afterwards), it does
+// not resolve one the way `from gdtf(...)` resolves a fixture type.
+venue_content = { (venue_source | fixture | focus_point | group)* }
+
+// The MVR this venue was seeded from, project-relative, and the MVR-space
+// point (meters) that became the stage origin — re-import reapplies it.
+venue_source = { "imported" ~ "from" ~ "mvr" ~ "(" ~ string ~ ")" ~ venue_origin? }
+
+venue_origin = { "origin" ~ vec3 }
+
+// A named stage point shows can aim at; the positional analog of a tag.
+focus_point = { "focus" ~ string ~ vec3 }
 
 // The type may be quoted. `identifier` is atomic, so a type whose declared
 // name is not a bare word — `fixture_type "Moving Head"` — has no other way to
 // be referenced. It used to work only because a non-atomic `identifier`
 // silently swallowed the space.
-fixture = { "fixture" ~ string ~ (string | identifier) ~ "@" ~ universe_num ~ ":" ~ address_num ~ tags? }
+fixture = { "fixture" ~ string ~ (string | identifier) ~ "@" ~ universe_num ~ ":" ~ address_num ~ (tags | position | rotation)* }
+
+// Stage coordinates: meters, right-handed Z-up, origin downstage-center on
+// the deck, +x stage-left, +y upstage, +z up. Rotation is degrees about the
+// stage X, Y and Z axes, applied in that order.
+position = { "position" ~ vec3 }
+rotation = { "rotation" ~ vec3 }
+
+vec3 = { "(" ~ signed_number ~ "," ~ signed_number ~ "," ~ signed_number ~ ")" }
+
+signed_number = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 
 universe_num = { ASCII_DIGIT+ }
 address_num = { ASCII_DIGIT+ }

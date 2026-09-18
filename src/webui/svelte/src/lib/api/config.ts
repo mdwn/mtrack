@@ -327,17 +327,33 @@ export interface FixtureTypeData {
   strobe_dmx_offset: number | null;
 }
 
+/** A stage triple: meters (or degrees, for a rotation). */
+export type Vec3 = [number, number, number];
+
 export interface FixtureData {
   name: string;
   fixture_type: string;
   universe: number;
   start_channel: number;
   tags: string[];
+  /** Stage position, when the venue places the fixture. */
+  position?: Vec3 | null;
+  /** Mounting rotation in degrees about X, Y, Z. */
+  rotation?: Vec3 | null;
+}
+
+/** Where a venue was seeded from (an MVR import). */
+export interface VenueSource {
+  mvr: string;
+  origin: Vec3;
 }
 
 export interface VenueData {
   name: string;
   fixtures: Record<string, FixtureData>;
+  /** Named stage points, the positional analog of tags. */
+  focus_points?: Record<string, Vec3>;
+  source?: VenueSource | null;
 }
 
 export async function fetchFixtureTypes(dir?: string): Promise<{
@@ -493,7 +509,11 @@ export async function saveVenue(
       universe: number;
       start_channel: number;
       tags: string[];
+      position?: Vec3 | null;
+      rotation?: Vec3 | null;
     }[];
+    focus_points?: Record<string, Vec3>;
+    source?: VenueSource | null;
   },
   dir?: string,
 ): Promise<void> {

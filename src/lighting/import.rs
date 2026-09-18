@@ -20,6 +20,8 @@
 //! through the same code path the player's loader takes — so a successful
 //! import is, by construction, a fixture type that will load.
 
+mod mvr;
+
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -27,6 +29,11 @@ use serde::Serialize;
 
 use super::gdtf;
 use super::system::LightingSystem;
+
+pub use mvr::{
+    import_mvr, import_mvr_bytes, inspect_mvr, inspect_mvr_bytes, MvrImport, MvrImportOptions,
+    MvrPlan, PlannedFixture, PlannedFixtureType, PlannedFocusPoint, RemovedFixture,
+};
 
 /// What an import did, for reporting: files written, the channels the
 /// fixture ended up with, and everything the distiller skipped or guessed.
@@ -48,8 +55,8 @@ pub struct GdtfImport {
     pub warnings: Vec<String>,
 }
 
-/// A fixture-type name reduced to a safe filename stem.
-fn fixture_filename_stem(name: &str) -> String {
+/// A fixture-type (or venue) name reduced to a safe filename stem.
+pub(crate) fn fixture_filename_stem(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for c in name.chars() {
         if c.is_ascii_alphanumeric() {
@@ -69,13 +76,13 @@ fn fixture_filename_stem(name: &str) -> String {
 /// [`crate::util::write_file`] with the path and any deploy hint in the
 /// error — a bare "Read-only file system (os error 30)" names no file and
 /// no fix.
-fn write(path: &Path, contents: &[u8]) -> Result<(), Box<dyn Error>> {
+pub(super) fn write(path: &Path, contents: &[u8]) -> Result<(), Box<dyn Error>> {
     crate::util::write_file(path, contents)
         .map_err(|e| annotate(crate::util::WriteTarget::File(path), e))
 }
 
 /// [`crate::util::create_dir_all`] with the same annotation.
-fn create_dir(path: &Path) -> Result<(), Box<dyn Error>> {
+pub(super) fn create_dir(path: &Path) -> Result<(), Box<dyn Error>> {
     crate::util::create_dir_all(path)
         .map_err(|e| annotate(crate::util::WriteTarget::Directory(path), e))
 }

@@ -26,6 +26,8 @@
     importGdtf,
     type FixtureTypeData,
     type VenueData,
+    type VenueSource,
+    type Vec3,
     type GdtfInspection,
     type GdtfImportReport,
   } from "../../lib/api/config";
@@ -93,8 +95,15 @@
       universe: number;
       start_channel: number;
       tags: string[];
+      /** Carried through the edit untouched: positions are edited on the
+       *  stage view, not here, and a save must not drop them. */
+      position?: Vec3 | null;
+      rotation?: Vec3 | null;
     }[]
   >([]);
+  /** Likewise carried through: the venue's focus points and MVR provenance. */
+  let editVenueFocusPoints = $state<Record<string, Vec3>>({});
+  let editVenueSource = $state<VenueSource | null>(null);
   let isNewVenue = $state(false);
 
   // Effective directories (from profile config or defaults)
@@ -332,7 +341,11 @@
         universe: f.universe,
         start_channel: f.start_channel,
         tags: [...f.tags],
+        position: f.position ?? null,
+        rotation: f.rotation ?? null,
       }));
+    editVenueFocusPoints = { ...(v.focus_points ?? {}) };
+    editVenueSource = v.source ?? null;
     isNewVenue = false;
   }
 
@@ -340,6 +353,8 @@
     editingVenue = "__new__";
     editVenueName = "";
     editVenueFixtures = [];
+    editVenueFocusPoints = {};
+    editVenueSource = null;
     isNewVenue = true;
   }
 
@@ -377,6 +392,8 @@
         universe: f.universe,
         start_channel: f.start_channel,
         tags: f.tags,
+        position: f.position ?? null,
+        rotation: f.rotation ?? null,
       }));
     const newName = editVenueName.trim();
     const oldName = editingVenue !== "__new__" ? editingVenue : null;
@@ -384,7 +401,15 @@
     venueSaving = true;
     venueMsg = "";
     try {
-      await saveVenue(newName, { fixtures }, venueDir || undefined);
+      await saveVenue(
+        newName,
+        {
+          fixtures,
+          focus_points: editVenueFocusPoints,
+          source: editVenueSource,
+        },
+        venueDir || undefined,
+      );
       if (isRename) {
         await deleteVenue(oldName, venueDir || undefined);
       }

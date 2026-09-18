@@ -63,8 +63,10 @@ Roughly 50 tools are available. They fall into a few groups:
 - **Song & playlist authoring** — read, write, and patch `song.yaml` and playlist files, plus
   detailed song metadata and beat-grid queries.
 - **Lighting authoring** — read, write, validate, patch, and delete `.light` DSL files for songs,
-  venues, and fixture types, list the lighting cues and active effects, and fetch a DSL reference
-  primer. Deleting a song's lighting file also removes its `lighting:` entry, so the song is never
+  venues, and fixture types (venue tools also take `.venue` files, fixture-type tools `.fixture`),
+  list the lighting cues and active effects, and fetch a DSL reference primer. Manufacturer and
+  venue files import through `list_gdtf_modes` / `import_gdtf` and `inspect_mvr` / `import_mvr`,
+  so an agent can fetch a GDTF or a venue's MVR, pick the mode or origin, and wire it in. Deleting a song's lighting file also removes its `lighting:` entry, so the song is never
   left with a dangling reference.
   `validate_lighting` returns each show's resolved cue timeline alongside the parse result, so
   "the cues land where I meant" can be checked without loading the show into the player, plus

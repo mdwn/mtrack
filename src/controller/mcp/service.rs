@@ -336,6 +336,18 @@ pub struct ImportGdtfArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ImportMvrArgs {
+    /// Path to an .mvr archive, relative to the project directory.
+    pub path: String,
+    /// Name for the venue; defaults to the archive's file stem.
+    pub name: Option<String>,
+    /// The MVR-space point, in millimeters, that becomes the stage origin
+    /// (downstage-center on the deck). Omitted, a re-import keeps the
+    /// venue's recorded origin and a fresh seed uses the MVR's own.
+    pub origin_mm: Option<[f64; 3]>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteSongLightingArgs {
     /// Song name as listed by `list_songs`.
     pub song: String,
@@ -1816,6 +1828,68 @@ impl McpServer {
         })?))
     }
 
+    fn mvr_options(&self, args: &ImportMvrArgs) -> crate::lighting::import::MvrImportOptions {
+        crate::lighting::import::MvrImportOptions {
+            name: args.name.clone(),
+            origin_mm: args.origin_mm,
+            ..crate::lighting::import::MvrImportOptions::default()
+        }
+    }
+
+    #[tool(description = "Resolve an MVR venue archive against the project and \
+        report what importing it would do, writing nothing: the venue file it \
+        would seed or merge into, every referenced fixture type (and whether \
+        a .fixture already covers it), each patched fixture with its stage \
+        position, TODOs for fixtures whose GDTF or mode cannot be resolved, \
+        and — on a re-import — what changed. Pick `origin_mm` from the report's \
+        positions so downstage-center lands at (0, 0, 0), then call import_mvr.")]
+    async fn inspect_mvr(
+        &self,
+        Parameters(args): Parameters<ImportMvrArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let path = self.resolve_in_project(&args.path)?;
+        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let options = self.mvr_options(&args);
+        let plan = tokio::task::spawn_blocking(move || {
+            crate::lighting::import::inspect_mvr(&path, &options, &project)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("inspect task failed: {e}"), None))?
+        .map_err(|e| McpError::invalid_params(e, None))?;
+        Ok(ok_json(serde_json::to_value(&plan).map_err(|e| {
+            McpError::internal_error(format!("plan serialization failed: {e}"), None)
+        })?))
+    }
+
+    #[tool(description = "Import an MVR venue archive: copies the MVR and its \
+        embedded GDTFs into lighting/library/, writes a GDTF-referential \
+        .fixture per referenced fixture type, and seeds a .venue file with \
+        positions, rotations and focus points in stage coordinates. A venue \
+        seeded earlier from the same MVR is merged instead — rig facts from \
+        the new file, tags and focus names kept. Tags are empty on a fresh \
+        seed: the venue file is the user's to tag afterwards. All validation \
+        runs before any write. The archive must already be inside the project \
+        directory.")]
+    async fn import_mvr(
+        &self,
+        Parameters(args): Parameters<ImportMvrArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let path = self.resolve_in_project(&args.path)?;
+        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let options = self.mvr_options(&args);
+        let report = tokio::task::spawn_blocking(move || {
+            crate::lighting::import::import_mvr(&path, &options, &project)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("import task failed: {e}"), None))?
+        .map_err(|e| McpError::invalid_params(e, None))?;
+        Ok(ok_json(serde_json::to_value(&report).map_err(|e| {
+            McpError::internal_error(format!("report serialization failed: {e}"), None)
+        })?))
+    }
+
     #[tool(description = "Read a lighting `.light` file referenced by a song. \
         The file lookup matches the basename against the song's loaded \
         lighting shows, so files at the song root or any subdirectory the \
@@ -1849,18 +1923,19 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "List the venue `.light` files in the configured \
-        venues directory. Returns the resolved directory and a list of basenames.")]
+    #[tool(description = "List the venue files (`.light` and `.venue`) in the \
+        configured venues directory. Returns the resolved directory and a list \
+        of basenames.")]
     async fn list_venue_files(&self) -> Result<CallToolResult, McpError> {
         let dir = self.resolve_lighting_dir(LightingDirKind::Venues).await?;
-        let entries = list_light_files(&dir).await?;
+        let entries = list_light_files(&dir, LightingDirKind::Venues).await?;
         Ok(ok_json(json!({
             "dir": dir.display().to_string(),
             "files": entries,
         })))
     }
 
-    #[tool(description = "Read a venue `.light` file by basename.")]
+    #[tool(description = "Read a venue file (`.light` or `.venue`) by basename.")]
     async fn read_venue(
         &self,
         Parameters(args): Parameters<LightingFileArgs>,
@@ -1877,9 +1952,12 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Validate and write a venue `.light` file into the \
+    #[tool(
+        description = "Validate and write a venue file (`.light`, or `.venue` \
+        for one using positions, focus points or MVR provenance) into the \
         configured venues directory. The DSL is parsed with the in-tree venue \
-        parser; on failure the file is not written.")]
+        parser; on failure the file is not written."
+    )]
     async fn write_venue(
         &self,
         Parameters(args): Parameters<WriteLightingFileArgs>,
@@ -1896,8 +1974,8 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Delete a venue `.light` file from the configured \
-        venues directory.")]
+    #[tool(description = "Delete a venue file (`.light` or `.venue`) from the \
+        configured venues directory.")]
     async fn delete_venue(
         &self,
         Parameters(args): Parameters<LightingFileArgs>,
@@ -2005,7 +2083,7 @@ impl McpServer {
         let dir = self
             .resolve_lighting_dir(LightingDirKind::FixtureTypes)
             .await?;
-        let entries = list_light_files(&dir).await?;
+        let entries = list_light_files(&dir, LightingDirKind::FixtureTypes).await?;
         Ok(ok_json(json!({
             "dir": dir.display().to_string(),
             "files": entries,
@@ -2266,8 +2344,8 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Patch a venue `.light` file with a string replacement. \
-        The result is parsed with the venue parser before being written."
+        description = "Patch a venue file (`.light` or `.venue`) with a string \
+        replacement. The result is parsed with the venue parser before being written."
     )]
     async fn patch_venue(
         &self,
@@ -3351,7 +3429,7 @@ impl McpServer {
         kind: LightingDirKind,
         name: &str,
     ) -> Result<std::path::PathBuf, McpError> {
-        validate_lighting_filename(name)?;
+        validate_lighting_dir_filename(kind, name)?;
         let dir = self.resolve_lighting_dir(kind).await?;
         Ok(dir.join(name))
     }
@@ -3531,6 +3609,26 @@ fn is_directory_layout(song: &crate::songs::Song) -> bool {
 }
 
 /// Validates that `name` is a single path segment ending in `.light`.
+/// A fixture-type or venue file name: `.light`, or the directory's typed
+/// peer extension (`.fixture` / `.venue`).
+pub(crate) fn validate_lighting_dir_filename(
+    kind: LightingDirKind,
+    name: &str,
+) -> Result<(), McpError> {
+    crate::webui::safe_path::SafePath::validate_name(name).map_err(safepath_err)?;
+    let typed = kind.typed_extension();
+    if !name.ends_with(".light") && !name.ends_with(&format!(".{typed}")) {
+        return Err(McpError::invalid_params(
+            format!(
+                "{} filename must end with .light or .{typed}",
+                kind.field_name()
+            ),
+            None,
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_lighting_filename(name: &str) -> Result<(), McpError> {
     crate::webui::safe_path::SafePath::validate_name(name).map_err(safepath_err)?;
     if !name.ends_with(".light") {
@@ -3559,6 +3657,14 @@ pub(crate) enum LightingDirKind {
 }
 
 impl LightingDirKind {
+    /// The extension of the directory's typed files, a peer of `.light`.
+    pub(crate) fn typed_extension(self) -> &'static str {
+        match self {
+            LightingDirKind::Venues => "venue",
+            LightingDirKind::FixtureTypes => "fixture",
+        }
+    }
+
     pub(crate) fn field_name(self) -> &'static str {
         match self {
             LightingDirKind::Venues => "venues",
@@ -3628,7 +3734,11 @@ pub(crate) async fn read_text(path: &std::path::Path) -> Result<String, McpError
 
 /// Lists `.light` files directly under `dir` (no recursion). Subdirectories
 /// and other extensions are skipped silently.
-pub(crate) async fn list_light_files(dir: &std::path::Path) -> Result<Vec<String>, McpError> {
+pub(crate) async fn list_light_files(
+    dir: &std::path::Path,
+    kind: LightingDirKind,
+) -> Result<Vec<String>, McpError> {
+    let typed = kind.typed_extension();
     let mut out = Vec::new();
     let mut entries = tokio::fs::read_dir(dir).await.map_err(|e| {
         McpError::internal_error(format!("failed to list {}: {e}", dir.display()), None)
@@ -3639,7 +3749,8 @@ pub(crate) async fn list_light_files(dir: &std::path::Path) -> Result<Vec<String
         .map_err(|e| McpError::internal_error(format!("read_dir entry: {e}"), None))?
     {
         let path = entry.path();
-        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("light") {
+        let extension = path.extension().and_then(|e| e.to_str());
+        if path.is_file() && (extension == Some("light") || extension == Some(typed)) {
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 out.push(name.to_string());
             }
