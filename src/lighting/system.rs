@@ -245,6 +245,18 @@ impl LightingSystem {
                                 continue;
                             }
                         }
+                    } else if fixture_type.uses_rich_channels()
+                        && path.extension().is_some_and(|ext| ext == "light")
+                    {
+                        // The extension is the version marker: rich channel
+                        // syntax is the v2 DSL and lives in .fixture files.
+                        warn!(
+                            fixture_type = name,
+                            file = %path.display(),
+                            "Rich channel syntax (fine, range, functions) belongs in a \
+                             .fixture file; rename the file — skipping this type"
+                        );
+                        continue;
                     } else {
                         info!(fixture_type = name, "Loading fixture type");
                         fixture_type
@@ -675,6 +687,29 @@ mod tests {
             !system.venues.contains_key("old"),
             "the legacy file genuinely does not parse"
         );
+    }
+
+    #[test]
+    fn rich_channel_syntax_loads_from_fixture_files_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rich = "fixture_type \"Mover\" {\n  channel \"pan\" @ 1 fine 2 range -270deg..270deg\n  channel \"dimmer\" @ 3\n}\n";
+        std::fs::write(dir.path().join("mover.fixture"), rich).unwrap();
+        std::fs::write(
+            dir.path().join("wrong_home.light"),
+            rich.replace("\"Mover\"", "\"Stray\""),
+        )
+        .unwrap();
+        let mut system = LightingSystem::new();
+        system
+            .load_fixture_types_directory(dir.path(), dir.path())
+            .expect("directory loads");
+        assert!(system.fixture_types.contains_key("Mover"));
+        assert!(
+            !system.fixture_types.contains_key("Stray"),
+            "rich syntax in a .light file is refused, loudly"
+        );
+        let mover = &system.fixture_types["Mover"];
+        assert_eq!(mover.channel_defs()["pan"].fine, Some(2));
     }
 
     #[test]

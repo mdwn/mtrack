@@ -355,3 +355,131 @@ fn a_hash_inside_a_quoted_name_is_not_a_comment() {
     assert_eq!(fixture.fixture_type(), "Par #1");
     assert_eq!(fixture.tags(), ["a"]);
 }
+
+// ── rich channel syntax (.fixture, design §15.6) ──────────────────
+
+const CHEAP_MOVER: &str = r#"fixture_type "Cheap Mover" {
+  channel "pan"  @ 1 fine 2 range -270deg..270deg
+  channel "tilt" @ 3 fine 4 range -135deg..135deg
+  channel "dimmer" @ 5
+  channel "strobe" @ 6 {
+    function "open"   0..15
+    function "strobe" 16..255 0.5hz..20hz
+  }
+  channel "red" @ 7
+  channel "green" @ 8
+  channel "blue" @ 9
+  movement { max_pan_speed: 240deg/s }
+}"#;
+
+#[test]
+fn rich_channel_lines_build_the_structured_model() {
+    use crate::lighting::types::PhysicalUnit;
+    let types = parse_fixture_types(CHEAP_MOVER).expect("parses");
+    let mover = &types["Cheap Mover"];
+    assert!(mover.uses_rich_channels());
+
+    let pan = &mover.channel_defs()["pan"];
+    assert_eq!((pan.offset, pan.fine), (1, Some(2)));
+    let range = pan.range.expect("pan range");
+    assert_eq!(
+        (range.from, range.to, range.unit),
+        (-270.0, 270.0, PhysicalUnit::Degrees)
+    );
+    assert_eq!(mover.channel_defs()["dimmer"].fine, None);
+
+    let strobe = &mover.channel_defs()["strobe"];
+    assert_eq!(strobe.functions.len(), 2);
+    assert_eq!(strobe.functions[0].name, "open");
+    assert_eq!(
+        (strobe.functions[0].dmx_from, strobe.functions[0].dmx_to),
+        (0, 15)
+    );
+    let physical = strobe.functions[1].physical.expect("strobe hz");
+    assert_eq!(
+        (physical.from, physical.to, physical.unit),
+        (0.5, 20.0, PhysicalUnit::Hertz)
+    );
+
+    // The v1 view derives from the definitions: the flat map, the footprint
+    // including fine bytes, and the strobe fields from the strobe function.
+    assert_eq!(mover.channels()["pan"], 1);
+    assert_eq!(mover.channels().len(), 7);
+    assert_eq!(mover.footprint(), 9);
+    assert_eq!(mover.strobe_dmx_offset(), Some(16));
+    assert_eq!(mover.max_strobe_frequency(), Some(20.0));
+    assert_eq!(mover.movement().max_pan_speed, Some(240.0));
+}
+
+#[test]
+fn the_rich_form_round_trips_through_display() {
+    let types = parse_fixture_types(CHEAP_MOVER).expect("parses");
+    let rendered = types["Cheap Mover"].to_string();
+    assert!(
+        rendered.contains("channel \"pan\" @ 1 fine 2 range -270deg..270deg\n"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("    function \"strobe\" 16..255 0.5hz..20hz\n"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("    max_pan_speed: 240deg/s\n"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("channel_map"), "{rendered}");
+    let again = parse_fixture_types(&rendered).expect("the rendered form parses");
+    assert_eq!(
+        again["Cheap Mover"].channel_defs(),
+        types["Cheap Mover"].channel_defs()
+    );
+
+    // A plain type still renders in the v1 form.
+    let plain = parse_fixture_types(
+        "fixture_type \"Par\" {\n  channels: 3\n  channel_map: {\"red\": 1, \"green\": 2, \"blue\": 3}\n  max_strobe_frequency: 20.0\n}\n",
+    )
+    .unwrap();
+    assert!(!plain["Par"].uses_rich_channels());
+    assert!(plain["Par"].to_string().contains("channel_map"));
+}
+
+#[test]
+fn rich_channels_do_not_mix_with_the_v1_forms_or_a_gdtf_reference() {
+    for (source, needle) in [
+        (
+            "fixture_type \"X\" {\n  channel \"red\" @ 1\n  channel_map: {\"green\": 2}\n}",
+            "mixes `channel` lines with a channel_map",
+        ),
+        (
+            "fixture_type \"X\" {\n  channel \"strobe\" @ 1\n  max_strobe_frequency: 20\n}",
+            "as a function on its channel",
+        ),
+        (
+            "fixture_type \"X\"\n  from gdtf(\"a.gdtf\", mode \"m\")\n{\n  channel \"red\" @ 1\n}",
+            "come from the GDTF",
+        ),
+        (
+            "fixture_type \"X\" {\n  channel \"red\" @ 1\n  channel \"red\" @ 2\n}",
+            "more than once",
+        ),
+        (
+            "fixture_type \"X\" {\n  channel \"pan\" @ 1 fine 2\n  channel \"tilt\" @ 2\n}",
+            "already used",
+        ),
+        (
+            "fixture_type \"X\" {\n  channel \"pan\" @ 1 fine 1\n}",
+            "cannot share",
+        ),
+        (
+            "fixture_type \"X\" {\n  channel \"pan\" @ 1 range 0deg..1hz\n}",
+            "same unit",
+        ),
+        (
+            "fixture_type \"X\" {\n  channel \"s\" @ 1 {\n    function \"a\" 200..100\n  }\n}",
+            "runs backwards",
+        ),
+    ] {
+        let err = parse_fixture_types(source).expect_err(source).to_string();
+        assert!(err.contains(needle), "{source}\n→ {err}");
+    }
+}

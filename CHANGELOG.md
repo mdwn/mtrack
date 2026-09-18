@@ -44,6 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untrusted-input layers — the zip archive and the description XML — carry hard size and nesting
   caps and have cargo-fuzz targets.
 
+- **Rich channel syntax in `.fixture` files (P1c-3)**: a hand-written fixture type can now
+  say what a GDTF would — `channel "pan" @ 1 fine 2 range -270deg..270deg`, and a block of
+  `function` lines dividing a channel into DMX sub-ranges with their physical spans (`function
+  "strobe" 16..255 0.5hz..20hz`). This is what a `move` resolves degrees through, with 16-bit
+  precision where the fixture has it. The form lives in `.fixture` files only; the loader and
+  the MCP fixture-type tools refuse it in a `.light` file and say where it belongs. A type
+  renders in whichever form it needs, so the rich form round-trips. `channel_map` stays valid
+  forever. A `cheap_mover.fixture` example shows the syntax.
+
 - **`move` effect, focus-point aiming, pose memory (P1c-2)**: shows can move fixtures.
   `spots: move focus: "drummer", duration: 2s, easing: smooth` aims a group at a venue focus
   point through each fixture's position and mounting rotation (pan zero, tilt zero is the

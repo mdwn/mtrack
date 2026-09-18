@@ -166,6 +166,41 @@ produces incorrect results. `mtrack` uses period-linear interpolation to match t
 For example, the Astera PixelBrick's strobe channel uses DMX values 7–255 for 0.4–25 Hz. At
 10 Hz, `mtrack` sends DMX 248 (period-linear), not 103 (frequency-linear).
 
+### Rich channel definitions (`*.fixture`)
+
+When a fixture has no GDTF — the manual is all you have — a `.fixture` file can describe
+its channels in full: the fine byte of a 16-bit channel, the physical range a channel
+covers, and the functions a channel is divided into. This is what a `move` resolves degrees
+through, and what makes a slow sweep smooth on a 16-bit mover.
+
+```light
+# lighting/fixture_types/cheap_mover.fixture
+fixture_type "Cheap Mover" {
+  channel "pan"    @ 1 fine 2 range -270deg..270deg
+  channel "tilt"   @ 3 fine 4 range -135deg..135deg
+  channel "dimmer" @ 5
+  channel "strobe" @ 6 {
+    function "open"   0..15
+    function "strobe" 16..255 0.5hz..20hz
+  }
+  channel "red"    @ 7
+  channel "green"  @ 8
+  channel "blue"   @ 9
+  movement { max_pan_speed: 240deg/s }
+}
+```
+
+One `channel` line per channel: the name, `@` the 1-based offset, then optionally `fine`
+with the fine byte's offset, `range` with the physical span the whole channel covers, and a
+block of `function` lines each naming a DMX sub-range and, where it maps to something
+physical, that span. Units are part of the value: `deg` for angles, `hz` for strobe rates.
+The v1 strobe fields are not needed — the strobe function carries the same facts — and a
+type uses either `channel` lines or a `channel_map`, not both.
+
+The rich form is the v2 DSL and lives in `.fixture` files only; a `.light` fixture file
+keeps the v1 grammar and the loader skips, loudly, a `.light` file that uses it. Both forms
+stay valid forever, and the web UI renders whichever form a type needs.
+
 ## Venue Definitions (`lighting/venues/`)
 
 ```light

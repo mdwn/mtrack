@@ -1,0 +1,22 @@
+# A hand-written moving head in the rich channel form. Where a GDTF exists,
+# `mtrack import-gdtf` writes a referential .fixture instead; this form is
+# for the fixture whose manual is all you have.
+#
+#   channel "name" @ coarse [fine N] [range a..b] [{ function ... }]
+#
+# Ranges and function values carry their unit: deg for pan/tilt, hz for
+# strobe. A `move` resolves degrees through the range, over both bytes.
+fixture_type "Cheap Mover" {
+  channel "pan"    @ 1 fine 2 range -270deg..270deg
+  channel "tilt"   @ 3 fine 4 range -135deg..135deg
+  channel "dimmer" @ 5
+  channel "strobe" @ 6 {
+    function "open"   0..15
+    function "strobe" 16..255 0.5hz..20hz
+  }
+  channel "red"    @ 7
+  channel "green"  @ 8
+  channel "blue"   @ 9
+  # Not in any datasheet: measured, or from "540 degrees in 2.25 s".
+  movement { max_pan_speed: 240deg/s }
+}
