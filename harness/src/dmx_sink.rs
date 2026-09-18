@@ -73,20 +73,6 @@ fn dummy_output_port(listing: &str) -> Option<(u32, u32)> {
     None
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_dummy_output_port_is_found_in_a_device_listing() {
-        let listing = "Device 1: Dummy Device\n  port 0, OUT Dummy Port, RDM supported\n\
-                       Device 2: ArtNet [192.168.1.216]\n  port 0, IN, priority 100\n  port 0, OUT\n";
-        assert_eq!(dummy_output_port(listing), Some((1, 0)));
-        let no_dummy = "Device 2: ArtNet [192.168.1.216]\n  port 0, OUT\n";
-        assert_eq!(dummy_output_port(no_dummy), None);
-    }
-}
-
 /// The readback client.
 pub struct DmxSink {
     http: reqwest::Client,
@@ -238,5 +224,19 @@ impl DmxSink {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_dummy_output_port_is_found_in_a_device_listing() {
+        let listing = "Device 1: Dummy Device\n  port 0, OUT Dummy Port, RDM supported\n\
+                       Device 2: ArtNet [192.168.1.216]\n  port 0, IN, priority 100\n  port 0, OUT\n";
+        assert_eq!(dummy_output_port(listing), Some((1, 0)));
+        let no_dummy = "Device 2: ArtNet [192.168.1.216]\n  port 0, OUT\n";
+        assert_eq!(dummy_output_port(no_dummy), None);
     }
 }
