@@ -588,14 +588,17 @@ audio, not instead of it.
 | P1c-3 | Rich channel syntax in `.fixture` + `Display` round-trip + docs | Hand-written 16-bit mover moves smoothly |
 | P1c-4 | Harness DMX sink + four checks; stage view beam-direction ticks from live pan/tilt | 41+4 blessed on the rig |
 
-### 15.9 Open for decision
+### 15.9 Decisions (settled 2026-09-18)
 
-1. **Pose memory** (§15.4): hold after arrival, as recommended, or end-of-effect releases
-   the channels (the fixture sits where OLA left it, unmodelled).
-2. **Home convention** (§15.3): pan 0 / tilt 0 = mounting frame's +y, level — the plot's
-   tick — rather than GDTF's rest pose. Simple and checkable by eye; loses nothing because
-   the mounting rotation absorbs the difference.
-3. **`move` parameter names**: `focus:`/`to:`/`from:` and `pan:`/`tilt:` in `deg`. Or the
-   § 8 sketch's `focus: "a" -> "b"` arrow form, which needs a new value grammar.
-4. **Undeclared slew is unclamped** (lint-only), rather than clamped to the default.
-5. **Rich syntax `.fixture`-only** (§15.6), keeping `.light` on the frozen v1 grammar.
+1. **Pose memory**: hold after arrival. A mover that has arrived keeps its pose until the
+   next move or a `clear`.
+2. **Home convention**: pan 0 / tilt 0 is the mounting frame's +y axis, level — the stage
+   plot's orientation tick. GDTF's rest pose is not assumed; the venue's mounting rotation
+   carries the difference.
+3. **`move` spelling**: `focus:` / `to:` / `from:` and `pan:` / `tilt:` in `deg`. No arrow
+   form.
+4. **Undeclared slew**: never clamped by the engine — the fixture applies its own limit —
+   and lint warns against the conservative default. A declared `movement { max_*_speed }`
+   is clamped.
+5. **Rich channel syntax** lands in `.fixture` only; `.light` stays on the frozen v1
+   grammar.
