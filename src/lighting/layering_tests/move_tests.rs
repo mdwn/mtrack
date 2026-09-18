@@ -289,3 +289,98 @@ fn an_unbound_focus_point_leaves_the_fixture_where_it_is() {
     );
     assert!(engine.poses().is_empty());
 }
+
+/// The phase's exit criterion (design §13, P1c): a movement show authored
+/// on one venue plays correctly on a second venue that hangs the same
+/// fixture somewhere else and binds the same focus name to a different
+/// point. Both venues are real `.venue` files loaded through the lighting
+/// system; the show is one cue, `spots: move focus: "drummer"`.
+#[test]
+fn the_same_move_aims_correctly_in_two_venues() {
+    use crate::config::lighting::{Directories, Lighting};
+    use crate::lighting::system::LightingSystem;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("fixture_types")).unwrap();
+    std::fs::create_dir_all(dir.path().join("venues")).unwrap();
+    std::fs::write(
+        dir.path().join("fixture_types/mover.light"),
+        "fixture_type \"Mover\" {\n  channels: 5\n  channel_map: {\"pan\": 1, \"pan_fine\": 2, \"tilt\": 3, \"tilt_fine\": 4, \"dimmer\": 5}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("venues/a.venue"),
+        "venue \"a\" {\n  fixture \"Spot1\" Mover @ 1:1 tags [\"spot\"] position (-2, 3.5, 4.2) rotation (0, 0, 180)\n  focus \"drummer\" (0, 2.8, 1.4)\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("venues/b.venue"),
+        "venue \"b\" {\n  fixture \"Spot1\" Mover @ 1:1 tags [\"spot\"] position (3, 0.5, 3)\n  focus \"drummer\" (-1, 4, 1.2)\n}\n",
+    )
+    .unwrap();
+
+    let show = crate::lighting::parser::parse_light_shows(
+        "show \"s\" {\n    @00:00.000\n    spots: move focus: \"drummer\", duration: 100ms\n}\n",
+    )
+    .unwrap();
+    let cue_effect = &show["s"].cues[0].effects[0];
+
+    let mut results = Vec::new();
+    for venue_name in ["a", "b"] {
+        let config = Lighting::new(
+            Some(venue_name.to_string()),
+            None,
+            None,
+            Some(Directories::new(
+                Some("fixture_types".to_string()),
+                Some("venues".to_string()),
+            )),
+        );
+        let mut system = LightingSystem::new();
+        system.load(&config, dir.path()).unwrap();
+        let fixtures = system.get_current_venue_fixtures().unwrap();
+        let venue = system.get_current_venue().unwrap();
+        let (position, rotation) = (
+            fixtures[0].position.unwrap(),
+            fixtures[0].rotation.unwrap_or([0.0; 3]),
+        );
+        let expected = aim(position, rotation, venue.focus_points()["drummer"]);
+
+        let mut engine = EffectEngine::new();
+        engine.set_focus_points(
+            venue
+                .focus_points()
+                .iter()
+                .map(|(n, p)| (n.clone(), *p))
+                .collect(),
+        );
+        for fixture in fixtures {
+            engine.register_fixture(fixture);
+        }
+        let mut instance = crate::lighting::timeline::LightingTimeline::create_effect_instance(
+            cue_effect,
+            Duration::ZERO,
+        );
+        // The DMX engine resolves the group to fixtures at cue time.
+        instance.target_fixtures = vec!["Spot1".to_string()];
+        engine.start_effect(instance).unwrap();
+        engine.update(Duration::from_millis(10), None).unwrap();
+        engine.update(Duration::from_millis(200), None).unwrap();
+
+        let pose = engine.poses()["Spot1"];
+        // The v1 type has no pan range, so the engine works over the
+        // assumed 0..540 travel and may pick the equivalent turn: compare
+        // modulo a full turn.
+        let pan_error = (pose.pan - expected.pan).rem_euclid(360.0);
+        assert!(
+            (pan_error.min(360.0 - pan_error)) < 1e-9 && (pose.tilt - expected.tilt).abs() < 1e-9,
+            "venue {venue_name}: {pose:?} vs {expected:?}"
+        );
+        results.push(pose);
+    }
+    // Same cue, different rooms, different answers.
+    assert!(
+        (results[0].tilt - results[1].tilt).abs() > 1.0,
+        "{results:?}"
+    );
+}
