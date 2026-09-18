@@ -3315,14 +3315,19 @@ impl McpServer {
             let mut last = rx.borrow().clone();
 
             loop {
-                if rx.changed().await.is_err() {
+                // Wait for a change only when the state is what was last
+                // sent. A transition that landed during the coalescing
+                // sleep and then held is already sitting on the channel;
+                // the sampler sends only on change, so nothing would
+                // announce it again.
+                if *rx.borrow() == last && rx.changed().await.is_err() {
                     break;
                 }
-                if *rx.borrow_and_update() == last {
+                let current = rx.borrow_and_update().clone();
+                if current == last {
                     continue;
                 }
 
-                let sent = rx.borrow().clone();
                 let payload = build_lighting_snapshot(&player)
                     .await
                     .unwrap_or(Value::Null);
@@ -3336,12 +3341,9 @@ impl McpServer {
                 // Coalesce the ticks that arrive while we were sending. The
                 // next payload is the state then, not a replay of this backlog.
                 tokio::time::sleep(lighting_notify_interval()).await;
-                rx.mark_unchanged();
-                // Deliberately the state we *sent*, not the state now: the
-                // sampler re-sends unconditionally, so `== last` is the only
-                // change filter. Adopting the post-sleep value here would swallow
-                // any transition that happened during the sleep and then held.
-                last = sent;
+                // The state we *sent*: the loop's next comparison is against
+                // it, so whatever changed during the sleep goes out next.
+                last = current;
             }
         });
         Ok(handle.abort_handle())
