@@ -167,12 +167,25 @@ async fn sampler_loop(
     let mut interval = time::interval(Duration::from_millis(50));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     let has_dimmer_map = init_dimmer_map(&effect_engine).await;
+    let mut first = true;
 
     loop {
         interval.tick().await;
 
         if let Some(snapshot) = sample_tick(&effect_engine, &has_dimmer_map).await {
-            let _ = tx.send(snapshot);
+            // An idle rig must not wake subscribers twenty times a second:
+            // a snapshot equal to the last one is not a change. The first
+            // one always goes out, so a subscriber waiting on the sampler
+            // learns it is alive.
+            tx.send_if_modified(|current| {
+                if !first && **current == *snapshot {
+                    false
+                } else {
+                    *current = snapshot;
+                    true
+                }
+            });
+            first = false;
         }
     }
 }
@@ -186,6 +199,7 @@ async fn sampler_loop_cancellable(
     let mut interval = time::interval(Duration::from_millis(50));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     let has_dimmer_map = init_dimmer_map(&effect_engine).await;
+    let mut first = true;
 
     loop {
         tokio::select! {
@@ -194,7 +208,19 @@ async fn sampler_loop_cancellable(
         }
 
         if let Some(snapshot) = sample_tick(&effect_engine, &has_dimmer_map).await {
-            let _ = tx.send(snapshot);
+            // An idle rig must not wake subscribers twenty times a second:
+            // a snapshot equal to the last one is not a change. The first
+            // one always goes out, so a subscriber waiting on the sampler
+            // learns it is alive.
+            tx.send_if_modified(|current| {
+                if !first && **current == *snapshot {
+                    false
+                } else {
+                    *current = snapshot;
+                    true
+                }
+            });
+            first = false;
         }
     }
 }
@@ -492,16 +518,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_start_sampler_multiple_ticks() {
+    async fn an_idle_engine_does_not_wake_subscribers_but_a_change_does() {
+        use crate::lighting::effects::{EffectInstance, EffectType, FixtureInfo};
         let engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let (mut rx, handle) = start_sampler(engine);
+        {
+            let channels: HashMap<String, u16> = [("red", 1u16)]
+                .into_iter()
+                .map(|(n, o)| (n.to_string(), o))
+                .collect();
+            engine.lock().register_fixture(FixtureInfo::new(
+                "f".to_string(),
+                1,
+                1,
+                "T".to_string(),
+                channels,
+                None,
+            ));
+        }
+        let (mut rx, handle) = start_sampler(engine.clone());
 
-        // Wait for first tick
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+        // The first snapshot always goes out.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+        assert!(first.is_ok(), "timed out waiting for the first snapshot");
 
-        // Wait for second tick
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
-        assert!(result.is_ok(), "timed out waiting for second sampler tick");
+        // Nothing changes: no wake-up, however many ticks pass.
+        let idle = tokio::time::timeout(std::time::Duration::from_millis(300), rx.changed()).await;
+        assert!(idle.is_err(), "an idle engine woke a subscriber");
+
+        // Something changes: the next tick reports it.
+        {
+            let mut guard = engine.lock();
+            let mut parameters = HashMap::new();
+            parameters.insert("red".to_string(), 1.0);
+            let effect = EffectInstance::new(
+                "e".to_string(),
+                EffectType::Static {
+                    parameters,
+                    duration: std::time::Duration::from_secs(5),
+                },
+                vec!["f".to_string()],
+                None,
+                None,
+                None,
+            );
+            guard.start_effect(effect).unwrap();
+            guard
+                .update(std::time::Duration::from_millis(10), None)
+                .unwrap();
+        }
+        let changed = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+        assert!(changed.is_ok(), "a change did not wake the subscriber");
+        assert!(!rx.borrow().fixtures.is_empty());
 
         handle.abort();
     }

@@ -189,7 +189,9 @@ pub const AREAS: &[Area] = &[
     Area {
         name: "dmx-output",
         description: "DMX frames read back from olad: strobe function, 16-bit sweep, slew, focus",
-        needs: &[Need::AudioOut, Need::OlaDaemon, Need::DmxReadback],
+        // No audio: playback runs DMX-only when the profile has no audio
+        // device, so a lighting-only rig can verify its frames.
+        needs: &[Need::OlaDaemon, Need::DmxReadback],
         opt_in: false,
     },
 ];

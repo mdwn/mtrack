@@ -230,9 +230,10 @@ pub async fn a_slow_sweep_is_continuous_across_sixteen_bits() -> CheckOutcome {
 
     let values: Vec<u16> = frames.iter().map(|f| f.value16(1, 2)).collect();
     let values = crate::sabotage::pick(values.clone(), {
+        // A step backwards (or, from 0, a wild jump): either fails.
         let mut broken = values.clone();
         if broken.len() > 2 {
-            broken.swap(1, 2);
+            broken[2] = broken[1].wrapping_sub(1);
         }
         broken
     });

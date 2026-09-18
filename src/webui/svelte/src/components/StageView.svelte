@@ -29,6 +29,7 @@
   import { fetchVenue, saveVenue } from "../lib/api/config";
   import {
     beamEnd,
+    drawBeam,
     facing,
     fitFrame,
     hasGeometry,
@@ -394,35 +395,18 @@
         const from = layoutPositions[name];
         if (!meta?.position || !from) continue;
         const end = toPx(frame, beamEnd(meta.position, pose.aim, pose.floor));
-        const state = fixtureStates[name] || {};
-        const dimmer = state.dimmer !== undefined ? state.dimmer : 255;
-        const k = dimmer / 255;
-        const r = Math.round((state.red || 0) * k);
-        const g = Math.round((state.green || 0) * k);
-        const b = Math.round((state.blue || 0) * k);
-        const lit = r + g + b > 24;
-        ctx.strokeStyle = lit
-          ? `rgba(${r},${g},${b},0.55)`
-          : isDark
-            ? "rgba(255,255,255,0.18)"
-            : "rgba(0,0,0,0.18)";
-        ctx.lineWidth = lit ? 3 : 1.5;
-        ctx.setLineDash(pose.floor ? [] : [3, 3]);
-        ctx.beginPath();
-        ctx.moveTo(from.x, from.y);
-        ctx.lineTo(end.x, end.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        if (pose.floor) {
-          ctx.fillStyle = lit
-            ? `rgba(${r},${g},${b},0.35)`
-            : isDark
-              ? "rgba(255,255,255,0.12)"
-              : "rgba(0,0,0,0.12)";
-          ctx.beginPath();
-          ctx.arc(end.x, end.y, 9, 0, Math.PI * 2);
-          ctx.fill();
-        }
+        drawBeam(
+          ctx,
+          from,
+          end,
+          fixtureStates[name] || {},
+          pose.floor !== null,
+          {
+            dark: isDark,
+            width: 3,
+            dot: 9,
+          },
+        );
       }
     }
 
