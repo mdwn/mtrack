@@ -461,6 +461,12 @@ pub struct FixtureInfo {
     pub max_strobe_frequency: Option<f64>,
     pub min_strobe_frequency: Option<f64>,
     pub strobe_dmx_offset: Option<u8>,
+    /// Where the fixture hangs, in stage coordinates (meters, right-handed
+    /// Z-up, origin downstage-center, +x stage-left, +y upstage), when the
+    /// venue places it. Chases order themselves by it.
+    pub position: Option<[f64; 3]>,
+    /// Mounting rotation in degrees about X, Y, Z, when the venue states it.
+    pub rotation: Option<[f64; 3]>,
     /// Cached capabilities derived from channels (computed once at construction)
     cached_capabilities: FixtureCapabilities,
     /// Cached fixture profile (computed once at construction)
@@ -488,6 +494,8 @@ impl FixtureInfo {
             max_strobe_frequency,
             min_strobe_frequency: None,
             strobe_dmx_offset: None,
+            position: None,
+            rotation: None,
             cached_capabilities: capabilities,
             cached_profile: profile,
         }
@@ -547,7 +555,6 @@ impl FixtureInfo {
     }
 
     /// Get cached capabilities
-    #[cfg(test)]
     #[inline]
     pub fn capabilities(&self) -> FixtureCapabilities {
         self.cached_capabilities

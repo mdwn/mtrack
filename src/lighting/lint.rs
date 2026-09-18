@@ -58,6 +58,81 @@ pub struct LintContext<'a> {
     /// The song's click-derived beat grid, for checking a `tempo` block against
     /// what the audio actually does.
     pub beat_grid: Option<&'a BeatGrid>,
+    /// What each targeted group's fixtures can do, in the current venue.
+    /// Leave empty when no venue is loaded.
+    pub group_capabilities: HashMap<String, GroupCapabilities>,
+}
+
+/// How many of a group's fixtures have each capability an effect can ask
+/// for, derived from their channel maps.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GroupCapabilities {
+    pub fixtures: usize,
+    pub rgb: usize,
+    pub dimmer: usize,
+    pub strobe: usize,
+}
+
+impl GroupCapabilities {
+    /// Tallies a group from its resolved fixtures.
+    pub fn from_fixtures<'f>(
+        fixtures: impl IntoIterator<Item = &'f crate::lighting::effects::FixtureInfo>,
+    ) -> GroupCapabilities {
+        use crate::lighting::effects::FixtureCapabilities;
+        let mut out = GroupCapabilities::default();
+        for fixture in fixtures {
+            let capabilities = fixture.capabilities();
+            out.fixtures += 1;
+            if capabilities.contains(FixtureCapabilities::RGB_COLOR) {
+                out.rgb += 1;
+            }
+            if capabilities.contains(FixtureCapabilities::DIMMING) {
+                out.dimmer += 1;
+            }
+            if capabilities.contains(FixtureCapabilities::STROBING) {
+                out.strobe += 1;
+            }
+        }
+        out
+    }
+}
+
+/// A venue-level finding: fixtures patched on a universe the active
+/// profile configures no output for. Reported at registration and on
+/// first drop today; this makes it a pre-show answer. `configured` is the
+/// profile's `dmx.universes`.
+pub fn universe_coverage(
+    fixtures: &[crate::lighting::effects::FixtureInfo],
+    configured: &[u16],
+) -> Vec<Warning> {
+    let mut by_universe: std::collections::BTreeMap<u16, Vec<&str>> = Default::default();
+    for fixture in fixtures {
+        if !configured.contains(&fixture.universe) {
+            by_universe
+                .entry(fixture.universe)
+                .or_default()
+                .push(&fixture.name);
+        }
+    }
+    by_universe
+        .into_iter()
+        .map(|(universe, mut names)| {
+            names.sort_unstable();
+            Warning::new(
+                "unconfigured-universe",
+                format!(
+                    "universe {universe} has no output under `dmx.universes` in the active \
+                     profile, so {} will not light: {}",
+                    if names.len() == 1 {
+                        "this fixture".to_string()
+                    } else {
+                        format!("these {} fixtures", names.len())
+                    },
+                    names.join(", ")
+                ),
+            )
+        })
+        .collect()
 }
 
 /// Runs every applicable check over `shows`.
@@ -65,6 +140,7 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
     let mut warnings = Vec::new();
     for show in shows {
         empty_groups(show, ctx, &mut warnings);
+        capability_coverage(show, ctx, &mut warnings);
         tempo_disagrees_with_grid(show, ctx, &mut warnings);
         cues_beyond_the_tempo_map(show, ctx, &mut warnings);
     }
@@ -151,6 +227,53 @@ fn empty_groups(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) {
                         "empty-group",
                         format!(
                             "group `{group}` resolves to 0 fixtures — its cues will do nothing"
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// An effect asking a group for something none of its fixtures can do. The
+/// fixture profile degrades gracefully — a strobe on a fixture with no
+/// strobe channel is simply not strobed — so nothing fails; the cue just
+/// does not do what it says, and only a venue-aware check can tell.
+fn capability_coverage(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) {
+    if ctx.group_capabilities.is_empty() {
+        return;
+    }
+    let mut reported = HashSet::new();
+    for cue in &show.cues {
+        for effect in &cue.effects {
+            let (needs, have, what): (&str, fn(&GroupCapabilities) -> usize, &str) =
+                match &effect.effect_type {
+                    EffectType::Strobe { .. } => ("strobe", |c| c.strobe, "a strobe channel"),
+                    EffectType::Dimmer { .. } | EffectType::Pulse { .. } => {
+                        ("dimmer", |c| c.dimmer + c.rgb, "a dimmer or RGB channels")
+                    }
+                    EffectType::ColorCycle { .. } | EffectType::Rainbow { .. } => {
+                        ("color", |c| c.rgb, "RGB channels")
+                    }
+                    EffectType::Static { .. } | EffectType::Chase { .. } => continue,
+                };
+            for group in &effect.groups {
+                let Some(capabilities) = ctx.group_capabilities.get(group) else {
+                    continue;
+                };
+                // An empty group is its own finding.
+                if capabilities.fixtures == 0 || have(capabilities) > 0 {
+                    continue;
+                }
+                if reported.insert((group.clone(), needs)) {
+                    out.push(Warning::new(
+                        "capability-gap",
+                        format!(
+                            "`{}` on `{group}` at {:.3}s needs {what}, and none of the \
+                             group's {} fixtures has one — the cue will not do what it says",
+                            dsl_keyword(&effect.effect_type),
+                            cue.time.as_secs_f64(),
+                            capabilities.fixtures,
                         ),
                     ));
                 }
@@ -495,6 +618,107 @@ show "T" {
             ..Default::default()
         };
         assert!(lint_shows(&shows(source), &ctx).is_empty());
+    }
+
+    #[test]
+    fn a_strobe_on_a_group_that_cannot_strobe_is_reported() {
+        let shows = shows(
+            r#"
+show "s" {
+    @00:00.000
+    wash: strobe frequency: 10, duration: 1s
+    spots: strobe frequency: 10, duration: 1s
+
+    @00:02.000
+    wash: rainbow speed: 1, duration: 1s
+}
+"#,
+        );
+        let mut group_capabilities = HashMap::new();
+        group_capabilities.insert(
+            "wash".to_string(),
+            GroupCapabilities {
+                fixtures: 4,
+                rgb: 4,
+                dimmer: 0,
+                strobe: 0,
+            },
+        );
+        group_capabilities.insert(
+            "spots".to_string(),
+            GroupCapabilities {
+                fixtures: 2,
+                rgb: 2,
+                dimmer: 2,
+                strobe: 2,
+            },
+        );
+        let ctx = LintContext {
+            group_capabilities,
+            ..LintContext::default()
+        };
+        let warnings = lint_shows(&shows, &ctx);
+        assert_eq!(kinds(&warnings), vec!["capability-gap"]);
+        assert!(
+            warnings[0].message.contains("`strobe` on `wash`"),
+            "{}",
+            warnings[0].message
+        );
+        assert!(warnings[0]
+            .message
+            .contains("none of the group's 4 fixtures"));
+    }
+
+    #[test]
+    fn without_a_venue_the_capability_check_does_not_guess() {
+        let shows = shows(
+            "\nshow \"s\" {\n    @00:00.000\n    wash: strobe frequency: 10, duration: 1s\n}\n",
+        );
+        assert!(lint_shows(&shows, &LintContext::default()).is_empty());
+    }
+
+    #[test]
+    fn fixtures_on_an_unconfigured_universe_are_reported_per_universe() {
+        use crate::lighting::effects::FixtureInfo;
+        let fixture = |name: &str, universe: u16| {
+            FixtureInfo::new(
+                name.to_string(),
+                universe,
+                1,
+                "T".to_string(),
+                HashMap::new(),
+                None,
+            )
+        };
+        let fixtures = vec![
+            fixture("a", 1),
+            fixture("c", 2),
+            fixture("b", 2),
+            fixture("d", 3),
+        ];
+        let warnings = universe_coverage(&fixtures, &[1]);
+        assert_eq!(
+            kinds(&warnings),
+            vec!["unconfigured-universe", "unconfigured-universe"]
+        );
+        assert!(
+            warnings[0].message.contains("universe 2"),
+            "{}",
+            warnings[0].message
+        );
+        assert!(
+            warnings[0]
+                .message
+                .contains("these 2 fixtures will not light: b, c"),
+            "{}",
+            warnings[0].message
+        );
+        assert!(
+            warnings[1].message.contains("this fixture"),
+            "{}",
+            warnings[1].message
+        );
+        assert!(universe_coverage(&fixtures, &[1, 2, 3]).is_empty());
     }
 
     #[test]

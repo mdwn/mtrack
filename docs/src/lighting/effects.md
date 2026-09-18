@@ -89,7 +89,12 @@ Moves an effect pattern across multiple fixtures in a spatial pattern.
 **Parameters:**
 - `pattern`: `linear`, `snake`, or `random`
 - `speed`: Steps per second, or tempo-aware (e.g., `2.0`, `1measure`)
-- `direction`: `left_to_right`, `right_to_left`, `top_to_bottom`, `bottom_to_top`, `clockwise`, `counter_clockwise`
+- `direction`: `left_to_right`, `right_to_left`, `top_to_bottom`, `bottom_to_top`, `clockwise`, `counter_clockwise`.
+  When the venue places every fixture in the group (`position` in a `.venue` file), these mean
+  what they say on the stage plot, seen from the audience: `left_to_right` runs from stage-right
+  to stage-left, `top_to_bottom` from upstage to downstage, `clockwise` around the group's
+  center starting upstage. Without positions — or if any fixture in the group lacks one — the
+  chase runs in the venue's list order, as before.
 - `transition`: `snap` or `fade` for transitions between fixtures
 - `duration`: **Required.** Duration of the chase effect (e.g., `10s`, `8measures`)
 

@@ -934,13 +934,43 @@ pub(super) async fn put_venue(
     })
     .await?;
 
+    let reloaded = reload_if_current_venue(&state, &name).await;
+
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({"status": "saved", "name": name})),
+            Json(json!({"status": "saved", "name": name, "reloaded": reloaded})),
         )
             .into_response(),
     )
+}
+
+/// After a venue file changed on disk: if it is the venue the running engine
+/// is playing against, re-read it and push fresh stage metadata to every
+/// web client. Returns whether that happened. A reload failure is logged,
+/// not returned — the save itself is durable and the loader will say the
+/// same thing at next startup.
+async fn reload_if_current_venue(state: &WebUiState, name: &str) -> bool {
+    let is_current = state
+        .player
+        .broadcast_handles()
+        .and_then(|h| h.lighting_system)
+        .is_some_and(|system| system.lock().current_venue() == Some(name));
+    if !is_current {
+        return false;
+    }
+    let player = state.player.clone();
+    match tokio::task::spawn_blocking(move || player.reload_current_venue()).await {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            tracing::warn!(venue = name, error = %e, "venue saved, but the running engine could not reload it");
+            false
+        }
+        Err(e) => {
+            tracing::warn!(venue = name, error = %e, "venue reload task failed");
+            false
+        }
+    }
 }
 
 /// DELETE /api/lighting/venues/:name — deletes a venue file.

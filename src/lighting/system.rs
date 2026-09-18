@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::error::Error;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tracing::{info, warn};
 
@@ -44,6 +44,19 @@ pub struct LightingSystem {
 
     /// Cached group resolutions per venue.
     group_cache: HashMap<String, HashMap<String, Vec<String>>>,
+
+    /// Where the venues were loaded from, so an edited venue can be re-read
+    /// without rebuilding the whole system.
+    venues_source: Option<VenuesSource>,
+}
+
+/// The venues directory a system loaded, as configured and as resolved.
+#[derive(Clone, Debug)]
+struct VenuesSource {
+    /// The configured directory, relative to the project.
+    configured: String,
+    /// The resolved directory.
+    path: PathBuf,
 }
 
 impl Default for LightingSystem {
@@ -62,7 +75,30 @@ impl LightingSystem {
             inline_fixtures: HashMap::new(),
             logical_groups: HashMap::new(),
             group_cache: HashMap::new(),
+            venues_source: None,
         }
+    }
+
+    /// The configured venues directory, relative to the project, when the
+    /// system loaded one.
+    pub fn venues_dir(&self) -> Option<&str> {
+        self.venues_source.as_ref().map(|s| s.configured.as_str())
+    }
+
+    /// Re-reads every venue from the directory the system was loaded from,
+    /// so an edit to the current venue (positions, focus points) reaches the
+    /// running engine without a hardware reload. Fixture types are not
+    /// re-read: a venue edit does not change them, and re-expanding
+    /// referential types is the expensive part of a load.
+    pub fn reload_venues(&mut self) -> Result<(), Box<dyn Error>> {
+        let Some(source) = self.venues_source.clone() else {
+            return Err("no venues directory was loaded".into());
+        };
+        let mut fresh = LightingSystem::new();
+        fresh.load_venues_directory(&source.path)?;
+        self.venues = fresh.venues;
+        self.group_cache.clear();
+        Ok(())
     }
 
     /// Returns an iterator over the (name, venue) pairs known to the system.
@@ -108,6 +144,10 @@ impl LightingSystem {
             if let Some(venues_dir) = dirs.venues() {
                 let path = base_path.join(venues_dir);
                 self.load_venues_directory(&path)?;
+                self.venues_source = Some(VenuesSource {
+                    configured: venues_dir.to_string(),
+                    path,
+                });
             }
         }
 
@@ -440,6 +480,8 @@ impl LightingSystem {
             );
             fixture_info.min_strobe_frequency = fixture_type.min_strobe_frequency();
             fixture_info.strobe_dmx_offset = fixture_type.strobe_dmx_offset();
+            fixture_info.position = fixture.position();
+            fixture_info.rotation = fixture.rotation();
 
             fixture_infos.push(fixture_info);
         }

@@ -509,6 +509,24 @@ impl Engine {
         Ok(())
     }
 
+    /// The universes this profile configures an output for.
+    pub fn configured_universes(&self) -> Vec<u16> {
+        let mut universes: Vec<u16> = self.universes.keys().copied().collect();
+        universes.sort_unstable();
+        universes
+    }
+
+    /// Re-reads the venues from disk and re-registers the current venue's
+    /// fixtures, so an edit to the venue file (positions, focus points,
+    /// tags) reaches the running engine without a hardware reload.
+    pub fn reload_current_venue(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(lighting_system) = &self.lighting_system else {
+            return Err("no lighting system is loaded".into());
+        };
+        lighting_system.lock().reload_venues()?;
+        self.register_venue_fixtures_safe()
+    }
+
     /// Registers all fixtures from the current venue (thread-safe version)
     pub fn register_venue_fixtures_safe(&self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(lighting_system) = &self.lighting_system {

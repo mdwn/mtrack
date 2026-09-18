@@ -846,6 +846,7 @@ pub fn build_metadata_json(
     lighting_system: Option<&Arc<Mutex<crate::lighting::system::LightingSystem>>>,
 ) -> String {
     let mut fixtures = serde_json::Map::new();
+    let mut venue_meta = serde_json::Value::Null;
 
     if let Some(ls) = lighting_system {
         let system = ls.lock();
@@ -855,18 +856,31 @@ pub fn build_metadata_json(
             for fi in &fixture_infos {
                 let tags = venue_fixtures.get(&fi.name).cloned().unwrap_or_default();
 
+                // Position and rotation are the venue's stage geometry, when
+                // it has any; the stage view draws a plot from them and
+                // falls back to the tag layout without.
                 let fixture_meta = json!({
                     "tags": tags,
                     "type": fi.fixture_type,
+                    "position": fi.position,
+                    "rotation": fi.rotation,
                 });
                 fixtures.insert(fi.name.clone(), fixture_meta);
             }
+        }
+        if let Some(venue) = system.get_current_venue() {
+            venue_meta = json!({
+                "name": venue.name(),
+                "dir": system.venues_dir(),
+                "focus_points": venue.focus_points(),
+            });
         }
     }
 
     let msg = json!({
         "type": "metadata",
         "fixtures": fixtures,
+        "venue": venue_meta,
     });
     msg.to_string()
 }
@@ -1630,6 +1644,23 @@ metronome: {}
         let tags = fixture_meta["tags"].as_array().unwrap();
         assert!(tags.contains(&serde_json::json!("front")));
         assert!(tags.contains(&serde_json::json!("wash")));
+    }
+
+    #[test]
+    fn build_metadata_json_carries_stage_geometry() {
+        let fixture_dsl = "fixture_type \"T\" {\n  channels: 3\n  channel_map: {\"red\": 1, \"green\": 2, \"blue\": 3}\n}\n";
+        let venue_dsl = "venue \"v\" {\n  fixture \"A\" T @ 1:1 tags [\"front\"] position (-2, 3.5, 4.2) rotation (0, 0, 180)\n  fixture \"B\" T @ 1:5\n  focus \"drummer\" (0, 2.8, 1.4)\n}\n";
+        let (system, _dir) = create_test_lighting_system(fixture_dsl, venue_dsl, "v");
+        let json = build_metadata_json(Some(&Arc::new(parking_lot::Mutex::new(system))));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["fixtures"]["A"]["position"], json!([-2.0, 3.5, 4.2]));
+        assert_eq!(value["fixtures"]["A"]["rotation"], json!([0.0, 0.0, 180.0]));
+        assert!(value["fixtures"]["B"]["position"].is_null());
+        assert_eq!(value["venue"]["name"], "v");
+        assert_eq!(
+            value["venue"]["focus_points"]["drummer"],
+            json!([0.0, 2.8, 1.4])
+        );
     }
 
     #[test]

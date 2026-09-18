@@ -91,9 +91,19 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   (double-click resets to 0 dB) and an **M** mute button. Muting silences the track
   immediately without touching the fader value, so unmuting restores the exact gain you
   had — mute state is runtime-only and resets on player restart.
-- **Stage view** — Interactive canvas showing fixture positions organized by tags (left, right,
-  front, back), with real-time RGB color rendering, glow effects, and strobe animation. Drag
-  fixtures to rearrange the layout — positions persist in localStorage across page reloads.
+- **Stage view** — Interactive canvas with real-time RGB color rendering, glow effects, and
+  strobe animation. When the current venue carries stage positions (a `.venue` file, seeded by
+  `import-mvr` or written by hand), it is a top-down stage plot to scale: a meter grid, the
+  audience at the bottom, stage-left on the right, each placed fixture with an orientation tick
+  from its mounting yaw, and the venue's focus points as pins. Fixtures the venue has not placed
+  wait in a tray along the bottom; drag one onto the stage to place it. Dragging a fixture or a
+  focus pin writes the new coordinates to the venue file, the running engine reloads the venue,
+  and every open stage view redraws from the file. The **+ Focus point** button adds a pin, and
+  the list beneath the plot renames or deletes them — focus points are the stage points a show
+  aims at, so name them for what they are ("drummer", "center-stage"). A fixture dragged from the
+  tray is hung at 3 m; edit the venue file to correct its height. Without positions the view is
+  the older layout organized by tags (left, right, front, back), and dragging only rearranges the
+  picture in this browser's localStorage.
 - **Active effects** — Lists currently running lighting effects by name.
 - **Log panel** — Streaming application logs with level filter pills
   (TRACE/DEBUG/INFO/WARN/ERROR), defaulting to INFO+. ERROR rows get a pink-tinted
@@ -402,8 +412,9 @@ resumes from that point. Pressing **Stop** resets the cursor to the beginning.
 ### Stage Preview
 
 The bottom-left panel shows a compact stage visualization with real-time fixture RGB output,
-glow effects, strobe animation, and active effect names. Fixtures can be rearranged by
-dragging, just like the dashboard stage view.
+glow effects, strobe animation, and active effect names. It draws the same picture as the
+dashboard stage view: a stage plot with focus pins when the venue has positions, the tag layout
+otherwise. Positions are edited on the dashboard; here, dragging only rearranges the tag layout.
 
 ### Editing Cues
 

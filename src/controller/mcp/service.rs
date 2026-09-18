@@ -1241,34 +1241,46 @@ impl McpServer {
     ) -> Result<Vec<Value>, McpError> {
         // Resolved before the song is looked up: `LintContext` borrows the
         // song, and a borrow of it must not be held across an await.
-        let group_fixture_counts = match self
-            .player
-            .dmx_engine()
-            .and_then(|dmx| dmx.broadcast_handles().lighting_system)
-        {
-            Some(system) => {
-                let names = group_names(shows);
-                // The lighting-system mutex is shared with the effects loop
-                // thread, so taking it belongs off the async worker.
-                tokio::task::spawn_blocking(move || {
-                    let mut guard = system.lock();
-                    let mut counts = std::collections::HashMap::new();
-                    // Only when a venue is actually loaded. Without one every
-                    // group resolves to nothing, and reporting them all as empty
-                    // would be noise rather than a finding.
-                    if guard.get_current_venue().is_some() {
-                        for name in names {
-                            let count = guard.resolve_logical_group_graceful(&name).len();
-                            counts.insert(name, count);
+        let dmx = self.player.dmx_engine();
+        let configured_universes = dmx.as_ref().map(|d| d.configured_universes());
+        let (group_fixture_counts, group_capabilities, mut venue_warnings) =
+            match dmx.and_then(|dmx| dmx.broadcast_handles().lighting_system) {
+                Some(system) => {
+                    let names = group_names(shows);
+                    // The lighting-system mutex is shared with the effects loop
+                    // thread, so taking it belongs off the async worker.
+                    tokio::task::spawn_blocking(move || {
+                        let mut guard = system.lock();
+                        let mut counts = std::collections::HashMap::new();
+                        let mut capabilities = std::collections::HashMap::new();
+                        let mut venue_warnings = Vec::new();
+                        // Only when a venue is actually loaded. Without one every
+                        // group resolves to nothing, and reporting them all as empty
+                        // would be noise rather than a finding.
+                        if guard.get_current_venue().is_some() {
+                            let fixtures = guard.get_current_venue_fixtures().unwrap_or_default();
+                            for name in names {
+                                let members = guard.resolve_logical_group_graceful(&name);
+                                counts.insert(name.clone(), members.len());
+                                capabilities.insert(
+                                    name,
+                                    crate::lighting::lint::GroupCapabilities::from_fixtures(
+                                        fixtures.iter().filter(|f| members.contains(&f.name)),
+                                    ),
+                                );
+                            }
+                            if let Some(configured) = &configured_universes {
+                                venue_warnings =
+                                    crate::lighting::lint::universe_coverage(&fixtures, configured);
+                            }
                         }
-                    }
-                    counts
-                })
-                .await
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?
-            }
-            None => std::collections::HashMap::new(),
-        };
+                        (counts, capabilities, venue_warnings)
+                    })
+                    .await
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?
+                }
+                None => Default::default(),
+            };
 
         let song = match song {
             Some(name) => Some(
@@ -1284,9 +1296,12 @@ impl McpServer {
             song_duration: song.as_ref().map(|s| s.duration()),
             beat_grid: song.as_ref().and_then(|s| s.beat_grid()),
             group_fixture_counts,
+            group_capabilities,
         };
 
-        Ok(crate::lighting::lint::lint_shows(shows, &ctx)
+        let mut warnings = crate::lighting::lint::lint_shows(shows, &ctx);
+        warnings.append(&mut venue_warnings);
+        Ok(warnings
             .into_iter()
             .map(|w| json!({"kind": w.kind, "message": w.message}))
             .collect())
@@ -1639,7 +1654,8 @@ impl McpServer {
     }
 
     #[tool(description = "List the venues known to the running DMX engine. Each \
-        venue lists its fixture count.")]
+        venue lists its fixture count, how many fixtures carry a stage \
+        position, and its named focus points.")]
     async fn list_venues(&self) -> Result<CallToolResult, McpError> {
         let dmx = match self.player.dmx_engine() {
             Some(d) => d,
@@ -1656,6 +1672,13 @@ impl McpServer {
                 json!({
                     "name": name,
                     "fixtures": venue.fixtures().len(),
+                    "positioned": venue
+                        .fixtures()
+                        .values()
+                        .filter(|f| f.position().is_some())
+                        .count(),
+                    "focus_points": venue.focus_points(),
+                    "imported_from": venue.source().map(|s| s.mvr.clone()),
                 })
             })
             .collect();
@@ -1968,10 +1991,30 @@ impl McpServer {
             .resolve_lighting_file(LightingDirKind::Venues, &args.file)
             .await?;
         staged_write_string(&path, &args.source).await?;
+        let reloaded = self.reload_venue_if_current().await;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "bytes": args.source.len(),
+            "reloaded": reloaded,
         })))
+    }
+
+    /// After a venue file changed: re-read the venues and re-register the
+    /// current one with the running engine, pushing fresh stage metadata to
+    /// web clients. Best effort — the file is the durable truth.
+    async fn reload_venue_if_current(&self) -> bool {
+        if self.player.dmx_engine().is_none() {
+            return false;
+        }
+        let player = self.player.clone();
+        match tokio::task::spawn_blocking(move || player.reload_current_venue()).await {
+            Ok(Ok(())) => true,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "venue written, but the running engine could not reload it");
+                false
+            }
+            Err(_) => false,
+        }
     }
 
     #[tool(description = "Delete a venue file (`.light` or `.venue`) from the \
@@ -2360,6 +2403,7 @@ impl McpServer {
             McpError::invalid_params(format!("patched venue is invalid: {e}"), None)
         })?;
         staged_write_string(&path, &updated).await?;
+        self.reload_venue_if_current().await;
         Ok(patch_response(&path, &original, &updated))
     }
 

@@ -44,7 +44,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untrusted-input layers — the zip archive and the description XML — carry hard size and nesting
   caps and have cargo-fuzz targets.
 
-- **Venue positions, focus points and MVR import (#433, this change)**: venues can say where
+- **Positional stage view, focus-point editing, spatial chases, venue lint**: when the current
+  venue places its fixtures, the dashboard's stage view is a top-down stage plot to scale — meter
+  grid, audience at the bottom, orientation ticks, focus points as pins — and an editor: dragging
+  a fixture or a pin writes the coordinates to the venue file, a **+ Focus point** button and a
+  list beneath the plot add, rename and delete pins, and unplaced fixtures wait in a tray to be
+  dragged onto the stage. The running engine reloads the venue after every save (also after MCP
+  `write_venue`/`patch_venue`) and pushes fresh geometry to every open stage view. The timeline
+  editor's preview draws the same plot, read-only. Venues without positions keep the tag layout.
+
+  Chase directions now mean what they say when every fixture in the group is placed:
+  `left_to_right` runs stage-right to stage-left as the audience sees it, `top_to_bottom`
+  upstage to downstage, `clockwise` around the group's center. Unplaced or partially placed
+  groups keep list order. Lint gains `capability-gap` (a `strobe`, `dimmer`, `pulse`, `cycle` or
+  `rainbow` on a group none of whose fixtures has the channel for it) and
+  `unconfigured-universe` (venue fixtures the active profile has no output for), and
+  `list_venues` reports placed-fixture counts, focus points and MVR provenance.
+
+- **Venue positions, focus points and MVR import (#433, #434)**: venues can say where
   their fixtures hang — `position (x, y, z)` and `rotation (rx, ry, rz)` per fixture, in meters
   and degrees from a downstage-center origin — and name the stage points a show may aim at with
   `focus "drummer" (0, 2.8, 1.4)`. Files using this syntax take the `.venue` extension and load

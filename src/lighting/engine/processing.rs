@@ -516,6 +516,10 @@ fn apply_chase(
         return Ok(Some(fixture_states));
     }
 
+    // Where the venue places every target, the direction means what it
+    // says on the stage plot; otherwise it is group-list order, as before.
+    let targets = spatial_order(fixture_registry, &effect.target_fixtures, direction);
+
     // Calculate fixture order based on pattern and direction
     // For Random pattern, use cue_time (song time) as seed for deterministic randomness
     // This ensures random effects are consistent when seeking to the same time
@@ -533,7 +537,7 @@ fn apply_chase(
     let current_pattern_index = current_pattern_index_f.floor() as usize;
     let position_progress = current_pattern_index_f - current_pattern_index as f64;
 
-    for (i, fixture_name) in effect.target_fixtures.iter().enumerate() {
+    for (i, fixture_name) in targets.iter().enumerate() {
         if let Some(fixture) = fixture_registry.get(fixture_name) {
             let chase_value = match transition {
                 CycleTransition::Snap => {
@@ -611,6 +615,65 @@ fn apply_chase(
     }
 
     Ok(Some(fixture_states))
+}
+
+/// The chase's targets in the order the stage plot gives them, when the
+/// venue places every one of them; group-list order otherwise.
+///
+/// Directions read from the audience: `left_to_right` runs from stage-right
+/// (−x) to stage-left (+x), `top_to_bottom` from upstage (+y) to downstage,
+/// and `clockwise` goes around the targets' centroid as seen from above,
+/// starting at the upstage-most fixture. The reverse directions are the
+/// same orders reversed by `calculate_fixture_order`, so only the forward
+/// sort is decided here. Without positions the venue's own list order
+/// stands, and a mixed group (some placed, some not) keeps list order too
+/// rather than guessing where the unplaced ones are.
+fn spatial_order(
+    fixture_registry: &HashMap<String, FixtureInfo>,
+    targets: &[String],
+    direction: &ChaseDirection,
+) -> Vec<String> {
+    let placed: Option<Vec<(String, [f64; 3])>> = targets
+        .iter()
+        .map(|name| {
+            fixture_registry
+                .get(name)
+                .and_then(|f| f.position)
+                .map(|p| (name.clone(), p))
+        })
+        .collect();
+    let Some(mut placed) = placed else {
+        return targets.to_vec();
+    };
+    if placed.len() < 2 {
+        return targets.to_vec();
+    }
+    type Placed = (String, [f64; 3]);
+    let key: Box<dyn Fn(&Placed) -> f64> = match direction {
+        ChaseDirection::LeftToRight | ChaseDirection::RightToLeft => Box::new(|(_, p)| p[0]),
+        ChaseDirection::TopToBottom | ChaseDirection::BottomToTop => Box::new(|(_, p)| -p[1]),
+        ChaseDirection::Clockwise | ChaseDirection::CounterClockwise => {
+            let n = placed.len() as f64;
+            let cx = placed.iter().map(|(_, p)| p[0]).sum::<f64>() / n;
+            let cy = placed.iter().map(|(_, p)| p[1]).sum::<f64>() / n;
+            // Angle measured clockwise from upstage, as seen from above.
+            Box::new(move |(_, p)| {
+                let angle = (p[0] - cx).atan2(p[1] - cy);
+                if angle < 0.0 {
+                    angle + std::f64::consts::TAU
+                } else {
+                    angle
+                }
+            })
+        }
+    };
+    // Stable, so fixtures sharing a coordinate keep their list order.
+    placed.sort_by(|a, b| {
+        key(a)
+            .partial_cmp(&key(b))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    placed.into_iter().map(|(name, _)| name).collect()
 }
 
 /// Calculate fixture order for chase effects based on pattern and direction
@@ -1047,5 +1110,113 @@ mod tests {
         });
         assert_eq!(states.len(), 1);
         assert!(states.contains_key("test_fix"));
+    }
+}
+
+#[cfg(test)]
+mod spatial_order_tests {
+    use super::*;
+
+    fn registry(placed: &[(&str, Option<[f64; 3]>)]) -> HashMap<String, FixtureInfo> {
+        placed
+            .iter()
+            .map(|(name, position)| {
+                let mut info = FixtureInfo::new(
+                    name.to_string(),
+                    1,
+                    1,
+                    "T".to_string(),
+                    HashMap::new(),
+                    None,
+                );
+                info.position = *position;
+                (name.to_string(), info)
+            })
+            .collect()
+    }
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn positioned_targets_order_by_the_stage_plot() {
+        // Listed in patch order, hung the other way round.
+        let reg = registry(&[
+            ("a", Some([2.0, 0.0, 3.0])),
+            ("b", Some([-2.0, 0.0, 3.0])),
+            ("c", Some([0.0, 0.0, 3.0])),
+        ]);
+        let targets = names(&["a", "b", "c"]);
+        assert_eq!(
+            spatial_order(&reg, &targets, &ChaseDirection::LeftToRight),
+            names(&["b", "c", "a"]),
+            "audience left is stage-right (−x)"
+        );
+        // The reverse direction is the same sort; the caller reverses.
+        assert_eq!(
+            spatial_order(&reg, &targets, &ChaseDirection::RightToLeft),
+            names(&["b", "c", "a"])
+        );
+    }
+
+    #[test]
+    fn top_to_bottom_runs_upstage_to_downstage() {
+        let reg = registry(&[
+            ("front", Some([0.0, 0.5, 3.0])),
+            ("back", Some([0.0, 4.0, 3.0])),
+            ("mid", Some([0.0, 2.0, 3.0])),
+        ]);
+        let targets = names(&["front", "back", "mid"]);
+        assert_eq!(
+            spatial_order(&reg, &targets, &ChaseDirection::TopToBottom),
+            names(&["back", "mid", "front"])
+        );
+    }
+
+    #[test]
+    fn clockwise_goes_around_the_centroid_from_upstage() {
+        let reg = registry(&[
+            ("us", Some([0.0, 4.0, 3.0])),
+            ("sl", Some([2.0, 2.0, 3.0])),
+            ("ds", Some([0.0, 0.0, 3.0])),
+            ("sr", Some([-2.0, 2.0, 3.0])),
+        ]);
+        let targets = names(&["ds", "sr", "us", "sl"]);
+        assert_eq!(
+            spatial_order(&reg, &targets, &ChaseDirection::Clockwise),
+            names(&["us", "sl", "ds", "sr"]),
+            "seen from above: upstage, stage-left, downstage, stage-right"
+        );
+    }
+
+    #[test]
+    fn a_group_without_positions_keeps_list_order() {
+        let reg = registry(&[("a", None), ("b", None)]);
+        let targets = names(&["b", "a"]);
+        assert_eq!(
+            spatial_order(&reg, &targets, &ChaseDirection::LeftToRight),
+            names(&["b", "a"])
+        );
+        // Mixed: one placed, one not — no guessing.
+        let reg = registry(&[("a", Some([1.0, 0.0, 0.0])), ("b", None)]);
+        assert_eq!(
+            spatial_order(&reg, &targets, &ChaseDirection::LeftToRight),
+            names(&["b", "a"])
+        );
+    }
+
+    #[test]
+    fn fixtures_sharing_a_coordinate_keep_list_order() {
+        let reg = registry(&[
+            ("a", Some([0.0, 0.0, 0.0])),
+            ("b", Some([0.0, 1.0, 0.0])),
+            ("c", Some([0.0, 2.0, 0.0])),
+        ]);
+        let targets = names(&["c", "a", "b"]);
+        assert_eq!(
+            spatial_order(&reg, &targets, &ChaseDirection::LeftToRight),
+            names(&["c", "a", "b"])
+        );
     }
 }

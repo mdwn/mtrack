@@ -18,11 +18,24 @@
     metadataStore,
     fixtureStore,
     effectsStore,
+    venueStore,
   } from "../../../lib/ws/stores";
   import type {
     FixtureChannels,
     FixtureMetadata,
+    VenueMetadata,
   } from "../../../lib/ws/stores";
+  import {
+    fitFrame,
+    hasGeometry,
+    positionalLayout,
+    tagLayout,
+    toPx,
+    trayLayout,
+    type Pt,
+    type Rect,
+    type StageFrame,
+  } from "../../../lib/stage/layout";
 
   const FIXTURE_RADIUS = 14;
   const GLOW_RADIUS = 32;
@@ -42,66 +55,65 @@
   let dragOffsetX = 0;
   let dragOffsetY = 0;
 
-  function computeLayout(fixtures: Record<string, FixtureMetadata>) {
+  let frame: StageFrame | null = null;
+  let focusPositions: Record<string, Pt> = {};
+
+  /** The same picture as the dashboard's stage view, read-only: a stage
+   *  plot when the venue has geometry, the tag heuristic otherwise. */
+  function computeLayout(
+    fixtures: Record<string, FixtureMetadata>,
+    venue: VenueMetadata | null,
+  ) {
     const names = Object.keys(fixtures);
     if (!canvasEl || names.length === 0) return;
 
     const w = canvasEl.clientWidth;
     const h = canvasEl.clientHeight;
+    const points = venue?.focus_points ?? {};
 
-    const groups: Record<string, string[]> = {
-      left: [],
-      right: [],
-      front: [],
-      back: [],
-      mid: [],
-      other: [],
-    };
-
-    for (const name of names) {
-      const tags = fixtures[name].tags || [];
-      let placed = false;
-      for (const tag of tags) {
-        const key = tag.toLowerCase();
-        if (key in groups && key !== "other") {
-          groups[key].push(name);
-          placed = true;
-          break;
-        }
+    if (!hasGeometry(fixtures, points)) {
+      frame = null;
+      focusPositions = {};
+      const auto = tagLayout(fixtures, w, h, PADDING + 20);
+      layoutPositions = {};
+      for (const name of names) {
+        layoutPositions[name] = manualPositions[name] ?? auto[name];
       }
-      if (!placed) groups.other.push(name);
+      return;
     }
 
-    groups.front = groups.front.concat(groups.other);
-
-    const inset = PADDING + 20;
-    const regions: Record<
-      string,
-      { x: number; y: number; dx: number; dy: number }
-    > = {
-      left: { x: inset, y: h * 0.25, dx: 0, dy: h * 0.5 },
-      right: { x: w - inset, y: h * 0.25, dx: 0, dy: h * 0.5 },
-      back: { x: w * 0.25, y: inset, dx: w * 0.5, dy: 0 },
-      front: { x: w * 0.25, y: h - inset, dx: w * 0.5, dy: 0 },
-      mid: { x: w * 0.35, y: h * 0.4, dx: w * 0.3, dy: h * 0.2 },
+    const stage: Rect = {
+      x: PADDING - 10,
+      y: PADDING - 10,
+      w: w - 2 * PADDING + 20,
+      h: h - 2 * PADDING + 20,
     };
-
-    for (const [groupName, region] of Object.entries(regions)) {
-      const group = groups[groupName];
-      if (!group || group.length === 0) continue;
-      const count = group.length;
-      for (let i = 0; i < count; i++) {
-        const name = group[i];
-        if (manualPositions[name]) {
-          layoutPositions[name] = manualPositions[name];
-        } else {
-          const t = count === 1 ? 0.5 : i / (count - 1);
-          layoutPositions[name] = {
-            x: region.x + region.dx * t,
-            y: region.y + region.dy * t,
-          };
-        }
-      }
+    const anyUnplaced = Object.values(fixtures).some((f) => f.position == null);
+    const trayHeight = anyUnplaced ? 2 * FIXTURE_RADIUS + 16 : 0;
+    const plot: Rect = {
+      x: stage.x + FIXTURE_RADIUS + 4,
+      y: stage.y + 6,
+      w: stage.w - 2 * (FIXTURE_RADIUS + 4),
+      h: stage.h - 6 - 12 - trayHeight,
+    };
+    frame = fitFrame(fixtures, points, plot);
+    const laid = positionalLayout(fixtures, frame);
+    layoutPositions = {
+      ...laid.placed,
+      ...trayLayout(
+        laid.unplaced,
+        {
+          x: stage.x,
+          y: stage.y + stage.h - trayHeight,
+          w: stage.w,
+          h: trayHeight,
+        },
+        FIXTURE_RADIUS,
+      ),
+    };
+    focusPositions = {};
+    for (const [name, point] of Object.entries(points)) {
+      focusPositions[name] = toPx(frame, point);
     }
   }
 
@@ -129,7 +141,7 @@
     prevW = newW;
     prevH = newH;
 
-    computeLayout($metadataStore);
+    computeLayout($metadataStore, $venueStore);
   }
 
   function draw(fixtureStates: Record<string, FixtureChannels>) {
@@ -214,20 +226,40 @@
         ctx.fill();
       }
 
-      // Fixture body
+      // Fixture body — dashed when the venue has not placed it yet.
       ctx.fillStyle = `rgb(${finalR},${finalG},${finalB})`;
       ctx.strokeStyle = fixtureStroke;
       ctx.lineWidth = 1;
+      if (frame && $metadataStore[name]?.position == null) {
+        ctx.setLineDash([3, 2]);
+      }
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, FIXTURE_RADIUS, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+      ctx.setLineDash([]);
 
       // Label
       ctx.fillStyle = labelFill;
       ctx.font = "9px monospace";
       ctx.textAlign = "center";
       ctx.fillText(name, pos.x, pos.y + FIXTURE_RADIUS + 10);
+    }
+
+    // Focus points: the pins the show can aim at.
+    const focusFill = isDark ? "#d9a441" : "#b8801f";
+    for (const [name, pos] of Object.entries(focusPositions)) {
+      ctx.fillStyle = focusFill;
+      ctx.beginPath();
+      ctx.moveTo(pos.x, pos.y - 6);
+      ctx.lineTo(pos.x + 6, pos.y);
+      ctx.lineTo(pos.x, pos.y + 6);
+      ctx.lineTo(pos.x - 6, pos.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.font = "bold 8px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(name, pos.x, pos.y - 9);
     }
   }
 
@@ -253,6 +285,7 @@
   }
 
   function onMouseDown(e: MouseEvent) {
+    if (frame) return; // read-only plot; edit on the dashboard
     const pt = canvasCoords(e);
     const name = fixtureAt(pt.x, pt.y);
     if (name) {
@@ -297,7 +330,7 @@
   }
 
   function onTouchStart(e: TouchEvent) {
-    if (e.touches.length !== 1) return;
+    if (e.touches.length !== 1 || frame) return;
     const pt = touchCoords(e);
     const name = fixtureAt(pt.x, pt.y);
     if (name) {
@@ -335,7 +368,7 @@
   });
 
   $effect(() => {
-    computeLayout($metadataStore);
+    computeLayout($metadataStore, $venueStore);
   });
 
   let hasFixtures = $derived(Object.keys($metadataStore).length > 0);
