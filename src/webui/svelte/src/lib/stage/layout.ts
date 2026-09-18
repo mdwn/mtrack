@@ -235,6 +235,26 @@ export function facing(rotation: Vec3 | null | undefined): Pt {
   return { x: -Math.sin(yaw), y: -Math.cos(yaw) };
 }
 
+/**
+ * The on-plot beam of a mover: from the fixture to its footprint on the
+ * deck when the beam points down, or a short arrow along its heading when
+ * it does not. Stage meters in, stage meters out.
+ */
+export function beamEnd(
+  position: Vec3,
+  aim: Vec3,
+  floor: [number, number] | null,
+): [number, number] {
+  if (floor) return floor;
+  const len = Math.hypot(aim[0], aim[1]);
+  if (len < 1e-6) return [position[0], position[1]];
+  const reach = 1.5;
+  return [
+    position[0] + (aim[0] / len) * reach,
+    position[1] + (aim[1] / len) * reach,
+  ];
+}
+
 /** A name for a new focus point that no existing one uses. */
 export function nextFocusName(existing: Record<string, unknown>): string {
   let n = 1;

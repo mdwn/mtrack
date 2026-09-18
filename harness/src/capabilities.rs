@@ -73,6 +73,8 @@ pub struct Capabilities {
     pub midi_in: Option<MidiPort>,
     /// Whether an OLA daemon answered on the DMX port.
     pub ola_port: Option<u16>,
+    /// Whether olad's web server answered, so DMX can be read back.
+    pub ola_http: Option<u16>,
 
     /// Every output device found, for diagnostics.
     pub all_audio_out: Vec<AudioOutput>,
@@ -161,6 +163,7 @@ impl Capabilities {
         let mut audio_in = select_audio_input(&all_audio_in, &mut skips);
         let (mut midi_out, mut midi_in) = select_midi(&all_midi, &mut skips);
         let mut ola_port = probe_ola(&mut skips);
+        let mut ola_http = ola_port.and_then(|_| probe_ola_http(&mut skips));
 
         // `MTRACK_E2E_DISABLE=midi,audio,dmx` pretends a subsystem is absent.
         // A machine that has everything cannot otherwise exercise the paths a
@@ -186,6 +189,7 @@ impl Capabilities {
                 }
                 "dmx" => {
                     ola_port = None;
+                    ola_http = None;
                     skips.push(Skip {
                         area: "dmx",
                         reason: "disabled via MTRACK_E2E_DISABLE".to_string(),
@@ -201,6 +205,7 @@ impl Capabilities {
             midi_out,
             midi_in,
             ola_port,
+            ola_http,
             all_audio_out,
             all_audio_in,
             all_midi,
@@ -231,6 +236,12 @@ impl Capabilities {
             Some(p) => format!("dmx:       olad on port {p}"),
             None => "dmx:       no olad (null client only)".to_string(),
         });
+        if self.ola_port.is_some() {
+            lines.push(match self.ola_http {
+                Some(p) => format!("dmx read:  olad web server on port {p}"),
+                None => "dmx read:  no olad web server (frames not read back)".to_string(),
+            });
+        }
         lines
     }
 
@@ -285,9 +296,14 @@ impl Capabilities {
             (Some(o), None) => println!("  midi out  : {} [send only, no verification]", o.name),
             (None, _) => println!("  midi      : NONE"),
         }
-        match self.ola_port {
-            Some(p) => println!("  dmx       : olad on port {p} [DMX output checks ON]"),
-            None => println!("  dmx       : no olad [null client only]"),
+        match (self.ola_port, self.ola_http) {
+            (Some(p), Some(h)) => {
+                println!("  dmx       : olad on port {p}, read back via web server on {h} [DMX output checks ON]")
+            }
+            (Some(p), None) => {
+                println!("  dmx       : olad on port {p} [frames sent, not read back]")
+            }
+            (None, _) => println!("  dmx       : no olad [null client only]"),
         }
 
         if !self.skips.is_empty() {
@@ -577,6 +593,26 @@ fn probe_ola(skips: &mut Vec<Skip>) -> Option<u16> {
                 reason: format!(
                     "no OLA daemon on 127.0.0.1:{port} ({e}); lighting runs against the null \
                      client, so DMX frames are not verified"
+                ),
+            });
+            None
+        }
+    }
+}
+
+/// olad's web server, which answers `/get_dmx` — the DMX readback sink.
+fn probe_ola_http(skips: &mut Vec<Skip>) -> Option<u16> {
+    let port = env_override("MTRACK_E2E_OLA_HTTP_PORT")
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(9090);
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    match TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
+        Ok(_) => Some(port),
+        Err(e) => {
+            skips.push(Skip {
+                area: "dmx-output",
+                reason: format!(
+                    "olad's web server is not on 127.0.0.1:{port} ({e}); frames reach olad                      but cannot be read back, so DMX output is not verified"
                 ),
             });
             None

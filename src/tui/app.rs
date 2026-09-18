@@ -480,6 +480,7 @@ mod tests {
             let snapshot = Arc::new(StateSnapshot {
                 fixtures: vec![make_fixture("spot", &[("red", 255)])],
                 active_effects: vec!["chase".to_string()],
+                poses: Vec::new(),
             });
             let (_tx, state_rx) = watch::channel(snapshot);
             let mut app = App::new(player, state_rx);

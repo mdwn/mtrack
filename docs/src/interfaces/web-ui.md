@@ -95,7 +95,9 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   strobe animation. When the current venue carries stage positions (a `.venue` file, seeded by
   `import-mvr` or written by hand), it is a top-down stage plot to scale: a meter grid, the
   audience at the bottom, stage-left on the right, each placed fixture with an orientation tick
-  from its mounting yaw, and the venue's focus points as pins. Fixtures the venue has not placed
+  from its mounting yaw, the venue's focus points as pins, and — for each placed mover the show
+  has aimed — its beam, drawn in the color it is showing from the fixture to where the beam meets
+  the deck (a dashed heading when it points up or level). Fixtures the venue has not placed
   wait in a tray along the bottom; drag one onto the stage to place it. Dragging a fixture or a
   focus pin writes the new coordinates to the venue file, the running engine reloads the venue,
   and every open stage view redraws from the file. The **+ Focus point** button adds a pin, and

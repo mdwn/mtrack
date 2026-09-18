@@ -14,6 +14,7 @@
 //! The checks, and the order they run in.
 
 pub mod devices;
+pub mod dmx_output;
 pub mod lighting;
 pub mod midi_output;
 pub mod persistence;
@@ -397,6 +398,34 @@ pub fn all() -> Vec<Check> {
             "a_song_without_lighting_clears_the_previous_timeline",
             "A song with no show must not inherit the last song's cues.",
             lighting::a_song_without_lighting_clears_the_previous_timeline
+        ),
+        entry!(
+            "dmx-output",
+            "strobe_lands_in_the_strobe_function",
+            "A hardware strobe must land inside the strobe function's DMX range. Below it\n  \
+             the fixture reads \"open\" and does not strobe at all.",
+            dmx_output::strobe_lands_in_the_strobe_function
+        ),
+        entry!(
+            "dmx-output",
+            "a_slow_sweep_is_continuous_across_sixteen_bits",
+            "A slow pan sweep must advance the 16-bit value in small steps with the coarse\n  \
+             byte never stepping back across a fine rollover; otherwise movers judder.",
+            dmx_output::a_slow_sweep_is_continuous_across_sixteen_bits
+        ),
+        entry!(
+            "dmx-output",
+            "a_declared_slew_limit_holds_the_sweep",
+            "A fixture type's declared max_pan_speed must bound the sweep on the wire, and\n  \
+             the mover must keep travelling toward its goal after the cue's duration ends.",
+            dmx_output::a_declared_slew_limit_holds_the_sweep
+        ),
+        entry!(
+            "dmx-output",
+            "a_focus_point_resolves_through_the_venue",
+            "A move to a focus point must put the pan and tilt the pointing math predicts\n  \
+             on the wire, through the fixture's position and mounting in the venue.",
+            dmx_output::a_focus_point_resolves_through_the_venue
         ),
     ]
 }

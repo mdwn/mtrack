@@ -74,6 +74,9 @@ pub struct ProfileSpec {
     pub midi_extra: BTreeMap<String, String>,
     /// Whether to emit a `dmx.lighting` block referencing the generated venue.
     pub lighting: bool,
+    /// The venue `current_venue` selects; the generated one unless a check
+    /// brings its own.
+    pub venue: Option<String>,
     /// Whether to emit a `trigger:` block with one audio input, which makes
     /// the player build a trigger engine and open an input stream.
     pub trigger: bool,
@@ -92,6 +95,7 @@ impl ProfileSpec {
             audio_extra: BTreeMap::new(),
             midi_extra: BTreeMap::new(),
             lighting: false,
+            venue: None,
             trigger: false,
         }
     }
@@ -111,6 +115,13 @@ impl ProfileSpec {
     /// Emits a `dmx.lighting` block wired to the generated venue.
     pub fn with_lighting(mut self) -> ProfileSpec {
         self.lighting = true;
+        self
+    }
+
+    /// Selects a venue the check writes itself (see
+    /// [`ProjectBuilder::lighting_file`]) instead of the generated one.
+    pub fn with_venue(mut self, venue: &str) -> ProfileSpec {
+        self.venue = Some(venue.to_string());
         self
     }
 
@@ -283,7 +294,11 @@ impl ProfileSpec {
         // deliberately loose (one tag, one fixture minimum) so the venue
         // resolves on any rig.
         out.push_str("  lighting:\n");
-        let _ = writeln!(out, "    current_venue: \"{VENUE_NAME}\"");
+        let _ = writeln!(
+            out,
+            "    current_venue: \"{}\"",
+            self.venue.as_deref().unwrap_or(VENUE_NAME)
+        );
         out.push_str("    directories:\n");
         out.push_str("      fixture_types: lighting/fixture_types\n");
         out.push_str("      venues: lighting/venues\n");
@@ -395,6 +410,9 @@ pub struct ProjectBuilder {
     songs: Vec<SongSpec>,
     playlist: Vec<String>,
     extra_config: BTreeMap<String, String>,
+    /// Extra files under the project root: fixture types and venues a
+    /// check brings itself, beside the generated ones.
+    lighting_files: Vec<(String, String)>,
 }
 
 impl ProjectBuilder {
@@ -404,7 +422,16 @@ impl ProjectBuilder {
             songs: Vec::new(),
             playlist: Vec::new(),
             extra_config: BTreeMap::new(),
+            lighting_files: Vec::new(),
         }
+    }
+
+    /// Adds a file under the project root, e.g. a `.fixture` or `.venue` the
+    /// check needs beside the generated definitions.
+    pub fn lighting_file(mut self, relative: &str, content: &str) -> ProjectBuilder {
+        self.lighting_files
+            .push((relative.to_string(), content.to_string()));
+        self
     }
 
     /// Replaces the profile list.
@@ -454,6 +481,13 @@ impl ProjectBuilder {
 
         if self.profiles.iter().any(|p| p.lighting) {
             write_lighting_definitions(&root)?;
+        }
+        for (relative, content) in &self.lighting_files {
+            let path = root.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, content)?;
         }
 
         for profile in &self.profiles {

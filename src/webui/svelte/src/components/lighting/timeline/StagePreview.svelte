@@ -19,6 +19,7 @@
     fixtureStore,
     effectsStore,
     venueStore,
+    poseStore,
   } from "../../../lib/ws/stores";
   import type {
     FixtureChannels,
@@ -26,6 +27,7 @@
     VenueMetadata,
   } from "../../../lib/ws/stores";
   import {
+    beamEnd,
     fitFrame,
     hasGeometry,
     positionalLayout,
@@ -244,6 +246,32 @@
       ctx.font = "9px monospace";
       ctx.textAlign = "center";
       ctx.fillText(name, pos.x, pos.y + FIXTURE_RADIUS + 10);
+    }
+
+    // Beams of placed movers, ending at their footprint on the deck.
+    if (frame) {
+      for (const [name, pose] of Object.entries($poseStore)) {
+        const meta = $metadataStore[name];
+        const from = layoutPositions[name];
+        if (!meta?.position || !from) continue;
+        const end = toPx(frame, beamEnd(meta.position, pose.aim, pose.floor));
+        const state = fixtureStates[name] || {};
+        const k = (state.dimmer !== undefined ? state.dimmer : 255) / 255;
+        const r = Math.round((state.red || 0) * k);
+        const g = Math.round((state.green || 0) * k);
+        const b = Math.round((state.blue || 0) * k);
+        ctx.strokeStyle =
+          r + g + b > 24
+            ? `rgba(${r},${g},${b},0.55)`
+            : "rgba(128,128,128,0.3)";
+        ctx.lineWidth = 2;
+        ctx.setLineDash(pose.floor ? [] : [2, 2]);
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(end.x, end.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
 
     // Focus points: the pins the show can aim at.

@@ -594,7 +594,7 @@ audio, not instead of it.
 | P1c-1 (internal) | `channel_defs` + movement limits on `FixtureInfo`; `PhysicalState` (pan/tilt, replace-by-layer); resolution in `to_dmx_commands` (range interpolation, 16-bit fanout for physical and normalized values alike); equivalence tests | Existing shows byte-identical; a 16-bit synthetic mover fans out monotonically |
 | P1c-2 (shipped) | Pointing math + pose memory + `move` grammar/parser/effect + easing + slew clamp; lint (§15.5, feasibility deferred: the start pose is not known statically); timeline editor `move` form | A movement show authored on one venue plays correctly on a second imported venue (the P1c exit criterion) |
 | P1c-3 (shipped) | Rich channel syntax in `.fixture` + `Display` round-trip + docs; `.light` refuses it | Hand-written 16-bit mover moves smoothly |
-| P1c-4 | Harness DMX sink + four checks; stage view beam-direction ticks from live pan/tilt | 41+4 blessed on the rig |
+| P1c-4 (shipped) | Harness DMX sink (olad's web server, `/get_dmx`) + four checks; stage view beams from live pan/tilt with the deck footprint | 41+4 blessed on the rig |
 
 ### 15.9 Decisions (settled 2026-09-18)
 
