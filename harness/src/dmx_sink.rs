@@ -124,7 +124,9 @@ impl DmxSink {
             .json()
             .await
             .map_err(|e| CheckError::before_assertion(format!("olad readback JSON: {e}")))?;
-        if let Some(error) = body.error {
+        // A live universe answers with `"error": ""`; only a non-empty
+        // error means anything.
+        if let Some(error) = body.error.filter(|e| !e.is_empty()) {
             // "Universe doesn't exist" until mtrack's first frame reaches it.
             if body.dmx.is_empty() {
                 return Ok(Frame {
