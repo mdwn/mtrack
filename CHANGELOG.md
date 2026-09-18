@@ -44,6 +44,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untrusted-input layers — the zip archive and the description XML — carry hard size and nesting
   caps and have cargo-fuzz targets.
 
+- **`move` effect, focus-point aiming, pose memory (P1c-2)**: shows can move fixtures.
+  `spots: move focus: "drummer", duration: 2s, easing: smooth` aims a group at a venue focus
+  point through each fixture's position and mounting rotation (pan zero, tilt zero is the
+  mounting direction, level — the stage plot's orientation tick); `pan: 45deg, tilt: -20deg`
+  aims explicitly; `from:` names a starting point, else the move starts from wherever each
+  fixture is. Travel is interpolated in degrees, resolved through the fixture's pan/tilt
+  ranges with 16-bit precision, and the nearest turn of pan is chosen the way a desk does. A
+  mover holds its pose after arriving until the next move or a `clear`; a fixture type that
+  declares `movement { max_pan_speed }` is never driven faster than that. New lint:
+  `unbound-focus-point`, `move-without-positions`, `move-imprecise`, and `capability-gap` for
+  a group that cannot move. The timeline editor's effect form offers `move` with the venue's
+  focus points to pick from.
+
 - **Physical resolution layer (P1c-1, internal)**: fixture state carries pan and tilt in
   degrees beside its normalized channels, resolved into bytes only when DMX is produced,
   through the fixture type's channel definitions — the pan/tilt range, or a function carrying

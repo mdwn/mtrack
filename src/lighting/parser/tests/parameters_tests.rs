@@ -292,3 +292,79 @@ all_wash: cycle, color: "red", color: "green", color: "blue", speed: 1.5, direct
         panic!("Expected ColorCycle effect type");
     }
 }
+
+// ── move ───────────────────────────────────────────────────────────
+
+#[test]
+fn a_move_aims_at_a_focus_point_or_at_angles() {
+    use crate::lighting::effects::{Easing, EffectType, MoveTarget};
+    let source = r#"
+show "s" {
+    @00:00.000
+    spots: move focus: "drummer", duration: 2s, easing: smooth
+    @00:04.000
+    spots: move pan: 45deg, tilt: -20.5deg, duration: 1s, easing: linear
+    @00:08.000
+    spots: move from: "center-stage", to: "drummer", duration: 2s
+}
+"#;
+    let shows = parse_light_shows(source).expect("parses");
+    let show = &shows["s"];
+    let effect = |i: usize| &show.cues[i].effects[0].effect_type;
+
+    let EffectType::Move {
+        to,
+        from,
+        easing,
+        duration,
+    } = effect(0)
+    else {
+        panic!("not a move: {:?}", effect(0));
+    };
+    assert_eq!(*to, MoveTarget::Focus("drummer".to_string()));
+    assert_eq!(*from, None);
+    assert_eq!(*easing, Easing::Smooth);
+    assert_eq!(*duration, std::time::Duration::from_secs(2));
+
+    let EffectType::Move { to, easing, .. } = effect(1) else {
+        panic!("not a move");
+    };
+    assert_eq!(
+        *to,
+        MoveTarget::Angles {
+            pan: Some(45.0),
+            tilt: Some(-20.5)
+        }
+    );
+    assert_eq!(*easing, Easing::Linear);
+
+    let EffectType::Move { to, from, .. } = effect(2) else {
+        panic!("not a move");
+    };
+    assert_eq!(*to, MoveTarget::Focus("drummer".to_string()));
+    assert_eq!(*from, Some(MoveTarget::Focus("center-stage".to_string())));
+}
+
+#[test]
+fn a_move_refuses_a_missing_or_mixed_target_and_a_unitless_angle() {
+    for (source, needle) in [
+        ("spots: move duration: 2s", "requires a `focus`"),
+        (
+            "spots: move focus: \"a\", pan: 10deg, duration: 2s",
+            "not both",
+        ),
+        ("spots: move pan: 45, duration: 2s", "degrees"),
+        (
+            "spots: move focus: \"a\", easing: bouncy, duration: 2s",
+            "Invalid easing",
+        ),
+        ("spots: move focus: \"a\"", "requires a 'duration'"),
+    ] {
+        let err = parse_light_shows(&format!(
+            "show \"s\" {{\n    @00:00.000\n    {source}\n}}\n"
+        ))
+        .expect_err(source)
+        .to_string();
+        assert!(err.contains(needle), "{source}: {err}");
+    }
+}

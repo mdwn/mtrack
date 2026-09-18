@@ -32,6 +32,9 @@ pub struct EffectInstance {
     pub hold_time: Option<Duration>, // Time at full intensity (100%)
     pub down_time: Option<Duration>, // Fade out duration (100% to 0%)
     pub enabled: bool,
+    /// For a `move` without `from`: each target's pose when the effect
+    /// started, captured from the engine's pose memory. Empty otherwise.
+    pub start_poses: std::collections::HashMap<String, super::pointing::Pose>,
 }
 
 impl EffectInstance {
@@ -73,6 +76,7 @@ impl EffectInstance {
             hold_time: final_hold_time,
             down_time,
             enabled: true,
+            start_poses: std::collections::HashMap::new(),
         }
     }
 

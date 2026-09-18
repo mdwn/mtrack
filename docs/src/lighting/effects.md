@@ -142,6 +142,47 @@ Generates a continuous rainbow color cycle across the color spectrum.
 all_lights: rainbow speed: 1.0, saturation: 100%, brightness: 80%, duration: 10s
 ```
 
+### Move Effect
+
+Aims moving heads at a point on stage, or at explicit angles, travelling there in physical
+space over the duration. Targets are the venue's **focus points** (`focus "drummer" (x, y, z)`
+in a `.venue` file), so the same cue aims correctly in every venue that binds the name.
+
+**Parameters:**
+- `focus` (or `to`): The focus point to aim at, e.g. `"drummer"`
+- `pan`, `tilt`: Explicit angles in degrees, written with the unit (`45deg`, `-20deg`). Give
+  one or both; an omitted axis stays where it is. Not combined with `focus`.
+- `from`: The focus point to start from (`from_pan`/`from_tilt` for angles). Without it the
+  move starts from wherever each fixture is.
+- `easing`: `smooth` (ease in and out, the default) or `linear`
+- `duration`: **Required.** Travel time (e.g., `2s`, `1measure`)
+
+A mover that has arrived **holds its pose** until the next `move` on it or a `clear`; the
+effect's duration is the travel, not how long the fixture stays there. Movement is
+interpolated in degrees and resolved per fixture through its pan/tilt ranges (16-bit where the
+fixture has it), so a slow sweep is smooth. A fixture type that declares
+`movement { max_pan_speed: 240deg/s }` is never driven faster than that; it arrives late
+instead. Pan zero, tilt zero is the fixture's mounting direction — the orientation tick on
+the stage plot — level; the venue's `rotation` is what makes that true.
+
+`validate_lighting` warns about a focus point the current venue does not bind
+(`unbound-focus-point`), a `move` on movers the venue has not placed
+(`move-without-positions`), a group with no pan/tilt channels (`capability-gap`), and movers
+whose fixture type carries no pan/tilt range so degrees resolve over an assumed travel
+(`move-imprecise`, fixed by importing the GDTF or adding `range` to the channels).
+
+**Example:**
+```light
+@00:12.000
+spots: move focus: "drummer", duration: 2s, easing: smooth
+
+@00:20.000
+spots: move from: "center-stage", to: "drummer", duration: 2measures
+
+@00:30.000
+spots: move pan: 45deg, tilt: -20deg, duration: 1s, easing: linear
+```
+
 ## Common Effect Parameters
 
 All effects support these optional parameters for advanced control:

@@ -28,6 +28,7 @@ mod dimmer_tests;
 mod dsl_parsing_tests;
 #[cfg(test)]
 mod integration_tests;
+mod move_tests;
 #[cfg(test)]
 mod static_effect_tests;
 #[cfg(test)]

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use super::super::effects::{
     BlendMode, ChaseDirection, ChasePattern, Color, CycleDirection, CycleTransition, DimmerCurve,
-    EffectLayer, EffectType, TempoAwareFrequency, TempoAwareSpeed,
+    Easing, EffectLayer, EffectType, MoveTarget, TempoAwareFrequency, TempoAwareSpeed,
 };
 use super::super::tempo::TempoMap;
 use super::grammar::Rule;
@@ -131,6 +131,15 @@ pub(crate) fn parse_effect_definition(
                         speed: TempoAwareSpeed::Fixed(1.0),
                         saturation: 1.0,
                         brightness: 1.0,
+                        duration: Duration::ZERO,
+                    },
+                    "move" => EffectType::Move {
+                        to: MoveTarget::Angles {
+                            pan: None,
+                            tilt: None,
+                        },
+                        from: None,
+                        easing: Easing::default(),
                         duration: Duration::ZERO,
                     },
                     _ => return Err(format!("Unknown effect type: {}", inner_pair.as_str()).into()),
@@ -277,6 +286,7 @@ pub(crate) fn parse_effect_definition(
                 EffectType::Pulse { .. } => "pulse",
                 EffectType::Chase { .. } => "chase",
                 EffectType::Rainbow { .. } => "rainbow",
+                EffectType::Move { .. } => "move",
                 EffectType::Dimmer { .. } => unreachable!(),
             };
             return Err(format!(
@@ -299,6 +309,18 @@ pub(crate) fn parse_effect_definition(
         sequence_name: None, // Will be set when expanding sequences
         ignored_parameters,
     })
+}
+
+/// Parses an angle written with its unit: `45deg`, `-20.5deg`.
+fn parse_degrees(value: &str) -> Result<f64, Box<dyn Error>> {
+    let number = value
+        .trim()
+        .strip_suffix("deg")
+        .ok_or_else(|| format!("angle '{value}' must be written in degrees, e.g. 45deg"))?;
+    number
+        .trim()
+        .parse::<f64>()
+        .map_err(|e| format!("invalid angle '{value}': {e}").into())
 }
 
 /// Applies parsed parameters to effect types
@@ -584,6 +606,66 @@ pub(crate) fn apply_parameters_to_effect_type(
                     other => ignored.push(other.to_string()),
                 }
             }
+        }
+        EffectType::Move {
+            to,
+            from,
+            easing,
+            duration,
+        } => {
+            let mut to_focus: Option<String> = None;
+            let mut to_pan: Option<f64> = None;
+            let mut to_tilt: Option<f64> = None;
+            let mut from_focus: Option<String> = None;
+            let mut from_pan: Option<f64> = None;
+            let mut from_tilt: Option<f64> = None;
+            for (key, value) in parameters {
+                match key.as_str() {
+                    "focus" | "to" => to_focus = Some(value.trim_matches('"').to_string()),
+                    "pan" => to_pan = Some(parse_degrees(value)?),
+                    "tilt" => to_tilt = Some(parse_degrees(value)?),
+                    "from" => from_focus = Some(value.trim_matches('"').to_string()),
+                    "from_pan" => from_pan = Some(parse_degrees(value)?),
+                    "from_tilt" => from_tilt = Some(parse_degrees(value)?),
+                    "easing" => {
+                        *easing = match value.as_str() {
+                            "linear" => Easing::Linear,
+                            "smooth" => Easing::Smooth,
+                            other => {
+                                return Err(format!(
+                                    "Invalid easing '{other}' (expected: linear, smooth)"
+                                )
+                                .into())
+                            }
+                        }
+                    }
+                    "duration" => {
+                        *duration =
+                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
+                    }
+                    other => ignored.push(other.to_string()),
+                }
+            }
+            *to = match (to_focus, to_pan, to_tilt) {
+                (Some(_), pan, tilt) if pan.is_some() || tilt.is_some() => {
+                    return Err("move: give either `focus` or `pan`/`tilt`, not both".into());
+                }
+                (Some(name), _, _) => MoveTarget::Focus(name),
+                (None, None, None) => {
+                    return Err("move: requires a `focus` (or `to`), or `pan`/`tilt`".into());
+                }
+                (None, pan, tilt) => MoveTarget::Angles { pan, tilt },
+            };
+            *from = match (from_focus, from_pan, from_tilt) {
+                (Some(_), pan, tilt) if pan.is_some() || tilt.is_some() => {
+                    return Err(
+                        "move: give either `from` or `from_pan`/`from_tilt`, not both".into(),
+                    );
+                }
+                (Some(name), _, _) => Some(MoveTarget::Focus(name)),
+                (None, None, None) => None,
+                (None, pan, tilt) => Some(MoveTarget::Angles { pan, tilt }),
+            };
         }
         EffectType::Rainbow {
             speed,

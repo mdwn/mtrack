@@ -527,6 +527,12 @@ spots: move from: "center-stage", to: "drummer", duration: 2measures
   the per-tick delta to it, so a cue that asks for more than the fixture can do arrives late
   rather than commanding a jump the hardware would smear anyway. Undeclared = unclamped (the
   fixture applies its own limit); lint still warns using the conservative default (§14.4).
+  Built, this needed two memories, not one: where each mover *is* (the emitted pose, where
+  the next `move` starts from) and where it was last *asked* to be (its goal), because a
+  clamped mover whose effect has already expired must keep travelling toward the goal on
+  frames nobody drives it. The engine's no-effects fast path yields while any mover is
+  still short of its goal. A move that expires on a frame commits its destination as that
+  frame's intent, so a travel shorter than a tick — or a zero-duration snap — still lands.
 
 Chase, static and the color effects gain nothing; `static pan: 50%` keeps meaning a
 normalized channel write, as today. Physical *intent* comes only from `move`, so no
@@ -586,7 +592,7 @@ audio, not instead of it.
 | Slice | Contents | Exit |
 |---|---|---|
 | P1c-1 (internal) | `channel_defs` + movement limits on `FixtureInfo`; `PhysicalState` (pan/tilt, replace-by-layer); resolution in `to_dmx_commands` (range interpolation, 16-bit fanout for physical and normalized values alike); equivalence tests | Existing shows byte-identical; a 16-bit synthetic mover fans out monotonically |
-| P1c-2 | Pointing math + pose memory + `move` grammar/parser/effect + easing + slew clamp; lint (§15.5); timeline editor `move` form | A movement show authored on one venue plays correctly on a second imported venue (the P1c exit criterion) |
+| P1c-2 (shipped) | Pointing math + pose memory + `move` grammar/parser/effect + easing + slew clamp; lint (§15.5, feasibility deferred: the start pose is not known statically); timeline editor `move` form | A movement show authored on one venue plays correctly on a second imported venue (the P1c exit criterion) |
 | P1c-3 | Rich channel syntax in `.fixture` + `Display` round-trip + docs | Hand-written 16-bit mover moves smoothly |
 | P1c-4 | Harness DMX sink + four checks; stage view beam-direction ticks from live pan/tilt | 41+4 blessed on the rig |
 

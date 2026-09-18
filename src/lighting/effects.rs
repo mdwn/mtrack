@@ -17,6 +17,7 @@ mod error;
 mod fixture;
 mod instance;
 mod physical;
+mod pointing;
 mod state;
 mod tempo_aware;
 mod types;
@@ -36,9 +37,10 @@ pub use physical::{
     fanout, resolve_degrees, resolve_normalized, resolve_physical, Intent, PhysicalParameter,
     PhysicalState, Resolved,
 };
+pub use pointing::{aim, direction, lerp, nearest_pan, Pose};
 pub use state::{is_multiplier_channel, ChannelState, DmxCommand, FixtureState};
 pub use tempo_aware::{TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue};
 pub use types::{
-    BlendMode, ChaseDirection, ChasePattern, CycleDirection, CycleTransition, DimmerCurve,
-    EffectLayer, EffectType,
+    BlendMode, ChaseDirection, ChasePattern, CycleDirection, CycleTransition, DimmerCurve, Easing,
+    EffectLayer, EffectType, MoveTarget,
 };

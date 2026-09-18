@@ -75,6 +75,60 @@ pub enum EffectType {
         frequency: TempoAwareFrequency, // Hz (can be tempo-aware)
         duration: Duration,
     },
+
+    /// Movement: aim the group at a venue focus point or explicit angles,
+    /// travelling there over `duration` in physical space. The pose holds
+    /// after arrival (pose memory, design §15.4).
+    Move {
+        /// Where to go.
+        to: MoveTarget,
+        /// Where to start; the fixture's current pose when absent.
+        from: Option<MoveTarget>,
+        easing: Easing,
+        duration: Duration,
+    },
+}
+
+/// A place a `move` aims at.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MoveTarget {
+    /// A named focus point, bound by the venue.
+    Focus(String),
+    /// Explicit angles in degrees; a `None` leaves that axis where it is.
+    Angles { pan: Option<f64>, tilt: Option<f64> },
+}
+
+impl MoveTarget {
+    /// Whether the target is a set of angles with neither axis given.
+    pub fn is_empty(&self) -> bool {
+        matches!(
+            self,
+            MoveTarget::Angles {
+                pan: None,
+                tilt: None
+            }
+        )
+    }
+}
+
+/// How a move's progress maps onto its travel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Easing {
+    Linear,
+    #[default]
+    Smooth,
+}
+
+impl Easing {
+    /// Progress 0..1 to travel fraction 0..1.
+    pub fn apply(self, t: f64) -> f64 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Easing::Linear => t,
+            // Ease-in-out: smoothstep.
+            Easing::Smooth => t * t * (3.0 - 2.0 * t),
+        }
+    }
 }
 
 impl EffectType {
@@ -87,7 +141,8 @@ impl EffectType {
             | EffectType::Dimmer { duration, .. }
             | EffectType::ColorCycle { duration, .. }
             | EffectType::Chase { duration, .. }
-            | EffectType::Rainbow { duration, .. } => *duration,
+            | EffectType::Rainbow { duration, .. }
+            | EffectType::Move { duration, .. } => *duration,
         }
     }
 
@@ -145,6 +200,25 @@ impl EffectType {
                 out.insert("direction".to_string(), format!("{direction:?}"));
                 out.insert("transition".to_string(), format!("{transition:?}"));
             }
+            EffectType::Move {
+                to, from, easing, ..
+            } => {
+                let describe = |target: &MoveTarget| match target {
+                    MoveTarget::Focus(name) => format!("\"{name}\""),
+                    MoveTarget::Angles { pan, tilt } => format!(
+                        "pan {} tilt {}",
+                        pan.map(|p| format!("{p}deg"))
+                            .unwrap_or_else(|| "-".to_string()),
+                        tilt.map(|t| format!("{t}deg"))
+                            .unwrap_or_else(|| "-".to_string())
+                    ),
+                };
+                out.insert("to".to_string(), describe(to));
+                if let Some(from) = from {
+                    out.insert("from".to_string(), describe(from));
+                }
+                out.insert("easing".to_string(), format!("{easing:?}"));
+            }
             EffectType::Rainbow {
                 speed,
                 saturation,
@@ -180,6 +254,7 @@ impl EffectType {
             EffectType::Chase { .. } => "Chase",
             EffectType::Rainbow { .. } => "Rainbow",
             EffectType::Pulse { .. } => "Pulse",
+            EffectType::Move { .. } => "Move",
         }
     }
 }
