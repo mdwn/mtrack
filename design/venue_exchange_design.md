@@ -402,3 +402,205 @@ Open in draft 2; all resolved by draft 4.
    and versions mark breakages, not expansions: additive syntax never mints a new
    generation, and changing the meaning of existing syntax is forbidden (new meaning
    requires new syntax). A v3 would arrive as a new extension, if it ever exists.
+
+## 15. P1c in detail: the physical pipeline (draft 1, 2026-09-18)
+
+P1a and P1b built the sources (GDTF, MVR), the model (rich channels, positions, focus
+points) and the picture (stage plot). P1c is where the engine starts to *use* the model:
+values in degrees and hertz, resolved per fixture into the bytes that fixture wants, and a
+`move` effect that aims at the focus points the venue binds. This section fixes what §8
+sketched, and splits it into shippable slices under the same rule as before: syntax ships
+with its consumer, and every slice leaves existing shows producing byte-identical DMX.
+
+### 15.1 What exists to build on
+
+- `FixtureType` already carries `ChannelDef { offset, fine, range, functions }` with
+  `PhysicalRange { from, to, unit: Degrees | Hertz }` per function, and the GDTF distiller
+  fills it (16-bit as `fine`, Pan/Tilt ranges, the variable-strobe function). The engine
+  ignores all of it: `FixtureInfo.channels` is still the flat name→offset map, and
+  `to_dmx_commands` writes `(value × 255) as u8` per named channel.
+- Strobe already reaches DMX as a frequency, through the three legacy fields
+  (`max_strobe_frequency`, `min_strobe_frequency`, `strobe_dmx_offset`) that P0 reconciles
+  with the strobe function. The normalization lives in `apply_strobe`'s caller.
+- Venues carry `position`/`rotation` per fixture and named focus points; `FixtureInfo`
+  carries them since P1b. Fixture types carry `movement { max_pan_speed, max_tilt_speed }`
+  since P1a, consumed by nothing yet.
+- The effect engine is stateless per tick — every effect computes its contribution from
+  `elapsed` — except `last_merged_states`, the previous tick's merged output.
+
+### 15.2 The resolution layer
+
+`FixtureState` keeps its per-channel normalized values (0..1, layered and blended exactly as
+today) and gains a **physical intent** alongside them:
+
+```
+PhysicalState { pan: Option<Degrees>, tilt: Option<Degrees>, strobe: Option<Hertz> }
+```
+
+Layering and blending of physical intents is *replace-by-layer*: the highest active layer's
+intent wins per parameter; there is no meaningful "add" of two pan angles. Color and dimmer
+are untouched.
+
+Resolution happens where DMX is produced, `to_dmx_commands`, which gains the fixture's
+`ChannelDef`s (carried on `FixtureInfo` as `channel_defs`, beside the flat map that every
+existing caller keeps using):
+
+1. **Physical → DMX**: a degree or hertz value is mapped through the channel's range (a
+   `range:` on the channel, or the function whose `physical` covers it; the variable-strobe
+   function is the existing case) by linear interpolation into that function's DMX
+   sub-range. Out-of-range values clamp, and the clamp is reported once per effect
+   (§15.5). A fixture whose channel has no physical range (a hand-written `channel_map`
+   mover, or a GDTF that omitted it) resolves degrees over the full DMX range as if the
+   range were the type's declared `movement` travel or, failing that, 0..540 pan / 0..270
+   tilt with a lint warning. Nothing is refused: a venue with a thin fixture definition
+   still moves, just less precisely.
+2. **16-bit fanout**: a channel with `fine` emits two bytes from one 16-bit value, coarse
+   from the high byte and fine from the low. Normalized (0..1) values on 16-bit channels
+   fan out too, so a `static pan: 50%` on a 16-bit mover no longer leaves the fine byte
+   at whatever it was. Monotonic by construction; property-tested (§12).
+3. **Strobe stays on its existing path.** It already reaches DMX as a frequency through
+   the strobe function (P0 reconciles the three v1 fields with it, so `.light` and
+   `.fixture` types are one path today), and the resulting channel value is a normalized
+   channel that the layer master scales and blend modes combine like any other. Moving it
+   into the physical intent would change those bytes for no gain. Physical intents are
+   pan and tilt; strobe joins them only if a reason appears.
+
+Existing shows never produce a physical intent, so their DMX is byte-identical: the flat
+channel path is unchanged, and the fanout only differs for channels that have a `fine`
+byte, which no v1 fixture declares. The equivalence suite (§12) pins this.
+
+### 15.3 Pointing math
+
+A focus point is a stage-space target `(x, y, z)`. For a fixture at position `p` with
+mounting rotation `R = Rz·Ry·Rx` (the P1b convention, degrees about X, Y, Z in that order):
+
+```
+d_world = normalize(target − p)
+d_local = Rᵀ · d_world                 # into the fixture's mounting frame
+pan     = atan2(d_local.x, d_local.y)  # 0° faces the fixture's local +y
+tilt    = atan2(d_local.z, hypot(d_local.x, d_local.y))   # 0° level, +90° straight up
+```
+
+The fixture's "home" (pan 0, tilt 0) is its local +y axis, level. That is the same
+convention P1b's stage plot draws the orientation tick with, so a fixture drawn facing the
+drummer really does have the drummer at pan 0. GDTF's own rest pose (beam down −Z) is not
+assumed; the mounting rotation in the venue is the whole story, which is what a venue
+author can actually check against the room. Pan has a second solution 360° away wherever
+the range allows; the solver picks the one nearest the fixture's current pan (pose memory,
+§15.4), which is what a desk does and what stops a mover flipping through 500° to reach a
+point 10° away. Unattainable targets (outside the pan or tilt range) clamp to the nearest
+edge and are reported once per effect.
+
+Property tests: `aim → (pan, tilt) → direction` round-trips to the target direction for
+random poses and targets within range; the nearest-solution rule never chooses a pan more
+than 180° from the current one when a nearer one exists.
+
+### 15.4 The `move` effect and pose memory
+
+The show-side syntax, in the cue grammar every other effect uses:
+
+```
+@00:12.000
+spots: move focus: "drummer", duration: 2s, easing: smooth
+spots: move pan: 45deg, tilt: -20deg, duration: 1s
+spots: move from: "center-stage", to: "drummer", duration: 2measures
+```
+
+- `focus: "name"` (or `to:`) aims at a venue focus point; `pan:`/`tilt:` in degrees aim
+  explicitly; the two forms do not mix in one cue.
+- `from:` names the starting focus point (or `from_pan:`/`from_tilt:`). Without it the move
+  starts from the fixture's **current pose**, which is the point of pose memory: the engine
+  keeps the last resolved `(pan, tilt)` per fixture as engine state (initialized from the
+  first move's target, so a show's first cue is a snap, not a sweep from an unknown place).
+- `duration` is the travel time and is required, as every duration is. **When the travel
+  ends, the pose holds.** A mover that has arrived does not snap anywhere when its effect's
+  duration expires; the engine goes on emitting the held pose from pose memory until another
+  move (or a `clear`) changes it. This is the one place the explicit-durations model
+  reads differently — the effect's *contribution* is bounded, the fixture's *state*
+  persists, exactly as a real fixture's does — and it is the only sane behaviour: the
+  alternative writes pan/tilt to nothing, and the fixture sits wherever OLA's last frame
+  left it, which is the same thing with no model behind it.
+- `easing: linear | smooth` (smooth = ease-in-out); default `smooth`.
+- Movement interpolates in **physical space** (degrees) at the tick, then resolves — never
+  in DMX space, which is what made 8-bit chases look stepped.
+- **Slew**: when the fixture type declares `movement { max_pan_speed }`, the tick clamps
+  the per-tick delta to it, so a cue that asks for more than the fixture can do arrives late
+  rather than commanding a jump the hardware would smear anyway. Undeclared = unclamped (the
+  fixture applies its own limit); lint still warns using the conservative default (§14.4).
+
+Chase, static and the color effects gain nothing; `static pan: 50%` keeps meaning a
+normalized channel write, as today. Physical *intent* comes only from `move`, so no
+existing cue changes meaning.
+
+### 15.5 Lint
+
+The P1b list (§11) items that waited for show-side syntax arrive with `move`:
+
+- **Unbound focus point**: `focus: "x"` with no `focus "x"` in the current venue.
+- **Positional effect against a venue without positions**: a `move focus:` on a group with
+  a fixture that has no `position`.
+- **Capability**: a `move` on a group with no pan/tilt channels (`capability-gap` grows a
+  case).
+- **Feasibility**: travel required ÷ duration exceeds the fixture's `max_*_speed` (or the
+  default when undeclared — as a weaker "may arrive late" note); target outside range.
+- **Precision**: a `move` on a fixture whose pan/tilt has no physical range (§15.2 fallback).
+
+### 15.6 Rich channel syntax for hand-authored fixtures
+
+The P0 grammar that was reverted returns, in `.fixture` files only, now that the resolver
+consumes it. `.fixture` = the v2 DSL, whether referential (`from gdtf`) or native:
+
+```
+fixture_type "Cheap Mover" {
+  channel "pan"  @ 1 fine 2 range -270deg..270deg
+  channel "tilt" @ 3 fine 4 range -135deg..135deg
+  channel "dimmer" @ 5
+  channel "strobe" @ 6 {
+    function "open"   0..15
+    function "strobe" 16..255 0.5hz..20hz
+  }
+  channel "red" @ 7
+  channel "green" @ 8
+  channel "blue" @ 9
+  movement { max_pan_speed: 240deg/s }
+}
+```
+
+`channel_map` stays valid forever (§2 "coexist forever"). A `.fixture` may use either
+form; a `.light` fixture file keeps the v1 grammar. `Display` renders whichever form the
+file used, so the web UI's future fixture editor round-trips both.
+
+### 15.7 Harness
+
+The rig runs `olad`; the harness already probes it and gates DMX checks on it. The sink is
+OLA itself: the harness reads universe state through OLA's client (`GetDmx`) at the tick
+rate during a check and asserts on the frames. Checks: strobe function offsets on the
+PixelBrick, 16-bit continuity through a slow sweep on a synthetic mover (no coarse-byte
+jump across a fine rollover), slew clamp holding a sweep to the declared speed, and focus
+resolution on a venue of known geometry (two fixtures, one focus point, expected pan/tilt
+computed independently in the check). Playback stays on the loopback: DMX checks run beside
+audio, not instead of it.
+
+### 15.8 Slices
+
+| Slice | Contents | Exit |
+|---|---|---|
+| P1c-1 (internal) | `channel_defs` + movement limits on `FixtureInfo`; `PhysicalState` (pan/tilt, replace-by-layer); resolution in `to_dmx_commands` (range interpolation, 16-bit fanout for physical and normalized values alike); equivalence tests | Existing shows byte-identical; a 16-bit synthetic mover fans out monotonically |
+| P1c-2 | Pointing math + pose memory + `move` grammar/parser/effect + easing + slew clamp; lint (§15.5); timeline editor `move` form | A movement show authored on one venue plays correctly on a second imported venue (the P1c exit criterion) |
+| P1c-3 | Rich channel syntax in `.fixture` + `Display` round-trip + docs | Hand-written 16-bit mover moves smoothly |
+| P1c-4 | Harness DMX sink + four checks; stage view beam-direction ticks from live pan/tilt | 41+4 blessed on the rig |
+
+### 15.9 Decisions (settled 2026-09-18)
+
+1. **Pose memory**: hold after arrival. A mover that has arrived keeps its pose until the
+   next move or a `clear`.
+2. **Home convention**: pan 0 / tilt 0 is the mounting frame's +y axis, level — the stage
+   plot's orientation tick. GDTF's rest pose is not assumed; the venue's mounting rotation
+   carries the difference.
+3. **`move` spelling**: `focus:` / `to:` / `from:` and `pan:` / `tilt:` in `deg`. No arrow
+   form.
+4. **Undeclared slew**: never clamped by the engine — the fixture applies its own limit —
+   and lint warns against the conservative default. A declared `movement { max_*_speed }`
+   is clamped.
+5. **Rich channel syntax** lands in `.fixture` only; `.light` stays on the frozen v1
+   grammar.
