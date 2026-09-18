@@ -387,14 +387,104 @@ impl FixtureType {
     }
 }
 
+impl FixtureType {
+    /// Whether the channel definitions carry anything the v1 form cannot
+    /// say: a fine byte, a physical range, or functions beyond the single
+    /// strobe function the v1 strobe fields already describe. Such a type
+    /// renders — and must live — in the rich form of a `.fixture` file.
+    pub fn uses_rich_channels(&self) -> bool {
+        self.channel_defs.values().any(|def| {
+            def.fine.is_some()
+                || def.range.is_some()
+                || def.functions.len() > 1
+                || def
+                    .functions
+                    .iter()
+                    .any(|function| function.name != STROBE_FUNCTION)
+        }) || self
+            .channel_defs
+            .iter()
+            .any(|(name, def)| name != STROBE_CHANNEL && !def.functions.is_empty())
+    }
+}
+
+/// A physical value as the DSL writes it: `270deg`, `0.5hz`. Six decimals
+/// with trailing zeros trimmed — a strobe rate can be well under a
+/// millihertz, which the coordinate formatter's three would round away.
+fn fmt_physical(value: f64, unit: PhysicalUnit) -> String {
+    let unit = match unit {
+        PhysicalUnit::Degrees => "deg",
+        PhysicalUnit::Hertz => "hz",
+    };
+    let mut text = format!("{value:.6}");
+    if text.contains('.') {
+        text = text.trim_end_matches('0').trim_end_matches('.').to_string();
+    }
+    if text == "-0" {
+        text = "0".to_string();
+    }
+    format!("{text}{unit}")
+}
+
 impl fmt::Display for FixtureType {
-    /// Renders the v1 DSL form. The structured channel data (fine bytes,
-    /// ranges, functions) has no DSL rendering yet — that arrives with the
-    /// grammar that can parse it back. Until then this stays exactly the
-    /// output the current grammar round-trips; a synthesized strobe function
-    /// carries the same values as the strobe field lines, so nothing is
-    /// lost either way.
+    /// Renders the DSL form the type needs: the v1 `channel_map` form when
+    /// the channels are plain offsets (plus the three strobe fields, which
+    /// carry the same values as a synthesized strobe function), and the
+    /// rich `channel` form when any channel has a fine byte, a range or
+    /// functions — which only a `.fixture` file may hold.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.uses_rich_channels() {
+            writeln!(f, "fixture_type \"{}\" {{", self.name)?;
+            let mut defs: Vec<_> = self.channel_defs.iter().collect();
+            defs.sort_by_key(|(name, def)| (def.offset, (*name).clone()));
+            for (name, def) in defs {
+                write!(f, "  channel \"{name}\" @ {}", def.offset)?;
+                if let Some(fine) = def.fine {
+                    write!(f, " fine {fine}")?;
+                }
+                if let Some(range) = def.range {
+                    write!(
+                        f,
+                        " range {}..{}",
+                        fmt_physical(range.from, range.unit),
+                        fmt_physical(range.to, range.unit)
+                    )?;
+                }
+                if def.functions.is_empty() {
+                    writeln!(f)?;
+                } else {
+                    writeln!(f, " {{")?;
+                    for function in &def.functions {
+                        write!(
+                            f,
+                            "    function \"{}\" {}..{}",
+                            function.name, function.dmx_from, function.dmx_to
+                        )?;
+                        if let Some(physical) = function.physical {
+                            write!(
+                                f,
+                                " {}..{}",
+                                fmt_physical(physical.from, physical.unit),
+                                fmt_physical(physical.to, physical.unit)
+                            )?;
+                        }
+                        writeln!(f)?;
+                    }
+                    writeln!(f, "  }}")?;
+                }
+            }
+            if !self.movement.is_empty() {
+                writeln!(f, "  movement {{")?;
+                if let Some(speed) = self.movement.max_pan_speed {
+                    writeln!(f, "    max_pan_speed: {}deg/s", fmt_coord(speed))?;
+                }
+                if let Some(speed) = self.movement.max_tilt_speed {
+                    writeln!(f, "    max_tilt_speed: {}deg/s", fmt_coord(speed))?;
+                }
+                writeln!(f, "  }}")?;
+            }
+            return write!(f, "}}");
+        }
         writeln!(f, "fixture_type \"{}\" {{", self.name)?;
         writeln!(f, "  channels: {}", self.channels.len())?;
         writeln!(f, "  channel_map: {{")?;
@@ -828,6 +918,9 @@ mod tests {
     }
 
     #[test]
+    // The v1 form is what a plain type renders as, byte for byte: the
+    // rich form (fine, range, functions) exists since P1c-3 but only a
+    // type that needs it uses it.
     fn fixture_type_display_is_unchanged_v1_form() {
         // The Display output must stay exactly what today's grammar
         // round-trips — the rich model has no DSL rendering yet.

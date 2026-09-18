@@ -16,7 +16,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 
 use super::super::types::{
-    Fixture, FixtureType, FixtureTypeV1, GdtfSource, MovementLimits, Vec3, Venue, VenueSource,
+    ChannelDef, ChannelFunction, Fixture, FixtureType, FixtureTypeV1, GdtfSource, MovementLimits,
+    PhysicalRange, PhysicalUnit, Vec3, Venue, VenueSource,
 };
 use super::error::get_error_context;
 use super::grammar::{LightingParser, Rule};
@@ -109,6 +110,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
     let mut strobe_dmx_offset = None;
     let mut source = None;
     let mut movement = MovementLimits::default();
+    let mut rich_defs: HashMap<String, ChannelDef> = HashMap::new();
 
     for pair in pair.into_inner() {
         match pair.as_rule() {
@@ -122,6 +124,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
                 parse_fixture_content(
                     pair,
                     &mut channels,
+                    &mut rich_defs,
                     &mut movement,
                     &mut special_cases,
                     &mut max_strobe_frequency,
@@ -131,6 +134,61 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
             }
             _ => {}
         }
+    }
+
+    // The rich form (design §15.6): every channel is a `channel` line, and
+    // the type is built from the definitions directly. It does not mix with
+    // the v1 map or strobe fields — a strobe belongs on its channel as a
+    // function — nor with a GDTF reference, which brings its own channels.
+    if !rich_defs.is_empty() {
+        if !channels.is_empty() {
+            return Err(format!(
+                "fixture type \"{name}\" mixes `channel` lines with a channel_map; use one \
+                 form for the whole type"
+            )
+            .into());
+        }
+        if max_strobe_frequency.is_some()
+            || min_strobe_frequency.is_some()
+            || strobe_dmx_offset.is_some()
+        {
+            return Err(format!(
+                "fixture type \"{name}\" mixes `channel` lines with strobe fields; describe \
+                 the strobe as a function on its channel instead: \
+                 `channel \"strobe\" @ N {{ function \"strobe\" 16..255 0.5hz..20hz }}`"
+            )
+            .into());
+        }
+        if source.is_some() {
+            return Err(format!(
+                "fixture type \"{name}\" declares `from gdtf(...)` and `channel` lines; a \
+                 referential fixture's channels come from the GDTF — remove the channel \
+                 lines (or drop the gdtf reference to define it natively)"
+            )
+            .into());
+        }
+        // The engine's strobe path keys on a channel named "strobe" with a
+        // function named "strobe": a hertz function anywhere else parses
+        // and then silently does nothing, which is worse than a refusal.
+        for (channel, def) in &rich_defs {
+            for function in &def.functions {
+                let hertz = function
+                    .physical
+                    .is_some_and(|p| p.unit == PhysicalUnit::Hertz);
+                if hertz && (channel != "strobe" || function.name != "strobe") {
+                    return Err(format!(
+                        "fixture type \"{name}\": the hertz function \"{}\" on channel \
+                         \"{channel}\" would never drive a strobe — the engine looks for \
+                         `channel \"strobe\" ... {{ function \"strobe\" ... }}`; rename them",
+                        function.name
+                    )
+                    .into());
+                }
+            }
+        }
+        let mut fixture_type = FixtureType::from_channel_defs(name, rich_defs);
+        fixture_type.set_movement(movement);
+        return Ok(fixture_type);
     }
 
     // A referential fixture type carries only human additions (movement);
@@ -228,9 +286,164 @@ fn parse_movement_block(pair: Pair<Rule>) -> Result<MovementLimits, Box<dyn Erro
     Ok(movement)
 }
 
+/// Parses a physical value with its unit: `270deg`, `-135.5deg`, `0.5hz`.
+fn parse_phys_value(text: &str) -> Result<(f64, PhysicalUnit), Box<dyn Error>> {
+    let text = text.trim();
+    let (number, unit) = if let Some(n) = text.strip_suffix("deg") {
+        (n, PhysicalUnit::Degrees)
+    } else if let Some(n) = text.strip_suffix("hz") {
+        (n, PhysicalUnit::Hertz)
+    } else {
+        return Err(format!("physical value \"{text}\" needs a unit: deg or hz").into());
+    };
+    let value = number
+        .parse::<f64>()
+        .map_err(|e| format!("invalid physical value \"{text}\": {e}"))?;
+    Ok((value, unit))
+}
+
+fn parse_phys_range(pair: Pair<Rule>) -> Result<PhysicalRange, Box<dyn Error>> {
+    let mut values = pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::phys_value)
+        .map(|p| parse_phys_value(p.as_str()));
+    let (from, unit_from) = values.next().ok_or("range needs two values")??;
+    let (to, unit_to) = values.next().ok_or("range needs two values")??;
+    if unit_from != unit_to {
+        return Err("both ends of a range must use the same unit".into());
+    }
+    Ok(PhysicalRange {
+        from,
+        to,
+        unit: unit_from,
+    })
+}
+
+fn parse_number<T: std::str::FromStr>(pair: &Pair<Rule>, what: &str) -> Result<T, Box<dyn Error>>
+where
+    T::Err: std::fmt::Display,
+{
+    pair.as_str()
+        .trim()
+        .parse::<T>()
+        .map_err(|e| format!("invalid {what} \"{}\": {e}", pair.as_str().trim()).into())
+}
+
+/// Parses one `channel "name" @ N fine M range a..b { function ... }` line.
+fn parse_channel_def(pair: Pair<Rule>) -> Result<(String, ChannelDef), Box<dyn Error>> {
+    let mut name = String::new();
+    let mut def = ChannelDef::at(0);
+    let mut seen_offset = false;
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::string => name = extract_string(inner),
+            Rule::offset_value => {
+                def.offset = parse_number::<u16>(&inner, "channel offset")?;
+                seen_offset = true;
+            }
+            Rule::channel_fine => {
+                let number = inner
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::offset_value)
+                    .ok_or("fine needs an offset")?;
+                def.fine = Some(parse_number::<u16>(&number, "fine offset")?);
+            }
+            Rule::channel_range => {
+                let range = inner
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::phys_range)
+                    .ok_or("range needs two values")?;
+                def.range = Some(parse_phys_range(range)?);
+            }
+            Rule::channel_block => {
+                for function in inner
+                    .into_inner()
+                    .filter(|p| p.as_rule() == Rule::function_def)
+                {
+                    def.functions.push(parse_function_def(function)?);
+                }
+            }
+            _ => {}
+        }
+    }
+    if name.is_empty() {
+        return Err("channel needs a name".into());
+    }
+    if !seen_offset || def.offset == 0 {
+        return Err(format!("channel \"{name}\" needs a 1-based offset").into());
+    }
+    if def.fine == Some(def.offset) {
+        return Err(format!("channel \"{name}\": fine byte cannot share the coarse offset").into());
+    }
+    if def.fine == Some(0) {
+        return Err(format!("channel \"{name}\": fine offset is 1-based").into());
+    }
+    let mut seen_names = std::collections::HashSet::new();
+    for function in &def.functions {
+        if !seen_names.insert(function.name.as_str()) {
+            return Err(format!(
+                "channel \"{name}\" declares function \"{}\" more than once",
+                function.name
+            )
+            .into());
+        }
+        if function.dmx_from > function.dmx_to {
+            return Err(format!(
+                "channel \"{name}\" function \"{}\": DMX range {}..{} runs backwards",
+                function.name, function.dmx_from, function.dmx_to
+            )
+            .into());
+        }
+    }
+    for (i, a) in def.functions.iter().enumerate() {
+        for b in &def.functions[i + 1..] {
+            if a.dmx_from <= b.dmx_to && b.dmx_from <= a.dmx_to {
+                return Err(format!(
+                    "channel \"{name}\": functions \"{}\" ({}..{}) and \"{}\" ({}..{}) overlap; \
+                     each DMX value belongs to one function",
+                    a.name, a.dmx_from, a.dmx_to, b.name, b.dmx_from, b.dmx_to
+                )
+                .into());
+            }
+        }
+    }
+    Ok((name, def))
+}
+
+fn parse_function_def(pair: Pair<Rule>) -> Result<ChannelFunction, Box<dyn Error>> {
+    let mut function = ChannelFunction {
+        name: String::new(),
+        dmx_from: 0,
+        dmx_to: 0,
+        physical: None,
+    };
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::string => function.name = extract_string(inner),
+            Rule::dmx_range => {
+                let mut numbers = inner
+                    .into_inner()
+                    .filter(|p| p.as_rule() == Rule::offset_value);
+                let from = numbers.next().ok_or("DMX range needs two values")?;
+                let to = numbers.next().ok_or("DMX range needs two values")?;
+                function.dmx_from = parse_number::<u8>(&from, "DMX value")?;
+                function.dmx_to = parse_number::<u8>(&to, "DMX value")?;
+            }
+            Rule::phys_range => function.physical = Some(parse_phys_range(inner)?),
+            _ => {}
+        }
+    }
+    if function.name.is_empty() {
+        return Err("function needs a name".into());
+    }
+    Ok(function)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn parse_fixture_content(
     pair: Pair<Rule>,
     channels: &mut HashMap<String, u16>,
+    rich_defs: &mut HashMap<String, ChannelDef>,
     movement: &mut MovementLimits,
     special_cases: &mut Vec<String>,
     max_strobe_frequency: &mut Option<f64>,
@@ -241,6 +454,24 @@ fn parse_fixture_content(
         match content_pair.as_rule() {
             Rule::channel_map => {
                 *channels = parse_channel_mappings(content_pair);
+            }
+            Rule::channel_def => {
+                let (name, def) = parse_channel_def(content_pair)?;
+                if rich_defs.contains_key(&name) {
+                    return Err(format!("channel \"{name}\" is declared more than once").into());
+                }
+                let taken = rich_defs
+                    .values()
+                    .flat_map(|d| std::iter::once(d.offset).chain(d.fine));
+                for offset in std::iter::once(def.offset).chain(def.fine) {
+                    if taken.clone().any(|t| t == offset) {
+                        return Err(format!(
+                            "channel \"{name}\": offset {offset} is already used by another channel"
+                        )
+                        .into());
+                    }
+                }
+                rich_defs.insert(name, def);
             }
             Rule::movement_block => {
                 *movement = parse_movement_block(content_pair)?;

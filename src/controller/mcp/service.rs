@@ -2161,8 +2161,9 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<WriteLightingFileArgs>,
     ) -> Result<CallToolResult, McpError> {
-        crate::lighting::parser::parse_fixture_types(&args.source)
+        let types = crate::lighting::parser::parse_fixture_types(&args.source)
             .map_err(|e| McpError::invalid_params(format!("invalid fixture type: {e}"), None))?;
+        refuse_rich_channels_in_light(&args.file, types.values())?;
         let path = self
             .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
             .await?;
@@ -2423,9 +2424,10 @@ impl McpServer {
             .await?;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
-        crate::lighting::parser::parse_fixture_types(&updated).map_err(|e| {
+        let types = crate::lighting::parser::parse_fixture_types(&updated).map_err(|e| {
             McpError::invalid_params(format!("patched fixture type is invalid: {e}"), None)
         })?;
+        refuse_rich_channels_in_light(&args.file, types.values())?;
         staged_write_string(&path, &updated).await?;
         Ok(patch_response(&path, &original, &updated))
     }
@@ -3673,6 +3675,31 @@ pub(crate) fn validate_lighting_dir_filename(
             ),
             None,
         ));
+    }
+    Ok(())
+}
+
+/// The extension is the version marker: rich channel syntax (fine bytes,
+/// ranges, functions) is the v2 DSL and lives in `.fixture` files.
+fn refuse_rich_channels_in_light<'a>(
+    file: &str,
+    types: impl Iterator<Item = &'a crate::lighting::types::FixtureType>,
+) -> Result<(), McpError> {
+    if !file.ends_with(".light") {
+        return Ok(());
+    }
+    for fixture_type in types {
+        if fixture_type.uses_rich_channels() {
+            return Err(McpError::invalid_params(
+                format!(
+                    "fixture type \"{}\" uses rich channel syntax (fine, range, functions), \
+                     which belongs in a .fixture file — write it as {} instead",
+                    fixture_type.name(),
+                    file.trim_end_matches(".light").to_string() + ".fixture"
+                ),
+                None,
+            ));
+        }
     }
     Ok(())
 }

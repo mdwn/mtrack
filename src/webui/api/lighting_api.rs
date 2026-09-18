@@ -609,13 +609,29 @@ pub(super) async fn put_fixture_type(
     };
 
     // Validate the DSL parses correctly
-    lighting::parser::parse_fixture_types(&dsl).map_err(|e| {
+    let types = lighting::parser::parse_fixture_types(&dsl).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": format!("Invalid fixture type DSL: {}", e)})),
         )
             .into_response()
     })?;
+    // This editor writes .light files, and the extension is the version
+    // marker: rich channel syntax would be saved, then skipped by the
+    // loader, and one missing type fails the whole venue's registration.
+    if let Some(rich) = types.values().find(|t| t.uses_rich_channels()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!(
+                "fixture type \"{}\" uses rich channel syntax (fine, range, functions), which \
+                 belongs in a .fixture file; this editor writes .light files — save it as \
+                 lighting/fixture_types/{}.fixture by hand or through `mtrack import-gdtf`",
+                rich.name(),
+                sanitize_filename(&name)
+            )})),
+        )
+            .into_response());
+    }
 
     // The same helper the playlists and profiles writes use, so a refusal is
     // reported as the configuration problem it is rather than a server fault.
@@ -2744,6 +2760,30 @@ show "test" {
         let content = std::fs::read_to_string(&file_path).unwrap();
         let venues = lighting::parser::parse_venues(&content).unwrap();
         assert!(venues.contains_key("JSONVenue"));
+    }
+
+    #[tokio::test]
+    async fn put_fixture_type_refuses_rich_channel_syntax() {
+        let (state, _dir) = test_state();
+        let rel = "ft_rich";
+        let app = router().with_state(state);
+        let dsl =
+            "fixture_type \"Mover\" {\n  channel \"pan\" @ 1 fine 2 range -270deg..270deg\n}\n";
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/fixture-types/Mover?dir={}", rel))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(dsl))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains(".fixture"), "{body}");
+        assert!(!_dir.path().join(rel).join("mover.light").exists());
     }
 
     #[tokio::test]

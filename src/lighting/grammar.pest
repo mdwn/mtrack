@@ -244,8 +244,40 @@ fixture_type_name = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 gdtf_source = { "from" ~ "gdtf" ~ "(" ~ string ~ "," ~ "mode" ~ string ~ ")" }
 
 fixture_type_content = {
-    (channels | channel_map | movement_block | max_strobe_frequency | min_strobe_frequency | strobe_dmx_offset | special_cases)*
+    (channels | channel_map | channel_def | movement_block | max_strobe_frequency | min_strobe_frequency | strobe_dmx_offset | special_cases)*
 }
+
+// Rich channel definitions (design §15.6), the v2 DSL for hand-authored
+// fixture types in `.fixture` files: a one-liner per channel, with the
+// fine byte, a physical range, and a block only where the channel has
+// functions. `channels`/`channel_map` must come first in the alternation
+// above: their keywords share a prefix with this one.
+//
+//   channel "pan" @ 1 fine 2 range -270deg..270deg
+//   channel "strobe" @ 6 {
+//     function "open" 0..15
+//     function "strobe" 16..255 0.5hz..20hz
+//   }
+channel_def = { "channel" ~ string ~ "@" ~ offset_value ~ channel_fine? ~ channel_range? ~ channel_block? }
+
+channel_fine = { "fine" ~ offset_value }
+
+// Atomic: the shared `number_value` is not, and pest then lets whitespace
+// sit between its digits, so `255 0.5hz` read as one number.
+offset_value = @{ ASCII_DIGIT+ }
+
+channel_range = { "range" ~ phys_range }
+
+channel_block = { "{" ~ function_def* ~ "}" }
+
+function_def = { "function" ~ string ~ dmx_range ~ phys_range? }
+
+dmx_range = { offset_value ~ ".." ~ offset_value }
+
+phys_range = { phys_value ~ ".." ~ phys_value }
+
+// A physical value with its unit: degrees or hertz.
+phys_value = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ ("deg" | "hz") }
 
 // Movement limits — not in GDTF; measured or taken from the datasheet.
 movement_block = { "movement" ~ "{" ~ movement_param* ~ "}" }
