@@ -458,10 +458,12 @@ existing caller keeps using):
    from the high byte and fine from the low. Normalized (0..1) values on 16-bit channels
    fan out too, so a `static pan: 50%` on a 16-bit mover no longer leaves the fine byte
    at whatever it was. Monotonic by construction; property-tested (§12).
-3. **Strobe in hertz** goes through the strobe function's range. The three legacy fields
-   stay as the *derived* v1 view they already are; the caller-side normalization in the
-   effects processor moves into resolution, so one code path serves `.light` fixtures
-   with the three fields and `.fixture` ones with a function table.
+3. **Strobe stays on its existing path.** It already reaches DMX as a frequency through
+   the strobe function (P0 reconciles the three v1 fields with it, so `.light` and
+   `.fixture` types are one path today), and the resulting channel value is a normalized
+   channel that the layer master scales and blend modes combine like any other. Moving it
+   into the physical intent would change those bytes for no gain. Physical intents are
+   pan and tilt; strobe joins them only if a reason appears.
 
 Existing shows never produce a physical intent, so their DMX is byte-identical: the flat
 channel path is unchanged, and the fanout only differs for channels that have a `fine`
@@ -583,7 +585,7 @@ audio, not instead of it.
 
 | Slice | Contents | Exit |
 |---|---|---|
-| P1c-1 (internal) | `channel_defs` + movement limits on `FixtureInfo`; `PhysicalState`; resolution in `to_dmx_commands` (range interpolation, 16-bit fanout, strobe through the function); strobe normalization moved out of the processor; equivalence tests | Existing shows byte-identical; a 16-bit synthetic mover fans out monotonically |
+| P1c-1 (internal) | `channel_defs` + movement limits on `FixtureInfo`; `PhysicalState` (pan/tilt, replace-by-layer); resolution in `to_dmx_commands` (range interpolation, 16-bit fanout for physical and normalized values alike); equivalence tests | Existing shows byte-identical; a 16-bit synthetic mover fans out monotonically |
 | P1c-2 | Pointing math + pose memory + `move` grammar/parser/effect + easing + slew clamp; lint (§15.5); timeline editor `move` form | A movement show authored on one venue plays correctly on a second imported venue (the P1c exit criterion) |
 | P1c-3 | Rich channel syntax in `.fixture` + `Display` round-trip + docs | Hand-written 16-bit mover moves smoothly |
 | P1c-4 | Harness DMX sink + four checks; stage view beam-direction ticks from live pan/tilt | 41+4 blessed on the rig |
