@@ -147,9 +147,10 @@ async fn play_and_sink(
         "the DMX engine did not come up.\n--- log ---\n{}",
         server.log()
     );
+    let sink = DmxSink::new(http_port);
+    sink.ensure_universe(UNIVERSE).await?;
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
-    let sink = DmxSink::new(http_port);
     sink.wait_for_nonzero(UNIVERSE, first_channel, Duration::from_secs(5))
         .await?;
     Ok(sink)

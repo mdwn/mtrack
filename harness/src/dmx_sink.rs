@@ -49,6 +49,44 @@ impl Frame {
     }
 }
 
+/// The Dummy Device's first output port in `ola_dev_info` output, as
+/// `(device id, port id)`.
+fn dummy_output_port(listing: &str) -> Option<(u32, u32)> {
+    let mut device: Option<u32> = None;
+    for line in listing.lines() {
+        if let Some(rest) = line.strip_prefix("Device ") {
+            let (id, name) = rest.split_once(':')?;
+            device = if name.trim().starts_with("Dummy") {
+                id.trim().parse().ok()
+            } else {
+                None
+            };
+            continue;
+        }
+        if let (Some(dev), Some(rest)) = (device, line.trim().strip_prefix("port ")) {
+            let (port, kind) = rest.split_once(',')?;
+            if kind.trim().starts_with("OUT") {
+                return Some((dev, port.trim().parse().ok()?));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_dummy_output_port_is_found_in_a_device_listing() {
+        let listing = "Device 1: Dummy Device\n  port 0, OUT Dummy Port, RDM supported\n\
+                       Device 2: ArtNet [192.168.1.216]\n  port 0, IN, priority 100\n  port 0, OUT\n";
+        assert_eq!(dummy_output_port(listing), Some((1, 0)));
+        let no_dummy = "Device 2: ArtNet [192.168.1.216]\n  port 0, OUT\n";
+        assert_eq!(dummy_output_port(no_dummy), None);
+    }
+}
+
 /// The readback client.
 pub struct DmxSink {
     http: reqwest::Client,
@@ -102,6 +140,60 @@ impl DmxSink {
             at: Instant::now(),
             data: body.dmx,
         })
+    }
+
+    /// Makes sure olad has the universe at all.
+    ///
+    /// olad drops streamed frames for a universe nobody has created — the
+    /// streaming path never creates one — and a fresh olad has none, so
+    /// mtrack's output would silently go nowhere and every readback would
+    /// say "Universe doesn't exist". The Dummy plugin's output port exists
+    /// for exactly this: patching it to the universe creates the universe,
+    /// olad then keeps what is streamed, and nothing physical is driven.
+    /// The patch is recorded, since it changes olad's state for the run.
+    pub async fn ensure_universe(&self, universe: u16) -> Result<(), CheckError> {
+        if !self.read(universe).await?.data.is_empty() {
+            return Ok(());
+        }
+        let devices = std::process::Command::new("ola_dev_info")
+            .output()
+            .map_err(|e| {
+                CheckError::before_assertion(format!(
+                    "universe {universe} does not exist in olad and ola_dev_info is not \
+                     runnable to patch one: {e}"
+                ))
+            })?;
+        let listing = String::from_utf8_lossy(&devices.stdout);
+        let (device, port) = dummy_output_port(&listing).ok_or_else(|| {
+            CheckError::before_assertion(format!(
+                "universe {universe} does not exist in olad and no Dummy Device output port \
+                 is available to patch it to; patch a port to universe {universe} \
+                 (ola_patch) and rerun.\n--- ola_dev_info ---\n{listing}"
+            ))
+        })?;
+        let status = std::process::Command::new("ola_patch")
+            .args([
+                "-d",
+                &device.to_string(),
+                "-p",
+                &port.to_string(),
+                "-u",
+                &universe.to_string(),
+            ])
+            .status()
+            .map_err(|e| CheckError::before_assertion(format!("ola_patch: {e}")))?;
+        if !status.success() {
+            return Err(CheckError::before_assertion(format!(
+                "ola_patch -d {device} -p {port} -u {universe} failed: {status}"
+            )));
+        }
+        crate::outcome::record(format!(
+            "caveat: olad had no universe {universe}, so the Dummy Device port {device}/{port} \
+             was patched to it for this run — an unpatched olad drops mtrack's frames silently"
+        ));
+        // olad creates the universe on the patch; give it a moment.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        Ok(())
     }
 
     /// Frames of a universe for `window`, one every `period`.
