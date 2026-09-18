@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untrusted-input layers — the zip archive and the description XML — carry hard size and nesting
   caps and have cargo-fuzz targets.
 
+- **Physical resolution layer (P1c-1, internal)**: fixture state carries pan and tilt in
+  degrees beside its normalized channels, resolved into bytes only when DMX is produced,
+  through the fixture type's channel definitions — the pan/tilt range, or a function carrying
+  one, with linear interpolation and clamping. Sixteen-bit channels (GDTF-imported movers)
+  fan one value out over coarse and fine bytes, monotonically. Nothing produces a physical
+  intent yet; that is the `move` effect of the next slice. The one visible change: a
+  normalized write to a 16-bit channel (`static pan: 50%` on an imported mover) now writes the
+  fine byte too, where it used to be left at whatever the last frame held. Eight-bit channels
+  emit exactly the bytes they always did.
+
 - **Positional stage view, focus-point editing, spatial chases, venue lint**: when the current
   venue places its fixtures, the dashboard's stage view is a top-down stage plot to scale — meter
   grid, audience at the bottom, orientation ticks, focus points as pins — and an editor: dragging

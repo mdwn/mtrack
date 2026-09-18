@@ -482,6 +482,8 @@ impl LightingSystem {
             fixture_info.strobe_dmx_offset = fixture_type.strobe_dmx_offset();
             fixture_info.position = fixture.position();
             fixture_info.rotation = fixture.rotation();
+            fixture_info.channel_defs = fixture_type.channel_defs().clone();
+            fixture_info.movement = *fixture_type.movement();
 
             fixture_infos.push(fixture_info);
         }
