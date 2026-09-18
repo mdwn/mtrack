@@ -217,6 +217,12 @@ function serializeEffect(cueEffect: CueEffect): string {
   }
   if (effect.from !== undefined && effect.from !== "")
     parts.push(`from: "${effect.from}"`);
+  else {
+    if (effect.from_pan !== undefined && effect.from_pan !== "")
+      parts.push(`from_pan: ${withDeg(effect.from_pan)}`);
+    if (effect.from_tilt !== undefined && effect.from_tilt !== "")
+      parts.push(`from_tilt: ${withDeg(effect.from_tilt)}`);
+  }
   if (effect.easing !== undefined) parts.push(`easing: ${effect.easing}`);
 
   // Extra params

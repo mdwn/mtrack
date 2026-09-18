@@ -674,6 +674,8 @@
   "effect.pan": "Pan (deg)",
   "effect.tilt": "Tilt (deg)",
   "effect.easing": "Easing",
+  "effect.fromPan": "From pan (deg)",
+  "effect.fromTilt": "From tilt (deg)",
   "effect.focusOrAngles": "Aim at a venue focus point, or give pan/tilt angles.",
   "effect.saturation": "Saturation",
   "effect.brightness": "Brightness",

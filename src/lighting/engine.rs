@@ -353,6 +353,10 @@ impl EffectEngine {
         for fixture in fixtures {
             self.register_fixture(fixture);
         }
+        // Pose memory follows the registry: a mover the venue renamed or
+        // unhung must not haunt the preview as a held pose.
+        self.poses.retain(|name, _| self.fixtures.contains(name));
+        self.goals.retain(|name, _| self.fixtures.contains(name));
         self.cache.invalidate();
     }
 
@@ -377,12 +381,13 @@ impl EffectEngine {
         &self.poses
     }
 
-    /// A `move` without `from` starts where the fixture is now: capture
-    /// that from pose memory before the effect's first tick. A fixture
-    /// with no memory yet starts at its target — the show's first cue is a
-    /// snap, not a sweep from nowhere.
+    /// A `move` starts where the fixture is now unless `from` says
+    /// otherwise: capture that from pose memory before the effect's first
+    /// tick, for every move, since a `from` naming an unbound focus point
+    /// falls back to it too. A fixture with no memory yet starts at its
+    /// target — the show's first cue is a snap, not a sweep from nowhere.
     fn capture_start_poses(&self, effect: &mut EffectInstance) {
-        let EffectType::Move { from: None, .. } = &effect.effect_type else {
+        let EffectType::Move { .. } = &effect.effect_type else {
             return;
         };
         effect.start_poses = effect
@@ -440,6 +445,9 @@ impl EffectEngine {
         // Held poses: every remembered mover nobody drove this frame keeps
         // heading for (or sitting at) its last goal.
         for (name, pose) in &self.goals {
+            if !self.fixtures.contains(name) {
+                continue;
+            }
             let state = states.entry(name.clone()).or_default();
             if state.physical.pan.is_none() {
                 state.physical.set(

@@ -133,6 +133,8 @@ export interface EffectParams {
   /** `move`: explicit angles, written with their unit (`45deg`). */
   pan?: string;
   tilt?: string;
+  from_pan?: string;
+  from_tilt?: string;
   easing?: string;
   extra: Record<string, string>;
 }

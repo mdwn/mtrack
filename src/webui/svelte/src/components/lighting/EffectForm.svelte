@@ -28,6 +28,33 @@
   import ColorInput from "./ColorInput.svelte";
   import { venueStore } from "../../lib/ws/stores";
 
+  /** A `move` aims at a focus point or at angles, never both: setting one
+   *  clears the other, so the form always shows what will be written. */
+  function updateMoveTarget(key: "focus" | "pan" | "tilt", value?: string) {
+    const next = { ...effect.effect, [key]: value };
+    if (key === "focus" && value) {
+      next.pan = undefined;
+      next.tilt = undefined;
+    } else if (key !== "focus" && value) {
+      next.focus = undefined;
+    }
+    onchange({ ...effect, effect: next });
+  }
+
+  function updateMoveStart(
+    key: "from" | "from_pan" | "from_tilt",
+    value?: string,
+  ) {
+    const next = { ...effect.effect, [key]: value };
+    if (key === "from" && value) {
+      next.from_pan = undefined;
+      next.from_tilt = undefined;
+    } else if (key !== "from" && value) {
+      next.from = undefined;
+    }
+    onchange({ ...effect, effect: next });
+  }
+
   /** The current venue's focus points, offered as `move` targets. */
   let focusPointNames = $derived(
     Object.keys($venueStore?.focus_points ?? {}).sort(),
@@ -67,7 +94,17 @@
     ],
     cycle: ["speed", "direction", "transition", "duration"],
     strobe: ["frequency", "duration"],
-    move: ["focus", "to", "from", "pan", "tilt", "easing", "duration"],
+    move: [
+      "focus",
+      "to",
+      "from",
+      "from_pan",
+      "from_tilt",
+      "pan",
+      "tilt",
+      "easing",
+      "duration",
+    ],
     pulse: [
       "base_level",
       "pulse_amplitude",
@@ -560,7 +597,7 @@
               placeholder="drummer"
               value={effect.effect.focus ?? ""}
               onchange={(e) =>
-                updateParam(
+                updateMoveTarget(
                   "focus",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -580,7 +617,7 @@
               placeholder="center-stage"
               value={effect.effect.from ?? ""}
               onchange={(e) =>
-                updateParam(
+                updateMoveStart(
                   "from",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -593,7 +630,7 @@
               placeholder="45deg"
               value={effect.effect.pan ?? ""}
               onchange={(e) =>
-                updateParam(
+                updateMoveTarget(
                   "pan",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -606,8 +643,34 @@
               placeholder="-20deg"
               value={effect.effect.tilt ?? ""}
               onchange={(e) =>
-                updateParam(
+                updateMoveTarget(
                   "tilt",
+                  (e.target as HTMLInputElement).value || undefined,
+                )}
+            /></label
+          >
+          <label class="param"
+            ><span class="param-label">{$t("effect.fromPan")}</span><input
+              type="text"
+              class="param-input"
+              placeholder="0deg"
+              value={effect.effect.from_pan ?? ""}
+              onchange={(e) =>
+                updateMoveStart(
+                  "from_pan",
+                  (e.target as HTMLInputElement).value || undefined,
+                )}
+            /></label
+          >
+          <label class="param"
+            ><span class="param-label">{$t("effect.fromTilt")}</span><input
+              type="text"
+              class="param-input"
+              placeholder="0deg"
+              value={effect.effect.from_tilt ?? ""}
+              onchange={(e) =>
+                updateMoveStart(
+                  "from_tilt",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
             /></label

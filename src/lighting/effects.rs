@@ -34,8 +34,8 @@ pub use fixture::{
 };
 pub use instance::EffectInstance;
 pub use physical::{
-    fanout, resolve_degrees, resolve_normalized, resolve_physical, Intent, PhysicalParameter,
-    PhysicalState, Resolved,
+    degree_span, fanout, resolve_degrees, resolve_normalized, resolve_physical, Intent,
+    PhysicalParameter, PhysicalState, Resolved,
 };
 pub use pointing::{aim, direction, lerp, nearest_pan, Pose};
 pub use state::{is_multiplier_channel, ChannelState, DmxCommand, FixtureState};

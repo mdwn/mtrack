@@ -277,6 +277,69 @@ fn a_clear_releases_pose_memory() {
 }
 
 #[test]
+fn an_unbound_from_sweeps_from_the_remembered_pose() {
+    let mut engine = engine_with(
+        mover("m", [0.0, 0.0, 4.0], [0.0; 3]),
+        &[("left", [4.0, 0.0, 4.0]), ("ahead", [0.0, 4.0, 4.0])],
+    );
+    engine
+        .start_effect(move_to("a", MoveTarget::Focus("left".into()), None, 0.1))
+        .unwrap();
+    engine.update(Duration::from_millis(200), None).unwrap();
+    engine
+        .start_effect(move_to(
+            "b",
+            MoveTarget::Focus("ahead".into()),
+            Some(MoveTarget::Focus("nowhere".into())),
+            2.0,
+        ))
+        .unwrap();
+    let commands = engine.update(Duration::from_millis(1000), None).unwrap();
+    assert!(
+        (emitted_pan(commands) - 45.0).abs() < 0.05,
+        "halfway from the remembered 90, not snapped: {}",
+        emitted_pan(commands)
+    );
+}
+
+#[test]
+fn a_venue_reload_forgets_movers_that_left() {
+    let mut engine = engine_with(mover("m", [0.0, 0.0, 4.0], [0.0; 3]), &[]);
+    engine
+        .start_effect(move_to(
+            "a",
+            MoveTarget::Angles {
+                pan: Some(45.0),
+                tilt: Some(0.0),
+            },
+            None,
+            0.1,
+        ))
+        .unwrap();
+    engine.update(Duration::from_millis(200), None).unwrap();
+    assert!(engine.poses().contains_key("m"));
+    engine.replace_fixtures([mover("other", [1.0, 0.0, 4.0], [0.0; 3])]);
+    assert!(
+        !engine.poses().contains_key("m"),
+        "pose memory follows the registry"
+    );
+    // A frame on the full path shows no ghost of the departed mover.
+    let mut on_other = move_to(
+        "b",
+        MoveTarget::Angles {
+            pan: Some(10.0),
+            tilt: Some(0.0),
+        },
+        None,
+        1.0,
+    );
+    on_other.target_fixtures = vec!["other".to_string()];
+    engine.start_effect(on_other).unwrap();
+    engine.update(Duration::from_millis(100), None).unwrap();
+    assert!(!engine.get_fixture_states().contains_key("m"));
+}
+
+#[test]
 fn an_unbound_focus_point_leaves_the_fixture_where_it_is() {
     let mut engine = engine_with(mover("m", [0.0, 0.0, 4.0], [0.0; 3]), &[]);
     engine

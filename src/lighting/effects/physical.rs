@@ -143,33 +143,37 @@ pub fn resolve_normalized(def: &ChannelDef, value: f64) -> Vec<(u16, u8)> {
     }
 }
 
-/// Resolves degrees onto a pan or tilt channel. The channel's own range
-/// wins; a function carrying a degree range is next; with neither, the
-/// parameter's fallback travel is assumed. Linear interpolation over the
-/// full channel (or the function's DMX sub-range), clamped and flagged
-/// when the value lies outside.
+/// The degree span a channel resolves over, and the DMX sub-range it maps
+/// onto (inclusive, on the 8-bit coarse scale): the channel's own range
+/// first, then a function carrying a degree range, then the parameter's
+/// fallback travel. The one place this is decided, so the pointing math
+/// and the byte resolution never disagree about a fixture's travel.
+pub fn degree_span(def: &ChannelDef, parameter: PhysicalParameter) -> (f64, f64, u8, u8) {
+    if let Some(range) = def.range.filter(|r| r.unit == PhysicalUnit::Degrees) {
+        (range.from, range.to, 0u8, 255u8)
+    } else if let Some(function) = def
+        .functions
+        .iter()
+        .find(|f| f.physical.is_some_and(|p| p.unit == PhysicalUnit::Degrees))
+    {
+        let physical = function.physical.expect("filtered");
+        (
+            physical.from,
+            physical.to,
+            function.dmx_from,
+            function.dmx_to,
+        )
+    } else {
+        let (from, to) = parameter.fallback_range();
+        (from, to, 0, 255)
+    }
+}
+
+/// Resolves degrees onto a pan or tilt channel through [`degree_span`]:
+/// linear interpolation over the span's DMX sub-range, clamped and
+/// flagged when the value lies outside.
 pub fn resolve_degrees(def: &ChannelDef, parameter: PhysicalParameter, degrees: f64) -> Resolved {
-    // (from, to, dmx_from, dmx_to) — the physical span and the DMX span
-    // it maps onto, both inclusive, on the 8-bit coarse scale.
-    let (from, to, dmx_lo, dmx_hi) =
-        if let Some(range) = def.range.filter(|r| r.unit == PhysicalUnit::Degrees) {
-            (range.from, range.to, 0u8, 255u8)
-        } else if let Some(function) = def
-            .functions
-            .iter()
-            .find(|f| f.physical.is_some_and(|p| p.unit == PhysicalUnit::Degrees))
-        {
-            let physical = function.physical.expect("filtered");
-            (
-                physical.from,
-                physical.to,
-                function.dmx_from,
-                function.dmx_to,
-            )
-        } else {
-            let (from, to) = parameter.fallback_range();
-            (from, to, 0, 255)
-        };
+    let (from, to, dmx_lo, dmx_hi) = degree_span(def, parameter);
 
     let (low, high) = if from <= to { (from, to) } else { (to, from) };
     let clamped = degrees < low || degrees > high;

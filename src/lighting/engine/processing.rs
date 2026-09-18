@@ -507,7 +507,10 @@ fn target_pose(
             let range = fixture
                 .channel_defs
                 .get("pan")
-                .and_then(|def| def.range.map(|r| (r.from, r.to)))
+                .map(|def| {
+                    let (from, to, _, _) = degree_span(def, PhysicalParameter::Pan);
+                    (from, to)
+                })
                 .unwrap_or(PhysicalParameter::Pan.fallback_range());
             let reference = current.map(|c| c.pan).unwrap_or(0.0);
             Some(Pose {
@@ -577,10 +580,13 @@ fn apply_move(
         // Where the travel starts: the explicit `from`, else the pose the
         // engine remembered when the effect began, else the target itself
         // (a snap — the show's first cue has nowhere to sweep from).
-        let start = match from {
-            Some(from) => target_pose(fixture, focus_points, from, remembered).unwrap_or(target),
-            None => remembered.unwrap_or(target),
-        };
+        // A `from` naming a focus point the venue does not bind is a lint
+        // finding, not a snap: it falls back to the remembered pose the
+        // same way an absent `from` does.
+        let start = from
+            .and_then(|from| target_pose(fixture, focus_points, from, remembered))
+            .or(remembered)
+            .unwrap_or(target);
         let pose = lerp(start, target, travel);
         let mut state = FixtureState::new();
         state.physical.set(

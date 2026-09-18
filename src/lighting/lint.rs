@@ -109,6 +109,9 @@ impl GroupCapabilities {
                 if fixture.position.is_some() {
                     out.positioned += 1;
                 }
+                // An axis the fixture does not have is not imprecise — a
+                // pan-only mover simply is not tilted — so only an axis that
+                // exists without a range counts against the group.
                 let ranged = |name: &str| {
                     fixture.channel_defs.get(name).is_none_or(|def| {
                         def.range.is_some() || def.functions.iter().any(|f| f.physical.is_some())
@@ -836,6 +839,50 @@ show "s" {
     }
 
     #[test]
+    fn group_capabilities_count_ranged_movers_per_present_axis() {
+        use crate::lighting::effects::FixtureInfo;
+        use crate::lighting::types::{ChannelDef, PhysicalRange, PhysicalUnit};
+        let degrees = |from, to| {
+            Some(PhysicalRange {
+                from,
+                to,
+                unit: PhysicalUnit::Degrees,
+            })
+        };
+        let build = |name: &str, defs: Vec<(&str, ChannelDef)>| {
+            let channels = defs
+                .iter()
+                .map(|(n, d)| (n.to_string(), d.offset))
+                .collect();
+            let mut info =
+                FixtureInfo::new(name.to_string(), 1, 1, "T".to_string(), channels, None);
+            info.position = Some([0.0; 3]);
+            info.with_channel_defs(defs.into_iter().map(|(n, d)| (n.to_string(), d)).collect())
+        };
+        let mut ranged_pan = ChannelDef::at(1);
+        ranged_pan.range = degrees(-270.0, 270.0);
+        let mut ranged_tilt = ChannelDef::at(2);
+        ranged_tilt.range = degrees(-135.0, 135.0);
+
+        let full = build(
+            "full",
+            vec![("pan", ranged_pan.clone()), ("tilt", ranged_tilt)],
+        );
+        let pan_only = build("pan_only", vec![("pan", ranged_pan)]);
+        let bare = build(
+            "bare",
+            vec![("pan", ChannelDef::at(1)), ("tilt", ChannelDef::at(2))],
+        );
+        let caps = GroupCapabilities::from_fixtures([&full, &pan_only, &bare]);
+        assert_eq!(caps.pan_tilt, 3);
+        assert_eq!(caps.positioned, 3);
+        assert_eq!(
+            caps.ranged, 2,
+            "a pan-only mover with a ranged pan is precise; a rangeless one is not"
+        );
+    }
+
+    #[test]
     fn a_move_on_a_group_that_cannot_move_is_a_capability_gap_only() {
         let shows = shows(
             "\nshow \"s\" {\n    @00:00.000\n    wash: move focus: \"drummer\", duration: 2s\n}\n",
@@ -1419,7 +1466,7 @@ show "T" {
             "curve" => "linear",
             "speed" | "frequency" => "1",
             "focus" | "to" | "from" => "\"drummer\"",
-            "pan" | "tilt" => "45deg",
+            "pan" | "tilt" | "from_pan" | "from_tilt" => "45deg",
             "easing" => "smooth",
             _ => "0.5",
         }

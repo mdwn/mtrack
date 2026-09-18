@@ -273,6 +273,19 @@ pub(crate) fn parse_effect_definition(
     let (final_effect_type, ignored_parameters) =
         apply_parameters_to_effect_type(effect_type, &parameters, &color_parameters, ctx)?;
 
+    // A move's duration is its travel time, which `hold_time` cannot stand
+    // in for: without one the move would be an instant snap held for the
+    // hold, which is not what "required" means.
+    if let EffectType::Move { duration, .. } = &final_effect_type {
+        if duration.is_zero() {
+            return Err(
+                "Effect 'move' requires a 'duration' parameter: the travel time \
+                        (hold_time does not stand in for it)."
+                    .into(),
+            );
+        }
+    }
+
     // Validate that every effect has an explicit duration.
     // Dimmer always has a duration (defaults to 1s). For all other types,
     // either the effect's duration field or hold_time must be set.

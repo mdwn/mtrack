@@ -546,6 +546,12 @@ function parseEffectParams(str: string, effect: EffectParams): void {
       case "tilt":
         effect.tilt = val;
         break;
+      case "from_pan":
+        effect.from_pan = val;
+        break;
+      case "from_tilt":
+        effect.from_tilt = val;
+        break;
       case "easing":
         effect.easing = val;
         break;

@@ -359,6 +359,10 @@ fn a_move_refuses_a_missing_or_mixed_target_and_a_unitless_angle() {
             "Invalid easing",
         ),
         ("spots: move focus: \"a\"", "requires a 'duration'"),
+        (
+            "spots: move focus: \"a\", hold_time: 5s",
+            "requires a 'duration'",
+        ),
     ] {
         let err = parse_light_shows(&format!(
             "show \"s\" {{\n    @00:00.000\n    {source}\n}}\n"
