@@ -633,18 +633,24 @@ fn spatial_order(
     targets: &[String],
     direction: &ChaseDirection,
 ) -> Vec<String> {
-    let placed: Option<Vec<(String, [f64; 3])>> = targets
-        .iter()
-        .map(|name| {
-            fixture_registry
-                .get(name)
-                .and_then(|f| f.position)
-                .map(|p| (name.clone(), p))
-        })
-        .collect();
-    let Some(mut placed) = placed else {
-        return targets.to_vec();
-    };
+    let mut placed: Vec<(String, [f64; 3])> = Vec::with_capacity(targets.len());
+    for name in targets {
+        match fixture_registry.get(name) {
+            Some(fixture) => match fixture.position {
+                Some(position) => placed.push((name.clone(), position)),
+                None => return targets.to_vec(),
+            },
+            None => {
+                // A stale or misspelled group member: visible here rather
+                // than as "the chase does not look spatial".
+                tracing::debug!(
+                    fixture = %name,
+                    "chase target is not a registered fixture; using list order"
+                );
+                return targets.to_vec();
+            }
+        }
+    }
     if placed.len() < 2 {
         return targets.to_vec();
     }

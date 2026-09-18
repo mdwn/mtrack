@@ -110,6 +110,7 @@
   "stage.noFocus": "None yet. Add one, then drag it where the show should aim.",
   "stage.saved": "Saved",
   "stage.saveFailed": "Save failed: {error}",
+  "stage.busy": "the previous change is still saving; try again",
   "status.title": "Status",
   "status.failedToLoad": "Failed to load status: {error}",
   "status.buildInfo": "Build Info",

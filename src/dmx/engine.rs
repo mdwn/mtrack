@@ -548,6 +548,21 @@ impl Engine {
             let mut effect_engine = self.effect_engine.lock();
             let mut midi_dmx_store = self.midi_dmx_store.write();
 
+            // Registration replaces, never accumulates: this runs at every
+            // song start and every venue reload (a stage-view drag), and an
+            // append-only registry grew a slot per channel per call — in the
+            // effects loop's per-frame scan — and kept unhung fixtures.
+            let patched: std::collections::HashSet<(u16, u16)> = fixture_infos
+                .iter()
+                .flat_map(|f| {
+                    f.channels
+                        .values()
+                        .map(move |&offset| (f.universe, f.address + offset - 1))
+                })
+                .collect();
+            midi_dmx_store
+                .retain_channels(|universe, channel| patched.contains(&(universe, channel)));
+
             for fixture_info in &fixture_infos {
                 // Register slots in the MIDI DMX store for each fixture channel
                 for (channel_name, &offset) in &fixture_info.channels {
@@ -565,9 +580,7 @@ impl Engine {
             // Set the MIDI DMX store reference on the EffectEngine
             effect_engine.set_midi_dmx_store(self.midi_dmx_store.clone());
 
-            for fixture_info in fixture_infos {
-                effect_engine.register_fixture(fixture_info);
-            }
+            effect_engine.replace_fixtures(fixture_infos);
         }
         Ok(())
     }
@@ -3081,20 +3094,43 @@ mod test {
                 assert_eq!(registry["B"].position, None);
             }
 
-            // The band moves A, places B, and hangs C.
+            // Reloading an unchanged venue must not grow anything: this
+            // runs on every stage-view drag.
+            let slots_before = engine.midi_dmx_store.read().slot_count();
+            engine.reload_current_venue()?;
+            engine.reload_current_venue()?;
+            assert_eq!(engine.midi_dmx_store.read().slot_count(), slots_before);
+
+            // The band moves A, places B, hangs C and unhangs nothing yet.
             std::fs::write(
                 dir.path().join("lighting/venues/v.venue"),
                 "venue \"v\" {\n  fixture \"A\" Par @ 1:1 position (-1, 3, 4)\n  fixture \"B\" Par @ 1:5 position (1, 3, 4)\n  fixture \"C\" Par @ 1:9\n  focus \"drummer\" (0, 2.8, 1.4)\n}\n",
             )
             .unwrap();
             engine.reload_current_venue()?;
+            {
+                let registry = engine.effect_engine.lock();
+                let registry = registry.get_fixture_registry();
+                assert_eq!(registry["A"].position, Some([-1.0, 3.0, 4.0]));
+                assert_eq!(registry["B"].position, Some([1.0, 3.0, 4.0]));
+                assert!(registry.contains_key("C"), "a new fixture is registered");
+                assert_eq!(registry.len(), 3);
+            }
+            assert_eq!(engine.midi_dmx_store.read().slot_count(), 9);
 
+            // Then unhangs B: it leaves both registries.
+            std::fs::write(
+                dir.path().join("lighting/venues/v.venue"),
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1 position (-1, 3, 4)\n  fixture \"C\" Par @ 1:9\n  focus \"drummer\" (0, 2.8, 1.4)\n}\n",
+            )
+            .unwrap();
+            engine.reload_current_venue()?;
             let registry = engine.effect_engine.lock();
             let registry = registry.get_fixture_registry();
-            assert_eq!(registry["A"].position, Some([-1.0, 3.0, 4.0]));
-            assert_eq!(registry["B"].position, Some([1.0, 3.0, 4.0]));
-            assert!(registry.contains_key("C"), "a new fixture is registered");
-            assert_eq!(registry.len(), 3);
+            assert!(!registry.contains_key("B"), "an unhung fixture is purged");
+            assert_eq!(registry.len(), 2);
+            assert_eq!(engine.midi_dmx_store.read().slot_count(), 6);
+            assert_eq!(engine.midi_dmx_store.read().lookup(1, 5), None);
 
             let handles = engine.broadcast_handles();
             let system = handles.lighting_system.expect("lighting system");

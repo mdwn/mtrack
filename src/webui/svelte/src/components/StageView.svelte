@@ -433,6 +433,9 @@
   }
 
   function beginDrag(pt: Pt): boolean {
+    // In geometry mode a drag ends in a save; one at a time, so nothing
+    // is silently lost while the previous save is in flight.
+    if (frame && saving) return false;
     const target = hit(pt.x, pt.y);
     if (!target) return false;
     drag = target;
@@ -475,6 +478,11 @@
     }
     const activeFrame = frame;
     if (finished.kind === "focus") {
+      if (!inPlot(focusPositions[finished.name])) {
+        // Dropped off the stage: put it back where the file says.
+        computeLayout($metadataStore, $venueStore);
+        return;
+      }
       const [x, y] = toStage(activeFrame, focusPositions[finished.name]);
       const z = focusPoints[finished.name]?.[2] ?? 0;
       await persist((v) => {
@@ -486,8 +494,9 @@
       return;
     }
     const dropped = layoutPositions[finished.name];
-    if (finished.fromTray && !inPlot(dropped)) {
-      // Dropped back in the tray: nothing changed.
+    if (!inPlot(dropped)) {
+      // Dropped back in the tray, or off the stage: nothing changed. A
+      // placed fixture cannot be un-placed from here; edit the file.
       computeLayout($metadataStore, $venueStore);
       return;
     }
@@ -502,6 +511,9 @@
   // --- Persistence: the venue file is the truth. Read it, change the one
   // thing, write it back; the server reloads the running venue and pushes
   // fresh metadata, which redraws everything from the file's numbers.
+  // Last write wins: two editors on the same venue (two tabs, or the web
+  // UI racing an MCP patch) can overwrite each other's latest change. A
+  // single operator designing a show is the case this serves.
   async function persist(
     update: (venue: {
       fixtures: Record<
@@ -521,7 +533,18 @@
     }) => void,
   ) {
     const meta = $venueStore;
-    if (!meta || saving) return;
+    if (!meta) return;
+    if (saving) {
+      // Never silently: the caller's edit did not happen.
+      saveMsg = {
+        ok: false,
+        text: get(t)("stage.saveFailed", {
+          values: { error: get(t)("stage.busy") },
+        }),
+      };
+      computeLayout($metadataStore, $venueStore);
+      return;
+    }
     saving = true;
     saveMsg = null;
     try {
@@ -590,6 +613,10 @@
 
   async function renameFocusPoint(from: string) {
     const to = (renaming[from] ?? "").trim();
+    if (saving) {
+      // Keep the draft; the input shows it until the save settles.
+      return;
+    }
     delete renaming[from];
     renaming = { ...renaming };
     if (!to || to === from || to in focusPoints) return;
