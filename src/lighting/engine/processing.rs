@@ -134,6 +134,7 @@ fn calculate_color_indices(
 /// Process a single effect and return fixture states
 pub(crate) fn process_effect(
     fixture_registry: &HashMap<String, FixtureInfo>,
+    focus_points: &HashMap<String, [f64; 3]>,
     effect: &EffectInstance,
     elapsed: Duration,
     engine_elapsed: Duration,
@@ -147,6 +148,21 @@ pub(crate) fn process_effect(
     let absolute_time = engine_elapsed;
 
     match &effect.effect_type {
+        EffectType::Move {
+            to,
+            from,
+            easing,
+            duration,
+        } => Ok(Some(apply_move(
+            fixture_registry,
+            focus_points,
+            effect,
+            to,
+            from.as_ref(),
+            *easing,
+            *duration,
+            elapsed,
+        ))),
         EffectType::Static { parameters, .. } => {
             apply_static_effect(fixture_registry, effect, parameters, elapsed)
         }
@@ -469,6 +485,127 @@ fn apply_dimmer(
     });
 
     Ok(Some(fixture_states))
+}
+
+/// The pose a move target means for one fixture. A focus point aims
+/// through the pointing math from the fixture's position and mounting; a
+/// fixture the venue has not placed aims from the origin, level — which is
+/// wrong, and what the `move-without-positions` lint says. An unbound
+/// focus point leaves the fixture where it is (`None`).
+fn target_pose(
+    fixture: &FixtureInfo,
+    focus_points: &HashMap<String, [f64; 3]>,
+    target: &MoveTarget,
+    current: Option<Pose>,
+) -> Option<Pose> {
+    match target {
+        MoveTarget::Focus(name) => {
+            let point = focus_points.get(name)?;
+            let position = fixture.position.unwrap_or([0.0; 3]);
+            let rotation = fixture.rotation.unwrap_or([0.0; 3]);
+            let principal = aim(position, rotation, *point);
+            let range = fixture
+                .channel_defs
+                .get("pan")
+                .map(|def| {
+                    let (from, to, _, _) = degree_span(def, PhysicalParameter::Pan);
+                    (from, to)
+                })
+                .unwrap_or(PhysicalParameter::Pan.fallback_range());
+            let reference = current.map(|c| c.pan).unwrap_or(0.0);
+            Some(Pose {
+                pan: nearest_pan(principal.pan, reference, range),
+                tilt: principal.tilt,
+            })
+        }
+        MoveTarget::Angles { pan, tilt } => Some(Pose {
+            pan: pan.or(current.map(|c| c.pan)).unwrap_or(0.0),
+            tilt: tilt.or(current.map(|c| c.tilt)).unwrap_or(0.0),
+        }),
+    }
+}
+
+/// Where a move ends for each of its targets: the poses a completed move
+/// commits to memory, so a move whose last frame fell short of its
+/// duration (or that had no duration at all) still arrives.
+pub(crate) fn move_final_poses(
+    fixture_registry: &HashMap<String, FixtureInfo>,
+    focus_points: &HashMap<String, [f64; 3]>,
+    effect: &EffectInstance,
+) -> HashMap<String, Pose> {
+    let EffectType::Move { to, .. } = &effect.effect_type else {
+        return HashMap::new();
+    };
+    effect
+        .target_fixtures
+        .iter()
+        .filter_map(|name| {
+            let fixture = fixture_registry.get(name)?;
+            let remembered = effect.start_poses.get(name).copied();
+            target_pose(fixture, focus_points, to, remembered).map(|pose| (name.clone(), pose))
+        })
+        .collect()
+}
+
+/// Apply a move effect: each target travels from its start pose to its
+/// target pose over the duration, eased, in degrees. The result is a
+/// physical intent per fixture; the engine slews and remembers it.
+#[allow(clippy::too_many_arguments)]
+fn apply_move(
+    fixture_registry: &HashMap<String, FixtureInfo>,
+    focus_points: &HashMap<String, [f64; 3]>,
+    effect: &EffectInstance,
+    to: &MoveTarget,
+    from: Option<&MoveTarget>,
+    easing: Easing,
+    duration: Duration,
+    elapsed: Duration,
+) -> HashMap<String, FixtureState> {
+    let progress = if duration.is_zero() {
+        1.0
+    } else {
+        (elapsed.as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0)
+    };
+    let travel = easing.apply(progress);
+
+    let mut states = HashMap::new();
+    for name in &effect.target_fixtures {
+        let Some(fixture) = fixture_registry.get(name) else {
+            continue;
+        };
+        let remembered = effect.start_poses.get(name).copied();
+        let Some(target) = target_pose(fixture, focus_points, to, remembered) else {
+            continue;
+        };
+        // Where the travel starts: the explicit `from`, else the pose the
+        // engine remembered when the effect began, else the target itself
+        // (a snap — the show's first cue has nowhere to sweep from).
+        // A `from` naming a focus point the venue does not bind is a lint
+        // finding, not a snap: it falls back to the remembered pose the
+        // same way an absent `from` does.
+        let start = from
+            .and_then(|from| target_pose(fixture, focus_points, from, remembered))
+            .or(remembered)
+            .unwrap_or(target);
+        let pose = lerp(start, target, travel);
+        let mut state = FixtureState::new();
+        state.physical.set(
+            PhysicalParameter::Pan,
+            Intent {
+                degrees: pose.pan,
+                layer: effect.layer,
+            },
+        );
+        state.physical.set(
+            PhysicalParameter::Tilt,
+            Intent {
+                degrees: pose.tilt,
+                layer: effect.layer,
+            },
+        );
+        states.insert(name.clone(), state);
+    }
+    states
 }
 
 /// Apply a chase effect and return fixture states
@@ -1055,8 +1192,15 @@ mod tests {
             None,
         );
         effect.enabled = false;
-        let result =
-            process_effect(&registry, &effect, Duration::ZERO, Duration::ZERO, None).unwrap();
+        let result = process_effect(
+            &registry,
+            &HashMap::new(),
+            &effect,
+            Duration::ZERO,
+            Duration::ZERO,
+            None,
+        )
+        .unwrap();
         assert!(result.is_none());
     }
 

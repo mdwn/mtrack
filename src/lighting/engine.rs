@@ -175,6 +175,17 @@ pub struct EffectEngine {
     cache: EffectCache,
     /// Sub-phase indicator for update() progress.
     update_subphase: Arc<AtomicU64>,
+    /// The current venue's focus points, in stage coordinates.
+    focus_points: HashMap<String, [f64; 3]>,
+    /// Pose memory: where each mover actually is — the last pose emitted
+    /// after the slew clamp. A `move` without `from` starts here.
+    poses: HashMap<String, Pose>,
+    /// Where each mover was last asked to be. A mover nobody is driving
+    /// keeps travelling toward this, no faster than its limit, and holds
+    /// it on arrival until the next move or a clear (design §15.4).
+    goals: HashMap<String, Pose>,
+    /// The last tick's length, for the slew clamp.
+    last_dt: Duration,
 }
 
 impl Default for EffectEngine {
@@ -197,6 +208,10 @@ impl EffectEngine {
             midi_dmx_store: None,
             cache: EffectCache::new(),
             update_subphase: Arc::new(AtomicU64::new(0)),
+            focus_points: HashMap::new(),
+            poses: HashMap::new(),
+            goals: HashMap::new(),
+            last_dt: Duration::ZERO,
         }
     }
 
@@ -253,6 +268,18 @@ impl EffectEngine {
             } => (
                 "Strobe",
                 format!("frequency={:?}, duration={:?}", frequency, duration),
+            ),
+            EffectType::Move {
+                to,
+                from,
+                easing,
+                duration,
+            } => (
+                "Move",
+                format!(
+                    "to={:?}, from={:?}, easing={:?}, duration={:?}",
+                    to, from, easing, duration
+                ),
             ),
             EffectType::Dimmer {
                 start_level,
@@ -326,6 +353,10 @@ impl EffectEngine {
         for fixture in fixtures {
             self.register_fixture(fixture);
         }
+        // Pose memory follows the registry: a mover the venue renamed or
+        // unhung must not haunt the preview as a held pose.
+        self.poses.retain(|name, _| self.fixtures.contains(name));
+        self.goals.retain(|name, _| self.fixtures.contains(name));
         self.cache.invalidate();
     }
 
@@ -340,10 +371,37 @@ impl EffectEngine {
         self.midi_dmx_store = Some(store);
     }
 
+    /// Binds the venue's focus points, the stage points a `move` may aim at.
+    pub fn set_focus_points(&mut self, focus_points: HashMap<String, [f64; 3]>) {
+        self.focus_points = focus_points;
+    }
+
+    /// The pose memory: where each mover was last driven to.
+    pub fn poses(&self) -> &HashMap<String, Pose> {
+        &self.poses
+    }
+
+    /// A `move` starts where the fixture is now unless `from` says
+    /// otherwise: capture that from pose memory before the effect's first
+    /// tick, for every move, since a `from` naming an unbound focus point
+    /// falls back to it too. A fixture with no memory yet starts at its
+    /// target — the show's first cue is a snap, not a sweep from nowhere.
+    fn capture_start_poses(&self, effect: &mut EffectInstance) {
+        let EffectType::Move { .. } = &effect.effect_type else {
+            return;
+        };
+        effect.start_poses = effect
+            .target_fixtures
+            .iter()
+            .filter_map(|name| self.poses.get(name).map(|pose| (name.clone(), *pose)))
+            .collect();
+    }
+
     /// Start an effect
     pub fn start_effect(&mut self, mut effect: EffectInstance) -> Result<(), EffectError> {
         // Validate effect
         validation::validate_effect(self.fixtures.as_map(), &effect)?;
+        self.capture_start_poses(&mut effect);
 
         // Log effect parameters
         let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
@@ -368,6 +426,104 @@ impl EffectEngine {
         Ok(())
     }
 
+    /// Whether every mover has reached its goal. While one is still
+    /// travelling under its slew limit, the frame must be computed even
+    /// with no effect active, or the fast path would freeze it mid-sweep.
+    fn movers_settled(&self) -> bool {
+        self.goals.iter().all(|(name, goal)| {
+            self.poses.get(name).is_some_and(|pose| {
+                (pose.pan - goal.pan).abs() < 1e-9 && (pose.tilt - goal.tilt).abs() < 1e-9
+            })
+        })
+    }
+
+    /// Applies pose memory and the slew clamp to this frame's states.
+    fn settle_poses(&mut self, states: &mut HashMap<String, FixtureState>) {
+        use crate::lighting::effects::{Intent, PhysicalParameter};
+        let dt = self.last_dt.as_secs_f64();
+        let mut next_poses = self.poses.clone();
+        // Held poses: every remembered mover nobody drove this frame keeps
+        // heading for (or sitting at) its last goal.
+        for (name, pose) in &self.goals {
+            if !self.fixtures.contains(name) {
+                continue;
+            }
+            let state = states.entry(name.clone()).or_default();
+            if state.physical.pan.is_none() {
+                state.physical.set(
+                    PhysicalParameter::Pan,
+                    Intent {
+                        degrees: pose.pan,
+                        layer: EffectLayer::Background,
+                    },
+                );
+            }
+            if state.physical.tilt.is_none() {
+                state.physical.set(
+                    PhysicalParameter::Tilt,
+                    Intent {
+                        degrees: pose.tilt,
+                        layer: EffectLayer::Background,
+                    },
+                );
+            }
+        }
+        for (name, state) in states.iter_mut() {
+            if state.physical.is_empty() {
+                continue;
+            }
+            let previous = self.poses.get(name).copied();
+            let asked_pan = state.physical.pan.map(|i| i.degrees);
+            let asked_tilt = state.physical.tilt.map(|i| i.degrees);
+            let limits = self.fixtures.get(name).map(|f| f.movement);
+            let clamp = |asked: f64, was: Option<f64>, max_speed: Option<f64>| -> f64 {
+                match (was, max_speed) {
+                    (Some(was), Some(max_speed)) if max_speed > 0.0 && dt > 0.0 => {
+                        let step = max_speed * dt;
+                        was + (asked - was).clamp(-step, step)
+                    }
+                    _ => asked,
+                }
+            };
+            let pan = state.physical.pan.map(|intent| {
+                clamp(
+                    intent.degrees,
+                    previous.map(|p| p.pan),
+                    limits.and_then(|l| l.max_pan_speed),
+                )
+            });
+            let tilt = state.physical.tilt.map(|intent| {
+                clamp(
+                    intent.degrees,
+                    previous.map(|p| p.tilt),
+                    limits.and_then(|l| l.max_tilt_speed),
+                )
+            });
+            if let (Some(pan), Some(intent)) = (pan, state.physical.pan.as_mut()) {
+                intent.degrees = pan;
+            }
+            if let (Some(tilt), Some(intent)) = (tilt, state.physical.tilt.as_mut()) {
+                intent.degrees = tilt;
+            }
+            next_poses.insert(
+                name.clone(),
+                Pose {
+                    pan: pan.or(previous.map(|p| p.pan)).unwrap_or(0.0),
+                    tilt: tilt.or(previous.map(|p| p.tilt)).unwrap_or(0.0),
+                },
+            );
+            let goal = self.goals.get(name).copied();
+            self.goals.insert(
+                name.clone(),
+                Pose {
+                    pan: asked_pan.or(goal.map(|g| g.pan)).unwrap_or(0.0),
+                    tilt: asked_tilt.or(goal.map(|g| g.tilt)).unwrap_or(0.0),
+                },
+            );
+        }
+        self.poses = next_poses;
+    }
+
     /// Start an effect with a pre-calculated elapsed time (for seeking)
     /// This sets the effect's start_time to be in the past so it appears at the correct point in its lifecycle
     pub fn start_effect_with_elapsed(
@@ -377,6 +533,7 @@ impl EffectEngine {
     ) -> Result<(), EffectError> {
         // Validate effect
         validation::validate_effect(self.fixtures.as_map(), &effect)?;
+        self.capture_start_poses(&mut effect);
 
         // Log effect parameters
         let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
@@ -417,11 +574,12 @@ impl EffectEngine {
         self.current_time += dt;
         self.engine_elapsed += dt;
         self.last_song_time = song_time;
+        self.last_dt = dt;
 
         // Fast path for MIDI-DMX-only frames: when no DSL effects are running,
         // generate DmxCommands directly from the store. This skips all HashMap
         // cloning, fixture state rebuilding, and the full pipeline.
-        if !self.cache.dirty && self.active_effects.is_empty() {
+        if !self.cache.dirty && self.active_effects.is_empty() && self.movers_settled() {
             let store_gen = self
                 .midi_dmx_store
                 .as_ref()
@@ -624,6 +782,7 @@ impl EffectEngine {
                 // Process the effect and get fixture states
                 if let Some(mut effect_states) = processing::process_effect(
                     self.fixtures.as_map(),
+                    &self.focus_points,
                     effect,
                     elapsed,
                     absolute_time,
@@ -656,6 +815,30 @@ impl EffectEngine {
         // Handle completed effects — simply remove them. No state persists after completion.
         for effect_id in completed_effects {
             if let Some(effect) = self.active_effects.remove(&effect_id) {
+                // Except a move's destination: the frame it completes on is
+                // not processed, so the pose it was travelling to is written
+                // now, and pose memory holds it from here (design §15.4).
+                for (name, pose) in processing::move_final_poses(
+                    self.fixtures.as_map(),
+                    &self.focus_points,
+                    &effect,
+                ) {
+                    let state = current_fixture_states.entry(name).or_default();
+                    state.physical.set(
+                        PhysicalParameter::Pan,
+                        Intent {
+                            degrees: pose.pan,
+                            layer: effect.layer,
+                        },
+                    );
+                    state.physical.set(
+                        PhysicalParameter::Tilt,
+                        Intent {
+                            degrees: pose.tilt,
+                            layer: effect.layer,
+                        },
+                    );
+                }
                 // Clean up per-layer multipliers for completed effects
                 let multiplier_keys: Vec<String> = MULTIPLIER_PREFIXES
                     .iter()
@@ -674,7 +857,11 @@ impl EffectEngine {
 
         self.update_subphase.store(70, Ordering::Relaxed);
 
-        // Use current frame states directly — no persistent state merge needed
+        // Movers: a fixture no effect is driving this frame holds the pose
+        // it was last driven to; one that is being driven is slewed from
+        // where it was toward where it is asked to be, no faster than its
+        // declared limit; and the pose memory records where it ends up.
+        self.settle_poses(&mut current_fixture_states);
 
         self.update_subphase.store(80, Ordering::Relaxed);
 
@@ -700,6 +887,9 @@ impl EffectEngine {
 
     /// Stop all active effects and reset per-song layer state
     pub fn stop_all_effects(&mut self) {
+        // A clear releases pose memory: the next move starts from its target.
+        self.poses.clear();
+        self.goals.clear();
         self.active_effects.clear();
         self.last_merged_states.clear();
         // Layer masters and freezes belong to the song that set them. The engine is
@@ -757,6 +947,9 @@ impl EffectEngine {
     /// Clear all layers - immediately stops all effects on all layers
     /// This is equivalent to a "kill all" or panic button for everything
     pub fn clear_all_layers(&mut self) {
+        // A clear releases pose memory: the next move starts from its target.
+        self.poses.clear();
+        self.goals.clear();
         layers::clear_all_layers(&mut self.active_effects, &mut self.layer_state.frozen);
         // Including the layer masters — a panic button that leaves the rig mastered
         // down is not a panic button.

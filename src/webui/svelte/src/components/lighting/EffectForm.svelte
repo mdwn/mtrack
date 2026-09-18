@@ -17,6 +17,7 @@
   import type { CueEffect, EffectType } from "../../lib/lighting/types";
   import {
     EFFECT_TYPES,
+    EASINGS,
     LAYERS,
     BLEND_MODES,
     CURVES,
@@ -25,6 +26,39 @@
     CHASE_PATTERNS,
   } from "../../lib/lighting/types";
   import ColorInput from "./ColorInput.svelte";
+  import { venueStore } from "../../lib/ws/stores";
+
+  /** A `move` aims at a focus point or at angles, never both: setting one
+   *  clears the other, so the form always shows what will be written. */
+  function updateMoveTarget(key: "focus" | "pan" | "tilt", value?: string) {
+    const next = { ...effect.effect, [key]: value };
+    if (key === "focus" && value) {
+      next.pan = undefined;
+      next.tilt = undefined;
+    } else if (key !== "focus" && value) {
+      next.focus = undefined;
+    }
+    onchange({ ...effect, effect: next });
+  }
+
+  function updateMoveStart(
+    key: "from" | "from_pan" | "from_tilt",
+    value?: string,
+  ) {
+    const next = { ...effect.effect, [key]: value };
+    if (key === "from" && value) {
+      next.from_pan = undefined;
+      next.from_tilt = undefined;
+    } else if (key !== "from" && value) {
+      next.from = undefined;
+    }
+    onchange({ ...effect, effect: next });
+  }
+
+  /** The current venue's focus points, offered as `move` targets. */
+  let focusPointNames = $derived(
+    Object.keys($venueStore?.focus_points ?? {}).sort(),
+  );
 
   interface Props {
     effect: CueEffect;
@@ -60,6 +94,17 @@
     ],
     cycle: ["speed", "direction", "transition", "duration"],
     strobe: ["frequency", "duration"],
+    move: [
+      "focus",
+      "to",
+      "from",
+      "from_pan",
+      "from_tilt",
+      "pan",
+      "tilt",
+      "easing",
+      "duration",
+    ],
     pulse: [
       "base_level",
       "pulse_amplitude",
@@ -542,6 +587,124 @@
                 >{/each}
             </select>
           </label>
+        {:else if effect.effect.type === "move"}
+          <label class="param"
+            ><span class="param-label">{$t("effect.focus")}</span>
+            <input
+              type="text"
+              class="param-input"
+              list="focus-points"
+              placeholder="drummer"
+              value={effect.effect.focus ?? ""}
+              onchange={(e) =>
+                updateMoveTarget(
+                  "focus",
+                  (e.target as HTMLInputElement).value || undefined,
+                )}
+            />
+          </label>
+          <datalist id="focus-points">
+            {#each focusPointNames as name (name)}
+              <option value={name}></option>
+            {/each}
+          </datalist>
+          <label class="param"
+            ><span class="param-label">{$t("effect.from")}</span>
+            <input
+              type="text"
+              class="param-input"
+              list="focus-points"
+              placeholder="center-stage"
+              value={effect.effect.from ?? ""}
+              onchange={(e) =>
+                updateMoveStart(
+                  "from",
+                  (e.target as HTMLInputElement).value || undefined,
+                )}
+            />
+          </label>
+          <label class="param"
+            ><span class="param-label">{$t("effect.pan")}</span><input
+              type="text"
+              class="param-input"
+              placeholder="45deg"
+              value={effect.effect.pan ?? ""}
+              onchange={(e) =>
+                updateMoveTarget(
+                  "pan",
+                  (e.target as HTMLInputElement).value || undefined,
+                )}
+            /></label
+          >
+          <label class="param"
+            ><span class="param-label">{$t("effect.tilt")}</span><input
+              type="text"
+              class="param-input"
+              placeholder="-20deg"
+              value={effect.effect.tilt ?? ""}
+              onchange={(e) =>
+                updateMoveTarget(
+                  "tilt",
+                  (e.target as HTMLInputElement).value || undefined,
+                )}
+            /></label
+          >
+          <label class="param"
+            ><span class="param-label">{$t("effect.fromPan")}</span><input
+              type="text"
+              class="param-input"
+              placeholder="0deg"
+              value={effect.effect.from_pan ?? ""}
+              onchange={(e) =>
+                updateMoveStart(
+                  "from_pan",
+                  (e.target as HTMLInputElement).value || undefined,
+                )}
+            /></label
+          >
+          <label class="param"
+            ><span class="param-label">{$t("effect.fromTilt")}</span><input
+              type="text"
+              class="param-input"
+              placeholder="0deg"
+              value={effect.effect.from_tilt ?? ""}
+              onchange={(e) =>
+                updateMoveStart(
+                  "from_tilt",
+                  (e.target as HTMLInputElement).value || undefined,
+                )}
+            /></label
+          >
+          <label class="param"
+            ><span class="param-label">{$t("effect.easing")}</span>
+            <select
+              class="param-input"
+              value={effect.effect.easing ?? ""}
+              onchange={(e) =>
+                updateParam(
+                  "easing",
+                  (e.target as HTMLSelectElement).value || undefined,
+                )}
+            >
+              <option value="">--</option>{#each EASINGS as z (z)}<option
+                  value={z}>{z}</option
+                >{/each}
+            </select>
+          </label>
+          <label class="param"
+            ><span class="param-label">{$t("effect.duration")}</span><input
+              type="text"
+              class="param-input"
+              placeholder="2s"
+              value={effect.effect.duration ?? ""}
+              onchange={(e) =>
+                updateParam(
+                  "duration",
+                  (e.target as HTMLInputElement).value || undefined,
+                )}
+            /></label
+          >
+          <div class="param-hint">{$t("effect.focusOrAngles")}</div>
         {:else if effect.effect.type === "rainbow"}
           <label class="param"
             ><span class="param-label">{$t("effect.speed")}</span><input
@@ -679,6 +842,11 @@
 </div>
 
 <style>
+  .param-hint {
+    grid-column: 1 / -1;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
   .effect-form {
     background: var(--bg-input);
     border: 1px solid var(--border);

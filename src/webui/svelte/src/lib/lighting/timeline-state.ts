@@ -710,6 +710,8 @@ export function effectTypeColor(type: string): string {
       return "#6b7280";
     case "rainbow":
       return "#ec4899";
+    case "move":
+      return "#14b8a6";
     default:
       return "#6b7280";
   }

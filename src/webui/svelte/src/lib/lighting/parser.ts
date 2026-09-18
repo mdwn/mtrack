@@ -34,6 +34,7 @@ const EFFECT_TYPES = new Set([
   "chase",
   "dimmer",
   "rainbow",
+  "move",
 ]);
 
 /**
@@ -531,6 +532,28 @@ function parseEffectParams(str: string, effect: EffectParams): void {
         break;
       case "brightness":
         effect.brightness = parseFloat(val);
+        break;
+      case "focus":
+      case "to":
+        effect.focus = val;
+        break;
+      case "from":
+        effect.from = val;
+        break;
+      case "pan":
+        effect.pan = val;
+        break;
+      case "tilt":
+        effect.tilt = val;
+        break;
+      case "from_pan":
+        effect.from_pan = val;
+        break;
+      case "from_tilt":
+        effect.from_tilt = val;
+        break;
+      case "easing":
+        effect.easing = val;
         break;
       default:
         effect.extra[key] = val;

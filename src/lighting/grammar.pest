@@ -86,7 +86,7 @@ group_list = { group_name ~ ("," ~ group_name)* }
 
 group_name = { (ASCII_ALPHANUMERIC | "_" | "-")+ }
 
-effect_type = { "static" | "cycle" | "strobe" | "pulse" | "chase" | "dimmer" | "rainbow" }
+effect_type = { "static" | "cycle" | "strobe" | "pulse" | "chase" | "dimmer" | "rainbow" | "move" }
 
 parameters = { parameter ~ ("," ~ parameter)* }
 
@@ -96,6 +96,7 @@ parameter = { parameter_name ~ ":" ~ parameter_value }
 parameter_name = { identifier | string }
 
 parameter_value = { 
+    degrees_parameter |
     percentage |
     time_parameter |
     direction_parameter |
@@ -110,6 +111,10 @@ parameter_value = {
     string |
     bare_identifier
 }
+
+// An angle for `move`: `45deg`, `-20.5deg`. Before the number rules so the
+// unit is part of the value rather than a stray token.
+degrees_parameter = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ "deg" }
 
 // Restrictive bare identifier to avoid swallowing typos
 // Atomic to prevent backtracking issues when it's the last parameter

@@ -61,6 +61,9 @@ pub struct LintContext<'a> {
     /// What each targeted group's fixtures can do, in the current venue.
     /// Leave empty when no venue is loaded.
     pub group_capabilities: HashMap<String, GroupCapabilities>,
+    /// The current venue's focus points. `None` when no venue is loaded —
+    /// an empty set is a venue with none, which is a finding.
+    pub focus_points: Option<HashSet<String>>,
 }
 
 /// How many of a group's fixtures have each capability an effect can ask
@@ -71,6 +74,13 @@ pub struct GroupCapabilities {
     pub rgb: usize,
     pub dimmer: usize,
     pub strobe: usize,
+    /// Fixtures with a pan or tilt channel.
+    pub pan_tilt: usize,
+    /// Fixtures the venue places (position and rotation known).
+    pub positioned: usize,
+    /// Fixtures whose pan and tilt carry a physical range, so degrees
+    /// resolve precisely rather than over an assumed travel.
+    pub ranged: usize,
 }
 
 impl GroupCapabilities {
@@ -91,6 +101,25 @@ impl GroupCapabilities {
             }
             if capabilities.contains(FixtureCapabilities::STROBING) {
                 out.strobe += 1;
+            }
+            let moves = capabilities.contains(FixtureCapabilities::PANNING)
+                || capabilities.contains(FixtureCapabilities::TILTING);
+            if moves {
+                out.pan_tilt += 1;
+                if fixture.position.is_some() {
+                    out.positioned += 1;
+                }
+                // An axis the fixture does not have is not imprecise — a
+                // pan-only mover simply is not tilted — so only an axis that
+                // exists without a range counts against the group.
+                let ranged = |name: &str| {
+                    fixture.channel_defs.get(name).is_none_or(|def| {
+                        def.range.is_some() || def.functions.iter().any(|f| f.physical.is_some())
+                    })
+                };
+                if ranged("pan") && ranged("tilt") {
+                    out.ranged += 1;
+                }
             }
         }
         out
@@ -141,6 +170,7 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
     for show in shows {
         empty_groups(show, ctx, &mut warnings);
         capability_coverage(show, ctx, &mut warnings);
+        movement_checks(show, ctx, &mut warnings);
         tempo_disagrees_with_grid(show, ctx, &mut warnings);
         cues_beyond_the_tempo_map(show, ctx, &mut warnings);
     }
@@ -166,6 +196,7 @@ fn dsl_keyword(effect_type: &EffectType) -> &'static str {
         EffectType::Chase { .. } => "chase",
         EffectType::Dimmer { .. } => "dimmer",
         EffectType::Rainbow { .. } => "rainbow",
+        EffectType::Move { .. } => "move",
     }
 }
 
@@ -255,6 +286,7 @@ fn capability_coverage(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warnin
                     EffectType::ColorCycle { .. } | EffectType::Rainbow { .. } => {
                         ("color", |c| c.rgb, "RGB channels")
                     }
+                    EffectType::Move { .. } => ("move", |c| c.pan_tilt, "pan or tilt channels"),
                     EffectType::Static { .. } | EffectType::Chase { .. } => continue,
                 };
             for group in &effect.groups {
@@ -274,6 +306,86 @@ fn capability_coverage(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warnin
                             dsl_keyword(&effect.effect_type),
                             cue.time.as_secs_f64(),
                             capabilities.fixtures,
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// The checks a `move` needs a venue for (design §15.5): a focus point the
+/// venue does not bind, a positional move on fixtures the venue has not
+/// placed, and degrees resolving over an assumed travel because the
+/// fixture type carries no range.
+fn movement_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) {
+    let mut reported = HashSet::new();
+    for cue in &show.cues {
+        for effect in &cue.effects {
+            let EffectType::Move { to, from, .. } = &effect.effect_type else {
+                continue;
+            };
+            let targets = [Some(to), from.as_ref()];
+            let focus_names = targets.iter().flatten().filter_map(|t| match t {
+                crate::lighting::effects::MoveTarget::Focus(name) => Some(name.as_str()),
+                _ => None,
+            });
+            for name in focus_names {
+                if let Some(points) = &ctx.focus_points {
+                    if !points.contains(name) && reported.insert(("focus", name.to_string())) {
+                        out.push(Warning::new(
+                            "unbound-focus-point",
+                            format!(
+                                "`move` on `{}` at {:.3}s aims at focus point \"{name}\", which \
+                                 the current venue does not bind — add `focus \"{name}\" (x, y, z)` \
+                                 to the venue",
+                                effect.groups.join(", "),
+                                cue.time.as_secs_f64(),
+                            ),
+                        ));
+                    }
+                }
+            }
+            let aims_at_focus = targets
+                .iter()
+                .flatten()
+                .any(|t| matches!(t, crate::lighting::effects::MoveTarget::Focus(_)));
+            for group in &effect.groups {
+                let Some(capabilities) = ctx.group_capabilities.get(group) else {
+                    continue;
+                };
+                if capabilities.pan_tilt == 0 {
+                    continue; // capability_coverage reports it
+                }
+                if aims_at_focus
+                    && capabilities.positioned < capabilities.pan_tilt
+                    && reported.insert(("positions", group.clone()))
+                {
+                    out.push(Warning::new(
+                        "move-without-positions",
+                        format!(
+                            "`move` on `{group}` at {:.3}s aims at a focus point, but {} of the \
+                             group's {} movers have no `position` in the venue — they will snap to \
+                             pan 0 / tilt 0",
+                            cue.time.as_secs_f64(),
+                            capabilities.pan_tilt - capabilities.positioned,
+                            capabilities.pan_tilt,
+                        ),
+                    ));
+                }
+                if capabilities.ranged < capabilities.pan_tilt
+                    && reported.insert(("range", group.clone()))
+                {
+                    out.push(Warning::new(
+                        "move-imprecise",
+                        format!(
+                            "`move` on `{group}` at {:.3}s: {} of the group's {} movers have no \
+                             pan/tilt range in their fixture type, so degrees resolve over an \
+                             assumed 540°/270° travel — import the GDTF or add `range` to the \
+                             channels",
+                            cue.time.as_secs_f64(),
+                            capabilities.pan_tilt - capabilities.ranged,
+                            capabilities.pan_tilt,
                         ),
                     ));
                 }
@@ -642,6 +754,7 @@ show "s" {
                 rgb: 4,
                 dimmer: 0,
                 strobe: 0,
+                ..GroupCapabilities::default()
             },
         );
         group_capabilities.insert(
@@ -651,6 +764,7 @@ show "s" {
                 rgb: 2,
                 dimmer: 2,
                 strobe: 2,
+                ..GroupCapabilities::default()
             },
         );
         let ctx = LintContext {
@@ -667,6 +781,129 @@ show "s" {
         assert!(warnings[0]
             .message
             .contains("none of the group's 4 fixtures"));
+    }
+
+    #[test]
+    fn movement_checks_report_unbound_focus_points_and_unplaced_or_rangeless_movers() {
+        let shows = shows(
+            r#"
+show "s" {
+    @00:00.000
+    spots: move focus: "drummer", duration: 2s
+    @00:04.000
+    spots: move focus: "singer", duration: 2s
+}
+"#,
+        );
+        let mut group_capabilities = HashMap::new();
+        group_capabilities.insert(
+            "spots".to_string(),
+            GroupCapabilities {
+                fixtures: 2,
+                pan_tilt: 2,
+                positioned: 1,
+                ranged: 1,
+                ..GroupCapabilities::default()
+            },
+        );
+        let ctx = LintContext {
+            group_capabilities,
+            focus_points: Some(HashSet::from(["drummer".to_string()])),
+            ..LintContext::default()
+        };
+        let warnings = lint_shows(&shows, &ctx);
+        let mut found = kinds(&warnings);
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                "move-imprecise",
+                "move-without-positions",
+                "unbound-focus-point"
+            ]
+        );
+        let unbound = warnings
+            .iter()
+            .find(|w| w.kind == "unbound-focus-point")
+            .unwrap();
+        assert!(
+            unbound.message.contains("\"singer\""),
+            "{}",
+            unbound.message
+        );
+        assert!(
+            !unbound.message.contains("\"drummer\""),
+            "{}",
+            unbound.message
+        );
+    }
+
+    #[test]
+    fn group_capabilities_count_ranged_movers_per_present_axis() {
+        use crate::lighting::effects::FixtureInfo;
+        use crate::lighting::types::{ChannelDef, PhysicalRange, PhysicalUnit};
+        let degrees = |from, to| {
+            Some(PhysicalRange {
+                from,
+                to,
+                unit: PhysicalUnit::Degrees,
+            })
+        };
+        let build = |name: &str, defs: Vec<(&str, ChannelDef)>| {
+            let channels = defs
+                .iter()
+                .map(|(n, d)| (n.to_string(), d.offset))
+                .collect();
+            let mut info =
+                FixtureInfo::new(name.to_string(), 1, 1, "T".to_string(), channels, None);
+            info.position = Some([0.0; 3]);
+            info.with_channel_defs(defs.into_iter().map(|(n, d)| (n.to_string(), d)).collect())
+        };
+        let mut ranged_pan = ChannelDef::at(1);
+        ranged_pan.range = degrees(-270.0, 270.0);
+        let mut ranged_tilt = ChannelDef::at(2);
+        ranged_tilt.range = degrees(-135.0, 135.0);
+
+        let full = build(
+            "full",
+            vec![("pan", ranged_pan.clone()), ("tilt", ranged_tilt)],
+        );
+        let pan_only = build("pan_only", vec![("pan", ranged_pan)]);
+        let bare = build(
+            "bare",
+            vec![("pan", ChannelDef::at(1)), ("tilt", ChannelDef::at(2))],
+        );
+        let caps = GroupCapabilities::from_fixtures([&full, &pan_only, &bare]);
+        assert_eq!(caps.pan_tilt, 3);
+        assert_eq!(caps.positioned, 3);
+        assert_eq!(
+            caps.ranged, 2,
+            "a pan-only mover with a ranged pan is precise; a rangeless one is not"
+        );
+    }
+
+    #[test]
+    fn a_move_on_a_group_that_cannot_move_is_a_capability_gap_only() {
+        let shows = shows(
+            "\nshow \"s\" {\n    @00:00.000\n    wash: move focus: \"drummer\", duration: 2s\n}\n",
+        );
+        let mut group_capabilities = HashMap::new();
+        group_capabilities.insert(
+            "wash".to_string(),
+            GroupCapabilities {
+                fixtures: 4,
+                rgb: 4,
+                ..GroupCapabilities::default()
+            },
+        );
+        let ctx = LintContext {
+            group_capabilities,
+            focus_points: Some(HashSet::from(["drummer".to_string()])),
+            ..LintContext::default()
+        };
+        assert_eq!(kinds(&lint_shows(&shows, &ctx)), vec!["capability-gap"]);
+        // Without a venue, nothing is guessed.
+        assert!(lint_shows(&shows, &LintContext::default()).is_empty());
     }
 
     #[test]
@@ -1185,8 +1422,16 @@ show "T" {
                     continue;
                 }
                 let value = sample_value(kind, param);
+                // A `move` needs a target; a parameter that is not one gets
+                // a focus point to ride along with.
+                let companion =
+                    if kind == "move" && !matches!(param, "focus" | "to" | "pan" | "tilt") {
+                        ", focus: \"a\""
+                    } else {
+                        ""
+                    };
                 let source = format!(
-                    "show \"T\" {{\n    @00:00.000\n    wash: {kind} {param}: {value}, duration: 2s\n}}\n"
+                    "show \"T\" {{\n    @00:00.000\n    wash: {kind} {param}: {value}{companion}, duration: 2s\n}}\n"
                 );
                 let parsed = crate::lighting::parser::parse_light_shows(&source)
                     .unwrap_or_else(|e| panic!("`{kind} {param}: {value}` does not parse: {e}"));
@@ -1220,6 +1465,9 @@ show "T" {
             "pattern" => "linear",
             "curve" => "linear",
             "speed" | "frequency" => "1",
+            "focus" | "to" | "from" => "\"drummer\"",
+            "pan" | "tilt" | "from_pan" | "from_tilt" => "45deg",
+            "easing" => "smooth",
             _ => "0.5",
         }
     }

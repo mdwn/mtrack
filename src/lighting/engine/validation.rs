@@ -185,6 +185,16 @@ pub(crate) fn validate_effect_compatibility(
                         )));
                     }
                 }
+                EffectType::Move { .. } => {
+                    if !fixture_info.has_capability(FixtureCapabilities::PANNING)
+                        && !fixture_info.has_capability(FixtureCapabilities::TILTING)
+                    {
+                        return Err(EffectError::Parameter(format!(
+                            "Move effect not compatible with fixture '{}' (no pan or tilt channel)",
+                            fixture_name
+                        )));
+                    }
+                }
                 EffectType::Rainbow { .. } => {
                     // Rainbow effects require RGB channels
                     if !fixture_info.has_capability(FixtureCapabilities::RGB_COLOR) {

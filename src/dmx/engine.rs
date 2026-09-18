@@ -581,6 +581,18 @@ impl Engine {
             effect_engine.set_midi_dmx_store(self.midi_dmx_store.clone());
 
             effect_engine.replace_fixtures(fixture_infos);
+            effect_engine.set_focus_points(
+                lighting_system
+                    .get_current_venue()
+                    .map(|venue| {
+                        venue
+                            .focus_points()
+                            .iter()
+                            .map(|(name, point)| (name.clone(), *point))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            );
         }
         Ok(())
     }

@@ -51,7 +51,8 @@ export type EffectType =
   | "pulse"
   | "chase"
   | "dimmer"
-  | "rainbow";
+  | "rainbow"
+  | "move";
 
 export const EFFECT_TYPES: EffectType[] = [
   "static",
@@ -61,7 +62,10 @@ export const EFFECT_TYPES: EffectType[] = [
   "chase",
   "dimmer",
   "rainbow",
+  "move",
 ];
+
+export const EASINGS = ["smooth", "linear"];
 
 export type Layer = "background" | "midground" | "foreground";
 export const LAYERS: Layer[] = ["background", "midground", "foreground"];
@@ -122,6 +126,16 @@ export interface EffectParams {
   pattern?: string;
   saturation?: number;
   brightness?: number;
+  /** `move`: the focus point to aim at (`focus:` / `to:`). */
+  focus?: string;
+  /** `move`: the focus point to start from. */
+  from?: string;
+  /** `move`: explicit angles, written with their unit (`45deg`). */
+  pan?: string;
+  tilt?: string;
+  from_pan?: string;
+  from_tilt?: string;
+  easing?: string;
   extra: Record<string, string>;
 }
 

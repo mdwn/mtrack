@@ -257,7 +257,8 @@ pub(crate) fn parse_parameter(pair: Pair<Rule>) -> Result<(String, String), Box<
             Rule::color_parameter => {
                 value = parse_color_parameter(inner_pair)?;
             }
-            Rule::percentage
+            Rule::degrees_parameter
+            | Rule::percentage
             | Rule::time_parameter
             | Rule::direction_parameter
             | Rule::chase_pattern_parameter

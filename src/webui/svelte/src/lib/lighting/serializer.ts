@@ -206,6 +206,24 @@ function serializeEffect(cueEffect: CueEffect): string {
     parts.push(`saturation: ${effect.saturation}`);
   if (effect.brightness !== undefined)
     parts.push(`brightness: ${effect.brightness}`);
+  // `move`: a focus point or explicit angles, never both.
+  if (effect.focus !== undefined && effect.focus !== "")
+    parts.push(`focus: "${effect.focus}"`);
+  else {
+    if (effect.pan !== undefined && effect.pan !== "")
+      parts.push(`pan: ${withDeg(effect.pan)}`);
+    if (effect.tilt !== undefined && effect.tilt !== "")
+      parts.push(`tilt: ${withDeg(effect.tilt)}`);
+  }
+  if (effect.from !== undefined && effect.from !== "")
+    parts.push(`from: "${effect.from}"`);
+  else {
+    if (effect.from_pan !== undefined && effect.from_pan !== "")
+      parts.push(`from_pan: ${withDeg(effect.from_pan)}`);
+    if (effect.from_tilt !== undefined && effect.from_tilt !== "")
+      parts.push(`from_tilt: ${withDeg(effect.from_tilt)}`);
+  }
+  if (effect.easing !== undefined) parts.push(`easing: ${effect.easing}`);
 
   // Extra params
   for (const [k, v] of Object.entries(effect.extra)) {
@@ -216,6 +234,12 @@ function serializeEffect(cueEffect: CueEffect): string {
     return `${groups}: ${effect.type}, ${parts.join(", ")}`;
   }
   return `${groups}: ${effect.type}`;
+}
+
+/** An angle as the DSL wants it: `45deg`; a bare number gets the unit. */
+function withDeg(value: string): string {
+  const v = value.trim();
+  return v.endsWith("deg") ? v : `${v}deg`;
 }
 
 function serializeLayerCommand(cmd: LayerCommand): string {

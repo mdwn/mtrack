@@ -1243,7 +1243,7 @@ impl McpServer {
         // song, and a borrow of it must not be held across an await.
         let dmx = self.player.dmx_engine();
         let configured_universes = dmx.as_ref().map(|d| d.configured_universes());
-        let (group_fixture_counts, group_capabilities, mut venue_warnings) =
+        let (group_fixture_counts, group_capabilities, mut venue_warnings, focus_points) =
             match dmx.and_then(|dmx| dmx.broadcast_handles().lighting_system) {
                 Some(system) => {
                     let names = group_names(shows);
@@ -1254,6 +1254,9 @@ impl McpServer {
                         let mut counts = std::collections::HashMap::new();
                         let mut capabilities = std::collections::HashMap::new();
                         let mut venue_warnings = Vec::new();
+                        let focus_points: Option<std::collections::HashSet<String>> = guard
+                            .get_current_venue()
+                            .map(|venue| venue.focus_points().keys().cloned().collect());
                         // Only when a venue is actually loaded. Without one every
                         // group resolves to nothing, and reporting them all as empty
                         // would be noise rather than a finding.
@@ -1274,7 +1277,7 @@ impl McpServer {
                                     crate::lighting::lint::universe_coverage(&fixtures, configured);
                             }
                         }
-                        (counts, capabilities, venue_warnings)
+                        (counts, capabilities, venue_warnings, focus_points)
                     })
                     .await
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?
@@ -1297,6 +1300,7 @@ impl McpServer {
             beat_grid: song.as_ref().and_then(|s| s.beat_grid()),
             group_fixture_counts,
             group_capabilities,
+            focus_points,
         };
 
         let mut warnings = crate::lighting::lint::lint_shows(shows, &ctx);
