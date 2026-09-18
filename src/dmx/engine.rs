@@ -3032,6 +3032,107 @@ mod test {
         }
     }
 
+    mod reload_venue_tests {
+        use super::*;
+
+        /// A project with one fixture type and a positioned venue, loaded
+        /// as the current venue.
+        fn project_with_venue(venue_dsl: &str) -> (tempfile::TempDir, crate::config::Lighting) {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let types = dir.path().join("lighting/fixture_types");
+            let venues = dir.path().join("lighting/venues");
+            std::fs::create_dir_all(&types).unwrap();
+            std::fs::create_dir_all(&venues).unwrap();
+            std::fs::write(
+                types.join("par.light"),
+                "fixture_type \"Par\" {\n  channels: 3\n  channel_map: {\"red\": 1, \"green\": 2, \"blue\": 3}\n}\n",
+            )
+            .unwrap();
+            std::fs::write(venues.join("v.venue"), venue_dsl).unwrap();
+            let lighting = crate::config::Lighting::new(
+                Some("v".to_string()),
+                None,
+                None,
+                Some(crate::config::lighting::Directories::new(
+                    Some("lighting/fixture_types".to_string()),
+                    Some("lighting/venues".to_string()),
+                )),
+            );
+            (dir, lighting)
+        }
+
+        #[test]
+        fn reloading_the_venue_updates_the_registry_in_place() -> Result<(), Box<dyn Error>> {
+            let (dir, lighting) = project_with_venue(
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1 position (-2, 3, 4)\n  fixture \"B\" Par @ 1:5\n}\n",
+            );
+            let config = create_test_config();
+            let engine = Engine::new(
+                &config,
+                Some(&lighting),
+                Some(dir.path()),
+                OlaClientFactory::create_mock_client(),
+            )?;
+            engine.register_venue_fixtures_safe()?;
+            {
+                let registry = engine.effect_engine.lock();
+                let registry = registry.get_fixture_registry();
+                assert_eq!(registry["A"].position, Some([-2.0, 3.0, 4.0]));
+                assert_eq!(registry["B"].position, None);
+            }
+
+            // The band moves A, places B, and hangs C.
+            std::fs::write(
+                dir.path().join("lighting/venues/v.venue"),
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1 position (-1, 3, 4)\n  fixture \"B\" Par @ 1:5 position (1, 3, 4)\n  fixture \"C\" Par @ 1:9\n  focus \"drummer\" (0, 2.8, 1.4)\n}\n",
+            )
+            .unwrap();
+            engine.reload_current_venue()?;
+
+            let registry = engine.effect_engine.lock();
+            let registry = registry.get_fixture_registry();
+            assert_eq!(registry["A"].position, Some([-1.0, 3.0, 4.0]));
+            assert_eq!(registry["B"].position, Some([1.0, 3.0, 4.0]));
+            assert!(registry.contains_key("C"), "a new fixture is registered");
+            assert_eq!(registry.len(), 3);
+
+            let handles = engine.broadcast_handles();
+            let system = handles.lighting_system.expect("lighting system");
+            let system = system.lock();
+            let venue = system.get_current_venue().expect("current venue");
+            assert_eq!(venue.focus_points()["drummer"], [0.0, 2.8, 1.4]);
+            Ok(())
+        }
+
+        #[test]
+        fn a_venue_that_no_longer_parses_leaves_the_engine_as_it_was() -> Result<(), Box<dyn Error>>
+        {
+            let (dir, lighting) = project_with_venue(
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1 position (-2, 3, 4)\n}\n",
+            );
+            let config = create_test_config();
+            let engine = Engine::new(
+                &config,
+                Some(&lighting),
+                Some(dir.path()),
+                OlaClientFactory::create_mock_client(),
+            )?;
+            engine.register_venue_fixtures_safe()?;
+
+            // The venue directory is emptied of parseable venues: the loader
+            // keeps going per file, so the reload succeeds with no venues and
+            // registration then fails loudly. Nothing panics, nothing hangs.
+            std::fs::write(
+                dir.path().join("lighting/venues/v.venue"),
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1 position (nope)\n}\n",
+            )
+            .unwrap();
+            let result = engine.reload_current_venue();
+            assert!(result.is_err(), "the current venue vanished: {result:?}");
+            Ok(())
+        }
+    }
+
     mod effects_loop_heartbeat_tests {
         use super::*;
 
