@@ -255,11 +255,14 @@ layer:
    (44 Hz is ample; 8-bit quantization was the real smoothness problem). Configured
    `max_pan_speed` clamps output; lint flags cues that demand more than the fixture can do.
 
-Positions also give chase *direction* real meaning: today `left_to_right`
-orders fixtures by their position in the resolved group list, which has no
-spatial (or cross-universe) significance. Once venues carry positions, chase
-ordering resolves from them, with list order as the fallback for
-position-less venues.
+Positions also give chase *direction* real meaning: `left_to_right` used to
+order fixtures by their position in the resolved group list, which has no
+spatial (or cross-universe) significance. Since P1b, when the venue places
+every fixture in the group, chase ordering resolves from positions — seen
+from the audience, so `left_to_right` is stage-right to stage-left,
+`top_to_bottom` upstage to downstage, `clockwise` around the centroid from
+upstage — with list order as the fallback for position-less (or partially
+placed) groups.
 
 **Pointing math (tier 2, not tier 3):** fixture position + mounting rotation + pan/tilt
 ranges → spherical solve for "aim at (x,y,z)". No geometry-tree kinematics; a page of

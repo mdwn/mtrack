@@ -72,7 +72,10 @@ Roughly 50 tools are available. They fall into a few groups:
   "the cues land where I meant" can be checked without loading the show into the player, plus
   lint-level `warnings` for mistakes that are legal DSL but silently do nothing — an empty group,
   an effect past the end of the song, two `replace` effects stomping each other, a `tempo` block
-  that drifts from the click track.
+  that drifts from the click track, a `strobe` on a group none of whose fixtures can strobe
+  (`capability-gap`), and fixtures patched on a universe the active profile has no output for
+  (`unconfigured-universe`). `list_venues` reports each venue's placed-fixture count, focus
+  points and MVR provenance.
 - **Show comparison** — `diff_shows` reports what changed between two versions of a show: added,
   removed and changed effects by resolved time, plus the dark windows the revision opened and
   closed. It compares resolved effects rather than text, since identical cue text can land in

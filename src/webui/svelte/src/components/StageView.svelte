@@ -13,21 +13,56 @@
      *
      * -->
 <script lang="ts">
-  import { metadataStore, fixtureStore, reloadStore } from "../lib/ws/stores";
-  import type { FixtureChannels, FixtureMetadata } from "../lib/ws/stores";
+  import {
+    metadataStore,
+    fixtureStore,
+    reloadStore,
+    venueStore,
+  } from "../lib/ws/stores";
+  import type {
+    FixtureChannels,
+    FixtureMetadata,
+    Vec3,
+    VenueMetadata,
+  } from "../lib/ws/stores";
+  import { fetchVenue, saveVenue } from "../lib/api/config";
+  import {
+    facing,
+    fitFrame,
+    hasGeometry,
+    nextFocusName,
+    positionalLayout,
+    tagLayout,
+    toPx,
+    toStage,
+    trayLayout,
+    type Pt,
+    type Rect,
+    type StageFrame,
+  } from "../lib/stage/layout";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
   const FIXTURE_RADIUS = 22;
   const GLOW_RADIUS = 50;
   const PADDING = 60;
+  // The plot wants the room the tag layout spends on margins: smaller
+  // discs, a tighter inset, and label allowances inside the plot.
+  const GEO_RADIUS = 15;
+  const GEO_GLOW = 34;
+  const GEO_INSET = 28;
+  const FOCUS_RADIUS = 8;
+  const TRAY_HEIGHT = 2 * GEO_RADIUS + 34;
+  /** Trim height a fixture dragged onto the plot is hung at, meters. */
+  const DEFAULT_TRIM_M = 3;
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let ctx: CanvasRenderingContext2D | null = $state(null);
 
+  // --- Tag-layout mode keeps its per-browser nudges, as before.
   const STORAGE_KEY = "mtrack-stage-positions";
 
-  function loadManualPositions(): Record<string, { x: number; y: number }> {
+  function loadManualPositions(): Record<string, Pt> {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) return JSON.parse(stored);
@@ -45,81 +80,97 @@
     }
   }
 
-  // Position tracking
-  let layoutPositions: Record<string, { x: number; y: number }> = {};
-  let manualPositions: Record<string, { x: number; y: number }> =
-    loadManualPositions();
+  // --- Layout state
+  let layoutPositions: Record<string, Pt> = {};
+  let focusPositions: Record<string, Pt> = {};
+  let manualPositions: Record<string, Pt> = loadManualPositions();
+  let frame: StageFrame | null = null;
+  let plotRect: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  let trayRect: Rect | null = null;
+  let unplaced: string[] = [];
   let prevW = 0;
   let prevH = 0;
 
-  // Drag state
-  let dragFixture: string | null = null;
+  // --- Drag state: a fixture or a focus point.
+  type Drag =
+    | { kind: "fixture"; name: string; fromTray: boolean }
+    | { kind: "focus"; name: string };
+  let drag: Drag | null = null;
   let dragOffsetX = 0;
   let dragOffsetY = 0;
 
-  // Animation frame handle
   let animFrame: number | null = null;
 
-  function computeLayout(fixtures: Record<string, FixtureMetadata>) {
-    const names = Object.keys(fixtures);
-    if (!canvasEl || names.length === 0) return;
+  // --- Editing feedback
+  let saveMsg = $state<{ ok: boolean; text: string } | null>(null);
+  let saving = $state(false);
+  let renaming = $state<Record<string, string>>({});
 
+  let venue = $derived($venueStore);
+  let focusPoints = $derived(venue?.focus_points ?? {});
+  let geometryMode = $derived(hasGeometry($metadataStore, focusPoints));
+  let placedCount = $derived(
+    Object.values($metadataStore).filter((f) => f.position != null).length,
+  );
+  let focusNames = $derived(Object.keys(focusPoints).sort());
+
+  function computeLayout(
+    fixtures: Record<string, FixtureMetadata>,
+    venueMeta: VenueMetadata | null,
+  ) {
+    if (!canvasEl) return;
     const w = canvasEl.clientWidth;
     const h = canvasEl.clientHeight;
+    const points = venueMeta?.focus_points ?? {};
 
-    const groups: Record<string, string[]> = {
-      left: [],
-      right: [],
-      front: [],
-      back: [],
-      mid: [],
-      other: [],
-    };
-
-    for (const name of names) {
-      const tags = fixtures[name].tags || [];
-      let placed = false;
-      for (const tag of tags) {
-        const key = tag.toLowerCase();
-        if (key in groups && key !== "other") {
-          groups[key].push(name);
-          placed = true;
-          break;
-        }
+    if (!hasGeometry(fixtures, points)) {
+      frame = null;
+      trayRect = null;
+      unplaced = [];
+      focusPositions = {};
+      const auto = tagLayout(fixtures, w, h, PADDING + 40);
+      layoutPositions = {};
+      for (const name of Object.keys(auto)) {
+        layoutPositions[name] = manualPositions[name] ?? auto[name];
       }
-      if (!placed) groups.other.push(name);
+      return;
     }
 
-    groups.front = groups.front.concat(groups.other);
-
-    const inset = PADDING + 40;
-    const regions: Record<
-      string,
-      { x: number; y: number; dx: number; dy: number }
-    > = {
-      left: { x: inset, y: h * 0.25, dx: 0, dy: h * 0.5 },
-      right: { x: w - inset, y: h * 0.25, dx: 0, dy: h * 0.5 },
-      back: { x: w * 0.25, y: inset, dx: w * 0.5, dy: 0 },
-      front: { x: w * 0.25, y: h - inset, dx: w * 0.5, dy: 0 },
-      mid: { x: w * 0.35, y: h * 0.4, dx: w * 0.3, dy: h * 0.2 },
+    // The plot fills the stage rectangle, less a tray along the bottom for
+    // fixtures the venue has not placed yet. The fit rectangle is inset by
+    // a disc plus a label so nothing is drawn against the edge.
+    const stage: Rect = {
+      x: GEO_INSET,
+      y: GEO_INSET,
+      w: w - 2 * GEO_INSET,
+      h: h - 2 * GEO_INSET,
     };
-
-    for (const [groupName, region] of Object.entries(regions)) {
-      const group = groups[groupName];
-      if (!group || group.length === 0) continue;
-      const count = group.length;
-      for (let i = 0; i < count; i++) {
-        const name = group[i];
-        if (manualPositions[name]) {
-          layoutPositions[name] = manualPositions[name];
-        } else {
-          const t = count === 1 ? 0.5 : i / (count - 1);
-          layoutPositions[name] = {
-            x: region.x + region.dx * t,
-            y: region.y + region.dy * t,
-          };
+    const anyUnplaced = Object.values(fixtures).some((f) => f.position == null);
+    trayRect = anyUnplaced
+      ? {
+          x: stage.x,
+          y: stage.y + stage.h - TRAY_HEIGHT,
+          w: stage.w,
+          h: TRAY_HEIGHT,
         }
-      }
+      : null;
+    const label = GEO_RADIUS + 18;
+    plotRect = {
+      x: stage.x + label,
+      y: stage.y + label,
+      w: stage.w - 2 * label,
+      h: stage.h - label - (label + 14) - (trayRect ? trayRect.h : 0),
+    };
+    frame = fitFrame(fixtures, points, plotRect);
+    const laid = positionalLayout(fixtures, frame);
+    unplaced = laid.unplaced;
+    layoutPositions = {
+      ...laid.placed,
+      ...(trayRect ? trayLayout(unplaced, trayRect, GEO_RADIUS) : {}),
+    };
+    focusPositions = {};
+    for (const [name, point] of Object.entries(points)) {
+      focusPositions[name] = toPx(frame, point);
     }
   }
 
@@ -147,7 +198,66 @@
     prevW = newW;
     prevH = newH;
 
-    computeLayout($metadataStore);
+    computeLayout($metadataStore, $venueStore);
+  }
+
+  function drawPlotChrome(
+    w: number,
+    h: number,
+    colors: { grid: string; axis: string; caption: string },
+  ) {
+    if (!ctx || !frame) return;
+    // Meter grid, the centerline a touch stronger, the audience edge
+    // labeled so the picture reads the right way up.
+    // Grid lines run the width of the stage rectangle, one per meter, so
+    // the deck reads as a floor and not a chart.
+    const gridTop = GEO_INSET;
+    const gridBottom = (trayRect ? trayRect.y : h - GEO_INSET) - 16;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(GEO_INSET, gridTop, w - 2 * GEO_INSET, gridBottom - gridTop);
+    ctx.clip();
+    ctx.lineWidth = 1;
+    for (
+      let x = Math.ceil(frame.minX) - 2;
+      x <= Math.floor(frame.maxX) + 2;
+      x++
+    ) {
+      const px = toPx(frame, [x, 0]).x;
+      ctx.strokeStyle = x === 0 ? colors.axis : colors.grid;
+      ctx.beginPath();
+      ctx.moveTo(px, gridTop);
+      ctx.lineTo(px, gridBottom);
+      ctx.stroke();
+    }
+    for (
+      let y = Math.ceil(frame.minY) - 2;
+      y <= Math.floor(frame.maxY) + 2;
+      y++
+    ) {
+      const py = toPx(frame, [0, y]).y;
+      ctx.strokeStyle = y === 0 ? colors.axis : colors.grid;
+      ctx.beginPath();
+      ctx.moveTo(GEO_INSET, py);
+      ctx.lineTo(w - GEO_INSET, py);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    ctx.fillStyle = colors.caption;
+    ctx.font = "bold 10px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(get(t)("stage.audience"), w / 2, gridBottom + 11);
+    if (trayRect) {
+      ctx.strokeStyle = colors.grid;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(trayRect.x, trayRect.y);
+      ctx.lineTo(trayRect.x + trayRect.w, trayRect.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillText(get(t)("stage.unplaced"), w / 2, trayRect.y + 12);
+    }
   }
 
   function draw(fixtureStates: Record<string, FixtureChannels>) {
@@ -162,34 +272,43 @@
     const stageFill = isDark ? "#1a1a1a" : "#efeeee"; // gray-100
     const stageStroke = isDark ? "#3a3a3e" : "#c9c7c8"; // gray-300
     const stageCaption = isDark ? "#333" : "#9a9a9a"; // gray-400
+    const gridLine = isDark ? "#242426" : "#e2e0e1";
+    const axisLine = isDark ? "#3a3a3e" : "#cfcdce";
     const fixtureStroke = isDark ? "#555" : "#9a9a9a"; // gray-400
     const fixtureLabel = isDark ? "#888" : "#4a4849"; // gray-600
+    const focusFill = isDark ? "#d9a441" : "#b8801f";
 
     // Stage outline
+    const inset = frame ? GEO_INSET : PADDING - 20;
     ctx.fillStyle = stageFill;
-    ctx.fillRect(
-      PADDING - 20,
-      PADDING - 20,
-      w - 2 * PADDING + 40,
-      h - 2 * PADDING + 40,
-    );
+    ctx.fillRect(inset, inset, w - 2 * inset, h - 2 * inset);
     ctx.strokeStyle = stageStroke;
     ctx.lineWidth = 1;
-    ctx.strokeRect(
-      PADDING - 20,
-      PADDING - 20,
-      w - 2 * PADDING + 40,
-      h - 2 * PADDING + 40,
-    );
+    ctx.strokeRect(inset, inset, w - 2 * inset, h - 2 * inset);
 
-    ctx.fillStyle = stageCaption;
-    ctx.font = "12px monospace";
-    ctx.textAlign = "center";
-    ctx.fillText(get(t)("stage.label"), w / 2, PADDING - 6);
+    if (!frame) {
+      ctx.fillStyle = stageCaption;
+      ctx.font = "12px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(get(t)("stage.label"), w / 2, PADDING - 6);
+    }
+
+    const radius = frame ? GEO_RADIUS : FIXTURE_RADIUS;
+    const glow = frame ? GEO_GLOW : GLOW_RADIUS;
+
+    if (frame) {
+      drawPlotChrome(w, h, {
+        grid: gridLine,
+        axis: axisLine,
+        caption: stageCaption,
+      });
+    }
 
     for (const name of Object.keys($metadataStore)) {
       const pos = layoutPositions[name];
       if (!pos) continue;
+      const meta = $metadataStore[name];
+      const isUnplaced = frame !== null && meta.position == null;
 
       const state = fixtureStates[name] || {};
       const r = state.red || 0;
@@ -220,10 +339,10 @@
         const gradient = ctx.createRadialGradient(
           pos.x,
           pos.y,
-          FIXTURE_RADIUS,
+          radius,
           pos.x,
           pos.y,
-          GLOW_RADIUS,
+          glow,
         );
         gradient.addColorStop(
           0,
@@ -232,24 +351,56 @@
         gradient.addColorStop(1, "rgba(0,0,0,0)");
         ctx.fillStyle = gradient;
         ctx.beginPath();
-        ctx.arc(pos.x, pos.y, GLOW_RADIUS, 0, Math.PI * 2);
+        ctx.arc(pos.x, pos.y, glow, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Fixture body
+      // Fixture body — dashed when the venue has not placed it yet.
       ctx.fillStyle = `rgb(${finalR},${finalG},${finalB})`;
       ctx.strokeStyle = fixtureStroke;
       ctx.lineWidth = 1.5;
+      if (isUnplaced) ctx.setLineDash([4, 3]);
       ctx.beginPath();
-      ctx.arc(pos.x, pos.y, FIXTURE_RADIUS, 0, Math.PI * 2);
+      ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Orientation tick from the mounting yaw, on placed fixtures.
+      if (frame && meta.position && meta.rotation) {
+        const dir = facing(meta.rotation);
+        ctx.strokeStyle = fixtureStroke;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(pos.x + dir.x * radius, pos.y + dir.y * radius);
+        ctx.lineTo(pos.x + dir.x * (radius + 8), pos.y + dir.y * (radius + 8));
+        ctx.stroke();
+      }
 
       // Label
       ctx.fillStyle = fixtureLabel;
       ctx.font = "11px monospace";
       ctx.textAlign = "center";
-      ctx.fillText(name, pos.x, pos.y + FIXTURE_RADIUS + 14);
+      ctx.fillText(name, pos.x, pos.y + radius + 14);
+    }
+
+    // Focus points: diamond pins the show can aim at.
+    for (const [name, pos] of Object.entries(focusPositions)) {
+      ctx.fillStyle = focusFill;
+      ctx.strokeStyle = stageFill;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(pos.x, pos.y - FOCUS_RADIUS);
+      ctx.lineTo(pos.x + FOCUS_RADIUS, pos.y);
+      ctx.lineTo(pos.x, pos.y + FOCUS_RADIUS);
+      ctx.lineTo(pos.x - FOCUS_RADIUS, pos.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = focusFill;
+      ctx.font = "bold 10px monospace";
+      ctx.textAlign = "left";
+      ctx.fillText(name, pos.x + FOCUS_RADIUS + 4, pos.y + 4);
     }
   }
 
@@ -258,29 +409,245 @@
     animFrame = requestAnimationFrame(animLoop);
   }
 
-  // Hit-test
-  function fixtureAt(cx: number, cy: number): string | null {
+  // --- Hit-testing: focus pins first, they sit on top.
+  function hit(cx: number, cy: number): Drag | null {
+    for (const name of Object.keys(focusPositions)) {
+      const pos = focusPositions[name];
+      const dx = cx - pos.x;
+      const dy = cy - pos.y;
+      if (dx * dx + dy * dy <= FOCUS_RADIUS * FOCUS_RADIUS * 1.5) {
+        return { kind: "focus", name };
+      }
+    }
+    const radius = frame ? GEO_RADIUS : FIXTURE_RADIUS;
     for (const name of Object.keys(layoutPositions)) {
       const pos = layoutPositions[name];
       const dx = cx - pos.x;
       const dy = cy - pos.y;
-      if (dx * dx + dy * dy <= FIXTURE_RADIUS * FIXTURE_RADIUS) return name;
+      if (dx * dx + dy * dy <= radius * radius) {
+        return {
+          kind: "fixture",
+          name,
+          fromTray: frame !== null && $metadataStore[name]?.position == null,
+        };
+      }
     }
     return null;
   }
 
-  function canvasCoords(e: MouseEvent): { x: number; y: number } {
+  function canvasCoords(e: MouseEvent): Pt {
     const rect = canvasEl!.getBoundingClientRect();
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
 
+  function beginDrag(pt: Pt): boolean {
+    // In geometry mode a drag ends in a save; one at a time, so nothing
+    // is silently lost while the previous save is in flight.
+    if (frame && saving) return false;
+    const target = hit(pt.x, pt.y);
+    if (!target) return false;
+    drag = target;
+    const pos =
+      target.kind === "focus"
+        ? focusPositions[target.name]
+        : layoutPositions[target.name];
+    dragOffsetX = pt.x - pos.x;
+    dragOffsetY = pt.y - pos.y;
+    return true;
+  }
+
+  function moveDrag(pt: Pt) {
+    if (!drag) return;
+    const next = { x: pt.x - dragOffsetX, y: pt.y - dragOffsetY };
+    if (drag.kind === "focus") {
+      focusPositions[drag.name] = next;
+    } else {
+      layoutPositions[drag.name] = next;
+      if (!frame) manualPositions[drag.name] = next;
+    }
+  }
+
+  function inPlot(pt: Pt): boolean {
+    return (
+      pt.x >= plotRect.x &&
+      pt.x <= plotRect.x + plotRect.w &&
+      pt.y >= plotRect.y &&
+      pt.y <= plotRect.y + plotRect.h
+    );
+  }
+
+  async function endDrag() {
+    const finished = drag;
+    drag = null;
+    if (!finished) return;
+    if (!frame) {
+      saveManualPositions();
+      return;
+    }
+    const activeFrame = frame;
+    if (finished.kind === "focus") {
+      if (!inPlot(focusPositions[finished.name])) {
+        // Dropped off the stage: put it back where the file says.
+        computeLayout($metadataStore, $venueStore);
+        return;
+      }
+      const [x, y] = toStage(activeFrame, focusPositions[finished.name]);
+      const z = focusPoints[finished.name]?.[2] ?? 0;
+      await persist((v) => {
+        v.focus_points = {
+          ...(v.focus_points ?? {}),
+          [finished.name]: [x, y, z],
+        };
+      });
+      return;
+    }
+    const dropped = layoutPositions[finished.name];
+    if (!inPlot(dropped)) {
+      // Dropped back in the tray, or off the stage: nothing changed. A
+      // placed fixture cannot be un-placed from here; edit the file.
+      computeLayout($metadataStore, $venueStore);
+      return;
+    }
+    const [x, y] = toStage(activeFrame, dropped);
+    const z = $metadataStore[finished.name]?.position?.[2] ?? DEFAULT_TRIM_M;
+    await persist((v) => {
+      const fixture = v.fixtures[finished.name];
+      if (fixture) fixture.position = [x, y, z];
+    });
+  }
+
+  // --- Persistence: the venue file is the truth. Read it, change the one
+  // thing, write it back; the server reloads the running venue and pushes
+  // fresh metadata, which redraws everything from the file's numbers.
+  // Last write wins: two editors on the same venue (two tabs, or the web
+  // UI racing an MCP patch) can overwrite each other's latest change. A
+  // single operator designing a show is the case this serves.
+  async function persist(
+    update: (venue: {
+      fixtures: Record<
+        string,
+        {
+          name: string;
+          fixture_type: string;
+          universe: number;
+          start_channel: number;
+          tags: string[];
+          position?: Vec3 | null;
+          rotation?: Vec3 | null;
+        }
+      >;
+      focus_points?: Record<string, Vec3>;
+      source?: { mvr: string; origin: Vec3 } | null;
+    }) => void,
+  ) {
+    const meta = $venueStore;
+    if (!meta) return;
+    if (saving) {
+      // Never silently: the caller's edit did not happen.
+      saveMsg = {
+        ok: false,
+        text: get(t)("stage.saveFailed", {
+          values: { error: get(t)("stage.busy") },
+        }),
+      };
+      computeLayout($metadataStore, $venueStore);
+      return;
+    }
+    saving = true;
+    saveMsg = null;
+    try {
+      const { venue: current } = await fetchVenue(
+        meta.name,
+        meta.dir ?? undefined,
+      );
+      update(current);
+      await saveVenue(
+        meta.name,
+        {
+          // Keyed by name; the entries carry it too, but a lean server
+          // (or the e2e mock) may leave it out.
+          fixtures: Object.entries(current.fixtures).map(([name, f]) => ({
+            ...f,
+            name: f.name ?? name,
+          })),
+          focus_points: current.focus_points ?? {},
+          source: current.source ?? null,
+        },
+        meta.dir ?? undefined,
+      );
+      // Optimistic: the broadcast metadata will confirm, but a client the
+      // engine cannot reach (no DMX engine running) should still see it.
+      const fixtures = { ...$metadataStore };
+      for (const [name, f] of Object.entries(current.fixtures)) {
+        if (fixtures[name]) {
+          fixtures[name] = {
+            ...fixtures[name],
+            position: f.position ?? null,
+            rotation: f.rotation ?? null,
+          };
+        }
+      }
+      metadataStore.set(fixtures);
+      venueStore.set({ ...meta, focus_points: current.focus_points ?? {} });
+      saveMsg = { ok: true, text: get(t)("stage.saved") };
+      setTimeout(() => (saveMsg = null), 2000);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      saveMsg = {
+        ok: false,
+        text: get(t)("stage.saveFailed", { values: { error: message } }),
+      };
+      computeLayout($metadataStore, $venueStore);
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function addFocusPoint() {
+    const name = nextFocusName(focusPoints);
+    // Center of the shown stage, on the deck; a venue with no geometry yet
+    // gets its first pin at downstage-center.
+    const point: Vec3 = frame
+      ? [
+          Math.round(((frame.minX + frame.maxX) / 2) * 100) / 100,
+          Math.round(((frame.minY + frame.maxY) / 2) * 100) / 100,
+          0,
+        ]
+      : [0, 1, 0];
+    await persist((v) => {
+      v.focus_points = { ...(v.focus_points ?? {}), [name]: point };
+    });
+  }
+
+  async function renameFocusPoint(from: string) {
+    const to = (renaming[from] ?? "").trim();
+    if (saving) {
+      // Keep the draft; the input shows it until the save settles.
+      return;
+    }
+    delete renaming[from];
+    renaming = { ...renaming };
+    if (!to || to === from || to in focusPoints) return;
+    await persist((v) => {
+      const points = { ...(v.focus_points ?? {}) };
+      const point = points[from];
+      if (!point) return;
+      delete points[from];
+      points[to] = point;
+      v.focus_points = points;
+    });
+  }
+
+  async function deleteFocusPoint(name: string) {
+    await persist((v) => {
+      const points = { ...(v.focus_points ?? {}) };
+      delete points[name];
+      v.focus_points = points;
+    });
+  }
+
   function onMouseDown(e: MouseEvent) {
-    const pt = canvasCoords(e);
-    const name = fixtureAt(pt.x, pt.y);
-    if (name) {
-      dragFixture = name;
-      dragOffsetX = pt.x - layoutPositions[name].x;
-      dragOffsetY = pt.y - layoutPositions[name].y;
+    if (beginDrag(canvasCoords(e))) {
       canvasEl!.style.cursor = "grabbing";
       e.preventDefault();
     }
@@ -288,25 +655,21 @@
 
   function onMouseMove(e: MouseEvent) {
     const pt = canvasCoords(e);
-    if (dragFixture) {
-      const newX = pt.x - dragOffsetX;
-      const newY = pt.y - dragOffsetY;
-      layoutPositions[dragFixture] = { x: newX, y: newY };
-      manualPositions[dragFixture] = { x: newX, y: newY };
+    if (drag) {
+      moveDrag(pt);
     } else {
-      canvasEl!.style.cursor = fixtureAt(pt.x, pt.y) ? "grab" : "default";
+      canvasEl!.style.cursor = hit(pt.x, pt.y) ? "grab" : "default";
     }
   }
 
   function onMouseUp() {
-    if (dragFixture) {
-      saveManualPositions();
-      dragFixture = null;
+    if (drag) {
       canvasEl!.style.cursor = "grab";
+      void endDrag();
     }
   }
 
-  function touchCoords(e: TouchEvent): { x: number; y: number } {
+  function touchCoords(e: TouchEvent): Pt {
     const rect = canvasEl!.getBoundingClientRect();
     const touch = e.touches[0] || e.changedTouches[0];
     return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
@@ -314,37 +677,25 @@
 
   function onTouchStart(e: TouchEvent) {
     if (e.touches.length !== 1) return;
-    const pt = touchCoords(e);
-    const name = fixtureAt(pt.x, pt.y);
-    if (name) {
-      dragFixture = name;
-      dragOffsetX = pt.x - layoutPositions[name].x;
-      dragOffsetY = pt.y - layoutPositions[name].y;
-      e.preventDefault();
-    }
+    if (beginDrag(touchCoords(e))) e.preventDefault();
   }
 
   function onTouchMove(e: TouchEvent) {
-    if (!dragFixture || e.touches.length !== 1) return;
-    const pt = touchCoords(e);
-    const newX = pt.x - dragOffsetX;
-    const newY = pt.y - dragOffsetY;
-    layoutPositions[dragFixture] = { x: newX, y: newY };
-    manualPositions[dragFixture] = { x: newX, y: newY };
+    if (!drag || e.touches.length !== 1) return;
+    moveDrag(touchCoords(e));
     e.preventDefault();
   }
 
   function onTouchEnd() {
-    if (dragFixture) {
-      saveManualPositions();
-    }
-    dragFixture = null;
+    if (drag) void endDrag();
   }
 
   function onMouseLeave() {
-    if (dragFixture) {
-      dragFixture = null;
+    if (drag) {
+      // Abandoned mid-drag: put things back where the file says.
+      drag = null;
       canvasEl!.style.cursor = "default";
+      if (frame) computeLayout($metadataStore, $venueStore);
     }
   }
 
@@ -361,30 +712,60 @@
     };
   });
 
-  // Recompute layout when metadata changes
+  // Recompute layout when metadata or the venue changes
   $effect(() => {
-    computeLayout($metadataStore);
+    computeLayout($metadataStore, $venueStore);
   });
 </script>
 
-<section class="card stage-card">
+<section class="card stage-card" class:stage-card--geometry={geometryMode}>
   <header class="stage-card__head">
     <div>
       <div class="overline">{$t("stage.title")}</div>
       <div class="stage-card__title">
         {$t("stage.title")} · {Object.keys($metadataStore).length} fixtures
+        {#if geometryMode}
+          <span class="stage-card__placed">
+            · {$t("stage.placed", {
+              values: {
+                placed: placedCount,
+                total: Object.keys($metadataStore).length,
+              },
+            })}
+          </span>
+        {/if}
       </div>
     </div>
-    {#if $reloadStore}
-      <span
-        class="badge stage-card__reload"
-        class:stage-card__reload--error={$reloadStore.status === "error"}
-      >
-        {$reloadStore.status === "ok"
-          ? $t("stage.reloaded")
-          : `Error: ${$reloadStore.error}`}
-      </span>
-    {/if}
+    <div class="stage-card__actions">
+      {#if saveMsg}
+        <span
+          class="badge stage-card__reload"
+          class:stage-card__reload--error={!saveMsg.ok}
+        >
+          {saveMsg.text}
+        </span>
+      {/if}
+      {#if $reloadStore}
+        <span
+          class="badge stage-card__reload"
+          class:stage-card__reload--error={$reloadStore.status === "error"}
+        >
+          {$reloadStore.status === "ok"
+            ? $t("stage.reloaded")
+            : `Error: ${$reloadStore.error}`}
+        </span>
+      {/if}
+      {#if venue}
+        <button
+          class="btn btn-sm stage-card__add-focus"
+          type="button"
+          disabled={saving}
+          onclick={addFocusPoint}
+        >
+          {$t("stage.addFocus")}
+        </button>
+      {/if}
+    </div>
   </header>
   <div class="stage-card__viewport">
     <div class="stage-card__caption" aria-hidden="true">
@@ -401,6 +782,51 @@
       ontouchend={onTouchEnd}
     ></canvas>
   </div>
+  {#if venue && (geometryMode || focusNames.length > 0)}
+    <div class="stage-card__focus">
+      <div class="overline">{$t("stage.focusPoints")}</div>
+      {#if focusNames.length === 0}
+        <div class="stage-card__focus-empty">{$t("stage.noFocus")}</div>
+      {:else}
+        <ul class="stage-card__focus-list">
+          {#each focusNames as name (name)}
+            <li class="stage-card__focus-item">
+              <input
+                class="stage-card__focus-name"
+                type="text"
+                aria-label={name}
+                value={renaming[name] ?? name}
+                disabled={saving}
+                oninput={(e) =>
+                  (renaming = {
+                    ...renaming,
+                    [name]: (e.currentTarget as HTMLInputElement).value,
+                  })}
+                onblur={() => renameFocusPoint(name)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter")
+                    (e.currentTarget as HTMLInputElement).blur();
+                }}
+              />
+              <span class="stage-card__focus-coords">
+                ({focusPoints[name][0]}, {focusPoints[name][1]}, {focusPoints[
+                  name
+                ][2]})
+              </span>
+              <button
+                class="btn btn-danger btn-sm"
+                type="button"
+                disabled={saving}
+                onclick={() => deleteFocusPoint(name)}
+              >
+                {$t("stage.deleteFocus")}
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
+  {/if}
 </section>
 
 <style>
@@ -419,12 +845,23 @@
     border-bottom: 1px solid var(--card-border);
     gap: 12px;
   }
+  .stage-card__actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
   .stage-card__title {
     font-family: var(--nc-font-display);
     font-weight: 700;
     font-size: 16px;
     margin-top: 4px;
     color: var(--nc-fg-1);
+  }
+  .stage-card__placed {
+    font-weight: 500;
+    color: var(--nc-fg-3);
   }
   .stage-card__viewport {
     position: relative;
@@ -438,6 +875,10 @@
     border: 1px dashed var(--card-border);
     background: var(--inset-bg);
     overflow: hidden;
+  }
+  .stage-card--geometry .stage-card__viewport {
+    height: 45vh;
+    max-height: 560px;
   }
   .stage-card__caption {
     position: absolute;
@@ -468,5 +909,38 @@
     background: rgba(232, 75, 75, 0.18);
     color: var(--nc-error);
     border-color: rgba(232, 75, 75, 0.4);
+  }
+  .stage-card__focus {
+    padding: 0 20px 16px;
+  }
+  .stage-card__focus-empty {
+    color: var(--nc-fg-3);
+    font-size: 13px;
+    margin-top: 6px;
+  }
+  .stage-card__focus-list {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .stage-card__focus-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .stage-card__focus-name {
+    font-family: var(--nc-font-mono);
+    font-size: 13px;
+    min-width: 0;
+    width: 180px;
+  }
+  .stage-card__focus-coords {
+    font-family: var(--nc-font-mono);
+    font-size: 12px;
+    color: var(--nc-fg-3);
+    flex: 1;
   }
 </style>

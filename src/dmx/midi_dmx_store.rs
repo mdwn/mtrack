@@ -89,8 +89,11 @@ impl MidiDmxStore {
         }
     }
 
-    /// Registers a slot for a fixture channel. Called during fixture registration.
-    /// Returns the slot index.
+    /// Registers a slot for a fixture channel. Called during fixture
+    /// registration, which happens at every song start and every venue
+    /// reload, so it is idempotent: a channel already registered keeps its
+    /// slot (and any value MIDI is holding on it) and only its fixture
+    /// mapping is refreshed. Returns the slot index.
     pub fn register_slot(
         &mut self,
         universe: u16,
@@ -98,6 +101,10 @@ impl MidiDmxStore {
         fixture_name: &str,
         channel_name: &str,
     ) -> usize {
+        if let Some(&slot_index) = self.channel_to_slot.get(&(universe, dmx_channel)) {
+            self.slot_to_fixture[slot_index] = (fixture_name.to_string(), channel_name.to_string());
+            return slot_index;
+        }
         let slot_index = self.slots.len();
         self.slots.push(Slot::new());
         self.channel_to_slot
@@ -105,6 +112,39 @@ impl MidiDmxStore {
         self.slot_to_fixture
             .push((fixture_name.to_string(), channel_name.to_string()));
         slot_index
+    }
+
+    /// Drops the slots of channels the venue no longer patches, keeping
+    /// (and re-indexing) the rest with their values. Called before the
+    /// venue's fixtures are re-registered, so a fixture unhung between two
+    /// reloads does not linger in the effects loop's per-frame scan.
+    pub fn retain_channels(&mut self, keep: impl Fn(u16, u16) -> bool) {
+        let old_slots = std::mem::take(&mut self.slots);
+        let old_map = std::mem::take(&mut self.slot_to_fixture);
+        let mut old_index_by_slot: Vec<Option<(u16, u16)>> = vec![None; old_slots.len()];
+        for (&channel, &index) in &self.channel_to_slot {
+            old_index_by_slot[index] = Some(channel);
+        }
+        self.channel_to_slot.clear();
+        for ((slot, mapping), channel) in old_slots.into_iter().zip(old_map).zip(old_index_by_slot)
+        {
+            let Some((universe, dmx_channel)) = channel else {
+                continue;
+            };
+            if !keep(universe, dmx_channel) {
+                continue;
+            }
+            self.channel_to_slot
+                .insert((universe, dmx_channel), self.slots.len());
+            self.slots.push(slot);
+            self.slot_to_fixture.push(mapping);
+        }
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    /// How many channels have slots.
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
     }
 
     /// Ensures a dim_rate entry exists for the given universe.
@@ -242,6 +282,44 @@ impl MidiDmxStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn re_registering_a_channel_reuses_its_slot_and_keeps_its_value() {
+        let mut store = MidiDmxStore::new();
+        let first = store.register_slot(1, 1, "A", "red");
+        store.write(1, 1, 200, false);
+        let again = store.register_slot(1, 1, "A", "red");
+        assert_eq!(first, again);
+        assert_eq!(store.slot_count(), 1);
+        assert!(store.has_active_slots(), "the held MIDI value survives");
+        // A different fixture on the same channel takes the mapping over.
+        store.register_slot(1, 1, "B", "dimmer");
+        assert_eq!(
+            store.fixture_info(first),
+            &("B".to_string(), "dimmer".to_string())
+        );
+    }
+
+    #[test]
+    fn retaining_channels_drops_the_rest_and_reindexes() {
+        let mut store = MidiDmxStore::new();
+        store.register_slot(1, 1, "A", "red");
+        store.register_slot(1, 2, "A", "green");
+        store.register_slot(1, 5, "B", "red");
+        store.write(1, 5, 100, false);
+        store.tick();
+        store.retain_channels(|_, channel| channel != 2);
+        assert_eq!(store.slot_count(), 2);
+        assert_eq!(store.lookup(1, 2), None);
+        let b = store.lookup(1, 5).expect("B's channel kept");
+        assert_eq!(store.fixture_info(b), &("B".to_string(), "red".to_string()));
+        assert!(
+            store
+                .iter_active()
+                .any(|(index, value)| index == b && value > 0.0),
+            "B's held value survives the re-index"
+        );
+    }
 
     fn create_test_store() -> MidiDmxStore {
         let mut store = MidiDmxStore::new();

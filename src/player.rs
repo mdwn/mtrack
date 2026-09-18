@@ -691,6 +691,27 @@ impl Player {
             .map(|e| e.broadcast_handles())
     }
 
+    /// Re-reads the venues from disk, re-registers the current venue's
+    /// fixtures with the running DMX engine, and tells every web client
+    /// the stage geometry changed. The venue file is the durable truth;
+    /// this is how an edit to it (positions, focus points, tags) reaches a
+    /// running player without a hardware reload. A player with no DMX
+    /// engine has nothing to reload, which is not an error.
+    pub fn reload_current_venue(&self) -> Result<(), String> {
+        let Some(engine) = self.dmx_engine() else {
+            return Ok(());
+        };
+        engine.reload_current_venue().map_err(|e| e.to_string())?;
+        let metadata = crate::webui::state::build_metadata_json(
+            engine.broadcast_handles().lighting_system.as_ref(),
+        );
+        if let Some(tx) = self.broadcast_tx.lock().as_ref() {
+            // No receivers is fine: nobody is watching the stage right now.
+            let _ = tx.send(metadata);
+        }
+        Ok(())
+    }
+
     /// Stores the broadcast channel and wires it to the DMX engine if one exists.
     /// If the DMX engine hasn't initialized yet, the channel is stored and will
     /// be wired when the engine comes up during async init.

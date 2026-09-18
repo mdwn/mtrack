@@ -108,9 +108,23 @@ export interface FixtureChannels {
   [channel: string]: number;
 }
 
+export type Vec3 = [number, number, number];
+
 export interface FixtureMetadata {
   tags: string[];
   type: string;
+  /** Stage position in meters, when the venue places the fixture. */
+  position?: Vec3 | null;
+  /** Mounting rotation in degrees about X, Y, Z, when the venue states it. */
+  rotation?: Vec3 | null;
+}
+
+/** The current venue as the stage view needs it. */
+export interface VenueMetadata {
+  name: string;
+  /** The configured venues directory, for saving edits back. */
+  dir: string | null;
+  focus_points: Record<string, Vec3>;
 }
 
 export interface LogLine {
@@ -159,6 +173,7 @@ export const playbackStore = writable<PlaybackState>({
 export const fixtureStore = writable<Record<string, FixtureChannels>>({});
 
 export const metadataStore = writable<Record<string, FixtureMetadata>>({});
+export const venueStore = writable<VenueMetadata | null>(null);
 
 export const effectsStore = writable<string[]>([]);
 
@@ -218,8 +233,12 @@ on("metadata", (msg) => {
   const m = msg as {
     type: string;
     fixtures: Record<string, FixtureMetadata>;
+    venue?: VenueMetadata | null;
   };
   metadataStore.set(m.fixtures ?? {});
+  venueStore.set(
+    m.venue ? { ...m.venue, focus_points: m.venue.focus_points ?? {} } : null,
+  );
 });
 
 on("logs", (msg) => {

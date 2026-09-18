@@ -333,26 +333,64 @@ app.get("/api/lighting/venues", (_req, res) => {
   });
 });
 
-app.get("/api/lighting/venues/:name", (_req, res) => {
+// Venue saves are remembered per name so a second edit sees the first,
+// the way the real server's file does.
+type VenueFixture = {
+  name: string;
+  fixture_type: string;
+  universe: number;
+  start_channel: number;
+  tags: string[];
+  position?: [number, number, number] | null;
+  rotation?: [number, number, number] | null;
+};
+type VenueBody = {
+  fixtures: VenueFixture[];
+  focus_points?: Record<string, [number, number, number]>;
+  source?: { mvr: string; origin: [number, number, number] } | null;
+};
+const savedVenues = new Map<string, VenueBody>();
+const MOCK_VENUE: VenueBody = {
+  fixtures: [
+    {
+      name: "front-left",
+      fixture_type: "par",
+      universe: 1,
+      start_channel: 1,
+      tags: ["front", "left"],
+      position: [-2, 0.5, 3],
+      rotation: [0, 0, 0],
+    },
+  ],
+  focus_points: { drummer: [0, 2.8, 1.4] },
+  source: null,
+};
+
+app.get("/api/lighting/venues/:name", (req, res) => {
+  const body = savedVenues.get(req.params.name) ?? MOCK_VENUE;
+  const fixtures: Record<string, VenueFixture> = {};
+  for (const f of body.fixtures) fixtures[f.name] = f;
   res.json({
     venue: {
-      name: "test-venue",
-      fixtures: {
-        "front-left": {
-          fixture_type: "par",
-          universe: 1,
-          start_channel: 1,
-          tags: ["front", "left"],
-        },
-      },
-      groups: {},
+      name: req.params.name,
+      fixtures,
+      focus_points: body.focus_points ?? {},
+      source: body.source ?? null,
     },
     dsl: "venue test-venue {\n  fixture front-left par@1:1 [front, left]\n}",
   });
 });
 
-app.put("/api/lighting/venues/:name", (_req, res) => {
+let lastVenuePut: { name: string; body: unknown } | null = null;
+app.put("/api/lighting/venues/:name", (req, res) => {
+  lastVenuePut = { name: req.params.name, body: req.body };
+  savedVenues.set(req.params.name, req.body as VenueBody);
   res.json({ status: "saved" });
+});
+// GET /test/last-venue-put — what the last venue save sent, for tests of
+// the stage view's geometry editing.
+app.get("/test/last-venue-put", (_req, res) => {
+  res.json(lastVenuePut);
 });
 
 app.delete("/api/lighting/venues/:name", (_req, res) => {

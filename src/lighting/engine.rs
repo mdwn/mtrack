@@ -318,6 +318,17 @@ impl EffectEngine {
         self.fixtures.register(fixture);
     }
 
+    /// Replaces the registered fixtures with the venue's current set, so a
+    /// fixture unhung since the last registration does not linger with its
+    /// old patch. Registration runs at every song start and venue reload.
+    pub fn replace_fixtures(&mut self, fixtures: impl IntoIterator<Item = FixtureInfo>) {
+        self.fixtures = FixtureRegistry::new();
+        for fixture in fixtures {
+            self.register_fixture(fixture);
+        }
+        self.cache.invalidate();
+    }
+
     /// Look up which fixture and channel a DMX address belongs to (test only).
     #[cfg(test)]
     pub fn lookup_dmx_channel(&self, universe: u16, dmx_channel: u16) -> Option<&(String, String)> {
