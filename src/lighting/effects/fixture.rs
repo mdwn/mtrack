@@ -467,6 +467,12 @@ pub struct FixtureInfo {
     pub position: Option<[f64; 3]>,
     /// Mounting rotation in degrees about X, Y, Z, when the venue states it.
     pub rotation: Option<[f64; 3]>,
+    /// The structured channel definitions — fine bytes, physical ranges,
+    /// function tables — that physical values resolve through. Mirrors
+    /// `channels` for a fixture type that declares nothing more.
+    pub channel_defs: HashMap<String, crate::lighting::types::ChannelDef>,
+    /// Movement limits, when the fixture type declares them.
+    pub movement: crate::lighting::types::MovementLimits,
     /// Cached capabilities derived from channels (computed once at construction)
     cached_capabilities: FixtureCapabilities,
     /// Cached fixture profile (computed once at construction)
@@ -485,6 +491,10 @@ impl FixtureInfo {
     ) -> Self {
         let capabilities = Self::derive_capabilities(&channels);
         let profile = FixtureProfile::from_capabilities(&capabilities);
+        let channel_defs = channels
+            .iter()
+            .map(|(name, &offset)| (name.clone(), crate::lighting::types::ChannelDef::at(offset)))
+            .collect();
         Self {
             name,
             universe,
@@ -496,9 +506,21 @@ impl FixtureInfo {
             strobe_dmx_offset: None,
             position: None,
             rotation: None,
+            channel_defs,
+            movement: crate::lighting::types::MovementLimits::default(),
             cached_capabilities: capabilities,
             cached_profile: profile,
         }
+    }
+
+    /// Replaces the plain channel definitions with the fixture type's
+    /// structured ones (fine bytes, ranges, functions).
+    pub fn with_channel_defs(
+        mut self,
+        channel_defs: HashMap<String, crate::lighting::types::ChannelDef>,
+    ) -> Self {
+        self.channel_defs = channel_defs;
+        self
     }
 
     /// Derive fixture capabilities from available channels

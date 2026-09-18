@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 
 use super::fixture::{FixtureInfo, MULTIPLIER_PREFIXES};
+use super::physical::PhysicalState;
 use super::types::{BlendMode, EffectLayer};
 
 /// Check if a channel name is a multiplier channel (dimmer, pulse or chase)
@@ -94,6 +95,9 @@ impl ChannelState {
 #[derive(Debug, Clone)]
 pub struct FixtureState {
     pub channels: HashMap<String, ChannelState>,
+    /// What the show asked for in physical units (degrees), resolved into
+    /// bytes only when DMX is produced. Never scaled by a layer master.
+    pub physical: PhysicalState,
 }
 
 impl Default for FixtureState {
@@ -106,6 +110,7 @@ impl FixtureState {
     pub fn new() -> Self {
         Self {
             channels: HashMap::new(),
+            physical: PhysicalState::default(),
         }
     }
 
@@ -118,6 +123,7 @@ impl FixtureState {
     pub fn from_channels(channels: impl IntoIterator<Item = (String, ChannelState)>) -> Self {
         Self {
             channels: channels.into_iter().collect(),
+            physical: PhysicalState::default(),
         }
     }
 
@@ -128,6 +134,7 @@ impl FixtureState {
 
     /// Blend this fixture state with another
     pub fn blend_with(&mut self, other: &FixtureState) {
+        self.physical.blend_with(&other.physical);
         // Blend other channels normally
         for (channel_name, other_state) in &other.channels {
             // For per-layer multiplier channels, overwrite (last-writer-wins) to avoid compounding across frames
@@ -186,21 +193,40 @@ impl FixtureState {
         value
     }
 
-    /// Convert to DMX commands
+    /// Convert to DMX commands.
+    ///
+    /// Normalized channels resolve through the fixture's channel
+    /// definitions: an 8-bit channel gets the byte the engine always wrote,
+    /// a 16-bit one gets its fine byte too. Physical intents (pan, tilt in
+    /// degrees) resolve through the channel's range and win over any
+    /// normalized value written to the same channel.
     pub fn to_dmx_commands(&self, fixture_info: &FixtureInfo) -> Vec<DmxCommand> {
         let mut commands = Vec::new();
         let has_dedicated_dimmer = fixture_info.channels.contains_key("dimmer");
+        let physical =
+            super::physical::resolve_physical(&self.physical, &fixture_info.channel_defs);
 
         for (channel_name, state) in &self.channels {
-            if let Some(&channel_offset) = fixture_info.channels.get(channel_name) {
-                let dmx_channel = fixture_info.address + channel_offset - 1;
+            if physical.iter().any(|(name, _)| name == channel_name) {
+                continue;
+            }
+            if let Some(def) = fixture_info.channel_defs.get(channel_name) {
                 let value = self.effective_channel_value(channel_name, state, has_dedicated_dimmer);
-                let dmx_value = (value * 255.0) as u8;
-
+                for (offset, byte) in super::physical::resolve_normalized(def, value) {
+                    commands.push(DmxCommand {
+                        universe: fixture_info.universe,
+                        channel: fixture_info.address + offset - 1,
+                        value: byte,
+                    });
+                }
+            }
+        }
+        for (_, resolved) in physical {
+            for (offset, byte) in resolved.bytes {
                 commands.push(DmxCommand {
                     universe: fixture_info.universe,
-                    channel: dmx_channel,
-                    value: dmx_value,
+                    channel: fixture_info.address + offset - 1,
+                    value: byte,
                 });
             }
         }
@@ -211,6 +237,7 @@ impl FixtureState {
 
 #[cfg(test)]
 mod tests {
+    use super::super::physical::{Intent, PhysicalParameter};
     use super::*;
 
     // ── is_multiplier_channel ──────────────────────────────────────
@@ -594,6 +621,82 @@ mod tests {
         assert_eq!(cmds[0].universe, 1);
         assert_eq!(cmds[0].channel, 10); // address(10) + offset(1) - 1
         assert_eq!(cmds[0].value, 255);
+    }
+
+    #[test]
+    fn a_physical_pan_resolves_through_the_range_and_wins_over_the_channel_write() {
+        use crate::lighting::types::{ChannelDef, PhysicalRange, PhysicalUnit};
+        let mut fixture = make_fixture_info(vec![("pan", 1), ("pan_fine", 2), ("dimmer", 3)], 10);
+        let mut defs = HashMap::new();
+        defs.insert(
+            "pan".to_string(),
+            ChannelDef {
+                offset: 1,
+                fine: Some(2),
+                range: Some(PhysicalRange {
+                    from: -270.0,
+                    to: 270.0,
+                    unit: PhysicalUnit::Degrees,
+                }),
+                functions: Vec::new(),
+            },
+        );
+        defs.insert("dimmer".to_string(), ChannelDef::at(3));
+        fixture = fixture.with_channel_defs(defs);
+
+        let mut fs = FixtureState::new();
+        // A normalized write to pan, as `static pan: 100%` produces...
+        fs.set_channel(
+            "pan".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        fs.set_channel(
+            "dimmer".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+        );
+        // ...loses to a physical intent on the same channel.
+        fs.physical.set(
+            PhysicalParameter::Pan,
+            Intent {
+                degrees: 0.0,
+                layer: EffectLayer::Background,
+            },
+        );
+        let mut cmds = fs.to_dmx_commands(&fixture);
+        cmds.sort_by_key(|c| c.channel);
+        let bytes: Vec<(u16, u8)> = cmds.iter().map(|c| (c.channel, c.value)).collect();
+        assert_eq!(
+            bytes,
+            vec![(10, 0x80), (11, 0x00), (12, 127)],
+            "0° is mid-travel over coarse+fine at address 10/11; the dimmer byte is untouched"
+        );
+    }
+
+    #[test]
+    fn a_normalized_write_to_a_sixteen_bit_channel_fans_out() {
+        use crate::lighting::types::ChannelDef;
+        let mut fixture = make_fixture_info(vec![("pan", 1), ("pan_fine", 2)], 1);
+        let mut defs = HashMap::new();
+        defs.insert(
+            "pan".to_string(),
+            ChannelDef {
+                offset: 1,
+                fine: Some(2),
+                range: None,
+                functions: Vec::new(),
+            },
+        );
+        fixture = fixture.with_channel_defs(defs);
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "pan".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+        );
+        let mut cmds = fs.to_dmx_commands(&fixture);
+        cmds.sort_by_key(|c| c.channel);
+        assert_eq!(cmds.len(), 2);
+        assert_eq!((cmds[0].channel, cmds[0].value), (1, 128));
+        assert_eq!(cmds[1].channel, 2);
     }
 
     #[test]
