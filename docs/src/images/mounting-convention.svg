@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400" width="600" height="400"
+     role="img" aria-label="A hung moving head at rest pointing straight down along minus Z, with a counter-clockwise pan arrow about the vertical Z axis and a tilt arrow swinging the beam from straight down toward plus Y, upstage.">
+  <style>
+    .ink   { stroke: #6e7681; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .body  { stroke: #6e7681; fill: #b9c0c9; stroke-width: 2; stroke-linejoin: round; }
+    .lens  { stroke: #6e7681; fill: #6e7681; stroke-width: 2; }
+    .arrow { stroke: #c07c2a; fill: none; stroke-width: 2.5; stroke-linecap: round; }
+    .head  { fill: #c07c2a; stroke: none; }
+    .tip   { fill: #6e7681; stroke: none; }
+    text   { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; fill: #6e7681; }
+    .lbl   { font-size: 14px; }
+    .acc   { font-size: 14px; font-weight: 600; fill: #c07c2a; }
+    .sm    { font-size: 11px; }
+  </style>
+
+  <!-- Truss -->
+  <line class="ink" x1="60" y1="40" x2="350" y2="40" stroke-width="8"/>
+  <text class="sm" x="64" y="26">truss</text>
+
+  <!-- The pan axis: the mounting frame's Z -->
+  <line class="ink" x1="220" y1="20" x2="220" y2="152" stroke-width="1.5" stroke-dasharray="5 5"/>
+
+  <!-- Clamp and base plate -->
+  <rect class="body" x="210" y="36" width="20" height="18" rx="2"/>
+  <rect class="body" x="186" y="54" width="68" height="20" rx="3"/>
+
+  <!-- Pan: a right-hand turn about +Z, drawn behind the yoke -->
+  <ellipse class="arrow" cx="220" cy="104" rx="62" ry="17"/>
+
+  <!-- Yoke -->
+  <line class="ink" x1="196" y1="74" x2="196" y2="152" stroke-width="7"/>
+  <line class="ink" x1="244" y1="74" x2="244" y2="152" stroke-width="7"/>
+  <circle class="body" cx="196" cy="152" r="6"/>
+  <circle class="body" cx="244" cy="152" r="6"/>
+
+  <!-- Head and lens -->
+  <rect class="body" x="198" y="126" width="44" height="48" rx="7"/>
+  <rect class="lens" x="202" y="172" width="36" height="10" rx="3"/>
+
+  <polygon class="head" points="273.6,113.3 264.3,121.8 261.7,112.2"/>
+  <text class="acc" x="150" y="100" text-anchor="end">pan +</text>
+  <text class="sm" x="150" y="116" text-anchor="end">counter-clockwise</text>
+  <text class="sm" x="150" y="129" text-anchor="end">seen from above</text>
+
+  <!-- Rest beam: straight down, the mounting frame's −Z -->
+  <line class="ink" x1="220" y1="182" x2="220" y2="328" stroke-width="2.5" stroke-dasharray="8 7"/>
+  <polygon class="tip" points="220,342 212,326 228,326"/>
+  <text class="lbl" x="220" y="364" text-anchor="middle">rest: pan 0, tilt 0</text>
+
+  <!-- Tilt: from the down beam toward +Y -->
+  <path class="arrow" d="M 220 245 A 95 95 0 0 0 298 96"/>
+  <polygon class="head" points="292.3,87.8 302.1,93.2 293.9,98.8"/>
+  <text class="acc" x="330" y="176">tilt +</text>
+  <text class="sm" x="330" y="192">swings the beam</text>
+  <text class="sm" x="330" y="205">from −Z toward +Y</text>
+
+  <!-- Stage axes -->
+  <g class="ink" stroke-width="2">
+    <line x1="430" y1="312" x2="430" y2="228"/>
+    <line x1="430" y1="312" x2="516" y2="312"/>
+    <line x1="430" y1="312" x2="487" y2="273"/>
+  </g>
+  <polygon class="tip" points="430,218 424,232 436,232"/>
+  <polygon class="tip" points="528,312 514,306 514,318"/>
+  <polygon class="tip" points="497,265 483,267 490,277"/>
+  <text class="lbl" x="438" y="225">Z up</text>
+  <text class="lbl" x="478" y="334" text-anchor="middle">X stage-left</text>
+  <text class="lbl" x="504" y="262">Y upstage</text>
+  <text class="sm" x="504" y="276">(into the page)</text>
+</svg>

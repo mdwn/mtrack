@@ -32,7 +32,6 @@
     beamEnd,
     cellBar,
     drawBeam,
-    facing,
     fitFrame,
     hasGeometry,
     nextFocusName,
@@ -432,17 +431,6 @@
       }
       ctx.setLineDash([]);
 
-      // Orientation tick from the mounting yaw, on placed fixtures.
-      if (frame && meta.position && meta.rotation) {
-        const dir = facing(meta.rotation);
-        ctx.strokeStyle = fixtureStroke;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(pos.x + dir.x * radius, pos.y + dir.y * radius);
-        ctx.lineTo(pos.x + dir.x * (radius + 8), pos.y + dir.y * (radius + 8));
-        ctx.stroke();
-      }
-
       // Label
       ctx.fillStyle = fixtureLabel;
       ctx.font = "11px monospace";
@@ -450,8 +438,10 @@
       ctx.fillText(name, pos.x, pos.y + radius + 14);
     }
 
-    // Beams: where each placed mover points, in the color it is showing,
-    // ending at its footprint on the deck.
+    // Beams: where each placed fixture points, in the color it is
+    // showing, ending at its footprint on the deck. Statics get a pose
+    // too — pan 0, tilt 0 through their mounting — so the beam is also
+    // what says which way a fixture is hung.
     if (frame) {
       for (const [name, pose] of Object.entries($poseStore)) {
         const meta = $metadataStore[name];

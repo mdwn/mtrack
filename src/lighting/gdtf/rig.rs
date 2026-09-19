@@ -132,6 +132,58 @@ pub struct RigBeam {
     pub radius_m: Option<f64>,
 }
 
+/// Where a rig's first beam points in the mounting frame at a pose, by
+/// forward kinematics through the GDTF geometry: every node's own
+/// transform, the pan node turned about its local Z by `pan`, the tilt
+/// node about its local X by `tilt`, and the beam leaving its node along
+/// −Z — the way Blender DMX renders a GDTF's physical values. `None` for
+/// a rig with no beam. Shares nothing with the pointing math but the
+/// spec's definitions, which is what makes it a cross-check of it.
+pub fn beam_direction(rig: &RigModel, pan_deg: f64, tilt_deg: f64) -> Option<[f64; 3]> {
+    let beam = rig.beams.first()?;
+    // The chain from the root down to the beam's node.
+    let mut chain = Vec::new();
+    let mut at = Some(beam.node);
+    while let Some(index) = at {
+        chain.push(index);
+        at = rig.nodes.get(index)?.parent;
+    }
+    chain.reverse();
+
+    let mut r = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    for index in chain {
+        let node = &rig.nodes[index];
+        let t = node.transform;
+        let own = [
+            [t[0][0], t[0][1], t[0][2]],
+            [t[1][0], t[1][1], t[1][2]],
+            [t[2][0], t[2][1], t[2][2]],
+        ];
+        r = mat_mul(r, own);
+        if rig.pan == Some(index) {
+            let (c, s) = (pan_deg.to_radians().cos(), pan_deg.to_radians().sin());
+            r = mat_mul(r, [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]);
+        }
+        if rig.tilt == Some(index) {
+            let (c, s) = (tilt_deg.to_radians().cos(), tilt_deg.to_radians().sin());
+            r = mat_mul(r, [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]]);
+        }
+    }
+    let d = [-r[0][2], -r[1][2], -r[2][2]];
+    let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    (length > 1e-9).then(|| [d[0] / length, d[1] / length, d[2] / length])
+}
+
+fn mat_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut out = [[0.0; 3]; 3];
+    for (i, row) in out.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().enumerate() {
+            *cell = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    out
+}
+
 /// The beam angle assumed when a GDTF's beam states none.
 pub const DEFAULT_BEAM_ANGLE: f64 = 20.0;
 

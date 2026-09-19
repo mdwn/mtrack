@@ -225,17 +225,6 @@ export function trayLayout(
 }
 
 /**
- * Where a fixture faces on the plot, from its yaw: rotation about Z, with
- * an unrotated fixture facing upstage, so the seeded `rotation (0, 0, 180)`
- * of a rear fixture faces the audience. Unit vector in canvas pixels.
- */
-export function facing(rotation: Vec3 | null | undefined): Pt {
-  const yaw = ((rotation?.[2] ?? 0) * Math.PI) / 180;
-  // Stage: (-sin, cos) rotated counterclockwise from +y; canvas flips y.
-  return { x: -Math.sin(yaw), y: -Math.cos(yaw) };
-}
-
-/**
  * The on-plot beam of a mover: from the fixture to its footprint on the
  * deck when the beam points down, or a short arrow along its heading when
  * it does not. Stage meters in, stage meters out.

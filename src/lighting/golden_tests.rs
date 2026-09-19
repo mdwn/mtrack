@@ -123,63 +123,71 @@ const AT: [Duration; 3] = [
 /// Bytes over a 16-bit range: `round((deg − from) / (to − from) × 65535)`.
 struct Aimed(&'static str, u16, u16);
 
-/// Hand-worked expectations, one list per instant.
+/// Hand-worked expectations, one list per instant, in GDTF's convention
+/// (design §18.2): rest is straight down the mounting's −Z, positive pan
+/// turns counter-clockwise seen from above, positive tilt swings the beam
+/// toward the mounting's +y.
 ///
 /// Aiming: `d = target − position`, rotated into the mounting frame by
-/// `(Rz·Ry·Rx)ᵀ`; `pan = atan2(dx, dy)`, `tilt = atan2(dz, hypot(dx, dy))`.
-/// The turn is the one nearest the previous pan within ±270°.
+/// `(Rz·Ry·Rx)ᵀ` and normalised; `tilt = acos(−dz)`,
+/// `pan = atan2(−dx, dy)`; the flip is `(pan ± 180°, −tilt)`. The head
+/// takes whichever solution lies inside its tilt range with the pan
+/// nearest where it was (both ranges ±270° / ±135° here).
 ///
 /// t = 1 s, every mover on the drummer (0, 2.8, 1.4):
-/// - M1 at (−2, 3.5, 4.2) yawed 180°: d = (2, −0.7, −2.8); yaw flips x
-///   and y → (−2, 0.7, −2.8); pan = atan2(−2, 0.7) = −70.71°,
-///   tilt = atan2(−2.8, 2.119) = −52.88°. Pan → 24186, tilt → 19932.
-/// - M2 mirrors M1 in x: pan +70.71° → 41349, tilt the same.
+/// - M1 at (−2, 3.5, 4.2) yawed 180°: d = (2, −0.7, −2.8); the yaw flips
+///   x and y → (−2, 0.7, −2.8), unit (−0.5675, 0.1986, −0.7994).
+///   tilt = acos(0.7994) = 37.12°, pan = atan2(0.5675, 0.1986) = 70.71°.
+///   Pan → (340.71/540)·65535 = 41349; tilt → (172.12/270)·65535 = 41777.
+/// - M2 mirrors M1 in x: pan −70.71° → 24186, tilt the same.
 /// - M3 at (0, 0.5, 3) pitched 30° about X: d = (0, 2.3, −1.6);
-///   Rxᵀ(30°) gives y' = 2.3cos30 − 1.6sin30 = 1.192,
-///   z' = −2.3sin30 − 1.6cos30 = −2.536; pan 0 → 32768,
-///   tilt = atan2(−2.536, 1.192) = −64.82° → 17033.
-/// - M4 at (3, 2, 4), Ry 20° then Rz 90°: d = (−3, 0.8, −2.6);
-///   undo the yaw first (Rzᵀ 90°: (x,y) → (y,−x)) → (0.8, 3, −2.6), then
-///   Ryᵀ 20°: x' = 0.8cos20 − (−2.6)sin20 = 1.641,
-///   z' = 0.8sin20 + (−2.6)cos20 = −2.170; pan = atan2(1.641, 3) = 28.68°
-///   → 36248, tilt = atan2(−2.170, 3.420) = −32.39° → 24905.
+///   Rxᵀ(30°): y' = 2.3cos30 − 1.6sin30 = 1.192, z' = −2.3sin30 − 1.6cos30
+///   = −2.536; unit (0, 0.4254, −0.9050). tilt = acos(0.9050) = 25.18°
+///   → 38878, pan 0 → 32768.
+/// - M4 at (3, 2, 4), Ry 20° then Rz 90°: d = (−3, 0.8, −2.6); undo the
+///   yaw (Rzᵀ 90°: (x, y) → (y, −x)) → (0.8, 3, −2.6), then Ryᵀ 20°:
+///   x' = 0.8cos20 + 2.6sin20 = 1.641, z' = 0.8sin20 − 2.6cos20 = −2.170;
+///   |d| = √(1.641² + 3² + 2.170²) = 4.050, unit (0.4052, 0.7407, −0.5358).
+///   tilt = acos(0.5358) = 57.61° → 46750,
+///   pan = atan2(−0.4052, 0.7407) = −28.68° → 29287.
 ///
 /// t = 4 s, every mover on the singer (0.4, 0.9, 1.6):
-/// - M1: pan −42.71° → 27584, tilt −36.31° → 23955.
-/// - M2: pan 31.61° → 36603, tilt −40.42° → 22957.
-/// - M3: d = (0.4, 0.4, −1.4); Rxᵀ(30°): y' = 0.4cos30 + (−1.4)sin30
-///   = −0.354, z' = −0.4sin30 + (−1.4)cos30 = −1.412. The singer is
-///   behind the pitched frame's +y, so pan = atan2(0.4, −0.354) = 131.48°
-///   → 48724; tilt = atan2(−1.412, 0.534) = −69.29° → 15948.
-/// - M4: pan −4.68° → 32200, tilt −45.25° → 21785.
+/// - M1: pan 42.71° → 37951, tilt 53.69° → 45800.
+/// - M2: pan −31.61° → 28932, tilt 49.58° → 44802.
+/// - M3: d = (0.4, 0.4, −1.4); Rxᵀ(30°): y' = 0.4cos30 − 1.4sin30 =
+///   −0.354, z' = −0.4sin30 − 1.4cos30 = −1.412; the singer is behind the
+///   pitched frame's horizon, so the principal solution is pan
+///   atan2(−0.4, −0.354) = −131.48°, tilt 20.71°. Its flip, pan 48.52°,
+///   tilt −20.71°, is 83° nearer the head's pan of 0 and inside ±135°,
+///   so the head takes the flip: pan → 38656, tilt → 27742.
+/// - M4: pan 4.68° → 33335, tilt 44.75° → 43630.
 ///
 /// t = 7 s: the front pair on the wing (−3, 1.5, 1.0), the rear pair at
 /// explicit angles.
-/// - M3: principal pan −92.56°; the pan before was 131.48°, so the
-///   nearest turn inside ±270° is 267.44° (136° away, not 224° back the
-///   other way) → 65225; tilt −36.62° → 23878.
-/// - M4: pan 5.30° → 33410, tilt −26.39° → 26362.
+/// - M3: from pan 48.52°, the principal pan 92.56° (tilt 53.38°) is
+///   nearer than its flip −87.44°: → 44000, tilt → 45723.
+/// - M4: pan −5.30° → 32125, tilt 63.61° → 48207.
 /// - M1, M2: pan 45° → round(315/540 × 65535) = 38229,
 ///   tilt −20° → round(115/270 × 65535) = 27913.
 fn expected_pointing() -> [Vec<Aimed>; 3] {
     [
         vec![
-            Aimed("M1", 24186, 19932),
-            Aimed("M2", 41349, 19932),
-            Aimed("M3", 32768, 17033),
-            Aimed("M4", 36248, 24905),
+            Aimed("M1", 41349, 41777),
+            Aimed("M2", 24186, 41777),
+            Aimed("M3", 32768, 38878),
+            Aimed("M4", 29287, 46750),
         ],
         vec![
-            Aimed("M1", 27584, 23955),
-            Aimed("M2", 36603, 22957),
-            Aimed("M3", 48724, 15948),
-            Aimed("M4", 32200, 21785),
+            Aimed("M1", 37951, 45800),
+            Aimed("M2", 28932, 44802),
+            Aimed("M3", 38656, 27742),
+            Aimed("M4", 33335, 43630),
         ],
         vec![
             Aimed("M1", 38229, 27913),
             Aimed("M2", 38229, 27913),
-            Aimed("M3", 65225, 23878),
-            Aimed("M4", 33410, 26362),
+            Aimed("M3", 44000, 45723),
+            Aimed("M4", 32125, 48207),
         ],
     ]
 }
@@ -369,12 +377,21 @@ fn near(got: u16, want: u16) -> bool {
 
 /// Every mover's pan and tilt on the wire match the hand-worked bytes at
 /// each instant: focus points through two venue rotations that do not
-/// commute, a range from a GDTF file and one from a `.fixture`, the
-/// nearest turn after a previous pose, and an explicit-angle move.
+/// commute, a range from a GDTF file and one from a `.fixture`, the flip
+/// solution when it is nearer, and an explicit-angle move.
 #[test]
 fn movers_aim_where_the_hand_calculation_says_on_the_wire() {
     let mut project = project();
     let frames = live_frames(&mut project);
+    // The bytes the old convention produced for M1 (pan −70.71°, tilt
+    // −52.88° as GDTF degrees) would put a real head 4.1 m from the
+    // drummer (design §18.1). They must not come back.
+    let old = (24186u16, 19932u16);
+    let m1 = (
+        u16::from_be_bytes([frames[0][1], frames[0][2]]),
+        u16::from_be_bytes([frames[0][3], frames[0][4]]),
+    );
+    assert_ne!(m1, old, "M1 is aimed by the convention §18 replaced");
     for (i, expected) in expected_pointing().iter().enumerate() {
         for Aimed(name, pan, tilt) in expected {
             let base = address(name) as usize;
@@ -458,6 +475,65 @@ fn the_evaluator_reports_the_same_cells_as_the_wire() {
             let got = [own["red"], own["green"], own["blue"]];
             assert_eq!(got, [r, g, b], "{fixture}/{cell} at {:?}", AT[i]);
             assert_eq!(snapshot.channels["dimmer"], 255, "{fixture} dimmer");
+        }
+    }
+}
+
+/// The pointing math against the manufacturer's geometry: the pose the
+/// math chooses, pushed through the rig's joints exactly as a GDTF
+/// renderer would turn them, sends the beam at the target. The two share
+/// only the spec's definitions of the axes.
+#[test]
+fn the_rig_kinematics_send_the_beam_where_the_pointing_math_aims() {
+    use crate::lighting::effects::{aim_solutions, direction, Pose};
+    use crate::lighting::gdtf::{beam_direction, distill_rig, parse_description};
+
+    let description = parse_description(SYNTHETIC_DESCRIPTION).unwrap();
+    let rig = distill_rig(&description, "Mover 16bit", &Default::default()).unwrap();
+    assert!(rig.pan.is_some() && rig.tilt.is_some(), "{rig:?}");
+
+    // Every pose the math can produce, through the joints.
+    for pan in (-270..=270).step_by(15) {
+        for tilt in (-135..=135).step_by(15) {
+            let pose = Pose {
+                pan: f64::from(pan),
+                tilt: f64::from(tilt),
+            };
+            let math = direction([0.0; 3], pose);
+            let rig_beam = beam_direction(&rig, pose.pan, pose.tilt).unwrap();
+            for i in 0..3 {
+                assert!(
+                    (math[i] - rig_beam[i]).abs() < 1e-9,
+                    "pan {pan} tilt {tilt}: math {math:?}, rig {rig_beam:?}"
+                );
+            }
+        }
+    }
+
+    // And the golden venue's movers at the drummer, through the joints
+    // and the mounting.
+    let drummer = [0.0, 2.8, 1.4];
+    let mountings: [([f64; 3], [f64; 3]); 3] = [
+        ([-2.0, 3.5, 4.2], [0.0, 0.0, 180.0]),
+        ([0.0, 0.5, 3.0], [30.0, 0.0, 0.0]),
+        ([3.0, 2.0, 4.0], [0.0, 20.0, 90.0]),
+    ];
+    for (position, rotation) in mountings {
+        let d = [
+            drummer[0] - position[0],
+            drummer[1] - position[1],
+            drummer[2] - position[2],
+        ];
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        for pose in aim_solutions(position, rotation, drummer) {
+            let local = beam_direction(&rig, pose.pan, pose.tilt).unwrap();
+            let stage = crate::lighting::effects::out_of_frame(rotation, local);
+            for i in 0..3 {
+                assert!(
+                    (stage[i] - d[i] / len).abs() < 1e-9,
+                    "{position:?} {rotation:?} {pose:?}: rig beam {stage:?}, target {d:?}"
+                );
+            }
         }
     }
 }

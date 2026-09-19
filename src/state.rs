@@ -64,13 +64,25 @@ pub struct StateSnapshot {
 const MAX_THROW_M: f64 = 40.0;
 
 /// Computes the pose snapshots from the engine's pose memory and the
-/// registered fixtures' placement.
+/// registered fixtures' placement. Every placed fixture has one (design
+/// §18, decision 4): a fixture nothing has moved sits at rest, pointing
+/// down its mounting's −Z, which for a static fixture is simply where it
+/// points.
 pub(crate) fn compute_pose_snapshots(
     poses: &HashMap<String, crate::lighting::effects::Pose>,
     registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
 ) -> Vec<PoseSnapshot> {
+    let rest = crate::lighting::effects::Pose {
+        pan: 0.0,
+        tilt: 0.0,
+    };
+    let at_rest = registry.iter().filter_map(|(name, fixture)| {
+        (fixture.position.is_some() && fixture.parent.is_none() && !poses.contains_key(name))
+            .then_some((name, &rest))
+    });
     let mut out: Vec<PoseSnapshot> = poses
         .iter()
+        .chain(at_rest)
         .filter_map(|(name, pose)| {
             let fixture = registry.get(name)?;
             let rotation = fixture.rotation.unwrap_or([0.0; 3]);
@@ -399,13 +411,14 @@ mod tests {
         mover.rotation = Some([0.0, 0.0, 180.0]);
         registry.insert("m".to_string(), mover);
         let mut poses = HashMap::new();
-        // Facing the audience, tilted 45° down: the beam hits the deck 4 m
-        // downstage of the fixture.
+        // Hung facing the audience, tilted 45° from straight down toward
+        // its local +y (downstage): the beam hits the deck 4 m downstage
+        // of the fixture.
         poses.insert(
             "m".to_string(),
             Pose {
                 pan: 0.0,
-                tilt: -45.0,
+                tilt: 45.0,
             },
         );
         let snapshots = compute_pose_snapshots(&poses, &registry);
@@ -415,8 +428,8 @@ mod tests {
             (floor[0]).abs() < 1e-9 && (floor[1] - -0.5).abs() < 1e-9,
             "{floor:?}"
         );
-        // Level or upward: no footprint.
-        poses.get_mut("m").unwrap().tilt = 10.0;
+        // Past level: no footprint.
+        poses.get_mut("m").unwrap().tilt = 100.0;
         assert!(compute_pose_snapshots(&poses, &registry)[0].floor.is_none());
     }
 

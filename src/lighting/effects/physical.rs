@@ -101,10 +101,12 @@ impl PhysicalParameter {
     /// The travel assumed for a channel with no physical range: enough
     /// that any real fixture's degrees land inside it, so a thin fixture
     /// definition still moves, less precisely. Lint says so (§15.5).
+    /// The travel assumed for a channel that declares none, centred on
+    /// rest the way GDTF ranges are (mid-travel is straight down).
     pub fn fallback_range(self) -> (f64, f64) {
         match self {
-            PhysicalParameter::Pan => (0.0, 540.0),
-            PhysicalParameter::Tilt => (0.0, 270.0),
+            PhysicalParameter::Pan => (-270.0, 270.0),
+            PhysicalParameter::Tilt => (-135.0, 135.0),
         }
     }
 }
@@ -353,12 +355,13 @@ mod tests {
     #[test]
     fn a_channel_with_no_range_uses_the_fallback_travel() {
         let def = ChannelDef::at(2);
-        let full = resolve_degrees(&def, PhysicalParameter::Pan, 540.0);
+        let full = resolve_degrees(&def, PhysicalParameter::Pan, 270.0);
         assert_eq!(full.bytes, vec![(2, 255)]);
         assert!(!full.clamped);
-        let half = resolve_degrees(&def, PhysicalParameter::Tilt, 135.0);
-        assert_eq!(half.bytes, vec![(2, 128)]);
-        assert!(resolve_degrees(&def, PhysicalParameter::Pan, -10.0).clamped);
+        // Rest is mid-travel, as GDTF ranges have it.
+        let rest = resolve_degrees(&def, PhysicalParameter::Tilt, 0.0);
+        assert_eq!(rest.bytes, vec![(2, 128)]);
+        assert!(resolve_degrees(&def, PhysicalParameter::Pan, -300.0).clamped);
     }
 
     #[test]
@@ -415,7 +418,7 @@ mod tests {
         defs.insert("pan".to_string(), ChannelDef::at(1));
         let physical = PhysicalState {
             pan: Some(Intent {
-                degrees: 270.0,
+                degrees: 0.0,
                 layer: EffectLayer::Background,
             }),
             tilt: Some(Intent {
