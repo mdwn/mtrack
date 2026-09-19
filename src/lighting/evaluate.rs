@@ -202,6 +202,7 @@ fn fill_dark_fixtures<'a>(
             continue;
         }
         snapshots.push(FixtureSnapshot {
+            cells: Default::default(),
             name: info.name.clone(),
             channels: info
                 .channels
@@ -265,6 +266,7 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
         .filter(|(name, _)| registry.get(name).is_none_or(|f| f.parent.is_none()))
         .collect();
     let mut fixtures = compute_fixture_snapshots(&states, &has_dimmer);
+    crate::state::attach_cell_snapshots(&mut fixtures, &engine.get_fixture_states(), registry);
     fill_dark_fixtures(&mut fixtures, registry.values());
 
     Evaluation {

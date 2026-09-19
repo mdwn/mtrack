@@ -123,7 +123,16 @@ export interface FixtureMetadata {
    * body without one.
    */
   rig?: string | null;
+  /**
+   * The cells of a pixel fixture, in the manufacturer's order, with their
+   * offsets in the fixture's frame (meters); empty for a one-colour
+   * fixture. The plot draws one segment each.
+   */
+  cells?: { name: string; offset: Vec3 }[];
 }
+
+/** Per-cell channel values, by fixture then cell (design §17.4). */
+export type CellChannels = Record<string, Record<string, FixtureChannels>>;
 
 /** The current venue as the stage view needs it. */
 export interface VenueMetadata {
@@ -184,6 +193,11 @@ export const playbackStore = writable<PlaybackState>({
 });
 
 export const fixtureStore = writable<Record<string, FixtureChannels>>({});
+/**
+ * Per-cell values for fixtures a per-cell effect is driving this frame;
+ * a fixture absent here shows its own channels on every cell.
+ */
+export const cellStore = writable<CellChannels>({});
 
 /** Where a mover points, from the engine's pose memory. */
 export interface FixturePose {
@@ -249,10 +263,12 @@ on("state", (msg) => {
     fixtures: Record<string, FixtureChannels>;
     active_effects: string[];
     poses?: Record<string, FixturePose>;
+    cells?: CellChannels;
   };
   fixtureStore.set(m.fixtures ?? {});
   effectsStore.set(m.active_effects ?? []);
   poseStore.set(m.poses ?? {});
+  cellStore.set(m.cells ?? {});
 });
 
 on("metadata", (msg) => {

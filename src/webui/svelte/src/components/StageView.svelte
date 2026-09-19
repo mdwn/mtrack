@@ -16,6 +16,7 @@
   import {
     metadataStore,
     fixtureStore,
+    cellStore,
     reloadStore,
     venueStore,
     poseStore,
@@ -264,6 +265,9 @@
   }
 
   function draw(fixtureStates: Record<string, FixtureChannels>) {
+    // Per-cell values ride the same state message as the channels; read
+    // here so a redraw for either shows both.
+    const cellStates = get(cellStore);
     if (!canvasEl || !ctx) return;
 
     const w = canvasEl.clientWidth;
@@ -358,15 +362,51 @@
         ctx.fill();
       }
 
-      // Fixture body — dashed when the venue has not placed it yet.
-      ctx.fillStyle = `rgb(${finalR},${finalG},${finalB})`;
+      // Fixture body — dashed when the venue has not placed it yet. A
+      // pixel fixture is a disc of wedges, one per cell in the
+      // manufacturer's order, each in its own colour when a per-cell
+      // effect drives it (design §17.4), else the fixture's.
       ctx.strokeStyle = fixtureStroke;
       ctx.lineWidth = 1.5;
       if (isUnplaced) ctx.setLineDash([4, 3]);
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
+      const cells = meta.cells ?? [];
+      const cellState = cellStates[name];
+      if (cells.length > 1) {
+        const step = (Math.PI * 2) / cells.length;
+        for (const [i, cell] of cells.entries()) {
+          const own = cellState?.[cell.name];
+          let cr = finalR;
+          let cg = finalG;
+          let cb = finalB;
+          if (own) {
+            const k = (own.dimmer ?? dimmer) / 255;
+            cr = strobeVisible ? Math.round((own.red ?? 0) * k) : 0;
+            cg = strobeVisible ? Math.round((own.green ?? 0) * k) : 0;
+            cb = strobeVisible ? Math.round((own.blue ?? 0) * k) : 0;
+          }
+          ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+          ctx.beginPath();
+          ctx.moveTo(pos.x, pos.y);
+          ctx.arc(
+            pos.x,
+            pos.y,
+            radius,
+            -Math.PI / 2 + i * step,
+            -Math.PI / 2 + (i + 1) * step,
+          );
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = `rgb(${finalR},${finalG},${finalB})`;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
       ctx.setLineDash([]);
 
       // Orientation tick from the mounting yaw, on placed fixtures.

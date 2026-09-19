@@ -313,6 +313,43 @@ export const METADATA_STATE = {
   },
 };
 
+/** The same venue with a three-cell pixel bar beside the pars. */
+export const PIXEL_METADATA_STATE = {
+  type: "metadata",
+  fixtures: {
+    "front-left": { tags: ["front", "left"], type: "par" },
+    "front-right": { tags: ["front", "right"], type: "par" },
+    bar: {
+      tags: ["bar"],
+      type: "PixelBar",
+      cells: [
+        { name: "1", offset: [-0.3, 0, 0] },
+        { name: "2", offset: [0, 0, 0] },
+        { name: "3", offset: [0.3, 0, 0] },
+      ],
+    },
+  },
+};
+
+/** A state frame in which a per-cell effect drives the bar: red, green,
+ *  blue along its cells over a white bed. */
+export const PIXEL_STATE = {
+  type: "state",
+  fixtures: {
+    "front-left": { red: 255, green: 0, blue: 128, dimmer: 200, strobe: 0 },
+    "front-right": { red: 0, green: 255, blue: 64, dimmer: 180, strobe: 0 },
+    bar: { red: 255, green: 255, blue: 255, dimmer: 255, strobe: 0 },
+  },
+  active_effects: ["rainbow"],
+  cells: {
+    bar: {
+      "1": { red: 255, green: 0, blue: 0 },
+      "2": { red: 0, green: 255, blue: 0 },
+      "3": { red: 0, green: 0, blue: 255 },
+    },
+  },
+};
+
 /** A mover's rig as the asset store writes it: base, yoke (pan), head
  *  (tilt), one beam. */
 export const TEST_RIG = {

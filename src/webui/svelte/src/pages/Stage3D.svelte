@@ -22,6 +22,7 @@
   import { onMount } from "svelte";
   import { t } from "svelte-i18n";
   import {
+    cellStore,
     fixtureStore,
     metadataStore,
     poseStore,
@@ -116,6 +117,9 @@
   });
   $effect(() => {
     scene?.setPoses($poseStore);
+  });
+  $effect(() => {
+    scene?.setCells($cellStore);
   });
   $effect(() => {
     if (!labelsChosen) labels = fixtureCount <= 40;
