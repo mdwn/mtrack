@@ -199,14 +199,14 @@ pub fn distill(
             channel_defs.insert(n.name, n.def);
             continue;
         };
-        let owner = &owner_geometry[&n.name.clone()];
-        let same_shape = |g: &str| {
-            sections
-                .iter()
-                .find(|(s, _)| s == g)
-                .map(|(_, a)| a.clone())
-        };
-        if owner != &n.geometry && same_shape(owner) == same_shape(&n.geometry) {
+        let owner = owner_geometry[n.name.as_str()].as_str();
+        let same_shape = |g: &str| sections.iter().find(|(s, _)| s == g).map(|(_, a)| a);
+        // A repeat on the owner's own geometry is the same section by
+        // definition. Pan and tilt never gang: two heads exposing the same
+        // attributes are still aimed independently, and mirroring one
+        // head's angles onto the other would be wrong, not merely coarse.
+        let aims = n.name == "pan" || n.name == "tilt";
+        if !aims && (owner == n.geometry || same_shape(owner) == same_shape(&n.geometry)) {
             existing.mirrors.push((n.def.offset, n.def.fine));
             if !ganged.contains(&n.geometry) {
                 ganged.push(n.geometry.clone());
@@ -227,8 +227,8 @@ pub fn distill(
     }
     if !ganged.is_empty() {
         warnings.push(format!(
-            "{} identical section(s) ganged to the first ({}): the whole fixture shows one \
-             color; per-section control is not modelled",
+            "{} identical section(s) ganged to the first ({}): every section receives the \
+             same value — one color, one level; per-section control is not modelled",
             ganged.len(),
             ganged.join(", ")
         ));
@@ -560,6 +560,37 @@ mod tests {
             "{:?}",
             distilled.warnings
         );
+    }
+
+    #[test]
+    fn a_repeat_on_the_same_geometry_gangs_and_pan_tilt_never_do() {
+        let xml = r#"<GDTF><FixtureType Name="Twin" Manufacturer="m">
+  <Geometries><Geometry Name="Base"><Geometry Name="Head A"/><Geometry Name="Head B"/></Geometry></Geometries>
+  <DMXModes>
+    <DMXMode Name="M" Geometry="Base">
+      <DMXChannels>
+        <DMXChannel Offset="1" Geometry="Head A"><LogicalChannel Attribute="Dimmer"><ChannelFunction Name="D" Attribute="Dimmer" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="2" Geometry="Head A"><LogicalChannel Attribute="Dimmer"><ChannelFunction Name="D" Attribute="Dimmer" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="3" Geometry="Head A"><LogicalChannel Attribute="Pan"><ChannelFunction Name="P" Attribute="Pan" DMXFrom="0/1" PhysicalFrom="-270" PhysicalTo="270"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="4" Geometry="Head B"><LogicalChannel Attribute="Dimmer"><ChannelFunction Name="D" Attribute="Dimmer" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="5" Geometry="Head B"><LogicalChannel Attribute="Dimmer"><ChannelFunction Name="D" Attribute="Dimmer" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="6" Geometry="Head B"><LogicalChannel Attribute="Pan"><ChannelFunction Name="P" Attribute="Pan" DMXFrom="0/1" PhysicalFrom="-270" PhysicalTo="270"/></LogicalChannel></DMXChannel>
+      </DMXChannels>
+    </DMXMode>
+  </DMXModes>
+</FixtureType></GDTF>"#;
+        let description = parse_description(xml).unwrap();
+        let distilled = distill(&description, "M", "Twin").unwrap();
+        let defs = distilled.fixture_type.channel_defs();
+        // Both heads have the same shape: the dimmers gang, all four bytes.
+        assert_eq!(
+            defs["dimmer"].mirrors,
+            vec![(2, None), (4, None), (5, None)]
+        );
+        // Pan does not: the second head keeps its own.
+        assert_eq!(defs["pan"].offset, 3);
+        assert!(defs["pan"].mirrors.is_empty());
+        assert_eq!(defs["pan:head_b"].offset, 6);
     }
 
     #[test]

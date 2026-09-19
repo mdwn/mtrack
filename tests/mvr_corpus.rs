@@ -80,15 +80,15 @@ fn every_corpus_file_parses_and_references_resolve() {
                 println!("  [{}] no GDTF reference", fixture.name);
                 continue;
             };
-            // Console exports sometimes omit the extension in the reference.
-            let entry = embedded
-                .iter()
-                .find(|name| {
-                    name.as_str() == spec
-                        || name.strip_suffix(".gdtf") == Some(spec)
-                        || name.rsplit('/').next() == Some(spec)
-                })
-                .cloned();
+            // The importer's own resolution: extension, path prefix and
+            // manufacturer prefix tolerated, ambiguity reported.
+            let entry = match mvr::resolve_gdtf_entry(&embedded, spec) {
+                Ok(entry) => entry.map(str::to_string),
+                Err(e) => {
+                    println!("  [{}] {e}", fixture.name);
+                    continue;
+                }
+            };
             let Some(entry) = entry else {
                 println!(
                     "  [{}] GDTF reference {spec:?} matches no embedded entry",

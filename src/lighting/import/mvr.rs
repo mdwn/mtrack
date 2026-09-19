@@ -417,13 +417,20 @@ fn plan(
             resolved.push((index, None, Some("no GDTF reference".to_string())));
             continue;
         };
-        let Some(entry) = mvr::resolve_gdtf_entry(&entries, spec) else {
-            resolved.push((
-                index,
-                None,
-                Some(format!("GDTF \"{spec}\" is not embedded in the MVR")),
-            ));
-            continue;
+        let entry = match mvr::resolve_gdtf_entry(&entries, spec) {
+            Ok(Some(entry)) => entry,
+            Ok(None) => {
+                resolved.push((
+                    index,
+                    None,
+                    Some(format!("GDTF \"{spec}\" is not embedded in the MVR")),
+                ));
+                continue;
+            }
+            Err(e) => {
+                resolved.push((index, None, Some(e.to_string())));
+                continue;
+            }
         };
         let entry = entry.to_string();
         if !embedded.contains_key(&entry) {
@@ -519,17 +526,18 @@ fn plan(
         );
         let existing =
             existing_fixture_type(project, &fixture_file, type_name, &archive, &key.mode)?;
+        // Same rule as import-gdtf, reused .fixture or not: a same-named
+        // library archive with different bytes would silently re-source
+        // every fixture type that points at it.
+        let library = project.join(&archive);
+        if library.exists() && std::fs::read(&library)? != item.bytes {
+            return Err(format!(
+                "{archive} already exists with different content — other fixture types \
+                 may reference it; remove it deliberately or rename the entry in the MVR"
+            )
+            .into());
+        }
         if !existing {
-            // Same rule as import-gdtf: a same-named library archive with
-            // different bytes would silently re-source other fixtures.
-            let library = project.join(&archive);
-            if library.exists() && std::fs::read(&library)? != item.bytes {
-                return Err(format!(
-                    "{archive} already exists with different content — other fixture types \
-                     may reference it; remove it deliberately or rename the entry in the MVR"
-                )
-                .into());
-            }
             // The definition the GDTF importer will write must parse back
             // and distill *now*, or the write loop could refuse halfway
             // through the batch — the one thing the plan exists to prevent.
@@ -606,11 +614,13 @@ fn plan(
             }
             _ => base.to_string(),
         };
-        let before = ordinal_named.len();
-        let name = unique_name(&candidate, *index, &mut seen_names, &mut ordinal_named);
-        if ordinal_named.len() > before {
-            // Collapsed below into one line rather than one per fixture.
-        }
+        let name = unique_name(
+            &candidate,
+            *index,
+            &mut seen_names,
+            &mut ordinal_named,
+            &mut warnings,
+        );
         let (position, rotation) = geometry(source, &origin_mm, &mut warnings);
         let patch = source.addresses.first().copied();
         if source.addresses.len() > 1 {
@@ -646,8 +656,8 @@ fn plan(
         let shown: Vec<&str> = ordinal_named.iter().take(6).map(String::as_str).collect();
         let more = ordinal_named.len().saturating_sub(shown.len());
         warnings.push(format!(
-            "{} fixtures shared a name and had no console fixture ID to tell them apart; \
-             they took an ordinal: {}{}",
+            "{} fixtures shared a name (and a fixture ID, where the file had one) and took \
+             an ordinal: {}{}",
             ordinal_named.len(),
             shown.join(", "),
             if more > 0 {
@@ -976,12 +986,12 @@ fn unique_name(
     index: usize,
     seen: &mut HashMap<String, usize>,
     ordinal_named: &mut Vec<String>,
+    warnings: &mut Vec<String>,
 ) -> String {
     let base = if name.trim().is_empty() {
         format!("Fixture {}", index + 1)
     } else {
-        let mut scratch = Vec::new();
-        dsl_safe(name, &mut scratch)
+        dsl_safe(name, warnings)
     };
     let count = seen.entry(base.clone()).or_default();
     *count += 1;
@@ -1570,6 +1580,36 @@ mod tests {
             .to_string();
         assert!(err.contains("quote"), "{err}");
         assert!(!other.path().join("lighting/library").exists());
+    }
+
+    #[test]
+    fn a_quoted_fixture_name_is_reported_without_a_focus_point_to_help() {
+        let dir = project();
+        let bytes = mvr_bytes(&scene_with(&brick("Foo&quot;Bar", "1.1", 0.0), ""));
+        let plan = inspect_mvr_bytes(&bytes, "kellys.mvr", &options(), dir.path()).unwrap();
+        assert_eq!(plan.fixtures[0].name, "Foo'Bar");
+        assert!(
+            plan.warnings.iter().any(|w| w.contains("contains a quote")),
+            "{:?}",
+            plan.warnings
+        );
+    }
+
+    #[test]
+    fn a_reused_fixture_type_still_checks_the_archive_bytes() {
+        let dir = project();
+        let bytes = mvr_bytes(&scene_with(&brick("B", "1.1", 0.0), ""));
+        import_mvr_bytes(&bytes, "kellys.mvr", &options(), dir.path()).unwrap();
+        // The library archive changes underneath the .fixture that pins it.
+        std::fs::write(
+            dir.path().join("lighting/library/Astera_PB15.gdtf"),
+            b"not the same bytes",
+        )
+        .unwrap();
+        let err = inspect_mvr_bytes(&bytes, "kellys.mvr", &options(), dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("different content"), "{err}");
     }
 
     #[test]
