@@ -166,6 +166,13 @@ produces incorrect results. `mtrack` uses period-linear interpolation to match t
 For example, the Astera PixelBrick's strobe channel uses DMX values 7–255 for 0.4–25 Hz. At
 10 Hz, `mtrack` sends DMX 248 (period-linear), not 103 (frequency-linear).
 
+#### The universe must exist in olad
+
+olad drops streamed frames for a universe that has no port patched to it, silently: `ola_uni_info`
+listing nothing means mtrack's frames are going nowhere, however healthy the connection looks.
+Patch your output port to each universe the profile drives (`ola_patch -d <device> -p <port> -u
+1`, or the olad web UI) before expecting light.
+
 ### Rich channel definitions (`*.fixture`)
 
 When a fixture has no GDTF — the manual is all you have — a `.fixture` file can describe

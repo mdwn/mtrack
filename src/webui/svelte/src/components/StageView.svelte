@@ -18,6 +18,7 @@
     fixtureStore,
     reloadStore,
     venueStore,
+    poseStore,
   } from "../lib/ws/stores";
   import type {
     FixtureChannels,
@@ -27,6 +28,8 @@
   } from "../lib/ws/stores";
   import { fetchVenue, saveVenue } from "../lib/api/config";
   import {
+    beamEnd,
+    drawBeam,
     facing,
     fitFrame,
     hasGeometry,
@@ -382,6 +385,29 @@
       ctx.font = "11px monospace";
       ctx.textAlign = "center";
       ctx.fillText(name, pos.x, pos.y + radius + 14);
+    }
+
+    // Beams: where each placed mover points, in the color it is showing,
+    // ending at its footprint on the deck.
+    if (frame) {
+      for (const [name, pose] of Object.entries($poseStore)) {
+        const meta = $metadataStore[name];
+        const from = layoutPositions[name];
+        if (!meta?.position || !from) continue;
+        const end = toPx(frame, beamEnd(meta.position, pose.aim, pose.floor));
+        drawBeam(
+          ctx,
+          from,
+          end,
+          fixtureStates[name] || {},
+          pose.floor !== null,
+          {
+            dark: isDark,
+            width: 3,
+            dot: 9,
+          },
+        );
+      }
     }
 
     // Focus points: diamond pins the show can aim at.

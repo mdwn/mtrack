@@ -357,10 +357,22 @@ pub async fn state_poller(
             })
             .collect();
 
+        let poses: serde_json::Map<String, serde_json::Value> = snapshot
+            .poses
+            .iter()
+            .map(|p| {
+                (
+                    p.name.clone(),
+                    json!({"pan": p.pan, "tilt": p.tilt, "aim": p.aim, "floor": p.floor}),
+                )
+            })
+            .collect();
+
         let msg = json!({
             "type": "state",
             "fixtures": fixtures,
             "active_effects": snapshot.active_effects,
+            "poses": poses,
         });
 
         let _ = tx.send(msg.to_string());
@@ -1173,6 +1185,7 @@ metronome: {}
                 },
             }],
             active_effects: vec!["chase".to_string()],
+            poses: Vec::new(),
         });
         state_tx.send(snapshot).unwrap();
 
@@ -1535,6 +1548,7 @@ metronome: {}
                 channels: std::collections::HashMap::new(),
             }],
             active_effects: vec![],
+            poses: Vec::new(),
         });
         state_tx.send(snapshot).unwrap();
 

@@ -235,6 +235,70 @@ export function facing(rotation: Vec3 | null | undefined): Pt {
   return { x: -Math.sin(yaw), y: -Math.cos(yaw) };
 }
 
+/**
+ * The on-plot beam of a mover: from the fixture to its footprint on the
+ * deck when the beam points down, or a short arrow along its heading when
+ * it does not. Stage meters in, stage meters out.
+ */
+export function beamEnd(
+  position: Vec3,
+  aim: Vec3,
+  floor: [number, number] | null,
+): [number, number] {
+  if (floor) return floor;
+  const len = Math.hypot(aim[0], aim[1]);
+  if (len < 1e-6) return [position[0], position[1]];
+  const reach = 1.5;
+  return [
+    position[0] + (aim[0] / len) * reach,
+    position[1] + (aim[1] / len) * reach,
+  ];
+}
+
+/** The channels a beam's look is read from. */
+export interface BeamChannels {
+  red?: number;
+  green?: number;
+  blue?: number;
+  dimmer?: number;
+}
+
+/**
+ * Draws a mover's beam on a canvas: from the fixture to `end` in the color
+ * the fixture is showing, solid with a footprint dot when the beam meets
+ * the deck, dashed when it points up or level, neutral when the fixture
+ * is dark.
+ */
+export function drawBeam(
+  ctx: CanvasRenderingContext2D,
+  from: Pt,
+  end: Pt,
+  channels: BeamChannels,
+  hasFloor: boolean,
+  options: { dark: boolean; width: number; dot: number },
+): void {
+  const k = (channels.dimmer ?? 255) / 255;
+  const r = Math.round((channels.red ?? 0) * k);
+  const g = Math.round((channels.green ?? 0) * k);
+  const b = Math.round((channels.blue ?? 0) * k);
+  const lit = r + g + b > 24;
+  const neutral = options.dark ? "255,255,255" : "0,0,0";
+  ctx.strokeStyle = lit ? `rgba(${r},${g},${b},0.55)` : `rgba(${neutral},0.18)`;
+  ctx.lineWidth = lit ? options.width : Math.max(1, options.width / 2);
+  ctx.setLineDash(hasFloor ? [] : [3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(end.x, end.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  if (hasFloor && options.dot > 0) {
+    ctx.fillStyle = lit ? `rgba(${r},${g},${b},0.35)` : `rgba(${neutral},0.12)`;
+    ctx.beginPath();
+    ctx.arc(end.x, end.y, options.dot, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 /** A name for a new focus point that no existing one uses. */
 export function nextFocusName(existing: Record<string, unknown>): string {
   let n = 1;

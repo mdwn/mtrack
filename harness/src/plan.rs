@@ -22,11 +22,9 @@
 use crate::capabilities::Capabilities;
 use crate::discovery::Discovery;
 
-// Note: there is deliberately no `dmx-output` area. Verifying DMX on the wire
-// needs a reader on the far side of OLA, which does not exist yet; the lighting
-// checks record a caveat when olad is absent instead. An area with no checks
-// behind it would advertise RUN in the plan and then never appear in the
-// results -- exactly the overstated coverage this tool exists to avoid.
+// The `dmx-output` area reads frames back through olad's web server: not a
+// reader on the far side of the wire, but what olad is outputting, one hop
+// from it. The lighting checks still record a caveat when olad is absent.
 
 /// A capability an area depends on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +40,8 @@ pub enum Need {
     MidiLoopback,
     /// An OLA daemon, so DMX frames reach the wire.
     OlaDaemon,
+    /// olad's web server, so what it outputs can be read back.
+    DmxReadback,
 }
 
 impl Need {
@@ -86,6 +86,18 @@ impl Need {
                 .ola_port
                 .is_none()
                 .then(|| "no OLA daemon is listening".to_string()),
+            Need::DmxReadback => {
+                if caps.ola_port.is_none() {
+                    Some("no OLA daemon".to_string())
+                } else if caps.ola_http.is_none() {
+                    Some(
+                        "olad's web server is not reachable, so frames cannot be read back"
+                            .to_string(),
+                    )
+                } else {
+                    None
+                }
+            }
         }
     }
 }
@@ -172,6 +184,14 @@ pub const AREAS: &[Area] = &[
         name: "lighting",
         description: "show creation, validation, cues, live effects",
         needs: &[Need::AudioOut],
+        opt_in: false,
+    },
+    Area {
+        name: "dmx-output",
+        description: "DMX frames read back from olad: strobe function, 16-bit sweep, slew, focus",
+        // No audio: playback runs DMX-only when the profile has no audio
+        // device, so a lighting-only rig can verify its frames.
+        needs: &[Need::OlaDaemon, Need::DmxReadback],
         opt_in: false,
     },
 ];

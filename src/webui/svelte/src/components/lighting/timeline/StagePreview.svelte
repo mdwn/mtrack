@@ -19,6 +19,7 @@
     fixtureStore,
     effectsStore,
     venueStore,
+    poseStore,
   } from "../../../lib/ws/stores";
   import type {
     FixtureChannels,
@@ -26,6 +27,8 @@
     VenueMetadata,
   } from "../../../lib/ws/stores";
   import {
+    beamEnd,
+    drawBeam,
     fitFrame,
     hasGeometry,
     positionalLayout,
@@ -244,6 +247,28 @@
       ctx.font = "9px monospace";
       ctx.textAlign = "center";
       ctx.fillText(name, pos.x, pos.y + FIXTURE_RADIUS + 10);
+    }
+
+    // Beams of placed movers, ending at their footprint on the deck.
+    if (frame) {
+      for (const [name, pose] of Object.entries($poseStore)) {
+        const meta = $metadataStore[name];
+        const from = layoutPositions[name];
+        if (!meta?.position || !from) continue;
+        const end = toPx(frame, beamEnd(meta.position, pose.aim, pose.floor));
+        drawBeam(
+          ctx,
+          from,
+          end,
+          fixtureStates[name] || {},
+          pose.floor !== null,
+          {
+            dark: isDark,
+            width: 2,
+            dot: 5,
+          },
+        );
+      }
     }
 
     // Focus points: the pins the show can aim at.

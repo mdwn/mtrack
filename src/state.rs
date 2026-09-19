@@ -34,11 +34,61 @@ pub struct FixtureSnapshot {
     pub channels: HashMap<String, u8>,
 }
 
+/// Where a mover is pointing, for the stage plot's beam.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PoseSnapshot {
+    pub name: String,
+    pub pan: f64,
+    pub tilt: f64,
+    /// The beam direction in stage space, unit length.
+    pub aim: [f64; 3],
+    /// Where the beam meets the deck (stage x, y), when it points down and
+    /// the venue places the fixture; a beam pointing up has no footprint.
+    pub floor: Option<[f64; 2]>,
+}
+
 /// State snapshot broadcast to all display consumers.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StateSnapshot {
     pub fixtures: Vec<FixtureSnapshot>,
     pub active_effects: Vec<String>,
+    pub poses: Vec<PoseSnapshot>,
+}
+
+/// The farthest a beam footprint is drawn from its fixture, meters: a
+/// near-level beam would otherwise land off the plot.
+const MAX_THROW_M: f64 = 40.0;
+
+/// Computes the pose snapshots from the engine's pose memory and the
+/// registered fixtures' placement.
+pub(crate) fn compute_pose_snapshots(
+    poses: &HashMap<String, crate::lighting::effects::Pose>,
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+) -> Vec<PoseSnapshot> {
+    let mut out: Vec<PoseSnapshot> = poses
+        .iter()
+        .filter_map(|(name, pose)| {
+            let fixture = registry.get(name)?;
+            let rotation = fixture.rotation.unwrap_or([0.0; 3]);
+            let aim = crate::lighting::effects::direction(rotation, *pose);
+            let floor = fixture.position.and_then(|p| {
+                if aim[2] >= -1e-6 || p[2] <= 0.0 {
+                    return None;
+                }
+                let t = (-p[2] / aim[2]).min(MAX_THROW_M);
+                Some([p[0] + aim[0] * t, p[1] + aim[1] * t])
+            });
+            Some(PoseSnapshot {
+                name: name.clone(),
+                pan: pose.pan,
+                tilt: pose.tilt,
+                aim,
+                floor,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
 }
 
 /// Starts a 20Hz sampler that produces `StateSnapshot` values via a `watch` channel.
@@ -89,11 +139,12 @@ async fn sample_tick(
     has_dimmer_map: &HashMap<String, bool>,
 ) -> Option<Arc<StateSnapshot>> {
     let engine_ref = effect_engine.clone();
-    let (states, mut active_effects) = tokio::task::spawn_blocking(move || {
+    let (states, mut active_effects, poses) = tokio::task::spawn_blocking(move || {
         let engine = engine_ref.lock();
         let states = engine.get_fixture_states();
         let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
-        (states, effects)
+        let poses = compute_pose_snapshots(engine.poses(), engine.get_fixture_registry());
+        (states, effects, poses)
     })
     .await
     .ok()?;
@@ -104,6 +155,7 @@ async fn sample_tick(
     Some(Arc::new(StateSnapshot {
         fixtures,
         active_effects,
+        poses,
     }))
 }
 
@@ -115,12 +167,25 @@ async fn sampler_loop(
     let mut interval = time::interval(Duration::from_millis(50));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     let has_dimmer_map = init_dimmer_map(&effect_engine).await;
+    let mut first = true;
 
     loop {
         interval.tick().await;
 
         if let Some(snapshot) = sample_tick(&effect_engine, &has_dimmer_map).await {
-            let _ = tx.send(snapshot);
+            // An idle rig must not wake subscribers twenty times a second:
+            // a snapshot equal to the last one is not a change. The first
+            // one always goes out, so a subscriber waiting on the sampler
+            // learns it is alive.
+            tx.send_if_modified(|current| {
+                if !first && **current == *snapshot {
+                    false
+                } else {
+                    *current = snapshot;
+                    true
+                }
+            });
+            first = false;
         }
     }
 }
@@ -134,6 +199,7 @@ async fn sampler_loop_cancellable(
     let mut interval = time::interval(Duration::from_millis(50));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     let has_dimmer_map = init_dimmer_map(&effect_engine).await;
+    let mut first = true;
 
     loop {
         tokio::select! {
@@ -142,7 +208,19 @@ async fn sampler_loop_cancellable(
         }
 
         if let Some(snapshot) = sample_tick(&effect_engine, &has_dimmer_map).await {
-            let _ = tx.send(snapshot);
+            // An idle rig must not wake subscribers twenty times a second:
+            // a snapshot equal to the last one is not a change. The first
+            // one always goes out, so a subscriber waiting on the sampler
+            // learns it is alive.
+            tx.send_if_modified(|current| {
+                if !first && **current == *snapshot {
+                    false
+                } else {
+                    *current = snapshot;
+                    true
+                }
+            });
+            first = false;
         }
     }
 }
@@ -187,6 +265,37 @@ pub(crate) fn compute_fixture_snapshots(
 mod tests {
     use super::*;
     use crate::lighting::effects::{BlendMode, ChannelState, EffectLayer, FixtureState};
+
+    #[test]
+    fn pose_snapshots_carry_the_beam_and_its_footprint() {
+        use crate::lighting::effects::{FixtureInfo, Pose};
+        let mut registry = HashMap::new();
+        let mut mover =
+            FixtureInfo::new("m".to_string(), 1, 1, "T".to_string(), HashMap::new(), None);
+        mover.position = Some([0.0, 3.5, 4.0]);
+        mover.rotation = Some([0.0, 0.0, 180.0]);
+        registry.insert("m".to_string(), mover);
+        let mut poses = HashMap::new();
+        // Facing the audience, tilted 45° down: the beam hits the deck 4 m
+        // downstage of the fixture.
+        poses.insert(
+            "m".to_string(),
+            Pose {
+                pan: 0.0,
+                tilt: -45.0,
+            },
+        );
+        let snapshots = compute_pose_snapshots(&poses, &registry);
+        assert_eq!(snapshots.len(), 1);
+        let floor = snapshots[0].floor.expect("footprint");
+        assert!(
+            (floor[0]).abs() < 1e-9 && (floor[1] - -0.5).abs() < 1e-9,
+            "{floor:?}"
+        );
+        // Level or upward: no footprint.
+        poses.get_mut("m").unwrap().tilt = 10.0;
+        assert!(compute_pose_snapshots(&poses, &registry)[0].floor.is_none());
+    }
 
     #[test]
     fn test_compute_fixture_snapshots_rgb_only() {
@@ -349,6 +458,7 @@ mod tests {
                 channels: HashMap::new(),
             }],
             active_effects: vec!["effect1".to_string()],
+            poses: Vec::new(),
         };
         let cloned = snapshot.clone();
         assert_eq!(cloned.fixtures.len(), 1);
@@ -408,16 +518,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_start_sampler_multiple_ticks() {
+    async fn an_idle_engine_does_not_wake_subscribers_but_a_change_does() {
+        use crate::lighting::effects::{EffectInstance, EffectType, FixtureInfo};
         let engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let (mut rx, handle) = start_sampler(engine);
+        {
+            let channels: HashMap<String, u16> = [("red", 1u16)]
+                .into_iter()
+                .map(|(n, o)| (n.to_string(), o))
+                .collect();
+            engine.lock().register_fixture(FixtureInfo::new(
+                "f".to_string(),
+                1,
+                1,
+                "T".to_string(),
+                channels,
+                None,
+            ));
+        }
+        let (mut rx, handle) = start_sampler(engine.clone());
 
-        // Wait for first tick
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+        // The first snapshot always goes out.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+        assert!(first.is_ok(), "timed out waiting for the first snapshot");
 
-        // Wait for second tick
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
-        assert!(result.is_ok(), "timed out waiting for second sampler tick");
+        // Nothing changes: no wake-up, however many ticks pass.
+        let idle = tokio::time::timeout(std::time::Duration::from_millis(300), rx.changed()).await;
+        assert!(idle.is_err(), "an idle engine woke a subscriber");
+
+        // Something changes: the next tick reports it.
+        {
+            let mut guard = engine.lock();
+            let mut parameters = HashMap::new();
+            parameters.insert("red".to_string(), 1.0);
+            let effect = EffectInstance::new(
+                "e".to_string(),
+                EffectType::Static {
+                    parameters,
+                    duration: std::time::Duration::from_secs(5),
+                },
+                vec!["f".to_string()],
+                None,
+                None,
+                None,
+            );
+            guard.start_effect(effect).unwrap();
+            guard
+                .update(std::time::Duration::from_millis(10), None)
+                .unwrap();
+        }
+        let changed = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+        assert!(changed.is_ok(), "a change did not wake the subscriber");
+        assert!(!rx.borrow().fixtures.is_empty());
 
         handle.abort();
     }

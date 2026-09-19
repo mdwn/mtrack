@@ -44,6 +44,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untrusted-input layers — the zip archive and the description XML — carry hard size and nesting
   caps and have cargo-fuzz targets.
 
+- **Beams on the stage plot, and DMX read back on the hardware harness (P1c-4)**: the stage
+  view draws each aimed mover's beam in the color it is showing, from the fixture to its
+  footprint on the deck, from the engine's live pan and tilt. The hardware harness gains a
+  `dmx-output` area that reads what olad is outputting back through its web server and asserts
+  on the bytes: a hardware strobe lands in its strobe function's range, a slow pan sweep is
+  continuous across both bytes of a 16-bit channel, a declared slew limit bounds a sweep on the
+  wire, and a focus point resolves to the pan and tilt the pointing math predicts through the
+  venue's placement. Runs wherever olad's web server answers; skips, loudly, where it does not.
+  Found on the way: olad silently drops streamed frames for a universe nobody has created, and a
+  fresh olad has none — so mtrack's output on such a rig goes nowhere without a word. The harness
+  patches the Dummy Device's output port to the universe for the run and says so; a real rig needs
+  its output port patched to the universe (`ola_patch`) or the lights stay dark.
+
 - **Rich channel syntax in `.fixture` files (P1c-3)**: a hand-written fixture type can now
   say what a GDTF would — `channel "pan" @ 1 fine 2 range -270deg..270deg`, and a block of
   `function` lines dividing a channel into DMX sub-ranges with their physical spans (`function

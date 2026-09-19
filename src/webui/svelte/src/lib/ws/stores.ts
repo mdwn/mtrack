@@ -172,6 +172,17 @@ export const playbackStore = writable<PlaybackState>({
 
 export const fixtureStore = writable<Record<string, FixtureChannels>>({});
 
+/** Where a mover points, from the engine's pose memory. */
+export interface FixturePose {
+  pan: number;
+  tilt: number;
+  /** Beam direction in stage space, unit length. */
+  aim: Vec3;
+  /** Where the beam meets the deck, when it points down. */
+  floor: [number, number] | null;
+}
+
+export const poseStore = writable<Record<string, FixturePose>>({});
 export const metadataStore = writable<Record<string, FixtureMetadata>>({});
 export const venueStore = writable<VenueMetadata | null>(null);
 
@@ -224,9 +235,11 @@ on("state", (msg) => {
     type: string;
     fixtures: Record<string, FixtureChannels>;
     active_effects: string[];
+    poses?: Record<string, FixturePose>;
   };
   fixtureStore.set(m.fixtures ?? {});
   effectsStore.set(m.active_effects ?? []);
+  poseStore.set(m.poses ?? {});
 });
 
 on("metadata", (msg) => {
