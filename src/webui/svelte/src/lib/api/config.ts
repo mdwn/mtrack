@@ -356,8 +356,20 @@ export interface VenueData {
   source?: VenueSource | null;
 }
 
+/** A fixture type as the directory listing carries it: the parsed type plus
+ *  the file it came from. The form decides how it may be edited — a
+ *  `.fixture` type is text-only, and a referential one has no channels of
+ *  its own until the lighting system expands its GDTF archive. */
+export interface FixtureTypeEntry {
+  fixture_type: FixtureTypeData;
+  file: string;
+  extension: string;
+  referential: boolean;
+  rich: boolean;
+}
+
 export async function fetchFixtureTypes(dir?: string): Promise<{
-  fixtureTypes: Record<string, FixtureTypeData>;
+  fixtureTypes: Record<string, FixtureTypeEntry>;
   errors: LightingFileError[];
 }> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
@@ -417,7 +429,7 @@ export async function importGdtf(
 export async function fetchFixtureType(
   name: string,
   dir?: string,
-): Promise<{ fixture_type: FixtureTypeData; dsl: string }> {
+): Promise<FixtureTypeEntry & { dsl: string }> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
@@ -440,6 +452,23 @@ export async function saveFixtureType(
   const res = await put(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
     JSON.stringify(data),
+  );
+  if (!res.ok) throw await apiError(res, "Failed to save fixture type");
+}
+
+/** Saves a fixture type as raw DSL. `ext` decides the form a *new* type is
+ *  born in; an existing file keeps its own extension. */
+export async function saveFixtureTypeText(
+  name: string,
+  dsl: string,
+  ext: "light" | "fixture",
+  dir?: string,
+): Promise<void> {
+  const params = new URLSearchParams({ ext });
+  if (dir) params.set("dir", dir);
+  const res = await putText(
+    `/lighting/fixture-types/${encodeURIComponent(name)}?${params}`,
+    dsl,
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
 }

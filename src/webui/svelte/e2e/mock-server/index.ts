@@ -254,22 +254,27 @@ app.post("/api/lighting/validate", (_req, res) => {
   res.json({ valid: true });
 });
 
-app.get("/api/lighting/fixture-types", (_req, res) => {
-  res.json({
-    fixture_types: {
-      par: {
-        name: "par",
-        channels: { red: 0, green: 1, blue: 2, dimmer: 3 },
-        max_strobe_frequency: null,
-        min_strobe_frequency: null,
-        strobe_dmx_offset: null,
-      },
-    },
-  });
-});
-
-app.get("/api/lighting/fixture-types/:name", (_req, res) => {
-  res.json({
+// The three forms a fixture type comes in: a v1 `.light` channel map, a
+// hand-written rich `.fixture`, and one distilled from a GDTF archive —
+// which has no channels of its own until the lighting system expands it.
+const FIXTURE_TYPES: Record<
+  string,
+  {
+    fixture_type: {
+      name: string;
+      channels: Record<string, number>;
+      max_strobe_frequency: number | null;
+      min_strobe_frequency: number | null;
+      strobe_dmx_offset: number | null;
+    };
+    file: string;
+    extension: string;
+    referential: boolean;
+    rich: boolean;
+    dsl: string;
+  }
+> = {
+  par: {
     fixture_type: {
       name: "par",
       channels: { red: 0, green: 1, blue: 2, dimmer: 3 },
@@ -277,8 +282,56 @@ app.get("/api/lighting/fixture-types/:name", (_req, res) => {
       min_strobe_frequency: null,
       strobe_dmx_offset: null,
     },
+    file: "par.light",
+    extension: "light",
+    referential: false,
+    rich: false,
     dsl: "fixture_type par { red: 0, green: 1, blue: 2, dimmer: 3 }",
-  });
+  },
+  mover: {
+    fixture_type: {
+      name: "mover",
+      channels: { pan: 1, tilt: 3, dimmer: 5 },
+      max_strobe_frequency: null,
+      min_strobe_frequency: null,
+      strobe_dmx_offset: null,
+    },
+    file: "mover.fixture",
+    extension: "fixture",
+    referential: false,
+    rich: true,
+    dsl: 'fixture_type "mover" {\n  channel "pan" @ 1 fine 2 range -270deg..270deg\n}\n',
+  },
+  pixelbrick: {
+    fixture_type: {
+      name: "pixelbrick",
+      channels: {},
+      max_strobe_frequency: null,
+      min_strobe_frequency: null,
+      strobe_dmx_offset: null,
+    },
+    file: "pixelbrick.fixture",
+    extension: "fixture",
+    referential: true,
+    rich: false,
+    dsl: 'fixture_type "pixelbrick" from gdtf("library/pb15.gdtf", mode "8: RGBS") {\n}\n',
+  },
+};
+
+app.get("/api/lighting/fixture-types", (_req, res) => {
+  // The listing carries everything but the source text, which GET-one has.
+  const fixture_types = Object.fromEntries(
+    Object.entries(FIXTURE_TYPES).map(([name, entry]) => [
+      name,
+      { ...entry, dsl: undefined },
+    ]),
+  );
+  res.json({ fixture_types });
+});
+
+app.get("/api/lighting/fixture-types/:name", (req, res) => {
+  const entry = FIXTURE_TYPES[req.params.name] ?? FIXTURE_TYPES.par;
+  res.json(entry);
 });
 
 app.put("/api/lighting/fixture-types/:name", (_req, res) => {

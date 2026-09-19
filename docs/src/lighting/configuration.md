@@ -218,9 +218,11 @@ type uses either `channel` lines or a `channel_map`, not both.
 
 The rich form is the v2 DSL and lives in `.fixture` files only; a `.light` fixture file
 keeps the v1 grammar, the loader skips, loudly, a `.light` file that uses it, and the web
-UI's fixture-type editor (which writes `.light`) refuses to save it. Both forms stay valid
-forever. Rich and referential `.fixture` types are edited by hand or written by import
-today; the web UI lists and edits v1 types only.
+UI refuses to save it into one. Both forms stay valid forever. The web UI lists both kinds
+of file: a v1 `.light` type opens in the channel-map form, while a `.fixture` type — rich
+or referential — opens as the text of its file, since neither form fits a channel map. A
+new type is created as either. A referential type's `from gdtf(...)` line must survive the
+edit, or the type loses its archive.
 
 **Cells:** a pixel fixture — an LED batten with several individually-colored
 segments, a pixel mover's ring — can describe each segment as a `cell`
