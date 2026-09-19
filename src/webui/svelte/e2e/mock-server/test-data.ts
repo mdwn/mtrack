@@ -313,6 +313,79 @@ export const METADATA_STATE = {
   },
 };
 
+/** A mover's rig as the asset store writes it: base, yoke (pan), head
+ *  (tilt), one beam. */
+export const TEST_RIG = {
+  version: 1,
+  fixture_type: "Test Mover",
+  mode: "Mode 1",
+  nodes: [
+    {
+      name: "Base",
+      parent: null,
+      role: { kind: "body" },
+      transform: [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+      ],
+      shape: { shape: "primitive", kind: "Base", size: [0.3, 0.2, 0.1] },
+    },
+    {
+      name: "Yoke",
+      parent: 0,
+      role: { kind: "pan" },
+      transform: [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, -0.1],
+        [0, 0, 0, 1],
+      ],
+      shape: { shape: "primitive", kind: "Yoke", size: [0.3, 0.1, 0.25] },
+    },
+    {
+      name: "Head",
+      parent: 1,
+      role: { kind: "tilt" },
+      transform: [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, -0.25],
+        [0, 0, 0, 1],
+      ],
+      shape: { shape: "primitive", kind: "Cylinder", size: [0.2, 0.2, 0.15] },
+    },
+    {
+      name: "Lens",
+      parent: 2,
+      role: { kind: "beam" },
+      transform: [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, -0.08],
+        [0, 0, 0, 1],
+      ],
+      shape: { shape: "empty" },
+    },
+  ],
+  pan: 1,
+  tilt: 2,
+  beams: [
+    {
+      node: 3,
+      angle_deg: 12,
+      field_deg: 20,
+      kind: "Spot",
+      flux_lm: 5000,
+      cct_k: 6500,
+      radius_m: 0.05,
+    },
+  ],
+  thumbnail: null,
+  warnings: [],
+};
+
 export const FIXTURE_STATE = {
   type: "state",
   fixtures: {

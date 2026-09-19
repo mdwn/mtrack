@@ -29,6 +29,7 @@ import {
   PLAYBACK_STATE,
   METADATA_STATE,
   FIXTURE_STATE,
+  TEST_RIG,
   WAVEFORM_DATA,
   LOG_LINES,
 } from "./test-data.js";
@@ -311,6 +312,19 @@ app.post("/api/lighting/gdtf/import", (req, res) => {
     ],
     warnings: ["skipped virtual channel (no DMX offset): Dimmer"],
   });
+});
+
+// The asset store (design §16.2): one rig model for tests of the 3D page;
+// anything else is a 404 like the real store.
+app.get("/api/lighting/assets/{*path}", (req, res) => {
+  const path = (req.params as { path?: string | string[] }).path;
+  const joined = Array.isArray(path) ? path.join("/") : (path ?? "");
+  if (joined === "test-archive/rig-test-v1.json") {
+    res.set("Content-Type", "application/json");
+    res.json(TEST_RIG);
+    return;
+  }
+  res.status(404).json({ error: "Asset not found" });
 });
 
 app.get("/api/lighting/venues", (_req, res) => {

@@ -334,6 +334,28 @@ says so); a fixture with sections that differ keeps its first section's channels
 the rest under section-suffixed names. gdtf.eu publishes sample MVR files from several consoles,
 which are a good way to see what an import of your own rig will look like.
 
+## Stage 3D
+
+The dashboard's stage card has a **3D** button that opens the venue as a room: the deck with
+the audience edge marked, every fixture at its venue position, movers turning as the show
+drives them, beams in the colour and level the fixture is showing, and focus points as
+markers. Drag to orbit, scroll to zoom, right-drag to pan; the **Front of house**, **Side**
+and **Top** buttons are camera presets, and **Labels** toggles the fixture names (off by
+default on a large rig).
+
+![Stage 3D during a show](../images/stage-3d.png)
+
+What a fixture looks like comes from its GDTF: the archive's meshes when it ships them, or
+the GDTF's own primitives with their sizes. Pan turns the geometry the GDTF's pan channel
+names, tilt the one its tilt channel names, and a beam leaves each beam geometry with the
+angle the GDTF states — a 5° spot looks like a spot, a 25° wash like a wash. A fixture type
+written by hand has none of this and is drawn as a box with a 20° beam along its mounting
+direction. Fixtures the venue does not place sit on a tray in front of the audience edge.
+
+The room is always dark, whatever the UI theme, and it is a sketch, not a render: no haze
+model, no shadows, no photometrics. The models and rig data it draws live in the asset
+store (`lighting/.cache/assets/`, rebuildable) and load only on this page.
+
 ## Song Lighting Definitions
 
 Lighting shows are defined in separate `.light` files using the DSL format. Songs reference these files:
