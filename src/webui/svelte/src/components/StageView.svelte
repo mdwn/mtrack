@@ -781,6 +781,9 @@
             : `Error: ${$reloadStore.error}`}
         </span>
       {/if}
+      <a href="#/stage" class="btn btn-sm stage-card__3d">
+        {$t("stage3d.open")}
+      </a>
       {#if venue}
         <button
           class="btn btn-sm stage-card__add-focus"

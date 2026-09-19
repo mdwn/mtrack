@@ -20,6 +20,7 @@
   import SongBrowser from "./pages/SongBrowser.svelte";
   import PlaylistEditor from "./pages/PlaylistEditor.svelte";
   import StatusPage from "./pages/StatusPage.svelte";
+  import Stage3D from "./pages/Stage3D.svelte";
   import NotFound from "./pages/NotFound.svelte";
   import ConfirmDialog from "./components/ConfirmDialog.svelte";
   import { playbackStore } from "./lib/ws/stores";
@@ -92,6 +93,8 @@
         : get(t)("nav.playlists");
     } else if (currentHash.startsWith("#/status")) {
       pageTitle = get(t)("nav.status");
+    } else if (currentHash.startsWith("#/stage")) {
+      pageTitle = get(t)("stage3d.title");
     }
 
     const song = $playbackStore.song_name;
@@ -118,6 +121,8 @@
     <PlaylistEditor {currentHash} />
   {:else if currentHash.startsWith("#/status")}
     <StatusPage />
+  {:else if currentHash.startsWith("#/stage")}
+    <Stage3D />
   {:else}
     <NotFound />
   {/if}

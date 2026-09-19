@@ -38,6 +38,11 @@ export default defineConfig({
           if (vendorPkgs.some((pkg) => id.includes(`/node_modules/${pkg}/`))) {
             return "vendor";
           }
+          // three.js is the Stage 3D page's alone: its own chunk, loaded
+          // with the page's dynamic import and nowhere else.
+          if (id.includes("/node_modules/three/")) {
+            return "three";
+          }
         },
       },
     },
