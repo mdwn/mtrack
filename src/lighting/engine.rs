@@ -449,7 +449,10 @@ impl EffectEngine {
     /// order (spatial order is the effect's to apply); a target without
     /// cells stays itself, so a mixed group still works.
     fn expand_cells(&self, effect: &mut EffectInstance) {
-        if !effect.per_cell {
+        // A cell has no pan or tilt: a move stays on the fixtures (the
+        // lint says `per: cell` does nothing there) rather than failing
+        // validation for the whole cue.
+        if !effect.per_cell || matches!(effect.effect_type, EffectType::Move { .. }) {
             return;
         }
         let mut targets = Vec::with_capacity(effect.target_fixtures.len());

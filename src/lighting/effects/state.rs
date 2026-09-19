@@ -163,11 +163,25 @@ impl FixtureState {
         state: &ChannelState,
         has_dedicated_dimmer: bool,
     ) -> f64 {
+        effective_value(channel_name, state, has_dedicated_dimmer, |k| {
+            self.channels.get(k).map(|c| c.value).unwrap_or(1.0)
+        })
+    }
+}
+
+/// [`FixtureState::effective_channel_value`] over any source of multiplier
+/// channels — a fixture's own state, or a cell's over its fixture's.
+fn effective_value(
+    channel_name: &str,
+    state: &ChannelState,
+    has_dedicated_dimmer: bool,
+    read: impl Fn(&str) -> f64,
+) -> f64 {
+    {
         let mut value = state.value;
         if !has_dedicated_dimmer
             && (channel_name == "red" || channel_name == "green" || channel_name == "blue")
         {
-            let read = |k: &str| self.channels.get(k).map(|c| c.value).unwrap_or(1.0);
             let dimmer_mult =
                 read("_dimmer_mult_bg") * read("_dimmer_mult_mid") * read("_dimmer_mult_fg");
             let pulse_mult =
@@ -192,7 +206,9 @@ impl FixtureState {
         }
         value
     }
+}
 
+impl FixtureState {
     /// Convert to DMX commands.
     ///
     /// Normalized channels resolve through the fixture's channel
@@ -243,21 +259,29 @@ impl FixtureState {
         for cell in &fixture_info.cells {
             // A cell's effects were computed against the cell's own
             // channels (a chase on a cell without a dimmer dims its colour
-            // through multipliers), so its bytes resolve the same way.
+            // through multipliers), so its bytes resolve the same way. No
+            // state is cloned: each channel is the fixture's blended with
+            // the cell's, and a multiplier is read from the cell's state
+            // first (the last writer, as `blend_with` would have it), else
+            // the fixture's.
             let cell_has_dimmer = cell.channels.contains_key("dimmer");
-            let merged: std::borrow::Cow<'_, FixtureState> = match cell_state(&cell.name) {
-                Some(own) => {
-                    let mut merged = self.clone();
-                    merged.blend_with(own);
-                    std::borrow::Cow::Owned(merged)
-                }
-                None => std::borrow::Cow::Borrowed(self),
+            let own = cell_state(&cell.name);
+            let read = |k: &str| {
+                own.and_then(|o| o.channels.get(k))
+                    .or_else(|| self.channels.get(k))
+                    .map(|c| c.value)
+                    .unwrap_or(1.0)
             };
             for (channel_name, def) in &cell.channels {
-                let Some(state) = merged.channels.get(channel_name) else {
-                    continue;
+                let base = self.channels.get(channel_name);
+                let over = own.and_then(|o| o.channels.get(channel_name));
+                let state = match (base, over) {
+                    (Some(b), Some(o)) => b.blend_with(*o),
+                    (Some(b), None) => *b,
+                    (None, Some(o)) => *o,
+                    (None, None) => continue,
                 };
-                let value = merged.effective_channel_value(channel_name, state, cell_has_dimmer);
+                let value = effective_value(channel_name, &state, cell_has_dimmer, read);
                 for (offset, byte) in super::physical::resolve_normalized(def, value) {
                     commands.push(DmxCommand {
                         universe: fixture_info.universe,

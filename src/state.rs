@@ -141,9 +141,17 @@ async fn sample_tick(
     let engine_ref = effect_engine.clone();
     let (states, mut active_effects, poses) = tokio::task::spawn_blocking(move || {
         let engine = engine_ref.lock();
-        let states = engine.get_fixture_states();
+        // A cell's sub-fixture is part of its fixture, not a fixture of
+        // its own to the stream (design §17.4; per-cell state arrives
+        // with the cells field).
+        let registry = engine.get_fixture_registry();
+        let states: HashMap<String, FixtureState> = engine
+            .get_fixture_states()
+            .into_iter()
+            .filter(|(name, _)| registry.get(name).is_none_or(|f| f.parent.is_none()))
+            .collect();
         let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
-        let poses = compute_pose_snapshots(engine.poses(), engine.get_fixture_registry());
+        let poses = compute_pose_snapshots(engine.poses(), registry);
         (states, effects, poses)
     })
     .await

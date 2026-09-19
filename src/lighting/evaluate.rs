@@ -197,7 +197,8 @@ fn fill_dark_fixtures<'a>(
     known: impl Iterator<Item = &'a FixtureInfo>,
 ) {
     for info in known {
-        if snapshots.iter().any(|s| s.name == info.name) {
+        // A cell's sub-fixture is its fixture's, not a fixture of its own.
+        if info.parent.is_some() || snapshots.iter().any(|s| s.name == info.name) {
             continue;
         }
         snapshots.push(FixtureSnapshot {
@@ -255,8 +256,16 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
             .then_with(|| a.fixtures.cmp(&b.fixtures))
     });
 
-    let mut fixtures = compute_fixture_snapshots(&engine.get_fixture_states(), &has_dimmer);
-    fill_dark_fixtures(&mut fixtures, engine.get_fixture_registry().values());
+    // Sub-fixtures (a pixel fixture's cells) are part of their fixture,
+    // not fixtures of their own here.
+    let registry = engine.get_fixture_registry();
+    let states: std::collections::HashMap<_, _> = engine
+        .get_fixture_states()
+        .into_iter()
+        .filter(|(name, _)| registry.get(name).is_none_or(|f| f.parent.is_none()))
+        .collect();
+    let mut fixtures = compute_fixture_snapshots(&states, &has_dimmer);
+    fill_dark_fixtures(&mut fixtures, registry.values());
 
     Evaluation {
         time: at,

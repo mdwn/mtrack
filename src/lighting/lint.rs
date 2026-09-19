@@ -215,7 +215,8 @@ fn cell_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) {
                         "per-cell-no-effect",
                         format!(
                             "`per: cell` on `{}` (`{kind}`) at {:.3}s does nothing: {kind} gives \
-                             every target the same value — only chase, rainbow and cycle vary \
+                             every target the same value (and a move stays on the fixtures, since \
+                             cells have no pan or tilt) — only chase, rainbow and cycle vary \
                              across cells",
                             effect.groups.join(", "),
                             cue.time.as_secs_f64(),

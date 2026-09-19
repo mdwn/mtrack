@@ -494,8 +494,10 @@ pub async fn a_per_cell_chase_runs_along_the_bar() -> CheckOutcome {
         settled.iter().map(|f| f.channel(1)).min()
     );
     check!(
-        whole > 0,
-        "without `per: cell` the chase lights the whole bar at once on its step; no frame did"
+        whole > 0 && per_fixture.iter().all(|f| lit(f).len() != 1),
+        "without `per: cell` the chase treats the bar as one fixture: every frame should light \
+         all three cells or none, never exactly one; {whole} of {} lit all three",
+        per_fixture.len()
     );
     server.check_clean_log(&[])?;
     Ok(())
