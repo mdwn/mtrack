@@ -22,6 +22,8 @@ use super::lighting::Lighting;
 /// The default DMX dimming speed.
 #[cfg(not(test))]
 pub const DEFAULT_OLA_PORT: u16 = 9010;
+/// The default port of olad's web server, which is not the streaming port.
+pub const DEFAULT_OLA_HTTP_PORT: u16 = 9090;
 pub const DEFAULT_DMX_DIMMING_SPEED_MODIFIER: f64 = 1.0;
 pub const DEFAULT_DMX_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
@@ -36,6 +38,10 @@ pub struct Dmx {
 
     /// The OLA port. Defaults to the default OLA port.
     ola_port: Option<u16>,
+
+    /// The port of olad's web server, used only to check that the configured
+    /// universes have an output port patched to them. Defaults to olad's.
+    ola_http_port: Option<u16>,
 
     /// The configuration of devices to universes.
     universes: Vec<Universe>,
@@ -63,6 +69,7 @@ impl Dmx {
             dim_speed_modifier,
             playback_delay,
             ola_port,
+            ola_http_port: None,
             universes,
             lighting,
             null_client: false,
@@ -90,6 +97,11 @@ impl Dmx {
     #[cfg(not(test))]
     pub fn ola_port(&self) -> u16 {
         self.ola_port.unwrap_or(DEFAULT_OLA_PORT)
+    }
+
+    /// Gets the port of olad's web server.
+    pub fn ola_http_port(&self) -> u16 {
+        self.ola_http_port.unwrap_or(DEFAULT_OLA_HTTP_PORT)
     }
 
     /// Converts the configuration into universe configs.
@@ -281,6 +293,7 @@ mod tests {
             dim_speed_modifier: 1.5
             playback_delay: "200ms"
             ola_port: 9020
+            ola_http_port: 9091
             universes:
               - universe: 1
                 name: main
@@ -297,6 +310,7 @@ mod tests {
         assert!((dmx.dimming_speed_modifier() - 1.5).abs() < f64::EPSILON);
         assert_eq!(dmx.playback_delay().unwrap(), Duration::from_millis(200));
         assert_eq!(dmx.get_ola_port(), Some(9020));
+        assert_eq!(dmx.ola_http_port(), 9091);
         assert_eq!(dmx.universes().len(), 2);
         assert!(dmx.null_client());
     }
@@ -317,6 +331,7 @@ mod tests {
                 < f64::EPSILON
         );
         assert_eq!(dmx.playback_delay().unwrap(), DEFAULT_DMX_PLAYBACK_DELAY);
+        assert_eq!(dmx.ola_http_port(), DEFAULT_OLA_HTTP_PORT);
         assert!(!dmx.null_client());
         assert!(dmx.universes().is_empty());
         assert!(dmx.lighting().is_none());

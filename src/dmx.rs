@@ -15,6 +15,7 @@
 pub mod engine;
 pub mod midi_dmx_store;
 pub mod ola_client;
+pub mod patch_check;
 pub mod universe;
 pub mod watcher;
 
@@ -83,6 +84,11 @@ fn create_engine_inner(
         OlaClientFactory::create_mock_client_unconditional()
     };
 
+    // Only a real connection is worth asking olad about its patch state: the
+    // null client streams nowhere by design.
+    #[cfg(not(test))]
+    let mut ola_connected = false;
+
     #[cfg(not(test))]
     let ola_client = if config.null_client() {
         info!("null_client enabled, skipping OLA connection");
@@ -110,7 +116,10 @@ fn create_engine_inner(
             }
         }
         match (found, last_err) {
-            (Some(client), _) => client,
+            (Some(client), _) => {
+                ola_connected = true;
+                client
+            }
             (None, Some(e)) => {
                 if allow_null_client {
                     info!("OLA not available, using null DMX client");
@@ -129,6 +138,19 @@ fn create_engine_inner(
         lighting = lighting_config.is_some(),
         "DMX engine initialized"
     );
+
+    // Reload re-enters create_engine, so this covers startup and reload alike.
+    #[cfg(not(test))]
+    if ola_connected {
+        patch_check::warn_unpatched_universes(
+            config.ola_http_port(),
+            config
+                .universes()
+                .iter()
+                .map(|universe| universe.universe())
+                .collect(),
+        );
+    }
 
     // Start the persistent effects loop
     Engine::start_persistent_effects_loop(engine.clone());
