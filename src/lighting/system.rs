@@ -347,7 +347,12 @@ impl LightingSystem {
         // The rig (design §16.2) is the 3D view's, not the show's: a rig
         // that cannot be written is logged, and the type loads without one.
         match cache.ensure_rig(&bytes, &source.mode, describe) {
-            Ok(rig) => expanded.set_rig(Some(rig)),
+            Ok((rig, warnings)) => {
+                for warning in warnings {
+                    warn!(fixture_type = name, "Rig model: {warning}");
+                }
+                expanded.set_rig(Some(rig));
+            }
             Err(e) => warn!(fixture_type = name, error = %e, "No rig model for the 3D view"),
         }
         Ok(expanded)

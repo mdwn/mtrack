@@ -50,8 +50,17 @@ const MAX_MODEL_BYTES: u64 = 16 * 1024 * 1024;
 /// The most bytes of assets (meshes and thumbnail) read out of one archive.
 const MAX_ASSET_BYTES_TOTAL: u64 = 64 * 1024 * 1024;
 
-/// The archive directory that holds glTF meshes.
-const MODELS_DIR: &str = "models/gltf/";
+/// The archive directories that hold glTF meshes, best first: a fixture
+/// may ship only the low-detail set.
+const MODEL_DIRS: [&str; 2] = ["models/gltf/", "models/gltf_low/"];
+
+/// The mesh stem an archive entry is, if it is one: `(stem, detail rank)`.
+fn mesh_entry(name: &str) -> Option<(String, usize)> {
+    MODEL_DIRS.iter().enumerate().find_map(|(rank, dir)| {
+        let stem = name.strip_prefix(dir)?.strip_suffix(".glb")?;
+        (!stem.is_empty() && !stem.contains('/')).then(|| (stem.to_ascii_lowercase(), rank))
+    })
+}
 
 /// Opens an archive with the entry-count and size caps applied.
 fn open(bytes: &[u8]) -> Result<ZipArchive<Cursor<&[u8]>>, GdtfError> {
@@ -102,17 +111,14 @@ fn read_capped(
     Ok(content)
 }
 
-/// The mesh stems the archive carries under `models/gltf/`, lowercased —
-/// what a model table's `File` can resolve to.
+/// The mesh stems the archive carries under `models/gltf/` or
+/// `models/gltf_low/`, lowercased — what a model table's `File` can
+/// resolve to.
 pub fn list_model_files(bytes: &[u8]) -> Result<HashSet<String>, GdtfError> {
     let archive = open(bytes)?;
     Ok(archive
         .file_names()
-        .filter_map(|name| {
-            let rest = name.strip_prefix(MODELS_DIR)?;
-            let stem = rest.strip_suffix(".glb")?;
-            (!stem.is_empty() && !stem.contains('/')).then(|| stem.to_ascii_lowercase())
-        })
+        .filter_map(|name| mesh_entry(name).map(|(stem, _)| stem))
         .collect())
 }
 
@@ -126,10 +132,11 @@ pub struct Assets {
     pub thumbnail: Option<(String, Vec<u8>)>,
 }
 
-/// Reads the meshes named by `stems` (lowercased) and the thumbnail named
-/// by the fixture type, if any, under the per-asset and total caps. A stem
-/// the archive lacks is skipped; a mesh over the cap is an error, since a
-/// rig that names it would draw nothing.
+/// Reads the meshes named by `stems` (lowercased, the full-detail set
+/// preferred over `gltf_low`) and the thumbnail named by the fixture type,
+/// if any, under the per-asset and total caps. A stem the archive lacks is
+/// skipped; a mesh over the cap is an error, since a rig that names it
+/// would draw nothing.
 pub fn read_assets(
     bytes: &[u8],
     stems: &HashSet<String>,
@@ -148,20 +155,25 @@ pub fn read_assets(
         }
         Ok(())
     };
+    // Best detail rank per wanted stem.
+    let mut chosen: Vec<(String, usize, &String)> = Vec::new();
     for name in &names {
-        let Some(stem) = name
-            .strip_prefix(MODELS_DIR)
-            .and_then(|rest| rest.strip_suffix(".glb"))
-        else {
+        let Some((stem, rank)) = mesh_entry(name) else {
             continue;
         };
-        let lowered = stem.to_ascii_lowercase();
-        if !stems.contains(&lowered) || assets.models.iter().any(|(s, _)| *s == lowered) {
+        if !stems.contains(&stem) {
             continue;
         }
+        match chosen.iter_mut().find(|(s, _, _)| *s == stem) {
+            Some(entry) if entry.1 <= rank => {}
+            Some(entry) => *entry = (stem, rank, name),
+            None => chosen.push((stem, rank, name)),
+        }
+    }
+    for (stem, _, name) in chosen {
         let content = read_capped(&mut archive, name, MAX_MODEL_BYTES)?;
         budget(content.len())?;
-        assets.models.push((lowered, content));
+        assets.models.push((stem, content));
     }
     if let Some(thumbnail) = thumbnail {
         for ext in ["png", "svg"] {

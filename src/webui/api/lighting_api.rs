@@ -555,15 +555,26 @@ pub(super) async fn get_lighting_asset(
             .into_response()
     })?;
 
+    // The bytes are a stranger's (copied out of a GDTF archive), so the
+    // type is not to be sniffed, and an SVG — which may script — is served
+    // as a picture only: no scripts, no fetches, sandboxed if navigated to.
+    let mut response = axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, content_type)
+        .header(axum::http::header::CONTENT_LENGTH, len)
+        .header(axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(
+            axum::http::header::CACHE_CONTROL,
+            "public, max-age=31536000, immutable",
+        );
+    if content_type == "image/svg+xml" {
+        response = response.header(
+            axum::http::header::CONTENT_SECURITY_POLICY,
+            "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        );
+    }
     Ok::<_, axum::response::Response>(
-        axum::response::Response::builder()
-            .status(StatusCode::OK)
-            .header(axum::http::header::CONTENT_TYPE, content_type)
-            .header(axum::http::header::CONTENT_LENGTH, len)
-            .header(
-                axum::http::header::CACHE_CONTROL,
-                "public, max-age=31536000, immutable",
-            )
+        response
             .body(axum::body::Body::from(bytes))
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
     )
@@ -3386,6 +3397,7 @@ show "test" {
         std::fs::create_dir_all(store.join("models")).unwrap();
         std::fs::write(store.join("rig-1-v1.json"), "{\"version\":1}").unwrap();
         std::fs::write(store.join("models/yoke.glb"), b"glTF").unwrap();
+        std::fs::write(store.join("thumbnail.svg"), "<svg><script/></svg>").unwrap();
         std::fs::write(store.join("notes.txt"), "no").unwrap();
         // Something outside the store that a traversal would reach.
         std::fs::write(dir.path().join("lighting/secret.json"), "{}").unwrap();
@@ -3420,6 +3432,19 @@ show "test" {
         let response = get("/lighting/assets/abc123/models/yoke.glb".to_string()).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()["content-type"], "model/gltf-binary");
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        assert!(response.headers().get("content-security-policy").is_none());
+
+        let response = get("/lighting/assets/abc123/thumbnail.svg".to_string()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "image/svg+xml");
+        let csp = response.headers()["content-security-policy"]
+            .to_str()
+            .unwrap();
+        assert!(
+            csp.contains("default-src 'none'") && csp.contains("sandbox"),
+            "{csp}"
+        );
 
         // Not an asset type, missing, a directory, and a traversal.
         for (uri, why) in [

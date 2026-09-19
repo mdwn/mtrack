@@ -61,6 +61,10 @@ pub struct RigModel {
     /// The thumbnail's path relative to the rig file, when the cache holds
     /// one.
     pub thumbnail: Option<String>,
+    /// What was guessed or skipped, one line each — a rig is a picture,
+    /// so it is drawn anyway, and the fill logs these.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// One node of a rig.
@@ -166,22 +170,34 @@ pub fn distill_rig(
         tilt: None,
         beams: Vec::new(),
         thumbnail: None,
+        warnings: Vec::new(),
     };
 
     // The mode's root, or the first top-level geometry when the mode names
-    // none the tree has (a rig is a picture; a wrong root is still one).
+    // none the tree has (a rig is a picture; a wrong root is still one,
+    // and it is said so).
     let root = description
         .geometries
         .iter()
-        .position(|g| g.parent.is_none() && g.name == mode.geometry)
-        .or_else(|| {
-            description
+        .position(|g| g.parent.is_none() && g.name == mode.geometry);
+    let root = match root {
+        Some(root) => root,
+        None => {
+            let Some(first) = description
                 .geometries
                 .iter()
                 .position(|g| g.parent.is_none())
-        });
-    let Some(root) = root else {
-        return Ok(rig);
+            else {
+                rig.warnings
+                    .push("the GDTF has no geometry tree; nothing to draw".to_string());
+                return Ok(rig);
+            };
+            rig.warnings.push(format!(
+                "mode \"{}\" names root geometry \"{}\", which the tree lacks; drawing \"{}\"",
+                matched.name, mode.geometry, description.geometries[first].name
+            ));
+            first
+        }
     };
 
     let mut walk = RigWalk {
@@ -246,21 +262,7 @@ impl RigWalk<'_> {
         };
 
         if node.kind == GeometryKind::Reference {
-            if let Some(referenced) = node.reference.as_deref() {
-                let target = self
-                    .description
-                    .geometries
-                    .iter()
-                    .position(|g| g.parent.is_none() && g.name == referenced);
-                let cyclic = self.chain.iter().any(|c| c == referenced);
-                if let Some(target) = target.filter(|_| !cyclic) {
-                    if self.chain.len() < MAX_REFERENCE_DEPTH {
-                        self.chain.push(referenced.to_string());
-                        self.emit(target, Some(out), Some(out));
-                        self.chain.pop();
-                    }
-                }
-            }
+            self.expand_reference(node, out);
         }
 
         let children: Vec<usize> = self
@@ -274,6 +276,49 @@ impl RigWalk<'_> {
         for child in children {
             self.emit(child, Some(out), None);
         }
+    }
+
+    /// Draws the geometry a reference points at onto the reference's node.
+    /// The spec has references name top-level geometries; one naming a
+    /// nested geometry is honored anyway (preferring a top-level match),
+    /// and one naming nothing is said so.
+    fn expand_reference(&mut self, node: &GeometryNode, out: usize) {
+        let Some(referenced) = node.reference.as_deref() else {
+            self.rig.warnings.push(format!(
+                "reference \"{}\" names no geometry; drawn empty",
+                node.name
+            ));
+            return;
+        };
+        let geometries = &self.description.geometries;
+        let target = geometries
+            .iter()
+            .position(|g| g.parent.is_none() && g.name == referenced)
+            .or_else(|| geometries.iter().position(|g| g.name == referenced));
+        let Some(target) = target else {
+            self.rig.warnings.push(format!(
+                "reference \"{}\" names geometry \"{referenced}\", which the tree lacks; drawn empty",
+                node.name
+            ));
+            return;
+        };
+        if self.chain.iter().any(|c| c == referenced) {
+            self.rig.warnings.push(format!(
+                "reference \"{}\" to \"{referenced}\" is a cycle; stopped",
+                node.name
+            ));
+            return;
+        }
+        if self.chain.len() >= MAX_REFERENCE_DEPTH {
+            self.rig.warnings.push(format!(
+                "reference \"{}\" nests deeper than {MAX_REFERENCE_DEPTH}; stopped",
+                node.name
+            ));
+            return;
+        }
+        self.chain.push(referenced.to_string());
+        self.emit(target, Some(out), Some(out));
+        self.chain.pop();
     }
 
     fn role_for(&mut self, node: &GeometryNode) -> RigRole {
@@ -328,6 +373,11 @@ impl RigWalk<'_> {
         let Some(beam) = node.beam.as_ref() else {
             return;
         };
+        // A node draws one beam: a reference chain whose every level is a
+        // beam keeps the outermost.
+        if self.rig.beams.iter().any(|b| b.node == out) {
+            return;
+        }
         self.rig.beams.push(RigBeam {
             node: out,
             angle_deg: beam
@@ -453,6 +503,49 @@ mod tests {
         // is a node).
         assert!(names(&rig).contains(&"Loop"));
         assert!(rig.nodes.len() < 12, "{:?}", names(&rig));
+        assert!(
+            rig.warnings.iter().any(|w| w.contains("cycle")),
+            "{:?}",
+            rig.warnings
+        );
+    }
+
+    #[test]
+    fn a_dangling_or_nested_reference_is_reported_or_honored() {
+        // Nothing named "Ghost": an empty cell, and a warning naming it.
+        let xml = SYNTHETIC_DESCRIPTION.replace(
+            "Geometry=\"Cell\" Model=\"Cell\"",
+            "Geometry=\"Ghost\" Model=\"Cell\"",
+        );
+        let rig = distill_rig(
+            &parse_description(&xml).unwrap(),
+            "8: RGBS",
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert!(!names(&rig).contains(&"Cell Lens"));
+        assert!(
+            rig.warnings.iter().any(|w| w.contains("\"Ghost\"")),
+            "{:?}",
+            rig.warnings
+        );
+        // A reference to a nested geometry (the head's lens) draws it.
+        let xml = SYNTHETIC_DESCRIPTION.replace(
+            "Geometry=\"Cell\" Model=\"Cell\"",
+            "Geometry=\"Lens\" Model=\"Cell\"",
+        );
+        let rig = distill_rig(
+            &parse_description(&xml).unwrap(),
+            "8: RGBS",
+            &HashSet::new(),
+        )
+        .unwrap();
+        let pixel = rig.nodes.iter().position(|n| n.name == "Pixel 2").unwrap();
+        assert!(rig
+            .beams
+            .iter()
+            .any(|b| b.node == pixel && b.angle_deg == 12.0));
+        assert!(rig.warnings.is_empty(), "{:?}", rig.warnings);
     }
 
     #[test]
@@ -460,15 +553,23 @@ mod tests {
         let xml = SYNTHETIC_DESCRIPTION.replace("Geometry=\"Base\"", "Geometry=\"Nowhere\"");
         let description = parse_description(&xml).unwrap();
         // The mode names a root the tree lacks: the first top-level one
-        // stands in.
+        // stands in, and the rig says so.
         let rig = distill_rig(&description, "8: RGBS", &HashSet::new()).unwrap();
         assert_eq!(rig.nodes[0].name, "Base");
+        assert!(
+            rig.warnings
+                .iter()
+                .any(|w| w.contains("\"Nowhere\"") && w.contains("\"Base\"")),
+            "{:?}",
+            rig.warnings
+        );
 
         let mut bare = parse_description(SYNTHETIC_DESCRIPTION).unwrap();
         bare.geometries.clear();
         let rig = distill_rig(&bare, "8: RGBS", &HashSet::new()).unwrap();
         assert!(rig.nodes.is_empty());
         assert!(rig.beams.is_empty());
+        assert_eq!(rig.warnings.len(), 1, "{:?}", rig.warnings);
     }
 
     #[test]

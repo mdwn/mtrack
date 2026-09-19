@@ -661,10 +661,11 @@ RigModel {
 
 Distilled at import from the geometry tree and written to `lighting/.cache/assets/<archive
 hash>/rig.json` beside the copied `.glb` files (and the thumbnail). The cache is rebuildable
-and gitignored, as today. A `.fixture` written by hand, or a v1 `.light` type, has no rig
-model and gets the generic one: a box body sized from nothing better than a guess, a beam
-from `beam_angle` if the type ever declares one, else 20°. Everything degrades (§2, DSL
-scope rule).
+and gitignored, as today. A `.fixture` written by hand, or a v1 `.light` type, has no
+archive to address a store entry by, so it has no rig file: the metadata says so (`rig:
+null`) and the viewer draws the generic one — a box body, a 20° beam — itself. Everything
+degrades (§2, DSL scope rule). The rig carries its own warnings (a mode naming a root the
+tree lacks, a reference to nothing), logged when it is written.
 
 Pan and tilt: the DMX channel for `Pan` names its geometry — the yoke, on every mover in
 the corpus — and `Tilt` names the head. Those become the two rotating nodes. The rotation
@@ -719,7 +720,7 @@ conversion unless it proves cheap.
 
 | Slice | Contents | Exit |
 |---|---|---|
-| P2-1 (internal) | Geometry tree, models and beams in the GDTF parser; rig model distilled and written to the asset cache with the `.glb` files at import; generic rig model for native types; asset endpoint | The Spiider's rig model names its yoke and head as the axes, its 20 cells (19 pixels and the flower) and their beams, and its meshes; assets served with containment |
+| P2-1 (internal) | Geometry tree, models and beams in the GDTF parser; rig model distilled and written to the asset cache with the `.glb` files at import; `rig: null` for native types; asset endpoint | The Spiider's rig model names its yoke and head as the axes, its 20 cells (19 pixels and the flower) and their beams, and its meshes; assets served with containment |
 | P2-2 | Stage 3D page: deck, fixtures from rig models, live pan/tilt, beams from live state, focus markers, orbit camera; dashboard button | A move to a focus point visibly lands there in 3D on the corpus's Demoshow venue |
 | P2-3 | MVR export with embedded GDTFs and generated minimal GDTFs for native types; round-trip test on the corpus | Import → export → import gives the same plan |
 | P2-4 | Scenery from glTF MVRs; `.3ds` reported; polish and docs; screenshots | The docs show a real venue in 3D |

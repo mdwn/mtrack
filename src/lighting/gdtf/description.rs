@@ -357,10 +357,12 @@ impl Walk {
                         .filter(|f| !f.is_empty()),
                     primitive: attr(element, "PrimitiveType")?
                         .unwrap_or_else(|| "Undefined".to_string()),
+                    // A size is a length; a negative one is garbage, not
+                    // a mirror.
                     size: [
-                        parse_finite(attr(element, "Length")?.as_deref()).unwrap_or(0.0),
-                        parse_finite(attr(element, "Width")?.as_deref()).unwrap_or(0.0),
-                        parse_finite(attr(element, "Height")?.as_deref()).unwrap_or(0.0),
+                        parse_positive(attr(element, "Length")?.as_deref()),
+                        parse_positive(attr(element, "Width")?.as_deref()),
+                        parse_positive(attr(element, "Height")?.as_deref()),
                     ],
                 });
             }
@@ -559,6 +561,11 @@ fn parse_dmx_value(text: &str) -> Option<DmxValue> {
     Some(DmxValue { value, bytes })
 }
 
+/// Parses a size: finite and positive, else zero.
+fn parse_positive(text: Option<&str>) -> f64 {
+    parse_finite(text).filter(|v| *v > 0.0).unwrap_or(0.0)
+}
+
 /// Parses a physical value, dropping non-finite garbage.
 fn parse_finite(text: Option<&str>) -> Option<f64> {
     let value: f64 = text?.trim().parse().ok()?;
@@ -749,6 +756,12 @@ pub(super) mod tests {
         assert_eq!(description.models[0].file, None, "an empty File is no file");
         assert_eq!(description.models[0].primitive, "Base");
         assert_eq!(description.models[2].size, [0.20, 0.20, 0.15]);
+        let negative = parse_description(&SYNTHETIC_DESCRIPTION.replace(
+            "Length=\"0.20\" Width=\"0.20\"",
+            "Length=\"-0.20\" Width=\"nan\"",
+        ))
+        .unwrap();
+        assert_eq!(negative.models[2].size, [0.0, 0.0, 0.15]);
 
         let by_name = |name: &str| {
             description

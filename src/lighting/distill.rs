@@ -189,7 +189,10 @@ impl DistillCache {
     /// The store-relative path of the rig file for an archive and mode:
     /// `<archive sha256>/rig-<mode sha256 prefix>-v<RIG_VERSION>.json`.
     /// The archive hash keys the directory (its meshes are the archive's,
-    /// whatever mode is in use); the mode and rig version key the file.
+    /// whatever mode is in use); the mode string as the `.fixture` pins it
+    /// and the rig version key the file — two spellings of one mode that
+    /// [`gdtf::match_mode`] folds together get two identical rig files,
+    /// which is cheap and keeps the path computable without a parse.
     pub fn rig_path(archive_bytes: &[u8], mode: &str) -> String {
         let archive = format!("{:x}", Sha256::digest(archive_bytes));
         let mode = format!("{:x}", Sha256::digest(mode.as_bytes()));
@@ -198,19 +201,20 @@ impl DistillCache {
 
     /// Makes sure the store holds the rig model for an archive and mode,
     /// with the meshes and thumbnail it names, and returns the rig's
-    /// store-relative path. A present rig file is trusted (the path is
-    /// content-addressed); otherwise `describe` parses the archive once
-    /// and everything is written, meshes first, the rig last.
+    /// store-relative path with the distillation's warnings. A present rig
+    /// file is trusted (the path is content-addressed) and has no warnings
+    /// to repeat; otherwise `describe` parses the archive once and
+    /// everything is written, meshes first, the rig last.
     pub fn ensure_rig<'a>(
         &self,
         archive_bytes: &[u8],
         mode: &str,
         describe: impl FnOnce() -> Result<&'a Description, Box<dyn Error>>,
-    ) -> Result<String, Box<dyn Error>> {
+    ) -> Result<(String, Vec<String>), Box<dyn Error>> {
         let rel = Self::rig_path(archive_bytes, mode);
         let rig_file = self.assets_dir().join(&rel);
         if rig_file.is_file() {
-            return Ok(rel);
+            return Ok((rel, Vec::new()));
         }
         let description = describe()?;
         let available = gdtf::list_model_files(archive_bytes)?;
@@ -242,7 +246,7 @@ impl DistillCache {
             rig.thumbnail = Some(name);
         }
         write_atomic(&rig_file, serde_json::to_string_pretty(&rig)?.as_bytes())?;
-        Ok(rel)
+        Ok((rel, rig.warnings))
     }
 
     /// Reads a rig model back from the store by its store-relative path.
@@ -461,7 +465,8 @@ mod tests {
             parses.set(parses.get() + 1);
             Ok(&description)
         };
-        let rel = cache.ensure_rig(&archive, "Mover 16bit", describe).unwrap();
+        let (rel, warnings) = cache.ensure_rig(&archive, "Mover 16bit", describe).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert!(rel.ends_with(&format!("-v{RIG_VERSION}.json")), "{rel}");
         let rig = cache.rig(&rel).unwrap();
         assert_eq!(rig.mode, "Mover 16bit");
@@ -483,11 +488,11 @@ mod tests {
 
         // Present: nothing is parsed again. Another mode of the same
         // archive shares the directory and adds a rig file.
-        let again = cache
+        let (again, _) = cache
             .ensure_rig(&archive, "Mover 16bit", || panic!("must not parse"))
             .unwrap();
         assert_eq!(again, rel);
-        let other = cache
+        let (other, _) = cache
             .ensure_rig(&archive, "8: RGBS", || Ok(&description))
             .unwrap();
         assert_ne!(other, rel);
