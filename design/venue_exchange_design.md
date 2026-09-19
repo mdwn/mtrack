@@ -997,3 +997,27 @@ A target on the pan axis (straight down or up) keeps the current pan.
 4. **The plot's orientation tick goes**; every placed fixture shows its beam footprint.
 5. **The kinematic cross-check against the corpus rigs is the gate** for this change, and
    stays as the permanent independent test of the convention.
+
+### 18.6 Aiming through geometry (follow-up, 2026-09-19)
+
+The corpus cross-check (§18.4.1) found one rig in 56 that the plain convention cannot
+aim: the Ayrton MagicDot SX yaws its `Yoke` geometry 90° about Z in the file, so its tilt
+plane is the base's X–Z, not Y–Z. That is the manufacturer describing the fixture, and the
+right response is to follow it. Every rig's joints are now reduced to an **aim
+calibration** when the fixture type loads:
+
+```
+direction = R · pre · Rz(pan + pan_offset) · Rx(tilt + tilt_offset) · (0, 0, −1)
+```
+
+`pre` is the product of the geometry rotations from the root down to and including the
+pan node; `pan_offset` the yaw between the pan and tilt nodes; `tilt_offset` the lens's
+rest angle in the head's Y–Z plane. The closed form still applies, in the calibrated
+frame. A geometry that does not reduce — a tilt axis not perpendicular to the pan axis, a
+lens outside the tilt plane — is logged and the plain convention stands in, so nothing is
+worse than before. The identity calibration is the common case and the `.fixture` case.
+
+Reading: a GDTF `Position` matrix is four rows with the translation in the fourth column,
+as this parser and Blender DMX (`Matrix(geometry.position.matrix)`) both read it; the
+yawed yoke is `Rz(−90°)` under that reading. The corpus check now aims through each rig's
+calibration and requires every calibrated rig to agree to 0.01°.

@@ -304,6 +304,12 @@ impl DistillCache {
     }
 
     /// The store-relative path of the rig file for an archive and mode:
+    /// Reads a rig the cache holds, by the path [`Self::ensure_rig`] gave.
+    pub fn load_rig(&self, rel: &str) -> Result<gdtf::RigModel, Box<dyn Error>> {
+        let bytes = std::fs::read(self.assets_dir().join(rel))?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
     /// `<archive sha256>/rig-<mode sha256 prefix>-v<RIG_VERSION>.json`.
     /// The archive hash keys the directory (its meshes are the archive's,
     /// whatever mode is in use); the mode string as the `.fixture` pins it

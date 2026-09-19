@@ -217,6 +217,12 @@ pub struct FixtureType {
     #[serde(skip)]
     rig: Option<String>,
 
+    /// How the rig's joints sit in the mounting frame (design §18.6),
+    /// read from the rig when the type has one. Absent means the plain
+    /// convention; a cache location's derivative, not part of the type.
+    #[serde(skip)]
+    aim: Option<crate::lighting::effects::AimCalibration>,
+
     /// Maximum strobe frequency in Hz (if supported). Derived from the
     /// strobe channel's function when one exists; private so a fixture type
     /// can only be built through the normalizing constructors.
@@ -277,6 +283,7 @@ impl FixtureType {
             movement: MovementLimits::default(),
             cells: Vec::new(),
             rig: None,
+            aim: None,
             max_strobe_frequency: None,
             min_strobe_frequency: None,
             strobe_dmx_offset: None,
@@ -425,6 +432,17 @@ impl FixtureType {
     /// Sets (or clears) the rig model's asset-store path.
     pub fn set_rig(&mut self, rig: Option<String>) {
         self.rig = rig;
+    }
+
+    /// The aim calibration through the rig's geometry, when the type has
+    /// a rig and it reduces to one.
+    pub fn aim(&self) -> Option<crate::lighting::effects::AimCalibration> {
+        self.aim
+    }
+
+    /// Sets (or clears) the aim calibration.
+    pub fn set_aim(&mut self, aim: Option<crate::lighting::effects::AimCalibration>) {
+        self.aim = aim;
     }
 
     /// The DMX footprint: the highest byte offset any channel occupies.

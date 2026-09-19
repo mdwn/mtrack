@@ -140,15 +140,7 @@ pub struct RigBeam {
 /// a rig with no beam. Shares nothing with the pointing math but the
 /// spec's definitions, which is what makes it a cross-check of it.
 pub fn beam_direction(rig: &RigModel, pan_deg: f64, tilt_deg: f64) -> Option<[f64; 3]> {
-    let beam = rig.beams.first()?;
-    // The chain from the root down to the beam's node.
-    let mut chain = Vec::new();
-    let mut at = Some(beam.node);
-    while let Some(index) = at {
-        chain.push(index);
-        at = rig.nodes.get(index)?.parent;
-    }
-    chain.reverse();
+    let chain = beam_chain(rig)?;
 
     let mut r = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     for index in chain {
@@ -172,6 +164,86 @@ pub fn beam_direction(rig: &RigModel, pan_deg: f64, tilt_deg: f64) -> Option<[f6
     let d = [-r[0][2], -r[1][2], -r[2][2]];
     let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
     (length > 1e-9).then(|| [d[0] / length, d[1] / length, d[2] / length])
+}
+
+/// How this rig's joints sit in its mounting frame (design §18.6): the
+/// rotation its geometry puts before the pan joint, any yaw between the
+/// pan and tilt joints, and the angle the beam rests at in the head. A
+/// rig whose geometry does not reduce to that — a tilt axis that is not
+/// the yoke's X, a beam that is not in the head's Y–Z plane — cannot be
+/// aimed by the closed form; the reason is returned so the fixture type
+/// can say so and fall back to the plain math.
+pub fn aim_calibration(rig: &RigModel) -> Result<crate::lighting::effects::AimCalibration, String> {
+    use crate::lighting::effects::AimCalibration;
+    let (Some(pan), Some(tilt)) = (rig.pan, rig.tilt) else {
+        return Ok(AimCalibration::IDENTITY);
+    };
+    let Some(chain) = beam_chain(rig) else {
+        return Ok(AimCalibration::IDENTITY);
+    };
+    let pan_at = chain
+        .iter()
+        .position(|&i| i == pan)
+        .ok_or("the pan node is not above the beam")?;
+    let tilt_at = chain
+        .iter()
+        .position(|&i| i == tilt)
+        .ok_or("the tilt node is not above the beam")?;
+    if tilt_at < pan_at {
+        return Err("the tilt node is above the pan node".to_string());
+    }
+    let rotation_of = |index: usize| {
+        let t = rig.nodes[index].transform;
+        [
+            [t[0][0], t[0][1], t[0][2]],
+            [t[1][0], t[1][1], t[1][2]],
+            [t[2][0], t[2][1], t[2][2]],
+        ]
+    };
+    let product = |nodes: &[usize]| {
+        nodes.iter().fold(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            |acc, &i| mat_mul(acc, rotation_of(i)),
+        )
+    };
+    let pre = product(&chain[..=pan_at]);
+    let between = product(&chain[pan_at + 1..=tilt_at]);
+    let after = product(&chain[tilt_at + 1..]);
+
+    // Between the joints only a yaw is allowed: the tilt axis must still
+    // be the yoke's X after the pan joint, i.e. `between` keeps Z. The
+    // tolerance suits a file carrying six digits of a cosine.
+    const ALIGNED: f64 = 1e-4;
+    if (between[0][2].abs() + between[1][2].abs() + (between[2][2] - 1.0).abs()) > ALIGNED {
+        return Err("the tilt axis is not perpendicular to the pan axis".to_string());
+    }
+    let pan_offset = between[1][0].atan2(between[0][0]).to_degrees();
+    // After the tilt joint the beam must rest in the head's Y–Z plane, so
+    // tilting sweeps it through straight down.
+    let rest = [-after[0][2], -after[1][2], -after[2][2]];
+    if rest[0].abs() > ALIGNED {
+        return Err("the beam does not lie in the tilt plane".to_string());
+    }
+    let tilt_offset = rest[1].atan2(-rest[2]).to_degrees();
+    Ok(AimCalibration {
+        pre,
+        pan_offset,
+        tilt_offset,
+    })
+}
+
+/// The nodes from the root down to the first beam's node, in that order;
+/// `None` for a rig with no beam or a broken parent link.
+fn beam_chain(rig: &RigModel) -> Option<Vec<usize>> {
+    let beam = rig.beams.first()?;
+    let mut chain = Vec::new();
+    let mut at = Some(beam.node);
+    while let Some(index) = at {
+        chain.push(index);
+        at = rig.nodes.get(index)?.parent;
+    }
+    chain.reverse();
+    Some(chain)
 }
 
 fn mat_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
@@ -630,5 +702,112 @@ mod tests {
         let json = serde_json::to_string(&rig).unwrap();
         assert!(json.contains("\"kind\":\"pan\""), "{json}");
         assert_eq!(serde_json::from_str::<RigModel>(&json).unwrap(), rig);
+    }
+
+    const YOKE_PLAIN: &str =
+        r#"<Axis Name="Yoke" Model="Yoke" Position="{1,0,0,0}{0,1,0,0}{0,0,1,-0.1}{0,0,0,1}">"#;
+    /// The MagicDot SX's yoke: yawed 90° about Z in the file.
+    const YOKE_YAWED: &str =
+        r#"<Axis Name="Yoke" Model="Yoke" Position="{0,1,0,0}{-1,0,0,0}{0,0,1,-0.1}{0,0,0,1}">"#;
+    const LENS_PLAIN: &str = r#"Position="{1,0,0,0}{0,1,0,0}{0,0,1,-0.06}{0,0,0,1}"/>"#;
+    /// A lens pitched 30° about X in the head: cos30 = 0.866, sin30 = 0.5.
+    const LENS_PITCHED: &str =
+        r#"Position="{1,0,0,0}{0,0.866025,-0.5,0}{0,0.5,0.866025,-0.06}{0,0,0,1}"/>"#;
+    /// A lens yawed about Y: its beam leaves the tilt plane.
+    const LENS_SKEWED: &str =
+        r#"Position="{0.866025,0,0.5,0}{0,1,0,0}{-0.5,0,0.866025,-0.06}{0,0,0,1}"/>"#;
+
+    fn mover_rig(yoke: &str, lens: &str) -> RigModel {
+        let xml = SYNTHETIC_DESCRIPTION
+            .replace(YOKE_PLAIN, yoke)
+            .replace(LENS_PLAIN, lens);
+        assert!(
+            xml.contains(yoke) && xml.contains(lens),
+            "fixture text changed"
+        );
+        let description = parse_description(&xml).unwrap();
+        distill_rig(&description, "Mover 16bit", &HashSet::new()).unwrap()
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    /// A rig whose joints are the mounting axes calibrates to the
+    /// identity; a yawed yoke turns up in `pre`; a pitched lens in the
+    /// tilt offset; a lens that leaves the tilt plane is refused.
+    #[test]
+    fn calibration_reads_the_joints_from_the_geometry() {
+        let plain = aim_calibration(&mover_rig(YOKE_PLAIN, LENS_PLAIN)).unwrap();
+        assert!(plain.is_identity(), "{plain:?}");
+
+        let yawed = aim_calibration(&mover_rig(YOKE_YAWED, LENS_PLAIN)).unwrap();
+        // Rz(−90°): local x is the parent's −y.
+        assert!(
+            close(yawed.pre[0][1], 1.0) && close(yawed.pre[1][0], -1.0),
+            "{yawed:?}"
+        );
+        assert!(close(yawed.pan_offset, 0.0) && close(yawed.tilt_offset, 0.0));
+
+        let pitched = aim_calibration(&mover_rig(YOKE_PLAIN, LENS_PITCHED)).unwrap();
+        // The matrix above carries six digits of cos 30°.
+        assert!((pitched.tilt_offset - 30.0).abs() < 1e-3, "{pitched:?}");
+        assert!(pitched.pre == crate::lighting::effects::AimCalibration::IDENTITY.pre);
+
+        let err = aim_calibration(&mover_rig(YOKE_PLAIN, LENS_SKEWED)).unwrap_err();
+        assert!(err.contains("tilt plane"), "{err}");
+    }
+
+    /// Whatever the geometry, the calibrated direction is what the joints
+    /// produce, and the calibrated aim sends the joints at the target.
+    #[test]
+    fn calibrated_aim_and_kinematics_agree_for_every_geometry() {
+        use crate::lighting::effects::Pose;
+        for (yoke, lens) in [
+            (YOKE_PLAIN, LENS_PLAIN),
+            (YOKE_YAWED, LENS_PLAIN),
+            (YOKE_PLAIN, LENS_PITCHED),
+            (YOKE_YAWED, LENS_PITCHED),
+        ] {
+            let rig = mover_rig(yoke, lens);
+            let calibration = aim_calibration(&rig).unwrap();
+            for pan in (-270..=270).step_by(30) {
+                for tilt in (-135..=135).step_by(15) {
+                    let pose = Pose {
+                        pan: f64::from(pan),
+                        tilt: f64::from(tilt),
+                    };
+                    let expected = calibration.direction([0.0; 3], pose);
+                    let joints = beam_direction(&rig, pose.pan, pose.tilt).unwrap();
+                    for i in 0..3 {
+                        assert!(
+                            (expected[i] - joints[i]).abs() < 1e-9,
+                            "{yoke} {lens} {pose:?}: {expected:?} vs {joints:?}"
+                        );
+                    }
+                }
+            }
+            let rotation: [f64; 3] = [20.0, -10.0, 135.0];
+            let targets: [[f64; 3]; 3] = [[1.0, 2.0, 0.0], [-3.0, 0.5, 1.0], [0.2, -1.0, 6.0]];
+            for target in targets {
+                let position: [f64; 3] = [0.0, 1.0, 4.0];
+                let d = [
+                    target[0] - position[0],
+                    target[1] - position[1],
+                    target[2] - position[2],
+                ];
+                let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                for pose in calibration.aim_solutions(position, rotation, target) {
+                    let joints = beam_direction(&rig, pose.pan, pose.tilt).unwrap();
+                    let stage = crate::lighting::effects::out_of_frame(rotation, joints);
+                    for i in 0..3 {
+                        assert!(
+                            (stage[i] - d[i] / len).abs() < 1e-9,
+                            "{yoke} {lens} {target:?} {pose:?}: {stage:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

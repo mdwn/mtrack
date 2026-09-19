@@ -475,6 +475,9 @@ pub struct FixtureInfo {
     pub movement: crate::lighting::types::MovementLimits,
     /// The fixture type's rig model in the asset store, when it has one.
     pub rig: Option<String>,
+    /// How the rig's joints sit in the mounting frame (design §18.6);
+    /// absent for a fixture aimed by the plain convention.
+    pub aim: Option<super::AimCalibration>,
     /// The cells of a pixel fixture (design §17.2), in the manufacturer's
     /// order; empty for a one-colour fixture.
     pub cells: Vec<crate::lighting::types::Cell>,
@@ -518,11 +521,18 @@ impl FixtureInfo {
             channel_defs,
             movement: crate::lighting::types::MovementLimits::default(),
             rig: None,
+            aim: None,
             cells: Vec::new(),
             parent: None,
             cached_capabilities: capabilities,
             cached_profile: profile,
         }
+    }
+
+    /// The geometry the fixture is aimed through: its rig's, or the plain
+    /// convention.
+    pub fn calibration(&self) -> super::AimCalibration {
+        self.aim.unwrap_or(super::AimCalibration::IDENTITY)
     }
 
     /// Replaces the plain channel definitions with the fixture type's
