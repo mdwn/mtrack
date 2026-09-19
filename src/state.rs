@@ -293,7 +293,9 @@ pub(crate) fn fixture_snapshots_with_cells(
 /// pan or tilt at all, and `evaluate_show` cannot answer "where is it
 /// pointing". Resolved through the same code as the wire: coarse byte
 /// under the channel's name, fine byte under `<name>_fine` when the
-/// channel has one.
+/// channel has one. A ganged channel's mirror bytes repeat these on the
+/// wire and have no name of their own here, as for every other channel
+/// in a snapshot.
 fn attach_pointing(
     snapshots: &mut [FixtureSnapshot],
     states: &HashMap<String, FixtureState>,

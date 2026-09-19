@@ -132,13 +132,16 @@ impl LightingTimeline {
                 .extend(cue.layer_commands.iter().cloned());
 
             // Simulate clear commands: purge effects that would have been stopped
-            // so we only start effects that are actually active at the seek point
+            // so we only start effects that are actually active at the seek point.
+            // A finished move stays through a layer clear: live, only a full
+            // `clear` releases pose memory (design §15.4), and the replayed
+            // move is what carries the pose to the seek point.
             for cmd in &cue.layer_commands {
                 if cmd.command_type == LayerCommandType::Clear {
                     if let Some(layer) = cmd.layer {
-                        result
-                            .effects_with_elapsed
-                            .retain(|_, (effect, _)| effect.layer != layer);
+                        result.effects_with_elapsed.retain(|_, (effect, elapsed)| {
+                            effect.layer != layer || Self::is_finished_move(effect, *elapsed)
+                        });
                     } else {
                         result.effects_with_elapsed.clear();
                     }
@@ -149,11 +152,12 @@ impl LightingTimeline {
 
             // Purge already-accumulated effects from stopped sequences,
             // mirroring what EffectEngine::stop_sequence() does at runtime.
+            // Stopping a sequence does not release pose memory either.
             for seq_name in &cue.stop_sequences {
                 let prefix = format!("seq_{}_", seq_name);
-                result
-                    .effects_with_elapsed
-                    .retain(|id, _| !id.starts_with(&prefix));
+                result.effects_with_elapsed.retain(|id, (effect, elapsed)| {
+                    !id.starts_with(&prefix) || Self::is_finished_move(effect, *elapsed)
+                });
             }
 
             // For effects, only include ones that would still be active at start_time
@@ -204,6 +208,15 @@ impl LightingTimeline {
         }
 
         result
+    }
+
+    /// A move that had already arrived by the seek point: replayed for its
+    /// pose, whatever later cleared its layer or stopped its sequence.
+    fn is_finished_move(effect: &EffectInstance, elapsed: Duration) -> bool {
+        matches!(
+            effect.effect_type,
+            crate::lighting::effects::EffectType::Move { .. }
+        ) && elapsed >= effect.total_duration()
     }
 
     /// Finds the index of the first cue that should trigger at or after the given time.
@@ -1035,6 +1048,41 @@ mod tests {
             kinds,
             vec![("Move", Duration::from_secs(8))],
             "only the move survives the seek, carrying its elapsed time"
+        );
+    }
+
+    /// Live, a layer clear or a stopped sequence leaves a head where it
+    /// is; only a full `clear` releases pose memory. The seek replay
+    /// keeps the same distinction.
+    #[test]
+    fn start_at_keeps_a_finished_move_through_a_layer_clear_but_not_a_full_clear() {
+        let parse = |src: &str| {
+            crate::lighting::parser::parse_light_shows(src)
+                .unwrap()
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        let layer_clear = parse(
+            "show \"s\" {\n    @00:01.000\n    spots: move pan: 45deg, tilt: -20deg, duration: 500ms\n    \
+             @00:03.000\n    clear(layer: background)\n}\n",
+        );
+        let mut timeline = LightingTimeline::new(layer_clear);
+        let update = timeline.start_at(Duration::from_secs(10));
+        assert_eq!(
+            update.effects_with_elapsed.len(),
+            1,
+            "a layer clear does not release the pose, so the move is replayed"
+        );
+
+        let full_clear = parse(
+            "show \"s\" {\n    @00:01.000\n    spots: move pan: 45deg, tilt: -20deg, duration: 500ms\n    \
+             @00:03.000\n    clear()\n}\n",
+        );
+        let mut timeline = LightingTimeline::new(full_clear);
+        let update = timeline.start_at(Duration::from_secs(10));
+        assert!(
+            update.effects_with_elapsed.is_empty(),
+            "a full clear releases the pose, so nothing is replayed"
         );
     }
 

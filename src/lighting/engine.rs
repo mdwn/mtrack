@@ -716,6 +716,16 @@ impl EffectEngine {
                 }
             }
 
+            // A settled mover still holds its pose: the states the live
+            // views read must say so even on this path, or a head that has
+            // arrived drops out of `get_fixture_state` the moment an
+            // unrelated MIDI fader moves.
+            let mut held = HashMap::new();
+            self.settle_poses(&mut held);
+            for (name, state) in held {
+                self.last_merged_states.entry(name).or_default().physical = state.physical;
+            }
+
             self.cache.update(commands, store_gen);
             self.update_subphase.store(0, Ordering::Relaxed);
             return Ok(self.cache.get_cached());

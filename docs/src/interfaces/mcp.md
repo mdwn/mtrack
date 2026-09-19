@@ -91,9 +91,10 @@ Roughly 50 tools are available. They fall into a few groups:
   instant and the fixtures each one resolved to, in the same shape, so predicted and actual state
   can be compared directly. Movers report `pan`, `tilt` and their `_fine` bytes, aimed through
   the current venue's focus points; pixel fixtures report each cell's own channels under
-  `cells`. `dark` ignores pan and tilt — where a head points is not light. `evaluate_show` needs no audio, no DMX output, and no real-time
-  waiting, so a show can be verified without playing the song through the PA and the rig — and
-  without perturbing playback if a song *is* running.
+  `cells`. `dark` ignores pan and tilt — where a head points is not light. `evaluate_show`
+  needs no audio, no DMX output, and no real-time waiting, so a show can be verified without
+  playing the song through the PA and the rig — and without perturbing playback if a song *is*
+  running.
 
 Every write and patch tool validates its input (YAML schema or `.light` DSL parse) **before** it
 writes to disk, so a malformed edit is rejected rather than corrupting a project file.
