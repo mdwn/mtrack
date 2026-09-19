@@ -140,15 +140,7 @@ pub struct RigBeam {
 /// a rig with no beam. Shares nothing with the pointing math but the
 /// spec's definitions, which is what makes it a cross-check of it.
 pub fn beam_direction(rig: &RigModel, pan_deg: f64, tilt_deg: f64) -> Option<[f64; 3]> {
-    let beam = rig.beams.first()?;
-    // The chain from the root down to the beam's node.
-    let mut chain = Vec::new();
-    let mut at = Some(beam.node);
-    while let Some(index) = at {
-        chain.push(index);
-        at = rig.nodes.get(index)?.parent;
-    }
-    chain.reverse();
+    let chain = beam_chain(rig)?;
 
     let mut r = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     for index in chain {
@@ -186,16 +178,9 @@ pub fn aim_calibration(rig: &RigModel) -> Result<crate::lighting::effects::AimCa
     let (Some(pan), Some(tilt)) = (rig.pan, rig.tilt) else {
         return Ok(AimCalibration::IDENTITY);
     };
-    let Some(beam) = rig.beams.first() else {
+    let Some(chain) = beam_chain(rig) else {
         return Ok(AimCalibration::IDENTITY);
     };
-    let mut chain = Vec::new();
-    let mut at = Some(beam.node);
-    while let Some(index) = at {
-        chain.push(index);
-        at = rig.nodes.get(index).and_then(|n| n.parent);
-    }
-    chain.reverse();
     let pan_at = chain
         .iter()
         .position(|&i| i == pan)
@@ -226,15 +211,17 @@ pub fn aim_calibration(rig: &RigModel) -> Result<crate::lighting::effects::AimCa
     let after = product(&chain[tilt_at + 1..]);
 
     // Between the joints only a yaw is allowed: the tilt axis must still
-    // be the yoke's X after the pan joint, i.e. `between` keeps Z.
-    if (between[0][2].abs() + between[1][2].abs() + (between[2][2] - 1.0).abs()) > 1e-6 {
+    // be the yoke's X after the pan joint, i.e. `between` keeps Z. The
+    // tolerance suits a file carrying six digits of a cosine.
+    const ALIGNED: f64 = 1e-4;
+    if (between[0][2].abs() + between[1][2].abs() + (between[2][2] - 1.0).abs()) > ALIGNED {
         return Err("the tilt axis is not perpendicular to the pan axis".to_string());
     }
     let pan_offset = between[1][0].atan2(between[0][0]).to_degrees();
     // After the tilt joint the beam must rest in the head's Y–Z plane, so
     // tilting sweeps it through straight down.
     let rest = [-after[0][2], -after[1][2], -after[2][2]];
-    if rest[0].abs() > 1e-6 {
+    if rest[0].abs() > ALIGNED {
         return Err("the beam does not lie in the tilt plane".to_string());
     }
     let tilt_offset = rest[1].atan2(-rest[2]).to_degrees();
@@ -243,6 +230,20 @@ pub fn aim_calibration(rig: &RigModel) -> Result<crate::lighting::effects::AimCa
         pan_offset,
         tilt_offset,
     })
+}
+
+/// The nodes from the root down to the first beam's node, in that order;
+/// `None` for a rig with no beam or a broken parent link.
+fn beam_chain(rig: &RigModel) -> Option<Vec<usize>> {
+    let beam = rig.beams.first()?;
+    let mut chain = Vec::new();
+    let mut at = Some(beam.node);
+    while let Some(index) = at {
+        chain.push(index);
+        at = rig.nodes.get(index)?.parent;
+    }
+    chain.reverse();
+    Some(chain)
 }
 
 fn mat_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {

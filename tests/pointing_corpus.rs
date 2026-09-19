@@ -123,10 +123,20 @@ fn every_corpus_mover_points_where_the_math_says() {
                 }
                 rigs += 1;
                 let name = format!("{} / {}", description.name, mode.name);
+                // A rig the calibration refuses is aimed by the plain
+                // convention in production, so that is what it is checked
+                // against, and the error it would carry is reported.
                 let calibration = match gdtf::aim_calibration(&rig) {
                     Ok(c) => c,
                     Err(reason) => {
-                        uncalibrated.push((name, reason));
+                        let plain = worst_error_deg(&rig, &AimCalibration::IDENTITY);
+                        uncalibrated.push((
+                            name,
+                            format!(
+                                "{reason}; plain convention off by {:.2}°",
+                                plain.unwrap_or(f64::NAN)
+                            ),
+                        ));
                         continue;
                     }
                 };

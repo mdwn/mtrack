@@ -603,3 +603,27 @@ fn a_target_on_the_pan_axis_holds_the_current_pan() {
     assert!((pose.pan - 90.0).abs() < 1e-9, "{pose:?}");
     assert!(pose.tilt.abs() < 1e-9, "{pose:?}");
 }
+
+/// A pitched lens shifts the channel tilt for every target; the "on the
+/// pan axis" hold must judge the joint's tilt, not the channel's, or an
+/// ordinary target just off straight-down would freeze the pan.
+#[test]
+fn a_pitched_lens_does_not_mistake_an_ordinary_target_for_the_pan_axis() {
+    let mut fixture = mover("m", [0.0, 0.0, 4.0], [0.0; 3]);
+    fixture.aim = Some(AimCalibration {
+        pre: AimCalibration::IDENTITY.pre,
+        pan_offset: 0.0,
+        tilt_offset: 30.0,
+    });
+    // 1 m to stage-right of straight down: a joint tilt of 14.04°, a
+    // channel tilt of −15.96° (the lens pitch is more than the joint
+    // tilt), and a pan of +90 (−x is a +90° turn of +y).
+    let mut engine = engine_with(fixture, &[("near", [-1.0, 0.0, 0.0])]);
+    engine
+        .start_effect(move_to("a", MoveTarget::Focus("near".into()), None, 0.1))
+        .unwrap();
+    engine.update(Duration::from_millis(200), None).unwrap();
+    let pose = engine.poses()["m"];
+    assert!((pose.pan - 90.0).abs() < 1e-6, "{pose:?}");
+    assert!((pose.tilt - (14.04 - 30.0)).abs() < 0.01, "{pose:?}");
+}

@@ -572,12 +572,14 @@ fn target_pose(
             // the tilt range whose pan is nearest the head's current pan
             // wins, ties to the smaller tilt change. Nothing in range:
             // the principal solution, clamped by the resolver.
-            let solutions = fixture
-                .calibration()
-                .aim_solutions(position, rotation, *point);
+            let calibration = fixture.calibration();
+            let solutions = calibration.aim_solutions(position, rotation, *point);
             // On the pan axis — straight down or straight up — every pan
             // is the same beam: hold the head's pan rather than snap it.
-            let on_axis = solutions[0].tilt < 1e-6 || solutions[0].tilt > 180.0 - 1e-6;
+            // The axis is the joint's, so the test is on the joint tilt,
+            // before the calibration's offset is taken off.
+            let joint_tilt = solutions[0].tilt + calibration.tilt_offset;
+            let on_axis = !(1e-6..=180.0 - 1e-6).contains(&joint_tilt);
             if on_axis {
                 return Some(Pose {
                     pan: reference.pan,

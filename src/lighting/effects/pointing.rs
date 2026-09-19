@@ -38,8 +38,6 @@
 //! No geometry-tree kinematics: a page of trigonometry, property-tested
 //! and cross-checked against rig kinematics in `golden_tests`.
 
-use serde::{Deserialize, Serialize};
-
 /// A pan/tilt pair in degrees.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
@@ -61,7 +59,7 @@ pub struct Pose {
 /// `pre` is the rotation the geometry puts before the pan joint, and the
 /// offsets are yaws between the joints and the beam's rest angle in the
 /// head. Derived by [`crate::lighting::gdtf::aim_calibration`].
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AimCalibration {
     /// Rotation from the joint frame into the mounting frame (row-major).
     pub pre: [[f64; 3]; 3],
