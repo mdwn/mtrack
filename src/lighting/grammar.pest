@@ -345,8 +345,11 @@ vec3 = { "(" ~ signed_number ~ "," ~ signed_number ~ "," ~ signed_number ~ ")" }
 
 signed_number = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 
-universe_num = { ASCII_DIGIT+ }
-address_num = { ASCII_DIGIT+ }
+// Atomic: non-atomic, pest put implicit WHITESPACE (which includes a
+// COMMENT) inside the digit run, so a one-digit address followed by a
+// trailing comment captured the comment as part of the number.
+universe_num = @{ ASCII_DIGIT+ }
+address_num = @{ ASCII_DIGIT+ }
 
 tags = { "tags" ~ tag_list }
 tag_list = { "[" ~ string ~ ("," ~ string)* ~ "]" }

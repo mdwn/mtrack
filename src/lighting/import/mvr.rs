@@ -790,8 +790,9 @@ fn plan(
     let venue_text = render_venue(&plan, archive_file_name, &kept, &kept_focus);
     // Prove the venue parses back, and to the same shape, before anything
     // is written: the loader's check, made while a refusal is still free.
-    let parsed = parse_venues(&venue_text)
-        .map_err(|e| format!("the seeded venue would not parse back: {e}"))?;
+    let parsed = parse_venues(&venue_text).map_err(|e| {
+        format!("the seeded venue would not parse back: {e}\n--- venue text ---\n{venue_text}")
+    })?;
     let Some(parsed) = parsed.get(&plan.venue_name) else {
         return Err("the seeded venue would not parse back under its own name".into());
     };

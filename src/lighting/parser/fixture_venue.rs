@@ -1164,4 +1164,19 @@ venue "Main" {
         assert_eq!(f.name(), "Spot");
         assert_eq!(f.tags(), &["front", "spot"]);
     }
+
+    #[test]
+    fn a_one_digit_address_survives_a_trailing_comment() {
+        // A seeded venue writes `# layer "..."` after every fixture; an
+        // unplaced one ends at its address, and a one-digit address used
+        // to swallow the comment (pest's implicit whitespace in a
+        // non-atomic digit run).
+        let venues = parse_venues(
+            "venue \"V\" {\n  fixture \"A\" Par @ 1:9  # layer \"Club\"\n  fixture \"B\" Par @ 2:100  # layer \"Back Wall\"\n}\n",
+        )
+        .unwrap();
+        let v = &venues["V"];
+        assert_eq!(v.fixtures()["A"].start_channel(), 9);
+        assert_eq!(v.fixtures()["B"].start_channel(), 100);
+    }
 }

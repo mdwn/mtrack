@@ -348,6 +348,17 @@ pub struct ImportMvrArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExportMvrArgs {
+    /// The venue to export, by name.
+    pub venue: String,
+    /// The `.mvr` file name; exports always land in the project's
+    /// `lighting/export/` directory. Defaults to `<venue>.mvr`.
+    pub output: Option<String>,
+    /// Put each fixture on an MVR layer named after its first tag.
+    pub layers_from_tags: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteSongLightingArgs {
     /// Song name as listed by `list_songs`.
     pub song: String,
@@ -1911,6 +1922,34 @@ impl McpServer {
         })
         .await
         .map_err(|e| McpError::internal_error(format!("import task failed: {e}"), None))?
+        .map_err(|e| McpError::invalid_params(e, None))?;
+        Ok(ok_json(serde_json::to_value(&report).map_err(|e| {
+            McpError::internal_error(format!("report serialization failed: {e}"), None)
+        })?))
+    }
+
+    #[tool(description = "Export a venue as an .mvr archive inside the project: \
+        the patch with positions, rotations and focus points in MVR \
+        coordinates (the venue's recorded origin restored), every fixture \
+        type's GDTF embedded from the library, and a minimal generated GDTF \
+        (channels only, no models) for native fixture types. A venue seeded \
+        from an MVR round-trips: re-importing the export merges with no \
+        changes. Returns the output path and what was embedded or generated.")]
+    async fn export_mvr(
+        &self,
+        Parameters(args): Parameters<ExportMvrArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let options = crate::lighting::export::MvrExportOptions {
+            output: args.output.clone(),
+            layers_from_tags: args.layers_from_tags.unwrap_or(false),
+            ..crate::lighting::export::MvrExportOptions::for_venue(&args.venue)
+        };
+        let report = tokio::task::spawn_blocking(move || {
+            crate::lighting::export::export_mvr(&options, &project).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("export task failed: {e}"), None))?
         .map_err(|e| McpError::invalid_params(e, None))?;
         Ok(ok_json(serde_json::to_value(&report).map_err(|e| {
             McpError::internal_error(format!("report serialization failed: {e}"), None)
