@@ -124,6 +124,10 @@ pub struct MvrFixture {
     /// Patch addresses as (universe, address), in document order; the first
     /// is the fixture's patch, later ones are additional DMX breaks.
     pub addresses: Vec<(u16, u16)>,
+    /// The console's fixture ID (`FixtureID`), the number an operator
+    /// knows the fixture by; consoles name fixtures by type, so this is
+    /// what tells them apart.
+    pub fixture_id: Option<String>,
     /// The fixture's transform, when present and parseable.
     pub matrix: Option<Matrix>,
 }
@@ -134,6 +138,7 @@ enum TextTarget {
     GdtfSpec,
     GdtfMode,
     Address,
+    FixtureId,
     /// A Fixture's transform.
     Matrix,
     /// A FocusPoint's transform.
@@ -257,11 +262,14 @@ impl Walk {
                     matrix: None,
                 });
             }
-            "GDTFSpec" | "GDTFMode" | "Address" | "Matrix" if self.current.is_some() => {
+            "GDTFSpec" | "GDTFMode" | "Address" | "FixtureID" | "Matrix"
+                if self.current.is_some() =>
+            {
                 self.text_target = Some(match name {
                     "GDTFSpec" => TextTarget::GdtfSpec,
                     "GDTFMode" => TextTarget::GdtfMode,
                     "Address" => TextTarget::Address,
+                    "FixtureID" => TextTarget::FixtureId,
                     _ => TextTarget::Matrix,
                 });
                 self.text_buffer.clear();
@@ -292,7 +300,7 @@ impl Walk {
                     self.scene.focus_points.push(focus);
                 }
             }
-            "GDTFSpec" | "GDTFMode" | "Address" | "Matrix" => {
+            "GDTFSpec" | "GDTFMode" | "Address" | "FixtureID" | "Matrix" => {
                 let Some(target) = self.text_target.take() else {
                     return;
                 };
@@ -316,6 +324,7 @@ impl Walk {
                 match target {
                     TextTarget::GdtfSpec if !text.is_empty() => fixture.gdtf_spec = Some(text),
                     TextTarget::GdtfMode if !text.is_empty() => fixture.gdtf_mode = Some(text),
+                    TextTarget::FixtureId if !text.is_empty() => fixture.fixture_id = Some(text),
                     TextTarget::Address => match parse_address(&text) {
                         Some(address) => fixture.addresses.push(address),
                         None => self.scene.warnings.push(format!(
@@ -409,6 +418,7 @@ pub(super) mod tests {
       <Layer name="Front Truss">
         <ChildList>
           <Fixture name="Brick 1" uuid="aaaa">
+            <FixtureID>101</FixtureID>
             <Matrix>{1,0,0}{0,1,0}{0,0,1}{-2000,3500,4200}</Matrix>
             <GDTFSpec>Astera_PB15.gdtf</GDTFSpec>
             <GDTFMode>8: RGBS</GDTFMode>
@@ -461,6 +471,7 @@ pub(super) mod tests {
         assert_eq!(brick.gdtf_spec.as_deref(), Some("Astera_PB15.gdtf"));
         assert_eq!(brick.gdtf_mode.as_deref(), Some("8: RGBS"));
         assert_eq!(brick.addresses, vec![(1, 1)]);
+        assert_eq!(brick.fixture_id.as_deref(), Some("101"));
         let matrix = brick.matrix.unwrap();
         assert_eq!(matrix.o, [-2000.0, 3500.0, 4200.0]);
 

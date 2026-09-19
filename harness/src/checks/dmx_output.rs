@@ -79,6 +79,7 @@ fn pan_def() -> ChannelDef {
             unit: PhysicalUnit::Degrees,
         }),
         functions: Vec::new(),
+        mirrors: Vec::new(),
     }
 }
 
@@ -92,6 +93,7 @@ fn tilt_def() -> ChannelDef {
             unit: PhysicalUnit::Degrees,
         }),
         functions: Vec::new(),
+        mirrors: Vec::new(),
     }
 }
 

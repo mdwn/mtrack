@@ -15,8 +15,12 @@
 //! Bring-your-own MVR corpus checks (venue-exchange design §12, tier 2).
 //!
 //! Real venue files come from consoles and pre-viz tools, not from anywhere
-//! CI can fetch. Drop `.mvr` files into `tests/mvr-corpus/` (gitignored)
-//! and run:
+//! CI can fetch. gdtf.eu publishes ten sample exports (Basic_Festival,
+//! Circle_Stage, Midsize_w_GP, Messy_Patch, Key_Arena_Remake_MVR,
+//! Template_Stage1, Demoshow_grandMA3, Demostage_MVR, Simple_Show,
+//! Capture_Demo) under `https://www.gdtf.eu/mvr_files/`; all ten import
+//! with one TODO between them as of 2026-09-19. Drop `.mvr` files into
+//! `tests/mvr-corpus/` (gitignored) and run:
 //!
 //! ```sh
 //! cargo test --test mvr_corpus -- --ignored --nocapture
@@ -76,15 +80,15 @@ fn every_corpus_file_parses_and_references_resolve() {
                 println!("  [{}] no GDTF reference", fixture.name);
                 continue;
             };
-            // Console exports sometimes omit the extension in the reference.
-            let entry = embedded
-                .iter()
-                .find(|name| {
-                    name.as_str() == spec
-                        || name.strip_suffix(".gdtf") == Some(spec)
-                        || name.rsplit('/').next() == Some(spec)
-                })
-                .cloned();
+            // The importer's own resolution: extension, path prefix and
+            // manufacturer prefix tolerated, ambiguity reported.
+            let entry = match mvr::resolve_gdtf_entry(&embedded, spec) {
+                Ok(entry) => entry.map(str::to_string),
+                Err(e) => {
+                    println!("  [{}] {e}", fixture.name);
+                    continue;
+                }
+            };
             let Some(entry) = entry else {
                 println!(
                     "  [{}] GDTF reference {spec:?} matches no embedded entry",

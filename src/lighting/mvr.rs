@@ -74,24 +74,51 @@ pub fn parse_archive(bytes: &[u8]) -> Result<Scene, MvrError> {
 /// Finds the embedded entry a fixture's `GDTFSpec` names. Console exports
 /// drift from the spec here too: the reference may omit the `.gdtf`
 /// extension, or the entry may sit under a path prefix.
-pub fn resolve_gdtf_entry<'a>(entries: &'a [String], spec: &str) -> Option<&'a str> {
+pub fn resolve_gdtf_entry<'a>(
+    entries: &'a [String],
+    spec: &str,
+) -> Result<Option<&'a str>, MvrError> {
     let spec = spec.trim();
     let basename = spec.rsplit('/').next().unwrap_or(spec);
-    entries
+    let wanted = basename.strip_suffix(".gdtf").unwrap_or(basename);
+    if let Some(exact) = entries.iter().find(|name| name.as_str() == spec) {
+        return Ok(Some(exact.as_str()));
+    }
+    let by_name: Vec<&String> = entries
         .iter()
-        .find(|name| name.as_str() == spec)
-        .or_else(|| {
-            entries.iter().find(|name| {
-                let entry_base = name.rsplit('/').next().unwrap_or(name);
-                entry_base == basename
-                    || entry_base.strip_suffix(".gdtf") == Some(basename)
-                    || entry_base.eq_ignore_ascii_case(basename)
-                    || entry_base
-                        .strip_suffix(".gdtf")
-                        .is_some_and(|stem| stem.eq_ignore_ascii_case(basename))
-            })
+        .filter(|name| {
+            let entry_base = name.rsplit('/').next().unwrap_or(name);
+            let entry_stem = entry_base.strip_suffix(".gdtf").unwrap_or(entry_base);
+            entry_base == basename || entry_stem.eq_ignore_ascii_case(wanted)
         })
-        .map(|s| s.as_str())
+        .collect();
+    if let Some(first) = by_name.first() {
+        return Ok(Some(first.as_str()));
+    }
+    // Entries are usually "Manufacturer@Fixture.gdtf"; a console may
+    // reference just "Fixture". Two manufacturers sharing a model name is
+    // an ambiguity to report, not a coin to flip.
+    let unprefixed: Vec<&String> = entries
+        .iter()
+        .filter(|name| {
+            let entry_base = name.rsplit('/').next().unwrap_or(name);
+            let entry_stem = entry_base.strip_suffix(".gdtf").unwrap_or(entry_base);
+            entry_stem
+                .split_once('@')
+                .is_some_and(|(_, f)| f.eq_ignore_ascii_case(wanted))
+        })
+        .collect();
+    match unprefixed.as_slice() {
+        [] => Ok(None),
+        [one] => Ok(Some(one.as_str())),
+        many => Err(MvrError::new(format!(
+            "GDTF reference \"{spec}\" is ambiguous: {} — the MVR must name the manufacturer",
+            many.iter()
+                .map(|n| format!("\"{n}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -104,25 +131,38 @@ mod tests {
             "Astera_PB15.gdtf".to_string(),
             "fixtures/Robe@Esprite.gdtf".to_string(),
         ];
+        let resolve = |spec: &str| resolve_gdtf_entry(&entries, spec).unwrap();
+        assert_eq!(resolve("Astera_PB15.gdtf"), Some("Astera_PB15.gdtf"));
         assert_eq!(
-            resolve_gdtf_entry(&entries, "Astera_PB15.gdtf"),
-            Some("Astera_PB15.gdtf")
-        );
-        assert_eq!(
-            resolve_gdtf_entry(&entries, "Astera_PB15"),
+            resolve("Astera_PB15"),
             Some("Astera_PB15.gdtf"),
             "a missing extension still resolves"
         );
         assert_eq!(
-            resolve_gdtf_entry(&entries, "Robe@Esprite.gdtf"),
+            resolve("Robe@Esprite.gdtf"),
             Some("fixtures/Robe@Esprite.gdtf"),
             "a path prefix on the entry is tolerated"
         );
+        assert_eq!(resolve("astera_pb15"), Some("Astera_PB15.gdtf"));
         assert_eq!(
-            resolve_gdtf_entry(&entries, "astera_pb15"),
-            Some("Astera_PB15.gdtf")
+            resolve("PB15"),
+            None,
+            "a fixture name that is only part of the entry's does not match"
         );
-        assert_eq!(resolve_gdtf_entry(&entries, "Nope"), None);
+        assert_eq!(
+            resolve_gdtf_entry(&["Roxx@Cluster S2.gdtf".to_string()], "Cluster S2").unwrap(),
+            Some("Roxx@Cluster S2.gdtf"),
+            "a reference without the manufacturer prefix resolves"
+        );
+        let two = vec![
+            "Roxx@Cluster S2.gdtf".to_string(),
+            "Other@Cluster S2.gdtf".to_string(),
+        ];
+        let err = resolve_gdtf_entry(&two, "Cluster S2")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ambiguous"), "{err}");
+        assert_eq!(resolve("Nope"), None);
     }
 
     /// The full exchange chain: an MVR embedding a GDTF, walked the way the

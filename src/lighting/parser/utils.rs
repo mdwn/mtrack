@@ -252,7 +252,9 @@ pub(crate) fn parse_parameter(pair: Pair<Rule>) -> Result<(String, String), Box<
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::parameter_name => {
-                key = inner_pair.as_str().trim().to_string();
+                // A quoted key ("dimmer:section_a") names a channel whose
+                // name is not an identifier; the quotes are not part of it.
+                key = inner_pair.as_str().trim().trim_matches('"').to_string();
             }
             Rule::color_parameter => {
                 value = parse_color_parameter(inner_pair)?;

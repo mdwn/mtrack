@@ -236,10 +236,12 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
 }
 
 fn parse_gdtf_source(pair: Pair<Rule>) -> Result<GdtfSource, Box<dyn Error>> {
+    // Exactly as written, inner whitespace included: a GDTF mode can be
+    // named with a trailing space, and the name must pin that mode.
     let mut strings = pair
         .into_inner()
         .filter(|p| p.as_rule() == Rule::string)
-        .map(extract_string);
+        .map(|p| p.as_str().trim().trim_matches('"').to_string());
     let path = strings
         .next()
         .ok_or("gdtf reference requires an archive path")?;

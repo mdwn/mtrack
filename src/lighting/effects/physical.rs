@@ -126,10 +126,15 @@ pub struct Resolved {
 /// never steps the coarse byte backwards across a fine rollover.
 pub fn fanout(def: &ChannelDef, value16: u16) -> Vec<(u16, u8)> {
     let [high, low] = value16.to_be_bytes();
-    match def.fine {
-        Some(fine) => vec![(def.offset, high), (fine, low)],
-        None => vec![(def.offset, high)],
+    let mut out = Vec::with_capacity(2 + 2 * def.mirrors.len());
+    for (coarse, fine) in std::iter::once((def.offset, def.fine)).chain(def.mirrors.iter().copied())
+    {
+        out.push((coarse, high));
+        if let Some(fine) = fine {
+            out.push((fine, low));
+        }
     }
+    out
 }
 
 /// Resolves a normalized 0..1 value onto a channel. An 8-bit channel gets
@@ -138,7 +143,13 @@ pub fn fanout(def: &ChannelDef, value16: u16) -> Vec<(u16, u8)> {
 /// used to leave untouched.
 pub fn resolve_normalized(def: &ChannelDef, value: f64) -> Vec<(u16, u8)> {
     match def.fine {
-        None => vec![(def.offset, (value * 255.0) as u8)],
+        None => {
+            let byte = (value * 255.0) as u8;
+            std::iter::once(def.offset)
+                .chain(def.mirrors.iter().map(|(coarse, _)| *coarse))
+                .map(|offset| (offset, byte))
+                .collect()
+        }
         Some(_) => fanout(def, (value.clamp(0.0, 1.0) * FULL_SCALE_16).round() as u16),
     }
 }
@@ -228,8 +239,7 @@ mod tests {
         ChannelDef {
             offset,
             fine: Some(fine),
-            range: None,
-            functions: Vec::new(),
+            ..ChannelDef::at(offset)
         }
     }
 
@@ -272,6 +282,22 @@ mod tests {
             assert!(pair >= previous, "{value}: {pair:?} after {previous:?}");
             previous = pair;
         }
+    }
+
+    #[test]
+    fn a_ganged_channel_writes_every_mirror() {
+        let mut def = ChannelDef::at(1);
+        def.mirrors = vec![(4, None), (7, None)];
+        assert_eq!(
+            resolve_normalized(&def, 1.0),
+            vec![(1, 255), (4, 255), (7, 255)]
+        );
+        let mut wide = def16(1, 2);
+        wide.mirrors = vec![(3, Some(4))];
+        assert_eq!(
+            fanout(&wide, 0x1234),
+            vec![(1, 0x12), (2, 0x34), (3, 0x12), (4, 0x34)]
+        );
     }
 
     #[test]

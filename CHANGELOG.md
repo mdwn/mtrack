@@ -44,6 +44,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untrusted-input layers — the zip archive and the description XML — carry hard size and nesting
   caps and have cargo-fuzz targets.
 
+- **Real-world MVR corpus, and pixel fixtures import**: run against ten console and pre-viz
+  exports from gdtf.eu (grandMA3, Capture, festival and arena rigs, 146 to 176 fixtures each),
+  the importer now seeds every one with a single TODO across all ten — a fixture with no GDTF
+  mode in its file — where a third of the fixtures used to be refused. Three real-world shapes
+  drove the changes. Fixtures whose geometries repeat an attribute — the cells of a pixel bar,
+  the identical sections of an LED batten — are **ganged**: the first section's channels are the
+  fixture's and every other section mirrors them, so the whole fixture shows one color until
+  per-cell control exists; sections that differ (a master beside per-section controls) keep the
+  first as the fixture's channel and the rest under section-suffixed names. Both are reported.
+  GDTF's placeholder `NoFeature` attribute is skipped. Consoles name every fixture by its type
+  and tell them apart by fixture ID, so a repeated name takes its ID ("Robe Spiider 12"), and a
+  reference written without the manufacturer prefix ("Cluster S2" for `Roxx@Cluster S2.gdtf`)
+  resolves. Import warnings are collapsed to one line per kind. Cached expansions regenerate
+  (distiller version 2).
+
 - **Beams on the stage plot, and DMX read back on the hardware harness (P1c-4)**: the stage
   view draws each aimed mover's beam in the color it is showing, from the fixture to its
   footprint on the deck, from the engine's live pan and tilt. The hardware harness gains a

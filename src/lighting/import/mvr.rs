@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use super::{create_dir, fixture_filename_stem, import_gdtf_bytes, write};
+use super::{create_dir, fixture_filename_stem, gdtf_definition, import_gdtf_bytes, write};
 use crate::lighting::gdtf;
 use crate::lighting::mvr::{self, MvrFixture, Scene};
 use crate::lighting::parser::{parse_fixture_types, parse_venues};
@@ -417,13 +417,20 @@ fn plan(
             resolved.push((index, None, Some("no GDTF reference".to_string())));
             continue;
         };
-        let Some(entry) = mvr::resolve_gdtf_entry(&entries, spec) else {
-            resolved.push((
-                index,
-                None,
-                Some(format!("GDTF \"{spec}\" is not embedded in the MVR")),
-            ));
-            continue;
+        let entry = match mvr::resolve_gdtf_entry(&entries, spec) {
+            Ok(Some(entry)) => entry,
+            Ok(None) => {
+                resolved.push((
+                    index,
+                    None,
+                    Some(format!("GDTF \"{spec}\" is not embedded in the MVR")),
+                ));
+                continue;
+            }
+            Err(e) => {
+                resolved.push((index, None, Some(e.to_string())));
+                continue;
+            }
         };
         let entry = entry.to_string();
         if !embedded.contains_key(&entry) {
@@ -460,10 +467,13 @@ fn plan(
         match gdtf::match_mode(description, requested) {
             Ok(matched) => {
                 if matched.normalized {
-                    warnings.push(format!(
-                        "fixture \"{}\": mode \"{requested}\" matched \"{}\" after normalization",
-                        fixture.name, matched.name
-                    ));
+                    let note = format!(
+                        "mode \"{requested}\" of {entry} matched \"{}\" after normalization",
+                        matched.name
+                    );
+                    if !warnings.contains(&note) {
+                        warnings.push(note);
+                    }
                 }
                 resolved.push((
                     index,
@@ -516,16 +526,33 @@ fn plan(
         );
         let existing =
             existing_fixture_type(project, &fixture_file, type_name, &archive, &key.mode)?;
+        // Same rule as import-gdtf, reused .fixture or not: a same-named
+        // library archive with different bytes would silently re-source
+        // every fixture type that points at it.
+        let library = project.join(&archive);
+        if library.exists() && std::fs::read(&library)? != item.bytes {
+            return Err(format!(
+                "{archive} already exists with different content — other fixture types \
+                 may reference it; remove it deliberately or rename the entry in the MVR"
+            )
+            .into());
+        }
         if !existing {
-            // Same rule as import-gdtf: a same-named library archive with
-            // different bytes would silently re-source other fixtures.
-            let library = project.join(&archive);
-            if library.exists() && std::fs::read(&library)? != item.bytes {
-                return Err(format!(
-                    "{archive} already exists with different content — other fixture types \
-                     may reference it; remove it deliberately or rename the entry in the MVR"
-                )
-                .into());
+            // The definition the GDTF importer will write must parse back
+            // and distill *now*, or the write loop could refuse halfway
+            // through the batch — the one thing the plan exists to prevent.
+            if let Ok(description) = &item.description {
+                let definition =
+                    gdtf_definition(type_name, &archive, &key.mode, &item.file_name, description);
+                let parsed = parse_fixture_types(&definition).map_err(|e| {
+                    format!("the .fixture for \"{type_name}\" would not parse back: {e}")
+                })?;
+                let pinned = parsed
+                    .get(type_name)
+                    .and_then(|t| t.source().map(|s| s.mode.clone()))
+                    .ok_or_else(|| format!("the .fixture for \"{type_name}\" lost its type"))?;
+                gdtf::distill(description, &pinned, type_name)
+                    .map_err(|e| format!("the .fixture for \"{type_name}\" would not load: {e}"))?;
             }
             gdtf_writes.push(GdtfWrite {
                 file_name: item.file_name.clone(),
@@ -564,11 +591,36 @@ fn plan(
         origin_mm[1] / 1000.0,
         origin_mm[2] / 1000.0,
     ];
+    // Consoles name fixtures by type ("Robe Spiider" forty times) and tell
+    // them apart by fixture ID; a name that repeats takes its ID.
+    let mut name_counts: HashMap<String, usize> = HashMap::new();
+    for fixture in &scene.fixtures {
+        *name_counts
+            .entry(fixture.name.trim().to_string())
+            .or_default() += 1;
+    }
     let mut seen_names: HashMap<String, usize> = HashMap::new();
     let mut fixtures = Vec::new();
+    let mut numbered = 0usize;
+    let mut ordinal_named: Vec<String> = Vec::new();
     for (index, key, todo) in &resolved {
         let source = &scene.fixtures[*index];
-        let name = unique_name(&source.name, *index, &mut seen_names, &mut warnings);
+        let base = source.name.trim();
+        let repeated = name_counts.get(base).is_some_and(|c| *c > 1);
+        let candidate = match (&source.fixture_id, repeated) {
+            (Some(id), true) if !base.is_empty() => {
+                numbered += 1;
+                format!("{base} {}", id.trim())
+            }
+            _ => base.to_string(),
+        };
+        let name = unique_name(
+            &candidate,
+            *index,
+            &mut seen_names,
+            &mut ordinal_named,
+            &mut warnings,
+        );
         let (position, rotation) = geometry(source, &origin_mm, &mut warnings);
         let patch = source.addresses.first().copied();
         if source.addresses.len() > 1 {
@@ -593,6 +645,27 @@ fn plan(
             todo,
             change: None,
         });
+    }
+    if numbered > 0 {
+        warnings.push(format!(
+            "{numbered} fixtures shared a name with another; each took its console fixture \
+             ID (\"Robe Spiider 12\") — rename freely, tags are what shows target"
+        ));
+    }
+    if !ordinal_named.is_empty() {
+        let shown: Vec<&str> = ordinal_named.iter().take(6).map(String::as_str).collect();
+        let more = ordinal_named.len().saturating_sub(shown.len());
+        warnings.push(format!(
+            "{} fixtures shared a name (and a fixture ID, where the file had one) and took \
+             an ordinal: {}{}",
+            ordinal_named.len(),
+            shown.join(", "),
+            if more > 0 {
+                format!(", and {more} more")
+            } else {
+                String::new()
+            }
+        ));
     }
     let mut focus_points: Vec<PlannedFocusPoint> = Vec::new();
     for focus in &scene.focus_points {
@@ -906,11 +979,13 @@ fn name_fixture_types(
 }
 
 /// A fixture name unique within the venue: the MVR's, made unique on
-/// collision and invented when blank.
+/// collision and invented when blank. A name that needed an ordinal is
+/// recorded in `ordinal_named` for one collapsed warning.
 fn unique_name(
     name: &str,
     index: usize,
     seen: &mut HashMap<String, usize>,
+    ordinal_named: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) -> String {
     let base = if name.trim().is_empty() {
@@ -924,9 +999,7 @@ fn unique_name(
         return base;
     }
     let unique = format!("{base} ({count})");
-    warnings.push(format!(
-        "two fixtures are named \"{base}\"; the later one is \"{unique}\""
-    ));
+    ordinal_named.push(unique.clone());
     unique
 }
 
@@ -1298,6 +1371,30 @@ mod tests {
     }
 
     #[test]
+    fn a_mode_named_with_a_trailing_space_imports_and_loads() {
+        // Real GDTFs do this ("Mode 8 - Pixel RGBW "). The importer matches
+        // the console's trimmed reference, writes the exact name, and the
+        // written definition must load — proven in the plan, before any
+        // write, and then for real.
+        let dir = project();
+        let description = SYNTHETIC_DESCRIPTION.replace("Name=\"8: RGBS\"", "Name=\"8: RGBS \"");
+        let gdtf = build_zip(&[("description.xml", description.as_bytes())]);
+        let scene = scene_with(&brick("B", "1.1", 0.0), "");
+        let bytes = build_zip(&[
+            ("GeneralSceneDescription.xml", scene.as_bytes()),
+            ("Astera_PB15.gdtf", gdtf.as_slice()),
+        ]);
+        let report = import_mvr_bytes(&bytes, "kellys.mvr", &options(), dir.path()).unwrap();
+        assert_eq!(report.plan.fixture_types[0].mode, "8: RGBS ");
+        let written =
+            std::fs::read_to_string(dir.path().join(&report.plan.fixture_types[0].fixture_file))
+                .unwrap();
+        assert!(written.contains("mode \"8: RGBS \""), "{written}");
+        let again = parse_fixture_types(&written).unwrap();
+        assert_eq!(again["Synth Brick"].source().unwrap().mode, "8: RGBS ");
+    }
+
+    #[test]
     fn a_drifted_mode_name_matches_with_a_warning() {
         let dir = project();
         let fixtures = brick("B", "1.1", 0.0).replace("8: RGBS", "8 rgbs");
@@ -1486,6 +1583,36 @@ mod tests {
     }
 
     #[test]
+    fn a_quoted_fixture_name_is_reported_without_a_focus_point_to_help() {
+        let dir = project();
+        let bytes = mvr_bytes(&scene_with(&brick("Foo&quot;Bar", "1.1", 0.0), ""));
+        let plan = inspect_mvr_bytes(&bytes, "kellys.mvr", &options(), dir.path()).unwrap();
+        assert_eq!(plan.fixtures[0].name, "Foo'Bar");
+        assert!(
+            plan.warnings.iter().any(|w| w.contains("contains a quote")),
+            "{:?}",
+            plan.warnings
+        );
+    }
+
+    #[test]
+    fn a_reused_fixture_type_still_checks_the_archive_bytes() {
+        let dir = project();
+        let bytes = mvr_bytes(&scene_with(&brick("B", "1.1", 0.0), ""));
+        import_mvr_bytes(&bytes, "kellys.mvr", &options(), dir.path()).unwrap();
+        // The library archive changes underneath the .fixture that pins it.
+        std::fs::write(
+            dir.path().join("lighting/library/Astera_PB15.gdtf"),
+            b"not the same bytes",
+        )
+        .unwrap();
+        let err = inspect_mvr_bytes(&bytes, "kellys.mvr", &options(), dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("different content"), "{err}");
+    }
+
+    #[test]
     fn two_entries_that_stem_alike_are_disambiguated_in_the_plan() {
         let dir = project();
         let gdtf = gdtf_bytes();
@@ -1517,21 +1644,26 @@ mod tests {
     }
 
     #[test]
-    fn a_pixel_mode_is_a_todo_found_before_any_write() {
+    fn a_pixel_mode_distills_ganged_and_says_so() {
         let dir = project();
-        // A mode whose channels sit on a GeometryReference is pixel/matrix
-        // instancing; the distiller refuses it, and the importer must learn
-        // that in the plan rather than from a write that fails halfway.
+        // A mode whose channels sit on pixel instances distills with the
+        // pixels ganged to one color, and the import report carries the
+        // distillation warning that says so.
         let pixel_bar = build_zip(&[(
             "description.xml",
             br#"<GDTF><FixtureType Name="Bar" Manufacturer="m">
   <Geometries>
-    <Geometry Name="Base"><GeometryReference Name="Pixel 1" Geometry="Cell"/></Geometry>
+    <Geometry Name="Base"><GeometryReference Name="Pixel 1" Geometry="Cell"/><GeometryReference Name="Pixel 2" Geometry="Cell"/></Geometry>
   </Geometries>
   <DMXModes>
     <DMXMode Name="Pixel Mode" Geometry="Base">
       <DMXChannels>
         <DMXChannel Offset="1" Geometry="Pixel 1">
+          <LogicalChannel Attribute="ColorAdd_R">
+            <ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/>
+          </LogicalChannel>
+        </DMXChannel>
+        <DMXChannel Offset="2" Geometry="Pixel 2">
           <LogicalChannel Attribute="ColorAdd_R">
             <ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/>
           </LogicalChannel>
@@ -1556,26 +1688,19 @@ mod tests {
             ("Astera_PB15.gdtf", gdtf.as_slice()),
             ("Bar.gdtf", pixel_bar.as_slice()),
         ]);
-        let plan = inspect_mvr_bytes(&bytes, "kellys.mvr", &options(), dir.path()).unwrap();
-        let pixels = plan.fixtures.iter().find(|f| f.name == "Pixels").unwrap();
+        let report = import_mvr_bytes(&bytes, "kellys.mvr", &options(), dir.path()).unwrap();
+        let pixels = report
+            .plan
+            .fixtures
+            .iter()
+            .find(|f| f.name == "Pixels")
+            .unwrap();
+        assert!(pixels.todo.is_none(), "{:?}", pixels.todo);
+        assert_eq!(report.plan.fixture_types.len(), 2);
+        let bar_warnings = &report.distillation_warnings["Bar"];
         assert!(
-            pixels
-                .todo
-                .as_deref()
-                .unwrap_or_default()
-                .contains("does not distill"),
-            "{:?}",
-            pixels.todo
-        );
-        assert_eq!(
-            plan.fixture_types.len(),
-            1,
-            "only the distillable type is planned"
-        );
-        assert_eq!(plan.fixture_types[0].mode, "8: RGBS");
-        assert!(
-            !dir.path().join("lighting/library").exists(),
-            "inspecting writes nothing"
+            bar_warnings.iter().any(|w| w.contains("ganged")),
+            "{bar_warnings:?}"
         );
     }
 

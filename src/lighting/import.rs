@@ -96,6 +96,22 @@ fn annotate(target: crate::util::WriteTarget<'_>, error: std::io::Error) -> Box<
     message.into()
 }
 
+/// The `.fixture` definition an import writes for a GDTF mode.
+pub(crate) fn gdtf_definition(
+    type_name: &str,
+    library_rel: &str,
+    mode: &str,
+    archive_file_name: &str,
+    description: &gdtf::Description,
+) -> String {
+    format!(
+        "# Imported from {archive_file_name} (\"{}\" by {}).\n\
+         # Channels come from the GDTF; this file carries only overrides.\n\
+         fixture_type \"{type_name}\"\n  from gdtf(\"{library_rel}\", mode \"{mode}\")\n{{\n}}\n",
+        description.name, description.manufacturer,
+    )
+}
+
 /// Imports one mode of a GDTF archive into a project. All validation runs
 /// before anything is written; a refused import leaves the project
 /// untouched.
@@ -187,13 +203,12 @@ pub fn import_gdtf_bytes(
         write(&library_path, bytes)?;
     }
     create_dir(&fixture_dir)?;
-    let definition = format!(
-        "# Imported from {} (\"{}\" by {}).\n\
-         # Channels come from the GDTF; this file carries only overrides.\n\
-         fixture_type \"{type_name}\"\n  from gdtf(\"{library_rel}\", mode \"{mode}\")\n{{\n}}\n",
-        archive_file_name.display(),
-        description.name,
-        description.manufacturer,
+    let definition = gdtf_definition(
+        &type_name,
+        &library_rel,
+        mode,
+        &archive_file_name.display().to_string(),
+        &description,
     );
     write(&fixture_path, definition.as_bytes())?;
 
@@ -415,7 +430,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(err.contains("no mode named"), "{err}");
+        assert!(err.contains("no mode matching"), "{err}");
         assert!(!project.join("lighting").exists());
     }
 

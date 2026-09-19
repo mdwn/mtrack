@@ -2409,7 +2409,10 @@ show "test" {
         let parsed: serde_json::Value =
             serde_json::from_str(&response_body(response).await).unwrap();
         assert!(
-            parsed["error"].as_str().unwrap().contains("no mode named"),
+            parsed["error"]
+                .as_str()
+                .unwrap()
+                .contains("no mode matching"),
             "{parsed}"
         );
     }
