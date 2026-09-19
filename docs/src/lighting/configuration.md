@@ -138,7 +138,10 @@ Notes:
 
 - The GDTF archive is part of your project (`lighting/library/`) — commit
   it. Expansions live in `lighting/.cache/`, which is rebuildable and should
-  be gitignored.
+  be gitignored. Beside them, `lighting/.cache/assets/` holds what the 3D
+  stage view draws: the archive's meshes and thumbnail, and a rig model per
+  mode (the fixture's yoke, head, beams and pixel cells with their
+  transforms), written the first time the type expands.
 - A referential fixture's channels come from the GDTF; the `.fixture` body
   carries only overrides. Anything the distiller can't represent (wheels,
   pixel/matrix modes) is skipped or refused with a clear message.

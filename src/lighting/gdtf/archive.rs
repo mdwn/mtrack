@@ -14,13 +14,13 @@
 
 //! Hardened access to a GDTF archive's `description.xml`.
 //!
-//! Only the description is ever read — nothing is extracted to disk, so
-//! zip-slip has no surface here. What remains is decompression abuse, capped
-//! hard: a bounded entry count, a bounded decompressed size for the
-//! description, and a strict read that refuses an entry lying about its
-//! size. Asset entries (models, thumbnails) are ignored entirely until the
-//! phase that consumes them.
+//! Nothing is extracted by the archive's own names — the asset cache writes
+//! model files under names it derives, so zip-slip has no surface here.
+//! What remains is decompression abuse, capped hard: a bounded entry count,
+//! a bounded decompressed size per entry and for all assets together, and a
+//! strict read that refuses an entry lying about its size.
 
+use std::collections::HashSet;
 use std::io::{Cursor, Read};
 
 use zip::ZipArchive;
@@ -43,23 +43,155 @@ const MAX_DESCRIPTION_BYTES: u64 = 64 * 1024 * 1024;
 /// directory parse and everything after it.
 const MAX_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
 
-/// Reads `description.xml` out of a GDTF archive held in memory.
-pub fn read_description_xml(bytes: &[u8]) -> Result<String, GdtfError> {
+/// The largest mesh accepted. Manufacturer glTF models run tens of KB to a
+/// few MB.
+const MAX_MODEL_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The most bytes of assets (meshes and thumbnail) read out of one archive.
+const MAX_ASSET_BYTES_TOTAL: u64 = 64 * 1024 * 1024;
+
+/// The archive directories that hold glTF meshes, best first: a fixture
+/// may ship only the low-detail set.
+const MODEL_DIRS: [&str; 2] = ["models/gltf/", "models/gltf_low/"];
+
+/// The mesh stem an archive entry is, if it is one: `(stem, detail rank)`.
+fn mesh_entry(name: &str) -> Option<(String, usize)> {
+    MODEL_DIRS.iter().enumerate().find_map(|(rank, dir)| {
+        let stem = name.strip_prefix(dir)?.strip_suffix(".glb")?;
+        (!stem.is_empty() && !stem.contains('/')).then(|| (stem.to_ascii_lowercase(), rank))
+    })
+}
+
+/// Opens an archive with the entry-count and size caps applied.
+fn open(bytes: &[u8]) -> Result<ZipArchive<Cursor<&[u8]>>, GdtfError> {
     if bytes.len() > MAX_ARCHIVE_BYTES {
         return Err(GdtfError::new(format!(
             "archive is {} bytes; refusing more than {MAX_ARCHIVE_BYTES}",
             bytes.len()
         )));
     }
-    let mut archive = ZipArchive::new(Cursor::new(bytes))
+    let archive = ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| GdtfError::new(format!("not a readable GDTF archive: {e}")))?;
-
     if archive.len() > MAX_ARCHIVE_ENTRIES {
         return Err(GdtfError::new(format!(
             "archive has {} entries; refusing more than {MAX_ARCHIVE_ENTRIES}",
             archive.len()
         )));
     }
+    Ok(archive)
+}
+
+/// Reads one entry through a hard limit; an entry lying about its size
+/// can't decompress past the cap either.
+fn read_capped(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    name: &str,
+    cap: u64,
+) -> Result<Vec<u8>, GdtfError> {
+    let mut entry = archive
+        .by_name(name)
+        .map_err(|e| GdtfError::new(format!("archive has no {name} ({e})")))?;
+    if entry.size() > cap {
+        return Err(GdtfError::new(format!(
+            "{name} claims {} bytes; refusing more than {cap}",
+            entry.size()
+        )));
+    }
+    let mut content = Vec::new();
+    entry
+        .by_ref()
+        .take(cap + 1)
+        .read_to_end(&mut content)
+        .map_err(|e| GdtfError::new(format!("failed to read {name}: {e}")))?;
+    if content.len() as u64 > cap {
+        return Err(GdtfError::new(format!(
+            "{name} decompressed past the {cap}-byte cap"
+        )));
+    }
+    Ok(content)
+}
+
+/// The mesh stems the archive carries under `models/gltf/` or
+/// `models/gltf_low/`, lowercased — what a model table's `File` can
+/// resolve to.
+pub fn list_model_files(bytes: &[u8]) -> Result<HashSet<String>, GdtfError> {
+    let archive = open(bytes)?;
+    Ok(archive
+        .file_names()
+        .filter_map(|name| mesh_entry(name).map(|(stem, _)| stem))
+        .collect())
+}
+
+/// The assets read out of an archive: meshes by lowercased stem, and the
+/// thumbnail by extension.
+#[derive(Default)]
+pub struct Assets {
+    /// `(stem, glb bytes)`.
+    pub models: Vec<(String, Vec<u8>)>,
+    /// `("png" | "svg", bytes)`.
+    pub thumbnail: Option<(String, Vec<u8>)>,
+}
+
+/// Reads the meshes named by `stems` (lowercased, the full-detail set
+/// preferred over `gltf_low`) and the thumbnail named by the fixture type,
+/// if any, under the per-asset and total caps. A stem the archive lacks is
+/// skipped; a mesh over the cap is an error, since a rig that names it
+/// would draw nothing.
+pub fn read_assets(
+    bytes: &[u8],
+    stems: &HashSet<String>,
+    thumbnail: Option<&str>,
+) -> Result<Assets, GdtfError> {
+    let mut archive = open(bytes)?;
+    let names: Vec<String> = archive.file_names().map(str::to_string).collect();
+    let mut assets = Assets::default();
+    let mut total: u64 = 0;
+    let mut budget = |len: usize| -> Result<(), GdtfError> {
+        total += len as u64;
+        if total > MAX_ASSET_BYTES_TOTAL {
+            return Err(GdtfError::new(format!(
+                "archive assets exceed {MAX_ASSET_BYTES_TOTAL} bytes together"
+            )));
+        }
+        Ok(())
+    };
+    // Best detail rank per wanted stem.
+    let mut chosen: Vec<(String, usize, &String)> = Vec::new();
+    for name in &names {
+        let Some((stem, rank)) = mesh_entry(name) else {
+            continue;
+        };
+        if !stems.contains(&stem) {
+            continue;
+        }
+        match chosen.iter_mut().find(|(s, _, _)| *s == stem) {
+            Some(entry) if entry.1 <= rank => {}
+            Some(entry) => *entry = (stem, rank, name),
+            None => chosen.push((stem, rank, name)),
+        }
+    }
+    for (stem, _, name) in chosen {
+        let content = read_capped(&mut archive, name, MAX_MODEL_BYTES)?;
+        budget(content.len())?;
+        assets.models.push((stem, content));
+    }
+    if let Some(thumbnail) = thumbnail {
+        for ext in ["png", "svg"] {
+            let wanted = format!("{thumbnail}.{ext}");
+            if let Some(name) = names.iter().find(|n| n.eq_ignore_ascii_case(&wanted)) {
+                let content = read_capped(&mut archive, name, MAX_MODEL_BYTES)?;
+                budget(content.len())?;
+                assets.thumbnail = Some((ext.to_string(), content));
+                break;
+            }
+        }
+    }
+    Ok(assets)
+}
+
+/// Reads `description.xml` out of a GDTF archive held in memory.
+pub fn read_description_xml(bytes: &[u8]) -> Result<String, GdtfError> {
+    let mut archive = open(bytes)?;
 
     let mut entry = archive.by_name("description.xml").map_err(|e| {
         GdtfError::new(format!(
@@ -153,6 +285,42 @@ pub(super) mod tests {
         let bytes = build_zip(&[("description.xml", &[0xFF, 0xFE, 0x00][..])]);
         let err = read_description_xml(&bytes).unwrap_err().to_string();
         assert!(err.contains("not valid UTF-8"), "{err}");
+    }
+
+    #[test]
+    fn assets_are_listed_and_read_by_stem_with_the_thumbnail() {
+        let bytes = build_zip(&[
+            ("description.xml", b"<GDTF/>".as_slice()),
+            ("thumbnail.png", b"png".as_slice()),
+            ("thumbnail.svg", b"svg".as_slice()),
+            ("models/gltf/Base.glb", b"base-mesh".as_slice()),
+            ("models/gltf/yoke.glb", b"yoke-mesh".as_slice()),
+            ("models/3ds/yoke.3ds", b"old".as_slice()),
+            ("models/gltf_low/yoke.glb", b"low".as_slice()),
+        ]);
+        let files = list_model_files(&bytes).unwrap();
+        assert_eq!(
+            files,
+            ["base".to_string(), "yoke".to_string()]
+                .into_iter()
+                .collect()
+        );
+        let wanted: HashSet<String> = ["base".to_string(), "missing".to_string()]
+            .into_iter()
+            .collect();
+        let assets = read_assets(&bytes, &wanted, Some("thumbnail")).unwrap();
+        assert_eq!(
+            assets.models,
+            vec![("base".to_string(), b"base-mesh".to_vec())]
+        );
+        assert_eq!(
+            assets.thumbnail,
+            Some(("png".to_string(), b"png".to_vec())),
+            "png is preferred over svg"
+        );
+        let none = read_assets(&bytes, &HashSet::new(), None).unwrap();
+        assert!(none.models.is_empty());
+        assert!(none.thumbnail.is_none());
     }
 
     #[test]

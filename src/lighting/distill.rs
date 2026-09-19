@@ -23,6 +23,11 @@
 //!
 //! The cache directory is per-project (`lighting/.cache/`), gitignored, and
 //! rebuildable from the committed GDTF archives.
+//!
+//! Beside the expansions sits the asset store (`lighting/.cache/assets/`,
+//! design §16.2): per archive, content-addressed by its bytes, the meshes
+//! and thumbnail copied out of it and one rig model per mode. The web UI
+//! serves the store to the 3D view; nothing at show time reads it.
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -33,7 +38,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
+use super::gdtf::{self, Description, RigModel, RIG_VERSION};
 use super::types::{ChannelDef, FixtureType, GdtfSource, MovementLimits};
+
+/// The asset store's directory under the cache.
+pub const ASSETS_DIR: &str = "assets";
 
 /// Bumped whenever the distiller's output for the same source can change.
 /// Part of the cache key, so an upgrade regenerates every expansion.
@@ -172,6 +181,80 @@ impl DistillCache {
         Ok(())
     }
 
+    /// The asset store's directory.
+    pub fn assets_dir(&self) -> PathBuf {
+        self.dir.join(ASSETS_DIR)
+    }
+
+    /// The store-relative path of the rig file for an archive and mode:
+    /// `<archive sha256>/rig-<mode sha256 prefix>-v<RIG_VERSION>.json`.
+    /// The archive hash keys the directory (its meshes are the archive's,
+    /// whatever mode is in use); the mode string as the `.fixture` pins it
+    /// and the rig version key the file — two spellings of one mode that
+    /// [`gdtf::match_mode`] folds together get two identical rig files,
+    /// which is cheap and keeps the path computable without a parse.
+    pub fn rig_path(archive_bytes: &[u8], mode: &str) -> String {
+        let archive = format!("{:x}", Sha256::digest(archive_bytes));
+        let mode = format!("{:x}", Sha256::digest(mode.as_bytes()));
+        format!("{archive}/rig-{}-v{RIG_VERSION}.json", &mode[..16])
+    }
+
+    /// Makes sure the store holds the rig model for an archive and mode,
+    /// with the meshes and thumbnail it names, and returns the rig's
+    /// store-relative path with the distillation's warnings. A present rig
+    /// file is trusted (the path is content-addressed) and has no warnings
+    /// to repeat; otherwise `describe` parses the archive once and
+    /// everything is written, meshes first, the rig last.
+    pub fn ensure_rig<'a>(
+        &self,
+        archive_bytes: &[u8],
+        mode: &str,
+        describe: impl FnOnce() -> Result<&'a Description, Box<dyn Error>>,
+    ) -> Result<(String, Vec<String>), Box<dyn Error>> {
+        let rel = Self::rig_path(archive_bytes, mode);
+        let rig_file = self.assets_dir().join(&rel);
+        if rig_file.is_file() {
+            return Ok((rel, Vec::new()));
+        }
+        let description = describe()?;
+        let available = gdtf::list_model_files(archive_bytes)?;
+        let mut rig = gdtf::distill_rig(description, mode, &available)?;
+
+        // Only the meshes the rig draws are copied out.
+        let wanted: std::collections::HashSet<String> = rig
+            .nodes
+            .iter()
+            .filter_map(|n| match &n.shape {
+                gdtf::RigShape::Model { file } => file
+                    .strip_prefix("models/")
+                    .and_then(|f| f.strip_suffix(".glb"))
+                    .map(str::to_string),
+                _ => None,
+            })
+            .collect();
+        let assets = gdtf::read_assets(archive_bytes, &wanted, description.thumbnail.as_deref())?;
+
+        let dir = rig_file.parent().expect("rig path has a directory");
+        let models_dir = dir.join("models");
+        std::fs::create_dir_all(&models_dir)?;
+        for (stem, bytes) in &assets.models {
+            write_atomic(&models_dir.join(format!("{stem}.glb")), bytes)?;
+        }
+        if let Some((ext, bytes)) = &assets.thumbnail {
+            let name = format!("thumbnail.{ext}");
+            write_atomic(&dir.join(&name), bytes)?;
+            rig.thumbnail = Some(name);
+        }
+        write_atomic(&rig_file, serde_json::to_string_pretty(&rig)?.as_bytes())?;
+        Ok((rel, rig.warnings))
+    }
+
+    /// Reads a rig model back from the store by its store-relative path.
+    pub fn rig(&self, rel: &str) -> Option<RigModel> {
+        let content = std::fs::read_to_string(self.assets_dir().join(rel)).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
     /// Returns the cached expansion for `key`, filling it via `fill` on a
     /// miss. The fill path is the only place untrusted source data is parsed.
     pub fn get_or_fill(
@@ -186,6 +269,21 @@ impl DistillCache {
         self.put(key, &fixture_type)?;
         Ok(fixture_type)
     }
+}
+
+/// Writes a file atomically (unique temp file + rename) so a crash or a
+/// concurrent fill can't leave a torn file behind; identical content makes
+/// last-rename-wins harmless. Skipped when the file already exists, since
+/// the store is content-addressed.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+    if path.is_file() {
+        return Ok(());
+    }
+    let dir = path.parent().expect("file path has a directory");
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    std::io::Write::write_all(&mut tmp, bytes)?;
+    tmp.persist(path)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -341,5 +439,85 @@ mod tests {
         let result = cache.get_or_fill(&key, || Err("distiller exploded".into()));
         assert!(result.is_err());
         assert!(cache.get(&key).is_none());
+    }
+
+    #[test]
+    fn the_asset_store_holds_the_rig_its_meshes_and_the_thumbnail() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DistillCache::new(dir.path().join(".cache"));
+        let archive = crate::lighting::gdtf::build_zip(&[
+            (
+                "description.xml",
+                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
+                    .replace(
+                        "Manufacturer=\"mtrack synthetic\"",
+                        "Manufacturer=\"m\" Thumbnail=\"thumbnail\"",
+                    )
+                    .as_bytes(),
+            ),
+            ("thumbnail.png", b"png".as_slice()),
+            ("models/gltf/yoke.glb", b"yoke-mesh".as_slice()),
+            ("models/gltf/unused.glb", b"unused".as_slice()),
+        ]);
+        let description = crate::lighting::gdtf::parse_archive(&archive).unwrap();
+        let parses = std::cell::Cell::new(0);
+        let describe = || {
+            parses.set(parses.get() + 1);
+            Ok(&description)
+        };
+        let (rel, warnings) = cache.ensure_rig(&archive, "Mover 16bit", describe).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(rel.ends_with(&format!("-v{RIG_VERSION}.json")), "{rel}");
+        let rig = cache.rig(&rel).unwrap();
+        assert_eq!(rig.mode, "Mover 16bit");
+        assert_eq!(rig.thumbnail.as_deref(), Some("thumbnail.png"));
+        let rig_dir = cache.assets_dir().join(rel.split('/').next().unwrap());
+        assert_eq!(
+            std::fs::read(rig_dir.join("models/yoke.glb")).unwrap(),
+            b"yoke-mesh"
+        );
+        assert!(
+            !rig_dir.join("models/unused.glb").exists(),
+            "only meshes the rig draws are copied"
+        );
+        assert_eq!(
+            std::fs::read(rig_dir.join("thumbnail.png")).unwrap(),
+            b"png"
+        );
+        assert_eq!(parses.get(), 1);
+
+        // Present: nothing is parsed again. Another mode of the same
+        // archive shares the directory and adds a rig file.
+        let (again, _) = cache
+            .ensure_rig(&archive, "Mover 16bit", || panic!("must not parse"))
+            .unwrap();
+        assert_eq!(again, rel);
+        let (other, _) = cache
+            .ensure_rig(&archive, "8: RGBS", || Ok(&description))
+            .unwrap();
+        assert_ne!(other, rel);
+        assert_eq!(
+            other.split('/').next(),
+            rel.split('/').next(),
+            "same archive, same directory"
+        );
+        assert!(cache.rig("nope/rig.json").is_none());
+    }
+
+    #[test]
+    fn a_rig_that_cannot_distill_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DistillCache::new(dir.path().join(".cache"));
+        let archive = crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+        )]);
+        let description = crate::lighting::gdtf::parse_archive(&archive).unwrap();
+        let err = cache
+            .ensure_rig(&archive, "No Such Mode", || Ok(&description))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no mode matching"), "{err}");
+        assert!(!cache.assets_dir().exists());
     }
 }

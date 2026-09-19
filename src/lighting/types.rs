@@ -191,6 +191,13 @@ pub struct FixtureType {
     #[serde(skip)]
     movement: MovementLimits,
 
+    /// The rig model's path in the project's asset store
+    /// (`lighting/.cache/assets/`), when the type has one — the 3D view's
+    /// picture of it (design §16.2). Never serialized: it is a cache
+    /// location, not part of the type.
+    #[serde(skip)]
+    rig: Option<String>,
+
     /// Maximum strobe frequency in Hz (if supported). Derived from the
     /// strobe channel's function when one exists; private so a fixture type
     /// can only be built through the normalizing constructors.
@@ -249,6 +256,7 @@ impl FixtureType {
             channels,
             source: None,
             movement: MovementLimits::default(),
+            rig: None,
             max_strobe_frequency: None,
             min_strobe_frequency: None,
             strobe_dmx_offset: None,
@@ -376,6 +384,16 @@ impl FixtureType {
     /// Sets the movement limits.
     pub fn set_movement(&mut self, movement: MovementLimits) {
         self.movement = movement;
+    }
+
+    /// The rig model's asset-store path, when the type has one.
+    pub fn rig(&self) -> Option<&str> {
+        self.rig.as_deref()
+    }
+
+    /// Sets (or clears) the rig model's asset-store path.
+    pub fn set_rig(&mut self, rig: Option<String>) {
+        self.rig = rig;
     }
 
     /// The DMX footprint: the highest byte offset any channel occupies.

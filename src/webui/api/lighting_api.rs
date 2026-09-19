@@ -475,6 +475,111 @@ fn validate_lighting_name(name: &str) -> Result<(), axum::response::Response> {
     Ok(())
 }
 
+/// The file types the asset store serves, by extension. Everything in the
+/// store was written by mtrack itself from a GDTF archive; the allowlist
+/// keeps the endpoint from ever becoming a general file server.
+const ASSET_TYPES: &[(&str, &str)] = &[
+    ("json", "application/json"),
+    ("glb", "model/gltf-binary"),
+    ("png", "image/png"),
+    ("svg", "image/svg+xml"),
+];
+
+/// The largest asset served; the store's own caps are lower.
+const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
+
+/// GET /api/lighting/assets/{*path} — serves a file of the project's
+/// asset store (`lighting/.cache/assets/`, design §16.2): rig models,
+/// meshes and thumbnails for the 3D view. Paths are content-addressed, so
+/// a hit is immutable and cached as such.
+pub(super) async fn get_lighting_asset(
+    State(state): State<WebUiState>,
+    Path(path): Path<String>,
+) -> impl IntoResponse {
+    use super::super::safe_path::{SafePath, VerifiedRoot};
+
+    let content_type = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .and_then(|ext| {
+            ASSET_TYPES
+                .iter()
+                .find(|(known, _)| known.eq_ignore_ascii_case(ext))
+        })
+        .map(|(_, mime)| *mime);
+    let Some(content_type) = content_type else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Not an asset type"})),
+        )
+            .into_response());
+    };
+
+    let store = project_root(&state.config_path)?
+        .join("lighting")
+        .join(".cache")
+        .join(lighting::distill::ASSETS_DIR);
+    // No store yet (no referential fixture type has expanded) is a plain
+    // 404, not a server error.
+    let root = VerifiedRoot::new(&store).map_err(|_| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "No asset store"})),
+        )
+            .into_response()
+    })?;
+    let file = SafePath::validate_relative(&path, &root).map_err(|e| e.into_response())?;
+
+    let (bytes, len) = super::helpers::spawn_blocking_io("read asset", move || {
+        let meta = std::fs::metadata(&file)?;
+        if !meta.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "not a file",
+            ));
+        }
+        if meta.len() > MAX_ASSET_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "asset over the size cap",
+            ));
+        }
+        Ok((std::fs::read(&file)?, meta.len()))
+    })
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Asset not found"})),
+        )
+            .into_response()
+    })?;
+
+    // The bytes are a stranger's (copied out of a GDTF archive), so the
+    // type is not to be sniffed, and an SVG — which may script — is served
+    // as a picture only: no scripts, no fetches, sandboxed if navigated to.
+    let mut response = axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, content_type)
+        .header(axum::http::header::CONTENT_LENGTH, len)
+        .header(axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(
+            axum::http::header::CACHE_CONTROL,
+            "public, max-age=31536000, immutable",
+        );
+    if content_type == "image/svg+xml" {
+        response = response.header(
+            axum::http::header::CONTENT_SECURITY_POLICY,
+            "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        );
+    }
+    Ok::<_, axum::response::Response>(
+        response
+            .body(axum::body::Body::from(bytes))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+    )
+}
+
 /// GET /api/lighting/fixture-types — lists all fixture types from the directory.
 pub(super) async fn get_fixture_types(
     State(state): State<WebUiState>,
@@ -3283,5 +3388,99 @@ show "test" {
         assert_eq!(venues.len(), 2);
         assert!(venues.contains_key("VenueA"));
         assert!(venues.contains_key("VenueB"));
+    }
+
+    #[tokio::test]
+    async fn assets_are_served_from_the_store_with_containment() {
+        let (state, dir) = test_state();
+        let store = dir.path().join("lighting/.cache/assets/abc123");
+        std::fs::create_dir_all(store.join("models")).unwrap();
+        std::fs::write(store.join("rig-1-v1.json"), "{\"version\":1}").unwrap();
+        std::fs::write(store.join("models/yoke.glb"), b"glTF").unwrap();
+        std::fs::write(store.join("thumbnail.svg"), "<svg><script/></svg>").unwrap();
+        std::fs::write(store.join("notes.txt"), "no").unwrap();
+        // Something outside the store that a traversal would reach.
+        std::fs::write(dir.path().join("lighting/secret.json"), "{}").unwrap();
+
+        let get = |uri: String| {
+            let app = router().with_state(state.clone());
+            async move {
+                app.oneshot(
+                    http::Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        let response = get("/lighting/assets/abc123/rig-1-v1.json".to_string()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()["content-type"],
+            "application/json",
+            "json is served as json"
+        );
+        assert!(response.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("immutable"));
+        assert_eq!(response_body(response).await, "{\"version\":1}");
+
+        let response = get("/lighting/assets/abc123/models/yoke.glb".to_string()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "model/gltf-binary");
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        assert!(response.headers().get("content-security-policy").is_none());
+
+        let response = get("/lighting/assets/abc123/thumbnail.svg".to_string()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "image/svg+xml");
+        let csp = response.headers()["content-security-policy"]
+            .to_str()
+            .unwrap();
+        assert!(
+            csp.contains("default-src 'none'") && csp.contains("sandbox"),
+            "{csp}"
+        );
+
+        // Not an asset type, missing, a directory, and a traversal.
+        for (uri, why) in [
+            (
+                "/lighting/assets/abc123/notes.txt",
+                "text is not an asset type",
+            ),
+            ("/lighting/assets/abc123/models/head.glb", "missing"),
+            ("/lighting/assets/abc123/models", "a directory"),
+            ("/lighting/assets/../secret.json", "traversal"),
+            ("/lighting/assets/abc123/../../secret.json", "traversal"),
+        ] {
+            let response = get(uri.to_string()).await;
+            assert!(
+                response.status() == StatusCode::NOT_FOUND
+                    || response.status() == StatusCode::BAD_REQUEST
+                    || response.status() == StatusCode::FORBIDDEN,
+                "{uri} ({why}): {}",
+                response.status()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_project_without_a_store_answers_not_found() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/assets/abc/rig.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

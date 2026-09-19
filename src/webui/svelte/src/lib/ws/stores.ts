@@ -117,6 +117,12 @@ export interface FixtureMetadata {
   position?: Vec3 | null;
   /** Mounting rotation in degrees about X, Y, Z, when the venue states it. */
   rotation?: Vec3 | null;
+  /**
+   * The fixture type's rig model, as a path under /api/lighting/assets/,
+   * when the type was distilled from a GDTF; the 3D view draws a generic
+   * body without one.
+   */
+  rig?: string | null;
 }
 
 /** The current venue as the stage view needs it. */
