@@ -693,10 +693,7 @@ pub(super) async fn get_fixture_types(
     }
     let all = super::helpers::spawn_blocking_io("load fixture types", move || {
         let mut all = std::collections::HashMap::new();
-        // Which file each name came from, so a name claimed twice can name
-        // both files rather than one silently winning.
-        let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        let mut duplicates: Vec<FileError> = Vec::new();
+        let mut duplicates = DuplicateNames::new("fixture type");
         // Both extensions, as the lighting system loads them. A type's file
         // travels with it: the form a type is in decides how it may be
         // edited, and a referential type parsed from a file has no expanded
@@ -711,19 +708,11 @@ pub(super) async fn get_fixture_types(
                     .unwrap_or_default()
                     .to_string();
                 for (name, fixture_type) in types {
-                    // Last-wins would show one file and hide the other, while the
-                    // lighting system registers the name twice. Report both files
-                    // and keep the first; the rest of this file still lists.
-                    if let Some(previous) = seen.get(&name) {
-                        duplicates.push(FileError {
-                            file: file.clone(),
-                            error: format!(
-                                "fixture type \"{name}\" is defined in both {previous} and {file}"
-                            ),
-                        });
+                    // The rest of this file still lists; only a name another
+                    // file already claimed is skipped.
+                    if !duplicates.claim(&name, &file) {
                         continue;
                     }
-                    seen.insert(name.clone(), file.clone());
                     all.insert(
                         name,
                         json!({
@@ -738,7 +727,7 @@ pub(super) async fn get_fixture_types(
                 Ok(())
             })
             .map_err(|e| e.to_string())?;
-        errors.append(&mut duplicates);
+        errors.append(&mut duplicates.errors);
         Ok::<_, String>((all, errors))
     })
     .await?;
@@ -1130,16 +1119,22 @@ pub(super) async fn get_venues(
     }
     let all = super::helpers::spawn_blocking_io("load venues", move || {
         let mut all = std::collections::HashMap::new();
-        let errors = load_light_files_from_dir(&dir, VENUE_EXTENSIONS, |content, _path| {
-            match lighting::parser::parse_venues(content) {
-                Ok(venues) => {
-                    all.extend(venues);
-                    Ok(())
+        let mut duplicates = DuplicateNames::new("venue");
+        // Both extensions, as the lighting system loads them — so the same
+        // name can arrive from a `.light` and a `.venue`.
+        let mut errors = load_light_files_from_dir(&dir, VENUE_EXTENSIONS, |content, path| {
+            let venues = lighting::parser::parse_venues(content)?;
+            let file = crate::util::filename_display(path).to_string();
+            for (name, venue) in venues {
+                if !duplicates.claim(&name, &file) {
+                    continue;
                 }
-                Err(e) => Err(e),
+                all.insert(name, venue);
             }
+            Ok(())
         })
         .map_err(|e| e.to_string())?;
+        errors.append(&mut duplicates.errors);
         Ok::<_, String>((all, errors))
     })
     .await?;
@@ -1364,6 +1359,45 @@ fn load_light_files_from_dir(
 struct FileError {
     file: String,
     error: String,
+}
+
+/// Tracks which file each name came from while a directory's files are
+/// merged. A directory is a set of independent files, and two of them can
+/// claim the same name — across the two extensions especially. Last-wins
+/// would show one file and hide the other while the lighting system
+/// registers the name twice, so the first file to claim a name keeps it and
+/// the clash is reported against both.
+struct DuplicateNames {
+    kind: &'static str,
+    seen: std::collections::HashMap<String, String>,
+    errors: Vec<FileError>,
+}
+
+impl DuplicateNames {
+    fn new(kind: &'static str) -> Self {
+        Self {
+            kind,
+            seen: std::collections::HashMap::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    /// Whether this name is still free. A name already taken is recorded as
+    /// an error naming both files, and the caller skips it.
+    fn claim(&mut self, name: &str, file: &str) -> bool {
+        if let Some(previous) = self.seen.get(name) {
+            self.errors.push(FileError {
+                file: file.to_string(),
+                error: format!(
+                    "{} \"{}\" is defined in both {} and {}",
+                    self.kind, name, previous, file
+                ),
+            });
+            return false;
+        }
+        self.seen.insert(name.to_string(), file.to_string());
+        true
+    }
 }
 
 /// Converts a name to a safe filename (lowercase, spaces to underscores).
@@ -3564,6 +3598,48 @@ show "test" {
         // under one of its two files.
         assert!(parsed["fixture_types"]["Par"].is_object(), "{parsed}");
         assert!(parsed["fixture_types"]["Mover"].is_object(), "{parsed}");
+    }
+
+    #[tokio::test]
+    async fn get_venues_reports_a_name_defined_twice() {
+        // The same shape as the fixture types: a venue directory holds both
+        // extensions, so two files can claim one name.
+        let (state, _dir) = test_state();
+        let venue_dir = _dir.path().join("venue_dupes");
+        std::fs::create_dir(&venue_dir).unwrap();
+        std::fs::write(venue_dir.join("a.light"), sample_venue_dsl("MainHall")).unwrap();
+        std::fs::write(venue_dir.join("b.venue"), sample_venue_dsl("MainHall")).unwrap();
+        std::fs::write(venue_dir.join("c.light"), sample_venue_dsl("Club")).unwrap();
+        let rel = venue_dir
+            .strip_prefix(_dir.path())
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/venues?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let errors = parsed["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1, "{parsed}");
+        let message = errors[0]["error"].as_str().unwrap();
+        assert!(message.contains("venue \"MainHall\""), "{message}");
+        assert!(message.contains("defined in both"), "{message}");
+        assert!(message.contains("a.light"), "{message}");
+        assert!(message.contains("b.venue"), "{message}");
+        // One bad pair does not empty the list.
+        assert!(parsed["venues"]["Club"].is_object(), "{parsed}");
+        assert!(parsed["venues"]["MainHall"].is_object(), "{parsed}");
     }
 
     #[tokio::test]
