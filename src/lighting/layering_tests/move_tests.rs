@@ -436,7 +436,7 @@ fn the_same_move_aims_correctly_in_two_venues() {
 
         let pose = engine.poses()["Spot1"];
         // The v1 type has no pan range, so the engine works over the
-        // assumed 0..540 travel and may pick the equivalent turn: compare
+        // assumed ±270° travel and may pick the equivalent turn: compare
         // modulo a full turn.
         let pan_error = (pose.pan - expected.pan).rem_euclid(360.0);
         assert!(
@@ -567,4 +567,39 @@ fn a_settled_mover_keeps_its_pose_through_the_midi_fast_path() {
         Some(45.0),
         "the settled head still reports its pose"
     );
+}
+
+/// A focus point straight below the head is every pan at once: the head
+/// keeps the pan it has instead of snapping to 0 (design §18.2).
+#[test]
+fn a_target_on_the_pan_axis_holds_the_current_pan() {
+    let mut engine = engine_with(
+        mover("m", [0.0, 0.0, 4.0], [0.0; 3]),
+        &[("below", [0.0, 0.0, 0.0])],
+    );
+    engine
+        .start_effect(move_to(
+            "park",
+            MoveTarget::Angles {
+                pan: Some(90.0),
+                tilt: Some(45.0),
+            },
+            None,
+            0.1,
+        ))
+        .unwrap();
+    engine.update(Duration::from_millis(0), None).unwrap();
+    engine.update(Duration::from_millis(200), None).unwrap();
+    engine
+        .start_effect(move_to(
+            "down",
+            MoveTarget::Focus("below".into()),
+            None,
+            0.1,
+        ))
+        .unwrap();
+    engine.update(Duration::from_millis(200), None).unwrap();
+    let pose = engine.poses()["m"];
+    assert!((pose.pan - 90.0).abs() < 1e-9, "{pose:?}");
+    assert!(pose.tilt.abs() < 1e-9, "{pose:?}");
 }

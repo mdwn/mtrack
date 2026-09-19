@@ -387,7 +387,7 @@ pub async fn a_focus_point_resolves_through_the_venue() -> CheckOutcome {
         tilt: 37.12,
     };
     let (want_pan, want_tilt): (u16, u16) = (41349, 41777);
-    debug_assert!(
+    assert!(
         (aim(position, rotation, drummer).pan - expected.pan).abs() < 0.01
             && (aim(position, rotation, drummer).tilt - expected.tilt).abs() < 0.01,
         "the hand derivation and the pointing math disagree"

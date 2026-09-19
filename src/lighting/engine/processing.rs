@@ -573,6 +573,15 @@ fn target_pose(
             // wins, ties to the smaller tilt change. Nothing in range:
             // the principal solution, clamped by the resolver.
             let solutions = aim_solutions(position, rotation, *point);
+            // On the pan axis — straight down or straight up — every pan
+            // is the same beam: hold the head's pan rather than snap it.
+            let on_axis = solutions[0].tilt < 1e-6 || solutions[0].tilt > 180.0 - 1e-6;
+            if on_axis {
+                return Some(Pose {
+                    pan: reference.pan,
+                    tilt: solutions[0].tilt.round(),
+                });
+            }
             solutions
                 .iter()
                 .filter(|s| s.tilt >= tilt_low - 1e-9 && s.tilt <= tilt_high + 1e-9)

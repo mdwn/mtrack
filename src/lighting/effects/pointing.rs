@@ -83,8 +83,9 @@ pub fn out_of_frame(rotation_deg: [f64; 3], v: [f64; 3]) -> [f64; 3] {
 /// (degrees about X, Y, Z) at a stage point: first the principal one
 /// (tilt in `0..=180`), then its flip (`pan + 180°`, `−tilt`). Pans are in
 /// `-180..=180`; [`nearest_pan`] picks the turn. A target on the pan axis
-/// (straight down or up) has no pan of its own and gets 0; a target on
-/// top of the fixture has no direction at all and gets rest.
+/// (straight down or up) has no pan of its own and gets 0 here — the
+/// engine holds the head's current pan for it; a target on top of the
+/// fixture has no direction at all and gets rest.
 pub fn aim_solutions(position: [f64; 3], rotation: [f64; 3], target: [f64; 3]) -> [Pose; 2] {
     let d = [
         target[0] - position[0],
