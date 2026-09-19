@@ -2594,6 +2594,8 @@ mod test {
             let effect = Effect {
                 sequence_name: None,
                 ignored_parameters: Vec::new(),
+                per_cell: false,
+                spread: 0.0,
                 groups: vec!["front_wash".to_string()],
                 effect_type: crate::lighting::effects::EffectType::Static {
                     parameters: {
@@ -2689,6 +2691,8 @@ mod test {
                 effects: vec![Effect {
                     sequence_name: None,
                     ignored_parameters: Vec::new(),
+                    per_cell: false,
+                    spread: 0.0,
                     groups: vec!["test_fixture".to_string()],
                     effect_type: crate::lighting::effects::EffectType::Static {
                         parameters: {
@@ -2779,6 +2783,8 @@ mod test {
                 effects: vec![Effect {
                     sequence_name: None,
                     ignored_parameters: Vec::new(),
+                    per_cell: false,
+                    spread: 0.0,
                     groups: vec!["test_fixture".to_string()],
                     effect_type: crate::lighting::effects::EffectType::Static {
                         parameters: {

@@ -201,17 +201,63 @@ impl FixtureState {
     /// degrees) resolve through the channel's range and win over any
     /// normalized value written to the same channel.
     pub fn to_dmx_commands(&self, fixture_info: &FixtureInfo) -> Vec<DmxCommand> {
+        self.to_dmx_commands_with_cells(fixture_info, |_| None)
+    }
+
+    /// [`Self::to_dmx_commands`] for a pixel fixture (design §17.3): the
+    /// channels a cell derives are written per cell, each cell's bytes
+    /// resolved from this state with the cell's own state (from
+    /// `cell_state`, by cell name) blended over it by the usual layer
+    /// rules. With no cell states the bytes are exactly the ganged ones.
+    pub fn to_dmx_commands_with_cells<'a>(
+        &self,
+        fixture_info: &FixtureInfo,
+        cell_state: impl Fn(&str) -> Option<&'a FixtureState>,
+    ) -> Vec<DmxCommand> {
         let mut commands = Vec::new();
         let has_dedicated_dimmer = fixture_info.channels.contains_key("dimmer");
         let physical =
             super::physical::resolve_physical(&self.physical, &fixture_info.channel_defs);
+        let cell_owned = |channel: &str| {
+            fixture_info
+                .cells
+                .first()
+                .is_some_and(|c| c.channels.contains_key(channel))
+        };
 
         for (channel_name, state) in &self.channels {
-            if physical.iter().any(|(name, _)| name == channel_name) {
+            if physical.iter().any(|(name, _)| name == channel_name) || cell_owned(channel_name) {
                 continue;
             }
             if let Some(def) = fixture_info.channel_defs.get(channel_name) {
                 let value = self.effective_channel_value(channel_name, state, has_dedicated_dimmer);
+                for (offset, byte) in super::physical::resolve_normalized(def, value) {
+                    commands.push(DmxCommand {
+                        universe: fixture_info.universe,
+                        channel: fixture_info.address + offset - 1,
+                        value: byte,
+                    });
+                }
+            }
+        }
+        for cell in &fixture_info.cells {
+            // A cell's effects were computed against the cell's own
+            // channels (a chase on a cell without a dimmer dims its colour
+            // through multipliers), so its bytes resolve the same way.
+            let cell_has_dimmer = cell.channels.contains_key("dimmer");
+            let merged: std::borrow::Cow<'_, FixtureState> = match cell_state(&cell.name) {
+                Some(own) => {
+                    let mut merged = self.clone();
+                    merged.blend_with(own);
+                    std::borrow::Cow::Owned(merged)
+                }
+                None => std::borrow::Cow::Borrowed(self),
+            };
+            for (channel_name, def) in &cell.channels {
+                let Some(state) = merged.channels.get(channel_name) else {
+                    continue;
+                };
+                let value = merged.effective_channel_value(channel_name, state, cell_has_dimmer);
                 for (offset, byte) in super::physical::resolve_normalized(def, value) {
                     commands.push(DmxCommand {
                         universe: fixture_info.universe,
@@ -737,5 +783,158 @@ mod tests {
         let cmds = fs.to_dmx_commands(&fixture);
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].value, 127); // 0.5 * 255 = 127
+    }
+
+    // ── to_dmx_commands_with_cells (design §17.3) ─────────────────────
+
+    /// A two-cell fixture at address 10: fixture-level `red` at offset 1
+    /// (mirrored to offset 2, the pre-cell path — cells must win over it),
+    /// `dimmer` at offset 3 (which no cell owns), cell "a" owning byte 1
+    /// and cell "b" owning byte 2.
+    fn two_cell_fixture() -> FixtureInfo {
+        use crate::lighting::types::{Cell, ChannelDef};
+
+        let fixture = make_fixture_info(vec![("red", 1), ("dimmer", 3)], 10);
+        let mut defs = HashMap::new();
+        defs.insert(
+            "red".to_string(),
+            ChannelDef {
+                offset: 1,
+                fine: None,
+                range: None,
+                functions: Vec::new(),
+                mirrors: vec![(2, None)],
+            },
+        );
+        defs.insert("dimmer".to_string(), ChannelDef::at(3));
+        let mut fixture = fixture.with_channel_defs(defs);
+        fixture.cells = vec![
+            Cell {
+                name: "a".to_string(),
+                channels: HashMap::from([("red".to_string(), ChannelDef::at(1))]),
+                offset: [0.0, 0.0, 0.0],
+            },
+            Cell {
+                name: "b".to_string(),
+                channels: HashMap::from([("red".to_string(), ChannelDef::at(2))]),
+                offset: [0.0, 0.0, 0.0],
+            },
+        ];
+        fixture
+    }
+
+    fn byte_at(commands: &[DmxCommand], channel: u16) -> u8 {
+        commands
+            .iter()
+            .find(|c| c.channel == channel)
+            .map(|c| c.value)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn with_no_cell_states_both_cells_show_the_fixture_value() {
+        let fixture = two_cell_fixture();
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "red".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+        );
+        let cmds = fs.to_dmx_commands_with_cells(&fixture, |_| None);
+        // Channel 10 = byte 1 (cell "a"), channel 11 = byte 2 (cell "b").
+        assert_eq!(byte_at(&cmds, 10), 127, "cell a == fixture value");
+        assert_eq!(byte_at(&cmds, 11), 127, "cell b == fixture value");
+    }
+
+    #[test]
+    fn a_cell_state_on_a_higher_layer_with_replace_wins_for_its_own_byte_only() {
+        let fixture = two_cell_fixture();
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "red".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+        );
+        let mut cell_b = FixtureState::new();
+        cell_b.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Foreground, BlendMode::Replace),
+        );
+        let cmds =
+            fs.to_dmx_commands_with_cells(
+                &fixture,
+                |name| {
+                    if name == "b" {
+                        Some(&cell_b)
+                    } else {
+                        None
+                    }
+                },
+            );
+        assert_eq!(byte_at(&cmds, 10), 127, "cell a stays at the fixture value");
+        assert_eq!(byte_at(&cmds, 11), 255, "cell b takes the cell's value");
+    }
+
+    #[test]
+    fn a_cell_state_on_the_same_layer_with_multiply_blends_into_a_product() {
+        let fixture = two_cell_fixture();
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "red".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+        );
+        let mut cell_b = FixtureState::new();
+        cell_b.set_channel(
+            "red".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
+        );
+        let cmds =
+            fs.to_dmx_commands_with_cells(
+                &fixture,
+                |name| {
+                    if name == "b" {
+                        Some(&cell_b)
+                    } else {
+                        None
+                    }
+                },
+            );
+        assert_eq!(byte_at(&cmds, 10), 127, "cell a untouched");
+        // 0.5 * 0.5 = 0.25 -> resolve_normalized(0.25) = 63
+        assert_eq!(byte_at(&cmds, 11), 63, "cell b is the product");
+    }
+
+    #[test]
+    fn to_dmx_commands_is_unchanged_for_a_fixture_without_cells() {
+        let fixture = make_fixture_info(vec![("red", 1), ("green", 2), ("blue", 3)], 10);
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        let cmds = fs.to_dmx_commands(&fixture);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].channel, 10);
+        assert_eq!(cmds[0].value, 255);
+    }
+
+    #[test]
+    fn a_fixture_level_channel_no_cell_owns_is_written_once() {
+        let fixture = two_cell_fixture();
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "red".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+        );
+        fs.set_channel(
+            "dimmer".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        let cmds = fs.to_dmx_commands_with_cells(&fixture, |_| None);
+        let dimmer_cmds: Vec<_> = cmds.iter().filter(|c| c.channel == 12).collect();
+        assert_eq!(
+            dimmer_cmds.len(),
+            1,
+            "dimmer written exactly once: {cmds:?}"
+        );
+        assert_eq!(dimmer_cmds[0].value, 255);
     }
 }

@@ -34,6 +34,9 @@ use crate::dmx::midi_dmx_store::MidiDmxStore;
 /// Registry of known fixtures and their DMX mappings.
 pub(crate) struct FixtureRegistry {
     fixtures: HashMap<String, FixtureInfo>,
+    /// Each pixel fixture's sub-fixture names (`parent/cell`), in cell
+    /// order (design §17.3).
+    cells: HashMap<String, Vec<String>>,
     /// Reverse map from (universe_id, dmx_channel) to (fixture_name, channel_name).
     /// Only built during tests for validation; not needed in production.
     #[cfg(test)]
@@ -44,12 +47,56 @@ impl FixtureRegistry {
     fn new() -> Self {
         Self {
             fixtures: HashMap::new(),
+            cells: HashMap::new(),
             #[cfg(test)]
             dmx_to_fixture_map: HashMap::new(),
         }
     }
 
+    /// The sub-fixture names of a pixel fixture, in cell order; empty for
+    /// a fixture without cells.
+    fn cells_of(&self, name: &str) -> &[String] {
+        self.cells.get(name).map(Vec::as_slice).unwrap_or(&[])
+    }
+
     fn register(&mut self, fixture: FixtureInfo) {
+        // A pixel fixture's cells register beside it as sub-fixtures: the
+        // parent's patch and rotation, the cell's channels, a position of
+        // the parent's plus the rotated cell offset, no pan or tilt.
+        if fixture.parent.is_none() && !fixture.cells.is_empty() {
+            let mut names = Vec::with_capacity(fixture.cells.len());
+            for cell in &fixture.cells {
+                let name = format!("{}/{}", fixture.name, cell.name);
+                let channels: HashMap<String, u16> = cell
+                    .channels
+                    .iter()
+                    .map(|(n, d)| (n.clone(), d.offset))
+                    .collect();
+                let mut sub = FixtureInfo::new(
+                    name.clone(),
+                    fixture.universe,
+                    fixture.address,
+                    fixture.fixture_type.clone(),
+                    channels,
+                    fixture.max_strobe_frequency,
+                );
+                sub.min_strobe_frequency = fixture.min_strobe_frequency;
+                sub.strobe_dmx_offset = fixture.strobe_dmx_offset;
+                sub.channel_defs = cell.channels.clone();
+                sub.rotation = fixture.rotation;
+                sub.position = fixture.position.map(|p| {
+                    let o = super::effects::out_of_frame(
+                        fixture.rotation.unwrap_or([0.0; 3]),
+                        cell.offset,
+                    );
+                    [p[0] + o[0], p[1] + o[1], p[2] + o[2]]
+                });
+                sub.parent = Some(fixture.name.clone());
+                self.fixtures.insert(name.clone(), sub);
+                names.push(name);
+            }
+            self.cells.insert(fixture.name.clone(), names);
+        }
         #[cfg(test)]
         {
             for (channel_name, &offset) in &fixture.channels {
@@ -398,7 +445,27 @@ impl EffectEngine {
     }
 
     /// Start an effect
+    /// `per: cell`: each target with cells becomes its cells, in cell
+    /// order (spatial order is the effect's to apply); a target without
+    /// cells stays itself, so a mixed group still works.
+    fn expand_cells(&self, effect: &mut EffectInstance) {
+        if !effect.per_cell {
+            return;
+        }
+        let mut targets = Vec::with_capacity(effect.target_fixtures.len());
+        for name in &effect.target_fixtures {
+            let cells = self.fixtures.cells_of(name);
+            if cells.is_empty() {
+                targets.push(name.clone());
+            } else {
+                targets.extend(cells.iter().cloned());
+            }
+        }
+        effect.target_fixtures = targets;
+    }
+
     pub fn start_effect(&mut self, mut effect: EffectInstance) -> Result<(), EffectError> {
+        self.expand_cells(&mut effect);
         // Validate effect
         validation::validate_effect(self.fixtures.as_map(), &effect)?;
         self.capture_start_poses(&mut effect);
@@ -531,6 +598,7 @@ impl EffectEngine {
         mut effect: EffectInstance,
         elapsed_time: Duration,
     ) -> Result<(), EffectError> {
+        self.expand_cells(&mut effect);
         // Validate effect
         validation::validate_effect(self.fixtures.as_map(), &effect)?;
         self.capture_start_poses(&mut effect);
@@ -868,11 +936,39 @@ impl EffectEngine {
         // Store states for preview/debugging (before converting to DMX)
         self.last_merged_states = current_fixture_states.clone();
 
-        // Convert fixture states to DMX commands.
+        // Convert fixture states to DMX commands. A sub-fixture (a cell)
+        // writes nothing of its own: its parent writes every cell, merging
+        // the cell's state over its own (design §17.3). A parent no effect
+        // touched this frame still writes its cells when one of them was.
         let mut commands = Vec::new();
-        for (fixture_name, fixture_state) in current_fixture_states {
-            if let Some(fixture_info) = self.fixtures.get(&fixture_name) {
+        let mut parents_with_cell_states: Vec<String> = Vec::new();
+        for name in current_fixture_states.keys() {
+            if let Some(parent) = self.fixtures.get(name).and_then(|f| f.parent.clone()) {
+                if !current_fixture_states.contains_key(&parent)
+                    && !parents_with_cell_states.contains(&parent)
+                {
+                    parents_with_cell_states.push(parent);
+                }
+            }
+        }
+        for parent in parents_with_cell_states {
+            current_fixture_states.insert(parent, FixtureState::new());
+        }
+        for (fixture_name, fixture_state) in &current_fixture_states {
+            let Some(fixture_info) = self.fixtures.get(fixture_name) else {
+                continue;
+            };
+            if fixture_info.parent.is_some() {
+                continue;
+            }
+            if fixture_info.cells.is_empty() {
                 commands.extend(fixture_state.to_dmx_commands(fixture_info));
+            } else {
+                commands.extend(
+                    fixture_state.to_dmx_commands_with_cells(fixture_info, |cell| {
+                        current_fixture_states.get(&format!("{fixture_name}/{cell}"))
+                    }),
+                );
             }
         }
 

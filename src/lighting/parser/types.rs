@@ -110,6 +110,13 @@ pub struct Effect {
     pub hold_time: Option<Duration>,
     pub down_time: Option<Duration>,
     pub sequence_name: Option<String>, // Track which sequence this effect came from (for stopping)
+    /// `per: cell` (design §17.3): the effect's targets are the group's
+    /// fixtures expanded to their cells, in spatial order.
+    pub per_cell: bool,
+    /// `spread` in degrees: how much of a cycle the ordered targets are
+    /// spread across (`rainbow` and `cycle`); zero keeps every target in
+    /// phase.
+    pub spread: f64,
     /// Parameters this effect type does not use, in the order they sort.
     ///
     /// A `direction` on a rainbow parses and does nothing — the DSL accepts any
@@ -185,6 +192,8 @@ mod tests {
             down_time: None,
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
         }
     }
 
@@ -204,6 +213,8 @@ mod tests {
             down_time: down,
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
         }
     }
 

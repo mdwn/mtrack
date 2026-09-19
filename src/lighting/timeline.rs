@@ -345,6 +345,8 @@ impl LightingTimeline {
         if let Some(blend_mode) = effect.blend_mode {
             effect_instance.blend_mode = blend_mode;
         }
+        effect_instance.per_cell = effect.per_cell;
+        effect_instance.spread = effect.spread;
 
         effect_instance
     }
@@ -415,6 +417,8 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -460,6 +464,8 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["front_wash".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -500,6 +506,8 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -563,6 +571,8 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -608,6 +618,8 @@ mod tests {
         let effect1 = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["fixture1".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -623,6 +635,8 @@ mod tests {
         let effect2 = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["fixture2".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -765,6 +779,8 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -811,6 +827,8 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -870,6 +888,8 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -935,6 +955,8 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -991,6 +1013,8 @@ mod tests {
         let bg_effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -1006,6 +1030,8 @@ mod tests {
         let fg_effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -1094,6 +1120,8 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -1160,6 +1188,8 @@ mod tests {
         let seq_effect = |seq: &str| Effect {
             sequence_name: Some(seq.to_string()),
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -1236,6 +1266,8 @@ mod tests {
         let seq_effect = |seq: &str| Effect {
             sequence_name: Some(seq.to_string()),
             ignored_parameters: Vec::new(),
+            per_cell: false,
+            spread: 0.0,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),

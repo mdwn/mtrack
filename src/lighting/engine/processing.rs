@@ -351,6 +351,23 @@ fn apply_color_cycle(
             colors[color_index % colors.len()]
         }
     };
+    if effect.spread != 0.0 {
+        // Each ordered target a share of the spread further along the
+        // cycle: `spread: 360deg` paints every colour of the cycle across
+        // the group at once.
+        let fixture_states = build_spread_states(fixture_registry, effect, |share| {
+            let progress = (cycle_progress_val + share * effect.spread / 360.0).rem_euclid(1.0);
+            let (i, next, t) = calculate_color_indices(progress, colors.len(), direction);
+            let color = match transition {
+                CycleTransition::Fade => {
+                    colors[i % colors.len()].lerp(&colors[next % colors.len()], t)
+                }
+                CycleTransition::Snap => colors[i % colors.len()],
+            };
+            (color, crossfade_multiplier)
+        });
+        return Ok(Some(fixture_states));
+    }
     let fixture_states = build_fixture_states(fixture_registry, effect, |profile| {
         let mut commands = profile.apply_color(color, effect.layer, effect.blend_mode);
         for state in commands.values_mut() {
@@ -360,6 +377,35 @@ fn apply_color_cycle(
     });
 
     Ok(Some(fixture_states))
+}
+
+/// Colour states across the effect's targets in spatial order, each given
+/// its share (0 for the first, `(n−1)/n` for the last) of the spread
+/// (design §17.3). The colour and level come from `color_at(share)`.
+fn build_spread_states(
+    fixture_registry: &HashMap<String, FixtureInfo>,
+    effect: &EffectInstance,
+    color_at: impl Fn(f64) -> (Color, f64),
+) -> HashMap<String, FixtureState> {
+    let ordered = spatial_order(
+        fixture_registry,
+        &effect.target_fixtures,
+        &ChaseDirection::LeftToRight,
+    );
+    let n = ordered.len().max(1) as f64;
+    let mut fixture_states = HashMap::new();
+    for (i, fixture_name) in ordered.iter().enumerate() {
+        if let Some(fixture) = fixture_registry.get(fixture_name) {
+            let (color, level) = color_at(i as f64 / n);
+            let profile = FixtureProfile::for_fixture(fixture);
+            let mut commands = profile.apply_color(color, effect.layer, effect.blend_mode);
+            for state in commands.values_mut() {
+                state.value *= level;
+            }
+            fixture_states.insert(fixture_name.clone(), FixtureState::from_channels(commands));
+        }
+    }
+    fixture_states
 }
 
 /// Apply a strobe effect and return fixture states
@@ -929,6 +975,17 @@ fn apply_rainbow(
     // Calculate hue: cycles through 360 degrees based on speed
     let hue = (elapsed.as_secs_f64() * speed * 360.0) % 360.0;
     let color = Color::from_hsv(hue, saturation, brightness);
+
+    if effect.spread != 0.0 {
+        let fixture_states = build_spread_states(fixture_registry, effect, |share| {
+            let hue = (hue + share * effect.spread).rem_euclid(360.0);
+            (
+                Color::from_hsv(hue, saturation, brightness),
+                crossfade_multiplier,
+            )
+        });
+        return Ok(Some(fixture_states));
+    }
 
     let fixture_states = build_fixture_states(fixture_registry, effect, |profile| {
         let mut commands = profile.apply_color(color, effect.layer, effect.blend_mode);

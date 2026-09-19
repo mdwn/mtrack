@@ -427,6 +427,14 @@ pub fn all() -> Vec<Check> {
              on the wire, through the fixture's position and mounting in the venue.",
             dmx_output::a_focus_point_resolves_through_the_venue
         ),
+        entry!(
+            "dmx-output",
+            "a_per_cell_chase_runs_along_the_bar",
+            "A `per: cell` chase must light a pixel bar's cells one at a time on the wire,\n  \
+             every cell taking a turn, while the bed's dimmer stays up; the same chase\n  \
+             without `per: cell` lights the whole bar at once.",
+            dmx_output::a_per_cell_chase_runs_along_the_bar
+        ),
     ]
 }
 
