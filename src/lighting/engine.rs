@@ -606,6 +606,24 @@ impl EffectEngine {
         validation::validate_effect(self.fixtures.as_map(), &effect)?;
         self.capture_start_poses(&mut effect);
 
+        // A move that had already finished by the time it is started — a
+        // seek past it, or an offline evaluation — is its destination: the
+        // head is committed there and the effect never runs. Done here,
+        // one effect at a time, so a later move's turn is chosen from where
+        // the earlier one ended, exactly as it would have been live.
+        if matches!(effect.effect_type, EffectType::Move { .. })
+            && elapsed_time >= effect.total_duration()
+        {
+            for (name, pose) in
+                processing::move_final_poses(self.fixtures.as_map(), &self.focus_points, &effect)
+            {
+                self.goals.insert(name.clone(), pose);
+                self.poses.insert(name, pose);
+            }
+            self.cache.invalidate();
+            return Ok(());
+        }
+
         // Log effect parameters
         let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
         debug!(

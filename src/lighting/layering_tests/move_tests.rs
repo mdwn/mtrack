@@ -449,3 +449,46 @@ fn the_same_move_aims_correctly_in_two_venues() {
         "{results:?}"
     );
 }
+
+/// A seek past a move lands the head at the move's destination, and a
+/// seek past two moves chooses the second one's turn from where the first
+/// left the head — what the timeline replays into a fresh engine, and what
+/// the offline evaluator relies on. A mover at the origin, unrotated:
+/// "a" lies at pan +170°, "b" at principal pan −170°; from 170° the
+/// nearest turn to b is +190°, not −170° through 340° of travel.
+#[test]
+fn a_seek_past_finished_moves_commits_each_destination_in_turn() {
+    let a = [170f64.to_radians().sin(), 170f64.to_radians().cos(), 0.0];
+    let b = [
+        (-170f64).to_radians().sin(),
+        (-170f64).to_radians().cos(),
+        0.0,
+    ];
+    let mut engine = engine_with(mover("m", [0.0; 3], [0.0; 3]), &[("a", a), ("b", b)]);
+    engine
+        .start_effect_with_elapsed(
+            move_to("first", MoveTarget::Focus("a".to_string()), None, 1.0),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    engine
+        .start_effect_with_elapsed(
+            move_to("second", MoveTarget::Focus("b".to_string()), None, 1.0),
+            Duration::from_secs(3),
+        )
+        .unwrap();
+    assert!(
+        engine.get_active_effects().is_empty(),
+        "a finished move is committed, not run"
+    );
+    let commands = engine
+        .update(Duration::from_millis(10), None)
+        .unwrap()
+        .to_vec();
+    let pan = emitted_pan(&commands);
+    assert!(
+        (pan - 190.0).abs() < 0.05,
+        "the head should sit at +190° (b's turn nearest a's +170°), got {pan:.2}°"
+    );
+    assert!((engine.poses()["m"].pan - 190.0).abs() < 1e-6);
+}

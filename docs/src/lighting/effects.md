@@ -177,7 +177,9 @@ in a `.venue` file), so the same cue aims correctly in every venue that binds th
 - `duration`: **Required.** Travel time (e.g., `2s`, `1measure`)
 
 A mover that has arrived **holds its pose** until the next `move` on it or a `clear`; the
-effect's duration is the travel, not how long the fixture stays there. Movement is
+effect's duration is the travel, not how long the fixture stays there. Seeking into a song
+past a `move` lands the head where that move ended, every earlier move replayed in order so
+the turn a head takes is the one it would have taken live. Movement is
 interpolated in degrees and resolved per fixture through its pan/tilt ranges (16-bit where the
 fixture has it), so a slow sweep is smooth. A fixture type that declares
 `movement { max_pan_speed: 240deg/s }` is never driven faster than that; it arrives late
@@ -189,6 +191,11 @@ the stage plot — level; the venue's `rotation` is what makes that true.
 (`move-without-positions`), a group with no pan/tilt channels (`capability-gap`), and movers
 whose fixture type carries no pan/tilt range so degrees resolve over an assumed travel
 (`move-imprecise`, fixed by importing the GDTF or adding `range` to the channels).
+
+To check where a show points without a rig, `evaluate_show` (MCP) reports every mover's
+`pan`, `tilt` and their `_fine` bytes at any instant, resolved through the same code as the
+wire; `get_fixture_state` reports the same for a running song. The example show
+`movers_demo.light` aims the example venue's movers at its focus points.
 
 **Example:**
 ```light

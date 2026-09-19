@@ -1453,23 +1453,34 @@ impl McpServer {
         let evaluations = tokio::task::spawn_blocking(move || {
             // Resolve every group the show mentions once, up front, so the lock
             // is held for a short bounded step rather than across evaluation.
-            let (fixtures, group_map) = match &lighting_system {
+            let (fixtures, focus_points, group_map) = match &lighting_system {
                 Some(system) => {
                     let mut guard = system.lock();
                     let fixtures = guard.get_current_venue_fixtures().unwrap_or_default();
+                    let focus_points: HashMap<String, [f64; 3]> = guard
+                        .get_current_venue()
+                        .map(|venue| {
+                            venue
+                                .focus_points()
+                                .iter()
+                                .map(|(name, point)| (name.clone(), *point))
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     let mut group_map: HashMap<String, Vec<String>> = HashMap::new();
                     for name in group_names(&shows) {
                         let resolved = guard.resolve_logical_group_graceful(&name);
                         group_map.insert(name, resolved);
                     }
-                    (fixtures, group_map)
+                    (fixtures, focus_points, group_map)
                 }
-                None => (Vec::new(), HashMap::new()),
+                None => (Vec::new(), HashMap::new(), HashMap::new()),
             };
 
             crate::lighting::evaluate::evaluate_show(
                 shows,
                 &fixtures,
+                &focus_points,
                 fallback_tempo.as_ref(),
                 &times,
                 |mut effect| {

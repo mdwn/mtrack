@@ -170,9 +170,18 @@ impl LightingTimeline {
                 let effect_start_time = cue.time;
                 let elapsed_at_start = start_time.saturating_sub(effect_start_time);
 
-                // Only include if the effect would still be running at start_time
+                // Only include if the effect would still be running at start_time.
+                // A move is the exception: it leaves the head where it ended
+                // (design §15.4), so a seek past it must still replay it — the
+                // engine commits a finished move to pose memory without
+                // running it. Every completed move goes, in cue order, since
+                // each one's turn is chosen from where the last one left off.
                 let duration = effect_instance.total_duration();
-                let should_include = elapsed_at_start < duration;
+                let is_move = matches!(
+                    effect_instance.effect_type,
+                    crate::lighting::effects::EffectType::Move { .. }
+                );
+                let should_include = elapsed_at_start < duration || is_move;
 
                 if should_include {
                     // Store the elapsed time in a map so we can start the effect at the correct point
@@ -1001,6 +1010,32 @@ mod tests {
         assert_eq!(cue_list[0], (Duration::from_secs(0), 0));
         assert_eq!(cue_list[1], (Duration::from_secs(5), 1));
         assert_eq!(cue_list[2], (Duration::from_secs(10), 2));
+    }
+
+    /// Seeking past a cue drops its finished effects — except a move,
+    /// which is replayed with its full elapsed time so the engine can
+    /// commit the head to where the move ended.
+    #[test]
+    fn start_at_replays_a_finished_move_but_not_a_finished_static() {
+        let shows = crate::lighting::parser::parse_light_shows(
+            "show \"s\" {\n    @00:01.000\n    spots: static red: 100%, duration: 2s\n    \
+             @00:02.000\n    spots: move pan: 45deg, tilt: -20deg, duration: 500ms\n}\n",
+        )
+        .unwrap()
+        .into_values()
+        .collect();
+        let mut timeline = LightingTimeline::new(shows);
+        let update = timeline.start_at(Duration::from_secs(10));
+        let kinds: Vec<(&'static str, Duration)> = update
+            .effects_with_elapsed
+            .values()
+            .map(|(effect, elapsed)| (effect.effect_type.name(), *elapsed))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![("Move", Duration::from_secs(8))],
+            "only the move survives the seek, carrying its elapsed time"
+        );
     }
 
     #[test]

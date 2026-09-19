@@ -28,6 +28,14 @@ A dedicated crossfade demonstration:
 - All effect types with crossfade support
 - Professional lighting console-style transitions
 
+### `movers_demo.light`
+Aims moving heads at the venue's focus points (`drummer`, `center-stage` in
+`kellys_basement.venue`), sweeps between them, and ends on explicit angles:
+- `move focus:` through a fixture's position and mounting rotation
+- `from:`/`to:` sweeps and `easing`
+- `move pan:/tilt:` in degrees
+- Verifiable without a rig via `evaluate_show`
+
 ### `dimmer_curves_demo.light`
 Demonstrates different dimmer curve types:
 - Linear curves (constant rate)

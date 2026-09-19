@@ -283,7 +283,46 @@ pub(crate) fn fixture_snapshots_with_cells(
     let mut fixtures = compute_fixture_snapshots(states, has_dimmer_map);
     fixtures.retain(|s| registry.get(&s.name).is_none_or(|f| f.parent.is_none()));
     attach_cell_snapshots(&mut fixtures, states, registry);
+    attach_pointing(&mut fixtures, states, registry);
     fixtures
+}
+
+/// Pan and tilt as the bytes on the wire. A move writes physical intents
+/// in degrees, not channel values, and they resolve to bytes only on the
+/// DMX path — so without this a snapshot of a mover mid-sweep shows no
+/// pan or tilt at all, and `evaluate_show` cannot answer "where is it
+/// pointing". Resolved through the same code as the wire: coarse byte
+/// under the channel's name, fine byte under `<name>_fine` when the
+/// channel has one.
+fn attach_pointing(
+    snapshots: &mut [FixtureSnapshot],
+    states: &HashMap<String, FixtureState>,
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+) {
+    for snapshot in snapshots.iter_mut() {
+        let (Some(state), Some(info)) = (states.get(&snapshot.name), registry.get(&snapshot.name))
+        else {
+            continue;
+        };
+        for (channel, resolved) in
+            crate::lighting::effects::resolve_physical(&state.physical, &info.channel_defs)
+        {
+            let def = &info.channel_defs[channel];
+            for (offset, byte) in resolved.bytes {
+                if offset == def.offset {
+                    snapshot.channels.insert(channel.to_string(), byte);
+                } else if Some(offset) == def.fine {
+                    snapshot.channels.insert(format!("{channel}_fine"), byte);
+                }
+            }
+        }
+    }
+}
+
+/// Whether a channel name carries where a head points rather than what it
+/// shows: pan, tilt and their fine bytes.
+pub fn is_pointing_channel(name: &str) -> bool {
+    matches!(name, "pan" | "tilt" | "pan_fine" | "tilt_fine")
 }
 
 /// Adds per-cell values to the snapshots of fixtures whose cells carry
@@ -838,5 +877,72 @@ mod tests {
         assert_eq!(*bar_snapshot.cells["2"].get("red").unwrap(), 255);
         assert!(bar_snapshot.cells["1"].is_empty());
         assert!(bar_snapshot.cells["3"].is_empty());
+    }
+
+    /// A mover's physical intent reaches the snapshot as the wire's
+    /// bytes: coarse under the channel name, fine under `<name>_fine`.
+    #[test]
+    fn fixture_snapshots_with_cells_carry_pan_and_tilt_bytes() {
+        use crate::lighting::effects::{EffectLayer, Intent, PhysicalParameter};
+        use crate::lighting::types::{ChannelDef, PhysicalRange, PhysicalUnit};
+
+        let channels: HashMap<String, u16> = [("pan", 1), ("tilt", 3), ("dimmer", 5)]
+            .into_iter()
+            .map(|(n, o)| (n.to_string(), o))
+            .collect();
+        let mut info = crate::lighting::effects::FixtureInfo::new(
+            "m".to_string(),
+            1,
+            1,
+            "Mover".to_string(),
+            channels,
+            None,
+        );
+        let mut defs = HashMap::new();
+        for (name, offset, span) in [("pan", 1, 270.0), ("tilt", 3, 135.0)] {
+            defs.insert(
+                name.to_string(),
+                ChannelDef {
+                    offset,
+                    fine: Some(offset + 1),
+                    range: Some(PhysicalRange {
+                        from: -span,
+                        to: span,
+                        unit: PhysicalUnit::Degrees,
+                    }),
+                    functions: Vec::new(),
+                    mirrors: Vec::new(),
+                },
+            );
+        }
+        defs.insert("dimmer".to_string(), ChannelDef::at(5));
+        info = info.with_channel_defs(defs);
+        let registry: HashMap<String, _> = [("m".to_string(), info)].into_iter().collect();
+
+        let mut state = FixtureState::new();
+        state.physical.set(
+            PhysicalParameter::Pan,
+            Intent {
+                degrees: 0.0,
+                layer: EffectLayer::Background,
+            },
+        );
+        state.physical.set(
+            PhysicalParameter::Tilt,
+            Intent {
+                degrees: 135.0,
+                layer: EffectLayer::Background,
+            },
+        );
+        let states: HashMap<String, FixtureState> =
+            [("m".to_string(), state)].into_iter().collect();
+
+        let snapshots = fixture_snapshots_with_cells(&states, &HashMap::new(), &registry);
+        let m = &snapshots[0].channels;
+        // Pan 0° over ±270° is 32768: 0x80 0x00. Tilt at the top of its
+        // range is 65535: 0xFF 0xFF.
+        assert_eq!((m["pan"], m["pan_fine"]), (0x80, 0x00));
+        assert_eq!((m["tilt"], m["tilt_fine"]), (0xFF, 0xFF));
+        assert!(!m.contains_key("dimmer"), "nothing wrote the dimmer");
     }
 }
