@@ -32,6 +32,10 @@ use crate::lighting::EffectEngine;
 pub struct FixtureSnapshot {
     pub name: String,
     pub channels: HashMap<String, u8>,
+    /// Per-cell values (design §17.4), by cell name, only while a
+    /// per-cell effect drives at least one cell of this fixture; empty
+    /// otherwise, when every cell shows the fixture's own channels.
+    pub cells: std::collections::BTreeMap<String, HashMap<String, u8>>,
 }
 
 /// Where a mover is pointing, for the stage plot's beam.
@@ -139,26 +143,23 @@ async fn sample_tick(
     has_dimmer_map: &HashMap<String, bool>,
 ) -> Option<Arc<StateSnapshot>> {
     let engine_ref = effect_engine.clone();
-    let (states, mut active_effects, poses) = tokio::task::spawn_blocking(move || {
+    let has_dimmer_map = has_dimmer_map.clone();
+    let (fixtures, mut active_effects, poses) = tokio::task::spawn_blocking(move || {
         let engine = engine_ref.lock();
         // A cell's sub-fixture is part of its fixture, not a fixture of
-        // its own to the stream (design §17.4; per-cell state arrives
-        // with the cells field).
+        // its own to the stream (design §17.4): its state folds into the
+        // fixture's `cells`.
         let registry = engine.get_fixture_registry();
-        let states: HashMap<String, FixtureState> = engine
-            .get_fixture_states()
-            .into_iter()
-            .filter(|(name, _)| registry.get(name).is_none_or(|f| f.parent.is_none()))
-            .collect();
+        let fixtures =
+            fixture_snapshots_with_cells(&engine.get_fixture_states(), &has_dimmer_map, registry);
         let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
         let poses = compute_pose_snapshots(engine.poses(), registry);
-        (states, effects, poses)
+        (fixtures, effects, poses)
     })
     .await
     .ok()?;
 
     active_effects.sort();
-    let fixtures = compute_fixture_snapshots(&states, has_dimmer_map);
 
     Some(Arc::new(StateSnapshot {
         fixtures,
@@ -261,6 +262,7 @@ pub(crate) fn compute_fixture_snapshots(
             FixtureSnapshot {
                 name: name.clone(),
                 channels,
+                cells: Default::default(),
             }
         })
         .collect();
@@ -269,10 +271,82 @@ pub(crate) fn compute_fixture_snapshots(
     snapshots
 }
 
+/// Snapshots for every fixture the engine holds state for, with a pixel
+/// fixture's cells folded in (design §17.4): sub-fixtures (`parent/cell`)
+/// are not fixtures of their own here, their state reaches the parent's
+/// `cells`. The one builder both the sampler and the evaluators use.
+pub(crate) fn fixture_snapshots_with_cells(
+    states: &HashMap<String, FixtureState>,
+    has_dimmer_map: &HashMap<String, bool>,
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+) -> Vec<FixtureSnapshot> {
+    let mut fixtures = compute_fixture_snapshots(states, has_dimmer_map);
+    fixtures.retain(|s| registry.get(&s.name).is_none_or(|f| f.parent.is_none()));
+    attach_cell_snapshots(&mut fixtures, states, registry);
+    fixtures
+}
+
+/// Adds per-cell values to the snapshots of fixtures whose cells carry
+/// state of their own this frame (design §17.4): each cell's channels are
+/// the fixture's blended with the cell's, as the wire gets them. A fixture
+/// none of whose cells has state stays without `cells`; a fixture that
+/// has no snapshot yet but a lit cell gets one, its own channels dark.
+pub(crate) fn attach_cell_snapshots(
+    snapshots: &mut Vec<FixtureSnapshot>,
+    states: &HashMap<String, FixtureState>,
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+) {
+    let empty = FixtureState::new();
+    let mut parents: Vec<&str> = states
+        .keys()
+        .filter_map(|name| registry.get(name).and_then(|f| f.parent.as_deref()))
+        .collect();
+    parents.sort();
+    parents.dedup();
+    for parent in parents {
+        let Some(info) = registry.get(parent) else {
+            continue;
+        };
+        let parent_state = states.get(parent).unwrap_or(&empty);
+        let mut cells = std::collections::BTreeMap::new();
+        for cell in &info.cells {
+            let own = states.get(&format!("{parent}/{}", cell.name));
+            let values: HashMap<String, u8> = parent_state
+                .cell_values(cell, own)
+                .into_iter()
+                .map(|(name, value)| (name, (value * 255.0) as u8))
+                .collect();
+            cells.insert(cell.name.clone(), values);
+        }
+        match snapshots.iter_mut().find(|s| s.name == parent) {
+            Some(snapshot) => snapshot.cells = cells,
+            None => {
+                let at = snapshots.partition_point(|s| s.name.as_str() < parent);
+                snapshots.insert(
+                    at,
+                    FixtureSnapshot {
+                        name: parent.to_string(),
+                        channels: info
+                            .channels
+                            .keys()
+                            .filter(|name| !is_multiplier_channel(name))
+                            .map(|name| (name.clone(), 0u8))
+                            .collect(),
+                        cells,
+                    },
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lighting::effects::{BlendMode, ChannelState, EffectLayer, FixtureState};
+    use crate::lighting::effects::{
+        BlendMode, ChannelState, EffectLayer, FixtureInfo, FixtureState,
+    };
+    use crate::lighting::types::{Cell, ChannelDef};
 
     #[test]
     fn pose_snapshots_carry_the_beam_and_its_footprint() {
@@ -449,6 +523,7 @@ mod tests {
         channels.insert("red".to_string(), 255u8);
         channels.insert("green".to_string(), 128u8);
         let snapshot = FixtureSnapshot {
+            cells: Default::default(),
             name: "test".to_string(),
             channels,
         };
@@ -464,6 +539,7 @@ mod tests {
             fixtures: vec![FixtureSnapshot {
                 name: "f1".to_string(),
                 channels: HashMap::new(),
+                cells: Default::default(),
             }],
             active_effects: vec!["effect1".to_string()],
             poses: Vec::new(),
@@ -593,5 +669,174 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         handle.abort();
         let _ = handle.await;
+    }
+
+    // ── attach_cell_snapshots (design §17.4) ───────────────────────
+
+    /// A three-cell RGB bar at address 1: dimmer 1, cells at 2-4, 5-7, 8-10,
+    /// the fixture-level colour ganged across them. Mirrors
+    /// `src/lighting/engine/tests/cell_tests.rs`'s `bar()`.
+    fn bar(name: &str) -> FixtureInfo {
+        let cell = |n: &str, base: u16, x: f64| Cell {
+            name: n.to_string(),
+            channels: HashMap::from([
+                ("red".to_string(), ChannelDef::at(base)),
+                ("green".to_string(), ChannelDef::at(base + 1)),
+                ("blue".to_string(), ChannelDef::at(base + 2)),
+            ]),
+            offset: [x, 0.0, 0.0],
+        };
+        let cells = vec![cell("1", 2, -0.3), cell("2", 5, 0.0), cell("3", 8, 0.3)];
+        let ganged = crate::lighting::types::ganged_from_cells(&cells).unwrap();
+        let mut channels: HashMap<String, u16> =
+            ganged.iter().map(|(n, d)| (n.clone(), d.offset)).collect();
+        channels.insert("dimmer".to_string(), 1);
+        let mut defs = ganged;
+        defs.insert("dimmer".to_string(), ChannelDef::at(1));
+        let mut info = FixtureInfo::new(name.to_string(), 1, 1, "Bar".to_string(), channels, None);
+        info.channel_defs = defs;
+        info.cells = cells;
+        info
+    }
+
+    /// A cell registered as a sub-fixture of `parent`, the way
+    /// `EffectEngine::register` builds one: the cell's own channels, and
+    /// `parent` set so `attach_cell_snapshots` folds its state back in.
+    fn sub_fixture(parent: &str, cell: &Cell) -> FixtureInfo {
+        let name = format!("{parent}/{}", cell.name);
+        let channels: HashMap<String, u16> = cell
+            .channels
+            .iter()
+            .map(|(n, d)| (n.clone(), d.offset))
+            .collect();
+        let mut sub = FixtureInfo::new(name, 1, 1, "Bar".to_string(), channels, None);
+        sub.channel_defs = cell.channels.clone();
+        sub.parent = Some(parent.to_string());
+        sub
+    }
+
+    #[test]
+    fn attach_cell_snapshots_blends_a_cells_own_state_over_the_bed() {
+        let bar_info = bar("Bar");
+        let mut registry = HashMap::new();
+        for cell in &bar_info.cells {
+            registry.insert(format!("Bar/{}", cell.name), sub_fixture("Bar", cell));
+        }
+        registry.insert("Bar".to_string(), bar_info);
+
+        let mut bed = FixtureState::new();
+        bed.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        let mut cell_2 = FixtureState::new();
+        cell_2.set_channel(
+            "red".to_string(),
+            ChannelState::new(0.0, EffectLayer::Midground, BlendMode::Replace),
+        );
+
+        let mut states = HashMap::new();
+        states.insert("Bar".to_string(), bed.clone());
+        states.insert("Bar/2".to_string(), cell_2);
+
+        // Seed the snapshot as `sample_tick` would: only the fixture-level
+        // state feeds `compute_fixture_snapshots` (sub-fixture states are
+        // filtered out before this point).
+        let has_dimmer = HashMap::from([("Bar".to_string(), false)]);
+        let bar_only: HashMap<String, FixtureState> = HashMap::from([("Bar".to_string(), bed)]);
+        let mut snapshots = compute_fixture_snapshots(&bar_only, &has_dimmer);
+        let channels_before = snapshots[0].channels.clone();
+
+        attach_cell_snapshots(&mut snapshots, &states, &registry);
+
+        assert_eq!(snapshots.len(), 1);
+        let bar_snapshot = &snapshots[0];
+        assert_eq!(
+            bar_snapshot.channels, channels_before,
+            "the parent's own channels are untouched by cell attachment"
+        );
+        assert_eq!(*bar_snapshot.cells["1"].get("red").unwrap(), 255);
+        assert_eq!(*bar_snapshot.cells["2"].get("red").unwrap(), 0);
+        assert_eq!(*bar_snapshot.cells["3"].get("red").unwrap(), 255);
+    }
+
+    #[test]
+    fn attach_cell_snapshots_is_a_no_op_with_no_sub_fixture_states() {
+        let bar_info = bar("Bar");
+        let mut registry = HashMap::new();
+        for cell in &bar_info.cells {
+            registry.insert(format!("Bar/{}", cell.name), sub_fixture("Bar", cell));
+        }
+        registry.insert("Bar".to_string(), bar_info);
+
+        let mut bed = FixtureState::new();
+        bed.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        let states = HashMap::from([("Bar".to_string(), bed.clone())]);
+
+        let has_dimmer = HashMap::from([("Bar".to_string(), false)]);
+        let mut snapshots = compute_fixture_snapshots(&states, &has_dimmer);
+        let before = snapshots.clone();
+
+        attach_cell_snapshots(&mut snapshots, &states, &registry);
+
+        assert_eq!(snapshots, before, "no fixture gets `cells`");
+        assert!(snapshots[0].cells.is_empty());
+    }
+
+    #[test]
+    fn attach_cell_snapshots_inserts_a_parent_that_has_no_snapshot_yet() {
+        let bar_info = bar("Bar");
+        let mut registry = HashMap::new();
+        for cell in &bar_info.cells {
+            registry.insert(format!("Bar/{}", cell.name), sub_fixture("Bar", cell));
+        }
+        registry.insert("Bar".to_string(), bar_info);
+
+        let mut cell_2 = FixtureState::new();
+        cell_2.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        // Only the cell has state — no state for "Bar" itself.
+        let states = HashMap::from([("Bar/2".to_string(), cell_2)]);
+
+        // Two unrelated fixtures already in the snapshot list, sorted, so
+        // the insertion position (between them) is exercised.
+        let mut snapshots = vec![
+            FixtureSnapshot {
+                name: "Aaa".to_string(),
+                channels: HashMap::new(),
+                cells: Default::default(),
+            },
+            FixtureSnapshot {
+                name: "Zzz".to_string(),
+                channels: HashMap::new(),
+                cells: Default::default(),
+            },
+        ];
+
+        attach_cell_snapshots(&mut snapshots, &states, &registry);
+
+        assert_eq!(
+            snapshots
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Aaa", "Bar", "Zzz"],
+            "inserted in sorted position"
+        );
+        let bar_snapshot = snapshots.iter().find(|s| s.name == "Bar").unwrap();
+        assert!(
+            bar_snapshot.channels.values().all(|v| *v == 0)
+                && bar_snapshot.channels.contains_key("dimmer"),
+            "inserted parent is dark, not empty: {:?}",
+            bar_snapshot.channels
+        );
+        assert_eq!(*bar_snapshot.cells["2"].get("red").unwrap(), 255);
+        assert!(bar_snapshot.cells["1"].is_empty());
+        assert!(bar_snapshot.cells["3"].is_empty());
     }
 }

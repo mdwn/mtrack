@@ -856,7 +856,7 @@ included, in list order, as it does for a chase today.
 |---|---|---|
 | P3-1 (internal) | `Cell` on the fixture type; distiller records cells with offsets; `cell` blocks in `.fixture`; cache v3; rig and distiller agree on names | The Spiider's 19 cells distill with positions matching its rig model's lenses |
 | P3-2 (shipped) | Sub-fixture registry, `per: cell` and `spread` in grammar, parser, engine; cell-aware DMX merge; lint; harness check | The three-cell chase check passes on the rig; existing shows produce byte-identical DMX |
-| P3-3 | State stream cells, segmented plot, 3D lenses per cell, docs, screenshots | A per-cell rainbow reads along the Spiider's lenses in 3D |
+| P3-3 (shipped) | State stream cells, segmented plot, 3D lenses per cell, docs, screenshots | A per-cell rainbow reads along the Spiider's lenses in 3D |
 
 ### 17.7 Decisions (settled 2026-09-19)
 

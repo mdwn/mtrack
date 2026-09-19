@@ -222,7 +222,9 @@ All effects support these optional parameters for advanced control:
   plain and pixel fixtures still works. `per: cell` is a no-op on effects that give every
   target the same value (`static`, `strobe`, `pulse`, `dimmer`) — the lint's
   `per-cell-no-effect` warning says so. It also does nothing, with the lint's `cells-absent`
-  warning, on a group whose fixtures have no cells in the current venue.
+  warning, on a group whose fixtures have no cells in the current venue. The dashboard's
+  stage plot and the Stage 3D view both show the cells: the plot as a segmented disc, the 3D
+  view lighting each cell's own lens and beam.
 - `spread`: An angle in degrees (e.g. `spread: 180deg`), for `rainbow` and `cycle` only — the
   lint's `spread-unused` warning fires on any other effect. It offsets each of the effect's
   ordered targets by its share of the spread: `spread: 360deg` paints one full rainbow, or one

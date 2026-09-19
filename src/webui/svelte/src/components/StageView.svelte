@@ -16,6 +16,7 @@
   import {
     metadataStore,
     fixtureStore,
+    cellStore,
     reloadStore,
     venueStore,
     poseStore,
@@ -29,6 +30,7 @@
   import { fetchVenue, saveVenue } from "../lib/api/config";
   import {
     beamEnd,
+    cellBar,
     drawBeam,
     facing,
     fitFrame,
@@ -264,6 +266,9 @@
   }
 
   function draw(fixtureStates: Record<string, FixtureChannels>) {
+    // Per-cell values ride the same state message as the channels; read
+    // here so a redraw for either shows both.
+    const cellStates = get(cellStore);
     if (!canvasEl || !ctx) return;
 
     const w = canvasEl.clientWidth;
@@ -358,15 +363,73 @@
         ctx.fill();
       }
 
-      // Fixture body — dashed when the venue has not placed it yet.
-      ctx.fillStyle = `rgb(${finalR},${finalG},${finalB})`;
+      // Fixture body — dashed when the venue has not placed it yet. A
+      // pixel fixture is a disc of wedges, one per cell in the
+      // manufacturer's order, each in its own colour when a per-cell
+      // effect drives it (design §17.4), else the fixture's.
       ctx.strokeStyle = fixtureStroke;
       ctx.lineWidth = 1.5;
       if (isUnplaced) ctx.setLineDash([4, 3]);
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
+      const cells = meta.cells ?? [];
+      const cellState = cellStates[name];
+      const cellColor = (cell: { name: string }) => {
+        const own = cellState?.[cell.name];
+        if (!own) return `rgb(${finalR},${finalG},${finalB})`;
+        const k = (own.dimmer ?? dimmer) / 255;
+        const cr = strobeVisible ? Math.round((own.red ?? 0) * k) : 0;
+        const cg = strobeVisible ? Math.round((own.green ?? 0) * k) : 0;
+        const cb = strobeVisible ? Math.round((own.blue ?? 0) * k) : 0;
+        return `rgb(${cr},${cg},${cb})`;
+      };
+      const bar = cells.length > 1 ? cellBar(cells, meta.rotation) : null;
+      if (bar) {
+        // Cells along a line: a bar of segments in that direction on the
+        // plot, seen from the audience.
+        const len = radius * 2.6;
+        const thick = radius * 0.9;
+        const seg = len / cells.length;
+        ctx.save();
+        ctx.translate(pos.x, pos.y);
+        ctx.rotate(bar.angle);
+        for (const [i, cell] of bar.ordered.entries()) {
+          ctx.fillStyle = cellColor(cell);
+          ctx.fillRect(-len / 2 + i * seg, -thick / 2, seg, thick);
+        }
+        ctx.strokeRect(-len / 2, -thick / 2, len, thick);
+        ctx.restore();
+      } else if (cells.length > 1) {
+        // Cells that do not line up: a disc of wedges, one per cell in
+        // the manufacturer's order.
+        const step = (Math.PI * 2) / cells.length;
+        for (const [i, cell] of cells.entries()) {
+          ctx.fillStyle = cellColor(cell);
+          ctx.beginPath();
+          ctx.moveTo(pos.x, pos.y);
+          ctx.arc(
+            pos.x,
+            pos.y,
+            radius,
+            -Math.PI / 2 + i * step,
+            -Math.PI / 2 + (i + 1) * step,
+          );
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+        ctx.stroke();
+      } else {
+        // One cell (or none): the disc shows that cell's colour when a
+        // per-cell effect drives it, else the fixture's.
+        ctx.fillStyle =
+          cells.length === 1
+            ? cellColor(cells[0])
+            : `rgb(${finalR},${finalG},${finalB})`;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
       ctx.setLineDash([]);
 
       // Orientation tick from the mounting yaw, on placed fixtures.

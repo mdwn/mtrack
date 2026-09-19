@@ -42,6 +42,7 @@ import {
   type SceneryModel,
 } from "./rig";
 import type {
+  CellChannels,
   FixtureChannels,
   FixtureMetadata,
   FixturePose,
@@ -103,6 +104,11 @@ interface FixtureActor {
   rig: RigModel;
   beams: BeamActor[];
   lens: THREE.MeshStandardMaterial[];
+  /** Lens materials and beams by cell name, for per-cell colour. */
+  cellLens: Map<string, THREE.MeshStandardMaterial[]>;
+  cellBeams: Map<string, BeamActor[]>;
+  /** Cells reported once as having no lens in the rig. */
+  unmatchedCells: Set<string>;
   label: THREE.Sprite;
   placed: boolean;
 }
@@ -262,6 +268,7 @@ export class StageScene {
   private generation = 0;
   private labels = true;
   private channels: Record<string, FixtureChannels> = {};
+  private cells: CellChannels = {};
   private poses: Record<string, FixturePose> = {};
   private extent: [number, number, number, number] = [-4, 4, 0, 6];
   private preset: CameraPreset = "foh";
@@ -341,6 +348,11 @@ export class StageScene {
   /** The live poses, per mover. */
   setPoses(poses: Record<string, FixturePose>) {
     this.poses = poses;
+  }
+
+  /** Per-cell values for fixtures a per-cell effect drives (design §17.4). */
+  setCells(cells: CellChannels) {
+    this.cells = cells;
   }
 
   /** Rebuilds the fixtures and focus markers from the metadata. */
@@ -543,10 +555,19 @@ export class StageScene {
     const spins: THREE.Group[] = [];
     const lens: THREE.MeshStandardMaterial[] = [];
     const owned: { dispose(): void }[] = [];
+    const cellLens = new Map<string, THREE.MeshStandardMaterial[]>();
+    const cellBeams = new Map<string, BeamActor[]>();
     let pan: THREE.Group | null = null;
     let tilt: THREE.Group | null = null;
+    // The cell a node belongs to: itself when it is one, else the nearest
+    // cell above it — its lens and beam take that cell's colour.
+    const cellOf: (string | null)[] = rig.nodes.map(() => null);
+    rig.nodes.forEach((node, i) => {
+      if (node.role.kind === "cell") cellOf[i] = node.name;
+      else if (node.parent !== null) cellOf[i] = cellOf[node.parent];
+    });
 
-    for (const node of rig.nodes) {
+    for (const [index, node] of rig.nodes.entries()) {
       // Static transform, then the axis rotation (if any), then the shape
       // and the children.
       const group = new THREE.Group();
@@ -567,7 +588,15 @@ export class StageScene {
           roughness: 0.7,
           metalness: 0.1,
         });
-        if (isLens) lens.push(m);
+        if (isLens) {
+          lens.push(m);
+          const cell = cellOf[index];
+          if (cell !== null) {
+            const list = cellLens.get(cell) ?? [];
+            list.push(m);
+            cellLens.set(cell, list);
+          }
+        }
         owned.push(m);
         return m;
       };
@@ -617,13 +646,20 @@ export class StageScene {
         cone.renderOrder = 5;
         spins[b.node].add(cone);
         owned.push(material);
-        return {
+        const actor: BeamActor = {
           node: spins[b.node],
           cone,
           material,
           style: beamStyle(b.kind),
           angle: b.angle_deg,
         };
+        const cell = cellOf[b.node];
+        if (cell !== null) {
+          const list = cellBeams.get(cell) ?? [];
+          list.push(actor);
+          cellBeams.set(cell, list);
+        }
+        return actor;
       });
 
     const label = labelSprite(name, "#ffffff");
@@ -642,6 +678,9 @@ export class StageScene {
       rig,
       beams,
       lens,
+      cellLens,
+      cellBeams,
+      unmatchedCells: new Set(),
       label,
       placed: true,
     };
@@ -718,12 +757,40 @@ export class StageScene {
       );
       if (actor.pan) actor.pan.rotation.set(0, 0, panZ);
       if (actor.tilt) actor.tilt.rotation.set(tiltX, 0, 0);
-      const look = beamLook(this.channels[actor.name] ?? {});
+      const channels = this.channels[actor.name] ?? {};
+      const look = beamLook(channels);
       const lit = look.strobeOn && look.intensity > 0.02;
       color.setRGB(look.rgb[0], look.rgb[1], look.rgb[2]);
       for (const material of actor.lens) {
         material.emissive.copy(lit ? color : dim);
         material.emissiveIntensity = lit ? 1.5 : 0;
+      }
+      // A cell a per-cell effect drives shows its own colour on its lens
+      // and beam; a cell without a dimmer of its own takes the fixture's.
+      const perCell = this.cells[actor.name];
+      const cellLooks = new Map<string, ReturnType<typeof beamLook>>();
+      if (perCell) {
+        for (const [cell, own] of Object.entries(perCell)) {
+          const cellLook = beamLook({ dimmer: channels.dimmer, ...own });
+          cellLooks.set(cell, cellLook);
+          if (!actor.cellLens.has(cell) && !actor.unmatchedCells.has(cell)) {
+            // The engine's cell names come from the same GDTF geometry
+            // as the rig's lenses; a miss is worth one line, not silence.
+            actor.unmatchedCells.add(cell);
+            console.warn(
+              `Stage 3D: ${actor.name}: cell "${cell}" has no lens in the rig; drawn in the fixture's colour`,
+            );
+          }
+          const cellLit = cellLook.strobeOn && cellLook.intensity > 0.02;
+          for (const material of actor.cellLens.get(cell) ?? []) {
+            material.emissive.setRGB(
+              cellLook.rgb[0],
+              cellLook.rgb[1],
+              cellLook.rgb[2],
+            );
+            material.emissiveIntensity = cellLit ? 1.5 : 0;
+          }
+        }
       }
       actor.root.updateMatrixWorld(true);
       // Many lenses on one fixture (a pixel wash) share its light.
@@ -740,11 +807,34 @@ export class StageScene {
         );
         const radius = length * Math.tan((beam.angle * Math.PI) / 360);
         beam.cone.scale.set(radius, radius, length);
-        beam.material.color.copy(lit ? color : dim);
-        beam.material.opacity = lit
-          ? (beam.style.floor + beam.style.gain * look.intensity) * share
+        // This beam's own cell, when a per-cell effect drives it.
+        let beamLook_ = look;
+        let beamLit = lit;
+        if (perCell) {
+          for (const [cell, beams] of actor.cellBeams) {
+            if (beams.includes(beam)) {
+              const own = cellLooks.get(cell);
+              if (own) {
+                beamLook_ = own;
+                beamLit = own.strobeOn && own.intensity > 0.02;
+              }
+              break;
+            }
+          }
+        }
+        if (beamLit) {
+          beam.material.color.setRGB(
+            beamLook_.rgb[0],
+            beamLook_.rgb[1],
+            beamLook_.rgb[2],
+          );
+        } else {
+          beam.material.color.copy(dim);
+        }
+        beam.material.opacity = beamLit
+          ? (beam.style.floor + beam.style.gain * beamLook_.intensity) * share
           : 0.03 * share;
-        beam.cone.visible = actor.placed || lit;
+        beam.cone.visible = actor.placed || beamLit;
       }
     }
     this.controls.update();

@@ -209,6 +209,44 @@ fn effective_value(
 }
 
 impl FixtureState {
+    /// A cell's effective channel values (0..1), by channel name, from this
+    /// fixture-level state with the cell's own state (`own`) blended over
+    /// it (design §17.3). A cell's effects were computed against the cell's
+    /// own channels — a chase on a cell without a dimmer dims its colour
+    /// through multipliers — so they resolve the same way. Nothing is
+    /// cloned: each channel is the fixture's blended with the cell's, and a
+    /// multiplier is read from the cell's state first (the last writer, as
+    /// `blend_with` would have it), else the fixture's.
+    pub fn cell_values(
+        &self,
+        cell: &crate::lighting::types::Cell,
+        own: Option<&FixtureState>,
+    ) -> Vec<(String, f64)> {
+        let cell_has_dimmer = cell.channels.contains_key("dimmer");
+        let read = |k: &str| {
+            own.and_then(|o| o.channels.get(k))
+                .or_else(|| self.channels.get(k))
+                .map(|c| c.value)
+                .unwrap_or(1.0)
+        };
+        let mut out = Vec::with_capacity(cell.channels.len());
+        for channel_name in cell.channels.keys() {
+            let base = self.channels.get(channel_name);
+            let over = own.and_then(|o| o.channels.get(channel_name));
+            let state = match (base, over) {
+                (Some(b), Some(o)) => b.blend_with(*o),
+                (Some(b), None) => *b,
+                (None, Some(o)) => *o,
+                (None, None) => continue,
+            };
+            out.push((
+                channel_name.clone(),
+                effective_value(channel_name, &state, cell_has_dimmer, read),
+            ));
+        }
+        out
+    }
+
     /// Convert to DMX commands.
     ///
     /// Normalized channels resolve through the fixture's channel
@@ -257,31 +295,8 @@ impl FixtureState {
             }
         }
         for cell in &fixture_info.cells {
-            // A cell's effects were computed against the cell's own
-            // channels (a chase on a cell without a dimmer dims its colour
-            // through multipliers), so its bytes resolve the same way. No
-            // state is cloned: each channel is the fixture's blended with
-            // the cell's, and a multiplier is read from the cell's state
-            // first (the last writer, as `blend_with` would have it), else
-            // the fixture's.
-            let cell_has_dimmer = cell.channels.contains_key("dimmer");
-            let own = cell_state(&cell.name);
-            let read = |k: &str| {
-                own.and_then(|o| o.channels.get(k))
-                    .or_else(|| self.channels.get(k))
-                    .map(|c| c.value)
-                    .unwrap_or(1.0)
-            };
-            for (channel_name, def) in &cell.channels {
-                let base = self.channels.get(channel_name);
-                let over = own.and_then(|o| o.channels.get(channel_name));
-                let state = match (base, over) {
-                    (Some(b), Some(o)) => b.blend_with(*o),
-                    (Some(b), None) => *b,
-                    (None, Some(o)) => *o,
-                    (None, None) => continue,
-                };
-                let value = effective_value(channel_name, &state, cell_has_dimmer, read);
+            for (channel_name, value) in self.cell_values(cell, cell_state(&cell.name)) {
+                let def = &cell.channels[&channel_name];
                 for (offset, byte) in super::physical::resolve_normalized(def, value) {
                     commands.push(DmxCommand {
                         universe: fixture_info.universe,
@@ -938,6 +953,92 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].channel, 10);
         assert_eq!(cmds[0].value, 255);
+    }
+
+    // ── cell_values (design §17.4) ────────────────────────────────────
+
+    fn red_cell() -> crate::lighting::types::Cell {
+        crate::lighting::types::Cell {
+            name: "2".to_string(),
+            channels: HashMap::from([(
+                "red".to_string(),
+                crate::lighting::types::ChannelDef::at(5),
+            )]),
+            offset: [0.0, 0.0, 0.0],
+        }
+    }
+
+    #[test]
+    fn cell_values_multiplies_a_cells_own_state_over_the_bed() {
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        let mut own = FixtureState::new();
+        own.set_channel(
+            "red".to_string(),
+            ChannelState::new(0.5, EffectLayer::Midground, BlendMode::Multiply),
+        );
+        let values = fs.cell_values(&red_cell(), Some(&own));
+        assert_eq!(values, vec![("red".to_string(), 0.5)]);
+    }
+
+    #[test]
+    fn cell_values_a_cell_only_channel_takes_the_cells_value() {
+        let fs = FixtureState::new(); // fixture has no "red" of its own
+        let mut own = FixtureState::new();
+        own.set_channel(
+            "red".to_string(),
+            ChannelState::new(0.75, EffectLayer::Background, BlendMode::Replace),
+        );
+        let values = fs.cell_values(&red_cell(), Some(&own));
+        assert_eq!(values, vec![("red".to_string(), 0.75)]);
+    }
+
+    /// A `_chase_mult_mid` multiplier on the cell's own state, with no
+    /// dimmer on the cell, dims the cell's red through the multiplier even
+    /// though the fixture-level state carries no multiplier of its own.
+    #[test]
+    fn cell_values_reads_a_multiplier_from_the_cells_own_state_first() {
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        let mut own = FixtureState::new();
+        own.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        own.set_channel(
+            "_chase_mult_mid".to_string(),
+            ChannelState::new(0.0, EffectLayer::Midground, BlendMode::Multiply),
+        );
+        let values = fs.cell_values(&red_cell(), Some(&own));
+        assert_eq!(values, vec![("red".to_string(), 0.0)]);
+    }
+
+    /// The same multiplier, but only on the fixture-level state (not the
+    /// cell's own) — the fallback read still applies it.
+    #[test]
+    fn cell_values_falls_back_to_the_fixtures_multiplier() {
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        fs.set_channel(
+            "_chase_mult_mid".to_string(),
+            ChannelState::new(0.0, EffectLayer::Midground, BlendMode::Multiply),
+        );
+        let mut own = FixtureState::new();
+        own.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        let values = fs.cell_values(&red_cell(), Some(&own));
+        assert_eq!(values, vec![("red".to_string(), 0.0)]);
     }
 
     #[test]

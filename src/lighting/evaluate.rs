@@ -32,7 +32,7 @@ use crate::lighting::parser::LightShow;
 use crate::lighting::tempo::TempoMap;
 use crate::lighting::timeline::LightingTimeline;
 use crate::lighting::EffectEngine;
-use crate::state::{compute_fixture_snapshots, FixtureSnapshot};
+use crate::state::FixtureSnapshot;
 
 /// An effect running at the evaluated instant.
 #[derive(Clone, Debug)]
@@ -139,7 +139,11 @@ where
             // clock exactly where the elapsed offsets were computed against.
             let _ = engine.update(Duration::ZERO, Some(time));
 
-            let mut fixtures = compute_fixture_snapshots(&engine.get_fixture_states(), &has_dimmer);
+            let mut fixtures = crate::state::fixture_snapshots_with_cells(
+                &engine.get_fixture_states(),
+                &has_dimmer,
+                engine.get_fixture_registry(),
+            );
             fill_dark_fixtures(&mut fixtures, venue_fixtures.iter());
             let mut active_effects: Vec<EvaluatedEffect> = engine
                 .get_active_effects()
@@ -202,6 +206,7 @@ fn fill_dark_fixtures<'a>(
             continue;
         }
         snapshots.push(FixtureSnapshot {
+            cells: Default::default(),
             name: info.name.clone(),
             channels: info
                 .channels
@@ -256,15 +261,12 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
             .then_with(|| a.fixtures.cmp(&b.fixtures))
     });
 
-    // Sub-fixtures (a pixel fixture's cells) are part of their fixture,
-    // not fixtures of their own here.
     let registry = engine.get_fixture_registry();
-    let states: std::collections::HashMap<_, _> = engine
-        .get_fixture_states()
-        .into_iter()
-        .filter(|(name, _)| registry.get(name).is_none_or(|f| f.parent.is_none()))
-        .collect();
-    let mut fixtures = compute_fixture_snapshots(&states, &has_dimmer);
+    let mut fixtures = crate::state::fixture_snapshots_with_cells(
+        &engine.get_fixture_states(),
+        &has_dimmer,
+        registry,
+    );
     fill_dark_fixtures(&mut fixtures, registry.values());
 
     Evaluation {
@@ -608,7 +610,10 @@ show "T" {
             let _ = engine.update(step, Some(now));
 
             if times.contains(&now) {
-                let mut snap = compute_fixture_snapshots(&engine.get_fixture_states(), &has_dimmer);
+                let mut snap = crate::state::compute_fixture_snapshots(
+                    &engine.get_fixture_states(),
+                    &has_dimmer,
+                );
                 fill_dark_fixtures(&mut snap, fixtures.iter());
                 sampled.push((now, snap));
             }

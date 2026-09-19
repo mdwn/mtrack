@@ -202,6 +202,7 @@ mod tests {
         FixtureSnapshot {
             name: name.to_string(),
             channels: map,
+            cells: Default::default(),
         }
     }
 

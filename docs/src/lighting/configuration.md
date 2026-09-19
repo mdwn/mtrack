@@ -395,7 +395,13 @@ the audience edge marked, every fixture at its venue position, movers turning as
 drives them, beams in the colour and level the fixture is showing, and focus points as
 markers. Drag to orbit, scroll to zoom, right-drag to pan; the **Front of house**, **Side**
 and **Top** buttons are camera presets, and **Labels** toggles the fixture names (off by
-default on a large rig).
+default on a large rig). A pixel fixture — one with cells — lights its lenses per cell when
+a show says `per: cell`; the stage plot on the dashboard draws such a fixture as a segmented
+disc, one wedge per cell, coloured from the cell's own state.
+
+![A per-cell rainbow on the stage plot: each Spiider a disc of wedges](../images/stage-plot-cells.png)
+
+![The same rainbow in Stage 3D, each lens and beam its own colour](../images/stage-3d-cells.png)
 
 ![Stage 3D during a show: the Basic_Festival sample venue with its glTF scenery](../images/stage-3d.png)
 

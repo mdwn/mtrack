@@ -368,11 +368,21 @@ pub async fn state_poller(
             })
             .collect();
 
+        // Per-cell values, by fixture then cell, only for fixtures a
+        // per-cell effect is driving this frame (design §17.4).
+        let cells: serde_json::Map<String, serde_json::Value> = snapshot
+            .fixtures
+            .iter()
+            .filter(|f| !f.cells.is_empty())
+            .map(|f| (f.name.clone(), json!(f.cells)))
+            .collect();
+
         let msg = json!({
             "type": "state",
             "fixtures": fixtures,
             "active_effects": snapshot.active_effects,
             "poses": poses,
+            "cells": cells,
         });
 
         let _ = tx.send(msg.to_string());
@@ -880,6 +890,14 @@ pub fn build_metadata_json(
                     // when the type has one; the 3D view draws a generic
                     // body without.
                     "rig": fi.rig,
+                    // The cells of a pixel fixture, in the manufacturer's
+                    // order, with their offsets in the fixture's frame:
+                    // the plot draws one segment each.
+                    "cells": fi
+                        .cells
+                        .iter()
+                        .map(|c| json!({"name": c.name, "offset": c.offset}))
+                        .collect::<Vec<_>>(),
                 });
                 fixtures.insert(fi.name.clone(), fixture_meta);
             }
@@ -1185,6 +1203,7 @@ metronome: {}
         // Send a state update with fixtures
         let snapshot = Arc::new(crate::state::StateSnapshot {
             fixtures: vec![crate::state::FixtureSnapshot {
+                cells: Default::default(),
                 name: "wash1".to_string(),
                 channels: {
                     let mut m = std::collections::HashMap::new();
@@ -1207,6 +1226,53 @@ metronome: {}
         assert!(parsed["fixtures"].is_object());
         assert_eq!(parsed["fixtures"]["wash1"]["red"], 255);
         assert_eq!(parsed["active_effects"][0], "chase");
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn state_poller_carries_cells_only_for_fixtures_that_have_them() {
+        let initial = Arc::new(crate::state::StateSnapshot::default());
+        let (state_tx, state_rx) = watch::channel(initial);
+        let (tx, mut rx) = broadcast::channel(16);
+
+        let handle = tokio::spawn(state_poller(state_rx, tx));
+
+        let mut cells = std::collections::BTreeMap::new();
+        cells.insert(
+            "1".to_string(),
+            std::collections::HashMap::from([("red".to_string(), 255u8)]),
+        );
+        let snapshot = Arc::new(crate::state::StateSnapshot {
+            fixtures: vec![
+                crate::state::FixtureSnapshot {
+                    name: "bar".to_string(),
+                    channels: std::collections::HashMap::new(),
+                    cells,
+                },
+                crate::state::FixtureSnapshot {
+                    name: "wash1".to_string(),
+                    channels: std::collections::HashMap::from([("red".to_string(), 255)]),
+                    cells: Default::default(),
+                },
+            ],
+            active_effects: Vec::new(),
+            poses: Vec::new(),
+        });
+        state_tx.send(snapshot).unwrap();
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timed out waiting for state message")
+            .expect("recv error");
+
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(parsed["type"], "state");
+        assert_eq!(parsed["cells"]["bar"]["1"]["red"], 255);
+        assert!(
+            parsed["cells"].as_object().unwrap().get("wash1").is_none(),
+            "a fixture with no cells is absent from `cells`: {parsed}"
+        );
 
         handle.abort();
     }
@@ -1554,6 +1620,7 @@ metronome: {}
             fixtures: vec![crate::state::FixtureSnapshot {
                 name: "light1".to_string(),
                 channels: std::collections::HashMap::new(),
+                cells: Default::default(),
             }],
             active_effects: vec![],
             poses: Vec::new(),
@@ -1634,6 +1701,80 @@ metronome: {}
         system.load(&config, dir.path()).unwrap();
 
         (system, dir)
+    }
+
+    /// [`create_test_lighting_system`], but the fixture types go in a
+    /// `.fixture` file rather than `.light` — required for `cell` blocks
+    /// and other rich-channel syntax, which a `.light` file refuses.
+    fn create_test_lighting_system_fixture(
+        fixture_type_dsl: &str,
+        venue_dsl: &str,
+        venue_name: &str,
+    ) -> (crate::lighting::system::LightingSystem, tempfile::TempDir) {
+        use crate::config::lighting::{Directories, Lighting};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ft_dir = dir.path().join("fixture_types");
+        let venues_dir = dir.path().join("venues");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::create_dir(&venues_dir).unwrap();
+
+        std::fs::write(ft_dir.join("types.fixture"), fixture_type_dsl).unwrap();
+        std::fs::write(venues_dir.join("venues.light"), venue_dsl).unwrap();
+
+        let config = Lighting::new(
+            Some(venue_name.to_string()),
+            None,
+            None,
+            Some(Directories::new(
+                Some("fixture_types".to_string()),
+                Some("venues".to_string()),
+            )),
+        );
+
+        let mut system = crate::lighting::system::LightingSystem::new();
+        system.load(&config, dir.path()).unwrap();
+
+        (system, dir)
+    }
+
+    #[test]
+    fn build_metadata_json_carries_cells_for_a_pixel_fixture() {
+        let fixture_dsl = "fixture_type \"Bar\" {\n  channel \"dimmer\" @ 1\n  cell \"1\" at (-0.3, 0, 0) { channel \"red\" @ 2 }\n  cell \"2\" at (0.3, 0, 0) { channel \"red\" @ 3 }\n}\n";
+        let venue_dsl = "venue \"v\" {\n  fixture \"bar\" Bar @ 1:1\n}\n";
+        let (system, _dir) = create_test_lighting_system_fixture(fixture_dsl, venue_dsl, "v");
+        let json = build_metadata_json(Some(&Arc::new(parking_lot::Mutex::new(system))));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let cells = value["fixtures"]["bar"]["cells"].as_array().unwrap();
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[0]["name"], "1");
+        assert_eq!(cells[0]["offset"], json!([-0.3, 0.0, 0.0]));
+        assert_eq!(cells[1]["name"], "2");
+        assert_eq!(cells[1]["offset"], json!([0.3, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn build_metadata_json_cells_is_empty_for_a_plain_fixture() {
+        let fixture_dsl = r#"fixture_type "wash" {
+            channels: 3
+            channel_map: {
+                "red": 1,
+                "green": 2,
+                "blue": 3
+            }
+        }"#;
+        let venue_dsl = r#"venue "Test Venue" {
+            fixture "front_wash_1" wash @ 1:1
+        }"#;
+        let (system, _dir) = create_test_lighting_system(fixture_dsl, venue_dsl, "Test Venue");
+        let json_str = build_metadata_json(Some(&Arc::new(parking_lot::Mutex::new(system))));
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
+
+        let cells = parsed["fixtures"]["front_wash_1"]["cells"]
+            .as_array()
+            .unwrap();
+        assert!(cells.is_empty());
     }
 
     #[test]
