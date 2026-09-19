@@ -620,3 +620,115 @@ audio, not instead of it.
    is clamped.
 5. **Rich channel syntax** lands in `.fixture` only; `.light` stays on the frozen v1
    grammar.
+
+## 16. P2 in detail: 3D simulation and export (draft 1, 2026-09-19)
+
+P1 ended with a venue you can import, place, aim and verify on the wire. P2 is the picture
+that lets a band play a show against a room they have never stood in, and the way back out:
+a venue mtrack owns, handed to a console. The data was kept for this from P1a on (§3, §5):
+every GDTF in the library carries its models and beam data; every venue carries transforms.
+Nothing here changes the DSL, the engine, or what a show means.
+
+### 16.1 What exists to build on
+
+- **GDTF archives** hold `models/gltf/*.glb` per named model, and a geometry tree:
+  `Geometry` nodes with a `Model` and a 4×4 `Position`, `Axis` nodes for pan and tilt (the
+  DMX channel's `Geometry` attribute names which), `Beam` nodes with `BeamAngle`,
+  `FieldAngle`, `BeamType`, `LuminousFlux`, `ColorTemperature`, and `GeometryReference`
+  instances for pixel cells. The description parser reads only enough of this to resolve
+  channels today; the archive layer copies nothing out.
+- **MVR scenes** carry scenery as `SceneObject` nodes with a transform and a `Symdef`
+  whose `Geometry3D` names a file in the archive. In all ten corpus files that file is
+  `.3ds`, the 1990s Autodesk format; the MVR spec also allows glTF, which newer exporters
+  write.
+- **Venues** carry position and rotation per fixture and focus points; the engine carries
+  live pose per mover (P1c-4) and the stage view already draws beam footprints from it.
+- **The web UI** is Svelte and Vite with no 3D dependency; the built bundle is 1.1 MB.
+
+### 16.2 The rig model
+
+The bridge between GDTF's asset-class data and a renderer is a compact, machine-only
+description per fixture type — the same intermediary discipline as the distill cache (§4):
+
+```
+RigModel {
+  nodes: [ { name, parent, kind: Body | Pan | Tilt | Beam | Cell(index),
+             transform: 4×4, model: Some(asset path) | Primitive { w, h, d } } ],
+  beams:  [ { node, angle_deg, field_deg, kind: Spot | Wash | ..., flux_lm, cct_k } ],
+  pan_node: Option<name>, tilt_node: Option<name>,
+}
+```
+
+Distilled at import from the geometry tree and written to `lighting/.cache/assets/<archive
+hash>/rig.json` beside the copied `.glb` files (and the thumbnail). The cache is rebuildable
+and gitignored, as today. A `.fixture` written by hand, or a v1 `.light` type, has no rig
+model and gets the generic one: a box body sized from nothing better than a guess, a beam
+from `beam_angle` if the type ever declares one, else 20°. Everything degrades (§2, DSL
+scope rule).
+
+Pan and tilt: the DMX channel for `Pan` names its geometry — the yoke, on every mover in
+the corpus — and `Tilt` names the head. Those become the two rotating nodes. The rotation
+axis of an `Axis` node is its local Z in GDTF; the rest-pose convention P1c settled (pan 0,
+tilt 0 = mounting +y, level) is applied as an offset at the fixture's root, so a GDTF whose
+rest pose points down still aims where the engine says.
+
+Pixel cells: `GeometryReference` instances become `Cell(i)` nodes so the viewer can draw
+one lens per pixel; they all show the ganged color until per-cell control exists (§5), and
+the picture is honest about that.
+
+### 16.3 The viewer
+
+A **Stage 3D** page (`#/stage`) and a button on the dashboard's stage card that opens it.
+three.js, as an npm dependency bundled like everything else in the web UI; no runtime CDN.
+
+- **Space**: the deck as a grid at z = 0 in stage coordinates, the audience edge marked,
+  focus points as small markers with labels, an orbit camera with a couple of presets
+  (front of house, top). Scenery from the MVR where its geometry is glTF; `.3ds` scenery
+  is listed in the import report as not rendered.
+- **Fixtures**: the rig model's nodes as glTF meshes (three's `GLTFLoader`, assets served
+  from the cache through a path-contained endpoint with a size cap) or primitives, placed
+  by the venue's transform, pan and tilt nodes driven by the engine's live pose from the
+  existing WebSocket `poses` message.
+- **Beams**: one translucent cone per beam node, aperture from the beam angle, colour from
+  the fixture's live channels, brightness from dimmer and strobe, additive blending, length
+  to the deck or a fixed throw when pointing up — the 3D form of what the stage plot draws.
+  A wash with a 25° field looks like a wash; a 5° spot looks like a spot.
+- **Feed**: the existing state stream at 20 Hz drives everything; the page subscribes to
+  the same stores as the 2D view. Metadata gains the rig model reference per fixture type.
+- **Not a lighting simulator**: no photometric rendering, no shadows, no haze model; a
+  pre-viz sketch a band can read, not a render an LD would sign.
+
+### 16.4 Export
+
+**MVR export first.** `mtrack export-mvr <venue>` writes a `.mvr` from a venue mtrack owns:
+fixtures with name, fixture ID, GDTF reference and mode, address, and transform (stage
+meters back to MVR millimetres, the import's re-origin undone), focus points as
+`FocusPoint` objects, layers from a tag if the user names one, and every referenced GDTF
+embedded from the library. A venue that was imported round-trips to the same patch; a
+venue written by hand exports the first time. Native `.fixture` types have no GDTF to embed:
+they are written as a generated minimal GDTF (one mode, the channel definitions, no models)
+so the console can at least patch them — which is also the seed of **GDTF export**, second.
+
+### 16.5 Out of P2
+
+Per-cell control (the engine has one colour per fixture; pixel effects are a show-DSL and
+engine design of their own), OFL import, photometric rendering, and `.3ds` scenery
+conversion unless it proves cheap.
+
+### 16.6 Slices
+
+| Slice | Contents | Exit |
+|---|---|---|
+| P2-1 (internal) | Geometry tree, models and beams in the GDTF parser; rig model distilled and written to the asset cache with the `.glb` files at import; generic rig model for native types; asset endpoint | The Spiider's rig model names its yoke, head, five lenses and beams; assets served with containment |
+| P2-2 | Stage 3D page: deck, fixtures from rig models, live pan/tilt, beams from live state, focus markers, orbit camera; dashboard button | A move to a focus point visibly lands there in 3D on the corpus's Demoshow venue |
+| P2-3 | MVR export with embedded GDTFs and generated minimal GDTFs for native types; round-trip test on the corpus | Import → export → import gives the same plan |
+| P2-4 | Scenery from glTF MVRs; `.3ds` reported; polish and docs; screenshots | The docs show a real venue in 3D |
+
+### 16.7 Decisions (settled 2026-09-18)
+
+1. **three.js is a bundled npm dependency**, loaded only on the Stage 3D page.
+2. **`.3ds` scenery is reported and skipped.** Corpus venues render fixtures over a bare
+   deck; a reader can come later if the deck matters.
+3. **3D is its own page**, reached from the dashboard's stage card.
+4. **MVR export before GDTF export**, the generated minimal GDTF serving both.
+5. **Per-cell control stays out** of P2.
