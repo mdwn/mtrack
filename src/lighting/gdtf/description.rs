@@ -133,6 +133,10 @@ pub struct GeometryNode {
     pub beam: Option<BeamData>,
     /// The referenced top-level geometry's name, on a `GeometryReference`.
     pub reference: Option<String>,
+    /// A reference's `Break` children as `(DMXBreak, DMXOffset)`: where
+    /// the referenced geometry's template channels land for this
+    /// instance (1-based offset added, minus one, to the template's).
+    pub breaks: Vec<(String, u16)>,
 }
 
 /// A DMX mode (personality).
@@ -154,6 +158,10 @@ pub struct Channel {
     pub offsets: Vec<u16>,
     /// The geometry this channel is attached to.
     pub geometry: String,
+    /// The DMX break the channel lives on: a number (`"1"` for a single-
+    /// break fixture) or `"Overwrite"`, which a template channel uses to
+    /// take its offset from the last `Break` of each reference.
+    pub dmx_break: String,
     /// The channel's logical channels, in document order.
     pub logical_channels: Vec<LogicalChannel>,
 }
@@ -377,6 +385,10 @@ impl Walk {
                 self.current_channel = Some(Channel {
                     offsets: parse_offsets(attr(element, "Offset")?.as_deref())?,
                     geometry: attr(element, "Geometry")?.unwrap_or_default(),
+                    dmx_break: attr(element, "DMXBreak")?
+                        .map(|b| b.trim().to_string())
+                        .filter(|b| !b.is_empty())
+                        .unwrap_or_else(|| "1".to_string()),
                     logical_channels: Vec::new(),
                 });
             }
@@ -401,6 +413,25 @@ impl Walk {
             }
             kind if in_subtree("Geometries") && GEOMETRY_ELEMENTS.contains(&kind) => {
                 return self.geometry_node(kind, element).map(Some);
+            }
+            "Break" if in_subtree("Geometries") => {
+                // A reference's DMX break: the offset its template
+                // channels take. The nearest open node is the reference.
+                let parent = self.geometry_stack.iter().rev().find_map(|n| *n);
+                if let Some(index) = parent {
+                    let node = &mut self.description.geometries[index];
+                    if node.kind == GeometryKind::Reference {
+                        let dmx_break = attr(element, "DMXBreak")?
+                            .map(|b| b.trim().to_string())
+                            .unwrap_or_else(|| "1".to_string());
+                        if let Some(offset) = attr(element, "DMXOffset")?
+                            .and_then(|o| o.trim().parse::<u16>().ok())
+                            .filter(|o| *o >= 1)
+                        {
+                            node.breaks.push((dmx_break, offset));
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -449,6 +480,7 @@ impl Walk {
             position,
             beam,
             reference,
+            breaks: Vec::new(),
         });
         Ok(self.description.geometries.len() - 1)
     }
@@ -791,6 +823,8 @@ pub(super) mod tests {
         assert_eq!(g[lens].kind, GeometryKind::Beam);
         assert_eq!(g[pixel].kind, GeometryKind::Reference);
         assert_eq!(g[pixel].reference.as_deref(), Some("Cell"));
+        assert_eq!(g[pixel].breaks, vec![("1".to_string(), 1)]);
+        assert_eq!(description.modes[0].channels[1].dmx_break, "1");
         assert_eq!(g[yoke].model.as_deref(), Some("Yoke"));
         assert_eq!(
             g[yoke].position[2][3], -0.1,

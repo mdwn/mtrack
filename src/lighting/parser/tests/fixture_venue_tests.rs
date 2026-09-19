@@ -513,3 +513,105 @@ fn rich_channels_do_not_mix_with_the_v1_forms_or_a_gdtf_reference() {
         assert!(err.contains(needle), "{source}\n→ {err}");
     }
 }
+
+// ── cells (design §17.2) ────────────────────────────────────────
+
+const PIXEL_BAR: &str = r#"fixture_type "Pixel Bar" {
+  channel "dimmer" @ 1
+  cell "1" at (-0.3, 0, 0) {
+    channel "red" @ 2
+    channel "green" @ 3
+    channel "blue" @ 4
+  }
+  cell "2" at (0, 0, 0) {
+    channel "red" @ 5
+    channel "green" @ 6
+    channel "blue" @ 7
+  }
+  cell "3" at (0.3, 0, 0) {
+    channel "red" @ 8
+    channel "green" @ 9
+    channel "blue" @ 10
+  }
+}"#;
+
+#[test]
+fn cell_blocks_build_the_ganged_fixture_level_channels() {
+    let types = parse_fixture_types(PIXEL_BAR).expect("parses");
+    let ft = &types["Pixel Bar"];
+    assert!(ft.uses_rich_channels());
+
+    let cells = ft.cells();
+    assert_eq!(cells.len(), 3);
+    assert_eq!(cells[0].name, "1");
+    assert_eq!(cells[0].offset, [-0.3, 0.0, 0.0]);
+    assert_eq!(cells[1].name, "2");
+    assert_eq!(cells[1].offset, [0.0, 0.0, 0.0]);
+    assert_eq!(cells[2].name, "3");
+    assert_eq!(cells[2].offset, [0.3, 0.0, 0.0]);
+    assert_eq!(cells[0].channels["red"].offset, 2);
+    assert_eq!(cells[1].channels["red"].offset, 5);
+    assert_eq!(cells[2].channels["red"].offset, 8);
+
+    let red = &ft.channel_defs()["red"];
+    assert_eq!(red.offset, 2);
+    assert_eq!(red.mirrors, vec![(5, None), (8, None)]);
+
+    assert_eq!(ft.channels()["dimmer"], 1);
+}
+
+#[test]
+fn the_cell_form_round_trips_through_display() {
+    let types = parse_fixture_types(PIXEL_BAR).expect("parses");
+    let original = &types["Pixel Bar"];
+    let rendered = original.to_string();
+    assert!(
+        rendered.contains("cell \"1\" at (-0.3, 0, 0) {"),
+        "{rendered}"
+    );
+    // Fixture-level channels a cell owns are not written twice.
+    assert!(
+        !rendered.contains("channel \"red\" @ 2\n  channel"),
+        "{rendered}"
+    );
+
+    let again = parse_fixture_types(&rendered).expect("the rendered form parses");
+    let reparsed = &again["Pixel Bar"];
+    assert_eq!(reparsed.cells(), original.cells());
+    assert_eq!(reparsed.channel_defs(), original.channel_defs());
+    assert_eq!(reparsed.movement(), original.movement());
+}
+
+#[test]
+fn cells_that_differ_in_channel_names_are_rejected() {
+    let content = "fixture_type \"X\" {\n  cell \"1\" at (0, 0, 0) {\n    channel \"red\" @ 1\n    channel \"green\" @ 2\n  }\n  cell \"2\" at (0.1, 0, 0) {\n    channel \"red\" @ 3\n    channel \"blue\" @ 4\n  }\n}\n";
+    let err = parse_fixture_types(content).unwrap_err().to_string();
+    assert!(
+        err.contains("every cell must carry the same channels"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_cell_channel_offset_colliding_with_a_fixture_level_channel_is_rejected() {
+    let content = "fixture_type \"X\" {\n  channel \"strobe\" @ 2\n  cell \"1\" at (0, 0, 0) {\n    channel \"red\" @ 2\n    channel \"green\" @ 3\n  }\n  cell \"2\" at (0.1, 0, 0) {\n    channel \"red\" @ 5\n    channel \"green\" @ 6\n  }\n}\n";
+    let err = parse_fixture_types(content).unwrap_err().to_string();
+    assert!(err.contains("already used by"), "{err}");
+}
+
+#[test]
+fn a_duplicate_cell_name_is_rejected() {
+    let content = "fixture_type \"X\" {\n  cell \"1\" at (0, 0, 0) {\n    channel \"red\" @ 1\n  }\n  cell \"1\" at (0.1, 0, 0) {\n    channel \"red\" @ 2\n  }\n}\n";
+    let err = parse_fixture_types(content).unwrap_err().to_string();
+    assert!(err.contains("more than once"), "{err}");
+}
+
+#[test]
+fn a_fixture_level_channel_that_a_cell_also_owns_is_rejected() {
+    let content = "fixture_type \"X\" {\n  channel \"red\" @ 11\n  cell \"1\" at (0, 0, 0) {\n    channel \"red\" @ 2\n    channel \"green\" @ 3\n  }\n  cell \"2\" at (0.1, 0, 0) {\n    channel \"red\" @ 5\n    channel \"green\" @ 6\n  }\n}\n";
+    let err = parse_fixture_types(content).unwrap_err().to_string();
+    assert!(
+        err.contains("is both a fixture-level line and a cell channel"),
+        "{err}"
+    );
+}

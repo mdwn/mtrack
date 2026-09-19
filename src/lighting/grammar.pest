@@ -244,8 +244,17 @@ fixture_type_name = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 gdtf_source = { "from" ~ "gdtf" ~ "(" ~ string ~ "," ~ "mode" ~ string ~ ")" }
 
 fixture_type_content = {
-    (channels | channel_map | channel_def | movement_block | max_strobe_frequency | min_strobe_frequency | strobe_dmx_offset | special_cases)*
+    (channels | channel_map | channel_def | cell_def | movement_block | max_strobe_frequency | min_strobe_frequency | strobe_dmx_offset | special_cases)*
 }
+
+// A cell of a pixel fixture (design §17.2): its channels, and where it
+// sits in the fixture's frame (meters). The fixture-level channels are
+// derived: the first cell's, mirroring the rest.
+//
+//   cell "1" at (-0.3, 0, 0) { channel "red" @ 2  channel "green" @ 3 }
+cell_def = { "cell" ~ string ~ cell_offset? ~ "{" ~ channel_def* ~ "}" }
+
+cell_offset = { "at" ~ vec3 }
 
 // Rich channel definitions (design §15.6), the v2 DSL for hand-authored
 // fixture types in `.fixture` files: a one-liner per channel, with the

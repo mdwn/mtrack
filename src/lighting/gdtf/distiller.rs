@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use super::description::{Channel, Description};
 use super::GdtfError;
 use crate::lighting::types::{
-    ChannelDef, ChannelFunction, FixtureType, PhysicalRange, PhysicalUnit,
+    Cell, ChannelDef, ChannelFunction, FixtureType, PhysicalRange, PhysicalUnit,
 };
 
 /// A distilled fixture type plus everything the distiller had to skip or
@@ -71,6 +71,17 @@ pub fn mode_summaries(description: &Description) -> Vec<ModeSummary> {
         .collect()
 }
 
+/// A channel after pass one: its canonical name, attribute, geometry and
+/// definition, before repeats are resolved.
+#[derive(Clone)]
+struct Named {
+    name: String,
+    attribute: String,
+    geometry: String,
+    dmx_break: String,
+    def: ChannelDef,
+}
+
 /// Distills the named mode into a fixture type called `type_name`.
 pub fn distill(
     description: &Description,
@@ -95,12 +106,6 @@ pub fn distill(
     // pixel bar, the identical sections of an LED batten, or the master
     // and per-section controls of a panel — and mtrack's model has one
     // channel per name. Pass two decides what to do with the repeats.
-    struct Named {
-        name: String,
-        attribute: String,
-        geometry: String,
-        def: ChannelDef,
-    }
     let mut named: Vec<Named> = Vec::new();
     for channel in &mode.channels {
         let Some(logical) = channel.logical_channels.first() else {
@@ -167,9 +172,20 @@ pub fn distill(
             name,
             attribute: logical.attribute.clone(),
             geometry: channel.geometry.clone(),
+            dmx_break: channel.dmx_break.clone(),
             def,
         });
     }
+
+    // Pass one and a half: template channels. A channel on a geometry that
+    // `GeometryReference`s instantiate is a template — the pixel mode of a
+    // Spiider puts RGBW on `Lens2` once and references it six times, each
+    // reference's `Break` saying where its bytes start. Each such channel
+    // becomes one channel per reference at the template offset plus the
+    // reference's break offset minus one, on the reference's geometry, so
+    // the sections below are the real ones, named as the rig model names
+    // them.
+    named = expand_templates(named, description, &mut warnings);
 
     // Pass two. Geometries carrying exactly the same attribute set are
     // identical sections — pixels, batten segments — and are ganged: the
@@ -193,25 +209,72 @@ pub fn distill(
     let mut owner_geometry: HashMap<String, String> = HashMap::new();
     let mut ganged: Vec<String> = Vec::new();
     let mut suffixed: Vec<String> = Vec::new();
-    for n in named {
-        let Some(existing) = channel_defs.get_mut(&n.name) else {
-            owner_geometry.insert(n.name.clone(), n.geometry.clone());
-            channel_defs.insert(n.name, n.def);
-            continue;
-        };
-        let owner = owner_geometry[n.name.as_str()].as_str();
-        let same_shape = |g: &str| sections.iter().find(|(s, _)| s == g).map(|(_, a)| a);
-        // A repeat on the owner's own geometry is the same section by
-        // definition. Pan and tilt never gang: two heads exposing the same
-        // attributes are still aimed independently, and mirroring one
-        // head's angles onto the other would be wrong, not merely coarse.
-        let aims = n.name == "pan" || n.name == "tilt";
-        if !aims && (owner == n.geometry || same_shape(owner) == same_shape(&n.geometry)) {
-            existing.mirrors.push((n.def.offset, n.def.fine));
-            if !ganged.contains(&n.geometry) {
-                ganged.push(n.geometry.clone());
+    // Every channel by the geometry it sits on, in document order, so the
+    // ganged sections can be handed back as cells (design §17.2), and
+    // which owner geometry each ganged section mirrors.
+    let mut by_geometry: Vec<(String, HashMap<String, ChannelDef>)> = Vec::new();
+    for n in &named {
+        let entry = match by_geometry.iter_mut().find(|(g, _)| *g == n.geometry) {
+            Some(entry) => entry,
+            None => {
+                by_geometry.push((n.geometry.clone(), HashMap::new()));
+                by_geometry.last_mut().expect("just pushed")
             }
+        };
+        entry.1.entry(n.name.clone()).or_insert_with(|| {
+            let mut def = n.def.clone();
+            def.mirrors.clear();
+            def
+        });
+    }
+    let mut ganged_onto: Vec<(String, String)> = Vec::new();
+    // Every channel name derived from a base name (the base itself and its
+    // section-suffixed forms), so a repeat can gang onto any same-shaped
+    // section that already owns the name — not only the first section that
+    // ever claimed it, which may be a differently shaped one (a Spiider's
+    // wash `Background` owns `red` before its nineteen lenses arrive).
+    let mut variants: HashMap<String, Vec<String>> = HashMap::new();
+    for n in named {
+        let same_shape = |g: &str| sections.iter().find(|(s, _)| s == g).map(|(_, a)| a);
+        // Pan and tilt never gang: two heads exposing the same attributes
+        // are still aimed independently, and mirroring one head's angles
+        // onto the other would be wrong, not merely coarse.
+        let aims = n.name == "pan" || n.name == "tilt";
+        let gang_target = if aims {
+            None
         } else {
+            variants
+                .get(&n.name)
+                .into_iter()
+                .flatten()
+                .find(|entry| {
+                    let owner = owner_geometry[entry.as_str()].as_str();
+                    owner == n.geometry || same_shape(owner) == same_shape(&n.geometry)
+                })
+                .cloned()
+        };
+        if let Some(entry) = gang_target {
+            let owner = owner_geometry[entry.as_str()].clone();
+            let existing = channel_defs.get_mut(&entry).expect("variant is a channel");
+            existing.mirrors.push((n.def.offset, n.def.fine));
+            if owner != n.geometry && !ganged.contains(&n.geometry) {
+                ganged.push(n.geometry.clone());
+                ganged_onto.push((n.geometry.clone(), owner));
+            }
+            continue;
+        }
+        if let std::collections::hash_map::Entry::Vacant(vacant) =
+            channel_defs.entry(n.name.clone())
+        {
+            owner_geometry.insert(n.name.clone(), n.geometry.clone());
+            variants
+                .entry(n.name.clone())
+                .or_default()
+                .push(n.name.clone());
+            vacant.insert(n.def);
+            continue;
+        }
+        {
             let suffix = sanitize(&n.geometry);
             let mut renamed = format!("{}:{suffix}", n.name);
             let mut ordinal = 2;
@@ -222,15 +285,47 @@ pub fn distill(
             suffixed.push(format!("{} → {renamed}", n.name));
             let geometry = n.geometry.clone();
             owner_geometry.insert(renamed.clone(), geometry);
+            variants
+                .entry(n.name.clone())
+                .or_default()
+                .push(renamed.clone());
             channel_defs.insert(renamed, n.def);
         }
     }
+    // The cells: each ganged group's owner section and the sections ganged
+    // onto it, in document order, each with its own channels and its place
+    // in the fixture's frame. A fixture whose sections gang into more than
+    // one group (two heads each with pixels) keeps the largest group.
+    let mut cells: Vec<Cell> = Vec::new();
     if !ganged.is_empty() {
+        let mut groups: Vec<Vec<String>> = Vec::new();
+        for (geometry, owner) in &ganged_onto {
+            if geometry == owner {
+                continue;
+            }
+            match groups.iter_mut().find(|g| &g[0] == owner) {
+                Some(group) => group.push(geometry.clone()),
+                None => groups.push(vec![owner.clone(), geometry.clone()]),
+            }
+        }
+        if let Some(group) = groups.iter().max_by_key(|g| g.len()) {
+            for geometry in group {
+                if let Some((_, channels)) = by_geometry.iter().find(|(g, _)| g == geometry) {
+                    cells.push(Cell {
+                        name: geometry.clone(),
+                        channels: channels.clone(),
+                        offset: geometry_offset(description, geometry),
+                    });
+                }
+            }
+        }
         warnings.push(format!(
             "{} identical section(s) ganged to the first ({}): every section receives the \
-             same value — one color, one level; per-section control is not modelled",
+             same value — one color, one level — unless a show says `per: cell`; {} cell(s) \
+             recorded",
             ganged.len(),
-            ganged.join(", ")
+            ganged.join(", "),
+            cells.len()
         ));
     }
     if !suffixed.is_empty() {
@@ -241,10 +336,111 @@ pub fn distill(
         ));
     }
 
+    let mut fixture_type = FixtureType::from_channel_defs(type_name.to_string(), channel_defs);
+    fixture_type.set_cells(cells);
     Ok(Distilled {
-        fixture_type: FixtureType::from_channel_defs(type_name.to_string(), channel_defs),
+        fixture_type,
         warnings,
     })
+}
+
+/// Expands template channels (see the call site): a channel on a geometry
+/// that references instantiate becomes one channel per reference, on the
+/// reference's geometry, at the template offset plus the reference's break
+/// offset minus one. A template referenced once is renamed too, so a cell
+/// is always called what the rig model calls its lens.
+fn expand_templates(
+    named: Vec<Named>,
+    description: &Description,
+    warnings: &mut Vec<String>,
+) -> Vec<Named> {
+    let references_of = |geometry: &str| -> Vec<&super::description::GeometryNode> {
+        description
+            .geometries
+            .iter()
+            .filter(|g| g.kind == super::description::GeometryKind::Reference)
+            .filter(|g| g.reference.as_deref() == Some(geometry))
+            .collect()
+    };
+    let mut out = Vec::with_capacity(named.len());
+    let mut expanded: Vec<String> = Vec::new();
+    for n in named {
+        let references = references_of(&n.geometry);
+        if references.is_empty() {
+            out.push(n);
+            continue;
+        }
+        if !expanded.contains(&n.geometry) {
+            expanded.push(n.geometry.clone());
+        }
+        for reference in references {
+            let Some(shift) = break_shift(reference, &n.dmx_break) else {
+                warnings.push(format!(
+                    "reference \"{}\" of template \"{}\" has no Break for DMX break {}; skipped",
+                    reference.name, n.geometry, n.dmx_break
+                ));
+                continue;
+            };
+            out.push(shifted(n.clone(), shift, Some(reference.name.clone())));
+        }
+    }
+    if !expanded.is_empty() {
+        warnings.push(format!(
+            "template geometries expanded per reference: {}",
+            expanded.join(", ")
+        ));
+    }
+    out
+}
+
+/// The offset shift a reference applies to a template channel on `dmx_break`:
+/// the matching `Break`'s DMXOffset minus one; `Overwrite` takes the last
+/// Break, as the spec says.
+fn break_shift(reference: &super::description::GeometryNode, dmx_break: &str) -> Option<u16> {
+    let entry = if dmx_break.eq_ignore_ascii_case("overwrite") {
+        reference.breaks.last()
+    } else {
+        reference.breaks.iter().find(|(b, _)| b == dmx_break)
+    };
+    entry.map(|(_, offset)| offset - 1)
+}
+
+/// `n` moved by `shift` bytes, onto `geometry` when given.
+fn shifted(mut n: Named, shift: u16, geometry: Option<String>) -> Named {
+    n.def.offset = n.def.offset.saturating_add(shift).min(512);
+    n.def.fine = n.def.fine.map(|f| f.saturating_add(shift).min(512));
+    if let Some(geometry) = geometry {
+        n.geometry = geometry;
+    }
+    n
+}
+
+/// Where a geometry sits in the fixture's frame: the translation of its
+/// transform chain from the root, meters. A name the tree lacks is at the
+/// origin.
+fn geometry_offset(description: &Description, name: &str) -> [f64; 3] {
+    let Some(index) = description.geometries.iter().position(|g| g.name == name) else {
+        return [0.0; 3];
+    };
+    let mut chain = Vec::new();
+    let mut at = Some(index);
+    while let Some(i) = at {
+        chain.push(i);
+        at = description.geometries[i].parent;
+    }
+    chain.reverse();
+    let mut m = super::description::IDENTITY;
+    for i in chain {
+        let n = description.geometries[i].position;
+        let mut out = [[0.0; 4]; 4];
+        for (r, row) in out.iter_mut().enumerate() {
+            for (c, cell) in row.iter_mut().enumerate() {
+                *cell = (0..4).map(|k| m[r][k] * n[k][c]).sum();
+            }
+        }
+        m = out;
+    }
+    [m[0][3], m[1][3], m[2][3]]
 }
 
 /// mtrack's canonical channel name for a GDTF attribute, when one exists.
@@ -562,6 +758,94 @@ mod tests {
         );
     }
 
+    /// The same three-pixel bar as `identical_sections_are_ganged_to_one_channel`,
+    /// reused so the cell recording can be checked against the exact ganging
+    /// this fixture already exercises.
+    const PIXEL_BAR_XML: &str = r#"<GDTF><FixtureType Name="Bar" Manufacturer="m">
+  <Geometries>
+    <Geometry Name="Base"><GeometryReference Name="Pixel 1" Geometry="Cell"/><GeometryReference Name="Pixel 2" Geometry="Cell"/><GeometryReference Name="Pixel 3" Geometry="Cell"/></Geometry>
+  </Geometries>
+  <DMXModes>
+    <DMXMode Name="Pixel Mode" Geometry="Base">
+      <DMXChannels>
+        <DMXChannel Offset="1" Geometry="Pixel 1"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="2" Geometry="Pixel 1"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="3" Geometry="Pixel 2"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="4" Geometry="Pixel 2"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="5" Geometry="Pixel 3"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="6" Geometry="Pixel 3"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+      </DMXChannels>
+    </DMXMode>
+  </DMXModes>
+</FixtureType></GDTF>"#;
+
+    #[test]
+    fn identical_sections_are_recorded_as_cells_in_order() {
+        let description = parse_description(PIXEL_BAR_XML).unwrap();
+        let distilled = distill(&description, "Pixel Mode", "Bar").unwrap();
+        let cells = distilled.fixture_type.cells();
+        assert_eq!(cells.len(), 3, "{cells:?}");
+        assert_eq!(cells[0].name, "Pixel 1");
+        assert_eq!(cells[1].name, "Pixel 2");
+        assert_eq!(cells[2].name, "Pixel 3");
+
+        // Each cell keeps its own offsets, unganged.
+        assert_eq!(cells[0].channels["red"].offset, 1);
+        assert!(cells[0].channels["red"].mirrors.is_empty());
+        assert_eq!(cells[0].channels["green"].offset, 2);
+        assert_eq!(cells[1].channels["red"].offset, 3);
+        assert_eq!(cells[1].channels["green"].offset, 4);
+        assert_eq!(cells[2].channels["red"].offset, 5);
+        assert_eq!(cells[2].channels["green"].offset, 6);
+
+        // No Position anywhere in the chain: every cell sits at the origin.
+        for cell in cells {
+            assert_eq!(cell.offset, [0.0, 0.0, 0.0], "{}", cell.name);
+        }
+
+        assert!(
+            distilled
+                .warnings
+                .iter()
+                .any(|w| w.contains("3 cell(s) recorded")),
+            "{:?}",
+            distilled.warnings
+        );
+    }
+
+    #[test]
+    fn cell_offsets_compose_the_geometry_transform_chain() {
+        // The parent geometry carries a translation of its own; each cell's
+        // offset is the parent's transform composed with the cell's.
+        let xml = r#"<GDTF><FixtureType Name="Bar" Manufacturer="m">
+  <Geometries>
+    <Geometry Name="Base" Position="{1,0,0,0}{0,1,0,0}{0,0,1,-0.2}{0,0,0,1}">
+      <GeometryReference Name="Pixel 1" Geometry="Cell" Position="{1,0,0,0.1}{0,1,0,0}{0,0,1,0}{0,0,0,1}"/>
+      <GeometryReference Name="Pixel 2" Geometry="Cell" Position="{1,0,0,0.1}{0,1,0,0}{0,0,1,0}{0,0,0,1}"/>
+      <GeometryReference Name="Pixel 3" Geometry="Cell" Position="{1,0,0,0.1}{0,1,0,0}{0,0,1,0}{0,0,0,1}"/>
+    </Geometry>
+  </Geometries>
+  <DMXModes>
+    <DMXMode Name="Pixel Mode" Geometry="Base">
+      <DMXChannels>
+        <DMXChannel Offset="1" Geometry="Pixel 1"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="2" Geometry="Pixel 1"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="3" Geometry="Pixel 2"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="4" Geometry="Pixel 2"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="5" Geometry="Pixel 3"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="6" Geometry="Pixel 3"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+      </DMXChannels>
+    </DMXMode>
+  </DMXModes>
+</FixtureType></GDTF>"#;
+        let description = parse_description(xml).unwrap();
+        let distilled = distill(&description, "Pixel Mode", "Bar").unwrap();
+        let cells = distilled.fixture_type.cells();
+        assert_eq!(cells.len(), 3, "{cells:?}");
+        // Parent z −0.2 composed with the cell's own x 0.1.
+        assert_eq!(cells[0].offset, [0.1, 0.0, -0.2]);
+    }
+
     #[test]
     fn a_repeat_on_the_same_geometry_gangs_and_pan_tilt_never_do() {
         let xml = r#"<GDTF><FixtureType Name="Twin" Manufacturer="m">
@@ -622,6 +906,11 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.contains("dimmer → dimmer:section_a")));
+        assert!(
+            distilled.fixture_type.cells().is_empty(),
+            "differing sections are not cells: {:?}",
+            distilled.fixture_type.cells()
+        );
     }
 
     #[test]
@@ -764,5 +1053,93 @@ mod tests {
         assert_eq!(sanitize("Strobe Off"), "strobe_off");
         assert_eq!(sanitize("Gobo (Rot.)"), "gobo_rot");
         assert_eq!(sanitize("__weird__"), "weird");
+    }
+
+    /// A wash section that owns `red` first, then a lens template
+    /// referenced three times with Break offsets: the pixel-mode shape.
+    const TEMPLATE_PIXELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<GDTF DataVersion="1.2"><FixtureType Name="Templ" Manufacturer="m">
+  <Geometries>
+    <Geometry Name="Base" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}">
+      <Geometry Name="Background"/>
+      <Geometry Name="Zone">
+        <GeometryReference Name="P1" Geometry="Lens" Position="{1,0,0,-0.1}{0,1,0,0}{0,0,1,0}{0,0,0,1}"><Break DMXBreak="1" DMXOffset="1"/><Break DMXBreak="1" DMXOffset="1"/></GeometryReference>
+        <GeometryReference Name="P2" Geometry="Lens" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}"><Break DMXBreak="1" DMXOffset="5"/><Break DMXBreak="1" DMXOffset="4"/></GeometryReference>
+        <GeometryReference Name="P3" Geometry="Lens" Position="{1,0,0,0.1}{0,1,0,0}{0,0,1,0}{0,0,0,1}"><Break DMXBreak="1" DMXOffset="9"/><Break DMXBreak="1" DMXOffset="7"/></GeometryReference>
+      </Geometry>
+    </Geometry>
+    <Geometry Name="Lens"/>
+  </Geometries>
+  <DMXModes><DMXMode Name="Pixel" Geometry="Base"><DMXChannels>
+    <DMXChannel Offset="1,2" Geometry="Background"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/2"/></LogicalChannel></DMXChannel>
+    <DMXChannel Offset="3,4" Geometry="Background"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/2"/></LogicalChannel></DMXChannel>
+    <DMXChannel Offset="5" Geometry="Background"><LogicalChannel Attribute="Dimmer"><ChannelFunction Name="D" Attribute="Dimmer" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+    <DMXChannel Offset="10" Geometry="Lens"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+    <DMXChannel Offset="11" Geometry="Lens"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+    <DMXChannel Offset="12" Geometry="Lens"><LogicalChannel Attribute="ColorAdd_B"><ChannelFunction Name="B" Attribute="ColorAdd_B" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+    <DMXChannel Offset="13" Geometry="Lens" DMXBreak="Overwrite"><LogicalChannel Attribute="ColorAdd_W"><ChannelFunction Name="W" Attribute="ColorAdd_W" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+  </DMXChannels></DMXMode></DMXModes>
+</FixtureType></GDTF>"#;
+
+    #[test]
+    fn template_channels_expand_per_reference_and_gang_by_shape() {
+        let description = parse_description(TEMPLATE_PIXELS).unwrap();
+        let distilled = distill(&description, "Pixel", "Templ").unwrap();
+        let ft = &distilled.fixture_type;
+        // The wash keeps the plain names; the lens group, arriving second
+        // with a different shape, is suffixed once and mirrors within.
+        assert_eq!(ft.channels()["red"], 1);
+        assert_eq!(
+            ft.channel_defs()["red"].mirrors,
+            Vec::<(u16, Option<u16>)>::new()
+        );
+        let lens_red = ft
+            .channel_defs()
+            .iter()
+            .find(|(n, _)| n.starts_with("red:"))
+            .map(|(n, d)| (n.clone(), d.clone()))
+            .expect("suffixed lens red");
+        assert_eq!(lens_red.1.offset, 10, "P1 at the template offset");
+        assert_eq!(
+            lens_red.1.mirrors,
+            vec![(14, None), (18, None)],
+            "P2, P3 shifted by their Breaks"
+        );
+        // Overwrite takes the last Break: 13, 13+3, 13+6.
+        let lens_white = ft
+            .channel_defs()
+            .iter()
+            .find(|(n, _)| n.starts_with("white"))
+            .map(|(_, d)| d.clone())
+            .unwrap();
+        assert_eq!(lens_white.offset, 13);
+        assert_eq!(lens_white.mirrors, vec![(16, None), (19, None)]);
+        // Cells: the three references, with canonical channel names and
+        // their offsets in the fixture's frame.
+        let cells = ft.cells();
+        assert_eq!(
+            cells.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["P1", "P2", "P3"]
+        );
+        assert_eq!(cells[1].channels["red"].offset, 14);
+        assert_eq!(cells[2].channels["white"].offset, 19);
+        assert!((cells[0].offset[0] + 0.1).abs() < 1e-9 && (cells[2].offset[0] - 0.1).abs() < 1e-9);
+        assert!(
+            distilled
+                .warnings
+                .iter()
+                .any(|w| w.contains("template geometries expanded")),
+            "{:?}",
+            distilled.warnings
+        );
+        assert!(
+            distilled
+                .warnings
+                .iter()
+                .any(|w| w.contains("3 cell(s) recorded")),
+            "{:?}",
+            distilled.warnings
+        );
+        assert_eq!(ft.footprint(), 20, "blue on P3: 12 + 8");
     }
 }

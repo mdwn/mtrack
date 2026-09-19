@@ -51,6 +51,20 @@ pub struct ChannelFunction {
     pub physical: Option<PhysicalRange>,
 }
 
+/// One cell of a pixel fixture (design §17.2): its own channel offsets and
+/// where it sits in the fixture's frame. The fixture-level channels stay
+/// ganged (the first cell's, mirroring the rest); a show that says
+/// `per: cell` reaches these.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Cell {
+    /// The cell's name — the GDTF geometry name, or the `cell` block's.
+    pub name: String,
+    /// The cell's channels by canonical name, offsets without mirrors.
+    pub channels: HashMap<String, ChannelDef>,
+    /// The cell's position in the fixture's frame, meters.
+    pub offset: Vec3,
+}
+
 /// A structured channel definition.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChannelDef {
@@ -191,6 +205,11 @@ pub struct FixtureType {
     #[serde(skip)]
     movement: MovementLimits,
 
+    /// The cells of a pixel fixture, in the manufacturer's order; empty for
+    /// a fixture with one colour.
+    #[serde(skip)]
+    cells: Vec<Cell>,
+
     /// The rig model's path in the project's asset store
     /// (`lighting/.cache/assets/`), when the type has one — the 3D view's
     /// picture of it (design §16.2). Never serialized: it is a cache
@@ -256,6 +275,7 @@ impl FixtureType {
             channels,
             source: None,
             movement: MovementLimits::default(),
+            cells: Vec::new(),
             rig: None,
             max_strobe_frequency: None,
             min_strobe_frequency: None,
@@ -386,6 +406,17 @@ impl FixtureType {
         self.movement = movement;
     }
 
+    /// The cells of a pixel fixture, in the manufacturer's order.
+    pub fn cells(&self) -> &[Cell] {
+        &self.cells
+    }
+
+    /// Sets the cells. The fixture-level channels are the caller's to keep
+    /// ganged with them (the parser and the distiller both do).
+    pub fn set_cells(&mut self, cells: Vec<Cell>) {
+        self.cells = cells;
+    }
+
     /// The rig model's asset-store path, when the type has one.
     pub fn rig(&self) -> Option<&str> {
         self.rig.as_deref()
@@ -427,18 +458,20 @@ impl FixtureType {
     /// strobe function the v1 strobe fields already describe. Such a type
     /// renders — and must live — in the rich form of a `.fixture` file.
     pub fn uses_rich_channels(&self) -> bool {
-        self.channel_defs.values().any(|def| {
-            def.fine.is_some()
-                || def.range.is_some()
-                || def.functions.len() > 1
-                || def
-                    .functions
-                    .iter()
-                    .any(|function| function.name != STROBE_FUNCTION)
-        }) || self
-            .channel_defs
-            .iter()
-            .any(|(name, def)| name != STROBE_CHANNEL && !def.functions.is_empty())
+        !self.cells.is_empty()
+            || self.channel_defs.values().any(|def| {
+                def.fine.is_some()
+                    || def.range.is_some()
+                    || def.functions.len() > 1
+                    || def
+                        .functions
+                        .iter()
+                        .any(|function| function.name != STROBE_FUNCTION)
+            })
+            || self
+                .channel_defs
+                .iter()
+                .any(|(name, def)| name != STROBE_CHANNEL && !def.functions.is_empty())
     }
 }
 
@@ -469,43 +502,37 @@ impl fmt::Display for FixtureType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.uses_rich_channels() {
             writeln!(f, "fixture_type \"{}\" {{", self.name)?;
-            let mut defs: Vec<_> = self.channel_defs.iter().collect();
+            // Channels a cell owns are written inside its block; the
+            // fixture-level copies are derived from them on parse.
+            let cell_offsets: std::collections::HashSet<u16> = self
+                .cells
+                .iter()
+                .flat_map(|c| c.channels.values().map(|d| d.offset))
+                .collect();
+            let mut defs: Vec<_> = self
+                .channel_defs
+                .iter()
+                .filter(|(_, def)| !cell_offsets.contains(&def.offset))
+                .collect();
             defs.sort_by_key(|(name, def)| (def.offset, (*name).clone()));
             for (name, def) in defs {
-                write!(f, "  channel \"{name}\" @ {}", def.offset)?;
-                if let Some(fine) = def.fine {
-                    write!(f, " fine {fine}")?;
+                fmt_channel_line(f, "  ", name, def)?;
+            }
+            for cell in &self.cells {
+                writeln!(
+                    f,
+                    "  cell \"{}\" at ({}, {}, {}) {{",
+                    cell.name,
+                    fmt_coord(cell.offset[0]),
+                    fmt_coord(cell.offset[1]),
+                    fmt_coord(cell.offset[2])
+                )?;
+                let mut defs: Vec<_> = cell.channels.iter().collect();
+                defs.sort_by_key(|(name, def)| (def.offset, (*name).clone()));
+                for (name, def) in defs {
+                    fmt_channel_line(f, "    ", name, def)?;
                 }
-                if let Some(range) = def.range {
-                    write!(
-                        f,
-                        " range {}..{}",
-                        fmt_physical(range.from, range.unit),
-                        fmt_physical(range.to, range.unit)
-                    )?;
-                }
-                if def.functions.is_empty() {
-                    writeln!(f)?;
-                } else {
-                    writeln!(f, " {{")?;
-                    for function in &def.functions {
-                        write!(
-                            f,
-                            "    function \"{}\" {}..{}",
-                            function.name, function.dmx_from, function.dmx_to
-                        )?;
-                        if let Some(physical) = function.physical {
-                            write!(
-                                f,
-                                " {}..{}",
-                                fmt_physical(physical.from, physical.unit),
-                                fmt_physical(physical.to, physical.unit)
-                            )?;
-                        }
-                        writeln!(f)?;
-                    }
-                    writeln!(f, "  }}")?;
-                }
+                writeln!(f, "  }}")?;
             }
             if !self.movement.is_empty() {
                 writeln!(f, "  movement {{")?;
@@ -540,6 +567,84 @@ impl fmt::Display for FixtureType {
         }
         write!(f, "}}")
     }
+}
+
+/// One rich `channel` line, with its function block when it has one.
+fn fmt_channel_line(
+    f: &mut fmt::Formatter<'_>,
+    indent: &str,
+    name: &str,
+    def: &ChannelDef,
+) -> fmt::Result {
+    write!(f, "{indent}channel \"{name}\" @ {}", def.offset)?;
+    if let Some(fine) = def.fine {
+        write!(f, " fine {fine}")?;
+    }
+    if let Some(range) = def.range {
+        write!(
+            f,
+            " range {}..{}",
+            fmt_physical(range.from, range.unit),
+            fmt_physical(range.to, range.unit)
+        )?;
+    }
+    if def.functions.is_empty() {
+        return writeln!(f);
+    }
+    writeln!(f, " {{")?;
+    for function in &def.functions {
+        write!(
+            f,
+            "{indent}  function \"{}\" {}..{}",
+            function.name, function.dmx_from, function.dmx_to
+        )?;
+        if let Some(physical) = function.physical {
+            write!(
+                f,
+                " {}..{}",
+                fmt_physical(physical.from, physical.unit),
+                fmt_physical(physical.to, physical.unit)
+            )?;
+        }
+        writeln!(f)?;
+    }
+    writeln!(f, "{indent}}}")
+}
+
+/// The fixture-level channels a set of cells implies: the first cell's
+/// channels, each mirroring the same-named channel of every other cell, so
+/// the whole fixture still shows one colour to a show that never says
+/// `per: cell`. Cells must all carry the same channel names.
+pub fn ganged_from_cells(cells: &[Cell]) -> Result<HashMap<String, ChannelDef>, String> {
+    let Some(first) = cells.first() else {
+        return Ok(HashMap::new());
+    };
+    let mut names: Vec<&String> = first.channels.keys().collect();
+    names.sort();
+    for cell in &cells[1..] {
+        let mut theirs: Vec<&String> = cell.channels.keys().collect();
+        theirs.sort();
+        if theirs != names {
+            return Err(format!(
+                "cell \"{}\" has channels {:?} but cell \"{}\" has {:?}; every cell must carry \
+                 the same channels",
+                cell.name, theirs, first.name, names
+            ));
+        }
+    }
+    let mut out = HashMap::new();
+    for (name, def) in &first.channels {
+        let mut ganged = def.clone();
+        ganged.mirrors = cells[1..]
+            .iter()
+            .map(|c| {
+                let d = &c.channels[name];
+                (d.offset, d.fine)
+            })
+            .collect();
+        out.insert(name.clone(), ganged);
+    }
+    Ok(out)
 }
 
 /// A fixture definition.
