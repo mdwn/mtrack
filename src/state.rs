@@ -150,14 +150,8 @@ async fn sample_tick(
         // its own to the stream (design §17.4): its state folds into the
         // fixture's `cells`.
         let registry = engine.get_fixture_registry();
-        let all_states = engine.get_fixture_states();
-        let states: HashMap<String, FixtureState> = all_states
-            .iter()
-            .filter(|(name, _)| registry.get(*name).is_none_or(|f| f.parent.is_none()))
-            .map(|(n, s)| (n.clone(), s.clone()))
-            .collect();
-        let mut fixtures = compute_fixture_snapshots(&states, &has_dimmer_map);
-        attach_cell_snapshots(&mut fixtures, &all_states, registry);
+        let fixtures =
+            fixture_snapshots_with_cells(&engine.get_fixture_states(), &has_dimmer_map, registry);
         let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
         let poses = compute_pose_snapshots(engine.poses(), registry);
         (fixtures, effects, poses)
@@ -277,11 +271,26 @@ pub(crate) fn compute_fixture_snapshots(
     snapshots
 }
 
+/// Snapshots for every fixture the engine holds state for, with a pixel
+/// fixture's cells folded in (design §17.4): sub-fixtures (`parent/cell`)
+/// are not fixtures of their own here, their state reaches the parent's
+/// `cells`. The one builder both the sampler and the evaluators use.
+pub(crate) fn fixture_snapshots_with_cells(
+    states: &HashMap<String, FixtureState>,
+    has_dimmer_map: &HashMap<String, bool>,
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+) -> Vec<FixtureSnapshot> {
+    let mut fixtures = compute_fixture_snapshots(states, has_dimmer_map);
+    fixtures.retain(|s| registry.get(&s.name).is_none_or(|f| f.parent.is_none()));
+    attach_cell_snapshots(&mut fixtures, states, registry);
+    fixtures
+}
+
 /// Adds per-cell values to the snapshots of fixtures whose cells carry
 /// state of their own this frame (design §17.4): each cell's channels are
 /// the fixture's blended with the cell's, as the wire gets them. A fixture
 /// none of whose cells has state stays without `cells`; a fixture that
-/// has no snapshot yet but a lit cell gets one.
+/// has no snapshot yet but a lit cell gets one, its own channels dark.
 pub(crate) fn attach_cell_snapshots(
     snapshots: &mut Vec<FixtureSnapshot>,
     states: &HashMap<String, FixtureState>,
@@ -317,7 +326,12 @@ pub(crate) fn attach_cell_snapshots(
                     at,
                     FixtureSnapshot {
                         name: parent.to_string(),
-                        channels: HashMap::new(),
+                        channels: info
+                            .channels
+                            .keys()
+                            .filter(|name| !is_multiplier_channel(name))
+                            .map(|name| (name.clone(), 0u8))
+                            .collect(),
                         cells,
                     },
                 );
@@ -816,8 +830,10 @@ mod tests {
         );
         let bar_snapshot = snapshots.iter().find(|s| s.name == "Bar").unwrap();
         assert!(
-            bar_snapshot.channels.is_empty(),
-            "no state of its own -> empty channels"
+            bar_snapshot.channels.values().all(|v| *v == 0)
+                && bar_snapshot.channels.contains_key("dimmer"),
+            "inserted parent is dark, not empty: {:?}",
+            bar_snapshot.channels
         );
         assert_eq!(*bar_snapshot.cells["2"].get("red").unwrap(), 255);
         assert!(bar_snapshot.cells["1"].is_empty());

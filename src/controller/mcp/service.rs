@@ -2686,6 +2686,9 @@ fn evaluation_json(
                 json!({
                     "name": fixture.name,
                     "channels": fixture.channels,
+                    // Per-cell values while a per-cell effect drives the
+                    // fixture (design §17.4); absent otherwise.
+                    "cells": if fixture.cells.is_empty() { serde_json::Value::Null } else { json!(fixture.cells) },
                     "driven_by": driven_by,
                 })
             })

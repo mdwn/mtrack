@@ -399,6 +399,10 @@ default on a large rig). A pixel fixture — one with cells — lights its lense
 a show says `per: cell`; the stage plot on the dashboard draws such a fixture as a segmented
 disc, one wedge per cell, coloured from the cell's own state.
 
+![A per-cell rainbow on the stage plot: each Spiider a disc of wedges](../images/stage-plot-cells.png)
+
+![The same rainbow in Stage 3D, each lens and beam its own colour](../images/stage-3d-cells.png)
+
 ![Stage 3D during a show: the Basic_Festival sample venue with its glTF scenery](../images/stage-3d.png)
 
 What a fixture looks like comes from its GDTF: the archive's meshes when it ships them, or

@@ -30,6 +30,7 @@
   import { fetchVenue, saveVenue } from "../lib/api/config";
   import {
     beamEnd,
+    cellBar,
     drawBeam,
     facing,
     fitFrame,
@@ -371,20 +372,37 @@
       if (isUnplaced) ctx.setLineDash([4, 3]);
       const cells = meta.cells ?? [];
       const cellState = cellStates[name];
-      if (cells.length > 1) {
+      const cellColor = (cell: { name: string }) => {
+        const own = cellState?.[cell.name];
+        if (!own) return `rgb(${finalR},${finalG},${finalB})`;
+        const k = (own.dimmer ?? dimmer) / 255;
+        const cr = strobeVisible ? Math.round((own.red ?? 0) * k) : 0;
+        const cg = strobeVisible ? Math.round((own.green ?? 0) * k) : 0;
+        const cb = strobeVisible ? Math.round((own.blue ?? 0) * k) : 0;
+        return `rgb(${cr},${cg},${cb})`;
+      };
+      const bar = cells.length > 1 ? cellBar(cells, meta.rotation) : null;
+      if (bar) {
+        // Cells along a line: a bar of segments in that direction on the
+        // plot, seen from the audience.
+        const len = radius * 2.6;
+        const thick = radius * 0.9;
+        const seg = len / cells.length;
+        ctx.save();
+        ctx.translate(pos.x, pos.y);
+        ctx.rotate(bar.angle);
+        for (const [i, cell] of bar.ordered.entries()) {
+          ctx.fillStyle = cellColor(cell);
+          ctx.fillRect(-len / 2 + i * seg, -thick / 2, seg, thick);
+        }
+        ctx.strokeRect(-len / 2, -thick / 2, len, thick);
+        ctx.restore();
+      } else if (cells.length > 1) {
+        // Cells that do not line up: a disc of wedges, one per cell in
+        // the manufacturer's order.
         const step = (Math.PI * 2) / cells.length;
         for (const [i, cell] of cells.entries()) {
-          const own = cellState?.[cell.name];
-          let cr = finalR;
-          let cg = finalG;
-          let cb = finalB;
-          if (own) {
-            const k = (own.dimmer ?? dimmer) / 255;
-            cr = strobeVisible ? Math.round((own.red ?? 0) * k) : 0;
-            cg = strobeVisible ? Math.round((own.green ?? 0) * k) : 0;
-            cb = strobeVisible ? Math.round((own.blue ?? 0) * k) : 0;
-          }
-          ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+          ctx.fillStyle = cellColor(cell);
           ctx.beginPath();
           ctx.moveTo(pos.x, pos.y);
           ctx.arc(
@@ -401,7 +419,12 @@
         ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
         ctx.stroke();
       } else {
-        ctx.fillStyle = `rgb(${finalR},${finalG},${finalB})`;
+        // One cell (or none): the disc shows that cell's colour when a
+        // per-cell effect drives it, else the fixture's.
+        ctx.fillStyle =
+          cells.length === 1
+            ? cellColor(cells[0])
+            : `rgb(${finalR},${finalG},${finalB})`;
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
         ctx.fill();

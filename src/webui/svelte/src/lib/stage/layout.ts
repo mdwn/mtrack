@@ -299,6 +299,60 @@ export function drawBeam(
   }
 }
 
+/**
+ * Whether a fixture's cells lie along a line, and how to draw them if so:
+ * the cells ordered along that line and the line's angle on the plot
+ * (canvas radians, the fixture's yaw applied, seen from the audience).
+ * Cells that spread in two directions — a ring, a grid — are not a bar.
+ */
+export function cellBar(
+  cells: { name: string; offset: Vec3 }[],
+  rotation: Vec3 | null | undefined,
+): { ordered: { name: string; offset: Vec3 }[]; angle: number } | null {
+  if (cells.length < 2) return null;
+  const xs = cells.map((c) => c.offset[0]);
+  const ys = cells.map((c) => c.offset[1]);
+  const mean = (v: number[]) => v.reduce((a, b) => a + b, 0) / v.length;
+  const mx = mean(xs);
+  const my = mean(ys);
+  // Principal direction of the offsets in the fixture's plane.
+  let sxx = 0;
+  let syy = 0;
+  let sxy = 0;
+  for (let i = 0; i < cells.length; i++) {
+    const dx = xs[i] - mx;
+    const dy = ys[i] - my;
+    sxx += dx * dx;
+    syy += dy * dy;
+    sxy += dx * dy;
+  }
+  const total = sxx + syy;
+  if (total < 1e-9) return null;
+  const angle = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  const ux = Math.cos(angle);
+  const uy = Math.sin(angle);
+  let along = 0;
+  let across = 0;
+  for (let i = 0; i < cells.length; i++) {
+    const dx = xs[i] - mx;
+    const dy = ys[i] - my;
+    const a = dx * ux + dy * uy;
+    const b = -dx * uy + dy * ux;
+    along += a * a;
+    across += b * b;
+  }
+  if (across > along * 0.05) return null;
+  const ordered = [...cells].sort(
+    (p, q) =>
+      (p.offset[0] - mx) * ux +
+      (p.offset[1] - my) * uy -
+      ((q.offset[0] - mx) * ux + (q.offset[1] - my) * uy),
+  );
+  // Fixture frame to stage: the mounting yaw; stage to canvas: y flips.
+  const yaw = ((rotation?.[2] ?? 0) * Math.PI) / 180;
+  return { ordered, angle: -(angle + yaw) };
+}
+
 /** A name for a new focus point that no existing one uses. */
 export function nextFocusName(existing: Record<string, unknown>): string {
   let n = 1;

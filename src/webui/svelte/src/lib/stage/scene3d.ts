@@ -107,6 +107,8 @@ interface FixtureActor {
   /** Lens materials and beams by cell name, for per-cell colour. */
   cellLens: Map<string, THREE.MeshStandardMaterial[]>;
   cellBeams: Map<string, BeamActor[]>;
+  /** Cells reported once as having no lens in the rig. */
+  unmatchedCells: Set<string>;
   label: THREE.Sprite;
   placed: boolean;
 }
@@ -678,6 +680,7 @@ export class StageScene {
       lens,
       cellLens,
       cellBeams,
+      unmatchedCells: new Set(),
       label,
       placed: true,
     };
@@ -770,6 +773,14 @@ export class StageScene {
         for (const [cell, own] of Object.entries(perCell)) {
           const cellLook = beamLook({ dimmer: channels.dimmer, ...own });
           cellLooks.set(cell, cellLook);
+          if (!actor.cellLens.has(cell) && !actor.unmatchedCells.has(cell)) {
+            // The engine's cell names come from the same GDTF geometry
+            // as the rig's lenses; a miss is worth one line, not silence.
+            actor.unmatchedCells.add(cell);
+            console.warn(
+              `Stage 3D: ${actor.name}: cell "${cell}" has no lens in the rig; drawn in the fixture's colour`,
+            );
+          }
           const cellLit = cellLook.strobeOn && cellLook.intensity > 0.02;
           for (const material of actor.cellLens.get(cell) ?? []) {
             material.emissive.setRGB(
