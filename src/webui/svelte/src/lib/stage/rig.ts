@@ -182,7 +182,12 @@ export function beamLength(
   return { length: options.skyLength, onDeck: false };
 }
 
-/** The colour and level a fixture's channels show, as the 2D view reads them. */
+/**
+ * The colour and level a fixture's channels show, as the 2D view reads
+ * them: `red`/`green`/`blue` (+ `white`) mixed by `dimmer`, or a warm
+ * white by `dimmer` alone. Other colour systems (CMY, amber, colour
+ * wheels) are not read — their fixtures show as a dimmer-only white.
+ */
 export function beamLook(channels: {
   red?: number;
   green?: number;

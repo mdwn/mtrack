@@ -94,6 +94,8 @@ interface BeamActor {
 interface FixtureActor {
   name: string;
   root: THREE.Group;
+  /** Everything GPU-side the actor owns, freed when it is rebuilt. */
+  owned: { dispose(): void }[];
   /** The node group that pan turns, if any. */
   pan: THREE.Group | null;
   tilt: THREE.Group | null;
@@ -136,6 +138,18 @@ class RigCache {
       this.models.set(url, pending);
     }
     return pending;
+  }
+
+  /** Frees the loaded meshes' geometry; clones in the scene share it. */
+  dispose() {
+    for (const pending of this.models.values()) {
+      void pending.then((gltf) =>
+        gltf?.scene.traverse((o) => {
+          if (o instanceof THREE.Mesh) o.geometry.dispose();
+        }),
+      );
+    }
+    this.models.clear();
   }
 }
 
@@ -227,6 +241,11 @@ export class StageScene {
   private channels: Record<string, FixtureChannels> = {};
   private poses: Record<string, FixturePose> = {};
   private extent: [number, number, number, number] = [-4, 4, 0, 6];
+  /** Primitive geometries shared by (kind, size); freed with the scene. */
+  private primitives = new Map<string, THREE.BufferGeometry>();
+  private focusOwned: { dispose(): void }[] = [];
+  private color = new THREE.Color();
+  private dim = new THREE.Color(0x223);
   private stats: SceneStats = {
     fixtures: 0,
     placed: 0,
@@ -303,9 +322,11 @@ export class StageScene {
     venue: VenueMetadata | null,
   ): Promise<void> {
     const generation = ++this.generation;
-    for (const actor of this.actors.values()) this.fixtures.remove(actor.root);
+    for (const actor of this.actors.values()) this.dropActor(actor);
     this.actors.clear();
     this.focus.clear();
+    for (const owned of this.focusOwned) owned.dispose();
+    this.focusOwned = [];
 
     const names = Object.keys(fixtures);
     const placed = names.filter((n) => fixtures[n].position);
@@ -326,6 +347,8 @@ export class StageScene {
       label.position.set(0, 0, 0.3);
       marker.add(label);
       this.focus.add(marker);
+      this.focusOwned.push(marker.geometry, marker.material, label.material);
+      if (label.material.map) this.focusOwned.push(label.material.map);
     }
 
     const stats: SceneStats = {
@@ -347,18 +370,23 @@ export class StageScene {
           ? meta.rig.slice(0, meta.rig.lastIndexOf("/") + 1)
           : "";
         const actor = await this.buildActor(name, model, rigDir, stats);
-        if (generation !== this.generation) return;
+        if (generation !== this.generation) {
+          // Built for a venue that is gone: free it rather than keep it.
+          this.dropActor(actor);
+          return;
+        }
         const position = meta.position ?? tray[name];
         actor.placed = !!meta.position;
         actor.root.position.set(position[0], position[1], position[2]);
         const rotation = meta.rotation ?? [0, 0, 0];
         // The venue's rotation: degrees about X, Y, Z applied in that
-        // order, which is three's "XYZ" Euler.
+        // order (R = Rz·Ry·Rx, as pointing.rs defines it). three names an
+        // Euler by the order its matrices are written, so that is "ZYX".
         actor.root.rotation.set(
           (rotation[0] * Math.PI) / 180,
           (rotation[1] * Math.PI) / 180,
           (rotation[2] * Math.PI) / 180,
-          "XYZ",
+          "ZYX",
         );
         this.actors.set(name, actor);
         this.fixtures.add(actor.root);
@@ -385,6 +413,7 @@ export class StageScene {
 
     const spins: THREE.Group[] = [];
     const lens: THREE.MeshStandardMaterial[] = [];
+    const owned: { dispose(): void }[] = [];
     let pan: THREE.Group | null = null;
     let tilt: THREE.Group | null = null;
 
@@ -410,18 +439,21 @@ export class StageScene {
           metalness: 0.1,
         });
         if (isLens) lens.push(m);
+        owned.push(m);
         return m;
       };
       if (node.shape.shape === "primitive") {
         spin.add(
           new THREE.Mesh(
-            primitiveGeometry(node.shape.kind, node.shape.size),
+            this.primitive(node.shape.kind, node.shape.size),
             material(),
           ),
         );
       } else if (node.shape.shape === "model") {
         const gltf = await this.cache.model(ASSETS + rigDir + node.shape.file);
         if (gltf) {
+          // A clone shares the loaded geometry (owned by the cache, freed
+          // with the scene); only the materials are this actor's.
           const mesh = gltf.scene.clone(true);
           // glTF is Y-up; the rig is Z-up.
           mesh.rotation.x = Math.PI / 2;
@@ -432,7 +464,10 @@ export class StageScene {
           stats.meshes++;
         } else {
           spin.add(
-            new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.15, 0.15), material()),
+            new THREE.Mesh(
+              this.primitive("Cube", [0.15, 0.15, 0.15]),
+              material(),
+            ),
           );
         }
       }
@@ -452,6 +487,7 @@ export class StageScene {
         const cone = new THREE.Mesh(this.cone, material);
         cone.renderOrder = 5;
         spins[b.node].add(cone);
+        owned.push(material);
         return {
           node: spins[b.node],
           cone,
@@ -465,8 +501,42 @@ export class StageScene {
     label.position.set(0, 0, 0.45);
     label.visible = this.labels;
     root.add(label);
+    owned.push(label.material);
+    if (label.material.map) owned.push(label.material.map);
 
-    return { name, root, pan, tilt, rig, beams, lens, label, placed: true };
+    return {
+      name,
+      root,
+      owned,
+      pan,
+      tilt,
+      rig,
+      beams,
+      lens,
+      label,
+      placed: true,
+    };
+  }
+
+  /** Takes an actor out of the scene and frees what it owns. */
+  private dropActor(actor: FixtureActor) {
+    this.fixtures.remove(actor.root);
+    for (const owned of actor.owned) owned.dispose();
+    actor.owned = [];
+  }
+
+  /** A primitive geometry, one per (kind, size) across the whole rig. */
+  private primitive(
+    kind: string,
+    size: [number, number, number],
+  ): THREE.BufferGeometry {
+    const key = `${kind.toLowerCase()}:${size.join(",")}`;
+    let geometry = this.primitives.get(key);
+    if (!geometry) {
+      geometry = primitiveGeometry(kind, size);
+      this.primitives.set(key, geometry);
+    }
+    return geometry;
   }
 
   private buildDeck() {
@@ -507,7 +577,7 @@ export class StageScene {
     const origin = new THREE.Vector3();
     const direction = new THREE.Vector3();
     const rotation = new THREE.Quaternion();
-    const dim = new THREE.Color(0x223);
+    const { color, dim } = this;
     for (const actor of this.actors.values()) {
       const pose = this.poses[actor.name];
       const { panZ, tiltX } = poseRotations(
@@ -519,7 +589,7 @@ export class StageScene {
       if (actor.tilt) actor.tilt.rotation.set(tiltX, 0, 0);
       const look = beamLook(this.channels[actor.name] ?? {});
       const lit = look.strobeOn && look.intensity > 0.02;
-      const color = new THREE.Color(look.rgb[0], look.rgb[1], look.rgb[2]);
+      color.setRGB(look.rgb[0], look.rgb[1], look.rgb[2]);
       for (const material of actor.lens) {
         material.emissive.copy(lit ? color : dim);
         material.emissiveIntensity = lit ? 1.5 : 0;
@@ -560,6 +630,11 @@ export class StageScene {
   }
 
   dispose() {
+    for (const actor of this.actors.values()) this.dropActor(actor);
+    this.actors.clear();
+    for (const owned of this.focusOwned) owned.dispose();
+    for (const geometry of this.primitives.values()) geometry.dispose();
+    this.cache.dispose();
     this.controls.dispose();
     this.renderer.dispose();
     this.cone.dispose();
