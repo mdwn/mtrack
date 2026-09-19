@@ -269,11 +269,16 @@ mod tests {
     fn colliding_custom_names_stay_distinct_channels() {
         let dsl = "fixture_type \"Odd\" {\n  channel \"gobo-wheel\" @ 1\n  channel \"gobo_wheel\" @ 2\n  channel \"dimmer\" @ 3 fine 4 {\n    function \"off\" 0..9\n    function \"on\" 10..255\n  }\n}\n";
         let types = parse_fixture_types(dsl).unwrap();
+        // The description carries the type's FixtureTypeID, so failures
+        // name what is missing rather than dump the document.
         let xml = description(&types["Odd"]);
-        assert!(xml.contains("Attribute=\"GoboWheel\""), "{xml}");
-        assert!(xml.contains("Attribute=\"GoboWheel2\""), "{xml}");
+        assert!(xml.contains("Attribute=\"GoboWheel\""), "first attribute");
+        assert!(
+            xml.contains("Attribute=\"GoboWheel2\""),
+            "second attribute suffixed"
+        );
         // A 16-bit channel's functions start in 16-bit resolution.
-        assert!(xml.contains("DMXFrom=\"2560/2\""), "{xml}");
+        assert!(xml.contains("DMXFrom=\"2560/2\""), "16-bit DMXFrom");
         let description = gdtf::parse_archive(&generate(&types["Odd"]).unwrap()).unwrap();
         let back = gdtf::distill(&description, MODE_NAME, "Odd")
             .unwrap()
