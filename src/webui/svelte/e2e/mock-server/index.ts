@@ -317,6 +317,12 @@ app.post("/api/lighting/gdtf/import", (req, res) => {
   });
 });
 
+// The one mesh the mock store serves, read once at startup (the server
+// runs from the package root, see playwright.config.ts).
+const TEST_BOX_GLB = readFileSync(
+  nodePath.resolve(process.cwd(), "e2e/mock-server/box.glb"),
+);
+
 // The asset store (design §16.2): one rig model for tests of the 3D page;
 // anything else is a 404 like the real store.
 app.get("/api/lighting/assets/{*path}", (req, res) => {
@@ -334,10 +340,7 @@ app.get("/api/lighting/assets/{*path}", (req, res) => {
   }
   if (joined === "scenery/test/models/box.glb") {
     res.set("Content-Type", "model/gltf-binary");
-    // The server runs from the package root (see playwright.config.ts).
-    res.send(
-      readFileSync(nodePath.resolve(process.cwd(), "e2e/mock-server/box.glb")),
-    );
+    res.send(TEST_BOX_GLB);
     return;
   }
   res.status(404).json({ error: "Asset not found" });
