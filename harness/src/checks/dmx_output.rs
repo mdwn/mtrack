@@ -463,7 +463,12 @@ pub async fn a_per_cell_chase_runs_along_the_bar() -> CheckOutcome {
         single.len(),
         per_cell.len(),
         per_fixture.len(),
-        per_cell.iter().map(|f| f.channel(1)).min().unwrap_or(0)
+        per_cell
+            .iter()
+            .skip(8)
+            .map(|f| f.channel(1))
+            .min()
+            .unwrap_or(0)
     ));
     check!(
         single.len() * 2 > per_cell.len(),
@@ -476,9 +481,17 @@ pub async fn a_per_cell_chase_runs_along_the_bar() -> CheckOutcome {
         vec![0, 1, 2],
         "every cell should take its turn under a per-cell chase"
     );
+    // The recording starts at the first nonzero frame, while the engine's
+    // dim-speed smoothing is still ramping the bed up: judge the dimmer
+    // once the ramp is over.
+    let settled: Vec<&Frame> = per_cell
+        .iter()
+        .filter(|f| f.at.duration_since(per_cell[0].at) > Duration::from_millis(300))
+        .collect();
     check!(
-        per_cell.iter().all(|f| f.channel(1) == 255),
-        "the bed's dimmer, which no cell owns, should stay up throughout"
+        !settled.is_empty() && settled.iter().all(|f| f.channel(1) == 255),
+        "the bed's dimmer, which no cell owns, should stay up once settled; it read {:?}",
+        settled.iter().map(|f| f.channel(1)).min()
     );
     check!(
         whole > 0,
