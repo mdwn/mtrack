@@ -308,7 +308,13 @@ pub fn distill(
                 None => groups.push(vec![owner.clone(), geometry.clone()]),
             }
         }
-        if let Some(group) = groups.iter().max_by_key(|g| g.len()) {
+        // The largest group; on a tie the first in document order.
+        let largest = groups
+            .iter()
+            .enumerate()
+            .max_by(|(ia, a), (ib, b)| a.len().cmp(&b.len()).then(ib.cmp(ia)))
+            .map(|(_, g)| g);
+        if let Some(group) = largest {
             for geometry in group {
                 if let Some((_, channels)) = by_geometry.iter().find(|(g, _)| g == geometry) {
                     cells.push(Cell {
@@ -354,34 +360,49 @@ fn expand_templates(
     description: &Description,
     warnings: &mut Vec<String>,
 ) -> Vec<Named> {
-    let references_of = |geometry: &str| -> Vec<&super::description::GeometryNode> {
-        description
-            .geometries
-            .iter()
-            .filter(|g| g.kind == super::description::GeometryKind::Reference)
-            .filter(|g| g.reference.as_deref() == Some(geometry))
-            .collect()
-    };
     let mut out = Vec::with_capacity(named.len());
     let mut expanded: Vec<String> = Vec::new();
+    let mut skipped_refs: Vec<String> = Vec::new();
     for n in named {
-        let references = references_of(&n.geometry);
-        if references.is_empty() {
+        let instances = instances_of(description, &n.geometry, &n.dmx_break, 0, warnings);
+        let Some(instances) = instances else {
             out.push(n);
             continue;
-        }
+        };
         if !expanded.contains(&n.geometry) {
             expanded.push(n.geometry.clone());
         }
-        for reference in references {
-            let Some(shift) = break_shift(reference, &n.dmx_break) else {
-                warnings.push(format!(
-                    "reference \"{}\" of template \"{}\" has no Break for DMX break {}; skipped",
-                    reference.name, n.geometry, n.dmx_break
-                ));
-                continue;
-            };
-            out.push(shifted(n.clone(), shift, Some(reference.name.clone())));
+        for instance in instances {
+            match instance.shift {
+                Some(shift) => {
+                    let mut copy = n.clone();
+                    // A byte past the universe is a wrong Break table, not
+                    // a channel to clamp onto byte 512 beside its neighbour.
+                    let end = copy
+                        .def
+                        .fine
+                        .unwrap_or(copy.def.offset)
+                        .max(copy.def.offset) as u32
+                        + shift as u32;
+                    if end > 512 {
+                        warnings.push(format!(
+                            "channel \"{}\" of \"{}\" would land at byte {end}, past the \
+                             universe; skipped",
+                            copy.name, instance.name
+                        ));
+                        continue;
+                    }
+                    copy.def.offset += shift;
+                    copy.def.fine = copy.def.fine.map(|f| f + shift);
+                    copy.geometry = instance.name;
+                    out.push(copy);
+                }
+                None => {
+                    if !skipped_refs.contains(&instance.name) {
+                        skipped_refs.push(instance.name.clone());
+                    }
+                }
+            }
         }
     }
     if !expanded.is_empty() {
@@ -390,7 +411,125 @@ fn expand_templates(
             expanded.join(", ")
         ));
     }
-    out
+    for name in skipped_refs {
+        warnings.push(format!(
+            "reference \"{name}\" has no Break for one of its template's DMX breaks; its \
+             channels are skipped and it is not a cell"
+        ));
+    }
+    // Two channels on one byte after expansion is a wrong Break table:
+    // keep the first, say so about the rest.
+    let mut seen: HashMap<u16, String> = HashMap::new();
+    let mut kept = Vec::with_capacity(out.len());
+    for n in out {
+        let bytes: Vec<u16> = std::iter::once(n.def.offset).chain(n.def.fine).collect();
+        if let Some(byte) = bytes.iter().find(|b| seen.contains_key(b)) {
+            warnings.push(format!(
+                "channel \"{}\" of \"{}\" overlaps byte {byte} used by \"{}\"; skipped",
+                n.name, n.geometry, seen[byte]
+            ));
+            continue;
+        }
+        for byte in bytes {
+            seen.insert(byte, format!("{}/{}", n.geometry, n.name));
+        }
+        kept.push(n);
+    }
+    kept
+}
+
+/// One placement of a template geometry: the instance's name — the
+/// reference's, or `outer/inner` when a referenced geometry holds
+/// references itself — and the byte shift its Breaks add up to, `None`
+/// when one of them lacks a Break for the channel's DMX break.
+struct Instance {
+    name: String,
+    shift: Option<u16>,
+}
+
+/// The deepest chain of nested references followed, and the most
+/// instances one channel may expand to: a wrong file must not explode.
+const MAX_TEMPLATE_DEPTH: usize = 6;
+const MAX_INSTANCES: usize = 4096;
+
+/// Every placement of `geometry`: `None` when nothing references it or any
+/// geometry enclosing it (a plain channel), else the instances, each
+/// reference multiplied by the placements of the geometry that holds it.
+fn instances_of(
+    description: &Description,
+    geometry: &str,
+    dmx_break: &str,
+    depth: usize,
+    warnings: &mut Vec<String>,
+) -> Option<Vec<Instance>> {
+    use super::description::GeometryKind;
+    if depth > MAX_TEMPLATE_DEPTH {
+        warnings.push(format!(
+            "template \"{geometry}\" nests deeper than {MAX_TEMPLATE_DEPTH} references; stopped"
+        ));
+        return None;
+    }
+    let node = description
+        .geometries
+        .iter()
+        .position(|g| g.name == geometry)?;
+    let references: Vec<&super::description::GeometryNode> = description
+        .geometries
+        .iter()
+        .filter(|g| g.kind == GeometryKind::Reference && g.reference.as_deref() == Some(geometry))
+        .collect();
+    if references.is_empty() {
+        // Not a template itself; but the geometry holding it may be.
+        let parent = description.geometries[node].parent?;
+        let parent_name = description.geometries[parent].name.clone();
+        return instances_of(description, &parent_name, dmx_break, depth, warnings);
+    }
+    // Outer placements first, so a twin-head bar lists head one's cells
+    // before head two's; every reference's own shift within.
+    let mut placed: Vec<(usize, usize, Instance)> = Vec::new();
+    for (ref_index, reference) in references.iter().enumerate() {
+        let own = break_shift(reference, dmx_break);
+        // The reference sits in some geometry; that geometry's placements
+        // multiply this one.
+        let outer = reference
+            .parent
+            .map(|p| description.geometries[p].name.clone())
+            .and_then(|parent| instances_of(description, &parent, dmx_break, depth + 1, warnings));
+        match outer {
+            Some(outers) => {
+                for (outer_index, outer) in outers.into_iter().enumerate() {
+                    placed.push((
+                        outer_index,
+                        ref_index,
+                        Instance {
+                            name: format!("{}/{}", outer.name, reference.name),
+                            shift: match (outer.shift, own) {
+                                (Some(a), Some(b)) => Some(a + b),
+                                _ => None,
+                            },
+                        },
+                    ));
+                }
+            }
+            None => placed.push((
+                0,
+                ref_index,
+                Instance {
+                    name: reference.name.clone(),
+                    shift: own,
+                },
+            )),
+        }
+        if placed.len() > MAX_INSTANCES {
+            warnings.push(format!(
+                "template \"{geometry}\" expands to more than {MAX_INSTANCES} instances; truncated"
+            ));
+            placed.truncate(MAX_INSTANCES);
+            break;
+        }
+    }
+    placed.sort_by_key(|(outer, reference, _)| (*outer, *reference));
+    Some(placed.into_iter().map(|(_, _, i)| i).collect())
 }
 
 /// The offset shift a reference applies to a template channel on `dmx_break`:
@@ -405,42 +544,49 @@ fn break_shift(reference: &super::description::GeometryNode, dmx_break: &str) ->
     entry.map(|(_, offset)| offset - 1)
 }
 
-/// `n` moved by `shift` bytes, onto `geometry` when given.
-fn shifted(mut n: Named, shift: u16, geometry: Option<String>) -> Named {
-    n.def.offset = n.def.offset.saturating_add(shift).min(512);
-    n.def.fine = n.def.fine.map(|f| f.saturating_add(shift).min(512));
-    if let Some(geometry) = geometry {
-        n.geometry = geometry;
-    }
-    n
-}
-
 /// Where a geometry sits in the fixture's frame: the translation of its
 /// transform chain from the root, meters. A name the tree lacks is at the
 /// origin.
 fn geometry_offset(description: &Description, name: &str) -> [f64; 3] {
-    let Some(index) = description.geometries.iter().position(|g| g.name == name) else {
-        return [0.0; 3];
-    };
-    let mut chain = Vec::new();
-    let mut at = Some(index);
-    while let Some(i) = at {
-        chain.push(i);
-        at = description.geometries[i].parent;
-    }
-    chain.reverse();
+    // An instance path (`Head1/P1`, from nested templates) is placed by
+    // the outer reference's own chain, then each inner segment's chain
+    // below its template root — the root's own Position is the reference's
+    // to replace, as the rig model does.
     let mut m = super::description::IDENTITY;
-    for i in chain {
-        let n = description.geometries[i].position;
-        let mut out = [[0.0; 4]; 4];
-        for (r, row) in out.iter_mut().enumerate() {
-            for (c, cell) in row.iter_mut().enumerate() {
-                *cell = (0..4).map(|k| m[r][k] * n[k][c]).sum();
-            }
+    for (depth, segment) in name.split('/').enumerate() {
+        let Some(index) = description
+            .geometries
+            .iter()
+            .position(|g| g.name == segment)
+        else {
+            return [0.0; 3];
+        };
+        let mut chain = Vec::new();
+        let mut at = Some(index);
+        while let Some(i) = at {
+            chain.push(i);
+            at = description.geometries[i].parent;
         }
-        m = out;
+        chain.reverse();
+        if depth > 0 {
+            chain.remove(0);
+        }
+        for i in chain {
+            m = multiply(&m, &description.geometries[i].position);
+        }
     }
     [m[0][3], m[1][3], m[2][3]]
+}
+
+/// Row-major 4×4 product `a · b`.
+fn multiply(a: &[[f64; 4]; 4], b: &[[f64; 4]; 4]) -> [[f64; 4]; 4] {
+    let mut out = [[0.0; 4]; 4];
+    for (r, row) in out.iter_mut().enumerate() {
+        for (c, cell) in row.iter_mut().enumerate() {
+            *cell = (0..4).map(|k| a[r][k] * b[k][c]).sum();
+        }
+    }
+    out
 }
 
 /// mtrack's canonical channel name for a GDTF attribute, when one exists.
@@ -1077,7 +1223,7 @@ mod tests {
     <DMXChannel Offset="10" Geometry="Lens"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
     <DMXChannel Offset="11" Geometry="Lens"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
     <DMXChannel Offset="12" Geometry="Lens"><LogicalChannel Attribute="ColorAdd_B"><ChannelFunction Name="B" Attribute="ColorAdd_B" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
-    <DMXChannel Offset="13" Geometry="Lens" DMXBreak="Overwrite"><LogicalChannel Attribute="ColorAdd_W"><ChannelFunction Name="W" Attribute="ColorAdd_W" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+    <DMXChannel Offset="13" Geometry="Lens"><LogicalChannel Attribute="ColorAdd_W"><ChannelFunction Name="W" Attribute="ColorAdd_W" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
   </DMXChannels></DMXMode></DMXModes>
 </FixtureType></GDTF>"#;
 
@@ -1105,7 +1251,6 @@ mod tests {
             vec![(14, None), (18, None)],
             "P2, P3 shifted by their Breaks"
         );
-        // Overwrite takes the last Break: 13, 13+3, 13+6.
         let lens_white = ft
             .channel_defs()
             .iter()
@@ -1113,7 +1258,16 @@ mod tests {
             .map(|(_, d)| d.clone())
             .unwrap();
         assert_eq!(lens_white.offset, 13);
-        assert_eq!(lens_white.mirrors, vec![(16, None), (19, None)]);
+        assert_eq!(lens_white.mirrors, vec![(17, None), (21, None)]);
+        // An Overwrite channel takes the reference's last Break instead.
+        let p2 = description
+            .geometries
+            .iter()
+            .find(|g| g.name == "P2")
+            .unwrap();
+        assert_eq!(break_shift(p2, "1"), Some(4));
+        assert_eq!(break_shift(p2, "Overwrite"), Some(3));
+        assert_eq!(break_shift(p2, "2"), None);
         // Cells: the three references, with canonical channel names and
         // their offsets in the fixture's frame.
         let cells = ft.cells();
@@ -1122,7 +1276,7 @@ mod tests {
             ["P1", "P2", "P3"]
         );
         assert_eq!(cells[1].channels["red"].offset, 14);
-        assert_eq!(cells[2].channels["white"].offset, 19);
+        assert_eq!(cells[2].channels["white"].offset, 21);
         assert!((cells[0].offset[0] + 0.1).abs() < 1e-9 && (cells[2].offset[0] - 0.1).abs() < 1e-9);
         assert!(
             distilled
@@ -1140,6 +1294,144 @@ mod tests {
             "{:?}",
             distilled.warnings
         );
-        assert_eq!(ft.footprint(), 20, "blue on P3: 12 + 8");
+        assert_eq!(ft.footprint(), 21, "white on P3: 13 + 8");
+    }
+
+    /// A twin-head pixel bar: `Head` holds three lens references and is
+    /// itself referenced twice with its own Breaks — a two-level template.
+    const TWIN_HEADS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<GDTF DataVersion="1.2"><FixtureType Name="Twin" Manufacturer="m">
+  <Geometries>
+    <Geometry Name="Base">
+      <GeometryReference Name="Head1" Geometry="Head" Position="{0,-1,0,-0.5}{1,0,0,0}{0,0,1,0.2}{0,0,0,1}"><Break DMXBreak="1" DMXOffset="1"/></GeometryReference>
+      <GeometryReference Name="Head2" Geometry="Head" Position="{1,0,0,0.5}{0,1,0,0}{0,0,1,0}{0,0,0,1}"><Break DMXBreak="1" DMXOffset="21"/></GeometryReference>
+    </Geometry>
+    <Geometry Name="Head" Position="{1,0,0,9}{0,1,0,9}{0,0,1,9}{0,0,0,1}">
+      <GeometryReference Name="P1" Geometry="Lens" Position="{1,0,0,0.1}{0,1,0,0}{0,0,1,0}{0,0,0,1}"><Break DMXBreak="1" DMXOffset="1"/></GeometryReference>
+      <GeometryReference Name="P2" Geometry="Lens" Position="{1,0,0,0.2}{0,1,0,0}{0,0,1,0}{0,0,0,1}"><Break DMXBreak="1" DMXOffset="4"/></GeometryReference>
+      <GeometryReference Name="P3" Geometry="Lens" Position="{1,0,0,0.3}{0,1,0,0}{0,0,1,0}{0,0,0,1}"><Break DMXBreak="1" DMXOffset="7"/></GeometryReference>
+    </Geometry>
+    <Geometry Name="Lens"/>
+  </Geometries>
+  <DMXModes><DMXMode Name="Pixel" Geometry="Base"><DMXChannels>
+    <DMXChannel Offset="1" Geometry="Lens"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+    <DMXChannel Offset="2" Geometry="Lens"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+    <DMXChannel Offset="3" Geometry="Lens"><LogicalChannel Attribute="ColorAdd_B"><ChannelFunction Name="B" Attribute="ColorAdd_B" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+  </DMXChannels></DMXMode></DMXModes>
+</FixtureType></GDTF>"#;
+
+    #[test]
+    fn nested_templates_expand_to_every_physical_instance() {
+        let description = parse_description(TWIN_HEADS).unwrap();
+        let distilled = distill(&description, "Pixel", "Twin").unwrap();
+        let ft = &distilled.fixture_type;
+        let names: Vec<&str> = ft.cells().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Head1/P1", "Head1/P2", "Head1/P3", "Head2/P1", "Head2/P2", "Head2/P3"],
+            "{:?}",
+            distilled.warnings
+        );
+        assert_eq!(ft.cells()[0].channels["red"].offset, 1);
+        assert_eq!(ft.cells()[2].channels["blue"].offset, 9);
+        assert_eq!(
+            ft.cells()[3].channels["red"].offset,
+            21,
+            "Head2's Break adds 20"
+        );
+        assert_eq!(ft.cells()[5].channels["blue"].offset, 29);
+        assert_eq!(ft.footprint(), 29);
+        assert_eq!(ft.channel_defs()["red"].mirrors.len(), 5);
+        // Cell positions compose a rotated outer reference: Head1 turns
+        // local +x onto +y and sits at (−0.5, 0, 0.2), so P1 at local x
+        // 0.1 lands at (−0.5, 0.1, 0.2); Head2 is plain, so its P1 is at
+        // (0.6, 0, 0). The template's own Position (a decoy at 9, 9, 9)
+        // is the reference's to replace and must not leak in.
+        let offsets: Vec<(String, [f64; 3])> = ft
+            .cells()
+            .iter()
+            .map(|c| (c.name.clone(), c.offset))
+            .collect();
+        let p1 = ft.cells()[0].offset;
+        assert!(
+            (p1[0] + 0.5).abs() < 1e-9 && (p1[1] - 0.1).abs() < 1e-9 && (p1[2] - 0.2).abs() < 1e-9,
+            "{offsets:?}"
+        );
+        let p4 = ft.cells()[3].offset;
+        assert!(
+            (p4[0] - 0.6).abs() < 1e-9 && p4[1].abs() < 1e-9 && p4[2].abs() < 1e-9,
+            "{offsets:?}"
+        );
+    }
+
+    #[test]
+    fn a_break_past_the_universe_is_skipped_not_clamped() {
+        let xml = TEMPLATE_PIXELS.replace("DMXOffset=\"9\"", "DMXOffset=\"505\"");
+        let description = parse_description(&xml).unwrap();
+        let distilled = distill(&description, "Pixel", "Templ").unwrap();
+        let ft = &distilled.fixture_type;
+        assert!(
+            distilled
+                .warnings
+                .iter()
+                .any(|w| w.contains("past the universe")),
+            "{:?}",
+            distilled.warnings
+        );
+        assert!(ft.footprint() < 512, "{}", ft.footprint());
+        assert!(!ft
+            .channel_defs()
+            .values()
+            .any(|d| d.offset == 512 || d.mirrors.iter().any(|(o, _)| *o == 512)));
+    }
+
+    #[test]
+    fn overlapping_breaks_keep_the_first_channel_and_report_the_rest() {
+        // P2's Break lands its red on P1's green (offset 11).
+        let xml = TEMPLATE_PIXELS.replace("DMXOffset=\"5\"", "DMXOffset=\"2\"");
+        let description = parse_description(&xml).unwrap();
+        let distilled = distill(&description, "Pixel", "Templ").unwrap();
+        assert!(
+            distilled
+                .warnings
+                .iter()
+                .any(|w| w.contains("overlaps byte")),
+            "{:?}",
+            distilled.warnings
+        );
+        let all: Vec<u16> = distilled
+            .fixture_type
+            .channel_defs()
+            .values()
+            .flat_map(|d| d.all_offsets())
+            .collect();
+        let mut sorted = all.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), all.len(), "no byte is used twice: {all:?}");
+    }
+
+    #[test]
+    fn equal_sized_cell_groups_tie_break_to_document_order() {
+        // Two independent two-cell groups of different shapes, A first.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<GDTF DataVersion="1.2"><FixtureType Name="Tie" Manufacturer="m">
+  <Geometries><Geometry Name="Base"><Geometry Name="A1"/><Geometry Name="A2"/><Geometry Name="B1"/><Geometry Name="B2"/></Geometry></Geometries>
+  <DMXModes><DMXMode Name="M" Geometry="Base"><DMXChannels>
+    <DMXChannel Offset="1" Geometry="A1"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+    <DMXChannel Offset="2" Geometry="A2"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+    <DMXChannel Offset="3" Geometry="B1"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+    <DMXChannel Offset="4" Geometry="B2"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+  </DMXChannels></DMXMode></DMXModes>
+</FixtureType></GDTF>"#;
+        let description = parse_description(xml).unwrap();
+        let distilled = distill(&description, "M", "Tie").unwrap();
+        let names: Vec<&str> = distilled
+            .fixture_type
+            .cells()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["A1", "A2"], "{:?}", distilled.warnings);
     }
 }

@@ -150,7 +150,12 @@ Notes:
 - When a GDTF's identical sections (a pixel bar's segments, a batten's
   cells) gang to one channel, the distiller also records them as cells —
   their own channels and a transform-derived offset — the same shape a
-  hand-written `.fixture` cell block (below) produces.
+  hand-written `.fixture` cell block (below) produces. Any sections of one
+  fixture that carry exactly the same attributes are treated as cells of one
+  pixel array, wherever they sit in its geometry. A section a GDTF template
+  instantiates through a `GeometryReference` takes the reference's name
+  (`P3 Zone2`, or `Head2/P3` when references nest), which is also the name
+  the 3D view gives its lens.
 - On a hardened deployment (`mtrack systemd` with `ProtectSystem=strict`),
   `lighting/.cache/` must be writable — pass your project directory (or at
   least the cache path) to `mtrack systemd` so it lands in

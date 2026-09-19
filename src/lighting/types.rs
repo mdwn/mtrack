@@ -504,15 +504,15 @@ impl fmt::Display for FixtureType {
             writeln!(f, "fixture_type \"{}\" {{", self.name)?;
             // Channels a cell owns are written inside its block; the
             // fixture-level copies are derived from them on parse.
-            let cell_offsets: std::collections::HashSet<u16> = self
-                .cells
-                .iter()
-                .flat_map(|c| c.channels.values().map(|d| d.offset))
-                .collect();
+            let derived = |name: &str, def: &ChannelDef| {
+                self.cells
+                    .iter()
+                    .any(|c| c.channels.get(name).is_some_and(|d| d.offset == def.offset))
+            };
             let mut defs: Vec<_> = self
                 .channel_defs
                 .iter()
-                .filter(|(_, def)| !cell_offsets.contains(&def.offset))
+                .filter(|(name, def)| !derived(name, def))
                 .collect();
             defs.sort_by_key(|(name, def)| (def.offset, (*name).clone()));
             for (name, def) in defs {
