@@ -370,6 +370,7 @@ existing group-resolution lint:
 | P1b | MVR import, positions, focus points, positional 2D StageView, lint expansion. **Introduces** the `.venue` extension and `position`/`rotation`/`focus` syntax | A real venue MVR imports to a playable venue; show lint runs against it | M |
 | P1c | Physical-value pipeline, 16-bit fanout, movement effects, slew model, harness DMX sink. **Introduces** rich channel syntax (`fine`, `range:`, function tables) for hand-authored fixtures | A movement show authored on one venue plays correctly on a second imported venue | L |
 | P2 | 3D simulation (glTF, beam rendering); GDTF/MVR export; optionally OFL import | Show playable against a 3D venue never visited | L–XL |
+| P3 | Per-cell (pixel) control: cells in the fixture model, cell-expanded effects, `spread`, per-cell state on the plot and in 3D | A chase runs across the 19 cells of one Spiider, verified on the wire | M–L |
 
 Each phase ships independently; P1a is already useful alone (import replaces hand
 transcription). Grammar follows the same rule as everything else here: a DSL construct
@@ -733,3 +734,127 @@ conversion unless it proves cheap.
 3. **3D is its own page**, reached from the dashboard's stage card.
 4. **MVR export before GDTF export**, the generated minimal GDTF serving both.
 5. **Per-cell control stays out** of P2.
+
+## 17. P3 in detail: per-cell control (draft 1, 2026-09-19)
+
+Every pixel fixture mtrack imports today is ganged: the first cell's channels are the
+fixture's and the other cells mirror them, so a Spiider with nineteen lenses shows one colour
+(§5). That was the honest P1 answer and it is still the right default — a tag-based show that
+says `bars: static color: "red"` should light every cell red. P3 adds the other half: a show
+that wants to run something *across* the cells can say so, and the engine, the wire, the stage
+plot and the 3D view follow. Nothing changes for a show that does not ask.
+
+### 17.1 What exists to build on
+
+- **The distiller** already finds the cells: identical geometry sections repeating an
+  attribute (§5). It knows each section's geometry name and byte offsets; it folds them into
+  `ChannelDef::mirrors` and throws the per-section identity away.
+- **The rig model** (§16.2) keeps the cells as `Cell(i)` nodes with their transforms, from the
+  same `GeometryReference` names — so cell positions relative to the fixture are known, and the
+  3D view already draws one lens per cell.
+- **The engine** keys everything by fixture name: effects resolve a group to fixture names,
+  compute one `FixtureState` per name, merge by layer, and write DMX per fixture. Chases order
+  their targets spatially from the venue's positions (`spatial_order`). Everything a cell needs
+  is what a fixture already has, minus pan and tilt.
+- **The wire**: `resolve_normalized` fans one value out to the owner and its mirrors.
+
+### 17.2 The model: cells on the fixture type
+
+A fixture type gains `cells`, distilled at import beside the ganged channels:
+
+```
+Cell { name: String, channels: HashMap<String, ChannelDef>, offset: Vec3 }
+```
+
+`name` is the GDTF geometry name (`P3 Zone2`), the same name the rig model gives the lens;
+`channels` are the cell's own byte offsets, without mirrors; `offset` is the cell's position
+in the fixture's frame, meters, from the geometry tree (the same transform chain the rig
+model carries). Cells are listed in document order, which is the manufacturer's numbering.
+The ganged channels stay exactly as they are, mirrors and all: a fixture with cells still has
+`red` at the fixture level, and it still fans out. `DISTILLER_VERSION` becomes 3 so caches
+regenerate. A `.fixture` written by hand can declare cells with the rich syntax:
+
+```light
+fixture_type "Cheap Bar" {
+  channel "dimmer" @ 1
+  cell "1" at (-0.3, 0, 0) { channel "red" @ 2  channel "green" @ 3  channel "blue" @ 4 }
+  cell "2" at (0, 0, 0)    { channel "red" @ 5  channel "green" @ 6  channel "blue" @ 7 }
+  cell "3" at (0.3, 0, 0)  { channel "red" @ 8  channel "green" @ 9  channel "blue" @ 10 }
+}
+```
+
+The fixture-level `red`/`green`/`blue` are derived: the first cell's, mirroring the rest — the
+loader builds them, so a hand-written bar behaves like an imported one. `.light` refuses the
+`cell` keyword, as it refuses every v2 form.
+
+### 17.3 The engine: cells as sub-fixtures
+
+A cell is addressed as a fixture named `<fixture>/<cell>` — `Robe Spiider 12/P3 Zone2` — with
+the parent's universe and address, only the cell's channels, the parent's rotation, and a
+position of parent position plus the rotated cell offset. It has no pan or tilt. Sub-fixtures
+are registered lazily, the first time a show asks for cells, so a rig that never does pays
+nothing.
+
+A show asks with one effect parameter, `per: cell` (default `per: fixture`):
+
+```light
+bars: static color: "blue", duration: 30s, layer: background
+bars: chase pattern: linear, direction: left_to_right, per: cell, duration: 30s, layer: midground
+bars: rainbow speed: 0.5, spread: 360deg, per: cell, duration: 30s
+```
+
+With `per: cell` the effect's targets are the group's fixtures expanded to their cells, in
+spatial order — fixtures as `spatial_order` sorts them today, and within a fixture its cells
+sorted along the same direction by their stage positions — so a left-to-right chase across
+three four-cell bars runs through twelve cells in stage order, crossing from one bar into the
+next. A fixture with no cells expands to itself, so a mixed group still works. Effects that
+give every target the same value (`static`, `strobe`, `pulse`, `dimmer`) accept `per: cell` as
+a no-op, and the lint says it does nothing.
+
+`spread` is the parameter that makes cells worth having for colour effects: for `rainbow` and
+`cycle` it offsets each target's phase by its share of `spread` across the ordered targets, so
+`spread: 360deg` paints one full rainbow along the bars and `spread: 0deg` (the default) keeps
+today's behaviour. It works `per: fixture` too, across the group.
+
+**Merging.** A cell's state sits on top of its fixture's: at DMX time each cell channel is
+resolved as the layered merge of the fixture-level channel state (the bed, today's path) and
+the cell's own state, with the same layer and blend rules as everything else. So a blue bed
+on the whole bar with a midground chase per cell gives a blue bar with a bright pulse running
+along it. Pan and tilt never go per cell. `mirrors` stay for the fixture-level path; with
+cells present, DMX generation walks cells rather than mirrors so each cell gets its own bytes.
+
+### 17.4 Surfaces
+
+- **State stream**: a fixture's state message gains `cells: { name: channels }` when any cell
+  differs from the fixture; the stage plot draws such a fixture as a segmented disc (or a bar,
+  when the cells lie along a line), and the 3D view drives each `Cell` node's lens by name.
+- **Lint**: `per: cell` on a group with no cells (`cells-absent`); `per: cell` on an effect
+  that cannot vary across targets (`per-cell-no-effect`); `spread` on an effect that does not
+  take it.
+- **Harness**: a `dmx-output` check with a three-cell synthetic bar: a per-cell chase produces
+  three distinct byte patterns on the wire in the right order; the same chase `per: fixture`
+  produces one.
+- **Import report**: the ganging line gains "N cells; address them with `per: cell`".
+
+### 17.5 Out of P3
+
+Matrix (2D) patterns beyond spatial order — a chase across a tile wall still runs in stage
+order, which is a row-major sweep; true 2D patterns (rings, wipes by axis) are their own
+effect family. Per-cell `move` (nonsense). Colour macros and the GDTF `Pattern`/`Flower`
+effects channels, which stay as plain channels a `static` can name.
+
+### 17.6 Slices
+
+| Slice | Contents | Exit |
+|---|---|---|
+| P3-1 (internal) | `Cell` on the fixture type; distiller records cells with offsets; `cell` blocks in `.fixture`; cache v3; rig and distiller agree on names | The Spiider's 19 cells distill with positions matching its rig model's lenses |
+| P3-2 | Sub-fixture registry, `per: cell` and `spread` in grammar, parser, engine; cell-aware DMX merge; lint; harness check | The three-cell chase check passes on the rig; existing shows produce byte-identical DMX |
+| P3-3 | State stream cells, segmented plot, 3D lenses per cell, docs, screenshots | A per-cell rainbow reads along the Spiider's lenses in 3D |
+
+### 17.7 Decisions (settled 2026-09-19)
+
+1. **Cells are sub-fixtures named `fixture/cell`**, reusing every per-fixture path.
+2. **`per: cell` is an effect parameter**, not a group property.
+3. **`spread` ships in this phase** for `rainbow` and `cycle`, per fixture and per cell.
+4. **Cell names are the GDTF geometry names**, in document order.
+5. **Hand-written `cell` blocks in `.fixture` are in scope.**
