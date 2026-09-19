@@ -280,8 +280,8 @@ enum Commands {
     ExportMvr {
         /// The venue to export, by name.
         venue: String,
-        /// Output path, relative to the project. Defaults to
-        /// lighting/export/<venue>.mvr.
+        /// The .mvr file name; exports always land in the project's
+        /// lighting/export/ directory. Defaults to <venue>.mvr.
         #[arg(short, long)]
         output: Option<String>,
         /// Put each fixture on a layer named after its first tag.

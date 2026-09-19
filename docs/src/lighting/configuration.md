@@ -332,9 +332,10 @@ Going the other way, `mtrack export-mvr <venue>` writes the venue as an `.mvr` a
 pre-viz tool can open: every fixture with its position, rotation (the origin chosen at import
 restored) and address, the focus points, and each fixture type's GDTF embedded from the
 library. A fixture type with no GDTF — a `.light` or hand-written `.fixture` — gets a minimal
-generated one carrying its channels and a box body, enough to patch. The output lands in
-`lighting/export/<venue>.mvr` unless `--output` says otherwise; `--layers-from-tags` puts each
-fixture on a layer named after its first tag. A venue seeded from an MVR round-trips: importing
+generated one carrying its channels and a box body, enough to patch. Exports always land in
+`lighting/export/`, as `<venue>.mvr` unless `--output` names another file; `--layers-from-tags`
+puts each fixture on a layer named after its first tag. Fixture IDs are the number a fixture's
+name ends in, else the lowest free one. A venue seeded from an MVR round-trips: importing
 the export merges it with nothing changed.
 
 The same flow is available over MCP as `inspect_mvr`, `import_mvr` and `export_mvr`. Pixel bars and

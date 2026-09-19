@@ -101,8 +101,17 @@ pub fn description(fixture_type: &FixtureType) -> String {
     let mut attribute_xml = String::new();
     let mut channel_xml = String::new();
     for (name, def) in &channels {
-        let attribute = attribute_for(name);
-        if !attributes.contains(&attribute) {
+        // Two channels folding to one attribute name (say `gobo-wheel` and
+        // `gobo_wheel`) must stay two attributes, or the distiller reads
+        // the second back as a mirror of the first.
+        let mut attribute = attribute_for(name);
+        let base = attribute.clone();
+        let mut n = 1;
+        while attributes.contains(&attribute) {
+            n += 1;
+            attribute = format!("{base}{n}");
+        }
+        {
             attributes.push(attribute.clone());
             let unit = match def.range.map(|r| r.unit) {
                 Some(PhysicalUnit::Degrees) => "Angle",
@@ -152,11 +161,10 @@ pub fn description(fixture_type: &FixtureType) -> String {
                     .map(|r| physical(r.from, r.to))
                     .unwrap_or_default();
                 channel_xml.push_str(&format!(
-                    "              <ChannelFunction Name=\"{}\" Attribute=\"{}\" DMXFrom=\"{}/1\" Default=\"{}/1\"{range}/>\n",
+                    "              <ChannelFunction Name=\"{}\" Attribute=\"{}\" DMXFrom=\"{from}/{bytes}\" Default=\"{from}/{bytes}\"{range}/>\n",
                     escape(&function.name),
                     escape(&function_attribute),
-                    function.dmx_from,
-                    function.dmx_from
+                    from = u64::from(function.dmx_from) << (8 * (bytes - 1)),
                 ));
             }
         }
@@ -255,5 +263,22 @@ mod tests {
         assert_eq!(rig.nodes.len(), 1);
         assert_eq!(attribute_for("amber"), "ColorAdd_RY");
         assert_eq!(pascal("red:flower"), "RedFlower");
+    }
+
+    #[test]
+    fn colliding_custom_names_stay_distinct_channels() {
+        let dsl = "fixture_type \"Odd\" {\n  channel \"gobo-wheel\" @ 1\n  channel \"gobo_wheel\" @ 2\n  channel \"dimmer\" @ 3 fine 4 {\n    function \"off\" 0..9\n    function \"on\" 10..255\n  }\n}\n";
+        let types = parse_fixture_types(dsl).unwrap();
+        let xml = description(&types["Odd"]);
+        assert!(xml.contains("Attribute=\"GoboWheel\""), "{xml}");
+        assert!(xml.contains("Attribute=\"GoboWheel2\""), "{xml}");
+        // A 16-bit channel's functions start in 16-bit resolution.
+        assert!(xml.contains("DMXFrom=\"2560/2\""), "{xml}");
+        let description = gdtf::parse_archive(&generate(&types["Odd"]).unwrap()).unwrap();
+        let back = gdtf::distill(&description, MODE_NAME, "Odd")
+            .unwrap()
+            .fixture_type;
+        assert_eq!(back.channels().len(), 3, "{:?}", back.channels());
+        assert_eq!(back.channel_defs()["dimmer"].fine, Some(4));
     }
 }

@@ -351,8 +351,8 @@ pub struct ImportMvrArgs {
 pub struct ExportMvrArgs {
     /// The venue to export, by name.
     pub venue: String,
-    /// Output path relative to the project directory; defaults to
-    /// `lighting/export/<venue>.mvr`.
+    /// The `.mvr` file name; exports always land in the project's
+    /// `lighting/export/` directory. Defaults to `<venue>.mvr`.
     pub output: Option<String>,
     /// Put each fixture on an MVR layer named after its first tag.
     pub layers_from_tags: Option<bool>,

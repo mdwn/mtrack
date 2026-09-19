@@ -847,13 +847,13 @@ async fn mcp_mvr_import_flow() -> Result<(), Box<dyn Error>> {
             &session,
             12,
             "export_mvr",
-            json!({"venue": "kellys", "output": "outgoing/kellys.mvr"}),
+            json!({"venue": "kellys", "output": "kellys-out.mvr"}),
         )
         .await,
     );
-    assert_eq!(export["output"], "outgoing/kellys.mvr");
+    assert_eq!(export["output"], "lighting/export/kellys-out.mvr");
     assert_eq!(export["embedded_gdtfs"][0], "Astera_PB15.gdtf");
-    let exported = std::fs::read(fixture.root.join("outgoing/kellys.mvr"))?;
+    let exported = std::fs::read(fixture.root.join("lighting/export/kellys-out.mvr"))?;
     let scene = crate::lighting::mvr::parse_archive(&exported)?;
     assert_eq!(scene.fixtures.len(), 1);
     assert_eq!(scene.focus_points[0].name, "Drummer");

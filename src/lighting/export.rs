@@ -45,8 +45,9 @@ use super::types::{Fixture, FixtureType, Vec3, Venue};
 pub struct MvrExportOptions {
     /// The venue to export, by name.
     pub venue: String,
-    /// Where the `.mvr` lands, relative to the project. Defaults to
-    /// `lighting/export/<venue stem>.mvr`.
+    /// The `.mvr` file name, under the project's `lighting/export/`
+    /// directory — a bare name, `.mvr` extension, no directories, so an
+    /// export can only ever land there. Defaults to `<venue stem>.mvr`.
     pub output: Option<String>,
     /// Fixture types directory, relative to the project.
     pub fixture_types_dir: String,
@@ -96,14 +97,43 @@ pub struct MvrExport {
 pub fn export_mvr(options: &MvrExportOptions, project: &Path) -> Result<MvrExport, Box<dyn Error>> {
     let (bytes, mut report) = export_mvr_bytes(options, project)?;
     let output = output_path(options)?;
-    let path = project.join(&output);
-    if let Some(parent) = path.parent() {
-        super::import::create_dir(parent)?;
+    // The export directory is the one place an export writes. It is
+    // created if missing and then proven to be inside the project (a
+    // symlink planted there could point anywhere; the canonical path says).
+    let export_dir = project.join(EXPORT_DIR);
+    super::import::create_dir(&export_dir)?;
+    let canonical_project = project.canonicalize().map_err(|e| {
+        format!(
+            "cannot resolve project directory {}: {e}",
+            project.display()
+        )
+    })?;
+    let canonical_dir = export_dir
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", export_dir.display()))?;
+    if !canonical_dir.starts_with(&canonical_project) {
+        return Err(format!(
+            "{} resolves outside the project ({}); refusing to write there",
+            export_dir.display(),
+            canonical_dir.display()
+        )
+        .into());
+    }
+    let path = canonical_dir.join(&output);
+    if path.is_symlink() {
+        return Err(format!(
+            "{} is a symlink; refusing to write through it",
+            path.display()
+        )
+        .into());
     }
     super::import::write(&path, &bytes)?;
-    report.output = output;
+    report.output = format!("{EXPORT_DIR}/{output}");
     Ok(report)
 }
+
+/// Where exports land, relative to the project.
+pub const EXPORT_DIR: &str = "lighting/export";
 
 /// [`export_mvr`] without the write: the archive bytes and the report
 /// (whose `output` names where [`export_mvr`] would put them).
@@ -146,7 +176,12 @@ pub fn export_mvr_bytes(
     // --- Every fixture type resolves to a GDTF entry: the library archive
     // for a referential type, a generated one for a native type. Resolved
     // before anything is rendered so a missing archive refuses the export.
+    // Entries are keyed by what they came from — the archive's project
+    // path, or the native type — never by the bare file name alone: two
+    // library archives called Spot.gdtf in different directories are two
+    // entries, the second's name disambiguated.
     let mut entries: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut entry_of_source: HashMap<String, String> = HashMap::new();
     let mut gdtf_of: HashMap<&str, (String, String)> = HashMap::new();
     let mut embedded = Vec::new();
     let mut generated = BTreeMap::new();
@@ -164,33 +199,53 @@ pub fn export_mvr_bytes(
         })?;
         let (entry, mode) = match fixture_type.source() {
             Some(source) => {
-                let archive_path = project.join(&source.path);
-                let entry = Path::new(&source.path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .ok_or_else(|| format!("GDTF path \"{}\" has no file name", source.path))?;
-                if !entries.contains_key(&entry) {
-                    let bytes = std::fs::read(&archive_path).map_err(|e| {
-                        format!(
-                            "fixture type \"{type_name}\" references {}, which cannot be read: {e}",
-                            source.path
-                        )
-                    })?;
-                    entries.insert(entry.clone(), bytes);
-                    embedded.push(entry.clone());
-                }
+                let source_key = format!("archive:{}", source.path);
+                let entry = match entry_of_source.get(&source_key) {
+                    Some(entry) => entry.clone(),
+                    None => {
+                        let bytes = std::fs::read(project.join(&source.path)).map_err(|e| {
+                            format!(
+                                "fixture type \"{type_name}\" references {}, which cannot be read: {e}",
+                                source.path
+                            )
+                        })?;
+                        let wanted = Path::new(&source.path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .ok_or_else(|| {
+                                format!("GDTF path \"{}\" has no file name", source.path)
+                            })?;
+                        let entry =
+                            place(wanted.clone(), source_key, &entries, &mut entry_of_source);
+                        if entry != wanted {
+                            warnings.push(format!(
+                                "two library archives are called {wanted}; {} is embedded as {entry}",
+                                source.path
+                            ));
+                        }
+                        entries.insert(entry.clone(), bytes);
+                        embedded.push(entry.clone());
+                        entry
+                    }
+                };
                 (entry, source.mode.clone())
             }
             None => {
-                let entry = format!("mtrack_{}.gdtf", fixture_filename_stem(type_name));
-                if !entries.contains_key(&entry) {
-                    entries.insert(entry.clone(), gdtf::generate(fixture_type)?);
-                    generated.insert(entry.clone(), type_name.to_string());
-                    warnings.push(format!(
-                        "fixture type \"{type_name}\" has no GDTF; a minimal one ({entry}) was \
-                         generated with its channels and no models"
-                    ));
-                }
+                let source_key = format!("native:{type_name}");
+                let entry = match entry_of_source.get(&source_key) {
+                    Some(entry) => entry.clone(),
+                    None => {
+                        let wanted = format!("mtrack_{}.gdtf", fixture_filename_stem(type_name));
+                        let entry = place(wanted, source_key, &entries, &mut entry_of_source);
+                        entries.insert(entry.clone(), gdtf::generate(fixture_type)?);
+                        generated.insert(entry.clone(), type_name.to_string());
+                        warnings.push(format!(
+                            "fixture type \"{type_name}\" has no GDTF; a minimal one ({entry}) was \
+                             generated with its channels and no models"
+                        ));
+                        entry
+                    }
+                };
                 (entry, gdtf::MODE_NAME.to_string())
             }
         };
@@ -236,21 +291,42 @@ pub fn export_mvr_bytes(
     ))
 }
 
+/// The output's bare file name: `.mvr`, no directories, nothing hidden.
 fn output_path(options: &MvrExportOptions) -> Result<String, Box<dyn Error>> {
     let output = match &options.output {
-        Some(output) => output.clone(),
-        None => format!(
-            "lighting/export/{}.mvr",
-            fixture_filename_stem(&options.venue)
-        ),
+        Some(output) => output.trim().to_string(),
+        None => format!("{}.mvr", fixture_filename_stem(&options.venue)),
     };
-    if Path::new(&output).is_absolute() || output.split(['/', '\\']).any(|part| part == "..") {
+    let bare = Path::new(&output).file_name() == Some(std::ffi::OsStr::new(output.as_str()));
+    if !bare || output.starts_with('.') || output.contains('\\') || output.contains('\0') {
         return Err(format!(
-            "output path \"{output}\" must be relative to the project and stay inside it"
+            "output \"{output}\" must be a bare file name; exports land in {EXPORT_DIR}/"
         )
         .into());
     }
+    if !output.to_ascii_lowercase().ends_with(".mvr") || output.len() <= 4 {
+        return Err(format!("output \"{output}\" must end in .mvr").into());
+    }
     Ok(output)
+}
+
+/// A zip entry name for a source: the wanted name, or the first free
+/// `(n)` variant when another source already took it.
+fn place(
+    wanted: String,
+    source_key: String,
+    entries: &BTreeMap<String, Vec<u8>>,
+    entry_of_source: &mut HashMap<String, String>,
+) -> String {
+    let mut name = wanted.clone();
+    let mut n = 1;
+    while entries.contains_key(&name) {
+        n += 1;
+        let stem = wanted.strip_suffix(".gdtf").unwrap_or(&wanted);
+        name = format!("{stem} ({n}).gdtf");
+    }
+    entry_of_source.insert(source_key, name.clone());
+    name
 }
 
 /// Every venue in a directory (`.venue` and `.light` files alike).
@@ -321,6 +397,7 @@ fn render_scene(
         layers.entry(layer).or_default().push(xml);
     };
 
+    let ids = fixture_ids(fixtures);
     for (index, fixture) in fixtures.iter().enumerate() {
         let (entry, mode) = &gdtf_of[fixture.fixture_type()];
         let layer = if layers_from_tags {
@@ -357,7 +434,7 @@ fn render_scene(
         ));
         xml.push_str(&format!(
             "            <FixtureID>{}</FixtureID>\n            <UnitNumber>0</UnitNumber>\n",
-            fixture_id(fixture.name(), index)
+            ids[index]
         ));
         xml.push_str("          </Fixture>\n");
         place(layer, xml);
@@ -441,14 +518,43 @@ fn num(value: f64) -> String {
     }
 }
 
-/// The FixtureID: the number the fixture's name ends in (the import names
-/// repeated fixtures "Type ID"), else the ordinal.
-fn fixture_id(name: &str, index: usize) -> String {
-    name.rsplit(' ')
-        .next()
-        .filter(|last| !last.is_empty() && last.chars().all(|c| c.is_ascii_digit()))
-        .map(str::to_string)
-        .unwrap_or_else(|| (index + 1).to_string())
+/// The FixtureIDs, one per fixture and all distinct: the number a name
+/// ends in (the import names repeated fixtures "Type ID", and people
+/// number theirs), else the lowest number no other fixture has. The venue
+/// does not keep a console's IDs for uniquely named fixtures, so those are
+/// mtrack's to assign.
+fn fixture_ids(fixtures: &[&Fixture]) -> Vec<u64> {
+    let named: Vec<Option<u64>> = fixtures
+        .iter()
+        .map(|f| {
+            f.name()
+                .rsplit(' ')
+                .next()
+                .filter(|last| !last.is_empty() && last.len() < 10)
+                .and_then(|last| last.parse::<u64>().ok())
+        })
+        .collect();
+    let mut taken: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut ids = vec![0u64; fixtures.len()];
+    // Named numbers first (first come, first served), then the rest.
+    for (i, id) in named.iter().enumerate() {
+        if let Some(id) = id {
+            if taken.insert(*id) {
+                ids[i] = *id;
+            }
+        }
+    }
+    let mut next = 1;
+    for id in ids.iter_mut() {
+        if *id == 0 {
+            while taken.contains(&next) {
+                next += 1;
+            }
+            taken.insert(next);
+            *id = next;
+        }
+    }
+    ids
 }
 
 /// A stable UUID (version-5 shaped, SHA-256 derived) for a scene object.
@@ -670,12 +776,12 @@ mod tests {
         )
         .unwrap();
         let options = MvrExportOptions {
-            output: Some("out/club.mvr".to_string()),
+            output: Some("club.mvr".to_string()),
             layers_from_tags: true,
             ..MvrExportOptions::for_venue("Club")
         };
         let report = export_mvr(&options, &project).unwrap();
-        assert_eq!(report.output, "out/club.mvr");
+        assert_eq!(report.output, "lighting/export/club.mvr");
         assert_eq!(
             report
                 .generated_gdtfs
@@ -694,7 +800,7 @@ mod tests {
             report.warnings
         );
 
-        let exported = std::fs::read(project.join("out/club.mvr")).unwrap();
+        let exported = std::fs::read(project.join("lighting/export/club.mvr")).unwrap();
         let scene = mvr::parse_archive(&exported).unwrap();
         let left = scene.fixtures.iter().find(|f| f.name == "Left").unwrap();
         assert_eq!(left.layer, "front");
@@ -775,17 +881,134 @@ mod tests {
             .to_string();
         assert!(err.contains("cannot be read"), "{err}");
         assert!(!project.join("lighting/export").exists());
+    }
 
-        let err = export_mvr(
+    #[test]
+    fn the_output_is_a_bare_mvr_name_under_the_export_directory() {
+        let (_dir, project) = seeded_project();
+        let venue_file = project.join("lighting/venues/kellys.venue");
+        let venue_before = std::fs::read(&venue_file).unwrap();
+        for output in [
+            "../escape.mvr",
+            "lighting/venues/kellys.venue",
+            "kellys.venue",
+            "/tmp/x.mvr",
+            ".hidden.mvr",
+            "sub/dir.mvr",
+            ".mvr",
+        ] {
+            let err = export_mvr(
+                &MvrExportOptions {
+                    output: Some(output.to_string()),
+                    ..MvrExportOptions::for_venue("kellys")
+                },
+                &project,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                err.contains("bare file name") || err.contains("end in .mvr"),
+                "{output}: {err}"
+            );
+        }
+        assert_eq!(std::fs::read(&venue_file).unwrap(), venue_before);
+        let report = export_mvr(
             &MvrExportOptions {
-                output: Some("../escape.mvr".to_string()),
+                output: Some("Kelly's Rig.MVR".to_string()),
                 ..MvrExportOptions::for_venue("kellys")
             },
             &project,
         )
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("inside it"), "{err}");
+        .unwrap();
+        assert_eq!(report.output, "lighting/export/Kelly's Rig.MVR");
+        assert!(project.join(&report.output).is_file());
+
+        // A symlinked export directory pointing outside the project is
+        // refused before anything is written through it.
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            std::fs::remove_dir_all(project.join("lighting/export")).unwrap();
+            std::os::unix::fs::symlink(outside.path(), project.join("lighting/export")).unwrap();
+            let err = export_mvr(&MvrExportOptions::for_venue("kellys"), &project)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("outside the project"), "{err}");
+            assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn same_named_archives_in_different_directories_are_both_embedded() {
+        let (_dir, project) = seeded_project();
+        // A second archive with the same file name in another library
+        // directory, and a type that uses it.
+        let other_dir = project.join("lighting/library/other");
+        std::fs::create_dir_all(&other_dir).unwrap();
+        let other = crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
+                .replace("Synth Brick", "Other Brick")
+                .as_bytes(),
+        )]);
+        std::fs::write(other_dir.join("Astera_PB15.gdtf"), &other).unwrap();
+        std::fs::write(
+            project.join("lighting/fixture_types/other_brick.fixture"),
+            "fixture_type \"Other Brick\"\n  from gdtf(\"lighting/library/other/Astera_PB15.gdtf\", mode \"8: RGBS\")\n{\n}\n",
+        )
+        .unwrap();
+        let venue_file = project.join("lighting/venues/kellys.venue");
+        let mut venue = std::fs::read_to_string(&venue_file).unwrap();
+        venue = venue.replace(
+            "\n}",
+            "\n  fixture \"Other 1\" \"Other Brick\" @ 3:1 position (0, 1, 2) rotation (0, 0, 0)\n}",
+        );
+        std::fs::write(&venue_file, venue).unwrap();
+
+        let report = export_mvr(&MvrExportOptions::for_venue("kellys"), &project).unwrap();
+        assert_eq!(
+            report.embedded_gdtfs.len(),
+            2,
+            "{:?}",
+            report.embedded_gdtfs
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("two library archives")),
+            "{:?}",
+            report.warnings
+        );
+        let exported = std::fs::read(project.join(&report.output)).unwrap();
+        let scene = mvr::parse_archive(&exported).unwrap();
+        let other_fixture = scene.fixtures.iter().find(|f| f.name == "Other 1").unwrap();
+        let spec = other_fixture.gdtf_spec.clone().unwrap();
+        assert_eq!(spec, "Astera_PB15 (2).gdtf");
+        assert_eq!(mvr::read_gdtf_entry(&exported, &spec).unwrap(), other);
+        let brick = scene.fixtures.iter().find(|f| f.name == "Brick 1").unwrap();
+        assert_eq!(brick.gdtf_spec.as_deref(), Some("Astera_PB15.gdtf"));
+    }
+
+    #[test]
+    fn fixture_ids_are_distinct() {
+        let mk = |name: &str, address: u16| {
+            Fixture::new(name.to_string(), "T".to_string(), 1, address, Vec::new())
+        };
+        let fixtures = [
+            mk("Wash 3", 1),
+            mk("Spot", 2),
+            mk("Spot", 3),
+            mk("Robe Spiider 12", 4),
+            mk("Left 3", 5),
+        ];
+        let refs: Vec<&Fixture> = fixtures.iter().collect();
+        let ids = fixture_ids(&refs);
+        assert_eq!(ids, vec![3, 1, 2, 12, 4]);
+        let mut sorted = ids.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len());
     }
 
     #[test]
@@ -826,8 +1049,6 @@ mod tests {
         assert_eq!(num(-0.0), "0");
         assert_eq!(num(1.5), "1.5");
         assert_eq!(num(0.1 + 0.2), "0.3");
-        assert_eq!(fixture_id("Robe Spiider 12", 0), "12");
-        assert_eq!(fixture_id("Spot", 4), "5");
         assert_eq!(escape("a<b & \"c\""), "a&lt;b &amp; &quot;c&quot;");
         assert_eq!(uuid("v", "fixture", "x").len(), 36);
         assert_eq!(uuid("v", "fixture", "x"), uuid("v", "fixture", "x"));
