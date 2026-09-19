@@ -330,7 +330,10 @@ app.get("/api/lighting/fixture-types", (_req, res) => {
 });
 
 app.get("/api/lighting/fixture-types/:name", (req, res) => {
-  const entry = FIXTURE_TYPES[req.params.name] ?? FIXTURE_TYPES.par;
+  const entry = FIXTURE_TYPES[req.params.name];
+  if (!entry) {
+    return res.status(404).json({ error: "Fixture type not found" });
+  }
   res.json(entry);
 });
 

@@ -79,9 +79,26 @@
   let editFtDsl = $state("");
   let editFtExt = $state<"light" | "fixture">("light");
   let editFtReferential = $state(false);
+  let editFtRich = $state(false);
   let ftTextLoading = $state(false);
+  /** In text mode the DSL declares the name — the file is keyed on it, and
+   *  the server refuses a save where the two disagree. So the Name field
+   *  reads it out rather than being a second, conflicting source. */
+  let editFtDslName = $derived(declaredFixtureTypeName(editFtDsl));
+  /** A rich or referential type cannot go back to `.light`: the loader
+   *  skips v2 syntax there. Anything else may be saved in either form. */
+  let ftExtChoosable = $derived(
+    ftMode === "text" && !editFtReferential && !editFtRich,
+  );
   /** Whether the "which form?" chooser is open ahead of a new type. */
   let newFtChoice = $state(false);
+
+  /** The name a fixture type DSL declares, quoted or bare. Comment lines
+   *  start with `#`, so anchoring to the start of a line skips them. */
+  function declaredFixtureTypeName(dsl: string): string {
+    const match = dsl.match(/^[ \t]*fixture_type[ \t]+(?:"([^"]*)"|([\w-]+))/m);
+    return (match?.[1] ?? match?.[2] ?? "").trim();
+  }
 
   /** The commented starting point for a hand-written `.fixture`. */
   const NEW_FIXTURE_TEMPLATE = `# The rich channel form, which only a .fixture file may hold:
@@ -187,21 +204,10 @@ fixture_type "Name" {
     ftMsg = "";
     editFtExt = entry.extension === "fixture" ? "fixture" : "light";
     editFtReferential = entry.referential;
+    editFtRich = entry.rich;
 
     if (editFtExt === "fixture" || entry.rich || entry.referential) {
-      // The listing carries the parsed type, not its source, and a
-      // referential type has no channels here at all — fetch the file.
-      ftMode = "text";
-      editFtDsl = "";
-      ftTextLoading = true;
-      try {
-        const full = await fetchFixtureType(name, ftDir || undefined);
-        editFtDsl = full.dsl;
-      } catch (e: any) {
-        ftMsg = e.message;
-      } finally {
-        ftTextLoading = false;
-      }
+      await openFtAsText(name);
       return;
     }
 
@@ -218,12 +224,44 @@ fixture_type "Name" {
       ft.strobe_dmx_offset != null ? String(ft.strobe_dmx_offset) : "";
   }
 
+  /** Opens a type as the text of its file, whatever form it is in. The
+   *  listing carries the parsed type, not its source, and a referential type
+   *  has no channels here at all — so the file itself is fetched. */
+  async function openFtAsText(name: string) {
+    ftMode = "text";
+    editFtDsl = "";
+    ftTextLoading = true;
+    try {
+      const full = await fetchFixtureType(name, ftDir || undefined);
+      editFtDsl = full.dsl;
+    } catch (e: any) {
+      ftMsg = e.message;
+    } finally {
+      ftTextLoading = false;
+    }
+  }
+
+  /** Opens a `.light` type in the text editor — the way out of the channel
+   *  map, and the only path from v1 to the rich form. */
+  async function editFtAsText(name: string) {
+    const entry = fixtureTypes[name];
+    editingFt = name;
+    editFtName = name;
+    isNewFt = false;
+    ftMsg = "";
+    editFtExt = entry.extension === "fixture" ? "fixture" : "light";
+    editFtReferential = entry.referential;
+    editFtRich = entry.rich;
+    await openFtAsText(name);
+  }
+
   function startNewFt(ext: "light" | "fixture") {
     newFtChoice = false;
     editingFt = "__new__";
     editFtName = "";
     editFtExt = ext;
     editFtReferential = false;
+    editFtRich = false;
     isNewFt = true;
     ftMsg = "";
     if (ext === "fixture") {
@@ -315,12 +353,12 @@ fixture_type "Name" {
   }
 
   async function saveFt() {
-    if (!editFtName.trim()) {
-      ftMsg = get(t)("lighting.nameRequired");
-      return;
-    }
     if (ftMode === "text") {
       await saveFtText();
+      return;
+    }
+    if (!editFtName.trim()) {
+      ftMsg = get(t)("lighting.nameRequired");
       return;
     }
     const channels: Record<string, number> = {};
@@ -369,7 +407,14 @@ fixture_type "Name" {
   }
 
   async function saveFtText() {
-    const newName = editFtName.trim();
+    // The text is the file, so the name it declares is the name to save
+    // under: a URL naming anything else would write a file the panel could
+    // never reach again, and the server refuses that outright.
+    const newName = editFtDslName;
+    if (!newName) {
+      ftMsg = get(t)("lighting.fixtureTypeNoName");
+      return;
+    }
     const oldName = editingFt !== "__new__" ? editingFt : null;
     const isRename = oldName && oldName !== newName;
     ftSaving = true;
@@ -771,12 +816,27 @@ fixture_type "Name" {
 
           <div class="field">
             <label for="ft-name">{$t("lighting.name")}</label>
-            <input
-              id="ft-name"
-              class="input"
-              bind:value={editFtName}
-              placeholder="e.g. RGBW_Par"
-            />
+            {#if ftMode === "text"}
+              <!-- The file is keyed on the name the DSL declares, so the
+                   field reads it out instead of competing with it. -->
+              <input
+                id="ft-name"
+                class="input"
+                data-testid="ft-name-derived"
+                value={editFtDslName}
+                readonly
+              />
+              <span class="field-hint"
+                >{$t("lighting.fixtureTypeNameFromDsl")}</span
+              >
+            {:else}
+              <input
+                id="ft-name"
+                class="input"
+                bind:value={editFtName}
+                placeholder="e.g. RGBW_Par"
+              />
+            {/if}
           </div>
 
           {#if ftMode === "text"}
@@ -792,6 +852,23 @@ fixture_type "Name" {
                 </p>
               {:else}
                 <p class="field-hint">{$t("lighting.fixtureTypeTextHint")}</p>
+              {/if}
+              {#if ftExtChoosable}
+                <!-- The one way out of v1: a plain type may be saved back as
+                     a `.light` or converted to a `.fixture`. A rich or
+                     referential type has no choice — v2 syntax in a `.light`
+                     file is skipped by the loader. -->
+                <label class="ext-choice">
+                  {$t("lighting.fixtureTypeSaveAs")}
+                  <select
+                    class="input"
+                    data-testid="ft-ext-select"
+                    bind:value={editFtExt}
+                  >
+                    <option value="light">.light</option>
+                    <option value="fixture">.fixture</option>
+                  </select>
+                </label>
               {/if}
               {#if ftTextLoading}
                 <p class="status-text">{$t("common.loading")}</p>
@@ -1051,6 +1128,19 @@ fixture_type "Name" {
                   <span class="ext-badge" data-testid="ft-ext"
                     >.{entry.extension}</span
                   >
+                  {#if entry.extension === "light"}
+                    <!-- The channel map is the default way in; this is the
+                         way out of it, and the only path from v1 to the
+                         rich form. -->
+                    <button
+                      class="btn btn-sm"
+                      data-testid="ft-edit-text"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        editFtAsText(name);
+                      }}>{$t("lighting.editAsText")}</button
+                    >
+                  {/if}
                   <button
                     class="btn btn-danger btn-sm"
                     onclick={(e) => {
@@ -1737,6 +1827,18 @@ fixture_type "Name" {
     padding: 1px 5px;
     margin-right: auto;
     margin-left: 6px;
+  }
+  .ext-choice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+  .ext-choice select {
+    width: auto;
+    font-family: var(--mono);
   }
   .new-ft-choice {
     display: flex;

@@ -448,18 +448,7 @@ fn resolve_lighting_dir(
 ) -> Result<std::path::PathBuf, axum::response::Response> {
     use super::super::safe_path::{SafePath, VerifiedRoot};
 
-    let canonical_config = config_path.canonicalize().map_err(|_| {
-        use axum::response::IntoResponse;
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to resolve config path"})),
-        )
-            .into_response()
-    })?;
-    let project_root = canonical_config
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let root = VerifiedRoot::new(project_root).map_err(|e| e.into_response())?;
+    let root = VerifiedRoot::new(&project_root(config_path)?).map_err(|e| e.into_response())?;
 
     let relative = match override_dir {
         Some(d) if !d.is_empty() => d,
@@ -467,6 +456,94 @@ fn resolve_lighting_dir(
     };
 
     SafePath::validate_relative(relative, &root).map_err(|e| e.into_response())
+}
+
+/// Checks a referential type's archive the way the lighting system will when
+/// it expands one: the path is project-relative, stays inside the project, and
+/// is a file that is actually there. Nothing is distilled — that happens at
+/// load, through the cache — but a `.fixture` whose archive is missing or
+/// outside the project cannot load, and a save is the last moment where the
+/// person still has the text in front of them to fix it.
+#[allow(clippy::result_large_err)]
+fn validate_referential_archives(
+    root: &std::path::Path,
+    types: &std::collections::HashMap<String, lighting::types::FixtureType>,
+) -> Result<(), axum::response::Response> {
+    let canonical_root = root.canonicalize().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to resolve project root"})),
+        )
+            .into_response()
+    })?;
+    for (name, fixture_type) in types {
+        let Some(source) = fixture_type.source() else {
+            continue;
+        };
+        let archive = canonical_root.join(&source.path);
+        let canonical = archive.canonicalize().map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!(
+                    "fixture type \"{}\" references a GDTF archive that cannot be read: {}: {}",
+                    name, source.path, e
+                )})),
+            )
+                .into_response()
+        })?;
+        if !canonical.starts_with(&canonical_root) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!(
+                    "fixture type \"{}\" references a GDTF archive outside the project: {}",
+                    name, source.path
+                )})),
+            )
+                .into_response());
+        }
+        if !canonical.is_file() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!(
+                    "fixture type \"{}\" references a GDTF archive that is not a file: {}",
+                    name, source.path
+                )})),
+            )
+                .into_response());
+        }
+    }
+    Ok(())
+}
+
+/// The name the URL asks for must be the name the DSL declares: the webui
+/// resolves a type or venue by its file stem, so a body that renames the
+/// declaration would write `oldname.fixture` holding `newname` — a file no
+/// later GET, PUT or DELETE can reach.
+#[allow(clippy::result_large_err)]
+fn require_declared_name<T>(
+    kind: &str,
+    name: &str,
+    parsed: &std::collections::HashMap<String, T>,
+) -> Result<(), axum::response::Response> {
+    if parsed.contains_key(name) {
+        return Ok(());
+    }
+    let mut declared: Vec<&str> = parsed.keys().map(String::as_str).collect();
+    declared.sort_unstable();
+    let found = if declared.is_empty() {
+        "it declares none".to_string()
+    } else {
+        format!("it declares \"{}\"", declared.join("\", \""))
+    };
+    Err((
+        StatusCode::BAD_REQUEST,
+        Json(json!({"error": format!(
+            "the DSL declares no {} named \"{}\" ({}); rename the {} in the Name field, not in \
+             the text",
+            kind, name, found, kind
+        )})),
+    )
+        .into_response())
 }
 
 /// Query parameters for lighting endpoints — allows overriding the directory.
@@ -616,33 +693,52 @@ pub(super) async fn get_fixture_types(
     }
     let all = super::helpers::spawn_blocking_io("load fixture types", move || {
         let mut all = std::collections::HashMap::new();
+        // Which file each name came from, so a name claimed twice can name
+        // both files rather than one silently winning.
+        let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut duplicates: Vec<FileError> = Vec::new();
         // Both extensions, as the lighting system loads them. A type's file
         // travels with it: the form a type is in decides how it may be
         // edited, and a referential type parsed from a file has no expanded
         // channels to show — only the system's expansion has those.
-        let errors = load_light_files_from_dir(&dir, FIXTURE_TYPE_EXTENSIONS, |content, path| {
-            let types = lighting::parser::parse_fixture_types(content)?;
-            let file = crate::util::filename_display(path).to_string();
-            let extension = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or_default()
-                .to_string();
-            for (name, fixture_type) in types {
-                all.insert(
-                    name,
-                    json!({
-                        "referential": fixture_type.source().is_some(),
-                        "rich": fixture_type.uses_rich_channels(),
-                        "fixture_type": fixture_type,
-                        "file": file,
-                        "extension": extension,
-                    }),
-                );
-            }
-            Ok(())
-        })
-        .map_err(|e| e.to_string())?;
+        let mut errors =
+            load_light_files_from_dir(&dir, FIXTURE_TYPE_EXTENSIONS, |content, path| {
+                let types = lighting::parser::parse_fixture_types(content)?;
+                let file = crate::util::filename_display(path).to_string();
+                let extension = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                for (name, fixture_type) in types {
+                    // Last-wins would show one file and hide the other, while the
+                    // lighting system registers the name twice. Report both files
+                    // and keep the first; the rest of this file still lists.
+                    if let Some(previous) = seen.get(&name) {
+                        duplicates.push(FileError {
+                            file: file.clone(),
+                            error: format!(
+                                "fixture type \"{name}\" is defined in both {previous} and {file}"
+                            ),
+                        });
+                        continue;
+                    }
+                    seen.insert(name.clone(), file.clone());
+                    all.insert(
+                        name,
+                        json!({
+                            "referential": fixture_type.source().is_some(),
+                            "rich": fixture_type.uses_rich_channels(),
+                            "fixture_type": fixture_type,
+                            "file": file,
+                            "extension": extension,
+                        }),
+                    );
+                }
+                Ok(())
+            })
+            .map_err(|e| e.to_string())?;
+        errors.append(&mut duplicates);
         Ok::<_, String>((all, errors))
     })
     .await?;
@@ -729,6 +825,21 @@ pub(super) async fn put_fixture_type(
         .unwrap_or("");
 
     let from_form = content_type.contains("application/json");
+
+    // Whatever form the body is in, an `ext` naming no known form is a
+    // mistake worth reporting rather than quietly writing a `.light`.
+    let requested_extension = match query.ext.as_deref() {
+        None | Some("") => None,
+        Some(known @ ("light" | "fixture")) => Some(known),
+        Some(other) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("Unknown fixture type extension: {}", other)})),
+            )
+                .into_response())
+        }
+    };
+
     let dsl = if from_form {
         // Parse JSON body and convert to DSL
         let json_body: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
@@ -759,21 +870,22 @@ pub(super) async fn put_fixture_type(
         )
             .into_response()
     })?;
-    // The same helper the playlists and profiles writes use, so a refusal is
-    // reported as the configuration problem it is rather than a server fault.
-    // The file goes under the directory that was made, not the spelling.
-    let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
+    require_declared_name("fixture type", &name, &types)?;
+    validate_referential_archives(&project_root(&state.config_path)?, &types)?;
+
     let stem = sanitize_filename(&name);
-    let existing = existing_fixture_type_file(&dir, &name);
-    let existing_extension = existing
-        .as_ref()
-        .and_then(|path| path.extension())
-        .and_then(|e| e.to_str());
+    // Read against the resolved directory rather than the created one: every
+    // refusal below should land before anything is made on disk.
+    let existing_extension = existing_fixture_type_file(&dir, &name).and_then(|path| {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_string)
+    });
 
     // The channel-map form cannot say what a `.fixture` file holds, so
     // saving one through it would silently drop the type's rich channels or
     // its GDTF reference.
-    if from_form && existing_extension == Some("fixture") {
+    if from_form && existing_extension.as_deref() == Some("fixture") {
         return Err((
             StatusCode::CONFLICT,
             Json(json!({"error": format!(
@@ -785,22 +897,16 @@ pub(super) async fn put_fixture_type(
             .into_response());
     }
 
-    // An existing file keeps its extension; a new one is born in the form
-    // the caller asked for, defaulting to `.light`.
-    let extension = match existing_extension {
-        Some(extension) => extension,
-        None if from_form => "light",
-        None => match query.ext.as_deref() {
-            None | Some("") | Some("light") => "light",
-            Some("fixture") => "fixture",
-            Some(other) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": format!("Unknown fixture type extension: {}", other)})),
-                )
-                    .into_response())
-            }
+    // An explicit `ext` wins — that is how a `.light` type converts to a
+    // `.fixture`. Without one, an existing file keeps its own extension and
+    // a new type is born a `.light`.
+    let extension = match (requested_extension, existing_extension.as_deref()) {
+        (Some(requested), _) => requested,
+        (None, Some(existing)) => match existing {
+            "fixture" => "fixture",
+            _ => "light",
         },
+        (None, None) => "light",
     };
 
     // The extension is the version marker: rich channel syntax written into
@@ -821,6 +927,12 @@ pub(super) async fn put_fixture_type(
                 .into_response());
         }
     }
+
+    // Everything that can refuse the save has: the same helper the playlists
+    // and profiles writes use, so a refusal is reported as the configuration
+    // problem it is rather than a server fault. The file goes under the
+    // directory that was made, not the spelling.
+    let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
 
     // A type is one file: whichever form it is saved in, the other one is
     // retired, or the loader would register the name twice.
@@ -1119,6 +1231,7 @@ pub(super) async fn put_venue(
         )
             .into_response()
     })?;
+    require_declared_name("venue", &name, &venues)?;
     let typed = venues.values().any(needs_venue_extension);
 
     let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
@@ -3154,6 +3267,303 @@ show "test" {
         assert!(std::fs::read_to_string(&file_path)
             .unwrap()
             .contains("fine 2"));
+    }
+
+    #[tokio::test]
+    async fn put_fixture_type_refuses_a_renamed_declaration() {
+        // The file is keyed on the URL name, so a body that renames the
+        // declaration would write `mover.light` holding "Rover" — a file no
+        // later GET, PUT or DELETE could reach.
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_rename");
+        std::fs::create_dir(&ft_dir).unwrap();
+        let file_path = ft_dir.join("mover.light");
+        std::fs::write(&file_path, sample_fixture_type_dsl("Mover")).unwrap();
+        let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/fixture-types/Mover?dir={}", rel))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(sample_fixture_type_dsl("Rover")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("declares no fixture type"), "{body}");
+        assert!(body.contains("Rover"), "{body}");
+        // The original is untouched, and no orphan was written.
+        assert!(std::fs::read_to_string(&file_path)
+            .unwrap()
+            .contains("Mover"));
+        assert!(!ft_dir.join("rover.light").exists());
+    }
+
+    #[tokio::test]
+    async fn put_venue_refuses_a_renamed_declaration() {
+        let (state, _dir) = test_state();
+        let rel = "venue_rename";
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/venues/MyVenue?dir={}", rel))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(sample_venue_dsl("OtherVenue")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("declares no venue"), "{body}");
+        assert!(!_dir.path().join(rel).join("myvenue.light").exists());
+    }
+
+    #[tokio::test]
+    async fn put_fixture_type_rejects_an_unknown_extension() {
+        let (state, _dir) = test_state();
+        let rel = "ft_bad_ext";
+        let app = router().with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/lighting/fixture-types/Mover?dir={}&ext=bogus",
+                        rel
+                    ))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(sample_fixture_type_dsl("Mover")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("Unknown fixture type extension"), "{body}");
+
+        // The JSON body is held to the same query, so a typo is caught in
+        // the form editor too rather than silently writing a `.light`.
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/lighting/fixture-types/Mover?dir={}&ext=bogus",
+                        rel
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({"channels": {"dimmer": 1}}))
+                            .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // Nothing was created — not even the directory.
+        assert!(!_dir.path().join(rel).exists());
+    }
+
+    #[tokio::test]
+    async fn put_fixture_type_converts_a_light_to_a_fixture() {
+        // The only way out of v1: an explicit `ext` wins over the existing
+        // file's extension, and the `.light` is retired behind it.
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_convert");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::write(ft_dir.join("mover.light"), sample_fixture_type_dsl("Mover")).unwrap();
+        let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/lighting/fixture-types/Mover?dir={}&ext=fixture",
+                        rel
+                    ))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(sample_rich_fixture_type_dsl("Mover")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(ft_dir.join("mover.fixture").exists());
+        assert!(!ft_dir.join("mover.light").exists());
+    }
+
+    #[tokio::test]
+    async fn put_fixture_type_keeps_the_existing_extension_without_ext() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_keep_ext");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::write(
+            ft_dir.join("mover.fixture"),
+            sample_rich_fixture_type_dsl("Mover"),
+        )
+        .unwrap();
+        let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/fixture-types/Mover?dir={}", rel))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(sample_rich_fixture_type_dsl("Mover")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(ft_dir.join("mover.fixture").exists());
+        assert!(!ft_dir.join("mover.light").exists());
+    }
+
+    #[tokio::test]
+    async fn put_fixture_type_refuses_a_missing_gdtf_archive() {
+        // The lighting system resolves the archive against the project at
+        // load; a save is the last moment the text is still in front of the
+        // person who can fix the path.
+        let (state, _dir) = test_state();
+        let rel = "ft_missing_archive";
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/lighting/fixture-types/Brick?dir={}&ext=fixture",
+                        rel
+                    ))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(sample_referential_fixture_type_dsl("Brick")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("GDTF archive"), "{body}");
+        assert!(body.contains("library/synth.gdtf"), "{body}");
+        assert!(!_dir.path().join(rel).exists());
+    }
+
+    #[tokio::test]
+    async fn put_fixture_type_accepts_a_referential_type_whose_archive_is_there() {
+        let (state, _dir) = test_state();
+        let library = _dir.path().join("library");
+        std::fs::create_dir(&library).unwrap();
+        std::fs::write(library.join("synth.gdtf"), synthetic_gdtf_bytes()).unwrap();
+        let rel = "ft_present_archive";
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/lighting/fixture-types/Brick?dir={}&ext=fixture",
+                        rel
+                    ))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(sample_referential_fixture_type_dsl("Brick")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(_dir.path().join(rel).join("brick.fixture").exists());
+    }
+
+    #[tokio::test]
+    async fn put_fixture_type_refuses_a_gdtf_archive_outside_the_project() {
+        let (state, _dir) = test_state();
+        let rel = "ft_escaping_archive";
+        let app = router().with_state(state);
+        let dsl = "fixture_type \"Brick\" from gdtf(\"../../etc/passwd\", mode \"8: RGBS\") {\n}\n";
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/lighting/fixture-types/Brick?dir={}&ext=fixture",
+                        rel
+                    ))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(dsl))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!_dir.path().join(rel).exists());
+    }
+
+    #[tokio::test]
+    async fn get_fixture_types_reports_a_name_defined_twice() {
+        // Last-wins would show one file and hide the other, while the
+        // lighting system registers the name twice.
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_dupes");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::write(ft_dir.join("a.light"), sample_fixture_type_dsl("Mover")).unwrap();
+        std::fs::write(
+            ft_dir.join("b.fixture"),
+            sample_rich_fixture_type_dsl("Mover"),
+        )
+        .unwrap();
+        std::fs::write(ft_dir.join("c.light"), sample_fixture_type_dsl("Par")).unwrap();
+        let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/fixture-types?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let errors = parsed["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1, "{parsed}");
+        let message = errors[0]["error"].as_str().unwrap();
+        assert!(message.contains("defined in both"), "{message}");
+        assert!(message.contains("a.light"), "{message}");
+        assert!(message.contains("b.fixture"), "{message}");
+        // The rest of the directory still lists, including the duplicate
+        // under one of its two files.
+        assert!(parsed["fixture_types"]["Par"].is_object(), "{parsed}");
+        assert!(parsed["fixture_types"]["Mover"].is_object(), "{parsed}");
     }
 
     #[tokio::test]

@@ -152,6 +152,83 @@ test.describe("Fixture Types Management", () => {
     expect(request.postData()).toContain('channel "pan"');
   });
 
+  test("a .light type can be opened as text and converted", async ({
+    page,
+  }) => {
+    // The channel map is the default way in; this is the way out of it, and
+    // the only path from a v1 file to the rich form.
+    await card(page, "par").getByTestId("ft-edit-text").click();
+    await expect(page.getByTestId("ft-dsl")).toHaveValue(/fixture_type par/);
+    await expect(page.locator(".channel-row")).toHaveCount(0);
+
+    // Saved back as it was found, unless the form is changed.
+    const selector = page.getByTestId("ft-ext-select");
+    await expect(selector).toHaveValue("light");
+    await selector.selectOption("fixture");
+
+    const requestPromise = page.waitForRequest(
+      (req) =>
+        req.url().includes("/api/lighting/fixture-types/par") &&
+        req.method() === "PUT",
+    );
+    await page
+      .locator(".editor-form")
+      .getByRole("button", { name: "Save" })
+      .click();
+    const request = await requestPromise;
+    expect(request.url()).toContain("ext=fixture");
+  });
+
+  test("a rich or referential type is not offered the .light form", async ({
+    page,
+  }) => {
+    // v2 syntax in a `.light` file is skipped by the loader, so there is no
+    // choice to offer.
+    await card(page, "pixelbrick").click();
+    await expect(page.getByTestId("ft-dsl")).toBeVisible();
+    await expect(page.getByTestId("ft-ext-select")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await card(page, "mover").click();
+    await expect(page.getByTestId("ft-dsl")).toBeVisible();
+    await expect(page.getByTestId("ft-ext-select")).toHaveCount(0);
+  });
+
+  test("the name in text mode is read from the definition", async ({
+    page,
+  }) => {
+    // The file is keyed on the declared name, and the server refuses a save
+    // where the URL and the text disagree — so the field reads it out.
+    await card(page, "mover").click();
+    const nameField = page.getByTestId("ft-name-derived");
+    await expect(nameField).toHaveValue("mover");
+    await expect(nameField).toHaveJSProperty("readOnly", true);
+
+    await page
+      .getByTestId("ft-dsl")
+      .fill('fixture_type "renamed" {\n  channel "pan" @ 1 fine 2\n}\n');
+    await expect(nameField).toHaveValue("renamed");
+
+    // The rename goes to the declared name, and the old file is deleted —
+    // the same two steps the channel-map form takes.
+    const putPromise = page.waitForRequest(
+      (req) =>
+        req.url().includes("/api/lighting/fixture-types/renamed") &&
+        req.method() === "PUT",
+    );
+    const deletePromise = page.waitForRequest(
+      (req) =>
+        req.url().includes("/api/lighting/fixture-types/mover") &&
+        req.method() === "DELETE",
+    );
+    await page
+      .locator(".editor-form")
+      .getByRole("button", { name: "Save" })
+      .click();
+    await putPromise;
+    await deletePromise;
+  });
+
   test("New Fixture Type offers both forms", async ({ page }) => {
     await page.getByRole("button", { name: "New Fixture Type" }).click();
     await expect(page.getByTestId("new-ft-choice")).toBeVisible();

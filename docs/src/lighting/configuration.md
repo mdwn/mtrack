@@ -221,8 +221,11 @@ keeps the v1 grammar, the loader skips, loudly, a `.light` file that uses it, an
 UI refuses to save it into one. Both forms stay valid forever. The web UI lists both kinds
 of file: a v1 `.light` type opens in the channel-map form, while a `.fixture` type — rich
 or referential — opens as the text of its file, since neither form fits a channel map. A
-new type is created as either. A referential type's `from gdtf(...)` line must survive the
-edit, or the type loses its archive.
+new type is created as either, and **Edit as text** on a `.light` type opens its file and
+offers to save it back as a `.fixture` — the path from v1 to the rich form. In text mode
+the type's name is the one the definition declares, and the archive a referential type
+points at must exist inside the project, or the save is refused where the text can still
+be fixed.
 
 **Cells:** a pixel fixture — an LED batten with several individually-colored
 segments, a pixel mover's ring — can describe each segment as a `cell`
