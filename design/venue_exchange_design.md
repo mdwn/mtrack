@@ -865,3 +865,135 @@ included, in list order, as it does for a chase today.
 3. **`spread` ships in this phase** for `rainbow` and `cycle`, per fixture and per cell.
 4. **Cell names are the GDTF geometry names**, in document order.
 5. **Hand-written `cell` blocks in `.fixture` are in scope.**
+
+## 18. Pointing convention: GDTF's, not ours (draft 1, 2026-09-19)
+
+### 18.1 The finding
+
+After #451 the pointing pipeline is verified from files to bytes against hand-worked
+numbers — but every number, and the harness check, and the Stage 3D picture, assume the
+convention §15.3 chose: pan 0, tilt 0 looks along the mounting frame's +y, level, and the
+venue `rotation` absorbs whatever the fixture's own rest pose is. Nothing external had been
+checked against that. With no movers on hand, the check was made against the two external
+readings that exist:
+
+- **The GDTF spec** (`gdtf-spec.md`, Models): "The device shall be drawn in a hanging
+  position displaying the front view. That results in the pan axis is Z aligned, and the
+  tilt axis is X aligned." Coordinates are right-handed, Z up, "0,0,0 – center base plate".
+  Beam geometries: "The beam geometry emits its light into negative Z direction." The spec
+  does not state the sign of a positive pan or tilt.
+- **Blender DMX** (open-stage/blender-dmx, `fixture.py`), the community's reference GDTF
+  renderer: a channel's physical value (linear over `PhysicalFrom..PhysicalTo`) is applied
+  as-is — `rotation_euler[2] = pan` on the yoke, `rotation_euler[0] = tilt` on the head,
+  and the head's target is `Euler((tilt, 0, pan), "XYZ")` applied to `(0, 0, −L)`. That
+  is: rest is straight down along −Z, positive pan is a right-hand rotation about +Z
+  (counter-clockwise seen from above), positive tilt a right-hand rotation about +X, and
+  `R = Rz(pan)·Rx(tilt)`.
+- **Real files** agree that tilt 0 is the middle of travel, not level: Robe Esprite tilt
+  `131.8 → −131.8`, Spiider `110 → −110`, Martin MAC Viper AirFX `134 → −134`. Pan ranges
+  carry the manufacturer's direction in their sign: Robe `−270 → 270`, Martin `270 → −270`.
+  Those signs only mean something against an absolute convention, which is Blender's.
+
+Our resolver hands `aim()`'s degrees straight to those ranges. So on a real fixture:
+
+- **tilt is 90° off** — our "level" is GDTF's "straight down", and
+- **pan is mirrored** — ours is positive toward local +x (clockwise from above), GDTF's is
+  counter-clockwise.
+
+The venue `rotation` cannot absorb this. A mounting rotation is a fixed frame applied
+outside the joints; the tilt offset lives *between* the pan and tilt joints, and the pan
+sign is a reflection. For the golden test's M1 (rear truss, aimed at the drummer at
+`(0, 2.8, 1.4)`), the bytes we send would put a real head's beam on the deck at
+`(3.2, 5.3, 0)`, 4.1 m from the target, the wrong side of the stage.
+
+Stage 3D did not show this because its pose mapping (`panZ = −pan`, `tiltX = tilt + 90`)
+was written to make the picture agree with our convention — it papers over exactly the two
+discrepancies. The harness check `a_focus_point_resolves_through_the_venue` computes its
+expectation from `aim()` and so could not see it either. The §15.3 claim that "GDTF's own
+rest pose is not assumed" was true of the math and false of the bytes.
+
+A second consequence, in our favour: the MVR importer passes a fixture's matrix through as
+`rotation` unchanged. An MVR venue therefore already describes mountings in GDTF's terms —
+a hung mover yawed to face downstage is `rotation (0, 0, 180)`, exactly what
+`basic_festival.venue` holds — and the current pointing math misreads every one of them.
+Under GDTF's convention the importer is correct as it stands.
+
+### 18.2 The convention (proposed)
+
+Pose degrees are GDTF physical degrees. For a fixture with mounting rotation
+`R = Rz·Ry·Rx` (unchanged, degrees about X, Y, Z in that order):
+
+```
+direction(pan, tilt) = R · Rz(pan) · Rx(tilt) · (0, 0, −1)
+                     = R · (−sin pan · sin tilt,  cos pan · sin tilt,  −cos tilt)
+```
+
+- Rest (`pan 0, tilt 0`) is the mounting frame's −Z: straight down for a hung fixture.
+- Positive pan turns the head counter-clockwise seen from above (+Z, right-hand rule).
+- Positive tilt swings the beam from −Z toward +Y (right-hand about +X).
+- A `.fixture` file's `range` is in the same degrees, so a hand-written mover with the
+  datasheet's `tilt −135deg..135deg` behaves like its GDTF.
+- `rotation` in a `.venue` is the mounting as GDTF models it: a hung mover is `(0, 0, yaw)`,
+  a floor-standing one is `(180, 0, yaw)`, and a PAR that points where it should is one
+  whose −Z points there.
+
+The inverse has two solutions, as every desk knows: `(pan, tilt)` and
+`(pan + 180°, −tilt)`. With `d_local = Rᵀ · normalize(target − p)`:
+
+```
+tilt  = ±acos(−d_local.z)                       # magnitude; sign picks the solution
+pan   = atan2(−d_local.x, d_local.y)             # for tilt ≥ 0; +180° for tilt < 0
+```
+
+The solver keeps both, drops any whose tilt is outside the fixture's range, applies
+`nearest_pan` to each, and takes the one whose pan is nearest the remembered pan
+(§15.4) — the head's current pose, not a fixed home. Ties go to the smaller tilt change.
+A target on the pan axis (straight down or up) keeps the current pan.
+
+### 18.3 What changes
+
+- `effects/pointing.rs`: `aim`, `direction` and the round-trip property under the new
+  convention; a `solutions()` returning both, and the selection rule above in
+  `processing::target_pose`.
+- `stage/rig.ts`: `poseRotations` becomes identity (`panZ = pan`, `tiltX = tilt`) and
+  `rootTiltX` is 0 for every rig — a GDTF PAR at rest points down, as the file says. The
+  plot's orientation tick (drawn from yaw, meaningful only under the old convention) is
+  replaced by the beam footprint every placed fixture already gets from `PoseSnapshot`;
+  a static fixture's footprint is `direction(0, 0)` through its mounting.
+- MVR import: unchanged. MVR export: unchanged (it writes the same matrix back).
+- Hand-authored venues under the old convention are re-authored, by hand, with the docs:
+  `examples/lighting/venues/kellys_basement.venue`, the harness venue, the golden test's
+  venue. There is no migration tool (a rotation cannot be translated without knowing what
+  the author meant).
+- Docs: the convention paragraph in `configuration.md` and `effects.md`; a diagram of a
+  hung mover with pan and tilt arrows, since this is the paragraph a venue author will
+  read with a fixture in one hand.
+
+### 18.4 Verification, this time against something external
+
+1. **Kinematic cross-check, in `cargo test`.** For every rig in the local corpus (583) and
+   for a spread of placements, rotations and targets: run `aim()`, then push the degrees
+   through the rig's joints exactly as Blender DMX would — yoke about its local Z by pan,
+   head about its local X by tilt, beam along the lens geometry's −Z, every node transform
+   from the GDTF — and assert the beam vector hits the target. The forward kinematics share
+   nothing with `pointing.rs` but the spec's definitions.
+2. **Golden numbers re-derived by hand** for §18.2, with the working; the M1 case above
+   becomes the first one, and the 4.1 m miss becomes a test that the old bytes are *not*
+   produced.
+3. **The harness check keeps its shape** but its expectation is written down as bytes
+   from the hand derivation, not from `aim()`.
+4. **Blender DMX as an oracle, once, by hand**: load the corpus Viper into Blender DMX,
+   set the bytes our golden test expects for the drummer, and photograph the target. Not
+   automatable; one screenshot in the PR.
+
+### 18.5 Decisions (settled 2026-09-19)
+
+1. **Adopt GDTF's convention for pose degrees** (rest −Z, pan +about +Z, tilt +about +X),
+   for movers and static fixtures alike, in `.fixture` ranges as in GDTF.
+2. **`rotation` is the GDTF mounting**; MVR import stays as it is; old hand-written
+   venues are re-authored by hand, no migration tool.
+3. **Both inverse solutions are kept and the nearest-pan one wins**, within tilt range,
+   ties to the smaller tilt change.
+4. **The plot's orientation tick goes**; every placed fixture shows its beam footprint.
+5. **The kinematic cross-check against the corpus rigs is the gate** for this change, and
+   stays as the permanent independent test of the convention.
