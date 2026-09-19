@@ -81,6 +81,8 @@ pub(crate) fn parse_effect_definition(
     let mut up_time = None;
     let mut hold_time = None;
     let mut down_time = None;
+    let mut per_cell = false;
+    let mut spread = 0.0_f64;
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
@@ -248,6 +250,21 @@ pub(crate) fn parse_effect_definition(
                                 };
                                 hold_time = Some(duration);
                             }
+                            "per" => {
+                                per_cell = match value.as_str() {
+                                    "cell" | "cells" => true,
+                                    "fixture" | "fixtures" => false,
+                                    other => {
+                                        return Err(format!(
+                                            "Invalid per: '{other}' (expected: fixture or cell)"
+                                        )
+                                        .into())
+                                    }
+                                };
+                            }
+                            "spread" => {
+                                spread = parse_degrees(&value)?;
+                            }
                             "down_time" => {
                                 // Use score-space time consistent with up_time
                                 let duration = parse_duration_in_score_space(
@@ -320,6 +337,8 @@ pub(crate) fn parse_effect_definition(
         hold_time,
         down_time,
         sequence_name: None, // Will be set when expanding sequences
+        per_cell,
+        spread,
         ignored_parameters,
     })
 }

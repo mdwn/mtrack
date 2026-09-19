@@ -475,6 +475,13 @@ pub struct FixtureInfo {
     pub movement: crate::lighting::types::MovementLimits,
     /// The fixture type's rig model in the asset store, when it has one.
     pub rig: Option<String>,
+    /// The cells of a pixel fixture (design §17.2), in the manufacturer's
+    /// order; empty for a one-colour fixture.
+    pub cells: Vec<crate::lighting::types::Cell>,
+    /// For a cell registered as a sub-fixture (`parent/cell`): the fixture
+    /// it belongs to. The state stream and the plot treat sub-fixtures as
+    /// part of their parent.
+    pub parent: Option<String>,
     /// Cached capabilities derived from channels (computed once at construction)
     cached_capabilities: FixtureCapabilities,
     /// Cached fixture profile (computed once at construction)
@@ -511,6 +518,8 @@ impl FixtureInfo {
             channel_defs,
             movement: crate::lighting::types::MovementLimits::default(),
             rig: None,
+            cells: Vec::new(),
+            parent: None,
             cached_capabilities: capabilities,
             cached_profile: profile,
         }

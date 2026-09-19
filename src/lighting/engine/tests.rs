@@ -17,6 +17,7 @@ mod common;
 #[cfg(test)]
 mod basic_tests;
 #[cfg(test)]
+mod cell_tests;
 mod chase_tests;
 #[cfg(test)]
 mod color_cycle_tests;

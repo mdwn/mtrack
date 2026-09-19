@@ -252,10 +252,10 @@ Every cell must carry the same channel names. The fixture-level channels a
 show already understands (`red`, `green`, `blue` above) are derived, not
 written separately: they are the first cell's, and every other cell's same
 channel mirrors it, so a show that never mentions cells still sees one
-color across the whole fixture. Per-cell addressing — a show reaching one
-cell by name with `per: cell` — is a later slice; today the cells exist in
-the fixture type so the engine and the 3D view know where they are, and
-the fixture as a whole is driven the way any other fixture is.
+color across the whole fixture. A show that wants to run something across
+the cells instead says `per: cell` on the effect (`bars: chase pattern:
+linear, per: cell, duration: 10s`); see [Effects: Common Effect
+Parameters](effects.md#common-effect-parameters).
 
 ## Venue Definitions (`lighting/venues/`)
 

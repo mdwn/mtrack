@@ -38,6 +38,11 @@ Cycles through a list of colors continuously. Colors transition smoothly or inst
 - `transition`: `snap` (instant) or `fade` (smooth)
 - `duration`: **Required.** Total duration of the effect (e.g., `10s`, `4measures`)
 
+With `spread` set, the cycle's targets each run a phase ahead of the last instead of in
+lockstep, so the palette paints across the group (or, with `per: cell`, across a fixture's
+cells) instead of every target showing the same color at once. See `spread` and `per` under
+[Common Effect Parameters](#common-effect-parameters).
+
 **Example:**
 ```light
 @00:10.000
@@ -103,11 +108,17 @@ currently on and passes through the ones it is, so the color comes from a lower
 layer — put a bed underneath it rather than expecting the chase to light the rig by
 itself.
 
+With `per: cell`, a chase's spatial order runs through a fixture's cells as well as through
+the group's fixtures, so it can step along the pixels of a single bar, or cross from one pixel
+bar's cells into the next bar's. See `per` under
+[Common Effect Parameters](#common-effect-parameters).
+
 **Example:**
 ```light
 @00:25.000
 movers: static color: "red", duration: 10s, layer: background
 movers: chase pattern: linear, speed: 2.0, direction: left_to_right, transition: fade, duration: 10s, layer: midground
+bars: chase pattern: linear, direction: left_to_right, per: cell, duration: 10s, layer: midground
 ```
 
 ### Dimmer Effect
@@ -136,10 +147,18 @@ Generates a continuous rainbow color cycle across the color spectrum.
 - `brightness`: Overall brightness (0-100% or 0.0-1.0)
 - `duration`: **Required.** Duration of the rainbow effect (e.g., `10s`, `8measures`)
 
+`spread` is where a rainbow becomes worth having across a pixel fixture or a row of them:
+`spread: 360deg, per: cell, duration: 30s` paints one full rainbow across the cells instead of
+every cell showing the same hue. See `spread` and `per` under
+[Common Effect Parameters](#common-effect-parameters).
+
 **Example:**
 ```light
 @00:35.000
 all_lights: rainbow speed: 1.0, saturation: 100%, brightness: 80%, duration: 10s
+
+@00:45.000
+bars: rainbow speed: 0.5, spread: 360deg, per: cell, duration: 30s
 ```
 
 ### Move Effect
@@ -192,6 +211,25 @@ All effects support these optional parameters for advanced control:
 - `up_time`: Fade-in duration (e.g., `2s`, `1beat`)
 - `hold_time`: Duration to hold at full intensity (e.g., `5s`, `4measures`)
 - `down_time`: Fade-out duration (e.g., `1s`, `2beats`)
+- `per`: `fixture` (the default) or `cell`. A pixel fixture — an LED batten, a mover's pixel
+  ring — normally shows one color across all its cells, ganged together. `per: cell` expands
+  the effect's targets from fixtures to their cells, so a chase or a rainbow can run *across*
+  the pixels of a single fixture, not just across fixtures in a group. Expansion follows
+  spatial order: the group's fixtures in stage order (as `direction` on a chase already sorts
+  them), and within each fixture its cells in stage order along the same axis — so a
+  left-to-right chase over a row of pixel bars runs through every bar's cells in turn, crossing
+  from one bar into the next. A fixture with no cells expands to itself, so a mixed group of
+  plain and pixel fixtures still works. `per: cell` is a no-op on effects that give every
+  target the same value (`static`, `strobe`, `pulse`, `dimmer`) — the lint's
+  `per-cell-no-effect` warning says so. It also does nothing, with the lint's `cells-absent`
+  warning, on a group whose fixtures have no cells in the current venue.
+- `spread`: An angle in degrees (e.g. `spread: 180deg`), for `rainbow` and `cycle` only — the
+  lint's `spread-unused` warning fires on any other effect. It offsets each of the effect's
+  ordered targets by its share of the spread: `spread: 360deg` paints one full rainbow, or one
+  full pass of a color cycle's palette, across the targets at once; `spread: 0deg` (the
+  default) keeps every target in phase, today's behavior. It works with `per: fixture` (spread
+  across a group) or `per: cell` (spread across the cells within a fixture, or across cells and
+  fixtures together).
 
 **Example with crossfades:**
 ```light

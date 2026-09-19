@@ -626,6 +626,7 @@ impl LightingSystem {
             fixture_info.channel_defs = fixture_type.channel_defs().clone();
             fixture_info.movement = *fixture_type.movement();
             fixture_info.rig = fixture_type.rig().map(str::to_string);
+            fixture_info.cells = fixture_type.cells().to_vec();
 
             fixture_infos.push(fixture_info);
         }

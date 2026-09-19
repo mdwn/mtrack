@@ -81,6 +81,8 @@ pub struct GroupCapabilities {
     /// Fixtures whose pan and tilt carry a physical range, so degrees
     /// resolve precisely rather than over an assumed travel.
     pub ranged: usize,
+    /// Fixtures with cells (pixel fixtures), which `per: cell` can reach.
+    pub cells: usize,
 }
 
 impl GroupCapabilities {
@@ -93,6 +95,9 @@ impl GroupCapabilities {
         for fixture in fixtures {
             let capabilities = fixture.capabilities();
             out.fixtures += 1;
+            if !fixture.cells.is_empty() {
+                out.cells += 1;
+            }
             if capabilities.contains(FixtureCapabilities::RGB_COLOR) {
                 out.rgb += 1;
             }
@@ -171,6 +176,7 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
         empty_groups(show, ctx, &mut warnings);
         capability_coverage(show, ctx, &mut warnings);
         movement_checks(show, ctx, &mut warnings);
+        cell_checks(show, ctx, &mut warnings);
         tempo_disagrees_with_grid(show, ctx, &mut warnings);
         cues_beyond_the_tempo_map(show, ctx, &mut warnings);
     }
@@ -184,6 +190,81 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
     // two cues in one show would. Checking them separately misses that.
     stomping_replace_effects(shows, &mut warnings);
     warnings
+}
+
+/// `per: cell` and `spread` (design §17.4): `per: cell` on a group with no
+/// pixel fixtures, or on an effect that gives every target the same value;
+/// `spread` on an effect that does not take it.
+fn cell_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) {
+    let mut reported = HashSet::new();
+    for cue in &show.cues {
+        for effect in &cue.effects {
+            let kind = dsl_keyword(&effect.effect_type);
+            let varies = matches!(
+                effect.effect_type,
+                EffectType::Chase { .. }
+                    | EffectType::Rainbow { .. }
+                    | EffectType::ColorCycle { .. }
+            );
+            if effect.per_cell
+                && !varies
+                && reported.insert(("per-cell-no-effect", effect.groups.join(", "), kind))
+            {
+                {
+                    out.push(Warning::new(
+                        "per-cell-no-effect",
+                        format!(
+                            "`per: cell` on `{}` (`{kind}`) at {:.3}s does nothing: {kind} gives \
+                             every target the same value (and a move stays on the fixtures, since \
+                             cells have no pan or tilt) — only chase, rainbow and cycle vary \
+                             across cells",
+                            effect.groups.join(", "),
+                            cue.time.as_secs_f64(),
+                        ),
+                    ));
+                }
+            }
+            if effect.per_cell {
+                for group in &effect.groups {
+                    let Some(capabilities) = ctx.group_capabilities.get(group) else {
+                        continue;
+                    };
+                    if capabilities.fixtures > 0
+                        && capabilities.cells == 0
+                        && reported.insert(("cells-absent", group.clone(), kind))
+                    {
+                        out.push(Warning::new(
+                            "cells-absent",
+                            format!(
+                                "`per: cell` on `{group}` at {:.3}s: none of the group's {} \
+                                 fixtures has cells in this venue, so it runs per fixture",
+                                cue.time.as_secs_f64(),
+                                capabilities.fixtures,
+                            ),
+                        ));
+                    }
+                }
+            }
+            let takes_spread = matches!(
+                effect.effect_type,
+                EffectType::Rainbow { .. } | EffectType::ColorCycle { .. }
+            );
+            if effect.spread != 0.0
+                && !takes_spread
+                && reported.insert(("spread-unused", effect.groups.join(", "), kind))
+            {
+                out.push(Warning::new(
+                    "spread-unused",
+                    format!(
+                        "`spread` on `{}` (`{kind}`) at {:.3}s does nothing: only rainbow and \
+                         cycle spread across their targets",
+                        effect.groups.join(", "),
+                        cue.time.as_secs_f64(),
+                    ),
+                ));
+            }
+        }
+    }
 }
 
 /// The keyword an author writes for an effect type.
@@ -967,6 +1048,116 @@ show "T" {
 }
 "#;
         assert!(lint_shows(&shows(source), &LintContext::default()).is_empty());
+    }
+
+    // ── per: cell / spread (design §17.3/17.4) ────────────────────
+
+    #[test]
+    fn each_cell_check_kind_fires_once_per_group_and_effect_across_many_cues() {
+        // Pulse neither varies across targets nor takes `spread`, and
+        // `bars` has fixtures but none with cells — every one of the three
+        // kinds should apply, but only once each, no matter how many cues
+        // repeat the same mistake.
+        let source = r#"
+show "s" {
+    @00:00.000
+    bars: pulse frequency: 2, spread: 45deg, per: cell, duration: 1s
+
+    @00:02.000
+    bars: pulse frequency: 2, spread: 45deg, per: cell, duration: 1s
+
+    @00:04.000
+    bars: pulse frequency: 2, spread: 45deg, per: cell, duration: 1s
+}
+"#;
+        let mut group_capabilities = HashMap::new();
+        group_capabilities.insert(
+            "bars".to_string(),
+            GroupCapabilities {
+                fixtures: 2,
+                dimmer: 2,
+                ..GroupCapabilities::default()
+            },
+        );
+        let ctx = LintContext {
+            group_capabilities,
+            ..LintContext::default()
+        };
+        let warnings = lint_shows(&shows(source), &ctx);
+        let mut found = kinds(&warnings);
+        found.sort();
+        assert_eq!(
+            found,
+            vec!["cells-absent", "per-cell-no-effect", "spread-unused"]
+        );
+    }
+
+    #[test]
+    fn cells_absent_does_not_fire_without_group_capabilities_or_with_no_fixtures() {
+        let source = r#"
+show "s" {
+    @00:00.000
+    bars: chase pattern: linear, per: cell, duration: 1s
+}
+"#;
+        // No venue loaded at all: `group_capabilities` is empty.
+        assert!(lint_shows(&shows(source), &LintContext::default()).is_empty());
+
+        // A venue loaded, but this group is not in it (stale/misspelled
+        // group name — a different check's business).
+        let ctx_missing = LintContext {
+            group_capabilities: HashMap::from([(
+                "other".to_string(),
+                GroupCapabilities {
+                    fixtures: 2,
+                    ..GroupCapabilities::default()
+                },
+            )]),
+            ..LintContext::default()
+        };
+        assert!(lint_shows(&shows(source), &ctx_missing).is_empty());
+
+        // The group resolves, but to nothing — its own finding (empty-group,
+        // when `group_fixture_counts` is set), not `cells-absent`.
+        let ctx_empty = LintContext {
+            group_capabilities: HashMap::from([("bars".to_string(), GroupCapabilities::default())]),
+            ..LintContext::default()
+        };
+        assert!(lint_shows(&shows(source), &ctx_empty).is_empty());
+    }
+
+    #[test]
+    fn a_valid_per_cell_chase_on_a_group_with_cells_is_silent() {
+        let source = r#"
+show "s" {
+    @00:00.000
+    bars: chase pattern: linear, per: cell, duration: 1s
+}
+"#;
+        let ctx = LintContext {
+            group_capabilities: HashMap::from([(
+                "bars".to_string(),
+                GroupCapabilities {
+                    fixtures: 2,
+                    cells: 2,
+                    ..GroupCapabilities::default()
+                },
+            )]),
+            ..LintContext::default()
+        };
+        let cell_warnings: Vec<Warning> = lint_shows(&shows(source), &ctx)
+            .into_iter()
+            .filter(|w| {
+                matches!(
+                    w.kind,
+                    "per-cell-no-effect" | "cells-absent" | "spread-unused"
+                )
+            })
+            .collect();
+        assert!(
+            cell_warnings.is_empty(),
+            "cell_checks should have nothing to say: {cell_warnings:?}"
+        );
     }
 
     // ── past end of song ───────────────────────────────────────────

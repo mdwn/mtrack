@@ -32,6 +32,12 @@ pub struct EffectInstance {
     pub hold_time: Option<Duration>, // Time at full intensity (100%)
     pub down_time: Option<Duration>, // Fade out duration (100% to 0%)
     pub enabled: bool,
+    /// `per: cell`: targets expand to their cells when the effect starts
+    /// (design §17.3).
+    pub per_cell: bool,
+    /// Phase spread in degrees across the ordered targets, for `rainbow`
+    /// and `cycle`; zero keeps them in phase.
+    pub spread: f64,
     /// For a `move` without `from`: each target's pose when the effect
     /// started, captured from the engine's pose memory. Empty otherwise.
     pub start_poses: std::collections::HashMap<String, super::pointing::Pose>,
@@ -76,6 +82,8 @@ impl EffectInstance {
             hold_time: final_hold_time,
             down_time,
             enabled: true,
+            per_cell: false,
+            spread: 0.0,
             start_poses: std::collections::HashMap::new(),
         }
     }

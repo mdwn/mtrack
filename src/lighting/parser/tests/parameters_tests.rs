@@ -345,6 +345,77 @@ show "s" {
     assert_eq!(*from, Some(MoveTarget::Focus("center-stage".to_string())));
 }
 
+// ── per: cell / spread (design §17.3) ─────────────────────────────
+
+#[test]
+fn per_cell_sets_the_flag_and_per_fixture_or_its_absence_do_not() {
+    let source = r#"show "s" {
+    @00:00.000
+    bars: chase pattern: linear, per: cell, duration: 1s
+
+    @00:02.000
+    bars: chase pattern: linear, per: fixture, duration: 1s
+
+    @00:04.000
+    bars: chase pattern: linear, duration: 1s
+}"#;
+    let shows = parse_light_shows(source).expect("parses");
+    let show = &shows["s"];
+    assert!(show.cues[0].effects[0].per_cell, "per: cell");
+    assert!(!show.cues[1].effects[0].per_cell, "per: fixture");
+    assert!(!show.cues[2].effects[0].per_cell, "no per at all");
+}
+
+#[test]
+fn spread_parses_positive_and_negative_degrees() {
+    let source = r#"show "s" {
+    @00:00.000
+    bars: rainbow speed: 1.0, spread: 180deg, duration: 1s
+
+    @00:02.000
+    bars: rainbow speed: 1.0, spread: -90deg, duration: 1s
+}"#;
+    let shows = parse_light_shows(source).expect("parses");
+    let show = &shows["s"];
+    assert_eq!(show.cues[0].effects[0].spread, 180.0);
+    assert_eq!(show.cues[1].effects[0].spread, -90.0);
+}
+
+#[test]
+fn an_invalid_per_value_is_a_parse_error() {
+    let source = r#"show "s" {
+    @00:00.000
+    bars: chase pattern: linear, per: sideways, duration: 1s
+}"#;
+    let err = parse_light_shows(source)
+        .expect_err("`per: sideways` should not parse")
+        .to_string();
+    assert!(
+        err.contains("expected: fixture or cell"),
+        "error should name the valid values: {err}"
+    );
+}
+
+#[test]
+fn per_and_spread_are_not_reported_as_ignored_parameters() {
+    let source = r#"show "s" {
+    @00:00.000
+    bars: chase pattern: linear, per: cell, spread: 90deg, duration: 1s
+}"#;
+    let shows = parse_light_shows(source).expect("parses");
+    let effect = &shows["s"].cues[0].effects[0];
+    assert!(
+        !effect.ignored_parameters.iter().any(|p| p == "per"),
+        "{:?}",
+        effect.ignored_parameters
+    );
+    assert!(
+        !effect.ignored_parameters.iter().any(|p| p == "spread"),
+        "{:?}",
+        effect.ignored_parameters
+    );
+}
+
 #[test]
 fn a_move_refuses_a_missing_or_mixed_target_and_a_unitless_angle() {
     for (source, needle) in [

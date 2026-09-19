@@ -792,8 +792,11 @@ loader builds them, so a hand-written bar behaves like an imported one. `.light`
 A cell is addressed as a fixture named `<fixture>/<cell>` — `Robe Spiider 12/P3 Zone2` — with
 the parent's universe and address, only the cell's channels, the parent's rotation, and a
 position of parent position plus the rotated cell offset. It has no pan or tilt. Sub-fixtures
-are registered lazily, the first time a show asks for cells, so a rig that never does pays
-nothing.
+register with their fixture (a few hundred map entries on the largest corpus rig; nothing runs
+for them until an effect targets them) and stay inside the engine: the state stream, the live
+snapshot, the plot and the venue tools see fixtures only, with per-cell state arriving as the
+fixture's `cells` (§17.4). A `move` never expands: cells have no pan or tilt, so `per: cell`
+on a move leaves the targets as they are and the lint says so.
 
 A show asks with one effect parameter, `per: cell` (default `per: fixture`):
 
@@ -841,14 +844,18 @@ cells present, DMX generation walks cells rather than mirrors so each cell gets 
 Matrix (2D) patterns beyond spatial order — a chase across a tile wall still runs in stage
 order, which is a row-major sweep; true 2D patterns (rings, wipes by axis) are their own
 effect family. Per-cell `move` (nonsense). Colour macros and the GDTF `Pattern`/`Flower`
-effects channels, which stay as plain channels a `static` can name.
+effects channels, which stay as plain channels a `static` can name. `spread` runs along the
+stage from stage-right to stage-left (the chase's `left_to_right` order); a spread along a
+vertical or upstage run of cells needs a direction of its own, later. Spatial order needs
+every target placed: one unplaced pixel fixture in a group puts the whole group, cells
+included, in list order, as it does for a chase today.
 
 ### 17.6 Slices
 
 | Slice | Contents | Exit |
 |---|---|---|
 | P3-1 (internal) | `Cell` on the fixture type; distiller records cells with offsets; `cell` blocks in `.fixture`; cache v3; rig and distiller agree on names | The Spiider's 19 cells distill with positions matching its rig model's lenses |
-| P3-2 | Sub-fixture registry, `per: cell` and `spread` in grammar, parser, engine; cell-aware DMX merge; lint; harness check | The three-cell chase check passes on the rig; existing shows produce byte-identical DMX |
+| P3-2 (shipped) | Sub-fixture registry, `per: cell` and `spread` in grammar, parser, engine; cell-aware DMX merge; lint; harness check | The three-cell chase check passes on the rig; existing shows produce byte-identical DMX |
 | P3-3 | State stream cells, segmented plot, 3D lenses per cell, docs, screenshots | A per-cell rainbow reads along the Spiider's lenses in 3D |
 
 ### 17.7 Decisions (settled 2026-09-19)

@@ -52,8 +52,9 @@ fn into_frame(rotation_deg: [f64; 3], v: [f64; 3]) -> [f64; 3] {
     [v[0], cx * v[1] + sx * v[2], -sx * v[1] + cx * v[2]]
 }
 
-/// Rotates a mounting-frame vector out into stage space: `R = Rz·Ry·Rx`.
-fn out_of_frame(rotation_deg: [f64; 3], v: [f64; 3]) -> [f64; 3] {
+/// Rotates a mounting-frame vector out into stage space: `R = Rz·Ry·Rx` —
+/// where a cell's offset in the fixture's frame lands on the stage.
+pub fn out_of_frame(rotation_deg: [f64; 3], v: [f64; 3]) -> [f64; 3] {
     let (rx, ry, rz) = (
         rotation_deg[0].to_radians(),
         rotation_deg[1].to_radians(),
