@@ -986,7 +986,7 @@ A target on the pan axis (straight down or up) keeps the current pan.
    set the bytes our golden test expects for the drummer, and photograph the target. Not
    automatable; one screenshot in the PR.
 
-### 18.5 Decisions
+### 18.5 Decisions (settled 2026-09-19)
 
 1. **Adopt GDTF's convention for pose degrees** (rest −Z, pan +about +Z, tilt +about +X),
    for movers and static fixtures alike, in `.fixture` ranges as in GDTF.
