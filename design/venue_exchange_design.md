@@ -723,7 +723,7 @@ conversion unless it proves cheap.
 | P2-1 (internal) | Geometry tree, models and beams in the GDTF parser; rig model distilled and written to the asset cache with the `.glb` files at import; `rig: null` for native types; asset endpoint | The Spiider's rig model names its yoke and head as the axes, its 20 cells (19 pixels and the flower) and their beams, and its meshes; assets served with containment |
 | P2-2 (shipped) | Stage 3D page: deck, fixtures from rig models, live pan/tilt, beams from live state, focus markers, orbit camera; dashboard button. The room is always dark; beams are styled by GDTF beam type (spot throws, wash shorter, LED tiles a haze); labels toggle | A move to a focus point visibly lands there in 3D on the corpus's Demoshow venue — verified with screenshots at t=2s (spots on "singer") and t=8s (on "drummer") |
 | P2-3 (shipped) | `export-mvr` / `export_mvr`: MVR export with embedded GDTFs and generated minimal GDTFs for native types; stable UUIDs; layers from tags on request; round-trip test on the corpus | Import → export → import gives the same plan — all ten corpus venues merge with nothing changed |
-| P2-4 | Scenery from glTF MVRs; `.3ds` reported; polish and docs; screenshots | The docs show a real venue in 3D |
+| P2-4 (shipped) | Scenery from glTF MVRs (scene objects, trusses, supports, screens; symbol definitions resolved; transforms with scale kept) into the asset store and the 3D view; `.3ds` reported by the import and the page; docs and screenshots | The docs show a real venue in 3D — Basic_Festival with its glTF scenery |
 
 ### 16.7 Decisions (settled 2026-09-18)
 

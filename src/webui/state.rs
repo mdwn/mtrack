@@ -889,6 +889,10 @@ pub fn build_metadata_json(
                 "name": venue.name(),
                 "dir": system.venues_dir(),
                 "focus_points": venue.focus_points(),
+                // The scenery file under /api/lighting/assets/, when the
+                // venue came from an MVR; the 3D view draws it.
+                "scenery": system.scenery(venue.name()),
+                "scenery_error": system.scenery_error(venue.name()),
             });
         }
     }
@@ -1677,6 +1681,10 @@ metronome: {}
         assert!(
             value["fixtures"]["A"]["rig"].is_null(),
             "a native type has no rig"
+        );
+        assert!(
+            value["venue"]["scenery"].is_null(),
+            "a hand-written venue has no scenery"
         );
         assert_eq!(value["venue"]["name"], "v");
         assert_eq!(

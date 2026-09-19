@@ -13,6 +13,8 @@
 //
 
 import express from "express";
+import { readFileSync } from "node:fs";
+import nodePath from "node:path";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import {
@@ -30,6 +32,7 @@ import {
   METADATA_STATE,
   FIXTURE_STATE,
   TEST_RIG,
+  TEST_SCENERY,
   WAVEFORM_DATA,
   LOG_LINES,
 } from "./test-data.js";
@@ -314,6 +317,12 @@ app.post("/api/lighting/gdtf/import", (req, res) => {
   });
 });
 
+// The one mesh the mock store serves, read once at startup (the server
+// runs from the package root, see playwright.config.ts).
+const TEST_BOX_GLB = readFileSync(
+  nodePath.resolve(process.cwd(), "e2e/mock-server/box.glb"),
+);
+
 // The asset store (design §16.2): one rig model for tests of the 3D page;
 // anything else is a 404 like the real store.
 app.get("/api/lighting/assets/{*path}", (req, res) => {
@@ -322,6 +331,16 @@ app.get("/api/lighting/assets/{*path}", (req, res) => {
   if (joined === "test-archive/rig-test-v1.json") {
     res.set("Content-Type", "application/json");
     res.json(TEST_RIG);
+    return;
+  }
+  if (joined === "scenery/test/scene-v1.json") {
+    res.set("Content-Type", "application/json");
+    res.json(TEST_SCENERY);
+    return;
+  }
+  if (joined === "scenery/test/models/box.glb") {
+    res.set("Content-Type", "model/gltf-binary");
+    res.send(TEST_BOX_GLB);
     return;
   }
   res.status(404).json({ error: "Asset not found" });

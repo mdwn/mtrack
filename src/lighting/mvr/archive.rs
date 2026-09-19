@@ -102,6 +102,65 @@ pub fn read_scene_xml(bytes: &[u8]) -> Result<String, MvrError> {
         .map_err(|_| MvrError::new("GeneralSceneDescription.xml is not valid UTF-8"))
 }
 
+/// The largest embedded mesh read out — scenery glTF runs KB to a few MB.
+const MAX_MESH_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Every entry name in the archive, sorted.
+pub fn list_entries(bytes: &[u8]) -> Result<Vec<String>, MvrError> {
+    let archive = open(bytes)?;
+    let mut names: Vec<String> = archive.file_names().map(str::to_string).collect();
+    names.sort();
+    Ok(names)
+}
+
+/// Reads one embedded mesh by entry name, under the mesh cap. A name the
+/// archive lists but cannot look up (a non-ASCII name stored without the
+/// UTF-8 flag decodes one way in the listing and another in the lookup)
+/// is found by scanning the entries for the same ASCII skeleton.
+pub fn read_mesh_entry(bytes: &[u8], name: &str) -> Result<Vec<u8>, MvrError> {
+    let mut archive = open(bytes)?;
+    if archive.by_name(name).is_ok() {
+        return read_entry(&mut archive, name, MAX_MESH_BYTES);
+    }
+    let skeleton = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
+    };
+    let wanted = skeleton(name);
+    let index = (0..archive.len()).find(|&i| {
+        archive
+            .by_index_raw(i)
+            .map(|e| skeleton(e.name()) == wanted)
+            .unwrap_or(false)
+    });
+    let Some(index) = index else {
+        return Err(MvrError::new(format!("archive has no {name}")));
+    };
+    let mut entry = archive
+        .by_index(index)
+        .map_err(|e| MvrError::new(format!("archive entry {name}: {e}")))?;
+    if entry.size() > MAX_MESH_BYTES {
+        return Err(MvrError::new(format!(
+            "{name} claims {} bytes; refusing more than {MAX_MESH_BYTES}",
+            entry.size()
+        )));
+    }
+    let mut content = Vec::new();
+    entry
+        .by_ref()
+        .take(MAX_MESH_BYTES + 1)
+        .read_to_end(&mut content)
+        .map_err(|e| MvrError::new(format!("failed to read {name}: {e}")))?;
+    if content.len() as u64 > MAX_MESH_BYTES {
+        return Err(MvrError::new(format!(
+            "{name} decompressed past the {MAX_MESH_BYTES}-byte cap"
+        )));
+    }
+    Ok(content)
+}
+
 /// Lists the embedded `.gdtf` entry names, sorted.
 pub fn list_gdtf_entries(bytes: &[u8]) -> Result<Vec<String>, MvrError> {
     let archive = open(bytes)?;

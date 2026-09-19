@@ -254,3 +254,69 @@ fn every_corpus_venue_round_trips_through_export() {
         );
     }
 }
+
+/// Every corpus venue's scenery distills into the store (design §16.6,
+/// P2-4): glTF meshes copied and drawn, `.3ds` reported and skipped.
+#[test]
+#[ignore = "bring-your-own corpus: put .mvr files in tests/mvr-corpus/ and run with --ignored"]
+fn every_corpus_venue_distills_its_scenery() {
+    use mtrack::lighting::distill::DistillCache;
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mvr-corpus");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .expect("readable corpus dir")
+        .filter_map(|entry| {
+            let path = entry.expect("dir entry").path();
+            (path.extension().is_some_and(|e| e == "mvr")).then_some(path)
+        })
+        .collect();
+    files.sort();
+    let mut drawn_somewhere = false;
+    for path in files {
+        let bytes = std::fs::read(&path).expect("readable mvr");
+        let scene = mvr::parse_archive(&bytes).expect("parses");
+        let store = tempfile::tempdir().expect("temp store");
+        let cache = DistillCache::new(store.path().to_path_buf());
+        let (rel, warnings) = cache
+            .ensure_scenery(&bytes, &[0.0; 3], || Ok(&scene))
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let model = cache.scenery(&rel).expect("scenery reads back");
+        let drawn: usize = model.objects.iter().map(|o| o.meshes.len()).sum();
+        let skipped: usize = model.objects.iter().map(|o| o.skipped.len()).sum();
+        if drawn > 0 {
+            drawn_somewhere = true;
+        }
+        for object in &model.objects {
+            for mesh in &object.meshes {
+                let file = store
+                    .path()
+                    .join("assets")
+                    .join(rel.rsplit_once('/').unwrap().0)
+                    .join(&mesh.file);
+                assert!(file.is_file(), "{}: {} missing", path.display(), mesh.file);
+                let bytes = std::fs::read(&file).unwrap();
+                assert!(
+                    bytes.starts_with(b"glTF"),
+                    "{}: {} is not a glb",
+                    path.display(),
+                    mesh.file
+                );
+            }
+        }
+        println!(
+            "{}: {} objects, {} meshes drawn, {} skipped, formats {:?}",
+            path.file_name().unwrap().to_string_lossy(),
+            model.objects.len(),
+            drawn,
+            skipped,
+            model.formats
+        );
+        for warning in &warnings {
+            println!("  [scenery] {warning}");
+        }
+    }
+    assert!(
+        drawn_somewhere,
+        "the corpus carries glTF scenery (Basic_Festival, Circle_Stage, Messy_Patch, Midsize_w_GP)"
+    );
+}

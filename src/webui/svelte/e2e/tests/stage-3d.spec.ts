@@ -51,6 +51,7 @@ const VENUE_METADATA = {
     name: "test-venue",
     dir: null,
     focus_points: { drummer: [0, 2.8, 1.4] },
+    scenery: "scenery/test/scene-v1.json",
   },
 };
 
@@ -75,6 +76,17 @@ test.describe("Stage 3D", () => {
     const rigRequests: string[] = [];
     page.on("request", (r) => {
       if (r.url().includes("/api/lighting/assets/")) rigRequests.push(r.url());
+    });
+    // Asset failures surface only in the console; keep them in the report.
+    page.on("console", (m) => {
+      if (m.type() === "error" || m.type() === "warning") {
+        console.log(`[browser ${m.type()}] ${m.text()}`);
+      }
+    });
+    page.on("response", (r) => {
+      if (r.url().includes("/api/lighting/assets/") && r.status() !== 200) {
+        console.log(`[asset ${r.status()}] ${r.url()}`);
+      }
     });
     await page.goto(`/?wsId=${wsId}#/stage`);
     await expect(page.locator(".stage3d__viewport")).toBeVisible();
@@ -107,6 +119,14 @@ test.describe("Stage 3D", () => {
       await expect(page.locator(".stage3d__subtitle")).toContainText(
         "2 drawn generically",
       );
+      // The scenery: the deck's glb drawn, the truss's .3ds reported.
+      await expect(page.locator(".stage3d__subtitle")).toContainText(
+        "1 scenery mesh (1 not drawn: .3ds)",
+        { timeout: 10000 },
+      );
+      expect(
+        rigRequests.some((u) => u.endsWith("scenery/test/models/box.glb")),
+      ).toBe(true);
       // Frames keep coming: the scene is live, not a still.
       const before = Number(
         await page.locator(".stage3d__viewport").getAttribute("data-frames"),

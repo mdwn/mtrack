@@ -40,8 +40,12 @@ mod scene;
 #[cfg(test)]
 pub(crate) use scene::tests::SYNTHETIC_SCENE;
 
-pub use archive::{list_gdtf_entries, read_gdtf_entry, read_scene_xml};
-pub use scene::{parse_scene, Matrix, MvrFixture, MvrFocusPoint, Scene};
+pub use archive::{
+    list_entries, list_gdtf_entries, read_gdtf_entry, read_mesh_entry, read_scene_xml,
+};
+pub use scene::{
+    parse_scene, Matrix, MvrFixture, MvrFocusPoint, MvrMesh, MvrSceneObject, Scene, IDENTITY,
+};
 
 use std::error::Error;
 use std::fmt;

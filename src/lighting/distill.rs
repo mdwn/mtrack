@@ -32,17 +32,130 @@
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
 use super::gdtf::{self, Description, RigModel, RIG_VERSION};
+use super::mvr::{self, Matrix, Scene};
 use super::types::{ChannelDef, FixtureType, GdtfSource, MovementLimits};
 
 /// The asset store's directory under the cache.
 pub const ASSETS_DIR: &str = "assets";
+
+/// Bumped whenever the scenery written for the same MVR can change.
+pub const SCENERY_VERSION: u32 = 1;
+
+/// The most bytes of meshes copied out of one MVR.
+const MAX_SCENERY_BYTES_TOTAL: u64 = 256 * 1024 * 1024;
+
+/// A venue's scenery as the store writes it (design §16.3): every scene
+/// object with its transform in stage space and the meshes it draws.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SceneryModel {
+    pub version: u32,
+    /// The objects, in document order.
+    pub objects: Vec<SceneryObject>,
+    /// Mesh files by extension: how much of the scenery each format holds,
+    /// drawn or not.
+    pub formats: BTreeMap<String, usize>,
+    /// What was skipped and why.
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// One piece of scenery.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SceneryObject {
+    pub name: String,
+    /// `SceneObject`, `Truss`, `Support`, ...
+    pub kind: String,
+    pub layer: String,
+    /// Row-major 4×4 in stage space: the MVR basis (scale and all) with
+    /// the translation in meters, re-origined like the fixtures.
+    pub transform: [[f64; 4]; 4],
+    /// Meshes the store holds, by path relative to the scenery file.
+    pub meshes: Vec<SceneryMesh>,
+    /// Mesh files the 3D view cannot draw (`.3ds` and the like), by name.
+    pub skipped: Vec<String>,
+}
+
+/// A drawable mesh of an object.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SceneryMesh {
+    pub file: String,
+    /// Row-major 4×4 relative to the object, translation in meters.
+    pub transform: [[f64; 4]; 4],
+}
+
+/// A name reduced to its lowercase ASCII letters and digits — what two
+/// spellings of one non-ASCII name agree on.
+fn ascii_skeleton(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// An MVR transform as a row-major 4×4 with the translation converted from
+/// millimeters, re-origined by `origin_mm`.
+fn scenery_transform(matrix: &Matrix, origin_mm: &[f64; 3]) -> [[f64; 4]; 4] {
+    [
+        [
+            matrix.u[0],
+            matrix.v[0],
+            matrix.w[0],
+            (matrix.o[0] - origin_mm[0]) / 1000.0,
+        ],
+        [
+            matrix.u[1],
+            matrix.v[1],
+            matrix.w[1],
+            (matrix.o[1] - origin_mm[1]) / 1000.0,
+        ],
+        [
+            matrix.u[2],
+            matrix.v[2],
+            matrix.w[2],
+            (matrix.o[2] - origin_mm[2]) / 1000.0,
+        ],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+/// A mesh entry name as a file name in the store: the archive's own name
+/// reduced to safe characters, made unique by a hash when two reduce alike.
+fn mesh_file_name(entry: &str, taken: &mut std::collections::HashSet<String>) -> String {
+    let base = entry.rsplit('/').next().unwrap_or(entry);
+    let (stem, ext) = match base.rsplit_once('.') {
+        Some((s, e)) => (s, e.to_ascii_lowercase()),
+        None => (base, String::new()),
+    };
+    let safe: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let safe = if safe.is_empty() {
+        "mesh".to_string()
+    } else {
+        safe
+    };
+    let mut name = format!("{safe}.{ext}");
+    if !taken.insert(name.clone()) {
+        let hash = format!("{:x}", Sha256::digest(entry.as_bytes()));
+        name = format!("{safe}-{}.{ext}", &hash[..8]);
+        taken.insert(name.clone());
+    }
+    name
+}
 
 /// Bumped whenever the distiller's output for the same source can change.
 /// Part of the cache key, so an upgrade regenerates every expansion.
@@ -247,6 +360,213 @@ impl DistillCache {
         }
         write_atomic(&rig_file, serde_json::to_string_pretty(&rig)?.as_bytes())?;
         Ok((rel, rig.warnings))
+    }
+
+    /// The store-relative path of a venue's scenery file:
+    /// `scenery/<mvr sha256>/scene-<origin hash>-v<SCENERY_VERSION>.json`.
+    /// The archive hash keys the directory (its meshes); the stage origin,
+    /// which the transforms bake in, keys the file.
+    pub fn scenery_path(mvr_bytes: &[u8], origin_m: &[f64; 3]) -> String {
+        let archive = format!("{:x}", Sha256::digest(mvr_bytes));
+        let origin = format!("{:x}", Sha256::digest(format!("{:?}", origin_m).as_bytes()));
+        format!(
+            "scenery/{archive}/scene-{}-v{SCENERY_VERSION}.json",
+            &origin[..16]
+        )
+    }
+
+    /// Makes sure the store holds a venue's scenery — the scene file and
+    /// every glTF mesh it draws — and returns the file's store-relative
+    /// path with the distillation's warnings. Meshes in formats the view
+    /// cannot draw (`.3ds`) are listed as skipped, not copied.
+    pub fn ensure_scenery<'a>(
+        &self,
+        mvr_bytes: &[u8],
+        origin_m: &[f64; 3],
+        describe: impl FnOnce() -> Result<&'a Scene, Box<dyn Error>>,
+    ) -> Result<(String, Vec<String>), Box<dyn Error>> {
+        let rel = Self::scenery_path(mvr_bytes, origin_m);
+        let scene_file = self.assets_dir().join(&rel);
+        if scene_file.is_file() {
+            return Ok((rel, Vec::new()));
+        }
+        let scene = describe()?;
+        let origin_mm = [
+            origin_m[0] * 1000.0,
+            origin_m[1] * 1000.0,
+            origin_m[2] * 1000.0,
+        ];
+        let entries: std::collections::HashSet<String> =
+            mvr::list_entries(mvr_bytes)?.into_iter().collect();
+
+        let mut model = SceneryModel {
+            version: SCENERY_VERSION,
+            objects: Vec::new(),
+            formats: BTreeMap::new(),
+            warnings: Vec::new(),
+        };
+        // Entry name → store file name, so a mesh many objects share is
+        // copied once.
+        let mut file_of: HashMap<String, String> = HashMap::new();
+        let mut taken = std::collections::HashSet::new();
+        let mut missing = std::collections::BTreeSet::new();
+        let mut ambiguous = std::collections::BTreeSet::new();
+        for object in &scene.objects {
+            let Some(matrix) = object.matrix else {
+                continue;
+            };
+            let mut out = SceneryObject {
+                name: object.name.clone(),
+                kind: object.kind.clone(),
+                layer: object.layer.clone(),
+                transform: scenery_transform(&matrix, &origin_mm),
+                meshes: Vec::new(),
+                skipped: Vec::new(),
+            };
+            for mesh in &object.meshes {
+                let ext = mesh
+                    .file
+                    .rsplit_once('.')
+                    .map(|(_, e)| e.to_ascii_lowercase())
+                    .unwrap_or_default();
+                *model.formats.entry(ext.clone()).or_default() += 1;
+                if ext != "glb" {
+                    out.skipped.push(mesh.file.clone());
+                    continue;
+                }
+                // Entry names are matched as written, then case-folded,
+                // then by ASCII skeleton: an archive that stores UTF-8
+                // names without the UTF-8 flag reads back as cp437
+                // ("B├╝hnenpodest"), and the scene spells it "Bühnenpodest".
+                let entry = if entries.contains(&mesh.file) {
+                    Some(mesh.file.clone())
+                } else {
+                    entries
+                        .iter()
+                        .find(|e| e.eq_ignore_ascii_case(&mesh.file))
+                        .or_else(|| {
+                            let wanted = ascii_skeleton(&mesh.file);
+                            let mut candidates =
+                                entries.iter().filter(|e| ascii_skeleton(e) == wanted);
+                            match (candidates.next(), candidates.next()) {
+                                (Some(one), None) => Some(one),
+                                (Some(_), Some(_)) => {
+                                    ambiguous.insert(mesh.file.clone());
+                                    None
+                                }
+                                _ => None,
+                            }
+                        })
+                        .cloned()
+                };
+                let Some(entry) = entry else {
+                    if !ambiguous.contains(&mesh.file) {
+                        missing.insert(mesh.file.clone());
+                    }
+                    out.skipped.push(mesh.file.clone());
+                    continue;
+                };
+                let file = match file_of.get(&entry) {
+                    Some(file) => file.clone(),
+                    None => {
+                        let file = format!("models/{}", mesh_file_name(&entry, &mut taken));
+                        file_of.insert(entry.clone(), file.clone());
+                        file
+                    }
+                };
+                out.meshes.push(SceneryMesh {
+                    file,
+                    transform: scenery_transform(&mesh.matrix.unwrap_or(mvr::IDENTITY), &[0.0; 3]),
+                });
+            }
+            model.objects.push(out);
+        }
+        for file in missing {
+            model.warnings.push(format!(
+                "scenery mesh {file} is referenced but not in the archive"
+            ));
+        }
+        for file in ambiguous {
+            model.warnings.push(format!(
+                "scenery mesh {file} matches more than one archive entry by name; skipped"
+            ));
+        }
+        let undrawn: usize = model
+            .formats
+            .iter()
+            .filter(|(ext, _)| ext.as_str() != "glb")
+            .map(|(_, n)| n)
+            .sum();
+        if undrawn > 0 {
+            model.warnings.push(format!(
+                "{undrawn} scenery mesh(es) are in formats the 3D view does not draw ({}); glTF (.glb) is drawn",
+                model
+                    .formats
+                    .iter()
+                    .filter(|(ext, _)| ext.as_str() != "glb")
+                    .map(|(ext, n)| format!("{n} .{ext}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+
+        // Meshes first, the scene file last, under a total budget. A mesh
+        // that cannot be read (over its cap, corrupt) or that would take
+        // the store past the budget is skipped, and the objects that use
+        // it say so; the rest of the scenery is kept.
+        let dir = scene_file.parent().expect("scene path has a directory");
+        let models_dir = dir.join("models");
+        std::fs::create_dir_all(&models_dir)?;
+        let mut total: u64 = 0;
+        let mut dropped: HashMap<String, String> = HashMap::new();
+        let mut ordered: Vec<(&String, &String)> = file_of.iter().collect();
+        ordered.sort();
+        for (entry, file) in ordered {
+            let bytes = match mvr::read_mesh_entry(mvr_bytes, entry) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    dropped.insert(file.clone(), format!("{entry}: {e}"));
+                    continue;
+                }
+            };
+            if total + bytes.len() as u64 > MAX_SCENERY_BYTES_TOTAL {
+                dropped.insert(
+                    file.clone(),
+                    format!("{entry}: past the {MAX_SCENERY_BYTES_TOTAL}-byte scenery budget"),
+                );
+                continue;
+            }
+            total += bytes.len() as u64;
+            write_atomic(&dir.join(file), &bytes)?;
+        }
+        if !dropped.is_empty() {
+            for object in &mut model.objects {
+                let (kept, lost): (Vec<SceneryMesh>, Vec<SceneryMesh>) = object
+                    .meshes
+                    .drain(..)
+                    .partition(|m| !dropped.contains_key(&m.file));
+                object.meshes = kept;
+                object.skipped.extend(lost.into_iter().map(|m| m.file));
+            }
+            let mut reasons: Vec<&String> = dropped.values().collect();
+            reasons.sort();
+            for reason in reasons {
+                model
+                    .warnings
+                    .push(format!("scenery mesh not stored: {reason}"));
+            }
+        }
+        write_atomic(
+            &scene_file,
+            serde_json::to_string_pretty(&model)?.as_bytes(),
+        )?;
+        Ok((rel, model.warnings))
+    }
+
+    /// Reads a scenery model back from the store by its store-relative path.
+    pub fn scenery(&self, rel: &str) -> Option<SceneryModel> {
+        let content = std::fs::read_to_string(self.assets_dir().join(rel)).ok()?;
+        serde_json::from_str(&content).ok()
     }
 
     /// Reads a rig model back from the store by its store-relative path.
@@ -519,5 +839,145 @@ mod tests {
             .to_string();
         assert!(err.contains("no mode matching"), "{err}");
         assert!(!cache.assets_dir().exists());
+    }
+
+    #[test]
+    fn the_scenery_store_holds_drawable_meshes_and_reports_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DistillCache::new(dir.path().join(".cache"));
+        let archive = crate::lighting::gdtf::build_zip(&[
+            (
+                "GeneralSceneDescription.xml",
+                crate::lighting::mvr::SYNTHETIC_SCENE.as_bytes(),
+            ),
+            ("Lid.glb", b"lid-mesh".as_slice()),
+            ("deck.glb", b"deck-mesh".as_slice()),
+            ("Box.3ds", b"old".as_slice()),
+        ]);
+        let scene = crate::lighting::mvr::parse_archive(&archive).unwrap();
+        let origin = [0.0, -3.5, 0.0];
+        let (rel, warnings) = cache
+            .ensure_scenery(&archive, &origin, || Ok(&scene))
+            .unwrap();
+        assert!(
+            rel.starts_with("scenery/") && rel.ends_with(&format!("-v{SCENERY_VERSION}.json")),
+            "{rel}"
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("1 .3ds"), "{warnings:?}");
+        let model = cache.scenery(&rel).unwrap();
+        assert_eq!(model.objects.len(), 2);
+        let truss = &model.objects[0];
+        assert_eq!(truss.kind, "Truss");
+        // Re-origined and in meters, the basis kept as it was.
+        assert_eq!(truss.transform[1][3], 3.5);
+        assert_eq!(truss.transform[2][3], 6.0);
+        assert_eq!(truss.transform[0][1], -1.0);
+        assert_eq!(truss.skipped, vec!["Box.3ds".to_string()]);
+        assert_eq!(truss.meshes.len(), 1);
+        assert_eq!(truss.meshes[0].file, "models/Lid.glb");
+        assert_eq!(
+            truss.meshes[0].transform[2][3], 1.0,
+            "relative offset in meters"
+        );
+        assert_eq!(truss.meshes[0].transform[0][0], 2.0, "symbol scale kept");
+        let deck = &model.objects[1];
+        assert_eq!(deck.transform[0][0], 7.5);
+        assert_eq!(deck.meshes[0].file, "models/deck.glb");
+        assert_eq!(model.formats["glb"], 2);
+        assert_eq!(model.formats["3ds"], 1);
+        let store_dir = cache.assets_dir().join(rel.rsplit_once('/').unwrap().0);
+        assert_eq!(
+            std::fs::read(store_dir.join("models/Lid.glb")).unwrap(),
+            b"lid-mesh"
+        );
+        assert!(!store_dir.join("models/Box.3ds").exists());
+
+        // Present: no parse. Another origin: another file, same meshes.
+        let (again, _) = cache
+            .ensure_scenery(&archive, &origin, || panic!("must not parse"))
+            .unwrap();
+        assert_eq!(again, rel);
+        let (other, _) = cache
+            .ensure_scenery(&archive, &[0.0; 3], || Ok(&scene))
+            .unwrap();
+        assert_ne!(other, rel);
+        assert_eq!(
+            other.rsplit_once('/').unwrap().0,
+            rel.rsplit_once('/').unwrap().0
+        );
+    }
+
+    #[test]
+    fn a_cp437_misread_entry_name_still_matches_its_mesh() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DistillCache::new(dir.path().join(".cache"));
+        // The scene names the mesh in UTF-8; the archive entry is what a
+        // cp437 read of the same bytes yields.
+        let scene_xml = crate::lighting::mvr::SYNTHETIC_SCENE
+            .replace("fileName=\"deck.glb\"", "fileName=\"Bühnenpodest_1.glb\"");
+        let archive = crate::lighting::gdtf::build_zip(&[
+            ("GeneralSceneDescription.xml", scene_xml.as_bytes()),
+            ("B├╝hnenpodest_1.glb", b"deck-mesh".as_slice()),
+            ("Lid.glb", b"lid".as_slice()),
+        ]);
+        let scene = crate::lighting::mvr::parse_archive(&archive).unwrap();
+        let (rel, warnings) = cache
+            .ensure_scenery(&archive, &[0.0; 3], || Ok(&scene))
+            .unwrap();
+        assert!(
+            !warnings.iter().any(|w| w.contains("not in the archive")),
+            "{warnings:?}"
+        );
+        let model = cache.scenery(&rel).unwrap();
+        let deck = model.objects.iter().find(|o| o.name == "Deck").unwrap();
+        assert_eq!(deck.meshes.len(), 1);
+        assert_eq!(deck.meshes[0].file, "models/B__hnenpodest_1.glb");
+        assert_eq!(ascii_skeleton("Bühnenpodest_1.glb"), "bhnenpodest1glb");
+    }
+
+    #[test]
+    fn an_ambiguous_skeleton_match_is_skipped_not_guessed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DistillCache::new(dir.path().join(".cache"));
+        let scene_xml = crate::lighting::mvr::SYNTHETIC_SCENE
+            .replace("fileName=\"deck.glb\"", "fileName=\"Bühne.glb\"");
+        // Two entries that both skeleton to "bhneglb" and neither of which
+        // matches exactly or case-folded: nothing is guessed.
+        let archive = crate::lighting::gdtf::build_zip(&[
+            ("GeneralSceneDescription.xml", scene_xml.as_bytes()),
+            ("B├╝hne.glb", b"one".as_slice()),
+            ("B_hne.glb", b"two".as_slice()),
+            ("Lid.glb", b"lid".as_slice()),
+        ]);
+        let scene = crate::lighting::mvr::parse_archive(&archive).unwrap();
+        let (rel, warnings) = cache
+            .ensure_scenery(&archive, &[0.0; 3], || Ok(&scene))
+            .unwrap();
+        let model = cache.scenery(&rel).unwrap();
+        let deck = model.objects.iter().find(|o| o.name == "Deck").unwrap();
+        assert!(deck.meshes.is_empty(), "{:?}", deck.meshes);
+        assert_eq!(deck.skipped, vec!["Bühne.glb".to_string()]);
+        assert!(
+            warnings.iter().any(|w| w.contains("more than one")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn mesh_file_names_are_safe_and_distinct() {
+        let mut taken = std::collections::HashSet::new();
+        assert_eq!(
+            mesh_file_name("Geometrie_ab cd.glb", &mut taken),
+            "Geometrie_ab_cd.glb"
+        );
+        let second = mesh_file_name("Geometrie_ab/cd.glb", &mut taken);
+        assert_ne!(second, "Geometrie_ab_cd.glb");
+        assert!(
+            second.starts_with("cd") || second.starts_with("Geometrie"),
+            "{second}"
+        );
+        assert_eq!(mesh_file_name("../evil.GLB", &mut taken), "evil.glb");
+        assert_eq!(mesh_file_name("", &mut taken), "mesh.");
     }
 }

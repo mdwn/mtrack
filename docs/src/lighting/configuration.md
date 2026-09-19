@@ -353,7 +353,7 @@ markers. Drag to orbit, scroll to zoom, right-drag to pan; the **Front of house*
 and **Top** buttons are camera presets, and **Labels** toggles the fixture names (off by
 default on a large rig).
 
-![Stage 3D during a show](../images/stage-3d.png)
+![Stage 3D during a show: the Basic_Festival sample venue with its glTF scenery](../images/stage-3d.png)
 
 What a fixture looks like comes from its GDTF: the archive's meshes when it ships them, or
 the GDTF's own primitives with their sizes. Pan turns the geometry the GDTF's pan channel
@@ -362,8 +362,11 @@ angle the GDTF states — a 5° spot looks like a spot, a 25° wash like a wash.
 written by hand has none of this and is drawn as a box with a 20° beam along its mounting
 direction. Fixtures the venue does not place sit on a tray in front of the audience edge.
 
-The room is always dark, whatever the UI theme, and it is a sketch, not a render: no haze
-model, no shadows, no photometrics. The models and rig data it draws live in the asset
+A venue seeded from an MVR also shows the MVR's scenery — decks, trusses, screens — where
+the MVR carries it as glTF (`.glb`); scenery in other formats (`.3ds` is common in console
+exports) is reported by the import and by the page, and skipped. The room is always dark,
+whatever the UI theme, and it is a sketch, not a render: no haze model, no shadows, no
+photometrics. The models and rig data it draws live in the asset
 store (`lighting/.cache/assets/`, rebuildable) and load only on this page.
 
 ## Song Lighting Definitions

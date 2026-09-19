@@ -707,6 +707,20 @@ pub fn import_mvr(
         for kept in &plan.kept_fixtures {
             println!("    KEPT \"{kept}\" (not in the MVR; yours)");
         }
+        if plan.scenery_objects > 0 {
+            println!(
+                "  scenery: {} object(s){}",
+                plan.scenery_objects,
+                if plan.scenery_meshes_undrawn > 0 {
+                    format!(
+                        ", {} mesh(es) in formats the 3D view does not draw",
+                        plan.scenery_meshes_undrawn
+                    )
+                } else {
+                    String::new()
+                }
+            );
+        }
         if !plan.focus_points.is_empty()
             || !plan.kept_focus_points.is_empty()
             || !plan.removed_focus_points.is_empty()
