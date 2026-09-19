@@ -473,6 +473,8 @@ pub struct FixtureInfo {
     pub channel_defs: HashMap<String, crate::lighting::types::ChannelDef>,
     /// Movement limits, when the fixture type declares them.
     pub movement: crate::lighting::types::MovementLimits,
+    /// The fixture type's rig model in the asset store, when it has one.
+    pub rig: Option<String>,
     /// Cached capabilities derived from channels (computed once at construction)
     cached_capabilities: FixtureCapabilities,
     /// Cached fixture profile (computed once at construction)
@@ -508,6 +510,7 @@ impl FixtureInfo {
             rotation: None,
             channel_defs,
             movement: crate::lighting::types::MovementLimits::default(),
+            rig: None,
             cached_capabilities: capabilities,
             cached_profile: profile,
         }

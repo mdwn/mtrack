@@ -294,9 +294,14 @@ mod tests {
         assert_eq!(
             std::fs::read_dir(project.join("lighting/.cache"))
                 .unwrap()
+                .filter(|e| e.as_ref().unwrap().path().is_file())
                 .count(),
             1,
             "import warms the expansion cache"
+        );
+        assert!(
+            project.join("lighting/.cache/assets").is_dir(),
+            "import fills the asset store"
         );
 
         // Same name again refuses rather than clobbering.

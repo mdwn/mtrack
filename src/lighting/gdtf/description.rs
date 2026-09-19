@@ -14,11 +14,12 @@
 
 //! Streaming parser for the subset of `description.xml` mtrack consumes.
 //!
-//! The subset (venue-exchange design §5): fixture identity, DMX modes with
-//! their channels, logical channels, and channel functions (offsets, DMX
-//! starts, physical ranges), plus the names of geometry references so the
-//! distiller can recognize multi-instance modes. Wheels, models, emitters,
-//! presets, protocols, and revisions are passed over without being modeled.
+//! The subset (venue-exchange design §5, §16): fixture identity, DMX modes
+//! with their channels, logical channels, and channel functions (offsets,
+//! DMX starts, physical ranges), the geometry tree with its axes, beams and
+//! references (the rig model distills from it), and the model table that
+//! names the archive's meshes. Wheels, emitters, presets, protocols, and
+//! revisions are passed over without being modeled.
 //!
 //! quick-xml performs no DTD processing or custom entity expansion, and the
 //! walk enforces a nesting-depth cap — the input is a stranger's file.
@@ -44,6 +45,94 @@ pub struct Description {
     /// Names of GeometryReference nodes — a mode whose channels sit on one
     /// is multi-instance (pixel bars and the like).
     pub geometry_reference_names: Vec<String>,
+    /// The model table: what each geometry node looks like.
+    pub models: Vec<Model>,
+    /// The geometry tree, flattened in document order; a node's parent
+    /// precedes it. Top-level geometries have no parent.
+    pub geometries: Vec<GeometryNode>,
+    /// The thumbnail's file stem, when the fixture type names one (the
+    /// archive then holds `<stem>.png` and/or `<stem>.svg`).
+    pub thumbnail: Option<String>,
+}
+
+/// A 4×4 transform, row-major, as GDTF writes it: three rows of a rotation
+/// (and scale) with the translation in the fourth column, meters.
+pub type Matrix4 = [[f64; 4]; 4];
+
+/// The identity transform.
+pub const IDENTITY: Matrix4 = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+
+/// An entry of the model table.
+#[derive(Debug, Clone)]
+pub struct Model {
+    /// The model's name, what a geometry node's `Model` attribute names.
+    pub name: String,
+    /// The mesh file's stem (`models/gltf/<file>.glb` in the archive), when
+    /// the model has one.
+    pub file: Option<String>,
+    /// The GDTF primitive standing in for a mesh (`Cube`, `Cylinder`,
+    /// `Base`, `Yoke`, `Head`, `Pigtail`, ...); `Undefined` when a mesh is
+    /// meant.
+    pub primitive: String,
+    /// Bounding size in meters: length (x), width (y), height (z).
+    pub size: [f64; 3],
+}
+
+/// What a geometry node is.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GeometryKind {
+    /// A plain geometry.
+    Geometry,
+    /// A rotating part: pan (about its local Z) or tilt (about its local
+    /// X), which the mode's `Pan`/`Tilt` channels name.
+    Axis,
+    /// A light source, emitting along its local −Z.
+    Beam,
+    /// An instance of another top-level geometry (a pixel cell, usually).
+    Reference,
+    /// Any other spec'd geometry type (filters, displays, structure, ...).
+    Other(String),
+}
+
+/// Photometric data on a `Beam` node.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BeamData {
+    /// Beam angle in degrees (the bright core).
+    pub beam_angle: Option<f64>,
+    /// Field angle in degrees (to 10% intensity).
+    pub field_angle: Option<f64>,
+    /// `Wash`, `Spot`, `None`, `Rectangle`, `PC`, `Fresnel`, `Glow`.
+    pub beam_type: Option<String>,
+    /// Luminous flux in lumens.
+    pub luminous_flux: Option<f64>,
+    /// Color temperature in kelvin.
+    pub color_temperature: Option<f64>,
+    /// Beam (lens) radius in meters.
+    pub beam_radius: Option<f64>,
+}
+
+/// One node of the geometry tree.
+#[derive(Debug, Clone)]
+pub struct GeometryNode {
+    /// The node's name — what channels and references point at.
+    pub name: String,
+    /// What the node is.
+    pub kind: GeometryKind,
+    /// The parent's index in [`Description::geometries`].
+    pub parent: Option<usize>,
+    /// The model the node is drawn with.
+    pub model: Option<String>,
+    /// The node's transform relative to its parent.
+    pub position: Matrix4,
+    /// Beam data, on a `Beam` node.
+    pub beam: Option<BeamData>,
+    /// The referenced top-level geometry's name, on a `GeometryReference`.
+    pub reference: Option<String>,
 }
 
 /// A DMX mode (personality).
@@ -125,20 +214,28 @@ pub fn parse_description(xml: &str) -> Result<Description, GdtfError> {
     }
     let mut reader = Reader::from_str(xml);
 
-    let mut description = Description {
-        name: String::new(),
-        manufacturer: String::new(),
-        modes: Vec::new(),
-        geometry_reference_names: Vec::new(),
+    let mut walk = Walk {
+        description: Description {
+            name: String::new(),
+            manufacturer: String::new(),
+            modes: Vec::new(),
+            geometry_reference_names: Vec::new(),
+            models: Vec::new(),
+            geometries: Vec::new(),
+            thumbnail: None,
+        },
+        current_mode: None,
+        current_channel: None,
+        current_logical: None,
+        geometry_stack: Vec::new(),
     };
 
     // The element stack provides context: tags like DMXMode only mean
     // something in the right subtree, and unrelated subtrees (Wheels,
-    // Models, ...) fall through every match arm untouched.
+    // Protocols, ...) fall through every match arm untouched. The geometry
+    // stack runs parallel to it, holding the geometry node each element
+    // opened (if any), so a node finds its parent.
     let mut stack: Vec<String> = Vec::new();
-    let mut current_mode: Option<Mode> = None;
-    let mut current_channel: Option<Channel> = None;
-    let mut current_logical: Option<LogicalChannel> = None;
 
     loop {
         let event = reader
@@ -146,15 +243,9 @@ pub fn parse_description(xml: &str) -> Result<Description, GdtfError> {
             .map_err(|e| GdtfError::new(format!("XML error in description.xml: {e}")))?;
         match event {
             Event::Start(ref element) => {
-                handle_element(
-                    element,
-                    &stack,
-                    &mut description,
-                    &mut current_mode,
-                    &mut current_channel,
-                    &mut current_logical,
-                )?;
+                let node = walk.handle_element(element, &stack)?;
                 stack.push(element_name(element)?);
+                walk.geometry_stack.push(node);
                 if stack.len() > MAX_DEPTH {
                     return Err(GdtfError::new(format!(
                         "description.xml nests deeper than {MAX_DEPTH} elements"
@@ -163,31 +254,13 @@ pub fn parse_description(xml: &str) -> Result<Description, GdtfError> {
             }
             Event::Empty(ref element) => {
                 // Self-closing: open and close in one step.
-                handle_element(
-                    element,
-                    &stack,
-                    &mut description,
-                    &mut current_mode,
-                    &mut current_channel,
-                    &mut current_logical,
-                )?;
-                close_element(
-                    &element_name(element)?,
-                    &mut description,
-                    &mut current_mode,
-                    &mut current_channel,
-                    &mut current_logical,
-                );
+                walk.handle_element(element, &stack)?;
+                walk.close_element(&element_name(element)?);
             }
             Event::End(_) => {
+                walk.geometry_stack.pop();
                 if let Some(name) = stack.pop() {
-                    close_element(
-                        &name,
-                        &mut description,
-                        &mut current_mode,
-                        &mut current_channel,
-                        &mut current_logical,
-                    );
+                    walk.close_element(&name);
                 }
             }
             Event::Eof => break,
@@ -195,6 +268,7 @@ pub fn parse_description(xml: &str) -> Result<Description, GdtfError> {
         }
     }
 
+    let description = walk.description;
     if description.name.is_empty() {
         return Err(GdtfError::new("description.xml has no FixtureType element"));
     }
@@ -222,90 +296,223 @@ fn attr(element: &BytesStart<'_>, name: &str) -> Result<Option<String>, GdtfErro
     Ok(None)
 }
 
-fn handle_element(
-    element: &BytesStart<'_>,
-    stack: &[String],
-    description: &mut Description,
-    current_mode: &mut Option<Mode>,
-    current_channel: &mut Option<Channel>,
-    current_logical: &mut Option<LogicalChannel>,
-) -> Result<(), GdtfError> {
-    let in_subtree = |name: &str| stack.iter().any(|s| s == name);
-    match element_name(element)?.as_str() {
-        "FixtureType" => {
-            description.name = attr(element, "Name")?.unwrap_or_default();
-            description.manufacturer = attr(element, "Manufacturer")?.unwrap_or_default();
-        }
-        "DMXMode" if in_subtree("DMXModes") => {
-            *current_mode = Some(Mode {
-                name: attr(element, "Name")?.unwrap_or_default(),
-                geometry: attr(element, "Geometry")?.unwrap_or_default(),
-                channels: Vec::new(),
-            });
-        }
-        "DMXChannel" if current_mode.is_some() => {
-            *current_channel = Some(Channel {
-                offsets: parse_offsets(attr(element, "Offset")?.as_deref())?,
-                geometry: attr(element, "Geometry")?.unwrap_or_default(),
-                logical_channels: Vec::new(),
-            });
-        }
-        "LogicalChannel" if current_channel.is_some() => {
-            *current_logical = Some(LogicalChannel {
-                attribute: attr(element, "Attribute")?.unwrap_or_default(),
-                functions: Vec::new(),
-            });
-        }
-        "ChannelFunction" => {
-            if let Some(logical) = current_logical.as_mut() {
-                logical.functions.push(Function {
-                    name: attr(element, "Name")?.unwrap_or_default(),
-                    attribute: attr(element, "Attribute")?.unwrap_or_default(),
-                    dmx_from: attr(element, "DMXFrom")?
-                        .as_deref()
-                        .and_then(parse_dmx_value),
-                    physical_from: parse_finite(attr(element, "PhysicalFrom")?.as_deref()),
-                    physical_to: parse_finite(attr(element, "PhysicalTo")?.as_deref()),
-                });
-            }
-        }
-        "GeometryReference" if in_subtree("Geometries") => {
-            if let Some(name) = attr(element, "Name")? {
-                description.geometry_reference_names.push(name);
-            }
-        }
-        _ => {}
-    }
-    Ok(())
+/// The walk's state: what is open at each level of the document.
+struct Walk {
+    description: Description,
+    current_mode: Option<Mode>,
+    current_channel: Option<Channel>,
+    current_logical: Option<LogicalChannel>,
+    /// Parallel to the element stack: the geometry node each open element
+    /// is, if it is one.
+    geometry_stack: Vec<Option<usize>>,
 }
 
-fn close_element(
-    name: &str,
-    description: &mut Description,
-    current_mode: &mut Option<Mode>,
-    current_channel: &mut Option<Channel>,
-    current_logical: &mut Option<LogicalChannel>,
-) {
-    match name {
-        "LogicalChannel" => {
-            if let (Some(channel), Some(logical)) =
-                (current_channel.as_mut(), current_logical.take())
-            {
-                channel.logical_channels.push(logical);
+/// The geometry element types the spec defines, all of which sit in the
+/// tree and carry a `Position`. `Break` (under a reference) and the
+/// laser/structure sub-elements are not nodes.
+const GEOMETRY_ELEMENTS: &[&str] = &[
+    "Geometry",
+    "Axis",
+    "Beam",
+    "GeometryReference",
+    "FilterBeam",
+    "FilterColor",
+    "FilterGobo",
+    "FilterShaper",
+    "MediaServerLayer",
+    "MediaServerCamera",
+    "MediaServerMaster",
+    "Display",
+    "Laser",
+    "WiringObject",
+    "Inventory",
+    "Structure",
+    "Support",
+    "Magnet",
+];
+
+impl Walk {
+    /// Handles an opening (or self-closing) element; returns the index of
+    /// the geometry node it opened, if it is one.
+    fn handle_element(
+        &mut self,
+        element: &BytesStart<'_>,
+        stack: &[String],
+    ) -> Result<Option<usize>, GdtfError> {
+        let in_subtree = |name: &str| stack.iter().any(|s| s == name);
+        let name = element_name(element)?;
+        match name.as_str() {
+            "FixtureType" => {
+                self.description.name = attr(element, "Name")?.unwrap_or_default();
+                self.description.manufacturer = attr(element, "Manufacturer")?.unwrap_or_default();
+                self.description.thumbnail = attr(element, "Thumbnail")?
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty());
             }
-        }
-        "DMXChannel" => {
-            if let (Some(mode), Some(channel)) = (current_mode.as_mut(), current_channel.take()) {
-                mode.channels.push(channel);
+            "Model" if in_subtree("Models") => {
+                self.description.models.push(Model {
+                    name: attr(element, "Name")?.unwrap_or_default(),
+                    file: attr(element, "File")?
+                        .map(|f| f.trim().to_string())
+                        .filter(|f| !f.is_empty()),
+                    primitive: attr(element, "PrimitiveType")?
+                        .unwrap_or_else(|| "Undefined".to_string()),
+                    size: [
+                        parse_finite(attr(element, "Length")?.as_deref()).unwrap_or(0.0),
+                        parse_finite(attr(element, "Width")?.as_deref()).unwrap_or(0.0),
+                        parse_finite(attr(element, "Height")?.as_deref()).unwrap_or(0.0),
+                    ],
+                });
             }
-        }
-        "DMXMode" => {
-            if let Some(mode) = current_mode.take() {
-                description.modes.push(mode);
+            "DMXMode" if in_subtree("DMXModes") => {
+                self.current_mode = Some(Mode {
+                    name: attr(element, "Name")?.unwrap_or_default(),
+                    geometry: attr(element, "Geometry")?.unwrap_or_default(),
+                    channels: Vec::new(),
+                });
             }
+            "DMXChannel" if self.current_mode.is_some() => {
+                self.current_channel = Some(Channel {
+                    offsets: parse_offsets(attr(element, "Offset")?.as_deref())?,
+                    geometry: attr(element, "Geometry")?.unwrap_or_default(),
+                    logical_channels: Vec::new(),
+                });
+            }
+            "LogicalChannel" if self.current_channel.is_some() => {
+                self.current_logical = Some(LogicalChannel {
+                    attribute: attr(element, "Attribute")?.unwrap_or_default(),
+                    functions: Vec::new(),
+                });
+            }
+            "ChannelFunction" => {
+                if let Some(logical) = self.current_logical.as_mut() {
+                    logical.functions.push(Function {
+                        name: attr(element, "Name")?.unwrap_or_default(),
+                        attribute: attr(element, "Attribute")?.unwrap_or_default(),
+                        dmx_from: attr(element, "DMXFrom")?
+                            .as_deref()
+                            .and_then(parse_dmx_value),
+                        physical_from: parse_finite(attr(element, "PhysicalFrom")?.as_deref()),
+                        physical_to: parse_finite(attr(element, "PhysicalTo")?.as_deref()),
+                    });
+                }
+            }
+            kind if in_subtree("Geometries") && GEOMETRY_ELEMENTS.contains(&kind) => {
+                return self.geometry_node(kind, element).map(Some);
+            }
+            _ => {}
         }
-        _ => {}
+        Ok(None)
     }
+
+    /// Records a geometry node under the nearest open node.
+    fn geometry_node(&mut self, kind: &str, element: &BytesStart<'_>) -> Result<usize, GdtfError> {
+        let name = attr(element, "Name")?.unwrap_or_default();
+        let kind = match kind {
+            "Geometry" => GeometryKind::Geometry,
+            "Axis" => GeometryKind::Axis,
+            "Beam" => GeometryKind::Beam,
+            "GeometryReference" => GeometryKind::Reference,
+            other => GeometryKind::Other(other.to_string()),
+        };
+        let beam = (kind == GeometryKind::Beam).then(|| BeamData {
+            beam_angle: parse_finite(attr(element, "BeamAngle").ok().flatten().as_deref()),
+            field_angle: parse_finite(attr(element, "FieldAngle").ok().flatten().as_deref()),
+            beam_type: attr(element, "BeamType").ok().flatten(),
+            luminous_flux: parse_finite(attr(element, "LuminousFlux").ok().flatten().as_deref()),
+            color_temperature: parse_finite(
+                attr(element, "ColorTemperature").ok().flatten().as_deref(),
+            ),
+            beam_radius: parse_finite(attr(element, "BeamRadius").ok().flatten().as_deref()),
+        });
+        let reference = if kind == GeometryKind::Reference {
+            let referenced = attr(element, "Geometry")?;
+            self.description.geometry_reference_names.push(name.clone());
+            referenced
+        } else {
+            None
+        };
+        let parent = self.geometry_stack.iter().rev().find_map(|n| *n);
+        let position = match attr(element, "Position")? {
+            Some(text) => parse_matrix(&text).ok_or_else(|| {
+                GdtfError::new(format!("geometry \"{name}\" has an unparseable Position"))
+            })?,
+            None => IDENTITY,
+        };
+        self.description.geometries.push(GeometryNode {
+            name,
+            kind,
+            parent,
+            model: attr(element, "Model")?.filter(|m| !m.is_empty()),
+            position,
+            beam,
+            reference,
+        });
+        Ok(self.description.geometries.len() - 1)
+    }
+
+    fn close_element(&mut self, name: &str) {
+        match name {
+            "LogicalChannel" => {
+                if let (Some(channel), Some(logical)) =
+                    (self.current_channel.as_mut(), self.current_logical.take())
+                {
+                    channel.logical_channels.push(logical);
+                }
+            }
+            "DMXChannel" => {
+                if let (Some(mode), Some(channel)) =
+                    (self.current_mode.as_mut(), self.current_channel.take())
+                {
+                    mode.channels.push(channel);
+                }
+            }
+            "DMXMode" => {
+                if let Some(mode) = self.current_mode.take() {
+                    self.description.modes.push(mode);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Parses a GDTF matrix: four `{a,b,c,d}` rows, row-major, translation in
+/// the fourth column. Three-value rows (the MVR spelling, columns with the
+/// translation last) are accepted too, since exporters mix them up.
+fn parse_matrix(text: &str) -> Option<Matrix4> {
+    let mut rows: Vec<Vec<f64>> = Vec::with_capacity(4);
+    let mut rest = text.trim();
+    while let Some(open) = rest.find('{') {
+        let close = rest[open..].find('}')? + open;
+        let values = rest[open + 1..close]
+            .split(',')
+            .map(|v| v.trim().parse::<f64>().ok().filter(|v| v.is_finite()))
+            .collect::<Option<Vec<f64>>>()?;
+        rows.push(values);
+        rest = &rest[close + 1..];
+    }
+    if rows.len() != 4 {
+        return None;
+    }
+    if rows.iter().all(|r| r.len() == 4) {
+        let mut m = IDENTITY;
+        for (i, row) in rows.iter().enumerate() {
+            m[i].copy_from_slice(row);
+        }
+        return Some(m);
+    }
+    if rows.iter().all(|r| r.len() == 3) {
+        // Columns u, v, w, o: basis vectors then the translation.
+        let mut m = IDENTITY;
+        for (col, values) in rows.iter().enumerate() {
+            for (r, v) in values.iter().enumerate() {
+                m[r][col] = *v;
+            }
+        }
+        return Some(m);
+    }
+    None
 }
 
 /// Parses a GDTF `Offset` attribute: comma-separated 1-based byte offsets,
@@ -372,10 +579,25 @@ pub(super) mod tests {
     <Wheels>
       <Wheel Name="IgnoredWheel"><Slot Name="Open"/></Wheel>
     </Wheels>
+    <Models>
+      <Model Name="Base" File="" PrimitiveType="Base" Length="0.30" Width="0.20" Height="0.10"/>
+      <Model Name="Yoke" File="yoke" PrimitiveType="Undefined" Length="0.30" Width="0.10" Height="0.25"/>
+      <Model Name="Head" File="" PrimitiveType="Cylinder" Length="0.20" Width="0.20" Height="0.15"/>
+      <Model Name="Cell" File="" PrimitiveType="Cylinder" Length="0.05" Width="0.05" Height="0.01"/>
+    </Models>
     <Geometries>
-      <Geometry Name="Base">
-        <Geometry Name="Head"/>
-        <GeometryReference Name="Pixel 2" Geometry="Head"/>
+      <Geometry Name="Base" Model="Base" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}">
+        <Axis Name="Yoke" Model="Yoke" Position="{1,0,0,0}{0,1,0,0}{0,0,1,-0.1}{0,0,0,1}">
+          <Axis Name="Head" Model="Head" Position="{1,0,0,0}{0,1,0,0}{0,0,1,-0.25}{0,0,0,1}">
+            <Beam Name="Lens" Model="Head" BeamAngle="12" FieldAngle="20" BeamType="Spot" LuminousFlux="5000" ColorTemperature="6500" BeamRadius="0.05" Position="{1,0,0,0}{0,1,0,0}{0,0,1,-0.06}{0,0,0,1}"/>
+          </Axis>
+        </Axis>
+        <GeometryReference Name="Pixel 2" Geometry="Cell" Model="Cell" Position="{1,0,0,0.05}{0,1,0,0}{0,0,1,0}{0,0,0,1}">
+          <Break DMXBreak="1" DMXOffset="1"/>
+        </GeometryReference>
+      </Geometry>
+      <Geometry Name="Cell" Model="Cell">
+        <Beam Name="Cell Lens" Model="Cell" BeamAngle="30" BeamType="Wash"/>
       </Geometry>
     </Geometries>
     <DMXModes>
@@ -412,7 +634,7 @@ pub(super) mod tests {
       </DMXMode>
       <DMXMode Name="Mover 16bit" Geometry="Base">
         <DMXChannels>
-          <DMXChannel Offset="1,2" Geometry="Head">
+          <DMXChannel Offset="1,2" Geometry="Yoke">
             <LogicalChannel Attribute="Pan">
               <ChannelFunction Name="Pan 1" Attribute="Pan" DMXFrom="0/2" PhysicalFrom="-270" PhysicalTo="270"/>
             </LogicalChannel>
@@ -515,5 +737,87 @@ pub(super) mod tests {
     fn a_fixture_less_document_is_an_error() {
         let err = parse_description("<NotGdtf/>").unwrap_err().to_string();
         assert!(err.contains("no FixtureType"), "{err}");
+    }
+
+    #[test]
+    fn the_geometry_tree_models_and_beams_are_parsed() {
+        let description = parse_description(SYNTHETIC_DESCRIPTION).unwrap();
+        assert!(description.thumbnail.is_none());
+        let names: Vec<&str> = description.models.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Base", "Yoke", "Head", "Cell"]);
+        assert_eq!(description.models[1].file.as_deref(), Some("yoke"));
+        assert_eq!(description.models[0].file, None, "an empty File is no file");
+        assert_eq!(description.models[0].primitive, "Base");
+        assert_eq!(description.models[2].size, [0.20, 0.20, 0.15]);
+
+        let by_name = |name: &str| {
+            description
+                .geometries
+                .iter()
+                .position(|g| g.name == name)
+                .unwrap_or_else(|| panic!("no geometry {name}"))
+        };
+        let (base, yoke, head, lens, pixel, cell, cell_lens) = (
+            by_name("Base"),
+            by_name("Yoke"),
+            by_name("Head"),
+            by_name("Lens"),
+            by_name("Pixel 2"),
+            by_name("Cell"),
+            by_name("Cell Lens"),
+        );
+        let g = &description.geometries;
+        assert_eq!(g[base].parent, None);
+        assert_eq!(g[yoke].parent, Some(base));
+        assert_eq!(g[head].parent, Some(yoke));
+        assert_eq!(g[lens].parent, Some(head));
+        assert_eq!(g[pixel].parent, Some(base), "Break is not a node");
+        assert_eq!(g[cell].parent, None);
+        assert_eq!(g[cell_lens].parent, Some(cell));
+        assert_eq!(g[yoke].kind, GeometryKind::Axis);
+        assert_eq!(g[lens].kind, GeometryKind::Beam);
+        assert_eq!(g[pixel].kind, GeometryKind::Reference);
+        assert_eq!(g[pixel].reference.as_deref(), Some("Cell"));
+        assert_eq!(g[yoke].model.as_deref(), Some("Yoke"));
+        assert_eq!(
+            g[yoke].position[2][3], -0.1,
+            "translation sits in the fourth column"
+        );
+        assert_eq!(g[pixel].position[0][3], 0.05);
+        assert_eq!(g[cell].position, IDENTITY, "no Position is the identity");
+        let beam = g[lens].beam.as_ref().unwrap();
+        assert_eq!(beam.beam_angle, Some(12.0));
+        assert_eq!(beam.field_angle, Some(20.0));
+        assert_eq!(beam.beam_type.as_deref(), Some("Spot"));
+        assert_eq!(beam.luminous_flux, Some(5000.0));
+        assert_eq!(beam.color_temperature, Some(6500.0));
+        assert_eq!(beam.beam_radius, Some(0.05));
+        assert!(g[head].beam.is_none());
+        assert_eq!(description.geometry_reference_names, vec!["Pixel 2"]);
+    }
+
+    #[test]
+    fn matrices_parse_in_both_spellings() {
+        let gdtf = parse_matrix("{0.5,0.866,0,-0.047}{-0.866,0.5,0,0.027}{0,0,1,-0.001}{0,0,0,1}")
+            .unwrap();
+        assert_eq!(gdtf[0][1], 0.866);
+        assert_eq!(gdtf[0][3], -0.047);
+        assert_eq!(gdtf[1][3], 0.027);
+        // The MVR column spelling lands the same numbers in the same cells.
+        let mvr = parse_matrix("{0.5,-0.866,0}{0.866,0.5,0}{0,0,1}{-0.047,0.027,-0.001}").unwrap();
+        assert_eq!(mvr, gdtf);
+        assert!(parse_matrix("{1,0,0}{0,1,0}").is_none());
+        assert!(parse_matrix("{1,0,0,x}{0,1,0,0}{0,0,1,0}{0,0,0,1}").is_none());
+        assert!(parse_matrix("{inf,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}").is_none());
+    }
+
+    #[test]
+    fn a_bad_position_is_an_error_naming_the_geometry() {
+        let xml = SYNTHETIC_DESCRIPTION.replace(
+            "Name=\"Yoke\" Model=\"Yoke\" Position=\"{1,0,0,0}{0,1,0,0}{0,0,1,-0.1}{0,0,0,1}\"",
+            "Name=\"Yoke\" Model=\"Yoke\" Position=\"{1,0,0}\"",
+        );
+        let err = parse_description(&xml).unwrap_err().to_string();
+        assert!(err.contains("\"Yoke\""), "{err}");
     }
 }

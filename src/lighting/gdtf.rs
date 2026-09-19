@@ -34,15 +34,21 @@
 mod archive;
 mod description;
 mod distiller;
+mod rig;
 
 #[cfg(test)]
 pub(crate) use archive::tests::build_zip;
 #[cfg(test)]
 pub(crate) use description::tests::SYNTHETIC_DESCRIPTION;
 
-pub use archive::read_description_xml;
-pub use description::{parse_description, Description};
+pub use archive::{list_model_files, read_assets, read_description_xml, Assets};
+pub use description::{
+    parse_description, BeamData, Description, GeometryKind, GeometryNode, Matrix4, Model, IDENTITY,
+};
 pub use distiller::{distill, mode_summaries, Distilled, ModeSummary};
+pub use rig::{
+    distill_rig, RigBeam, RigModel, RigNode, RigRole, RigShape, DEFAULT_BEAM_ANGLE, RIG_VERSION,
+};
 
 use std::error::Error;
 use std::fmt;

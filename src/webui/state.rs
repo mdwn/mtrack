@@ -876,6 +876,10 @@ pub fn build_metadata_json(
                     "type": fi.fixture_type,
                     "position": fi.position,
                     "rotation": fi.rotation,
+                    // The rig model's path under /api/lighting/assets/,
+                    // when the type has one; the 3D view draws a generic
+                    // body without.
+                    "rig": fi.rig,
                 });
                 fixtures.insert(fi.name.clone(), fixture_meta);
             }
@@ -1670,6 +1674,10 @@ metronome: {}
         assert_eq!(value["fixtures"]["A"]["position"], json!([-2.0, 3.5, 4.2]));
         assert_eq!(value["fixtures"]["A"]["rotation"], json!([0.0, 0.0, 180.0]));
         assert!(value["fixtures"]["B"]["position"].is_null());
+        assert!(
+            value["fixtures"]["A"]["rig"].is_null(),
+            "a native type has no rig"
+        );
         assert_eq!(value["venue"]["name"], "v");
         assert_eq!(
             value["venue"]["focus_points"]["drummer"],

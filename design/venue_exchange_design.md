@@ -719,7 +719,7 @@ conversion unless it proves cheap.
 
 | Slice | Contents | Exit |
 |---|---|---|
-| P2-1 (internal) | Geometry tree, models and beams in the GDTF parser; rig model distilled and written to the asset cache with the `.glb` files at import; generic rig model for native types; asset endpoint | The Spiider's rig model names its yoke, head, five lenses and beams; assets served with containment |
+| P2-1 (internal) | Geometry tree, models and beams in the GDTF parser; rig model distilled and written to the asset cache with the `.glb` files at import; generic rig model for native types; asset endpoint | The Spiider's rig model names its yoke and head as the axes, its 20 cells (19 pixels and the flower) and their beams, and its meshes; assets served with containment |
 | P2-2 | Stage 3D page: deck, fixtures from rig models, live pan/tilt, beams from live state, focus markers, orbit camera; dashboard button | A move to a focus point visibly lands there in 3D on the corpus's Demoshow venue |
 | P2-3 | MVR export with embedded GDTFs and generated minimal GDTFs for native types; round-trip test on the corpus | Import → export → import gives the same plan |
 | P2-4 | Scenery from glTF MVRs; `.3ds` reported; polish and docs; screenshots | The docs show a real venue in 3D |

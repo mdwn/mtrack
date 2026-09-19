@@ -316,15 +316,24 @@ impl LightingSystem {
         let fingerprint = format!("{:?}", fixture_type.movement());
         let key = DistillCache::key(name, &bytes, &source.mode, &fingerprint);
         let cache = DistillCache::new(base_path.join("lighting").join(".cache"));
-        cache.get_or_fill(&key, || {
+        // The archive is parsed at most once per call, whichever of the
+        // expansion and the rig is missing.
+        let parsed: std::cell::OnceCell<gdtf::Description> = std::cell::OnceCell::new();
+        let describe = || -> Result<&gdtf::Description, Box<dyn Error>> {
+            if parsed.get().is_none() {
+                let _ = parsed.set(gdtf::parse_archive(&bytes)?);
+            }
+            Ok(parsed.get().expect("just set"))
+        };
+        let mut expanded = cache.get_or_fill(&key, || {
             info!(
                 fixture_type = name,
                 gdtf = %source.path,
                 mode = %source.mode,
                 "Expansion cache is cold — distilling GDTF"
             );
-            let description = gdtf::parse_archive(&bytes)?;
-            let distilled = gdtf::distill(&description, &source.mode, name)?;
+            let description = describe()?;
+            let distilled = gdtf::distill(description, &source.mode, name)?;
             // Distillation warnings surface on the cold fill; the import
             // command is the place they're reported interactively.
             for warning in &distilled.warnings {
@@ -334,7 +343,14 @@ impl LightingSystem {
             expanded.set_source(source.clone());
             expanded.set_movement(*fixture_type.movement());
             Ok(expanded)
-        })
+        })?;
+        // The rig (design §16.2) is the 3D view's, not the show's: a rig
+        // that cannot be written is logged, and the type loads without one.
+        match cache.ensure_rig(&bytes, &source.mode, describe) {
+            Ok(rig) => expanded.set_rig(Some(rig)),
+            Err(e) => warn!(fixture_type = name, error = %e, "No rig model for the 3D view"),
+        }
+        Ok(expanded)
     }
 
     /// Loads venues from a file.
@@ -496,6 +512,7 @@ impl LightingSystem {
             fixture_info.rotation = fixture.rotation();
             fixture_info.channel_defs = fixture_type.channel_defs().clone();
             fixture_info.movement = *fixture_type.movement();
+            fixture_info.rig = fixture_type.rig().map(str::to_string);
 
             fixture_infos.push(fixture_info);
         }
@@ -754,11 +771,18 @@ mod tests {
         // The expansion landed in the per-project cache (hit/miss/corruption
         // mechanics are unit-tested on DistillCache itself; the key covers
         // the archive bytes, so a changed archive is a fresh distillation
-        // by design).
-        let cache_entries = std::fs::read_dir(base.join("lighting/.cache"))
-            .expect("cache dir")
-            .count();
-        assert_eq!(cache_entries, 1);
+        // by design), and the rig beside it in the asset store.
+        let expansions = || {
+            std::fs::read_dir(base.join("lighting/.cache"))
+                .expect("cache dir")
+                .filter(|e| e.as_ref().unwrap().path().is_file())
+                .count()
+        };
+        assert_eq!(expansions(), 1);
+        let rig = system.fixture_types["Brick"]
+            .rig()
+            .expect("a referential type gets a rig");
+        assert!(base.join("lighting/.cache/assets").join(rig).is_file());
 
         // A reload with the same inputs resolves to the same single entry.
         let mut reloaded = LightingSystem::new();
@@ -766,10 +790,8 @@ mod tests {
             .load_fixture_types_directory(&ft_dir, base)
             .expect("loads");
         assert!(reloaded.fixture_types.contains_key("Brick"));
-        let cache_entries = std::fs::read_dir(base.join("lighting/.cache"))
-            .expect("cache dir")
-            .count();
-        assert_eq!(cache_entries, 1);
+        assert_eq!(expansions(), 1);
+        assert_eq!(reloaded.fixture_types["Brick"].rig(), Some(rig));
     }
 
     #[test]
