@@ -66,15 +66,18 @@ impl Evaluation {
     /// is dark. `None` when there were no fixtures to evaluate, which is not
     /// darkness but an absence of evidence: no venue is loaded, so nothing can
     /// be said either way. `all()` over an empty set would answer `true`.
+    ///
+    /// Pan and tilt do not count: a mover parked at centre reads 128 on
+    /// both, and where a head points says nothing about whether it is lit.
     pub fn is_dark(&self) -> Option<bool> {
         if self.fixtures.is_empty() {
             return None;
         }
-        Some(
-            self.fixtures
+        Some(self.fixtures.iter().all(|f| {
+            f.channels
                 .iter()
-                .all(|f| f.channels.values().all(|&v| v == 0)),
-        )
+                .all(|(name, &v)| v == 0 || crate::state::is_pointing_channel(name))
+        }))
     }
 }
 
@@ -92,10 +95,15 @@ impl Evaluation {
 /// the fallback fails before it can be evaluated (see #337). The parameter is
 /// here so this evaluator keeps matching the live path when that changes.
 ///
+/// `focus_points` are the venue's named stage points, the same map the DMX
+/// engine hands its effect engine: without them a `move focus:` cue has
+/// nothing to aim at and evaluates as if the point were unbound.
+///
 /// Returned evaluations are in the order requested, including duplicates.
 pub fn evaluate_show<F>(
     shows: Vec<LightShow>,
     fixtures: &[FixtureInfo],
+    focus_points: &HashMap<String, [f64; 3]>,
     fallback_tempo_map: Option<&TempoMap>,
     times: &[Duration],
     mut resolve_groups: F,
@@ -123,6 +131,7 @@ where
         .map(|&time| {
             let mut engine = EffectEngine::new();
             engine.set_tempo_map(tempo_map.clone());
+            engine.set_focus_points(focus_points.clone());
             for fixture in fixtures {
                 engine.register_fixture(fixture.clone());
             }
@@ -344,7 +353,14 @@ mod tests {
 
     fn eval(source: &str, fixtures: &[FixtureInfo], times: &[f64]) -> Vec<Evaluation> {
         let times: Vec<Duration> = times.iter().map(|&t| Duration::from_secs_f64(t)).collect();
-        evaluate_show(shows(source), fixtures, None, &times, |e| e)
+        evaluate_show(
+            shows(source),
+            fixtures,
+            &HashMap::new(),
+            None,
+            &times,
+            |e| e,
+        )
     }
 
     fn channel(evaluation: &Evaluation, fixture: &str, channel: &str) -> u8 {
@@ -478,18 +494,32 @@ show "T" {
 "#;
         let times = [Duration::from_secs(1)];
 
-        let unresolved = evaluate_show(shows(source), &fixtures, None, &times, |e| e);
+        let unresolved = evaluate_show(
+            shows(source),
+            &fixtures,
+            &HashMap::new(),
+            None,
+            &times,
+            |e| e,
+        );
         assert!(
             unresolved[0].is_dark() == Some(true),
             "an unresolved group name matches no fixture"
         );
 
-        let resolved = evaluate_show(shows(source), &fixtures, None, &times, |mut e| {
-            if e.target_fixtures == ["all_wash"] {
-                e.target_fixtures = vec!["brick1".to_string(), "brick2".to_string()];
-            }
-            e
-        });
+        let resolved = evaluate_show(
+            shows(source),
+            &fixtures,
+            &HashMap::new(),
+            None,
+            &times,
+            |mut e| {
+                if e.target_fixtures == ["all_wash"] {
+                    e.target_fixtures = vec!["brick1".to_string(), "brick2".to_string()];
+                }
+                e
+            },
+        );
         assert_eq!(channel(&resolved[0], "brick1", "green"), 255);
         assert_eq!(channel(&resolved[0], "brick2", "green"), 255);
         assert_eq!(resolved[0].active_effects[0].fixtures, ["brick1", "brick2"]);
@@ -545,7 +575,14 @@ show "T" {
             Duration::from_secs_f64(6.5),
             Duration::from_secs_f64(8.5),
         ];
-        let results = evaluate_show(shows(source), &fixtures, Some(&slow), &times, |e| e);
+        let results = evaluate_show(
+            shows(source),
+            &fixtures,
+            &HashMap::new(),
+            Some(&slow),
+            &times,
+            |e| e,
+        );
 
         assert_eq!(channel(&results[0], "wash", "blue"), 255);
         assert!(
@@ -664,7 +701,14 @@ show "T" {
         .collect();
 
         let stepped = play_through(source, &fixtures, &times);
-        let reconstructed = evaluate_show(shows(source), &fixtures, None, &times, |e| e);
+        let reconstructed = evaluate_show(
+            shows(source),
+            &fixtures,
+            &HashMap::new(),
+            None,
+            &times,
+            |e| e,
+        );
 
         for (i, time) in times.iter().enumerate() {
             let expected = &stepped[i];
@@ -726,5 +770,36 @@ show "T" {
     fn no_times_requested_returns_no_evaluations() {
         let fixtures = vec![rgb_fixture("wash", 1)];
         assert!(eval(BLUE_5S, &fixtures, &[]).is_empty());
+    }
+
+    /// Where a head points is not light: a rig whose only non-zero bytes
+    /// are pan and tilt is dark.
+    #[test]
+    fn is_dark_ignores_pan_and_tilt() {
+        let mut channels = HashMap::new();
+        channels.insert("pan".to_string(), 128u8);
+        channels.insert("pan_fine".to_string(), 7u8);
+        channels.insert("tilt".to_string(), 90u8);
+        channels.insert("dimmer".to_string(), 0u8);
+        let evaluation = Evaluation {
+            time: Duration::ZERO,
+            fixtures: vec![FixtureSnapshot {
+                name: "m".to_string(),
+                channels: channels.clone(),
+                cells: Default::default(),
+            }],
+            active_effects: Vec::new(),
+        };
+        assert_eq!(evaluation.is_dark(), Some(true));
+        channels.insert("dimmer".to_string(), 1u8);
+        let lit = Evaluation {
+            fixtures: vec![FixtureSnapshot {
+                name: "m".to_string(),
+                channels,
+                cells: Default::default(),
+            }],
+            ..evaluation
+        };
+        assert_eq!(lit.is_dark(), Some(false));
     }
 }

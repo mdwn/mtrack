@@ -449,3 +449,110 @@ fn the_same_move_aims_correctly_in_two_venues() {
         "{results:?}"
     );
 }
+
+/// A seek past a move lands the head at the move's destination, and a
+/// seek past two moves chooses the second one's turn from where the first
+/// left the head — what the timeline replays into a fresh engine, and what
+/// the offline evaluator relies on. A mover at the origin, unrotated:
+/// "a" lies at pan +170°, "b" at principal pan −170°; from 170° the
+/// nearest turn to b is +190°, not −170° through 340° of travel.
+#[test]
+fn a_seek_past_finished_moves_commits_each_destination_in_turn() {
+    let a = [170f64.to_radians().sin(), 170f64.to_radians().cos(), 0.0];
+    let b = [
+        (-170f64).to_radians().sin(),
+        (-170f64).to_radians().cos(),
+        0.0,
+    ];
+    let mut engine = engine_with(mover("m", [0.0; 3], [0.0; 3]), &[("a", a), ("b", b)]);
+    engine
+        .start_effect_with_elapsed(
+            move_to("first", MoveTarget::Focus("a".to_string()), None, 1.0),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    engine
+        .start_effect_with_elapsed(
+            move_to("second", MoveTarget::Focus("b".to_string()), None, 1.0),
+            Duration::from_secs(3),
+        )
+        .unwrap();
+    assert!(
+        engine.get_active_effects().is_empty(),
+        "a finished move is committed, not run"
+    );
+    let commands = engine
+        .update(Duration::from_millis(10), None)
+        .unwrap()
+        .to_vec();
+    let pan = emitted_pan(&commands);
+    assert!(
+        (pan - 190.0).abs() < 0.05,
+        "the head should sit at +190° (b's turn nearest a's +170°), got {pan:.2}°"
+    );
+    assert!((engine.poses()["m"].pan - 190.0).abs() < 1e-6);
+}
+
+/// A settled mover keeps its pose in the states the live views read
+/// when the engine takes its MIDI-only fast path: an unrelated fader
+/// moving must not make an arrived head vanish from `get_fixture_state`.
+#[test]
+fn a_settled_mover_keeps_its_pose_through_the_midi_fast_path() {
+    use crate::dmx::midi_dmx_store::MidiDmxStore;
+    use std::sync::Arc;
+
+    let mut engine = engine_with(mover("m", [0.0; 3], [0.0; 3]), &[]);
+    let other: HashMap<String, u16> = [("dimmer".to_string(), 1)].into_iter().collect();
+    engine.register_fixture(FixtureInfo::new(
+        "other".to_string(),
+        1,
+        100,
+        "Par".to_string(),
+        other,
+        None,
+    ));
+    let store = Arc::new(parking_lot::RwLock::new(MidiDmxStore::new()));
+    store.write().register_slot(1, 100, "other", "dimmer");
+    store.write().register_universe(1);
+    engine.set_midi_dmx_store(store.clone());
+
+    engine
+        .start_effect(move_to(
+            "aim",
+            MoveTarget::Angles {
+                pan: Some(45.0),
+                tilt: Some(-20.0),
+            },
+            None,
+            0.1,
+        ))
+        .unwrap();
+    for _ in 0..30 {
+        engine.update(Duration::from_millis(10), None).unwrap();
+    }
+    assert!(
+        engine.get_active_effects().is_empty(),
+        "the move has finished"
+    );
+    let pan_before = engine.get_fixture_states()["m"]
+        .physical
+        .pan
+        .map(|i| i.degrees);
+    assert_eq!(pan_before, Some(45.0));
+
+    // An unrelated fader moves: the fast path rebuilds the states from
+    // the store alone.
+    store.read().write(1, 100, 200, false);
+    engine.update(Duration::from_millis(10), None).unwrap();
+    let states = engine.get_fixture_states();
+    assert!(states.contains_key("other"), "the fader's fixture is there");
+    let pan_after = states
+        .get("m")
+        .and_then(|s| s.physical.pan)
+        .map(|i| i.degrees);
+    assert_eq!(
+        pan_after,
+        Some(45.0),
+        "the settled head still reports its pose"
+    );
+}

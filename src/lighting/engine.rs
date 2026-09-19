@@ -606,6 +606,24 @@ impl EffectEngine {
         validation::validate_effect(self.fixtures.as_map(), &effect)?;
         self.capture_start_poses(&mut effect);
 
+        // A move that had already finished by the time it is started — a
+        // seek past it, or an offline evaluation — is its destination: the
+        // head is committed there and the effect never runs. Done here,
+        // one effect at a time, so a later move's turn is chosen from where
+        // the earlier one ended, exactly as it would have been live.
+        if matches!(effect.effect_type, EffectType::Move { .. })
+            && elapsed_time >= effect.total_duration()
+        {
+            for (name, pose) in
+                processing::move_final_poses(self.fixtures.as_map(), &self.focus_points, &effect)
+            {
+                self.goals.insert(name.clone(), pose);
+                self.poses.insert(name, pose);
+            }
+            self.cache.invalidate();
+            return Ok(());
+        }
+
         // Log effect parameters
         let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
         debug!(
@@ -696,6 +714,16 @@ impl EffectEngine {
                         }
                     }
                 }
+            }
+
+            // A settled mover still holds its pose: the states the live
+            // views read must say so even on this path, or a head that has
+            // arrived drops out of `get_fixture_state` the moment an
+            // unrelated MIDI fader moves.
+            let mut held = HashMap::new();
+            self.settle_poses(&mut held);
+            for (name, state) in held {
+                self.last_merged_states.entry(name).or_default().physical = state.physical;
             }
 
             self.cache.update(commands, store_gen);

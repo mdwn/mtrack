@@ -1,0 +1,31 @@
+# Moving heads aimed at the venue's focus points.
+#
+# The `movers` group is the example profile's (any fixture tagged
+# moving_head or spot, premium ones first); "drummer" and "center-stage"
+# are focus points the example venue (kellys_basement.venue) binds. The
+# same show aims correctly in any venue that binds those names — the
+# fixtures' positions and mounting rotations do the rest.
+#
+# Check the result without a rig: `evaluate_show` at 00:06, 00:12 and
+# 00:20 reports each mover's pan/tilt bytes.
+show "Movers Demo" {
+    # Light the movers so there is something to see.
+    @00:00.000
+    movers: static color: "white", dimmer: 80%, duration: 30s
+
+    # Snap onto the drummer as the song starts.
+    @00:00.000
+    movers: move focus: "drummer", duration: 500ms
+
+    # Sweep smoothly to center stage for the verse.
+    @00:08.000
+    movers: move focus: "center-stage", duration: 2s, easing: smooth
+
+    # Back to the drummer, starting explicitly from center stage.
+    @00:16.000
+    movers: move from: "center-stage", to: "drummer", duration: 1s
+
+    # Explicit angles: pan 45°, tilt -20°, a quick linear move.
+    @00:24.000
+    movers: move pan: 45deg, tilt: -20deg, duration: 1s, easing: linear
+}
