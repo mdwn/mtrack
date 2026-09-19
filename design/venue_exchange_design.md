@@ -724,14 +724,11 @@ conversion unless it proves cheap.
 | P2-3 | MVR export with embedded GDTFs and generated minimal GDTFs for native types; round-trip test on the corpus | Import → export → import gives the same plan |
 | P2-4 | Scenery from glTF MVRs; `.3ds` reported; polish and docs; screenshots | The docs show a real venue in 3D |
 
-### 16.7 Open for decision
+### 16.7 Decisions (settled 2026-09-18)
 
-1. **three.js as a bundled dependency.** Adds roughly 150 KB gzipped to a 1.1 MB build,
-   loaded only on the Stage 3D page. The alternative is no 3D at all.
-2. **`.3ds` scenery.** Report and skip, as recommended; every corpus file would show
-   fixtures over a bare deck. A small chunked-binary reader exists in the ecosystem if the
-   bare deck turns out to matter.
-3. **Where 3D lives.** A separate page, not a mode of the dashboard card — the card stays
-   the quick glance, the page is the pre-viz room.
-4. **Export order.** MVR before GDTF, with the generated minimal GDTF serving both.
+1. **three.js is a bundled npm dependency**, loaded only on the Stage 3D page.
+2. **`.3ds` scenery is reported and skipped.** Corpus venues render fixtures over a bare
+   deck; a reader can come later if the deck matters.
+3. **3D is its own page**, reached from the dashboard's stage card.
+4. **MVR export before GDTF export**, the generated minimal GDTF serving both.
 5. **Per-cell control stays out** of P2.
