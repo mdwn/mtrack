@@ -40,7 +40,7 @@ use tracing::warn;
 
 use super::gdtf::{self, Description, RigModel, RIG_VERSION};
 use super::mvr::{self, Matrix, Scene};
-use super::types::{ChannelDef, FixtureType, GdtfSource, MovementLimits};
+use super::types::{Cell, ChannelDef, FixtureType, GdtfSource, MovementLimits};
 
 /// The asset store's directory under the cache.
 pub const ASSETS_DIR: &str = "assets";
@@ -159,7 +159,7 @@ fn mesh_file_name(entry: &str, taken: &mut std::collections::HashSet<String>) ->
 
 /// Bumped whenever the distiller's output for the same source can change.
 /// Part of the cache key, so an upgrade regenerates every expansion.
-pub const DISTILLER_VERSION: u32 = 2;
+pub const DISTILLER_VERSION: u32 = 3;
 
 /// The cache's on-disk representation of a distilled fixture type.
 ///
@@ -177,6 +177,8 @@ struct CacheEntry {
     strobe_dmx_offset: Option<u8>,
     source: Option<GdtfSource>,
     movement: MovementLimits,
+    #[serde(default)]
+    cells: Vec<Cell>,
 }
 
 impl From<&FixtureType> for CacheEntry {
@@ -189,6 +191,7 @@ impl From<&FixtureType> for CacheEntry {
             strobe_dmx_offset: fixture_type.strobe_dmx_offset(),
             source: fixture_type.source().cloned(),
             movement: *fixture_type.movement(),
+            cells: fixture_type.cells().to_vec(),
         }
     }
 }
@@ -206,6 +209,7 @@ impl From<CacheEntry> for FixtureType {
             fixture_type.set_source(source);
         }
         fixture_type.set_movement(entry.movement);
+        fixture_type.set_cells(entry.cells);
         fixture_type
     }
 }
@@ -732,6 +736,54 @@ mod tests {
         let pan = restored.channel_defs().get("pan").unwrap();
         assert_eq!(pan.fine, Some(2));
         assert!(pan.range.is_some());
+    }
+
+    #[test]
+    fn round_trip_preserves_cells() {
+        let mut cell_channels = HashMap::new();
+        cell_channels.insert("red".to_string(), ChannelDef::at(2));
+        cell_channels.insert("green".to_string(), ChannelDef::at(3));
+        let cells = vec![
+            Cell {
+                name: "Pixel 1".to_string(),
+                channels: cell_channels.clone(),
+                offset: [-0.1, 0.0, 0.0],
+            },
+            Cell {
+                name: "Pixel 2".to_string(),
+                channels: cell_channels,
+                offset: [0.1, 0.0, 0.0],
+            },
+        ];
+        let mut original = sample_fixture_type();
+        original.set_cells(cells.clone());
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DistillCache::new(dir.path().to_path_buf());
+        let key = DistillCache::key("Brick", b"archive", "Mode 1", "");
+        cache.put(&key, &original).unwrap();
+        let restored = cache.get(&key).expect("cached entry");
+
+        assert_eq!(restored.cells(), cells.as_slice());
+    }
+
+    #[test]
+    fn a_cache_entry_without_a_cells_field_still_deserializes() {
+        // Entries written before cells existed (DISTILLER_VERSION < 3) must
+        // not be treated as corrupt — the field defaults to empty.
+        let entry = CacheEntry::from(&sample_fixture_type());
+        let mut value = serde_json::to_value(&entry).unwrap();
+        value.as_object_mut().unwrap().remove("cells");
+        let json = serde_json::to_string(&value).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DistillCache::new(dir.path().to_path_buf());
+        let key = DistillCache::key("Brick", b"archive", "Mode 1", "");
+        std::fs::create_dir_all(cache.dir()).unwrap();
+        std::fs::write(cache.dir().join(format!("{key}.json")), json).unwrap();
+
+        let restored = cache.get(&key).expect("still deserializes without cells");
+        assert!(restored.cells().is_empty());
     }
 
     #[test]

@@ -843,6 +843,29 @@ mod tests {
     }
 
     #[test]
+    fn cell_syntax_loads_from_fixture_files_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rich = "fixture_type \"Bar\" {\n  cell \"1\" at (-0.1, 0, 0) {\n    channel \"red\" @ 1\n    channel \"green\" @ 2\n  }\n  cell \"2\" at (0.1, 0, 0) {\n    channel \"red\" @ 3\n    channel \"green\" @ 4\n  }\n}\n";
+        std::fs::write(dir.path().join("bar.fixture"), rich).unwrap();
+        std::fs::write(
+            dir.path().join("wrong_home.light"),
+            rich.replace("\"Bar\"", "\"Stray\""),
+        )
+        .unwrap();
+        let mut system = LightingSystem::new();
+        system
+            .load_fixture_types_directory(dir.path(), dir.path())
+            .expect("directory loads");
+        assert!(system.fixture_types.contains_key("Bar"));
+        assert!(
+            !system.fixture_types.contains_key("Stray"),
+            "cell syntax in a .light file is refused, loudly"
+        );
+        let bar = &system.fixture_types["Bar"];
+        assert_eq!(bar.cells().len(), 2);
+    }
+
+    #[test]
     fn referential_fixture_types_expand_through_the_cache() {
         let dir = tempfile::tempdir().expect("tempdir");
         let base = dir.path();

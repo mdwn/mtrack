@@ -147,6 +147,15 @@ Notes:
   pixel/matrix modes) is skipped or refused with a clear message.
 - `.fixture` and `.light` fixture files load side by side; nothing renames
   or migrates.
+- When a GDTF's identical sections (a pixel bar's segments, a batten's
+  cells) gang to one channel, the distiller also records them as cells —
+  their own channels and a transform-derived offset — the same shape a
+  hand-written `.fixture` cell block (below) produces. Any sections of one
+  fixture that carry exactly the same attributes are treated as cells of one
+  pixel array, wherever they sit in its geometry. A section a GDTF template
+  instantiates through a `GeometryReference` takes the reference's name
+  (`P3 Zone2`, or `Head2/P3` when references nest), which is also the name
+  the 3D view gives its lens.
 - On a hardened deployment (`mtrack systemd` with `ProtectSystem=strict`),
   `lighting/.cache/` must be writable — pass your project directory (or at
   least the cache path) to `mtrack systemd` so it lands in
@@ -212,6 +221,41 @@ keeps the v1 grammar, the loader skips, loudly, a `.light` file that uses it, an
 UI's fixture-type editor (which writes `.light`) refuses to save it. Both forms stay valid
 forever. Rich and referential `.fixture` types are edited by hand or written by import
 today; the web UI lists and edits v1 types only.
+
+**Cells:** a pixel fixture — an LED batten with several individually-colored
+segments, a pixel mover's ring — can describe each segment as a `cell`
+block, with its own channels and where it sits in the fixture's frame
+(meters, the same axes a venue's fixture transform uses):
+
+```light
+fixture_type "Pixel Bar" {
+  channel "dimmer" @ 1
+  cell "1" at (-0.3, 0, 0) {
+    channel "red" @ 2
+    channel "green" @ 3
+    channel "blue" @ 4
+  }
+  cell "2" at (0, 0, 0) {
+    channel "red" @ 5
+    channel "green" @ 6
+    channel "blue" @ 7
+  }
+  cell "3" at (0.3, 0, 0) {
+    channel "red" @ 8
+    channel "green" @ 9
+    channel "blue" @ 10
+  }
+}
+```
+
+Every cell must carry the same channel names. The fixture-level channels a
+show already understands (`red`, `green`, `blue` above) are derived, not
+written separately: they are the first cell's, and every other cell's same
+channel mirrors it, so a show that never mentions cells still sees one
+color across the whole fixture. Per-cell addressing — a show reaching one
+cell by name with `per: cell` — is a later slice; today the cells exist in
+the fixture type so the engine and the 3D view know where they are, and
+the fixture as a whole is driven the way any other fixture is.
 
 ## Venue Definitions (`lighting/venues/`)
 

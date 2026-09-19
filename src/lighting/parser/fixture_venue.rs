@@ -16,8 +16,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 
 use super::super::types::{
-    ChannelDef, ChannelFunction, Fixture, FixtureType, FixtureTypeV1, GdtfSource, MovementLimits,
-    PhysicalRange, PhysicalUnit, Vec3, Venue, VenueSource,
+    ganged_from_cells, Cell, ChannelDef, ChannelFunction, Fixture, FixtureType, FixtureTypeV1,
+    GdtfSource, MovementLimits, PhysicalRange, PhysicalUnit, Vec3, Venue, VenueSource,
 };
 use super::error::get_error_context;
 use super::grammar::{LightingParser, Rule};
@@ -111,6 +111,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
     let mut source = None;
     let mut movement = MovementLimits::default();
     let mut rich_defs: HashMap<String, ChannelDef> = HashMap::new();
+    let mut cells: Vec<Cell> = Vec::new();
 
     for pair in pair.into_inner() {
         match pair.as_rule() {
@@ -125,6 +126,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
                     pair,
                     &mut channels,
                     &mut rich_defs,
+                    &mut cells,
                     &mut movement,
                     &mut special_cases,
                     &mut max_strobe_frequency,
@@ -140,6 +142,46 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
     // the type is built from the definitions directly. It does not mix with
     // the v1 map or strobe fields — a strobe belongs on its channel as a
     // function — nor with a GDTF reference, which brings its own channels.
+    // Cells bring their fixture-level channels with them (design §17.2):
+    // the first cell's, mirroring the rest. Their offsets must not collide
+    // with each other or with the fixture-level lines.
+    if !cells.is_empty() {
+        let ganged =
+            ganged_from_cells(&cells).map_err(|e| format!("fixture type \"{name}\": {e}"))?;
+        let mut taken: Vec<(u16, String)> = rich_defs
+            .iter()
+            .flat_map(|(n, d)| {
+                std::iter::once(d.offset)
+                    .chain(d.fine)
+                    .map(move |o| (o, n.clone()))
+            })
+            .collect();
+        for cell in &cells {
+            for (channel, def) in &cell.channels {
+                for offset in std::iter::once(def.offset).chain(def.fine) {
+                    if let Some((_, other)) = taken.iter().find(|(o, _)| *o == offset) {
+                        return Err(format!(
+                            "fixture type \"{name}\": cell \"{}\" channel \"{channel}\" offset \
+                             {offset} is already used by \"{other}\"",
+                            cell.name
+                        )
+                        .into());
+                    }
+                    taken.push((offset, format!("{}/{channel}", cell.name)));
+                }
+            }
+        }
+        for (channel, def) in ganged {
+            if rich_defs.contains_key(&channel) {
+                return Err(format!(
+                    "fixture type \"{name}\": channel \"{channel}\" is both a fixture-level line \
+                     and a cell channel; a cell channel's fixture-level form is derived"
+                )
+                .into());
+            }
+            rich_defs.insert(channel, def);
+        }
+    }
     if !rich_defs.is_empty() {
         if !channels.is_empty() {
             return Err(format!(
@@ -188,6 +230,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
         }
         let mut fixture_type = FixtureType::from_channel_defs(name, rich_defs);
         fixture_type.set_movement(movement);
+        fixture_type.set_cells(cells);
         return Ok(fixture_type);
     }
 
@@ -441,11 +484,48 @@ fn parse_function_def(pair: Pair<Rule>) -> Result<ChannelFunction, Box<dyn Error
     Ok(function)
 }
 
+/// A `cell "name" at (x, y, z) { channel ... }` block.
+fn parse_cell_def(pair: Pair<Rule>) -> Result<Cell, Box<dyn Error>> {
+    let mut cell = Cell {
+        name: String::new(),
+        channels: HashMap::new(),
+        offset: [0.0; 3],
+    };
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::string => cell.name = extract_string(inner),
+            Rule::cell_offset => {
+                cell.offset = parse_vec3(single_vec3(inner)?)?;
+            }
+            Rule::channel_def => {
+                let (name, def) = parse_channel_def(inner)?;
+                if cell.channels.contains_key(&name) {
+                    return Err(format!(
+                        "cell \"{}\": channel \"{name}\" is declared more than once",
+                        cell.name
+                    )
+                    .into());
+                }
+                cell.channels.insert(name, def);
+            }
+            _ => {}
+        }
+    }
+    if cell.name.is_empty() {
+        return Err("a cell needs a name".into());
+    }
+    if cell.channels.is_empty() {
+        return Err(format!("cell \"{}\" declares no channels", cell.name).into());
+    }
+    Ok(cell)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn parse_fixture_content(
     pair: Pair<Rule>,
     channels: &mut HashMap<String, u16>,
     rich_defs: &mut HashMap<String, ChannelDef>,
+    cells: &mut Vec<Cell>,
     movement: &mut MovementLimits,
     special_cases: &mut Vec<String>,
     max_strobe_frequency: &mut Option<f64>,
@@ -474,6 +554,13 @@ fn parse_fixture_content(
                     }
                 }
                 rich_defs.insert(name, def);
+            }
+            Rule::cell_def => {
+                let cell = parse_cell_def(content_pair)?;
+                if cells.iter().any(|c| c.name == cell.name) {
+                    return Err(format!("cell \"{}\" is declared more than once", cell.name).into());
+                }
+                cells.push(cell);
             }
             Rule::movement_block => {
                 *movement = parse_movement_block(content_pair)?;

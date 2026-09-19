@@ -157,12 +157,13 @@ fn every_embedded_gdtf_distills_a_rig_per_mode() {
                     let name = |i: Option<usize>| i.map(|i| rig.nodes[i].name.as_str());
                     assert_eq!(name(rig.pan), Some("Yoke"));
                     assert_eq!(name(rig.tilt), Some("Head"));
-                    let cells = rig
+                    let cell_names: Vec<&str> = rig
                         .nodes
                         .iter()
                         .filter(|n| matches!(n.role, gdtf::RigRole::Cell { .. }))
-                        .count();
-                    assert_eq!(cells, 20, "{:?}", rig.nodes);
+                        .map(|n| n.name.as_str())
+                        .collect();
+                    assert_eq!(cell_names.len(), 20, "{:?}", rig.nodes);
                     assert!(rig.beams.len() >= 20, "{} beams", rig.beams.len());
                     let meshes = rig
                         .nodes
@@ -173,6 +174,52 @@ fn every_embedded_gdtf_distills_a_rig_per_mode() {
                         meshes >= 6,
                         "{meshes} meshes: base, yoke, head, three lens kinds"
                     );
+
+                    // The distiller's own cells (design §17.2): the pixel
+                    // mode puts RGBW on the three lens templates and
+                    // references them nineteen times with Break offsets;
+                    // expanded per reference, the nineteen lenses gang into
+                    // one group of cells named for the references. The
+                    // flower is a differently shaped section and stays out.
+                    let distilled = gdtf::distill(&description, &mode.name, "Robin Spiider")
+                        .unwrap_or_else(|e| panic!("{entry} mode {:?}: {e}", mode.name));
+                    let cells = distilled.fixture_type.cells();
+                    let names: Vec<&str> = cells.iter().map(|c| c.name.as_str()).collect();
+                    assert_eq!(cells.len(), 19, "{names:?}\n{:?}", distilled.warnings);
+                    assert_eq!(names[0], "P1 Zone1");
+                    assert_eq!(names[18], "P19 Zone3");
+                    // Offsets follow the Break table: P3 Zone2 sits four
+                    // bytes after P2 Zone 2, P19 Zone3 at the mode's end.
+                    let red = |name: &str| {
+                        cells.iter().find(|c| c.name == name).unwrap().channels["red"].offset
+                    };
+                    assert_eq!(red("P2 Zone 2") + 4, red("P3 Zone2"));
+                    assert_eq!(red("P19 Zone3"), 107);
+                    // The whole-fixture view still fans out: the group's
+                    // owner mirrors the other eighteen.
+                    let owner_red = distilled
+                        .fixture_type
+                        .channel_defs()
+                        .iter()
+                        .find(|(_, d)| d.offset == red("P1 Zone1"))
+                        .map(|(n, d)| (n.clone(), d.mirrors.len()))
+                        .unwrap();
+                    assert_eq!(owner_red.1, 18, "{owner_red:?}");
+                    for cell in cells {
+                        assert!(
+                            cell_names.contains(&cell.name.as_str()),
+                            "distilled cell {:?} is not among the rig's Cell-role nodes {cell_names:?}",
+                            cell.name
+                        );
+                        for channel in ["red", "green", "blue", "white"] {
+                            assert!(
+                                cell.channels.contains_key(channel),
+                                "cell {:?} is missing channel {channel:?}: {:?}",
+                                cell.name,
+                                cell.channels.keys().collect::<Vec<_>>()
+                            );
+                        }
+                    }
                 }
             }
         }
