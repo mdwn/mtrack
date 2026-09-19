@@ -44,6 +44,7 @@ fn mover(name: &str, position: [f64; 3], rotation: [f64; 3]) -> FixtureInfo {
                 unit: PhysicalUnit::Degrees,
             }),
             functions: Vec::new(),
+            mirrors: Vec::new(),
         },
     );
     defs.insert(
@@ -57,6 +58,7 @@ fn mover(name: &str, position: [f64; 3], rotation: [f64; 3]) -> FixtureInfo {
                 unit: PhysicalUnit::Degrees,
             }),
             functions: Vec::new(),
+            mirrors: Vec::new(),
         },
     );
     defs.insert("dimmer".to_string(), ChannelDef::at(5));

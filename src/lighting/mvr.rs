@@ -83,12 +83,14 @@ pub fn resolve_gdtf_entry<'a>(entries: &'a [String], spec: &str) -> Option<&'a s
         .or_else(|| {
             entries.iter().find(|name| {
                 let entry_base = name.rsplit('/').next().unwrap_or(name);
+                let entry_stem = entry_base.strip_suffix(".gdtf").unwrap_or(entry_base);
+                // Entries are usually "Manufacturer@Fixture.gdtf"; a console
+                // may reference just "Fixture".
+                let unprefixed = entry_stem.split_once('@').map(|(_, f)| f);
+                let wanted = basename.strip_suffix(".gdtf").unwrap_or(basename);
                 entry_base == basename
-                    || entry_base.strip_suffix(".gdtf") == Some(basename)
-                    || entry_base.eq_ignore_ascii_case(basename)
-                    || entry_base
-                        .strip_suffix(".gdtf")
-                        .is_some_and(|stem| stem.eq_ignore_ascii_case(basename))
+                    || entry_stem.eq_ignore_ascii_case(wanted)
+                    || unprefixed.is_some_and(|f| f.eq_ignore_ascii_case(wanted))
             })
         })
         .map(|s| s.as_str())
@@ -121,6 +123,16 @@ mod tests {
         assert_eq!(
             resolve_gdtf_entry(&entries, "astera_pb15"),
             Some("Astera_PB15.gdtf")
+        );
+        assert_eq!(
+            resolve_gdtf_entry(&entries, "PB15"),
+            None,
+            "a fixture name that is only part of the entry's does not match"
+        );
+        assert_eq!(
+            resolve_gdtf_entry(&["Roxx@Cluster S2.gdtf".to_string()], "Cluster S2"),
+            Some("Roxx@Cluster S2.gdtf"),
+            "a reference without the manufacturer prefix resolves"
         );
         assert_eq!(resolve_gdtf_entry(&entries, "Nope"), None);
     }

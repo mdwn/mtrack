@@ -77,37 +77,32 @@ pub fn distill(
     mode_name: &str,
     type_name: &str,
 ) -> Result<Distilled, GdtfError> {
-    let Some(mode) = description.modes.iter().find(|m| m.name == mode_name) else {
-        let candidates: Vec<&str> = description.modes.iter().map(|m| m.name.as_str()).collect();
-        return Err(GdtfError::new(format!(
-            "GDTF \"{}\" has no mode named \"{mode_name}\"; available modes: {}",
-            description.name,
-            candidates.join(", ")
-        )));
-    };
+    // Exact, then with case/whitespace/punctuation folded: a GDTF can name
+    // a mode with a trailing space, and a `.fixture` written from it can
+    // come back through a parser that trims. The importer matches the same
+    // way, so what it pins is what this finds.
+    let matched = super::match_mode(description, mode_name)?;
+    let mode = description
+        .modes
+        .iter()
+        .find(|m| m.name == matched.name)
+        .expect("match_mode names an existing mode");
 
     let mut warnings = Vec::new();
-    let mut channel_defs: HashMap<String, ChannelDef> = HashMap::new();
 
+    // Pass one: each channel to a canonical name, keeping its geometry.
+    // Real fixtures repeat an attribute across geometries — the cells of a
+    // pixel bar, the identical sections of an LED batten, or the master
+    // and per-section controls of a panel — and mtrack's model has one
+    // channel per name. Pass two decides what to do with the repeats.
+    struct Named {
+        name: String,
+        attribute: String,
+        geometry: String,
+        def: ChannelDef,
+    }
+    let mut named: Vec<Named> = Vec::new();
     for channel in &mode.channels {
-        // A channel attached to a GeometryReference is one instance of a
-        // repeated cell — a pixel bar or multi-head mode. mtrack's model
-        // has no instancing; a flattened import would be wrong, so the
-        // whole mode is refused rather than half-imported. GDTF also
-        // permits references for plain geometry reuse, so this check can
-        // over-trigger on exotic files; the refusal names the geometry so
-        // a human holding the fixture can judge.
-        if description
-            .geometry_reference_names
-            .contains(&channel.geometry)
-        {
-            return Err(GdtfError::new(format!(
-                "mode \"{}\" is multi-instance (channel on geometry reference \"{}\"); \
-                 pixel/matrix modes are not supported — pick a non-pixel mode",
-                mode.name, channel.geometry
-            )));
-        }
-
         let Some(logical) = channel.logical_channels.first() else {
             warnings.push(format!(
                 "skipped a channel with no logical channel (geometry \"{}\")",
@@ -122,7 +117,6 @@ pub fn distill(
                 channel.logical_channels.len()
             ));
         }
-
         if channel.offsets.is_empty() {
             // Virtual channel: no DMX footprint, controlled by the console's
             // own math. Nothing for a patch-level model to carry.
@@ -132,27 +126,24 @@ pub fn distill(
             ));
             continue;
         }
-
+        if logical.attribute == "NoFeature" {
+            // GDTF's placeholder for a byte the fixture reserves: it has no
+            // function and no name worth keeping.
+            continue;
+        }
         let name = match canonical_channel_name(&logical.attribute) {
             Some(name) => name.to_string(),
             None => {
                 let fallback = sanitize(&logical.attribute);
-                warnings.push(format!(
-                    "unmapped GDTF attribute \"{}\"; using channel name \"{fallback}\"",
-                    logical.attribute
-                ));
+                if !named.iter().any(|n| n.attribute == logical.attribute) {
+                    warnings.push(format!(
+                        "unmapped GDTF attribute \"{}\"; using channel name \"{fallback}\"",
+                        logical.attribute
+                    ));
+                }
                 fallback
             }
         };
-        if channel_defs.contains_key(&name) {
-            return Err(GdtfError::new(format!(
-                "mode \"{}\": two channels map to the name \"{name}\" \
-                 (second from GDTF attribute \"{}\") — an instanced (pixel) mode \
-                 or an attribute collision; neither can be represented",
-                mode.name, logical.attribute
-            )));
-        }
-
         let mut def = ChannelDef::at(channel.offsets[0]);
         if channel.offsets.len() > 1 {
             def.fine = Some(channel.offsets[1]);
@@ -163,7 +154,6 @@ pub fn distill(
                 channel.offsets.len()
             ));
         }
-
         def.range = channel_range(&logical.attribute, channel);
         if def.range.is_none() && (logical.attribute == "Pan" || logical.attribute == "Tilt") {
             warnings.push(format!(
@@ -173,8 +163,82 @@ pub fn distill(
             ));
         }
         def.functions = convert_functions(&name, channel, &mut warnings);
+        named.push(Named {
+            name,
+            attribute: logical.attribute.clone(),
+            geometry: channel.geometry.clone(),
+            def,
+        });
+    }
 
-        channel_defs.insert(name, def);
+    // Pass two. Geometries carrying exactly the same attribute set are
+    // identical sections — pixels, batten segments — and are ganged: the
+    // first section's channels are the fixture's, and every other
+    // section's bytes mirror them, so the whole fixture shows one color.
+    // Sections that differ (a master beside per-section controls) keep the
+    // first occurrence as the fixture's channel and the rest under
+    // geometry-suffixed names, reachable by a `static` but driven by
+    // nothing. Both are reported: neither is what the console would do.
+    let mut sections: Vec<(String, Vec<String>)> = Vec::new();
+    for n in &named {
+        match sections.iter_mut().find(|(g, _)| *g == n.geometry) {
+            Some((_, attributes)) => attributes.push(n.attribute.clone()),
+            None => sections.push((n.geometry.clone(), vec![n.attribute.clone()])),
+        }
+    }
+    for (_, attributes) in &mut sections {
+        attributes.sort();
+    }
+    let mut channel_defs: HashMap<String, ChannelDef> = HashMap::new();
+    let mut owner_geometry: HashMap<String, String> = HashMap::new();
+    let mut ganged: Vec<String> = Vec::new();
+    let mut suffixed: Vec<String> = Vec::new();
+    for n in named {
+        let Some(existing) = channel_defs.get_mut(&n.name) else {
+            owner_geometry.insert(n.name.clone(), n.geometry.clone());
+            channel_defs.insert(n.name, n.def);
+            continue;
+        };
+        let owner = &owner_geometry[&n.name.clone()];
+        let same_shape = |g: &str| {
+            sections
+                .iter()
+                .find(|(s, _)| s == g)
+                .map(|(_, a)| a.clone())
+        };
+        if owner != &n.geometry && same_shape(owner) == same_shape(&n.geometry) {
+            existing.mirrors.push((n.def.offset, n.def.fine));
+            if !ganged.contains(&n.geometry) {
+                ganged.push(n.geometry.clone());
+            }
+        } else {
+            let suffix = sanitize(&n.geometry);
+            let mut renamed = format!("{}:{suffix}", n.name);
+            let mut ordinal = 2;
+            while channel_defs.contains_key(&renamed) {
+                renamed = format!("{}:{suffix}_{ordinal}", n.name);
+                ordinal += 1;
+            }
+            suffixed.push(format!("{} → {renamed}", n.name));
+            let geometry = n.geometry.clone();
+            owner_geometry.insert(renamed.clone(), geometry);
+            channel_defs.insert(renamed, n.def);
+        }
+    }
+    if !ganged.is_empty() {
+        warnings.push(format!(
+            "{} identical section(s) ganged to the first ({}): the whole fixture shows one \
+             color; per-section control is not modelled",
+            ganged.len(),
+            ganged.join(", ")
+        ));
+    }
+    if !suffixed.is_empty() {
+        warnings.push(format!(
+            "repeated attributes on differing sections kept under section names, driven by \
+             nothing unless a static names them: {}",
+            suffixed.join(", ")
+        ));
     }
 
     Ok(Distilled {
@@ -457,42 +521,82 @@ mod tests {
     fn unknown_mode_lists_the_candidates() {
         let description = parse_description(SYNTHETIC_DESCRIPTION).unwrap();
         let err = distill(&description, "Nope", "X").unwrap_err().to_string();
-        assert!(err.contains("no mode named \"Nope\""), "{err}");
+        assert!(err.contains("no mode matching \"Nope\""), "{err}");
         assert!(err.contains("8: RGBS"), "{err}");
         assert!(err.contains("Mover 16bit"), "{err}");
     }
 
     #[test]
-    fn multi_instance_modes_are_refused() {
-        // A mode whose channels sit on a GeometryReference is pixel/matrix
-        // instancing; flattening it would be wrong, so it must refuse.
+    fn identical_sections_are_ganged_to_one_channel() {
+        // Three pixels, each with its own RGB: the fixture gets one red,
+        // one green, one blue, and every other pixel mirrors them.
         let xml = r#"<GDTF><FixtureType Name="Bar" Manufacturer="m">
   <Geometries>
-    <Geometry Name="Base"><GeometryReference Name="Pixel 1" Geometry="Cell"/></Geometry>
+    <Geometry Name="Base"><GeometryReference Name="Pixel 1" Geometry="Cell"/><GeometryReference Name="Pixel 2" Geometry="Cell"/><GeometryReference Name="Pixel 3" Geometry="Cell"/></Geometry>
   </Geometries>
   <DMXModes>
     <DMXMode Name="Pixel Mode" Geometry="Base">
       <DMXChannels>
-        <DMXChannel Offset="1" Geometry="Pixel 1">
-          <LogicalChannel Attribute="ColorAdd_R">
-            <ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/>
-          </LogicalChannel>
-        </DMXChannel>
+        <DMXChannel Offset="1" Geometry="Pixel 1"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="2" Geometry="Pixel 1"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="3" Geometry="Pixel 2"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="4" Geometry="Pixel 2"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="5,6" Geometry="Pixel 3"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="7" Geometry="Pixel 3"><LogicalChannel Attribute="ColorAdd_G"><ChannelFunction Name="G" Attribute="ColorAdd_G" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
       </DMXChannels>
     </DMXMode>
   </DMXModes>
 </FixtureType></GDTF>"#;
         let description = parse_description(xml).unwrap();
-        let err = distill(&description, "Pixel Mode", "Bar")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("multi-instance"), "{err}");
+        let distilled = distill(&description, "Pixel Mode", "Bar").unwrap();
+        let defs = distilled.fixture_type.channel_defs();
+        assert_eq!(defs.len(), 2, "{:?}", defs.keys().collect::<Vec<_>>());
+        assert_eq!(defs["red"].offset, 1);
+        assert_eq!(defs["red"].mirrors, vec![(3, None), (5, Some(6))]);
+        assert_eq!(defs["green"].mirrors, vec![(4, None), (7, None)]);
+        assert_eq!(distilled.fixture_type.footprint(), 7);
+        assert!(
+            distilled.warnings.iter().any(|w| w.contains("ganged")),
+            "{:?}",
+            distilled.warnings
+        );
     }
 
     #[test]
-    fn duplicate_canonical_names_are_refused() {
-        // Two channels mapping to the same canonical name is instancing by
-        // another route (or a broken file); either way, refuse.
+    fn differing_sections_keep_the_first_and_suffix_the_rest() {
+        // A master dimmer beside a section with a dimmer and color: the
+        // master's dimmer is the fixture's; the section's is kept by name.
+        let xml = r#"<GDTF><FixtureType Name="Panel" Manufacturer="m">
+  <Geometries><Geometry Name="Base"><Geometry Name="Master"/><Geometry Name="Section A"/></Geometry></Geometries>
+  <DMXModes>
+    <DMXMode Name="M" Geometry="Base">
+      <DMXChannels>
+        <DMXChannel Offset="1" Geometry="Master"><LogicalChannel Attribute="Dimmer"><ChannelFunction Name="D" Attribute="Dimmer" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="2" Geometry="Section A"><LogicalChannel Attribute="Dimmer"><ChannelFunction Name="D" Attribute="Dimmer" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="3" Geometry="Section A"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="4" Geometry="Master"><LogicalChannel Attribute="NoFeature"><ChannelFunction Name="N" Attribute="NoFeature" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+      </DMXChannels>
+    </DMXMode>
+  </DMXModes>
+</FixtureType></GDTF>"#;
+        let description = parse_description(xml).unwrap();
+        let distilled = distill(&description, "M", "Panel").unwrap();
+        let defs = distilled.fixture_type.channel_defs();
+        assert_eq!(defs["dimmer"].offset, 1);
+        assert!(defs["dimmer"].mirrors.is_empty());
+        assert_eq!(defs["dimmer:section_a"].offset, 2);
+        assert_eq!(defs["red"].offset, 3);
+        assert!(!defs.contains_key("nofeature"), "NoFeature is skipped");
+        assert!(distilled
+            .warnings
+            .iter()
+            .any(|w| w.contains("dimmer → dimmer:section_a")));
+    }
+
+    #[test]
+    fn twin_sections_with_one_attribute_each_are_ganged() {
+        // Two geometries carrying the same single attribute are identical
+        // sections: the second mirrors the first, and the report says so.
         let xml = r#"<GDTF><FixtureType Name="Twin" Manufacturer="m">
   <DMXModes>
     <DMXMode Name="Twin Mode" Geometry="Base">
@@ -512,13 +616,14 @@ mod tests {
   </DMXModes>
 </FixtureType></GDTF>"#;
         let description = parse_description(xml).unwrap();
-        let err = distill(&description, "Twin Mode", "Twin")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("map to the name \"red\""), "{err}");
-        // A name collision must NOT claim to be multi-instance — that
-        // diagnosis once hard-refused legitimate tunable-white fixtures.
-        assert!(!err.contains("multi-instance"), "{err}");
+        let distilled = distill(&description, "Twin Mode", "Twin").unwrap();
+        let red = &distilled.fixture_type.channel_defs()["red"];
+        assert_eq!((red.offset, red.mirrors.as_slice()), (1, &[(2, None)][..]));
+        assert!(
+            distilled.warnings.iter().any(|w| w.contains("ganged")),
+            "{:?}",
+            distilled.warnings
+        );
     }
 
     #[test]

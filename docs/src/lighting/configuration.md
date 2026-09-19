@@ -325,7 +325,11 @@ the same name is never overwritten. A patched fixture whose GDTF is missing
 or whose mode cannot be matched is never silently dropped either: it becomes
 a `# TODO` line in the venue file carrying everything the MVR knew about it.
 
-The same flow is available over MCP as `inspect_mvr` and `import_mvr`.
+The same flow is available over MCP as `inspect_mvr` and `import_mvr`. Pixel bars and
+multi-section fixtures import with their identical sections ganged to one color (the report
+says so); a fixture with sections that differ keeps its first section's channels as its own and
+the rest under section-suffixed names. gdtf.eu publishes sample MVR files from several consoles,
+which are a good way to see what an import of your own rig will look like.
 
 ## Song Lighting Definitions
 

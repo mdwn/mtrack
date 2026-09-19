@@ -198,6 +198,16 @@ footprints; `--mode` or UI picker required).
 > no DTD/entity expansion (quick-xml default — keep it that way). Both parsers are
 > cargo-fuzz targets from day one.
 
+**Pixel and section fixtures (settled 2026-09-19 against the gdtf.eu MVR corpus).** A third
+of the fixtures in real festival and arena exports repeat an attribute across geometries:
+pixel cells, identical LED-batten sections, or a master beside per-section controls. Refusing
+those modes made real rigs import as TODO lists. The distiller now gangs identical sections
+(the first section's channels are the fixture's, the rest mirror them — one color across the
+fixture, `ChannelDef::mirrors`), and keeps differing sections' repeats under section-suffixed
+names, driven by nothing unless a `static` names them. Both are reported. Per-cell control is
+P2 work; ganging is the honest P1 answer, and it is what a band with a pixel bar and a
+tag-based show expects to see.
+
 ## 6. MVR parser (owned)
 
 Zip containing `GeneralSceneDescription.xml` plus embedded GDTF files. We read: layers →

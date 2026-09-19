@@ -62,6 +62,12 @@ pub struct ChannelDef {
     pub range: Option<PhysicalRange>,
     /// DMX sub-range functions of this channel.
     pub functions: Vec<ChannelFunction>,
+    /// Further `(coarse, fine)` byte offsets that receive the same value —
+    /// the other cells of a pixel fixture or the other identical sections
+    /// of an LED bar, ganged to this channel so the whole fixture shows one
+    /// color until per-cell control exists. GDTF-sourced only.
+    #[serde(default)]
+    pub mirrors: Vec<(u16, Option<u16>)>,
 }
 
 impl ChannelDef {
@@ -73,7 +79,17 @@ impl ChannelDef {
             fine: None,
             range: None,
             functions: Vec::new(),
+            mirrors: Vec::new(),
         }
+    }
+
+    /// Every byte offset this channel writes: its own, then its mirrors'.
+    pub fn all_offsets(&self) -> impl Iterator<Item = u16> + '_ {
+        std::iter::once(self.offset).chain(self.fine).chain(
+            self.mirrors
+                .iter()
+                .flat_map(|(c, f)| std::iter::once(*c).chain(*f)),
+        )
     }
 }
 
@@ -366,7 +382,7 @@ impl FixtureType {
     pub fn footprint(&self) -> u16 {
         self.channel_defs
             .values()
-            .map(|d| d.offset.max(d.fine.unwrap_or(0)))
+            .flat_map(|d| d.all_offsets())
             .max()
             .unwrap_or(0)
     }
@@ -885,6 +901,7 @@ mod tests {
                         }),
                     },
                 ],
+                mirrors: Vec::new(),
             },
         );
         let ft = FixtureType::from_channel_defs("PixelBrick".to_string(), defs);
@@ -909,6 +926,7 @@ mod tests {
                     unit: PhysicalUnit::Degrees,
                 }),
                 functions: Vec::new(),
+                mirrors: Vec::new(),
             },
         );
         let ft = FixtureType::from_channel_defs("Mover".to_string(), defs);
@@ -998,6 +1016,7 @@ mod tests {
                         unit: PhysicalUnit::Hertz,
                     }),
                 }],
+                mirrors: Vec::new(),
             },
         );
         let ft =
@@ -1039,6 +1058,7 @@ mod tests {
                         unit: PhysicalUnit::Hertz,
                     }),
                 }],
+                mirrors: Vec::new(),
             },
         );
         let ft = FixtureType::from_parts("Brick".to_string(), defs, Some(25.0), Some(0.4), Some(7));

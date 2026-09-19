@@ -37,7 +37,7 @@ use super::types::{ChannelDef, FixtureType, GdtfSource, MovementLimits};
 
 /// Bumped whenever the distiller's output for the same source can change.
 /// Part of the cache key, so an upgrade regenerates every expansion.
-pub const DISTILLER_VERSION: u32 = 1;
+pub const DISTILLER_VERSION: u32 = 2;
 
 /// The cache's on-disk representation of a distilled fixture type.
 ///
@@ -278,6 +278,7 @@ mod tests {
                     unit: crate::lighting::types::PhysicalUnit::Degrees,
                 }),
                 functions: Vec::new(),
+                mirrors: Vec::new(),
             },
         );
         defs.insert("strobe".to_string(), ChannelDef::at(3));

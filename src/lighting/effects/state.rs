@@ -639,6 +639,7 @@ mod tests {
                     unit: PhysicalUnit::Degrees,
                 }),
                 functions: Vec::new(),
+                mirrors: Vec::new(),
             },
         );
         defs.insert("dimmer".to_string(), ChannelDef::at(3));
@@ -684,6 +685,7 @@ mod tests {
                 fine: Some(2),
                 range: None,
                 functions: Vec::new(),
+                mirrors: Vec::new(),
             },
         );
         fixture = fixture.with_channel_defs(defs);
