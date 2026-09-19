@@ -45,6 +45,13 @@ pub struct LightingSystem {
     /// Cached group resolutions per venue.
     group_cache: HashMap<String, HashMap<String, Vec<String>>>,
 
+    /// Each MVR-seeded venue's scenery in the asset store, by venue name
+    /// (design §16.3), filled when venues load.
+    scenery: HashMap<String, String>,
+
+    /// The project directory the system loaded from, for the asset store.
+    project_root: Option<PathBuf>,
+
     /// Where the venues were loaded from, so an edited venue can be re-read
     /// without rebuilding the whole system.
     venues_source: Option<VenuesSource>,
@@ -75,6 +82,8 @@ impl LightingSystem {
             inline_fixtures: HashMap::new(),
             logical_groups: HashMap::new(),
             group_cache: HashMap::new(),
+            scenery: HashMap::new(),
+            project_root: None,
             venues_source: None,
         }
     }
@@ -98,7 +107,63 @@ impl LightingSystem {
         fresh.load_venues_directory(&source.path)?;
         self.venues = fresh.venues;
         self.group_cache.clear();
+        if let Some(root) = self.project_root.clone() {
+            self.refresh_scenery(&root);
+        }
         Ok(())
+    }
+
+    /// The store-relative path of a venue's scenery file, when the venue
+    /// was seeded from an MVR whose scenery has been distilled.
+    pub fn scenery(&self, venue: &str) -> Option<&str> {
+        self.scenery.get(venue).map(String::as_str)
+    }
+
+    /// Distills every MVR-seeded venue's scenery into the asset store. A
+    /// venue whose scenery cannot be distilled loads without any: the 3D
+    /// view is the only consumer, and a bare deck beats a missing venue.
+    fn refresh_scenery(&mut self, base_path: &Path) {
+        self.scenery.clear();
+        let base_path = if base_path.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            base_path
+        };
+        let cache = DistillCache::new(base_path.join("lighting").join(".cache"));
+        for (name, venue) in &self.venues {
+            let Some(source) = venue.source() else {
+                continue;
+            };
+            let result = (|| -> Result<(String, Vec<String>), Box<dyn Error>> {
+                let archive_path = base_path.join(&source.mvr);
+                let canonical = archive_path
+                    .canonicalize()
+                    .map_err(|e| format!("cannot read MVR {}: {e}", archive_path.display()))?;
+                if !canonical.starts_with(base_path.canonicalize()?) {
+                    return Err(
+                        format!("MVR path {} escapes the project directory", source.mvr).into(),
+                    );
+                }
+                let bytes = std::fs::read(&canonical)?;
+                let parsed: std::cell::OnceCell<crate::lighting::mvr::Scene> =
+                    std::cell::OnceCell::new();
+                cache.ensure_scenery(&bytes, &source.origin, || {
+                    if parsed.get().is_none() {
+                        let _ = parsed.set(crate::lighting::mvr::parse_archive(&bytes)?);
+                    }
+                    Ok(parsed.get().expect("just set"))
+                })
+            })();
+            match result {
+                Ok((rel, warnings)) => {
+                    for warning in warnings {
+                        warn!(venue = name, "Scenery: {warning}");
+                    }
+                    self.scenery.insert(name.clone(), rel);
+                }
+                Err(e) => warn!(venue = name, error = %e, "No scenery for the 3D view"),
+            }
+        }
     }
 
     /// Returns an iterator over the (name, venue) pairs known to the system.
@@ -151,6 +216,9 @@ impl LightingSystem {
             }
         }
 
+        // Scenery for the 3D view, from each MVR-seeded venue's archive.
+        self.project_root = Some(base_path.to_path_buf());
+        self.refresh_scenery(base_path);
         Ok(())
     }
 
@@ -1632,5 +1700,61 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Fixture type 'UnknownType' not found"));
+    }
+
+    #[test]
+    fn an_mvr_seeded_venue_gets_its_scenery_distilled_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let gdtf = crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+        )]);
+        let mvr = crate::lighting::gdtf::build_zip(&[
+            (
+                "GeneralSceneDescription.xml",
+                crate::lighting::mvr::SYNTHETIC_SCENE.as_bytes(),
+            ),
+            ("Astera_PB15.gdtf", gdtf.as_slice()),
+            ("Lid.glb", b"lid".as_slice()),
+            ("deck.glb", b"deck".as_slice()),
+        ]);
+        crate::lighting::import::import_mvr_bytes(
+            &mvr,
+            "kellys.mvr",
+            &crate::lighting::import::MvrImportOptions {
+                name: Some("kellys".to_string()),
+                ..Default::default()
+            },
+            &project,
+        )
+        .unwrap();
+
+        let config = Lighting::new(
+            Some("kellys".to_string()),
+            None,
+            None,
+            Some(crate::config::lighting::Directories::new(
+                Some("lighting/fixture_types".to_string()),
+                Some("lighting/venues".to_string()),
+            )),
+        );
+        let mut system = LightingSystem::new();
+        system.load(&config, &project).unwrap();
+        let rel = system
+            .scenery("kellys")
+            .expect("scenery distilled")
+            .to_string();
+        assert!(project.join("lighting/.cache/assets").join(&rel).is_file());
+        let cache = DistillCache::new(project.join("lighting/.cache"));
+        let model = cache.scenery(&rel).unwrap();
+        assert_eq!(model.objects.len(), 2);
+        assert_eq!(model.formats.get("glb"), Some(&2));
+
+        // A reload keeps it; a hand-written venue has none.
+        system.reload_venues().unwrap();
+        assert_eq!(system.scenery("kellys"), Some(rel.as_str()));
+        assert!(system.scenery("nowhere").is_none());
     }
 }

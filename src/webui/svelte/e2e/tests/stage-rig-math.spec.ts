@@ -159,5 +159,7 @@ test.describe("stage rig math", () => {
     expect(tray.c[1]).toBeLessThan(0);
     expect(deckExtent([])).toEqual([-4, 4, 0, 6]);
     expect(deckExtent([[-6, 9, 3]])).toEqual([-7, 7, 0, 10]);
+    // Something downstage of the audience edge pulls the deck down to it.
+    expect(deckExtent([[0, -4.3, 2]])).toEqual([-4, 4, -5.3, 6]);
   });
 });

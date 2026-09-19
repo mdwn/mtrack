@@ -14,9 +14,11 @@
 
 //! Streaming parser for the subset of `GeneralSceneDescription.xml` mtrack
 //! consumes: the patched fixtures — name, layer, GDTF reference and mode,
-//! addresses, transform. Scene graph nodes that aren't fixtures (scenery,
-//! trusses, groups) are passed over, though fixtures *inside* groups are
-//! still collected.
+//! addresses, transform — the focus points, and the scenery (scene
+//! objects, trusses, supports, screens: a transform and the mesh files
+//! they draw, through the symbol definitions they may reference). Group
+//! nodes are passed over, though what is *inside* them is still
+//! collected.
 //!
 //! Unlike GDTF, MVR carries its per-fixture data as element text
 //! (`<GDTFSpec>file</GDTFSpec>`), so the walk tracks which leaf it is
@@ -39,8 +41,37 @@ pub struct Scene {
     pub fixtures: Vec<MvrFixture>,
     /// The scene's focus points, in document order.
     pub focus_points: Vec<MvrFocusPoint>,
+    /// The scenery — everything with a transform and meshes that is not a
+    /// fixture — in document order.
+    pub objects: Vec<MvrSceneObject>,
     /// Per-value parse degradations — what was dropped and why.
     pub warnings: Vec<String>,
+}
+
+/// A piece of scenery as MVR states it: a scene object, truss, support,
+/// video screen or projector, with the meshes it draws.
+#[derive(Debug, Default, Clone)]
+pub struct MvrSceneObject {
+    /// The object's name (often empty).
+    pub name: String,
+    /// The element kind: `SceneObject`, `Truss`, `Support`, ...
+    pub kind: String,
+    /// The layer it sits on, when one encloses it.
+    pub layer: String,
+    /// The object's transform, when present and parseable.
+    pub matrix: Option<Matrix>,
+    /// The meshes, own and through symbol definitions, each with its
+    /// transform relative to the object.
+    pub meshes: Vec<MvrMesh>,
+}
+
+/// A mesh file an object draws.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct MvrMesh {
+    /// The archive entry name (`Geometry3D fileName`).
+    pub file: String,
+    /// The mesh's transform relative to its object, when it has one.
+    pub matrix: Option<Matrix>,
 }
 
 /// A focus point as MVR states it: a named transform fixtures can aim at.
@@ -104,7 +135,34 @@ impl Matrix {
         };
         ([rx.to_degrees(), ry.to_degrees(), rz.to_degrees()], exact)
     }
+
+    /// `self` after `inner`: the transform of something placed by `inner`
+    /// inside a frame placed by `self` (a symbol's mesh inside its object).
+    pub fn compose(&self, inner: &Matrix) -> Matrix {
+        let apply = |v: &Vec3| -> Vec3 {
+            [
+                self.u[0] * v[0] + self.v[0] * v[1] + self.w[0] * v[2],
+                self.u[1] * v[0] + self.v[1] * v[1] + self.w[1] * v[2],
+                self.u[2] * v[0] + self.v[2] * v[1] + self.w[2] * v[2],
+            ]
+        };
+        let o = apply(&inner.o);
+        Matrix {
+            u: apply(&inner.u),
+            v: apply(&inner.v),
+            w: apply(&inner.w),
+            o: [o[0] + self.o[0], o[1] + self.o[1], o[2] + self.o[2]],
+        }
+    }
 }
+
+/// The identity transform.
+pub const IDENTITY: Matrix = Matrix {
+    u: [1.0, 0.0, 0.0],
+    v: [0.0, 1.0, 0.0],
+    w: [0.0, 0.0, 1.0],
+    o: [0.0, 0.0, 0.0],
+};
 
 /// A scene-space triple.
 pub type Vec3 = [f64; 3];
@@ -143,7 +201,22 @@ enum TextTarget {
     Matrix,
     /// A FocusPoint's transform.
     FocusMatrix,
+    /// A scenery object's transform.
+    ObjectMatrix,
+    /// A Geometry3D's own transform.
+    MeshMatrix,
+    /// A Symbol instance's transform.
+    SymbolMatrix,
 }
+
+/// The element kinds that are scenery.
+const SCENERY_ELEMENTS: &[&str] = &[
+    "SceneObject",
+    "Truss",
+    "Support",
+    "VideoScreen",
+    "Projector",
+];
 
 /// The walk's mutable state.
 #[derive(Default)]
@@ -159,6 +232,20 @@ struct Walk {
     text_target: Option<TextTarget>,
     text_buffer: String,
     saw_root: bool,
+    /// The scenery object being read, and how deep inside it the walk is.
+    current_object: Option<MvrSceneObject>,
+    object_depth: usize,
+    /// A Geometry3D being read (its Matrix child may follow).
+    current_mesh: Option<MvrMesh>,
+    /// A Symbol instance being read: the symdef it names and its Matrix.
+    current_symbol: Option<(String, Option<Matrix>)>,
+    /// Symbol definitions by uuid: the meshes they hold.
+    symdefs: std::collections::HashMap<String, Vec<MvrMesh>>,
+    /// The symdef being read.
+    current_symdef: Option<(String, Vec<MvrMesh>)>,
+    /// Symbol references to resolve once the document is read:
+    /// (object index, symdef uuid, symbol transform).
+    symbol_refs: Vec<(usize, String, Option<Matrix>)>,
 }
 
 /// Parses `GeneralSceneDescription.xml` content into the consumed subset.
@@ -208,6 +295,33 @@ pub fn parse_scene(xml: &str) -> Result<Scene, MvrError> {
     if !walk.saw_root {
         return Err(MvrError::new(
             "scene description has no GeneralSceneDescription element",
+        ));
+    }
+    // Symbols resolve last: a symdef may be defined anywhere in the file.
+    let mut unresolved = std::collections::BTreeSet::new();
+    for (index, symdef, matrix) in walk.symbol_refs {
+        match walk.symdefs.get(&symdef) {
+            Some(meshes) => {
+                for mesh in meshes {
+                    let matrix = match (&matrix, &mesh.matrix) {
+                        (Some(symbol), Some(own)) => Some(symbol.compose(own)),
+                        (Some(symbol), None) => Some(*symbol),
+                        (None, own) => *own,
+                    };
+                    walk.scene.objects[index].meshes.push(MvrMesh {
+                        file: mesh.file.clone(),
+                        matrix,
+                    });
+                }
+            }
+            None => {
+                unresolved.insert(symdef);
+            }
+        }
+    }
+    for symdef in unresolved {
+        walk.scene.warnings.push(format!(
+            "symbol definition {symdef} is referenced but never defined"
         ));
     }
     Ok(walk.scene)
@@ -262,6 +376,45 @@ impl Walk {
                     matrix: None,
                 });
             }
+            "Symdef" if self.current_symdef.is_none() => {
+                self.current_symdef =
+                    Some((attr(element, "uuid")?.unwrap_or_default(), Vec::new()));
+            }
+            kind if SCENERY_ELEMENTS.contains(&kind) && self.current.is_none() => {
+                if self.current_object.is_some() {
+                    self.object_depth += 1;
+                } else {
+                    self.current_object = Some(MvrSceneObject {
+                        name: attr(element, "name")?.unwrap_or_default(),
+                        kind: kind.to_string(),
+                        layer: self.layer_stack.last().cloned().unwrap_or_default(),
+                        matrix: None,
+                        meshes: Vec::new(),
+                    });
+                    self.object_depth = 0;
+                }
+            }
+            "Geometry3D" if self.current_object.is_some() || self.current_symdef.is_some() => {
+                if let Some(file) = attr(element, "fileName")?.filter(|f| !f.trim().is_empty()) {
+                    self.current_mesh = Some(MvrMesh {
+                        file: file.trim().to_string(),
+                        matrix: None,
+                    });
+                }
+            }
+            "Symbol" if self.current_object.is_some() => {
+                if let Some(symdef) = attr(element, "symdef")?.filter(|s| !s.trim().is_empty()) {
+                    self.current_symbol = Some((symdef.trim().to_string(), None));
+                }
+            }
+            "Matrix" if self.current_mesh.is_some() => {
+                self.text_target = Some(TextTarget::MeshMatrix);
+                self.text_buffer.clear();
+            }
+            "Matrix" if self.current_symbol.is_some() => {
+                self.text_target = Some(TextTarget::SymbolMatrix);
+                self.text_buffer.clear();
+            }
             "GDTFSpec" | "GDTFMode" | "Address" | "FixtureID" | "Matrix"
                 if self.current.is_some() =>
             {
@@ -276,6 +429,10 @@ impl Walk {
             }
             "Matrix" if self.current_focus.is_some() => {
                 self.text_target = Some(TextTarget::FocusMatrix);
+                self.text_buffer.clear();
+            }
+            "Matrix" if self.current_object.is_some() && self.object_depth == 0 => {
+                self.text_target = Some(TextTarget::ObjectMatrix);
                 self.text_buffer.clear();
             }
             _ => {}
@@ -300,11 +457,76 @@ impl Walk {
                     self.scene.focus_points.push(focus);
                 }
             }
+            "Symdef" => {
+                if let Some((uuid, meshes)) = self.current_symdef.take() {
+                    self.symdefs.insert(uuid, meshes);
+                }
+            }
+            kind if SCENERY_ELEMENTS.contains(&kind) => {
+                if self.object_depth > 0 {
+                    self.object_depth -= 1;
+                } else if let Some(object) = self.current_object.take() {
+                    self.scene.objects.push(object);
+                }
+            }
+            "Geometry3D" => {
+                if let Some(mesh) = self.current_mesh.take() {
+                    if let Some((_, meshes)) = self.current_symdef.as_mut() {
+                        meshes.push(mesh);
+                    } else if let Some(object) = self.current_object.as_mut() {
+                        object.meshes.push(mesh);
+                    }
+                }
+            }
+            "Symbol" => {
+                if let Some((symdef, matrix)) = self.current_symbol.take() {
+                    if self.current_object.is_some() {
+                        // Resolved after the walk; the object's index is
+                        // what it will have once pushed.
+                        self.symbol_refs
+                            .push((self.scene.objects.len(), symdef, matrix));
+                    }
+                }
+            }
             "GDTFSpec" | "GDTFMode" | "Address" | "FixtureID" | "Matrix" => {
                 let Some(target) = self.text_target.take() else {
                     return;
                 };
                 let text = self.text_buffer.trim().to_string();
+                if matches!(
+                    target,
+                    TextTarget::ObjectMatrix | TextTarget::MeshMatrix | TextTarget::SymbolMatrix
+                ) {
+                    let parsed = parse_matrix(&text);
+                    if parsed.is_none() {
+                        let name = self
+                            .current_object
+                            .as_ref()
+                            .map(|o| o.name.clone())
+                            .unwrap_or_default();
+                        self.scene.warnings.push(format!(
+                            "scenery \"{name}\": unparseable matrix \"{text}\"; dropped"
+                        ));
+                    }
+                    match target {
+                        TextTarget::MeshMatrix => {
+                            if let Some(mesh) = self.current_mesh.as_mut() {
+                                mesh.matrix = parsed;
+                            }
+                        }
+                        TextTarget::SymbolMatrix => {
+                            if let Some(symbol) = self.current_symbol.as_mut() {
+                                symbol.1 = parsed;
+                            }
+                        }
+                        _ => {
+                            if let Some(object) = self.current_object.as_mut() {
+                                object.matrix = parsed;
+                            }
+                        }
+                    }
+                    return;
+                }
                 if target == TextTarget::FocusMatrix {
                     let Some(focus) = self.current_focus.as_mut() else {
                         return;
@@ -414,9 +636,27 @@ pub(super) mod tests {
 <GeneralSceneDescription verMajor="1" verMinor="6">
   <UserData/>
   <Scene>
+    <AUXData>
+      <Symdef uuid="sym-box" name="Box">
+        <ChildList>
+          <Geometry3D fileName="Box.3ds"/>
+          <Geometry3D fileName="Lid.glb">
+            <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,500}</Matrix>
+          </Geometry3D>
+        </ChildList>
+      </Symdef>
+    </AUXData>
     <Layers>
       <Layer name="Front Truss">
         <ChildList>
+          <Truss name="Truss A" uuid="tttt">
+            <Matrix>{0,1,0}{-1,0,0}{0,0,1}{0,0,6000}</Matrix>
+            <Geometries>
+              <Symbol uuid="s1" symdef="sym-box">
+                <Matrix>{2,0,0}{0,2,0}{0,0,2}{100,0,0}</Matrix>
+              </Symbol>
+            </Geometries>
+          </Truss>
           <Fixture name="Brick 1" uuid="aaaa">
             <FixtureID>101</FixtureID>
             <Matrix>{1,0,0}{0,1,0}{0,0,1}{-2000,3500,4200}</Matrix>
@@ -426,8 +666,11 @@ pub(super) mod tests {
               <Address break="0">1.1</Address>
             </Addresses>
           </Fixture>
-          <SceneObject name="Truss A">
-            <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,6000}</Matrix>
+          <SceneObject name="Deck" uuid="dddd">
+            <Matrix>{7.5,0,0}{0,4,0}{0,0,0.8}{0,0,400}</Matrix>
+            <Geometries>
+              <Geometry3D fileName="deck.glb"/>
+            </Geometries>
           </SceneObject>
           <FocusPoint name="Drummer" uuid="cccc">
             <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,2800,1400}</Matrix>
@@ -607,5 +850,78 @@ pub(super) mod tests {
         xml.push_str("</GeneralSceneDescription>");
         let err = parse_scene(&xml).unwrap_err().to_string();
         assert!(err.contains("nests deeper"), "{err}");
+    }
+
+    #[test]
+    fn scenery_is_collected_with_symbols_resolved() {
+        let scene = parse_scene(SYNTHETIC_SCENE).unwrap();
+        assert!(scene.warnings.is_empty(), "{:?}", scene.warnings);
+        assert_eq!(scene.fixtures.len(), 2, "scenery does not eat fixtures");
+        assert_eq!(scene.objects.len(), 2);
+
+        let truss = &scene.objects[0];
+        assert_eq!(truss.kind, "Truss");
+        assert_eq!(truss.name, "Truss A");
+        assert_eq!(truss.layer, "Front Truss");
+        assert_eq!(truss.matrix.unwrap().o, [0.0, 0.0, 6000.0]);
+        // The symbol's two meshes, the symbol's transform composed with
+        // each mesh's own.
+        assert_eq!(truss.meshes.len(), 2);
+        assert_eq!(truss.meshes[0].file, "Box.3ds");
+        let box_matrix = truss.meshes[0].matrix.unwrap();
+        assert_eq!(box_matrix.u, [2.0, 0.0, 0.0]);
+        assert_eq!(box_matrix.o, [100.0, 0.0, 0.0]);
+        assert_eq!(truss.meshes[1].file, "Lid.glb");
+        let lid = truss.meshes[1].matrix.unwrap();
+        assert_eq!(
+            lid.o,
+            [100.0, 0.0, 1000.0],
+            "scaled by the symbol, then offset"
+        );
+
+        let deck = &scene.objects[1];
+        assert_eq!(deck.kind, "SceneObject");
+        assert_eq!(deck.matrix.unwrap().u, [7.5, 0.0, 0.0], "scale is kept");
+        assert_eq!(
+            deck.meshes,
+            vec![MvrMesh {
+                file: "deck.glb".to_string(),
+                matrix: None
+            }]
+        );
+    }
+
+    #[test]
+    fn a_symbol_to_nothing_is_reported() {
+        let xml = SYNTHETIC_SCENE.replace("symdef=\"sym-box\"", "symdef=\"nope\"");
+        let scene = parse_scene(&xml).unwrap();
+        assert!(scene.objects[0].meshes.is_empty());
+        assert!(
+            scene.warnings.iter().any(|w| w.contains("nope")),
+            "{:?}",
+            scene.warnings
+        );
+    }
+
+    #[test]
+    fn matrices_compose_outer_then_inner() {
+        let outer = Matrix {
+            u: [0.0, 1.0, 0.0],
+            v: [-1.0, 0.0, 0.0],
+            w: [0.0, 0.0, 1.0],
+            o: [10.0, 0.0, 0.0],
+        };
+        let inner = Matrix {
+            u: [2.0, 0.0, 0.0],
+            v: [0.0, 2.0, 0.0],
+            w: [0.0, 0.0, 2.0],
+            o: [1.0, 0.0, 0.0],
+        };
+        let m = outer.compose(&inner);
+        // Inner's +x (scaled 2) turned by outer onto +y; the inner offset
+        // turned and then shifted.
+        assert_eq!(m.u, [0.0, 2.0, 0.0]);
+        assert_eq!(m.o, [10.0, 1.0, 0.0]);
+        assert_eq!(IDENTITY.compose(&inner), inner);
     }
 }

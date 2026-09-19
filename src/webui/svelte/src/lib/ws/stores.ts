@@ -131,6 +131,11 @@ export interface VenueMetadata {
   /** The configured venues directory, for saving edits back. */
   dir: string | null;
   focus_points: Record<string, Vec3>;
+  /**
+   * The venue's scenery file under /api/lighting/assets/, when the venue
+   * was seeded from an MVR; the 3D view draws it.
+   */
+  scenery?: string | null;
 }
 
 export interface LogLine {

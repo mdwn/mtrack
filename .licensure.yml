@@ -33,6 +33,7 @@ excludes:
   - .*\.prettierrc
   - .*\.md
   - .*\.png
+  - .*\.glb
 licenses:
   - files: any
     ident: GPL-3.0

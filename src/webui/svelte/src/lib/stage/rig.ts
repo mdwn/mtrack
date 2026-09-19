@@ -75,6 +75,25 @@ export interface RigModel {
   warnings?: string[];
 }
 
+/** A venue's scenery as the asset store writes it (design §16.3). */
+export interface SceneryModel {
+  version: number;
+  objects: SceneryObject[];
+  formats: Record<string, number>;
+  warnings?: string[];
+}
+
+export interface SceneryObject {
+  name: string;
+  kind: string;
+  layer: string;
+  /** Row-major 4×4 in stage space, translation in meters. */
+  transform: Mat4;
+  meshes: { file: string; transform: Mat4 }[];
+  /** Mesh files the store could not hold (formats it does not draw). */
+  skipped: string[];
+}
+
 /** The beam angle a rig without photometrics is drawn with, degrees. */
 export const GENERIC_BEAM_DEG = 20;
 
@@ -238,16 +257,23 @@ export function trayPositions(
   return out;
 }
 
-/** The deck extent that holds everything, meters: [minX, maxX, minY, maxY]. */
+/**
+ * The deck extent that holds everything, meters: [minX, maxX, minY, maxY].
+ * The deck starts at the audience edge (y = 0) unless something sits
+ * downstage of it — an MVR whose origin was left mid-stage — in which
+ * case it reaches down to hold that too.
+ */
 export function deckExtent(
   points: [number, number, number][],
   minimum: [number, number] = [8, 6],
 ): [number, number, number, number] {
   let maxAbsX = minimum[0] / 2;
   let maxY = minimum[1];
+  let minY = 0;
   for (const [x, y] of points) {
     maxAbsX = Math.max(maxAbsX, Math.abs(x) + 1);
     maxY = Math.max(maxY, y + 1);
+    minY = Math.min(minY, y - 1);
   }
-  return [-maxAbsX, maxAbsX, 0, maxY];
+  return [-maxAbsX, maxAbsX, minY, maxY];
 }

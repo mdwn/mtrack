@@ -30,6 +30,7 @@
   import type {
     CameraPreset,
     SceneStats,
+    SceneryStats,
     StageScene,
   } from "../lib/stage/scene3d";
 
@@ -38,6 +39,7 @@
   let scene: StageScene | null = $state(null);
   let renderer: "loading" | "webgl" | "none" = $state("loading");
   let stats: SceneStats | null = $state(null);
+  let scenery: SceneryStats | null = $state(null);
   let preset: CameraPreset = $state("foh");
   /** Fixture labels: on for a small rig, off when they would carpet it. */
   let labels = $state(true);
@@ -66,6 +68,7 @@
         if (disposed || !canvasEl || !hostEl) return;
         live = new StageScene(canvasEl);
         live.onStats = (s) => (stats = s);
+        live.onSceneryStats = (s) => (scenery = s);
         scene = live;
         renderer = "webgl";
         const fit = () => {
@@ -105,6 +108,10 @@
     if (scene) void scene.setVenue(fixtures, venue);
   });
   $effect(() => {
+    const path = $venueStore?.scenery ?? null;
+    if (scene) void scene.setScenery(path);
+  });
+  $effect(() => {
     scene?.setChannels($fixtureStore);
   });
   $effect(() => {
@@ -133,6 +140,17 @@
           })}
           {#if stats.generic > 0}
             · {$t("stage3d.generic", { values: { count: stats.generic } })}
+          {/if}
+        {/if}
+        {#if scenery}
+          · {$t("stage3d.scenery", { values: { count: scenery.drawn } })}
+          {#if scenery.skipped > 0}
+            {$t("stage3d.sceneryUndrawn", {
+              values: {
+                count: scenery.skipped,
+                formats: scenery.formats.map((f) => "." + f).join(", "),
+              },
+            })}
           {/if}
         {/if}
       </p>

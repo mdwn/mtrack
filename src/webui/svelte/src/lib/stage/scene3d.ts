@@ -37,8 +37,9 @@ import {
   poseRotations,
   rootTiltX,
   trayPositions,
+  type Mat4,
   type RigModel,
-  type RigNode,
+  type SceneryModel,
 } from "./rig";
 import type {
   FixtureChannels,
@@ -114,6 +115,17 @@ export interface SceneStats {
   meshes: number;
 }
 
+/** What the scenery pass drew and could not. */
+export interface SceneryStats {
+  objects: number;
+  /** Meshes placed in the scene. */
+  drawn: number;
+  /** Meshes the store skipped (undrawable formats) or that failed to load. */
+  skipped: number;
+  /** The undrawable formats, e.g. ["3ds"]. */
+  formats: string[];
+}
+
 /** Fetches and caches rig models and meshes by store path. */
 class RigCache {
   private rigs = new Map<string, Promise<RigModel | null>>();
@@ -153,7 +165,7 @@ class RigCache {
   }
 }
 
-function matrixOf(node: RigNode): THREE.Matrix4 {
+function matrixOf(node: { transform: Mat4 }): THREE.Matrix4 {
   const t = node.transform;
   // prettier-ignore
   return new THREE.Matrix4().set(
@@ -232,6 +244,11 @@ export class StageScene {
   private deck = new THREE.Group();
   private focus = new THREE.Group();
   private fixtures = new THREE.Group();
+  private scenery = new THREE.Group();
+  private sceneryGeneration = 0;
+  private sceneryOwned: { dispose(): void }[] = [];
+  private sceneryStats: SceneryStats | null = null;
+  onSceneryStats: ((stats: SceneryStats | null) => void) | null = null;
   private actors = new Map<string, FixtureActor>();
   private cache = new RigCache();
   private cone = beamGeometry();
@@ -271,7 +288,7 @@ export class StageScene {
     this.controls.maxPolarAngle = Math.PI / 2 - 0.02;
     this.controls.minDistance = 1;
     this.controls.maxDistance = 80;
-    this.scene.add(this.deck, this.focus, this.fixtures);
+    this.scene.add(this.deck, this.focus, this.fixtures, this.scenery);
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.2));
     const key = new THREE.DirectionalLight(0xffffff, 1.4);
     key.position.set(-4, -6, 10);
@@ -289,13 +306,15 @@ export class StageScene {
   }
 
   setCamera(preset: CameraPreset) {
-    const [, maxX, , maxY] = this.extent;
-    const target = new THREE.Vector3(0, maxY / 2, 1);
-    const reach = Math.max(maxX * 2, maxY) * 1.4;
-    if (preset === "foh") this.camera.position.set(0, -reach, reach * 0.45);
+    const [, maxX, minY, maxY] = this.extent;
+    const midY = (minY + maxY) / 2;
+    const target = new THREE.Vector3(0, midY, 1);
+    const reach = Math.max(maxX * 2, maxY - minY) * 1.4;
+    if (preset === "foh")
+      this.camera.position.set(0, minY - reach, reach * 0.45);
     else if (preset === "top")
-      this.camera.position.set(0, maxY / 2 - 0.01, reach * 1.3);
-    else this.camera.position.set(reach, maxY / 2, reach * 0.35);
+      this.camera.position.set(0, midY - 0.01, reach * 1.3);
+    else this.camera.position.set(reach, midY, reach * 0.35);
     this.controls.target.copy(target);
     this.controls.update();
   }
@@ -395,6 +414,86 @@ export class StageScene {
     if (generation !== this.generation) return;
     this.stats = stats;
     this.onStats?.(stats);
+  }
+
+  /**
+   * Draws the venue's scenery from the store: each object at its stage
+   * transform, each glTF mesh under it (Y-up turned to Z-up, then the
+   * mesh's own transform). `null` clears it.
+   */
+  async setScenery(path: string | null): Promise<void> {
+    const generation = ++this.sceneryGeneration;
+    this.scenery.clear();
+    for (const owned of this.sceneryOwned) owned.dispose();
+    this.sceneryOwned = [];
+    this.sceneryStats = null;
+    if (!path) {
+      this.onSceneryStats?.(null);
+      return;
+    }
+    const model = await fetch(ASSETS + path)
+      .then((r) => (r.ok ? (r.json() as Promise<SceneryModel>) : null))
+      .catch(() => null);
+    if (generation !== this.sceneryGeneration) return;
+    if (!model) {
+      this.onSceneryStats?.(null);
+      return;
+    }
+    const dir = path.slice(0, path.lastIndexOf("/") + 1);
+    const stats: SceneryStats = {
+      objects: model.objects.length,
+      drawn: 0,
+      skipped: 0,
+      formats: Object.keys(model.formats).filter((f) => f !== "glb"),
+    };
+    await Promise.all(
+      model.objects.map(async (object) => {
+        const group = new THREE.Group();
+        group.name = object.name || object.kind;
+        matrixOf(object).decompose(
+          group.position,
+          group.quaternion,
+          group.scale,
+        );
+        stats.skipped += object.skipped.length;
+        for (const mesh of object.meshes) {
+          const gltf = await this.cache.model(ASSETS + dir + mesh.file);
+          if (generation !== this.sceneryGeneration) return;
+          if (!gltf) {
+            stats.skipped++;
+            continue;
+          }
+          const holder = new THREE.Group();
+          matrixOf(mesh).decompose(
+            holder.position,
+            holder.quaternion,
+            holder.scale,
+          );
+          const clone = gltf.scene.clone(true);
+          // glTF is Y-up; the scene is Z-up.
+          clone.rotation.x = Math.PI / 2;
+          clone.traverse((o) => {
+            if (o instanceof THREE.Mesh) {
+              const material = new THREE.MeshStandardMaterial({
+                color: 0x5c6470,
+                roughness: 0.85,
+                metalness: 0.05,
+              });
+              o.material = material;
+              this.sceneryOwned.push(material);
+            }
+          });
+          holder.add(clone);
+          group.add(holder);
+          stats.drawn++;
+        }
+        if (generation !== this.sceneryGeneration) return;
+        this.scenery.add(group);
+      }),
+    );
+    if (generation !== this.sceneryGeneration) return;
+    this.sceneryStats = stats;
+    this.onSceneryStats?.(stats);
   }
 
   private async buildActor(
@@ -541,22 +640,24 @@ export class StageScene {
 
   private buildDeck() {
     this.deck.clear();
-    const [minX, maxX, , maxY] = this.extent;
+    const [minX, maxX, minY, maxY] = this.extent;
     const width = maxX - minX;
+    const depth = maxY - minY;
+    const midY = (minY + maxY) / 2;
     const deck = new THREE.Mesh(
-      new THREE.PlaneGeometry(width, maxY),
+      new THREE.PlaneGeometry(width, depth),
       new THREE.MeshStandardMaterial({ color: 0x1a2029, roughness: 1 }),
     );
-    deck.position.set(0, maxY / 2, -0.005);
+    deck.position.set(0, midY, -0.005);
     this.deck.add(deck);
     const grid = new THREE.GridHelper(
-      Math.max(width, maxY),
-      Math.max(width, maxY),
+      Math.max(width, depth),
+      Math.max(width, depth),
       0x3a4553,
       0x232b36,
     );
     grid.rotation.x = Math.PI / 2;
-    grid.position.set(0, maxY / 2, 0);
+    grid.position.set(0, midY, 0);
     this.deck.add(grid);
     // The audience edge: a line along y = 0.
     const edge = new THREE.Line(
@@ -632,6 +733,7 @@ export class StageScene {
   dispose() {
     for (const actor of this.actors.values()) this.dropActor(actor);
     this.actors.clear();
+    for (const owned of this.sceneryOwned) owned.dispose();
     for (const owned of this.focusOwned) owned.dispose();
     for (const geometry of this.primitives.values()) geometry.dispose();
     this.cache.dispose();

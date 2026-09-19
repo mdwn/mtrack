@@ -104,6 +104,11 @@ pub struct MvrPlan {
     pub removed_focus_points: Vec<String>,
     /// Focus points of the existing venue the MVR never knew about. Kept.
     pub kept_focus_points: Vec<String>,
+    /// Scenery objects in the scene (trusses, decks, screens), which the
+    /// 3D view draws from the MVR's meshes.
+    pub scenery_objects: usize,
+    /// Scenery meshes in formats the 3D view does not draw (`.3ds`).
+    pub scenery_meshes_undrawn: usize,
     /// What was skipped, approximated or guessed.
     pub warnings: Vec<String>,
 }
@@ -326,6 +331,30 @@ fn plan(
     }
     let scene = mvr::parse_archive(bytes)?;
     let mut warnings = scene.warnings.clone();
+    let scenery_objects = scene.objects.len();
+    let mut undrawn: BTreeMap<String, usize> = BTreeMap::new();
+    for mesh in scene.objects.iter().flat_map(|o| &o.meshes) {
+        let ext = mesh
+            .file
+            .rsplit_once('.')
+            .map(|(_, e)| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if ext != "glb" {
+            *undrawn.entry(ext).or_default() += 1;
+        }
+    }
+    let scenery_meshes_undrawn: usize = undrawn.values().sum();
+    if scenery_meshes_undrawn > 0 {
+        warnings.push(format!(
+            "{scenery_meshes_undrawn} scenery mesh(es) are in formats the 3D view does not draw ({}); \
+             glTF (.glb) scenery is drawn, and fixtures are drawn regardless",
+            undrawn
+                .iter()
+                .map(|(ext, n)| format!("{n} .{ext}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
 
     let venue_name = options.name.clone().unwrap_or_else(|| {
         Path::new(archive_file_name)
@@ -785,6 +814,8 @@ fn plan(
         focus_points,
         removed_focus_points,
         kept_focus_points,
+        scenery_objects,
+        scenery_meshes_undrawn,
         warnings,
     };
     let venue_text = render_venue(&plan, archive_file_name, &kept, &kept_focus);

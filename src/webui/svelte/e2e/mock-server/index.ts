@@ -13,6 +13,8 @@
 //
 
 import express from "express";
+import { readFileSync } from "node:fs";
+import nodePath from "node:path";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import {
@@ -30,6 +32,7 @@ import {
   METADATA_STATE,
   FIXTURE_STATE,
   TEST_RIG,
+  TEST_SCENERY,
   WAVEFORM_DATA,
   LOG_LINES,
 } from "./test-data.js";
@@ -322,6 +325,19 @@ app.get("/api/lighting/assets/{*path}", (req, res) => {
   if (joined === "test-archive/rig-test-v1.json") {
     res.set("Content-Type", "application/json");
     res.json(TEST_RIG);
+    return;
+  }
+  if (joined === "scenery/test/scene-v1.json") {
+    res.set("Content-Type", "application/json");
+    res.json(TEST_SCENERY);
+    return;
+  }
+  if (joined === "scenery/test/models/box.glb") {
+    res.set("Content-Type", "model/gltf-binary");
+    // The server runs from the package root (see playwright.config.ts).
+    res.send(
+      readFileSync(nodePath.resolve(process.cwd(), "e2e/mock-server/box.glb")),
+    );
     return;
   }
   res.status(404).json({ error: "Asset not found" });

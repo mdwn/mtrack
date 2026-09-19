@@ -386,6 +386,52 @@ export const TEST_RIG = {
   warnings: [],
 };
 
+/** A venue's scenery as the store writes it: a 7.5 × 4 × 0.8 m deck
+ *  (a unit box scaled by its transform) and a truss whose mesh is .3ds. */
+export const TEST_SCENERY = {
+  version: 1,
+  objects: [
+    {
+      name: "Deck",
+      kind: "SceneObject",
+      layer: "Stage",
+      transform: [
+        [7.5, 0, 0, 0],
+        [0, 4, 0, 2],
+        [0, 0, 0.8, 0.4],
+        [0, 0, 0, 1],
+      ],
+      meshes: [
+        {
+          file: "models/box.glb",
+          transform: [
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1],
+          ],
+        },
+      ],
+      skipped: [],
+    },
+    {
+      name: "Truss",
+      kind: "Truss",
+      layer: "Rig",
+      transform: [
+        [1, 0, 0, 0],
+        [0, 1, 0, 3],
+        [0, 0, 1, 6],
+        [0, 0, 0, 1],
+      ],
+      meshes: [],
+      skipped: ["truss.3ds"],
+    },
+  ],
+  formats: { glb: 1, "3ds": 1 },
+  warnings: [],
+};
+
 export const FIXTURE_STATE = {
   type: "state",
   fixtures: {
