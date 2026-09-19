@@ -549,20 +549,62 @@ fn target_pose(
             let point = focus_points.get(name)?;
             let position = fixture.position.unwrap_or([0.0; 3]);
             let rotation = fixture.rotation.unwrap_or([0.0; 3]);
-            let principal = aim(position, rotation, *point);
-            let range = fixture
-                .channel_defs
-                .get("pan")
-                .map(|def| {
-                    let (from, to, _, _) = degree_span(def, PhysicalParameter::Pan);
-                    (from, to)
+            let span = |channel: &str, parameter: PhysicalParameter| {
+                fixture
+                    .channel_defs
+                    .get(channel)
+                    .map(|def| {
+                        let (from, to, _, _) = degree_span(def, parameter);
+                        (from, to)
+                    })
+                    .unwrap_or(parameter.fallback_range())
+            };
+            let pan_range = span("pan", PhysicalParameter::Pan);
+            let (tilt_low, tilt_high) = {
+                let (a, b) = span("tilt", PhysicalParameter::Tilt);
+                (a.min(b), a.max(b))
+            };
+            let reference = current.unwrap_or(Pose {
+                pan: 0.0,
+                tilt: 0.0,
+            });
+            // Two ways to reach any point (design §18.2): the one inside
+            // the tilt range whose pan is nearest the head's current pan
+            // wins, ties to the smaller tilt change. Nothing in range:
+            // the principal solution, clamped by the resolver.
+            let solutions = aim_solutions(position, rotation, *point);
+            // On the pan axis — straight down or straight up — every pan
+            // is the same beam: hold the head's pan rather than snap it.
+            let on_axis = solutions[0].tilt < 1e-6 || solutions[0].tilt > 180.0 - 1e-6;
+            if on_axis {
+                return Some(Pose {
+                    pan: reference.pan,
+                    tilt: solutions[0].tilt.round(),
+                });
+            }
+            solutions
+                .iter()
+                .filter(|s| s.tilt >= tilt_low - 1e-9 && s.tilt <= tilt_high + 1e-9)
+                .map(|s| Pose {
+                    pan: nearest_pan(s.pan, reference.pan, pan_range),
+                    tilt: s.tilt,
                 })
-                .unwrap_or(PhysicalParameter::Pan.fallback_range());
-            let reference = current.map(|c| c.pan).unwrap_or(0.0);
-            Some(Pose {
-                pan: nearest_pan(principal.pan, reference, range),
-                tilt: principal.tilt,
-            })
+                .min_by(|a, b| {
+                    // Costs quantised to a millidegree so a true tie (a
+                    // level target: ±90° either way) is a tie, and the
+                    // principal solution keeps it.
+                    let cost = |p: &Pose| {
+                        (
+                            ((p.pan - reference.pan).abs() * 1e3).round(),
+                            ((p.tilt - reference.tilt).abs() * 1e3).round(),
+                        )
+                    };
+                    cost(a).partial_cmp(&cost(b)).expect("finite poses")
+                })
+                .or(Some(Pose {
+                    pan: nearest_pan(solutions[0].pan, reference.pan, pan_range),
+                    tilt: solutions[0].tilt,
+                }))
         }
         MoveTarget::Angles { pan, tilt } => Some(Pose {
             pan: pan.or(current.map(|c| c.pan)).unwrap_or(0.0),

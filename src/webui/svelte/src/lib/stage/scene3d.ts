@@ -20,6 +20,9 @@
  *
  * The world is stage space as the venue file spells it: meters,
  * right-handed, Z up, origin downstage-centre, +x stage-left, +y upstage.
+ * Fixtures sit in their mounting frame as GDTF models them — rest beam
+ * along −Z, straight down for a hung fixture — and pan and tilt are
+ * GDTF's own degrees (see `rig.ts`).
  * three.js does not mind which axis is up as long as the camera is told.
  * The room is dark whatever the UI theme: beams are light added to black,
  * which is how a pre-viz reads.
@@ -35,7 +38,6 @@ import {
   deckExtent,
   genericRig,
   poseRotations,
-  rootTiltX,
   trayPositions,
   type Mat4,
   type RigModel,
@@ -546,10 +548,9 @@ export class StageScene {
   ): Promise<FixtureActor> {
     const root = new THREE.Group();
     root.name = name;
-    // The rig hangs in the mounting frame; a static rig is raised so its
-    // rest beam runs along +y (see rootTiltX).
+    // The rig sits in the mounting frame exactly as its GDTF models it:
+    // rest beam along −Z, straight down for a hung fixture.
     const mount = new THREE.Group();
-    mount.rotation.x = rootTiltX(rig);
     root.add(mount);
 
     const spins: THREE.Group[] = [];

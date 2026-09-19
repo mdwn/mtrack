@@ -12,20 +12,31 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! Pointing math (venue-exchange design §15.3): from a fixture's place and
-//! mounting to the pan and tilt that aim it at a stage point.
+//! Pointing math (venue-exchange design §15.3, convention §18): from a
+//! fixture's place and mounting to the pan and tilt that aim it at a
+//! stage point.
 //!
-//! The convention is the venue's, not the manufacturer's. A fixture at
-//! pan 0, tilt 0 looks along its mounting frame's +y axis, level — the
-//! direction the stage plot draws its orientation tick — and the mounting
-//! rotation in the venue file (degrees about X, Y, Z, applied in that
-//! order) is what turns that frame into stage space. Pan is positive
-//! toward the fixture's local +x; tilt is positive upward. GDTF's rest
-//! pose is not assumed: whatever the fixture's own zero is, the venue's
-//! rotation absorbs it, and that is something a venue author can check by
-//! eye against the room.
+//! Pose degrees are GDTF physical degrees, so what the resolver writes
+//! through a fixture's `PhysicalFrom..PhysicalTo` means what the
+//! manufacturer meant. With the mounting rotation `R = Rz·Ry·Rx` (the
+//! venue's `rotation`, degrees about X, Y, Z applied in that order):
 //!
-//! No geometry-tree kinematics: a page of trigonometry, property-tested.
+//! ```text
+//! direction = R · Rz(pan) · Rx(tilt) · (0, 0, −1)
+//! ```
+//!
+//! Rest (pan 0, tilt 0) is the mounting frame's −Z — straight down for a
+//! hung fixture, the way GDTF models every fixture. Positive pan is a
+//! right-hand turn about +Z (counter-clockwise seen from above); positive
+//! tilt a right-hand turn about +X (the beam swings from −Z toward +Y).
+//! That is the reading Blender DMX gives a GDTF's physical values, and
+//! the one real ranges (`tilt 131.8 → −131.8`, mid-travel straight down)
+//! only make sense under.
+//!
+//! The inverse has two solutions, `(pan, tilt)` and `(pan + 180°, −tilt)`;
+//! [`aim_solutions`] returns both and the engine picks (design §18.2).
+//! No geometry-tree kinematics: a page of trigonometry, property-tested
+//! and cross-checked against rig kinematics in `golden_tests`.
 
 /// A pan/tilt pair in degrees.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -68,11 +79,14 @@ pub fn out_of_frame(rotation_deg: [f64; 3], v: [f64; 3]) -> [f64; 3] {
     [cz * v[0] - sz * v[1], sz * v[0] + cz * v[1], v[2]]
 }
 
-/// The pose that aims a fixture at `position` with mounting `rotation`
-/// (degrees about X, Y, Z) at a stage point. Pan is in `-180..=180`, the
-/// principal solution; [`nearest_pan`] picks the turn. A target on top of
-/// the fixture has no direction and aims straight up at pan 0.
-pub fn aim(position: [f64; 3], rotation: [f64; 3], target: [f64; 3]) -> Pose {
+/// Both poses that aim a fixture at `position` with mounting `rotation`
+/// (degrees about X, Y, Z) at a stage point: first the principal one
+/// (tilt in `0..=180`), then its flip (`pan + 180°`, `−tilt`). Pans are in
+/// `-180..=180`; [`nearest_pan`] picks the turn. A target on the pan axis
+/// (straight down or up) has no pan of its own and gets 0 here — the
+/// engine holds the head's current pan for it; a target on top of the
+/// fixture has no direction at all and gets rest.
+pub fn aim_solutions(position: [f64; 3], rotation: [f64; 3], target: [f64; 3]) -> [Pose; 2] {
     let d = [
         target[0] - position[0],
         target[1] - position[1],
@@ -80,22 +94,41 @@ pub fn aim(position: [f64; 3], rotation: [f64; 3], target: [f64; 3]) -> Pose {
     ];
     let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
     if length < 1e-9 {
-        return Pose {
+        return [Pose {
             pan: 0.0,
-            tilt: 90.0,
-        };
+            tilt: 0.0,
+        }; 2];
     }
     let local = into_frame(rotation, [d[0] / length, d[1] / length, d[2] / length]);
-    let pan = local[0].atan2(local[1]).to_degrees();
-    let tilt = local[2].atan2(local[0].hypot(local[1])).to_degrees();
-    Pose { pan, tilt }
+    // Rz(pan)·Rx(tilt)·(0,0,−1) = (−sin pan·sin tilt, cos pan·sin tilt, −cos tilt).
+    let tilt = (-local[2]).clamp(-1.0, 1.0).acos().to_degrees();
+    let pan = if local[0].hypot(local[1]) < 1e-9 {
+        0.0
+    } else {
+        (-local[0]).atan2(local[1]).to_degrees()
+    };
+    let flipped = if pan > 0.0 { pan - 180.0 } else { pan + 180.0 };
+    [
+        Pose { pan, tilt },
+        Pose {
+            pan: flipped,
+            tilt: -tilt,
+        },
+    ]
 }
 
-/// The direction (stage space, unit) a pose looks along, for round-trip
-/// checks and, later, the stage plot's beam ticks.
+/// The principal pose aiming at a stage point: tilt in `0..=180`. See
+/// [`aim_solutions`] for the flip.
+pub fn aim(position: [f64; 3], rotation: [f64; 3], target: [f64; 3]) -> Pose {
+    aim_solutions(position, rotation, target)[0]
+}
+
+/// The direction (stage space, unit) a pose looks along: the beam of a
+/// fixture at rest points down its mounting frame's −Z, pan turns it
+/// about +Z, tilt about +X.
 pub fn direction(rotation: [f64; 3], pose: Pose) -> [f64; 3] {
     let (pan, tilt) = (pose.pan.to_radians(), pose.tilt.to_radians());
-    let local = [tilt.cos() * pan.sin(), tilt.cos() * pan.cos(), tilt.sin()];
+    let local = [-pan.sin() * tilt.sin(), pan.cos() * tilt.sin(), -tilt.cos()];
     out_of_frame(rotation, local)
 }
 
@@ -141,33 +174,53 @@ mod tests {
     }
 
     #[test]
-    fn an_unrotated_fixture_aims_by_the_documented_convention() {
-        // Hung at 4 m on the centerline, 3 m upstage, looking upstage at
-        // rest (rotation 0): the drummer 1 m further upstage, on the deck.
+    fn a_hung_fixture_aims_by_the_gdtf_convention() {
+        // Hung at 4 m, 3 m upstage, unrotated: at rest it points straight
+        // down. The drummer 1 m further upstage on the deck is 1 m over
+        // for 4 m down: tilt +atan(1/4) toward +y, pan 0.
         let pose = aim([0.0, 3.0, 4.0], [0.0; 3], [0.0, 4.0, 0.0]);
         assert!(close(pose.pan, 0.0), "{pose:?}");
         assert!(
-            close(pose.tilt, -(4.0f64).atan2(1.0).to_degrees()),
+            close(pose.tilt, (1.0f64).atan2(4.0).to_degrees()),
             "{pose:?}"
         );
 
-        // A target to the fixture's own left (+x) at the same height: pan
-        // +90, level.
+        // Straight down is rest.
+        let down = aim([0.0, 3.0, 4.0], [0.0; 3], [0.0, 3.0, 0.0]);
+        assert!(close(down.pan, 0.0) && close(down.tilt, 0.0), "{down:?}");
+
+        // A target at +x, level: tilt 90° brings the beam to +y, and a
+        // right-hand turn of −90° about +Z takes +y to +x.
         let left = aim([0.0, 0.0, 4.0], [0.0; 3], [5.0, 0.0, 4.0]);
-        assert!(close(left.pan, 90.0), "{left:?}");
-        assert!(close(left.tilt, 0.0), "{left:?}");
+        assert!(close(left.pan, -90.0), "{left:?}");
+        assert!(close(left.tilt, 90.0), "{left:?}");
     }
 
     #[test]
     fn the_seeded_rear_fixture_faces_the_audience() {
-        // rotation (0, 0, 180) — the import's rear-truss mover: its +y
-        // points downstage, so a downstage target is pan 0.
+        // rotation (0, 0, 180) — a hung rear-truss mover yawed to face
+        // downstage: its local +y points downstage, so a level downstage
+        // target is pan 0, tilt 90.
         let pose = aim([0.0, 3.5, 4.2], [0.0, 0.0, 180.0], [0.0, 0.0, 4.2]);
         assert!(close(pose.pan, 0.0), "{pose:?}");
-        assert!(close(pose.tilt, 0.0), "{pose:?}");
-        // Stage-left of it (+x) is now to its right: pan −90.
+        assert!(close(pose.tilt, 90.0), "{pose:?}");
+        // Stage-left (+x) is its local −x: pan +90 (counter-clockwise from
+        // above takes local +y to local −x).
         let pose = aim([0.0, 3.5, 4.2], [0.0, 0.0, 180.0], [3.0, 3.5, 4.2]);
-        assert!(close(pose.pan, -90.0), "{pose:?}");
+        assert!(close(pose.pan, 90.0), "{pose:?}");
+    }
+
+    #[test]
+    fn both_solutions_look_the_same_way() {
+        let [a, b] = aim_solutions([1.0, 2.0, 4.0], [10.0, -20.0, 35.0], [-2.0, 5.0, 0.5]);
+        assert!(close(b.tilt, -a.tilt), "{a:?} {b:?}");
+        let turn = (b.pan - a.pan).abs();
+        assert!(close(turn, 180.0), "{a:?} {b:?}");
+        let da = direction([10.0, -20.0, 35.0], a);
+        let db = direction([10.0, -20.0, 35.0], b);
+        for i in 0..3 {
+            assert!(close(da[i], db[i]), "{da:?} {db:?}");
+        }
     }
 
     #[test]
@@ -198,16 +251,19 @@ mod tests {
             if len < 0.1 {
                 continue;
             }
-            let pose = aim(position, rotation, target);
-            let back = direction(rotation, pose);
-            for i in 0..3 {
-                assert!(
-                    (back[i] - d[i] / len).abs() < 1e-6,
-                    "{rotation:?} {position:?} {target:?}: {pose:?} → {back:?}"
-                );
+            let [principal, flipped] = aim_solutions(position, rotation, target);
+            for pose in [principal, flipped] {
+                let back = direction(rotation, pose);
+                for i in 0..3 {
+                    assert!(
+                        (back[i] - d[i] / len).abs() < 1e-6,
+                        "{rotation:?} {position:?} {target:?}: {pose:?} → {back:?}"
+                    );
+                }
+                assert!(pose.pan >= -180.0 && pose.pan <= 180.0);
             }
-            assert!(pose.tilt >= -90.0 && pose.tilt <= 90.0);
-            assert!(pose.pan >= -180.0 && pose.pan <= 180.0);
+            assert!(principal.tilt >= 0.0 && principal.tilt <= 180.0);
+            assert!(flipped.tilt <= 0.0);
         }
     }
 

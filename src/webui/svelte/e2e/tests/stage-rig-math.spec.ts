@@ -25,7 +25,6 @@ import {
   genericRig,
   isMover,
   poseRotations,
-  rootTiltX,
   trayPositions,
   type RigModel,
 } from "../../src/lib/stage/rig";
@@ -87,38 +86,46 @@ test.describe("stage rig math", () => {
     mover.tilt = 1;
     mover.pan = 0;
     expect(isMover(mover)).toBe(true);
+    // Pose degrees are GDTF's, so the mapping is the identity in radians.
     const { panZ, tiltX } = poseRotations(mover, 30, -20);
-    expect(panZ).toBeCloseTo((-30 * Math.PI) / 180);
-    expect(tiltX).toBeCloseTo((70 * Math.PI) / 180);
-    // At rest (pan 0, tilt 0) a hung head raised 90° about X looks +y.
-    const rest = new Vector3(0, 0, -1).applyEuler(
-      new Euler(poseRotations(mover, 0, 0).tiltX, 0, 0),
-    );
-    expect(close([rest.x, rest.y, rest.z], [0, 1, 0])).toBe(true);
-    // Positive pan swings the beam toward local +x.
-    const swung = new Vector3(0, 1, 0).applyEuler(
-      new Euler(0, 0, poseRotations(mover, 45, 0).panZ),
-    );
-    expect(swung.x).toBeGreaterThan(0);
-    expect(rootTiltX(mover)).toBe(0);
+    expect(panZ).toBeCloseTo((30 * Math.PI) / 180);
+    expect(tiltX).toBeCloseTo((-20 * Math.PI) / 180);
 
+    // The beam through the joints: R = Rz(pan)·Rx(tilt) applied to
+    // (0, 0, −1). three's Euler order "ZYX" is that matrix, so X turns
+    // the vector first.
+    const beam = (pan: number, tilt: number) => {
+      const r = poseRotations(mover, pan, tilt);
+      const v = new Vector3(0, 0, -1).applyEuler(
+        new Euler(r.tiltX, 0, r.panZ, "ZYX"),
+      );
+      return [v.x, v.y, v.z];
+    };
+    const s45 = Math.SQRT1_2;
+
+    // At rest a hung head looks straight down, along −Z.
+    expect(close(beam(0, 0), [0, 0, -1])).toBe(true);
+    // Positive tilt swings the beam from −Z toward +Y.
+    expect(close(beam(0, 45), [0, s45, -s45])).toBe(true);
+    // Pan turns about the beam at rest, which leaves it where it is.
+    expect(close(beam(90, 0), [0, 0, -1])).toBe(true);
+    // Tilt 90 puts the beam on +Y; pan 90 then turns it counter-clockwise
+    // seen from above, onto −X.
+    expect(close(beam(90, 90), [-1, 0, 0])).toBe(true);
+
+    // A rig without axes ignores the pose; nothing raises its root.
     const par: RigModel = genericRig("p");
     expect(isMover(par)).toBe(false);
     expect(poseRotations(par, 90, 90)).toEqual({ panZ: 0, tiltX: 0 });
-    // A static rig is raised so its −Z rest beam runs along +y.
-    const raised = new Vector3(0, 0, -1).applyEuler(
-      new Euler(rootTiltX(par), 0, 0),
-    );
-    expect(close([raised.x, raised.y, raised.z], [0, 1, 0])).toBe(true);
   });
 
-  test("the generic rig's lens looks along +y at rest", () => {
+  test("the generic rig's lens looks straight down at rest", () => {
     const rig = genericRig("x");
     const lens = rig.nodes[1].transform;
     // Local −Z of the lens node in the body's frame is the third column
-    // negated: (0, 1, 0).
+    // negated: (0, 0, −1), the GDTF rest direction.
     expect([-lens[0][2] + 0, -lens[1][2] + 0, -lens[2][2] + 0]).toEqual([
-      0, 1, 0,
+      0, 0, -1,
     ]);
     expect(rig.beams[0].node).toBe(1);
   });

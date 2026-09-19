@@ -37,7 +37,7 @@ pub use physical::{
     degree_span, fanout, resolve_degrees, resolve_normalized, resolve_physical, Intent,
     PhysicalParameter, PhysicalState, Resolved,
 };
-pub use pointing::{aim, direction, lerp, nearest_pan, out_of_frame, Pose};
+pub use pointing::{aim, aim_solutions, direction, lerp, nearest_pan, out_of_frame, Pose};
 pub use state::{is_multiplier_channel, ChannelState, DmxCommand, FixtureState};
 pub use tempo_aware::{TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue};
 pub use types::{

@@ -109,8 +109,9 @@ fn engine_with(fixture: FixtureInfo, focus: &[(&str, [f64; 3])]) -> EffectEngine
 
 #[test]
 fn a_move_to_a_focus_point_aims_through_the_mounting() {
-    // Rear-truss mover facing the audience (rotation 0,0,180). A target
-    // 3 m to stage-left at the same height is to its right: pan −90.
+    // Rear-truss mover hung facing the audience (rotation 0,0,180). A
+    // target 3 m to stage-left at the same height is level (tilt 90) and
+    // to its local −x: pan +90.
     let mut engine = engine_with(
         mover("m", [0.0, 3.5, 4.2], [0.0, 0.0, 180.0]),
         &[("left", [3.0, 3.5, 4.2])],
@@ -121,12 +122,12 @@ fn a_move_to_a_focus_point_aims_through_the_mounting() {
     // No pose memory yet: the first cue snaps to its target.
     let commands = engine.update(Duration::from_millis(0), None).unwrap();
     assert!(
-        (emitted_pan(commands) - -90.0).abs() < 0.02,
+        (emitted_pan(commands) - 90.0).abs() < 0.02,
         "{}",
         emitted_pan(commands)
     );
-    assert!((engine.poses()["m"].pan - -90.0).abs() < 1e-9);
-    assert!(engine.poses()["m"].tilt.abs() < 1e-9);
+    assert!((engine.poses()["m"].pan - 90.0).abs() < 1e-9);
+    assert!((engine.poses()["m"].tilt - 90.0).abs() < 1e-9);
 }
 
 #[test]
@@ -135,7 +136,8 @@ fn a_move_travels_from_the_remembered_pose_and_holds_after_arrival() {
         mover("m", [0.0, 0.0, 4.0], [0.0; 3]),
         &[("left", [4.0, 0.0, 4.0]), ("ahead", [0.0, 4.0, 4.0])],
     );
-    // Snap to "left" (pan 90), then a 2 s linear move to "ahead" (pan 0).
+    // Snap to "left" (+x: pan −90, tilt 90), then a 2 s linear move to
+    // "ahead" (+y: pan 0, tilt 90).
     engine
         .start_effect(move_to("a", MoveTarget::Focus("left".into()), None, 0.5))
         .unwrap();
@@ -146,8 +148,8 @@ fn a_move_travels_from_the_remembered_pose_and_holds_after_arrival() {
         .unwrap();
     let commands = engine.update(Duration::from_millis(1000), None).unwrap();
     assert!(
-        (emitted_pan(commands) - 45.0).abs() < 0.05,
-        "halfway from 90 to 0: {}",
+        (emitted_pan(commands) - -45.0).abs() < 0.05,
+        "halfway from −90 to 0: {}",
         emitted_pan(commands)
     );
     let commands = engine.update(Duration::from_millis(1000), None).unwrap();
@@ -298,8 +300,8 @@ fn an_unbound_from_sweeps_from_the_remembered_pose() {
         .unwrap();
     let commands = engine.update(Duration::from_millis(1000), None).unwrap();
     assert!(
-        (emitted_pan(commands) - 45.0).abs() < 0.05,
-        "halfway from the remembered 90, not snapped: {}",
+        (emitted_pan(commands) - -45.0).abs() < 0.05,
+        "halfway from the remembered −90, not snapped: {}",
         emitted_pan(commands)
     );
 }
@@ -434,7 +436,7 @@ fn the_same_move_aims_correctly_in_two_venues() {
 
         let pose = engine.poses()["Spot1"];
         // The v1 type has no pan range, so the engine works over the
-        // assumed 0..540 travel and may pick the equivalent turn: compare
+        // assumed ±270° travel and may pick the equivalent turn: compare
         // modulo a full turn.
         let pan_error = (pose.pan - expected.pan).rem_euclid(360.0);
         assert!(
@@ -453,21 +455,31 @@ fn the_same_move_aims_correctly_in_two_venues() {
 /// A seek past a move lands the head at the move's destination, and a
 /// seek past two moves chooses the second one's turn from where the first
 /// left the head — what the timeline replays into a fresh engine, and what
-/// the offline evaluator relies on. A mover at the origin, unrotated:
-/// "a" lies at pan +170°, "b" at principal pan −170°; from 170° the
-/// nearest turn to b is +190°, not −170° through 340° of travel.
+/// the offline evaluator relies on. A mover at the origin, unrotated, is
+/// first parked at pan +170°, tilt 90° (level); "b" lies level at
+/// principal pan −170° (`direction` at tilt 90 is `(−sin pan, cos pan, 0)`);
+/// from 170° the nearest turn to b is +190°, not −170° through 340° of
+/// travel, and not the flip (pan 10°, tilt −90°) either, which is 160°
+/// away.
 #[test]
 fn a_seek_past_finished_moves_commits_each_destination_in_turn() {
-    let a = [170f64.to_radians().sin(), 170f64.to_radians().cos(), 0.0];
     let b = [
-        (-170f64).to_radians().sin(),
+        -(-170f64).to_radians().sin(),
         (-170f64).to_radians().cos(),
         0.0,
     ];
-    let mut engine = engine_with(mover("m", [0.0; 3], [0.0; 3]), &[("a", a), ("b", b)]);
+    let mut engine = engine_with(mover("m", [0.0; 3], [0.0; 3]), &[("b", b)]);
     engine
         .start_effect_with_elapsed(
-            move_to("first", MoveTarget::Focus("a".to_string()), None, 1.0),
+            move_to(
+                "first",
+                MoveTarget::Angles {
+                    pan: Some(170.0),
+                    tilt: Some(90.0),
+                },
+                None,
+                1.0,
+            ),
             Duration::from_secs(5),
         )
         .unwrap();
@@ -555,4 +567,39 @@ fn a_settled_mover_keeps_its_pose_through_the_midi_fast_path() {
         Some(45.0),
         "the settled head still reports its pose"
     );
+}
+
+/// A focus point straight below the head is every pan at once: the head
+/// keeps the pan it has instead of snapping to 0 (design §18.2).
+#[test]
+fn a_target_on_the_pan_axis_holds_the_current_pan() {
+    let mut engine = engine_with(
+        mover("m", [0.0, 0.0, 4.0], [0.0; 3]),
+        &[("below", [0.0, 0.0, 0.0])],
+    );
+    engine
+        .start_effect(move_to(
+            "park",
+            MoveTarget::Angles {
+                pan: Some(90.0),
+                tilt: Some(45.0),
+            },
+            None,
+            0.1,
+        ))
+        .unwrap();
+    engine.update(Duration::from_millis(0), None).unwrap();
+    engine.update(Duration::from_millis(200), None).unwrap();
+    engine
+        .start_effect(move_to(
+            "down",
+            MoveTarget::Focus("below".into()),
+            None,
+            0.1,
+        ))
+        .unwrap();
+    engine.update(Duration::from_millis(200), None).unwrap();
+    let pose = engine.poses()["m"];
+    assert!((pose.pan - 90.0).abs() < 1e-9, "{pose:?}");
+    assert!(pose.tilt.abs() < 1e-9, "{pose:?}");
 }

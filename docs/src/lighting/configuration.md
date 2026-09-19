@@ -319,10 +319,12 @@ beside `.light` venues as peers; nothing renames or migrates.
 # lighting/venues/kellys_basement.venue
 venue "kellys-basement" {
   # Coordinates: meters, right-handed Z-up, origin downstage-center on the
-  # deck, +x stage-left, +y upstage. Rotation: degrees about X, Y, Z in order.
+  # deck, +x stage-left, +y upstage. Rotation: the mounting as GDTF models
+  # it, degrees about X, Y, Z in order.
   fixture "Spot1" MovingHead @ 1:1 tags ["spot", "rear"]
-    position (-2.0, 3.5, 4.2) rotation (0, 0, 180)
-  fixture "Wash1" RGBW_Par @ 1:40 tags ["wash", "front"] position (1.5, 0.5, 3.0)
+    position (-2.0, 3.5, 4.2) rotation (0, 0, 180)   # hung, facing downstage
+  fixture "Wash1" RGBW_Par @ 1:40 tags ["wash", "front"]
+    position (1.5, 0.5, 3.0) rotation (30, 0, 0)     # tipped 30° upstage
 
   # Named stage points — the positional analog of tags.
   focus "drummer" (0.0, 2.8, 1.4)
@@ -333,6 +335,36 @@ venue "kellys-basement" {
 Position and rotation are optional per fixture, and a venue without them
 still plays; it just cannot resolve positional effects or draw a meaningful
 stage plot.
+
+#### Mounting and pose convention
+
+`rotation` is the mounting exactly as [GDTF](https://gdtf.eu/) and MVR model it, which is
+why an imported MVR's rotations come through unchanged. Three rules cover all of it:
+
+- **Rest — `pan 0`, `tilt 0` — is the mounting frame's −Z: straight down.** That is where a
+  fixture with no `rotation` points, static fixtures included — an unrotated PAR points at
+  the deck, as its GDTF says.
+- **Positive pan is a right-hand rotation about +Z:** counter-clockwise seen from above.
+- **Positive tilt is a right-hand rotation about +X:** it swings the beam from −Z toward
+  +Y, upstage.
+
+![A hung moving head at rest, with the pan and tilt directions marked](../images/mounting-convention.svg)
+
+The rotation is degrees about X, Y and Z applied in that order, and it applies outside the
+pan and tilt joints, so a fixture's beam direction is `R · Rz(pan) · Rx(tilt) · (0, 0, −1)`.
+Three mountings are worth memorizing:
+
+- A mover hung from a truss facing downstage is `rotation (0, 0, 180)` — what an MVR
+  import writes for a hung head, and what makes `move pan: 0deg, tilt: 90deg` throw at the
+  audience.
+- A mover standing on the deck is `rotation (180, 0, 0)`.
+- A PAR on a downstage pipe tipped to throw 30° upstage is `rotation (30, 0, 0)`:
+  `Rx(30°)` takes the rest beam `(0, 0, −1)` to `(0, sin 30°, −cos 30°)`, up off the deck
+  and upstage.
+
+The same degrees go on the wire. A `.fixture` file's pan and tilt `range` is in these
+degrees too, so a hand-written mover carrying its datasheet's `tilt -135deg..135deg`
+behaves like its GDTF would.
 
 #### Importing a venue's MVR
 
@@ -409,8 +441,9 @@ What a fixture looks like comes from its GDTF: the archive's meshes when it ship
 the GDTF's own primitives with their sizes. Pan turns the geometry the GDTF's pan channel
 names, tilt the one its tilt channel names, and a beam leaves each beam geometry with the
 angle the GDTF states — a 5° spot looks like a spot, a 25° wash like a wash. A fixture type
-written by hand has none of this and is drawn as a box with a 20° beam along its mounting
-direction. Fixtures the venue does not place sit on a tray in front of the audience edge.
+written by hand has none of this and is drawn as a box with a 20° beam out of its rest
+direction, the mounting frame's −Z. Fixtures the venue does not place sit on a tray in
+front of the audience edge.
 
 A venue seeded from an MVR also shows the MVR's scenery — decks, trusses, screens — where
 the MVR carries it as glTF (`.glb`); scenery in other formats (`.3ds` is common in console

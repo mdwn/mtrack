@@ -17,12 +17,23 @@
  * math that turns a rig plus a pose into rotations — kept free of three.js
  * so it can be reasoned about (and tested) as plain numbers.
  *
- * Conventions, from the GDTF spec and the P1c pointing convention: a rig's
- * coordinates are Z-up with the fixture hanging base-up, the head pointing
- * −Z at rest; a beam leaves its node along −Z; pan turns the pan node
- * about its local Z; tilt turns the tilt node about its local X. The venue
- * says pan 0, tilt 0 looks along the mounting frame's +y, level — so the
- * tilt node is raised 90° from rest, and pan runs the other way round Z.
+ * Conventions, from the GDTF spec (design §18): a rig's coordinates are
+ * Z-up with the fixture drawn hanging, base up; a beam leaves its node
+ * along −Z; pan turns the pan node about its local Z; tilt turns the tilt
+ * node about its local X. Pose degrees are GDTF's own, so nothing here
+ * remaps them:
+ *
+ * - Rest (pan 0, tilt 0) is the mounting frame's −Z: straight down for a
+ *   hung fixture. This holds for static fixtures too — an unrotated PAR
+ *   points down, as its GDTF says.
+ * - Positive pan is a right-hand rotation about +Z: counter-clockwise
+ *   seen from above.
+ * - Positive tilt is a right-hand rotation about +X: it swings the beam
+ *   from −Z toward +Y.
+ *
+ * A venue's `rotation` is the mounting exactly as GDTF and MVR model it,
+ * applied outside the joints as R = Rz·Ry·Rx, so a fixture's beam is
+ * `R · Rz(pan) · Rx(tilt) · (0, 0, −1)`.
  */
 
 export type Mat4 = [
@@ -99,8 +110,8 @@ export const GENERIC_BEAM_DEG = 20;
 
 /**
  * A stand-in for a fixture type with no rig: a box body with one beam
- * along the mounting frame's +y (the direction the stage plot's tick
- * draws), which is −Z of a node raised 90° about X.
+ * along the mounting frame's −Z, the rest direction every GDTF fixture
+ * has — straight down for a hung fixture.
  */
 export function genericRig(typeName: string): RigModel {
   return {
@@ -119,11 +130,11 @@ export function genericRig(typeName: string): RigModel {
         name: "Lens",
         parent: 0,
         role: { kind: "beam" },
-        // Raised 90° about X: local −Z becomes parent +y.
+        // Unrotated, below the body: local −Z is the parent's −Z.
         transform: [
           [1, 0, 0, 0],
-          [0, 0, -1, 0.16],
           [0, 1, 0, 0],
+          [0, 0, 1, -0.16],
           [0, 0, 0, 1],
         ],
         shape: { shape: "empty" },
@@ -162,8 +173,14 @@ export function isMover(rig: RigModel): boolean {
 
 /**
  * The rotations, in radians, the pan and tilt nodes get for a pose: pan
- * about the pan node's local Z, tilt about the tilt node's local X. A rig
- * without axes ignores the pose.
+ * about the pan node's local Z, tilt about the tilt node's local X.
+ *
+ * Pose degrees are GDTF's, so this is the identity in radians. Rest
+ * (pan 0, tilt 0) leaves the beam on the mounting frame's −Z — straight
+ * down for a hung fixture. Positive pan is a right-hand rotation about
+ * +Z, counter-clockwise seen from above. Positive tilt is a right-hand
+ * rotation about +X, swinging the beam from −Z toward +Y. A rig without
+ * axes ignores the pose.
  */
 export function poseRotations(
   rig: RigModel,
@@ -172,19 +189,9 @@ export function poseRotations(
 ): { panZ: number; tiltX: number } {
   if (!isMover(rig)) return { panZ: 0, tiltX: 0 };
   return {
-    panZ: (-pan * Math.PI) / 180,
-    tiltX: ((tilt + 90) * Math.PI) / 180,
+    panZ: (pan * Math.PI) / 180,
+    tiltX: (tilt * Math.PI) / 180,
   };
-}
-
-/**
- * How the rig's root sits in the mounting frame. A mover hangs as the GDTF
- * models it (pan axis vertical). A static rig — a PAR, a blinder — is
- * raised so its rest beam (−Z) runs along the mounting frame's +y, the
- * direction the venue convention and the stage plot agree on.
- */
-export function rootTiltX(rig: RigModel): number {
-  return isMover(rig) ? 0 : Math.PI / 2;
 }
 
 /** Where a beam meets the deck (z = 0) from a point along a direction. */

@@ -47,7 +47,8 @@ pub use description::{
 };
 pub use distiller::{distill, mode_summaries, Distilled, ModeSummary};
 pub use rig::{
-    distill_rig, RigBeam, RigModel, RigNode, RigRole, RigShape, DEFAULT_BEAM_ANGLE, RIG_VERSION,
+    beam_direction, distill_rig, RigBeam, RigModel, RigNode, RigRole, RigShape, DEFAULT_BEAM_ANGLE,
+    RIG_VERSION,
 };
 
 use std::error::Error;

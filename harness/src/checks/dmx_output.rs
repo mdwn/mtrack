@@ -24,7 +24,7 @@
 
 use std::time::Duration;
 
-use mtrack::lighting::effects::{aim, resolve_degrees, PhysicalParameter};
+use mtrack::lighting::effects::{aim, Pose};
 use mtrack::lighting::types::{ChannelDef, PhysicalRange, PhysicalUnit};
 use mtrack::proto::player::v1::{PlayRequest, StopRequest};
 
@@ -377,11 +377,21 @@ pub async fn a_focus_point_resolves_through_the_venue() -> CheckOutcome {
     let frame = sink.read(UNIVERSE).await?;
     client.grpc().stop(StopRequest {}).await?;
 
-    let expected = aim(position, rotation, drummer);
-    let expected_pan = resolve_degrees(&pan_def(), PhysicalParameter::Pan, expected.pan);
-    let expected_tilt = resolve_degrees(&tilt_def(), PhysicalParameter::Tilt, expected.tilt);
-    let want_pan = u16::from_be_bytes([expected_pan.bytes[0].1, expected_pan.bytes[1].1]);
-    let want_tilt = u16::from_be_bytes([expected_tilt.bytes[0].1, expected_tilt.bytes[1].1]);
+    // Worked by hand (design §18.2), not by mtrack's own pointing math:
+    // d = (2, −0.7, −2.8); the 180° yaw flips x and y → (−2, 0.7, −2.8),
+    // unit (−0.5675, 0.1986, −0.7994). tilt = acos(0.7994) = 37.12°,
+    // pan = atan2(0.5675, 0.1986) = 70.71°. Over ±270° and ±135° on 16
+    // bits: pan (340.71/540)·65535 = 41349, tilt (172.12/270)·65535 = 41777.
+    let expected = Pose {
+        pan: 70.71,
+        tilt: 37.12,
+    };
+    let (want_pan, want_tilt): (u16, u16) = (41349, 41777);
+    assert!(
+        (aim(position, rotation, drummer).pan - expected.pan).abs() < 0.01
+            && (aim(position, rotation, drummer).tilt - expected.tilt).abs() < 0.01,
+        "the hand derivation and the pointing math disagree"
+    );
     let got_pan = crate::sabotage::pick(frame.value16(1, 2), want_pan.wrapping_add(5000));
     let got_tilt = frame.value16(3, 4);
     crate::outcome::record(format!(

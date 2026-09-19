@@ -34,6 +34,7 @@ excludes:
   - .*\.md
   - .*\.png
   - .*\.glb
+  - .*\.svg
 licenses:
   - files: any
     ident: GPL-3.0
