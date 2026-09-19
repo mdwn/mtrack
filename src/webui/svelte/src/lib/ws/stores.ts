@@ -136,6 +136,8 @@ export interface VenueMetadata {
    * was seeded from an MVR; the 3D view draws it.
    */
   scenery?: string | null;
+  /** Why the scenery is missing, when the venue should have had some. */
+  scenery_error?: string | null;
 }
 
 export interface LogLine {

@@ -218,6 +218,9 @@ const SCENERY_ELEMENTS: &[&str] = &[
     "Projector",
 ];
 
+/// A symbol instance an object drew: the symdef it names and its transform.
+type SymbolRef = (String, Option<Matrix>);
+
 /// The walk's mutable state.
 #[derive(Default)]
 struct Walk {
@@ -232,12 +235,15 @@ struct Walk {
     text_target: Option<TextTarget>,
     text_buffer: String,
     saw_root: bool,
-    /// The scenery object being read, and how deep inside it the walk is.
-    current_object: Option<MvrSceneObject>,
-    object_depth: usize,
-    /// A Geometry3D being read (its Matrix child may follow).
+    /// The scenery objects being read, outermost first — a truss can hold
+    /// trusses — each with the symbol references it has made so far.
+    object_stack: Vec<(MvrSceneObject, Vec<SymbolRef>)>,
+    /// A Geometry3D being read (its Matrix child may follow); an empty
+    /// file name is one with no `fileName`, dropped with a warning on
+    /// close so its Matrix cannot land anywhere else.
     current_mesh: Option<MvrMesh>,
-    /// A Symbol instance being read: the symdef it names and its Matrix.
+    /// A Symbol instance being read: the symdef it names (empty when it
+    /// names none) and its Matrix.
     current_symbol: Option<(String, Option<Matrix>)>,
     /// Symbol definitions by uuid: the meshes they hold.
     symdefs: std::collections::HashMap<String, Vec<MvrMesh>>,
@@ -348,6 +354,14 @@ fn attr(element: &BytesStart<'_>, name: &str) -> Result<Option<String>, MvrError
 }
 
 impl Walk {
+    /// The innermost scenery object's name, for warnings.
+    fn scenery_name(&self) -> String {
+        self.object_stack
+            .last()
+            .map(|(o, _)| o.name.clone())
+            .unwrap_or_default()
+    }
+
     fn open(&mut self, element: &BytesStart<'_>, name: &str) -> Result<(), MvrError> {
         match name {
             "GeneralSceneDescription" => self.saw_root = true,
@@ -381,31 +395,32 @@ impl Walk {
                     Some((attr(element, "uuid")?.unwrap_or_default(), Vec::new()));
             }
             kind if SCENERY_ELEMENTS.contains(&kind) && self.current.is_none() => {
-                if self.current_object.is_some() {
-                    self.object_depth += 1;
-                } else {
-                    self.current_object = Some(MvrSceneObject {
+                self.object_stack.push((
+                    MvrSceneObject {
                         name: attr(element, "name")?.unwrap_or_default(),
                         kind: kind.to_string(),
                         layer: self.layer_stack.last().cloned().unwrap_or_default(),
                         matrix: None,
                         meshes: Vec::new(),
-                    });
-                    self.object_depth = 0;
-                }
+                    },
+                    Vec::new(),
+                ));
             }
-            "Geometry3D" if self.current_object.is_some() || self.current_symdef.is_some() => {
-                if let Some(file) = attr(element, "fileName")?.filter(|f| !f.trim().is_empty()) {
-                    self.current_mesh = Some(MvrMesh {
-                        file: file.trim().to_string(),
-                        matrix: None,
-                    });
-                }
+            "Geometry3D" if !self.object_stack.is_empty() || self.current_symdef.is_some() => {
+                self.current_mesh = Some(MvrMesh {
+                    file: attr(element, "fileName")?
+                        .map(|f| f.trim().to_string())
+                        .unwrap_or_default(),
+                    matrix: None,
+                });
             }
-            "Symbol" if self.current_object.is_some() => {
-                if let Some(symdef) = attr(element, "symdef")?.filter(|s| !s.trim().is_empty()) {
-                    self.current_symbol = Some((symdef.trim().to_string(), None));
-                }
+            "Symbol" if !self.object_stack.is_empty() => {
+                self.current_symbol = Some((
+                    attr(element, "symdef")?
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_default(),
+                    None,
+                ));
             }
             "Matrix" if self.current_mesh.is_some() => {
                 self.text_target = Some(TextTarget::MeshMatrix);
@@ -431,7 +446,7 @@ impl Walk {
                 self.text_target = Some(TextTarget::FocusMatrix);
                 self.text_buffer.clear();
             }
-            "Matrix" if self.current_object.is_some() && self.object_depth == 0 => {
+            "Matrix" if !self.object_stack.is_empty() => {
                 self.text_target = Some(TextTarget::ObjectMatrix);
                 self.text_buffer.clear();
             }
@@ -463,28 +478,47 @@ impl Walk {
                 }
             }
             kind if SCENERY_ELEMENTS.contains(&kind) => {
-                if self.object_depth > 0 {
-                    self.object_depth -= 1;
-                } else if let Some(object) = self.current_object.take() {
+                if let Some((mut object, refs)) = self.object_stack.pop() {
+                    // A nested object's transform is relative to its
+                    // parents: fold them in, outermost first, so every
+                    // object the scene lists is placed in scene space.
+                    if let Some(own) = object.matrix {
+                        let mut absolute = IDENTITY;
+                        for (parent, _) in &self.object_stack {
+                            absolute = absolute.compose(&parent.matrix.unwrap_or(IDENTITY));
+                        }
+                        object.matrix = Some(absolute.compose(&own));
+                    }
                     self.scene.objects.push(object);
+                    let index = self.scene.objects.len() - 1;
+                    for (symdef, matrix) in refs {
+                        self.symbol_refs.push((index, symdef, matrix));
+                    }
                 }
             }
             "Geometry3D" => {
                 if let Some(mesh) = self.current_mesh.take() {
-                    if let Some((_, meshes)) = self.current_symdef.as_mut() {
+                    if mesh.file.is_empty() {
+                        self.scene.warnings.push(format!(
+                            "scenery \"{}\": a Geometry3D names no file; dropped",
+                            self.scenery_name()
+                        ));
+                    } else if let Some((_, meshes)) = self.current_symdef.as_mut() {
                         meshes.push(mesh);
-                    } else if let Some(object) = self.current_object.as_mut() {
+                    } else if let Some((object, _)) = self.object_stack.last_mut() {
                         object.meshes.push(mesh);
                     }
                 }
             }
             "Symbol" => {
                 if let Some((symdef, matrix)) = self.current_symbol.take() {
-                    if self.current_object.is_some() {
-                        // Resolved after the walk; the object's index is
-                        // what it will have once pushed.
-                        self.symbol_refs
-                            .push((self.scene.objects.len(), symdef, matrix));
+                    if symdef.is_empty() {
+                        self.scene.warnings.push(format!(
+                            "scenery \"{}\": a Symbol names no definition; dropped",
+                            self.scenery_name()
+                        ));
+                    } else if let Some((_, refs)) = self.object_stack.last_mut() {
+                        refs.push((symdef, matrix));
                     }
                 }
             }
@@ -499,11 +533,7 @@ impl Walk {
                 ) {
                     let parsed = parse_matrix(&text);
                     if parsed.is_none() {
-                        let name = self
-                            .current_object
-                            .as_ref()
-                            .map(|o| o.name.clone())
-                            .unwrap_or_default();
+                        let name = self.scenery_name();
                         self.scene.warnings.push(format!(
                             "scenery \"{name}\": unparseable matrix \"{text}\"; dropped"
                         ));
@@ -520,7 +550,7 @@ impl Walk {
                             }
                         }
                         _ => {
-                            if let Some(object) = self.current_object.as_mut() {
+                            if let Some((object, _)) = self.object_stack.last_mut() {
                                 object.matrix = parsed;
                             }
                         }
@@ -923,5 +953,52 @@ pub(super) mod tests {
         assert_eq!(m.u, [0.0, 2.0, 0.0]);
         assert_eq!(m.o, [10.0, 1.0, 0.0]);
         assert_eq!(IDENTITY.compose(&inner), inner);
+    }
+
+    #[test]
+    fn nested_scenery_keeps_each_object_in_scene_space() {
+        // As MVR orders it: the truss's own Matrix, then its children.
+        let xml = SYNTHETIC_SCENE.replace(
+            "<Matrix>{0,1,0}{-1,0,0}{0,0,1}{0,0,6000}</Matrix>",
+            "<Matrix>{0,1,0}{-1,0,0}{0,0,1}{0,0,6000}</Matrix>\n<ChildList><Truss name=\"Inner\"><Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,2000}</Matrix><Geometries><Geometry3D fileName=\"inner.glb\"/></Geometries></Truss></ChildList>",
+        );
+        let scene = parse_scene(&xml).unwrap();
+        assert!(scene.warnings.is_empty(), "{:?}", scene.warnings);
+        let names: Vec<&str> = scene.objects.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, ["Inner", "Truss A", "Deck"], "inner closes first");
+        let inner = &scene.objects[0];
+        // Truss A turns +x onto +y and sits at z 6000; Inner is 2000 up
+        // inside it.
+        let m = inner.matrix.unwrap();
+        assert_eq!(m.o, [0.0, 0.0, 8000.0]);
+        assert_eq!(m.u, [0.0, 1.0, 0.0]);
+        assert_eq!(inner.meshes.len(), 1);
+        assert_eq!(inner.meshes[0].file, "inner.glb");
+        // The outer truss still gets its own symbol meshes, not the inner's.
+        let outer = &scene.objects[1];
+        assert_eq!(outer.meshes.len(), 2);
+        assert!(outer.meshes.iter().all(|m| m.file != "inner.glb"));
+    }
+
+    #[test]
+    fn a_matrix_under_an_attribute_less_inner_element_cannot_move_the_object() {
+        let xml = SYNTHETIC_SCENE.replace(
+            "<Geometry3D fileName=\"deck.glb\"/>",
+            "<Geometry3D fileName=\"deck.glb\"/><Geometry3D><Matrix>{1,0,0}{0,1,0}{0,0,1}{9999,9999,9999}</Matrix></Geometry3D><Symbol uuid=\"x\"><Matrix>{1,0,0}{0,1,0}{0,0,1}{8888,8888,8888}</Matrix></Symbol>",
+        );
+        let scene = parse_scene(&xml).unwrap();
+        let deck = scene.objects.iter().find(|o| o.name == "Deck").unwrap();
+        assert_eq!(deck.matrix.unwrap().o, [0.0, 0.0, 400.0]);
+        assert_eq!(deck.meshes.len(), 1);
+        assert_eq!(
+            scene
+                .warnings
+                .iter()
+                .filter(|w| w.contains("\"Deck\""))
+                .count(),
+            2,
+            "{:?}",
+            scene.warnings
+        );
     }
 }

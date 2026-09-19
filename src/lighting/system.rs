@@ -49,6 +49,15 @@ pub struct LightingSystem {
     /// (design §16.3), filled when venues load.
     scenery: HashMap<String, String>,
 
+    /// Why a venue's scenery is missing, when its distillation failed —
+    /// the 3D view says so rather than showing a bare deck in silence.
+    scenery_errors: HashMap<String, String>,
+
+    /// The MVR file each venue's scenery was distilled from, as (path,
+    /// modified time, length): a reload whose archive is unchanged reuses
+    /// the entry without reading or hashing the file again.
+    scenery_sources: HashMap<String, (PathBuf, Option<std::time::SystemTime>, u64)>,
+
     /// The project directory the system loaded from, for the asset store.
     project_root: Option<PathBuf>,
 
@@ -83,6 +92,8 @@ impl LightingSystem {
             logical_groups: HashMap::new(),
             group_cache: HashMap::new(),
             scenery: HashMap::new(),
+            scenery_errors: HashMap::new(),
+            scenery_sources: HashMap::new(),
             project_root: None,
             venues_source: None,
         }
@@ -119,11 +130,18 @@ impl LightingSystem {
         self.scenery.get(venue).map(String::as_str)
     }
 
+    /// Why a venue's scenery is missing, when it should have had some.
+    pub fn scenery_error(&self, venue: &str) -> Option<&str> {
+        self.scenery_errors.get(venue).map(String::as_str)
+    }
+
     /// Distills every MVR-seeded venue's scenery into the asset store. A
     /// venue whose scenery cannot be distilled loads without any: the 3D
     /// view is the only consumer, and a bare deck beats a missing venue.
     fn refresh_scenery(&mut self, base_path: &Path) {
-        self.scenery.clear();
+        let previous = std::mem::take(&mut self.scenery);
+        let previous_sources = std::mem::take(&mut self.scenery_sources);
+        self.scenery_errors.clear();
         let base_path = if base_path.as_os_str().is_empty() {
             Path::new(".")
         } else {
@@ -134,8 +152,24 @@ impl LightingSystem {
             let Some(source) = venue.source() else {
                 continue;
             };
+            let archive_path = base_path.join(&source.mvr);
+            // Unchanged archive (same path, modified time and length) and a
+            // store entry still there: nothing to read or hash again. A
+            // venue edit that saves the file must not cost a pass over a
+            // hundred-megabyte MVR.
+            let stamp = std::fs::metadata(&archive_path)
+                .ok()
+                .map(|m| (archive_path.clone(), m.modified().ok(), m.len()));
+            if let (Some(stamp), Some(prev), Some(rel)) =
+                (&stamp, previous_sources.get(name), previous.get(name))
+            {
+                if prev == stamp && cache.assets_dir().join(rel).is_file() {
+                    self.scenery.insert(name.clone(), rel.clone());
+                    self.scenery_sources.insert(name.clone(), stamp.clone());
+                    continue;
+                }
+            }
             let result = (|| -> Result<(String, Vec<String>), Box<dyn Error>> {
-                let archive_path = base_path.join(&source.mvr);
                 let canonical = archive_path
                     .canonicalize()
                     .map_err(|e| format!("cannot read MVR {}: {e}", archive_path.display()))?;
@@ -160,8 +194,14 @@ impl LightingSystem {
                         warn!(venue = name, "Scenery: {warning}");
                     }
                     self.scenery.insert(name.clone(), rel);
+                    if let Some(stamp) = stamp {
+                        self.scenery_sources.insert(name.clone(), stamp);
+                    }
                 }
-                Err(e) => warn!(venue = name, error = %e, "No scenery for the 3D view"),
+                Err(e) => {
+                    warn!(venue = name, error = %e, "No scenery for the 3D view");
+                    self.scenery_errors.insert(name.clone(), e.to_string());
+                }
             }
         }
     }
@@ -1752,9 +1792,22 @@ mod tests {
         assert_eq!(model.objects.len(), 2);
         assert_eq!(model.formats.get("glb"), Some(&2));
 
-        // A reload keeps it; a hand-written venue has none.
+        // A reload keeps it without re-reading the archive (the stamp
+        // matches); a hand-written venue has none; a venue whose MVR is
+        // gone says why.
         system.reload_venues().unwrap();
         assert_eq!(system.scenery("kellys"), Some(rel.as_str()));
         assert!(system.scenery("nowhere").is_none());
+        assert!(system.scenery_error("kellys").is_none());
+        std::fs::remove_file(project.join("lighting/library/kellys.mvr")).unwrap();
+        system.reload_venues().unwrap();
+        assert!(system.scenery("kellys").is_none());
+        assert!(
+            system
+                .scenery_error("kellys")
+                .is_some_and(|e| e.contains("cannot read MVR")),
+            "{:?}",
+            system.scenery_error("kellys")
+        );
     }
 }

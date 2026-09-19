@@ -410,6 +410,7 @@ impl DistillCache {
         let mut file_of: HashMap<String, String> = HashMap::new();
         let mut taken = std::collections::HashSet::new();
         let mut missing = std::collections::BTreeSet::new();
+        let mut ambiguous = std::collections::BTreeSet::new();
         for object in &scene.objects {
             let Some(matrix) = object.matrix else {
                 continue;
@@ -445,12 +446,23 @@ impl DistillCache {
                         .find(|e| e.eq_ignore_ascii_case(&mesh.file))
                         .or_else(|| {
                             let wanted = ascii_skeleton(&mesh.file);
-                            entries.iter().find(|e| ascii_skeleton(e) == wanted)
+                            let mut candidates =
+                                entries.iter().filter(|e| ascii_skeleton(e) == wanted);
+                            match (candidates.next(), candidates.next()) {
+                                (Some(one), None) => Some(one),
+                                (Some(_), Some(_)) => {
+                                    ambiguous.insert(mesh.file.clone());
+                                    None
+                                }
+                                _ => None,
+                            }
                         })
                         .cloned()
                 };
                 let Some(entry) = entry else {
-                    missing.insert(mesh.file.clone());
+                    if !ambiguous.contains(&mesh.file) {
+                        missing.insert(mesh.file.clone());
+                    }
                     out.skipped.push(mesh.file.clone());
                     continue;
                 };
@@ -474,6 +486,11 @@ impl DistillCache {
                 "scenery mesh {file} is referenced but not in the archive"
             ));
         }
+        for file in ambiguous {
+            model.warnings.push(format!(
+                "scenery mesh {file} matches more than one archive entry by name; skipped"
+            ));
+        }
         let undrawn: usize = model
             .formats
             .iter()
@@ -493,21 +510,51 @@ impl DistillCache {
             ));
         }
 
-        // Meshes first, the scene file last, under a total budget.
+        // Meshes first, the scene file last, under a total budget. A mesh
+        // that cannot be read (over its cap, corrupt) or that would take
+        // the store past the budget is skipped, and the objects that use
+        // it say so; the rest of the scenery is kept.
         let dir = scene_file.parent().expect("scene path has a directory");
         let models_dir = dir.join("models");
         std::fs::create_dir_all(&models_dir)?;
         let mut total: u64 = 0;
-        for (entry, file) in &file_of {
-            let bytes = mvr::read_mesh_entry(mvr_bytes, entry)?;
-            total += bytes.len() as u64;
-            if total > MAX_SCENERY_BYTES_TOTAL {
-                return Err(format!(
-                    "scenery meshes exceed {MAX_SCENERY_BYTES_TOTAL} bytes together"
-                )
-                .into());
+        let mut dropped: HashMap<String, String> = HashMap::new();
+        let mut ordered: Vec<(&String, &String)> = file_of.iter().collect();
+        ordered.sort();
+        for (entry, file) in ordered {
+            let bytes = match mvr::read_mesh_entry(mvr_bytes, entry) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    dropped.insert(file.clone(), format!("{entry}: {e}"));
+                    continue;
+                }
+            };
+            if total + bytes.len() as u64 > MAX_SCENERY_BYTES_TOTAL {
+                dropped.insert(
+                    file.clone(),
+                    format!("{entry}: past the {MAX_SCENERY_BYTES_TOTAL}-byte scenery budget"),
+                );
+                continue;
             }
+            total += bytes.len() as u64;
             write_atomic(&dir.join(file), &bytes)?;
+        }
+        if !dropped.is_empty() {
+            for object in &mut model.objects {
+                let (kept, lost): (Vec<SceneryMesh>, Vec<SceneryMesh>) = object
+                    .meshes
+                    .drain(..)
+                    .partition(|m| !dropped.contains_key(&m.file));
+                object.meshes = kept;
+                object.skipped.extend(lost.into_iter().map(|m| m.file));
+            }
+            let mut reasons: Vec<&String> = dropped.values().collect();
+            reasons.sort();
+            for reason in reasons {
+                model
+                    .warnings
+                    .push(format!("scenery mesh not stored: {reason}"));
+            }
         }
         write_atomic(
             &scene_file,
@@ -887,6 +934,34 @@ mod tests {
         assert_eq!(deck.meshes.len(), 1);
         assert_eq!(deck.meshes[0].file, "models/B__hnenpodest_1.glb");
         assert_eq!(ascii_skeleton("Bühnenpodest_1.glb"), "bhnenpodest1glb");
+    }
+
+    #[test]
+    fn an_ambiguous_skeleton_match_is_skipped_not_guessed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DistillCache::new(dir.path().join(".cache"));
+        let scene_xml = crate::lighting::mvr::SYNTHETIC_SCENE
+            .replace("fileName=\"deck.glb\"", "fileName=\"Bühne.glb\"");
+        // Two entries that both skeleton to "bhneglb" and neither of which
+        // matches exactly or case-folded: nothing is guessed.
+        let archive = crate::lighting::gdtf::build_zip(&[
+            ("GeneralSceneDescription.xml", scene_xml.as_bytes()),
+            ("B├╝hne.glb", b"one".as_slice()),
+            ("B_hne.glb", b"two".as_slice()),
+            ("Lid.glb", b"lid".as_slice()),
+        ]);
+        let scene = crate::lighting::mvr::parse_archive(&archive).unwrap();
+        let (rel, warnings) = cache
+            .ensure_scenery(&archive, &[0.0; 3], || Ok(&scene))
+            .unwrap();
+        let model = cache.scenery(&rel).unwrap();
+        let deck = model.objects.iter().find(|o| o.name == "Deck").unwrap();
+        assert!(deck.meshes.is_empty(), "{:?}", deck.meshes);
+        assert_eq!(deck.skipped, vec!["Bühne.glb".to_string()]);
+        assert!(
+            warnings.iter().any(|w| w.contains("more than one")),
+            "{warnings:?}"
+        );
     }
 
     #[test]

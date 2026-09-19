@@ -152,6 +152,12 @@ class RigCache {
     return pending;
   }
 
+  /** Forgets every loaded mesh and rig; the scene rebuilds from fresh. */
+  clear() {
+    this.dispose();
+    this.rigs.clear();
+  }
+
   /** Frees the loaded meshes' geometry; clones in the scene share it. */
   dispose() {
     for (const pending of this.models.values()) {
@@ -258,6 +264,7 @@ export class StageScene {
   private channels: Record<string, FixtureChannels> = {};
   private poses: Record<string, FixturePose> = {};
   private extent: [number, number, number, number] = [-4, 4, 0, 6];
+  private preset: CameraPreset = "foh";
   /** Primitive geometries shared by (kind, size); freed with the scene. */
   private primitives = new Map<string, THREE.BufferGeometry>();
   private focusOwned: { dispose(): void }[] = [];
@@ -306,6 +313,7 @@ export class StageScene {
   }
 
   setCamera(preset: CameraPreset) {
+    this.preset = preset;
     const [, maxX, minY, maxY] = this.extent;
     const midY = (minY + maxY) / 2;
     const target = new THREE.Vector3(0, midY, 1);
@@ -343,6 +351,8 @@ export class StageScene {
     const generation = ++this.generation;
     for (const actor of this.actors.values()) this.dropActor(actor);
     this.actors.clear();
+    // Another venue's meshes are no use here: free them.
+    this.cache.clear();
     this.focus.clear();
     for (const owned of this.focusOwned) owned.dispose();
     this.focusOwned = [];
@@ -492,6 +502,26 @@ export class StageScene {
       }),
     );
     if (generation !== this.sceneryGeneration) return;
+    // Scenery can reach past the fixtures (a stage house, a wide deck):
+    // widen the floor and the framing to hold it.
+    const bounds = new THREE.Box3().setFromObject(this.scenery);
+    if (!bounds.isEmpty()) {
+      const [minX, maxX, minY, maxY] = this.extent;
+      const next: [number, number, number, number] = [
+        Math.min(minX, bounds.min.x - 1),
+        Math.max(maxX, bounds.max.x + 1),
+        Math.min(minY, bounds.min.y - 1),
+        Math.max(maxY, bounds.max.y + 1),
+      ];
+      const half = Math.max(-next[0], next[1]);
+      next[0] = -half;
+      next[1] = half;
+      if (next.some((v, i) => v !== this.extent[i])) {
+        this.extent = next;
+        this.buildDeck();
+        this.setCamera(this.preset);
+      }
+    }
     this.sceneryStats = stats;
     this.onSceneryStats?.(stats);
   }

@@ -142,6 +142,9 @@
             · {$t("stage3d.generic", { values: { count: stats.generic } })}
           {/if}
         {/if}
+        {#if $venueStore?.scenery_error}
+          · {$t("stage3d.sceneryError")}
+        {/if}
         {#if scenery}
           · {$t("stage3d.scenery", { values: { count: scenery.drawn } })}
           {#if scenery.skipped > 0}

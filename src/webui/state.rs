@@ -892,6 +892,7 @@ pub fn build_metadata_json(
                 // The scenery file under /api/lighting/assets/, when the
                 // venue came from an MVR; the 3D view draws it.
                 "scenery": system.scenery(venue.name()),
+                "scenery_error": system.scenery_error(venue.name()),
             });
         }
     }

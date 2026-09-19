@@ -121,7 +121,7 @@ test.describe("Stage 3D", () => {
       );
       // The scenery: the deck's glb drawn, the truss's .3ds reported.
       await expect(page.locator(".stage3d__subtitle")).toContainText(
-        "1 scenery meshes (1 not drawn: .3ds)",
+        "1 scenery mesh (1 not drawn: .3ds)",
         { timeout: 10000 },
       );
       expect(
