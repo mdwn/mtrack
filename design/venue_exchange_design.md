@@ -851,16 +851,10 @@ effects channels, which stay as plain channels a `static` can name.
 | P3-2 | Sub-fixture registry, `per: cell` and `spread` in grammar, parser, engine; cell-aware DMX merge; lint; harness check | The three-cell chase check passes on the rig; existing shows produce byte-identical DMX |
 | P3-3 | State stream cells, segmented plot, 3D lenses per cell, docs, screenshots | A per-cell rainbow reads along the Spiider's lenses in 3D |
 
-### 17.7 Open for decision
+### 17.7 Decisions (settled 2026-09-19)
 
-1. **Cells as sub-fixtures named `fixture/cell`**, reusing every per-fixture path, rather than a
-   new dimension on `FixtureState`. Cheapest for the engine; the name is also what the UI shows.
-2. **`per: cell` as an effect parameter**, not a group property. The same group serves both
-   `bars: static ...` (whole) and `bars: chase ..., per: cell`; a group of cells would double
-   every group definition.
+1. **Cells are sub-fixtures named `fixture/cell`**, reusing every per-fixture path.
+2. **`per: cell` is an effect parameter**, not a group property.
 3. **`spread` ships in this phase** for `rainbow` and `cycle`, per fixture and per cell.
-4. **Cell names are the GDTF geometry names**, order is document order. Shows never name
-   cells; the UI and lint do.
-5. **Hand-written cells (`cell` blocks in `.fixture`) are in scope**, so a native bar can be
-   pixel-mapped without a GDTF.
-
+4. **Cell names are the GDTF geometry names**, in document order.
+5. **Hand-written `cell` blocks in `.fixture` are in scope.**
