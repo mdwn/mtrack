@@ -615,3 +615,18 @@ fn a_fixture_level_channel_that_a_cell_also_owns_is_rejected() {
         "{err}"
     );
 }
+
+/// `#` names a ganged channel's repeats in state snapshots, so neither
+/// form of channel definition may use it.
+#[test]
+fn a_hash_in_a_channel_name_is_refused_in_both_forms() {
+    // The v1 grammar never admitted `#` in a channel name; it fails at
+    // the parse.
+    let v1 = parse_fixture_types(
+        "fixture_type \"P\" {\n  channels: 2\n  channel_map: { \"red\": 1, \"red#2\": 2 }\n}\n",
+    );
+    assert!(v1.is_err());
+    let rich = parse_fixture_types("fixture_type \"P\" {\n  channel \"pan#2\" @ 1\n}\n");
+    let err = rich.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(err.contains("reserved"), "{err}");
+}

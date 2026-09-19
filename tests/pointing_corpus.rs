@@ -71,13 +71,17 @@ fn worst_error_deg(rig: &gdtf::RigModel, calibration: &AimCalibration) -> Option
             let (lens, beam) = gdtf::beam_ray(rig, pose.pan, pose.tilt)?;
             let dot = (math[0] * beam[0] + math[1] * beam[1] + math[2] * beam[2]).clamp(-1.0, 1.0);
             worst = worst.max(dot.acos().to_degrees());
-            // The lens, too: a millimetre off counts as a degree here.
-            let expected = calibration.origin([0.0; 3], pose);
-            let off = (0..3)
-                .map(|i| (lens[i] - expected[i]).powi(2))
-                .sum::<f64>()
-                .sqrt();
-            worst = worst.max(off * 1000.0);
+            // The lens, too, a millimetre counting as a degree — for a
+            // calibration that knows the lens; the plain convention aims
+            // from the mount and is judged on direction alone.
+            if *calibration != AimCalibration::IDENTITY {
+                let expected = calibration.origin([0.0; 3], pose);
+                let off = (0..3)
+                    .map(|i| (lens[i] - expected[i]).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                worst = worst.max(off * 1000.0);
+            }
         }
     }
     Some(worst)
@@ -147,7 +151,7 @@ fn every_corpus_mover_points_where_the_math_says() {
                         continue;
                     }
                 };
-                if !calibration.is_identity() {
+                if !calibration.frame_is_identity() {
                     println!(
                         "calibrated: {name} (pan offset {:.1}°, tilt offset {:.1}°, pre {:?})",
                         calibration.pan_offset, calibration.tilt_offset, calibration.pre

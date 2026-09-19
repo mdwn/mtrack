@@ -37,6 +37,7 @@ pub use physical::{
     degree_span, fanout, resolve_degrees, resolve_normalized, resolve_physical, Intent,
     PhysicalParameter, PhysicalState, Resolved,
 };
+pub(crate) use pointing::mat_vec;
 pub use pointing::{
     aim, aim_solutions, direction, lerp, nearest_pan, out_of_frame, AimCalibration, Pose,
 };

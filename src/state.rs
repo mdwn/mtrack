@@ -306,8 +306,8 @@ pub(crate) fn fixture_snapshots_with_cells(
 }
 
 /// The bytes a ganged channel repeats on the wire, named: a channel with
-/// mirrors (a linked mover's second head, an LED bar's sections ganged
-/// to one colour) writes every mirror the same byte, and the snapshot
+/// mirrors (an LED bar's sections ganged to one colour, a wash's zones)
+/// writes every mirror the same byte, and the snapshot
 /// says so under `<channel>#2`, `<channel>#3`, ... (and `_fine` likewise),
 /// so a state reader sees what the wire carries. A pixel fixture's cells
 /// are their own entries already and are not repeated here.
@@ -341,7 +341,11 @@ fn attach_mirrors(
                 }
             }
         }
-        snapshot.channels.extend(extra);
+        for (name, value) in extra {
+            // Never over a channel of the fixture's own; `#` is refused in
+            // channel names by the parser, so this is belt and braces.
+            snapshot.channels.entry(name).or_insert(value);
+        }
     }
 }
 
@@ -382,7 +386,10 @@ fn attach_pointing(
 /// Whether a channel name carries where a head points rather than what it
 /// shows: pan, tilt and their fine bytes.
 pub fn is_pointing_channel(name: &str) -> bool {
-    let base = name.split('#').next().unwrap_or(name);
+    let base = match name.split_once('#') {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => name,
+    };
     matches!(base, "pan" | "tilt" | "pan_fine" | "tilt_fine")
 }
 

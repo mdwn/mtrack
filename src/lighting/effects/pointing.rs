@@ -110,6 +110,17 @@ impl AimCalibration {
         out_of_frame(rotation, in_mount)
     }
 
+    /// Whether the lens stays on the pan axis at rest, so that a target on
+    /// that axis is the same beam at every pan. True of every fixture in
+    /// the corpus (their offsets run straight down the chain); an arm that
+    /// carries the head sideways would make pan matter even there.
+    pub fn lens_on_pan_axis(&self) -> bool {
+        self.pan_to_tilt[0].abs() < 1e-9
+            && self.pan_to_tilt[1].abs() < 1e-9
+            && self.tilt_to_lens[0].abs() < 1e-9
+            && self.tilt_to_lens[1].abs() < 1e-9
+    }
+
     /// Whether the lens sits away from the mounting point at all.
     fn has_lens_offset(&self) -> bool {
         [self.mount_to_pan, self.pan_to_tilt, self.tilt_to_lens]
@@ -117,7 +128,8 @@ impl AimCalibration {
             .any(|t| t.iter().any(|c| c.abs() > 1e-9))
     }
 
-    /// Whether this is the identity: no geometry correction at all.
+    /// Whether this is the identity: no geometry correction and no lens
+    /// offset at all — the hand-written `.fixture` case.
     pub fn is_identity(&self) -> bool {
         *self == Self::IDENTITY
     }
@@ -155,11 +167,25 @@ impl AimCalibration {
         if !self.has_lens_offset() {
             return solutions;
         }
-        for _ in 0..4 {
-            solutions = [0, 1].map(|i| {
+        // Each round moves the lens to the last answer and solves again;
+        // it stops when the answer stops moving. A target within a head's
+        // length of the lens takes a few more rounds than a stage does.
+        for _ in 0..32 {
+            let next = [0, 1].map(|i| {
                 let lens = add(position, self.origin(rotation, solutions[i]));
                 self.aim_from(lens, rotation, target)[i]
             });
+            let moved = (0..2)
+                .map(|i| {
+                    (next[i].pan - solutions[i].pan)
+                        .abs()
+                        .max((next[i].tilt - solutions[i].tilt).abs())
+                })
+                .fold(0.0_f64, f64::max);
+            solutions = next;
+            if moved < 1e-9 {
+                break;
+            }
         }
         solutions
     }
@@ -239,7 +265,7 @@ fn rot_x(angle: f64, v: [f64; 3]) -> [f64; 3] {
     [v[0], c * v[1] - s * v[2], s * v[1] + c * v[2]]
 }
 
-fn mat_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+pub(crate) fn mat_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     [
         m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
         m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
@@ -470,6 +496,43 @@ mod tests {
                     close(chosen, best),
                     "{pan} from {current} → {chosen}, best {best}"
                 );
+            }
+        }
+    }
+
+    /// Aiming from the lens settles even when the target is within a
+    /// head's length of it, where the parallax is largest: the ray from
+    /// the settled lens position passes through the target.
+    #[test]
+    fn the_lens_solve_settles_on_a_target_next_to_the_head() {
+        let calibration = AimCalibration {
+            mount_to_pan: [0.0, 0.0, -0.1],
+            pan_to_tilt: [0.0, 0.0, -0.25],
+            tilt_to_lens: [0.0, 0.0, -0.06],
+            ..AimCalibration::IDENTITY
+        };
+        let position = [0.0, 0.0, 2.0];
+        let rotation = [0.0, 0.0, 0.0];
+        for target in [[0.3, 0.2, 1.4], [-0.5, 0.1, 1.7], [0.05, 0.6, 1.0]] {
+            for pose in calibration.aim_solutions(position, rotation, target) {
+                let lens = calibration.origin(rotation, pose);
+                let from = [
+                    position[0] + lens[0],
+                    position[1] + lens[1],
+                    position[2] + lens[2],
+                ];
+                let dir = calibration.direction(rotation, pose);
+                let d = [
+                    target[0] - from[0],
+                    target[1] - from[1],
+                    target[2] - from[2],
+                ];
+                let along = d[0] * dir[0] + d[1] * dir[1] + d[2] * dir[2];
+                let miss = (0..3)
+                    .map(|i| (d[i] - along * dir[i]).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                assert!(miss < 1e-6, "{target:?} {pose:?}: misses by {miss} m");
             }
         }
     }

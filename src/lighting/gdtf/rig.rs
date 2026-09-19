@@ -159,7 +159,7 @@ pub fn beam_ray(rig: &RigModel, pan_deg: f64, tilt_deg: f64) -> Option<([f64; 3]
             [t[1][0], t[1][1], t[1][2]],
             [t[2][0], t[2][1], t[2][2]],
         ];
-        let step = mat_vec3(r, [t[0][3], t[1][3], t[2][3]]);
+        let step = crate::lighting::effects::mat_vec(r, [t[0][3], t[1][3], t[2][3]]);
         origin = [
             origin[0] + step[0],
             origin[1] + step[1],
@@ -224,7 +224,7 @@ pub fn aim_calibration(rig: &RigModel) -> Result<crate::lighting::effects::AimCa
             ),
             |(r, origin), &i| {
                 let t = rig.nodes[i].transform;
-                let step = mat_vec3(r, [t[0][3], t[1][3], t[2][3]]);
+                let step = crate::lighting::effects::mat_vec(r, [t[0][3], t[1][3], t[2][3]]);
                 (
                     mat_mul(r, rotation_of(i)),
                     [
@@ -263,14 +263,6 @@ pub fn aim_calibration(rig: &RigModel) -> Result<crate::lighting::effects::AimCa
         pan_to_tilt,
         tilt_to_lens,
     })
-}
-
-fn mat_vec3(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
-    [
-        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
-        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
-        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
-    ]
 }
 
 /// The nodes from the root down to the first beam's node, in that order;

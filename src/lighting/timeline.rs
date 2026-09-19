@@ -82,12 +82,42 @@ impl LightingTimeline {
 
     /// Creates a new lighting timeline from DSL cues (for testing)
     pub(crate) fn new_with_cues(cues: Vec<Cue>) -> Self {
+        // The last effect's real end: a `clear` or a `stop sequence` cuts
+        // an effect short, and a show that ends on one is over then, not
+        // when the cleared bed would have run out. Same reckoning as the
+        // lint's, so the two never disagree about when a show ends.
+        let clears: Vec<(Option<crate::lighting::effects::EffectLayer>, Duration)> = cues
+            .iter()
+            .flat_map(|cue| {
+                cue.layer_commands
+                    .iter()
+                    .filter(|cmd| cmd.command_type == LayerCommandType::Clear)
+                    .map(move |cmd| (cmd.layer, cue.time))
+            })
+            .collect();
+        let stops: Vec<(String, Duration)> = cues
+            .iter()
+            .flat_map(|cue| {
+                cue.stop_sequences
+                    .iter()
+                    .map(move |name| (name.clone(), cue.time))
+            })
+            .collect();
+        let (clears, stops) = (&clears, &stops);
         let show_end = cues
             .iter()
             .flat_map(|cue| {
-                cue.effects
-                    .iter()
-                    .map(move |e| cue.time + e.total_duration())
+                cue.effects.iter().map(move |e| {
+                    crate::lighting::lint::effective_end(
+                        cue.time + e.total_duration(),
+                        cue.time,
+                        e.layer
+                            .unwrap_or(crate::lighting::effects::EffectLayer::Background),
+                        e.sequence_name.as_deref(),
+                        clears,
+                        stops,
+                    )
+                })
             })
             .max()
             .unwrap_or(Duration::ZERO);
@@ -515,6 +545,41 @@ mod tests {
         );
         let _ = timeline.update(Duration::from_secs(5));
         assert!(timeline.is_finished(), "the last effect has run its course");
+    }
+
+    /// A show that ends on a `clear` is over at the clear, not when the
+    /// bed it cleared would have run out; a layer clear ends only that
+    /// layer's effects, and a stopped sequence ends at the stop.
+    #[test]
+    fn a_clear_or_a_stop_ends_the_show_early() {
+        let parse = |src: &str| {
+            crate::lighting::parser::parse_light_shows(src)
+                .unwrap()
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        let full = LightingTimeline::new(parse(
+            "show \"s\" {\n    @00:00.000\n    spots: static red: 100%, duration: 30s\n    \
+             @00:05.000\n    clear()\n}\n",
+        ));
+        assert_eq!(full.show_end(), Duration::from_secs(5));
+
+        let layer = LightingTimeline::new(parse(
+            "show \"s\" {\n    @00:00.000\n    spots: static red: 100%, duration: 30s\n    \
+             spots: static blue: 100%, duration: 12s, layer: midground\n    \
+             @00:05.000\n    clear(layer: background)\n}\n",
+        ));
+        assert_eq!(
+            layer.show_end(),
+            Duration::from_secs(12),
+            "the midground bed runs on"
+        );
+
+        let stopped = LightingTimeline::new(parse(
+            "sequence \"bed\" {\n    @00:00.000\n    spots: static red: 100%, duration: 30s\n}\n\n\
+             show \"s\" {\n    @00:00.000\n    sequence \"bed\"\n    @00:07.000\n    stop sequence \"bed\"\n}\n",
+        ));
+        assert_eq!(stopped.show_end(), Duration::from_secs(7));
     }
 
     /// A song with audio ends with the audio: an effect tail past the

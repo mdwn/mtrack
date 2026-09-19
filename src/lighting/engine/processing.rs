@@ -578,8 +578,11 @@ fn target_pose(
             // is the same beam: hold the head's pan rather than snap it.
             // The axis is the joint's, so the test is on the joint tilt,
             // before the calibration's offset is taken off.
+            // (A lens carried off the pan axis would make pan matter even
+            // there, so the hold is only for a lens on the axis.)
             let joint_tilt = solutions[0].tilt + calibration.tilt_offset;
-            let on_axis = !(1e-6..=180.0 - 1e-6).contains(&joint_tilt);
+            let on_axis =
+                !(1e-6..=180.0 - 1e-6).contains(&joint_tilt) && calibration.lens_on_pan_axis();
             if on_axis {
                 return Some(Pose {
                     pan: reference.pan,
