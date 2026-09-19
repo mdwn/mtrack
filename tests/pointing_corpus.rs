@@ -23,15 +23,14 @@
 //! cargo test --test pointing_corpus -- --ignored --nocapture
 //! ```
 //!
-//! A rig whose geometry disagrees is printed with the worst angular error
-//! rather than failing outright: a manufacturer may orient a yoke or lens
-//! geometry with a rotated matrix, and that is a fact about the file worth
-//! seeing. The check fails only when *most* rigs disagree, which would
-//! mean the convention, not a file, is wrong.
+//! Aiming goes through each rig's own calibration (design §18.6), so a
+//! yawed yoke or a pitched lens in a manufacturer's file is followed, not
+//! fought. A rig whose geometry the calibration cannot reduce is printed
+//! with the reason; every other rig must agree to a hundredth of a degree.
 
 use std::collections::HashSet;
 
-use mtrack::lighting::effects::{direction, Pose};
+use mtrack::lighting::effects::{AimCalibration, Pose};
 use mtrack::lighting::gdtf;
 use mtrack::lighting::mvr;
 
@@ -60,7 +59,7 @@ fn corpus_files() -> Vec<std::path::PathBuf> {
 
 /// The largest angle, in degrees, between the rig's beam and the math's
 /// direction over a grid of poses.
-fn worst_error_deg(rig: &gdtf::RigModel) -> Option<f64> {
+fn worst_error_deg(rig: &gdtf::RigModel, calibration: &AimCalibration) -> Option<f64> {
     let mut worst: f64 = 0.0;
     for pan in (-270..=270).step_by(30) {
         for tilt in (-135..=135).step_by(15) {
@@ -68,7 +67,7 @@ fn worst_error_deg(rig: &gdtf::RigModel) -> Option<f64> {
                 pan: f64::from(pan),
                 tilt: f64::from(tilt),
             };
-            let math = direction([0.0; 3], pose);
+            let math = calibration.direction([0.0; 3], pose);
             let beam = gdtf::beam_direction(rig, pose.pan, pose.tilt)?;
             let dot = (math[0] * beam[0] + math[1] * beam[1] + math[2] * beam[2]).clamp(-1.0, 1.0);
             worst = worst.max(dot.acos().to_degrees());
@@ -83,6 +82,7 @@ fn every_corpus_mover_points_where_the_math_says() {
     let mut rigs = 0usize;
     let mut agree = 0usize;
     let mut disagreements: Vec<(String, f64)> = Vec::new();
+    let mut uncalibrated: Vec<(String, String)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
     for path in corpus_files() {
@@ -123,7 +123,20 @@ fn every_corpus_mover_points_where_the_math_says() {
                 }
                 rigs += 1;
                 let name = format!("{} / {}", description.name, mode.name);
-                match worst_error_deg(&rig) {
+                let calibration = match gdtf::aim_calibration(&rig) {
+                    Ok(c) => c,
+                    Err(reason) => {
+                        uncalibrated.push((name, reason));
+                        continue;
+                    }
+                };
+                if !calibration.is_identity() {
+                    println!(
+                        "calibrated: {name} (pan offset {:.1}°, tilt offset {:.1}°, pre {:?})",
+                        calibration.pan_offset, calibration.tilt_offset, calibration.pre
+                    );
+                }
+                match worst_error_deg(&rig, &calibration) {
                     Some(err) if err < 0.01 => agree += 1,
                     Some(err) => disagreements.push((name, err)),
                     None => println!("{name}: no beam"),
@@ -136,13 +149,17 @@ fn every_corpus_mover_points_where_the_math_says() {
     for (name, err) in &disagreements {
         println!("disagrees by {err:.2}°: {name}");
     }
+    for (name, reason) in &uncalibrated {
+        println!("not calibrated ({reason}): {name}");
+    }
     println!(
-        "{rigs} mover rigs: {agree} agree with the pointing math, {} do not",
-        disagreements.len()
+        "{rigs} mover rigs: {agree} agree with the pointing math, {} do not, {} could not be calibrated",
+        disagreements.len(),
+        uncalibrated.len()
     );
     assert!(rigs > 0, "the corpus holds no moving heads");
     assert!(
-        agree * 2 > rigs,
-        "most corpus rigs disagree with the pointing math: the convention, not the files, is wrong"
+        disagreements.is_empty(),
+        "calibrated rigs disagree with the pointing math: {disagreements:?}"
     );
 }

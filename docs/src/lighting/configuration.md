@@ -362,6 +362,13 @@ Three mountings are worth memorizing:
   `Rx(30°)` takes the rest beam `(0, 0, −1)` to `(0, sin 30°, −cos 30°)`, up off the deck
   and upstage.
 
+A fixture type imported from a GDTF is aimed through its own geometry: the rig's yoke and
+head axes and the lens's rest angle, read from the file, so a fixture whose manufacturer
+models the yoke yawed or the lens pitched (the Ayrton MagicDot SX yaws its yoke 90°) is
+still aimed where the focus point is. The log says so at load
+(`Aiming through the rig's geometry`), and says when a geometry cannot be followed and the
+plain convention stands in.
+
 The same degrees go on the wire. A `.fixture` file's pan and tilt `range` is in these
 degrees too, so a hand-written mover carrying its datasheet's `tilt -135deg..135deg`
 behaves like its GDTF would.

@@ -38,11 +38,142 @@
 //! No geometry-tree kinematics: a page of trigonometry, property-tested
 //! and cross-checked against rig kinematics in `golden_tests`.
 
+use serde::{Deserialize, Serialize};
+
 /// A pan/tilt pair in degrees.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
     pub pan: f64,
     pub tilt: f64,
+}
+
+/// How a fixture's joints sit inside its mounting frame, read from its
+/// GDTF geometry (design §18.6). Most fixtures are the identity: the
+/// yoke turns about the mounting's Z and the head about the yoke's X,
+/// with the beam down −Z at rest. Some are not — the Ayrton MagicDot SX
+/// yaws its yoke geometry 90° — and for those the plain math would aim
+/// the head into the wrong plane. With a calibration the beam is
+///
+/// ```text
+/// direction = R · pre · Rz(pan + pan_offset) · Rx(tilt + tilt_offset) · (0, 0, −1)
+/// ```
+///
+/// `pre` is the rotation the geometry puts before the pan joint, and the
+/// offsets are yaws between the joints and the beam's rest angle in the
+/// head. Derived by [`crate::lighting::gdtf::aim_calibration`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AimCalibration {
+    /// Rotation from the joint frame into the mounting frame (row-major).
+    pub pre: [[f64; 3]; 3],
+    /// Degrees added to the pan the geometry wants, to get the pan the
+    /// fixture's own channel means.
+    pub pan_offset: f64,
+    /// Likewise for tilt.
+    pub tilt_offset: f64,
+}
+
+impl AimCalibration {
+    /// A fixture whose joints are the mounting frame's axes.
+    pub const IDENTITY: AimCalibration = AimCalibration {
+        pre: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        pan_offset: 0.0,
+        tilt_offset: 0.0,
+    };
+
+    /// Whether this is the identity: no geometry correction at all.
+    pub fn is_identity(&self) -> bool {
+        *self == Self::IDENTITY
+    }
+
+    /// The direction (stage space, unit) a pose looks along through this
+    /// geometry: see [`direction`].
+    pub fn direction(&self, rotation: [f64; 3], pose: Pose) -> [f64; 3] {
+        let joint = joint_direction(Pose {
+            pan: pose.pan + self.pan_offset,
+            tilt: pose.tilt + self.tilt_offset,
+        });
+        out_of_frame(rotation, mat_vec(self.pre, joint))
+    }
+
+    /// Both poses aiming at a stage point through this geometry: see
+    /// [`aim_solutions`].
+    pub fn aim_solutions(
+        &self,
+        position: [f64; 3],
+        rotation: [f64; 3],
+        target: [f64; 3],
+    ) -> [Pose; 2] {
+        let d = [
+            target[0] - position[0],
+            target[1] - position[1],
+            target[2] - position[2],
+        ];
+        let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if length < 1e-9 {
+            return [Pose {
+                pan: 0.0,
+                tilt: 0.0,
+            }; 2];
+        }
+        let mounting = into_frame(rotation, [d[0] / length, d[1] / length, d[2] / length]);
+        let local = mat_t_vec(self.pre, mounting);
+        joint_solutions(local).map(|pose| Pose {
+            pan: wrap_pan(pose.pan - self.pan_offset),
+            tilt: pose.tilt - self.tilt_offset,
+        })
+    }
+}
+
+/// The beam a joint pose sends, in the joint frame:
+/// `Rz(pan)·Rx(tilt)·(0,0,−1)`.
+fn joint_direction(pose: Pose) -> [f64; 3] {
+    let (pan, tilt) = (pose.pan.to_radians(), pose.tilt.to_radians());
+    [-pan.sin() * tilt.sin(), pan.cos() * tilt.sin(), -tilt.cos()]
+}
+
+/// Both joint poses sending the beam along a unit direction in the joint
+/// frame: the principal (tilt in `0..=180`) and its flip.
+fn joint_solutions(local: [f64; 3]) -> [Pose; 2] {
+    let tilt = (-local[2]).clamp(-1.0, 1.0).acos().to_degrees();
+    let pan = if local[0].hypot(local[1]) < 1e-9 {
+        0.0
+    } else {
+        (-local[0]).atan2(local[1]).to_degrees()
+    };
+    let flipped = if pan > 0.0 { pan - 180.0 } else { pan + 180.0 };
+    [
+        Pose { pan, tilt },
+        Pose {
+            pan: flipped,
+            tilt: -tilt,
+        },
+    ]
+}
+
+/// A pan folded into `-180..=180`.
+fn wrap_pan(pan: f64) -> f64 {
+    let wrapped = (pan + 180.0).rem_euclid(360.0) - 180.0;
+    if wrapped == -180.0 && pan > 0.0 {
+        180.0
+    } else {
+        wrapped
+    }
+}
+
+fn mat_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+fn mat_t_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    [
+        m[0][0] * v[0] + m[1][0] * v[1] + m[2][0] * v[2],
+        m[0][1] * v[0] + m[1][1] * v[1] + m[2][1] * v[2],
+        m[0][2] * v[0] + m[1][2] * v[1] + m[2][2] * v[2],
+    ]
 }
 
 /// Rotates a stage-space vector into a mounting frame given by degrees
@@ -87,34 +218,7 @@ pub fn out_of_frame(rotation_deg: [f64; 3], v: [f64; 3]) -> [f64; 3] {
 /// engine holds the head's current pan for it; a target on top of the
 /// fixture has no direction at all and gets rest.
 pub fn aim_solutions(position: [f64; 3], rotation: [f64; 3], target: [f64; 3]) -> [Pose; 2] {
-    let d = [
-        target[0] - position[0],
-        target[1] - position[1],
-        target[2] - position[2],
-    ];
-    let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    if length < 1e-9 {
-        return [Pose {
-            pan: 0.0,
-            tilt: 0.0,
-        }; 2];
-    }
-    let local = into_frame(rotation, [d[0] / length, d[1] / length, d[2] / length]);
-    // Rz(pan)·Rx(tilt)·(0,0,−1) = (−sin pan·sin tilt, cos pan·sin tilt, −cos tilt).
-    let tilt = (-local[2]).clamp(-1.0, 1.0).acos().to_degrees();
-    let pan = if local[0].hypot(local[1]) < 1e-9 {
-        0.0
-    } else {
-        (-local[0]).atan2(local[1]).to_degrees()
-    };
-    let flipped = if pan > 0.0 { pan - 180.0 } else { pan + 180.0 };
-    [
-        Pose { pan, tilt },
-        Pose {
-            pan: flipped,
-            tilt: -tilt,
-        },
-    ]
+    AimCalibration::IDENTITY.aim_solutions(position, rotation, target)
 }
 
 /// The principal pose aiming at a stage point: tilt in `0..=180`. See
@@ -127,9 +231,7 @@ pub fn aim(position: [f64; 3], rotation: [f64; 3], target: [f64; 3]) -> Pose {
 /// fixture at rest points down its mounting frame's −Z, pan turns it
 /// about +Z, tilt about +X.
 pub fn direction(rotation: [f64; 3], pose: Pose) -> [f64; 3] {
-    let (pan, tilt) = (pose.pan.to_radians(), pose.tilt.to_radians());
-    let local = [-pan.sin() * tilt.sin(), pan.cos() * tilt.sin(), -tilt.cos()];
-    out_of_frame(rotation, local)
+    AimCalibration::IDENTITY.direction(rotation, pose)
 }
 
 /// Picks, among the pans equivalent to `pan` modulo 360° that lie within

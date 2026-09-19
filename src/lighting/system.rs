@@ -459,6 +459,27 @@ impl LightingSystem {
                 for warning in warnings {
                     warn!(fixture_type = name, "Rig model: {warning}");
                 }
+                // The show aims through the rig's joints (design §18.6);
+                // a geometry the closed form cannot follow is said so and
+                // the plain convention stands in.
+                match cache.load_rig(&rig).map(|model| gdtf::aim_calibration(&model)) {
+                    Ok(Ok(calibration)) => {
+                        if !calibration.is_identity() {
+                            info!(
+                                fixture_type = name,
+                                pan_offset = calibration.pan_offset,
+                                tilt_offset = calibration.tilt_offset,
+                                "Aiming through the rig's geometry"
+                            );
+                        }
+                        expanded.set_aim(Some(calibration));
+                    }
+                    Ok(Err(reason)) => warn!(
+                        fixture_type = name,
+                        "Cannot aim through the rig's geometry ({reason}); using the plain convention"
+                    ),
+                    Err(e) => warn!(fixture_type = name, error = %e, "Rig model unreadable"),
+                }
                 expanded.set_rig(Some(rig));
             }
             Err(e) => warn!(fixture_type = name, error = %e, "No rig model for the 3D view"),
@@ -626,6 +647,7 @@ impl LightingSystem {
             fixture_info.channel_defs = fixture_type.channel_defs().clone();
             fixture_info.movement = *fixture_type.movement();
             fixture_info.rig = fixture_type.rig().map(str::to_string);
+            fixture_info.aim = fixture_type.aim();
             fixture_info.cells = fixture_type.cells().to_vec();
 
             fixture_infos.push(fixture_info);
@@ -864,6 +886,54 @@ mod tests {
         );
         let bar = &system.fixture_types["Bar"];
         assert_eq!(bar.cells().len(), 2);
+    }
+
+    /// A referential mover whose GDTF yaws its yoke (the MagicDot SX's
+    /// shape) is aimed through that geometry: the type carries a
+    /// calibration, and a plain one carries the identity.
+    #[test]
+    fn referential_fixture_types_aim_through_their_rig() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path();
+        let library = base.join("lighting/library");
+        let ft_dir = base.join("lighting/fixture_types");
+        std::fs::create_dir_all(&library).expect("mkdir");
+        std::fs::create_dir_all(&ft_dir).expect("mkdir");
+        let yawed = crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.replace(
+            r#"<Axis Name="Yoke" Model="Yoke" Position="{1,0,0,0}{0,1,0,0}{0,0,1,-0.1}{0,0,0,1}">"#,
+            r#"<Axis Name="Yoke" Model="Yoke" Position="{0,1,0,0}{-1,0,0,0}{0,0,1,-0.1}{0,0,0,1}">"#,
+        );
+        assert_ne!(yawed, crate::lighting::gdtf::SYNTHETIC_DESCRIPTION);
+        for (file, xml) in [
+            ("plain.gdtf", crate::lighting::gdtf::SYNTHETIC_DESCRIPTION),
+            ("yawed.gdtf", yawed.as_str()),
+        ] {
+            std::fs::write(
+                library.join(file),
+                crate::lighting::gdtf::build_zip(&[("description.xml", xml.as_bytes())]),
+            )
+            .expect("write gdtf");
+        }
+        std::fs::write(
+            ft_dir.join("movers.fixture"),
+            "fixture_type \"Plain\"\n  from gdtf(\"lighting/library/plain.gdtf\", mode \"Mover 16bit\")\n{ }\n\n\
+             fixture_type \"Yawed\"\n  from gdtf(\"lighting/library/yawed.gdtf\", mode \"Mover 16bit\")\n{ }\n",
+        )
+        .expect("write fixture");
+
+        let mut system = LightingSystem::new();
+        system
+            .load_fixture_types_directory(&ft_dir, base)
+            .expect("loads");
+        let plain = system.fixture_types["Plain"]
+            .aim()
+            .expect("a rig gives a calibration");
+        assert!(plain.is_identity(), "{plain:?}");
+        let yawed = system.fixture_types["Yawed"]
+            .aim()
+            .expect("a rig gives a calibration");
+        assert!(!yawed.is_identity(), "{yawed:?}");
+        assert!((yawed.pre[1][0] + 1.0).abs() < 1e-6, "{yawed:?}");
     }
 
     #[test]

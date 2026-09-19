@@ -86,7 +86,7 @@ pub(crate) fn compute_pose_snapshots(
         .filter_map(|(name, pose)| {
             let fixture = registry.get(name)?;
             let rotation = fixture.rotation.unwrap_or([0.0; 3]);
-            let aim = crate::lighting::effects::direction(rotation, *pose);
+            let aim = fixture.calibration().direction(rotation, *pose);
             let floor = fixture.position.and_then(|p| {
                 if aim[2] >= -1e-6 || p[2] <= 0.0 {
                     return None;

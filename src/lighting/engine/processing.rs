@@ -572,7 +572,9 @@ fn target_pose(
             // the tilt range whose pan is nearest the head's current pan
             // wins, ties to the smaller tilt change. Nothing in range:
             // the principal solution, clamped by the resolver.
-            let solutions = aim_solutions(position, rotation, *point);
+            let solutions = fixture
+                .calibration()
+                .aim_solutions(position, rotation, *point);
             // On the pan axis — straight down or straight up — every pan
             // is the same beam: hold the head's pan rather than snap it.
             let on_axis = solutions[0].tilt < 1e-6 || solutions[0].tilt > 180.0 - 1e-6;
