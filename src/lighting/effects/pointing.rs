@@ -58,7 +58,14 @@ pub struct Pose {
 ///
 /// `pre` is the rotation the geometry puts before the pan joint, and the
 /// offsets are yaws between the joints and the beam's rest angle in the
-/// head. Derived by [`crate::lighting::gdtf::aim_calibration`].
+/// head. The three translations put the lens where the geometry has it,
+/// so the beam is aimed from the lens, not the mounting point:
+///
+/// ```text
+/// origin = mount_to_pan + pre · Rz(pan) · (pan_to_tilt + Rz(pan_offset) · Rx(tilt) · tilt_to_lens)
+/// ```
+///
+/// Derived by [`crate::lighting::gdtf::aim_calibration`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AimCalibration {
     /// Rotation from the joint frame into the mounting frame (row-major).
@@ -68,19 +75,71 @@ pub struct AimCalibration {
     pub pan_offset: f64,
     /// Likewise for tilt.
     pub tilt_offset: f64,
+    /// The pan joint's position in the mounting frame, meters.
+    pub mount_to_pan: [f64; 3],
+    /// The tilt joint's position in the pan joint's frame.
+    pub pan_to_tilt: [f64; 3],
+    /// The lens's position in the tilt joint's frame.
+    pub tilt_to_lens: [f64; 3],
 }
 
 impl AimCalibration {
-    /// A fixture whose joints are the mounting frame's axes.
+    /// A fixture whose joints are the mounting frame's axes and whose lens
+    /// is at the mounting point.
     pub const IDENTITY: AimCalibration = AimCalibration {
         pre: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         pan_offset: 0.0,
         tilt_offset: 0.0,
+        mount_to_pan: [0.0; 3],
+        pan_to_tilt: [0.0; 3],
+        tilt_to_lens: [0.0; 3],
     };
 
-    /// Whether this is the identity: no geometry correction at all.
+    /// Where the lens is at a pose, as an offset from the fixture's
+    /// position in stage space (meters).
+    pub fn origin(&self, rotation: [f64; 3], pose: Pose) -> [f64; 3] {
+        // The lens offset is in the tilt joint's frame, so it turns with
+        // the channel tilt; that frame sits `pan_offset` around from the
+        // pan joint's, which turns with the channel pan inside `pre`.
+        let head = rot_x(pose.tilt.to_radians(), self.tilt_to_lens);
+        let in_pan = add(self.pan_to_tilt, rot_z(self.pan_offset.to_radians(), head));
+        let in_mount = add(
+            self.mount_to_pan,
+            mat_vec(self.pre, rot_z(pose.pan.to_radians(), in_pan)),
+        );
+        out_of_frame(rotation, in_mount)
+    }
+
+    /// Whether the lens stays on the pan axis at rest, so that a target on
+    /// that axis is the same beam at every pan. True of every fixture in
+    /// the corpus (their offsets run straight down the chain); an arm that
+    /// carries the head sideways would make pan matter even there.
+    pub fn lens_on_pan_axis(&self) -> bool {
+        self.pan_to_tilt[0].abs() < 1e-9
+            && self.pan_to_tilt[1].abs() < 1e-9
+            && self.tilt_to_lens[0].abs() < 1e-9
+            && self.tilt_to_lens[1].abs() < 1e-9
+    }
+
+    /// Whether the lens sits away from the mounting point at all.
+    fn has_lens_offset(&self) -> bool {
+        [self.mount_to_pan, self.pan_to_tilt, self.tilt_to_lens]
+            .iter()
+            .any(|t| t.iter().any(|c| c.abs() > 1e-9))
+    }
+
+    /// Whether this is the identity: no geometry correction and no lens
+    /// offset at all — the hand-written `.fixture` case.
     pub fn is_identity(&self) -> bool {
         *self == Self::IDENTITY
+    }
+
+    /// Whether the joints sit on the mounting frame's axes with no
+    /// offsets — the plain convention, whatever the lens's position.
+    pub fn frame_is_identity(&self) -> bool {
+        self.pre == Self::IDENTITY.pre
+            && self.pan_offset.abs() < 1e-9
+            && self.tilt_offset.abs() < 1e-9
     }
 
     /// The direction (stage space, unit) a pose looks along through this
@@ -94,13 +153,47 @@ impl AimCalibration {
     }
 
     /// Both poses aiming at a stage point through this geometry: see
-    /// [`aim_solutions`].
+    /// [`aim_solutions`]. The beam leaves the lens, which moves with the
+    /// pose, so the aim is refined from the lens's position a few times;
+    /// each step corrects a head's length over metres of throw, and the
+    /// solutions settle to well under a hundredth of a degree.
     pub fn aim_solutions(
         &self,
         position: [f64; 3],
         rotation: [f64; 3],
         target: [f64; 3],
     ) -> [Pose; 2] {
+        let mut solutions = self.aim_from(position, rotation, target);
+        if !self.has_lens_offset() {
+            return solutions;
+        }
+        // Each round moves the lens to the last answer and solves again;
+        // it stops when the answer stops moving. A target within a head's
+        // length of the lens takes a few more rounds than a stage does.
+        for _ in 0..32 {
+            let next = [0, 1].map(|i| {
+                let lens = add(position, self.origin(rotation, solutions[i]));
+                self.aim_from(lens, rotation, target)[i]
+            });
+            let moved = (0..2)
+                .map(|i| {
+                    (next[i].pan - solutions[i].pan)
+                        .abs()
+                        .max((next[i].tilt - solutions[i].tilt).abs())
+                })
+                .fold(0.0_f64, f64::max);
+            solutions = next;
+            if moved < 1e-9 {
+                break;
+            }
+        }
+        solutions
+    }
+
+    /// Both poses sending the beam from `from` to `target`, ignoring the
+    /// lens offset.
+    fn aim_from(&self, from: [f64; 3], rotation: [f64; 3], target: [f64; 3]) -> [Pose; 2] {
+        let position = from;
         let d = [
             target[0] - position[0],
             target[1] - position[1],
@@ -158,7 +251,21 @@ fn wrap_pan(pan: f64) -> f64 {
     }
 }
 
-fn mat_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn rot_z(angle: f64, v: [f64; 3]) -> [f64; 3] {
+    let (c, s) = (angle.cos(), angle.sin());
+    [c * v[0] - s * v[1], s * v[0] + c * v[1], v[2]]
+}
+
+fn rot_x(angle: f64, v: [f64; 3]) -> [f64; 3] {
+    let (c, s) = (angle.cos(), angle.sin());
+    [v[0], c * v[1] - s * v[2], s * v[1] + c * v[2]]
+}
+
+pub(crate) fn mat_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     [
         m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
         m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
@@ -389,6 +496,43 @@ mod tests {
                     close(chosen, best),
                     "{pan} from {current} → {chosen}, best {best}"
                 );
+            }
+        }
+    }
+
+    /// Aiming from the lens settles even when the target is within a
+    /// head's length of it, where the parallax is largest: the ray from
+    /// the settled lens position passes through the target.
+    #[test]
+    fn the_lens_solve_settles_on_a_target_next_to_the_head() {
+        let calibration = AimCalibration {
+            mount_to_pan: [0.0, 0.0, -0.1],
+            pan_to_tilt: [0.0, 0.0, -0.25],
+            tilt_to_lens: [0.0, 0.0, -0.06],
+            ..AimCalibration::IDENTITY
+        };
+        let position = [0.0, 0.0, 2.0];
+        let rotation = [0.0, 0.0, 0.0];
+        for target in [[0.3, 0.2, 1.4], [-0.5, 0.1, 1.7], [0.05, 0.6, 1.0]] {
+            for pose in calibration.aim_solutions(position, rotation, target) {
+                let lens = calibration.origin(rotation, pose);
+                let from = [
+                    position[0] + lens[0],
+                    position[1] + lens[1],
+                    position[2] + lens[2],
+                ];
+                let dir = calibration.direction(rotation, pose);
+                let d = [
+                    target[0] - from[0],
+                    target[1] - from[1],
+                    target[2] - from[2],
+                ];
+                let along = d[0] * dir[0] + d[1] * dir[1] + d[2] * dir[2];
+                let miss = (0..3)
+                    .map(|i| (d[i] - along * dir[i]).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                assert!(miss < 1e-6, "{target:?} {pose:?}: misses by {miss} m");
             }
         }
     }

@@ -51,6 +51,12 @@ pub struct LightingTimeline {
     tempo_map: Option<crate::lighting::tempo::TempoMap>,
     /// Sequences that have been stopped — future cues from these sequences are suppressed
     stopped_sequences: HashSet<String>,
+    /// When the last effect of the last cue has run its course: the show's
+    /// end, as opposed to its last cue's time.
+    show_end: Duration,
+    /// A bound the show's end is held to — the song's audio length — so a
+    /// tail past the audio never holds a song open.
+    end_cap: Option<Duration>,
 }
 
 impl LightingTimeline {
@@ -76,6 +82,45 @@ impl LightingTimeline {
 
     /// Creates a new lighting timeline from DSL cues (for testing)
     pub(crate) fn new_with_cues(cues: Vec<Cue>) -> Self {
+        // The last effect's real end: a `clear` or a `stop sequence` cuts
+        // an effect short, and a show that ends on one is over then, not
+        // when the cleared bed would have run out. Same reckoning as the
+        // lint's, so the two never disagree about when a show ends.
+        let clears: Vec<(Option<crate::lighting::effects::EffectLayer>, Duration)> = cues
+            .iter()
+            .flat_map(|cue| {
+                cue.layer_commands
+                    .iter()
+                    .filter(|cmd| cmd.command_type == LayerCommandType::Clear)
+                    .map(move |cmd| (cmd.layer, cue.time))
+            })
+            .collect();
+        let stops: Vec<(String, Duration)> = cues
+            .iter()
+            .flat_map(|cue| {
+                cue.stop_sequences
+                    .iter()
+                    .map(move |name| (name.clone(), cue.time))
+            })
+            .collect();
+        let (clears, stops) = (&clears, &stops);
+        let show_end = cues
+            .iter()
+            .flat_map(|cue| {
+                cue.effects.iter().map(move |e| {
+                    crate::lighting::lint::effective_end(
+                        cue.time + e.total_duration(),
+                        cue.time,
+                        e.layer
+                            .unwrap_or(crate::lighting::effects::EffectLayer::Background),
+                        e.sequence_name.as_deref(),
+                        clears,
+                        stops,
+                    )
+                })
+            })
+            .max()
+            .unwrap_or(Duration::ZERO);
         let mut timeline = Self {
             cues,
             current_time: Duration::ZERO,
@@ -83,9 +128,29 @@ impl LightingTimeline {
             is_playing: false,
             tempo_map: None,
             stopped_sequences: HashSet::new(),
+            show_end,
+            end_cap: None,
         };
         timeline.sort_cues();
         timeline
+    }
+
+    /// Bounds the show's end to the song's length, when the song has one:
+    /// with audio, the audio decides when the song ends, as it always has;
+    /// without, the last effect does.
+    pub fn set_end_cap(&mut self, cap: Option<Duration>) {
+        self.end_cap = cap;
+    }
+
+    /// The bound set by [`Self::set_end_cap`], carried over on a hot reload.
+    pub fn end_cap(&self) -> Option<Duration> {
+        self.end_cap
+    }
+
+    /// When the show is over: its last effect's end, or the cap.
+    pub fn show_end(&self) -> Duration {
+        self.end_cap
+            .map_or(self.show_end, |cap| self.show_end.min(cap))
     }
 
     /// Get the tempo map for this timeline
@@ -259,9 +324,14 @@ impl LightingTimeline {
         self.cues.get(self.next_cue_index).map(|cue| cue.time)
     }
 
-    /// Returns true if all cues have been processed (including empty timelines)
+    /// Whether the show is over: every cue dispatched and, while playing,
+    /// the last effect run its course (or the song's audio ended). An
+    /// empty timeline is over at once, so nothing waits on it forever. A
+    /// song with no audio used to end the moment its last cue fired,
+    /// cutting that cue's fade or hold; now it ends when the cue does.
     pub fn is_finished(&self) -> bool {
         self.next_cue_index >= self.cues.len()
+            && (!self.is_playing || self.current_time >= self.show_end())
     }
 
     /// Updates the timeline with the current song time
@@ -465,13 +535,72 @@ mod tests {
             "Timeline with unprocessed cues should not be finished"
         );
 
-        // After processing all cues, should be finished
+        // The last cue has fired but its 5 s effect is still running: the
+        // show is not over until it is.
         timeline.start();
         let _ = timeline.update(Duration::from_secs(1));
         assert!(
-            timeline.is_finished(),
-            "Timeline should be finished after all cues processed"
+            !timeline.is_finished(),
+            "the last cue's effect is still running"
         );
+        let _ = timeline.update(Duration::from_secs(5));
+        assert!(timeline.is_finished(), "the last effect has run its course");
+    }
+
+    /// A show that ends on a `clear` is over at the clear, not when the
+    /// bed it cleared would have run out; a layer clear ends only that
+    /// layer's effects, and a stopped sequence ends at the stop.
+    #[test]
+    fn a_clear_or_a_stop_ends_the_show_early() {
+        let parse = |src: &str| {
+            crate::lighting::parser::parse_light_shows(src)
+                .unwrap()
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        let full = LightingTimeline::new(parse(
+            "show \"s\" {\n    @00:00.000\n    spots: static red: 100%, duration: 30s\n    \
+             @00:05.000\n    clear()\n}\n",
+        ));
+        assert_eq!(full.show_end(), Duration::from_secs(5));
+
+        let layer = LightingTimeline::new(parse(
+            "show \"s\" {\n    @00:00.000\n    spots: static red: 100%, duration: 30s\n    \
+             spots: static blue: 100%, duration: 12s, layer: midground\n    \
+             @00:05.000\n    clear(layer: background)\n}\n",
+        ));
+        assert_eq!(
+            layer.show_end(),
+            Duration::from_secs(12),
+            "the midground bed runs on"
+        );
+
+        let stopped = LightingTimeline::new(parse(
+            "sequence \"bed\" {\n    @00:00.000\n    spots: static red: 100%, duration: 30s\n}\n\n\
+             show \"s\" {\n    @00:00.000\n    sequence \"bed\"\n    @00:07.000\n    stop sequence \"bed\"\n}\n",
+        ));
+        assert_eq!(stopped.show_end(), Duration::from_secs(7));
+    }
+
+    /// A song with audio ends with the audio: an effect tail past the
+    /// audio's end is cut, as it always was, not waited for.
+    #[test]
+    fn the_end_cap_bounds_the_show_to_the_audio() {
+        let shows = crate::lighting::parser::parse_light_shows(
+            "show \"s\" {\n    @00:10.000\n    spots: static red: 100%, duration: 30s\n}\n",
+        )
+        .unwrap()
+        .into_values()
+        .collect();
+        let mut timeline = LightingTimeline::new(shows);
+        assert_eq!(timeline.show_end(), Duration::from_secs(40));
+        timeline.set_end_cap(Some(Duration::from_secs(20)));
+        assert_eq!(timeline.show_end(), Duration::from_secs(20));
+        timeline.start();
+        let _ = timeline.update(Duration::from_secs(12));
+        assert!(!timeline.is_finished());
+        let _ = timeline.update(Duration::from_secs(20));
+        assert!(timeline.is_finished(), "the audio has ended");
     }
 
     #[test]

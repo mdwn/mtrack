@@ -414,6 +414,9 @@ fn parse_channel_def(pair: Pair<Rule>) -> Result<(String, ChannelDef), Box<dyn E
     if name.is_empty() {
         return Err("channel needs a name".into());
     }
+    if name.contains('#') {
+        return Err(reserved_channel_name(&name).into());
+    }
     if !seen_offset || def.offset == 0 {
         return Err(format!("channel \"{name}\" needs a 1-based offset").into());
     }
@@ -536,6 +539,9 @@ fn parse_fixture_content(
         match content_pair.as_rule() {
             Rule::channel_map => {
                 *channels = parse_channel_mappings(content_pair);
+                if let Some(name) = channels.keys().find(|k| k.contains('#')) {
+                    return Err(reserved_channel_name(name).into());
+                }
             }
             Rule::channel_def => {
                 let (name, def) = parse_channel_def(content_pair)?;
@@ -640,6 +646,14 @@ fn parse_special_case_list(pair: Pair<Rule>) -> Vec<String> {
         .filter(|p| p.as_rule() == Rule::special_case)
         .map(|case| extract_string(case))
         .collect()
+}
+
+/// `#` is what a state snapshot uses to name a ganged channel's repeats
+/// (`red#2`), so a channel of the fixture's own cannot carry it.
+fn reserved_channel_name(name: &str) -> String {
+    format!(
+        "channel \"{name}\": `#` is reserved in channel names (it marks a ganged repeat in state)"
+    )
 }
 
 fn extract_string(pair: Pair<Rule>) -> String {

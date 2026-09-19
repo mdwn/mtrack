@@ -365,7 +365,9 @@ Three mountings are worth memorizing:
 A fixture type imported from a GDTF is aimed through its own geometry: the rig's yoke and
 head axes and the lens's rest angle, read from the file, so a fixture whose manufacturer
 models the yoke yawed or the lens pitched (the Ayrton MagicDot SX yaws its yoke 90°) is
-still aimed where the focus point is. The log says so at load
+still aimed where the focus point is. The beam is aimed from the lens, which the geometry
+puts a head's length from the mounting point and which moves with the pose, not from the
+mounting point itself. The log says so at load
 (`Aiming through the rig's geometry`), and says when a geometry cannot be followed and the
 plain convention stands in.
 

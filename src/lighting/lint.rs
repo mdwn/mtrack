@@ -626,7 +626,7 @@ fn stop_times(show: &LightShow) -> Vec<(String, Duration)> {
 /// and stops while the past-end check capped by clears alone, so the two
 /// disagreed about the same effect — one treating a stopped bed as ending at
 /// the stop, the other warning that it overran the song by the difference.
-fn effective_end(
+pub(crate) fn effective_end(
     authored_end: Duration,
     start: Duration,
     layer: EffectLayer,

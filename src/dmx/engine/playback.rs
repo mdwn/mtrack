@@ -117,7 +117,11 @@ impl Engine {
                 .collect();
 
             if !all_shows.is_empty() {
-                let timeline = crate::lighting::timeline::LightingTimeline::new(all_shows);
+                let mut timeline = crate::lighting::timeline::LightingTimeline::new(all_shows);
+                // With audio, the audio ends the song as it always has;
+                // without, the last effect does rather than the last cue.
+                let audio_length = song.duration();
+                timeline.set_end_cap((!audio_length.is_zero()).then_some(audio_length));
                 // Set or clear the tempo map — a song without a tempo block must not
                 // inherit one from the previous song. Shows without their own tempo
                 // block fall back to the song's tempo map (song.yaml `tempo:`).

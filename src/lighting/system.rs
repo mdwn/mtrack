@@ -464,7 +464,7 @@ impl LightingSystem {
                 // the plain convention stands in.
                 match cache.load_rig(&rig).map(|model| gdtf::aim_calibration(&model)) {
                     Ok(Ok(calibration)) => {
-                        if !calibration.is_identity() {
+                        if !calibration.frame_is_identity() {
                             info!(
                                 fixture_type = name,
                                 pan_offset = calibration.pan_offset,
@@ -928,11 +928,15 @@ mod tests {
         let plain = system.fixture_types["Plain"]
             .aim()
             .expect("a rig gives a calibration");
-        assert!(plain.is_identity(), "{plain:?}");
+        assert!(plain.frame_is_identity(), "{plain:?}");
+        assert!(
+            (plain.tilt_to_lens[2] + 0.06).abs() < 1e-9,
+            "the lens offset comes with it: {plain:?}"
+        );
         let yawed = system.fixture_types["Yawed"]
             .aim()
             .expect("a rig gives a calibration");
-        assert!(!yawed.is_identity(), "{yawed:?}");
+        assert!(!yawed.frame_is_identity(), "{yawed:?}");
         assert!((yawed.pre[1][0] + 1.0).abs() < 1e-6, "{yawed:?}");
     }
 

@@ -273,6 +273,8 @@ fn reload_timeline(
     // updates from the old timeline while the engine has new state.
     {
         let mut current = current_song_timeline.lock();
+        // The song's end bound belongs to the song, not the show text.
+        new_timeline.set_end_cap(current.as_ref().and_then(|t| t.end_cap()));
         *current = Some(new_timeline);
     }
 

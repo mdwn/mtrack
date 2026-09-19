@@ -86,8 +86,13 @@ pub(crate) fn compute_pose_snapshots(
         .filter_map(|(name, pose)| {
             let fixture = registry.get(name)?;
             let rotation = fixture.rotation.unwrap_or([0.0; 3]);
-            let aim = fixture.calibration().direction(rotation, *pose);
+            let calibration = fixture.calibration();
+            let aim = calibration.direction(rotation, *pose);
+            // The beam leaves the lens, a head's length from the mounting
+            // point and moving with the pose.
+            let lens = calibration.origin(rotation, *pose);
             let floor = fixture.position.and_then(|p| {
+                let p = [p[0] + lens[0], p[1] + lens[1], p[2] + lens[2]];
                 if aim[2] >= -1e-6 || p[2] <= 0.0 {
                     return None;
                 }
@@ -296,7 +301,52 @@ pub(crate) fn fixture_snapshots_with_cells(
     fixtures.retain(|s| registry.get(&s.name).is_none_or(|f| f.parent.is_none()));
     attach_cell_snapshots(&mut fixtures, states, registry);
     attach_pointing(&mut fixtures, states, registry);
+    attach_mirrors(&mut fixtures, registry);
     fixtures
+}
+
+/// The bytes a ganged channel repeats on the wire, named: a channel with
+/// mirrors (an LED bar's sections ganged to one colour, a wash's zones)
+/// writes every mirror the same byte, and the snapshot
+/// says so under `<channel>#2`, `<channel>#3`, ... (and `_fine` likewise),
+/// so a state reader sees what the wire carries. A pixel fixture's cells
+/// are their own entries already and are not repeated here.
+fn attach_mirrors(
+    snapshots: &mut [FixtureSnapshot],
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+) {
+    for snapshot in snapshots.iter_mut() {
+        let Some(info) = registry.get(&snapshot.name) else {
+            continue;
+        };
+        let cell_owned = |channel: &str| {
+            info.cells
+                .first()
+                .is_some_and(|c| c.channels.contains_key(channel))
+        };
+        let mut extra = Vec::new();
+        for (name, def) in &info.channel_defs {
+            if def.mirrors.is_empty() || cell_owned(name) {
+                continue;
+            }
+            let Some(&coarse) = snapshot.channels.get(name) else {
+                continue;
+            };
+            let fine = snapshot.channels.get(&format!("{name}_fine")).copied();
+            for (i, (_, mirror_fine)) in def.mirrors.iter().enumerate() {
+                let n = i + 2;
+                extra.push((format!("{name}#{n}"), coarse));
+                if let (Some(fine), Some(_)) = (fine, mirror_fine) {
+                    extra.push((format!("{name}_fine#{n}"), fine));
+                }
+            }
+        }
+        for (name, value) in extra {
+            // Never over a channel of the fixture's own; `#` is refused in
+            // channel names by the parser, so this is belt and braces.
+            snapshot.channels.entry(name).or_insert(value);
+        }
+    }
 }
 
 /// Pan and tilt as the bytes on the wire. A move writes physical intents
@@ -336,7 +386,11 @@ fn attach_pointing(
 /// Whether a channel name carries where a head points rather than what it
 /// shows: pan, tilt and their fine bytes.
 pub fn is_pointing_channel(name: &str) -> bool {
-    matches!(name, "pan" | "tilt" | "pan_fine" | "tilt_fine")
+    let base = match name.split_once('#') {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => name,
+    };
+    matches!(base, "pan" | "tilt" | "pan_fine" | "tilt_fine")
 }
 
 /// Adds per-cell values to the snapshots of fixtures whose cells carry
@@ -959,5 +1013,57 @@ mod tests {
         assert_eq!((m["pan"], m["pan_fine"]), (0x80, 0x00));
         assert_eq!((m["tilt"], m["tilt_fine"]), (0xFF, 0xFF));
         assert!(!m.contains_key("dimmer"), "nothing wrote the dimmer");
+    }
+
+    /// A ganged channel's mirror bytes are in the snapshot under numbered
+    /// names, so a linked head or a ganged bar section reads as the wire
+    /// carries it; an unganged channel gets none.
+    #[test]
+    fn fixture_snapshots_name_a_ganged_channels_mirrors() {
+        use crate::lighting::effects::{BlendMode, ChannelState, EffectLayer};
+        use crate::lighting::types::ChannelDef;
+
+        let channels: HashMap<String, u16> = [("red", 1), ("dimmer", 4)]
+            .into_iter()
+            .map(|(n, o)| (n.to_string(), o))
+            .collect();
+        let mut info = crate::lighting::effects::FixtureInfo::new(
+            "bar".to_string(),
+            1,
+            1,
+            "Bar".to_string(),
+            channels,
+            None,
+        );
+        let mut defs = HashMap::new();
+        defs.insert(
+            "red".to_string(),
+            ChannelDef {
+                offset: 1,
+                fine: None,
+                range: None,
+                functions: Vec::new(),
+                mirrors: vec![(2, None), (3, None)],
+            },
+        );
+        defs.insert("dimmer".to_string(), ChannelDef::at(4));
+        info = info.with_channel_defs(defs);
+        let registry: HashMap<String, _> = [("bar".to_string(), info)].into_iter().collect();
+
+        let mut state = FixtureState::new();
+        state.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        let states: HashMap<String, FixtureState> =
+            [("bar".to_string(), state)].into_iter().collect();
+        let snapshots = fixture_snapshots_with_cells(&states, &HashMap::new(), &registry);
+        let bar = &snapshots[0].channels;
+        assert_eq!((bar["red"], bar["red#2"], bar["red#3"]), (255, 255, 255));
+        assert!(
+            !bar.contains_key("dimmer#2"),
+            "an unganged channel has no mirrors"
+        );
+        assert!(is_pointing_channel("pan#2") && !is_pointing_channel("red#2"));
     }
 }
