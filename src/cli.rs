@@ -274,6 +274,29 @@ enum Commands {
         #[arg(long, default_value = "lighting/venues")]
         venues_dir: String,
     },
+    /// Exports a venue as an .mvr archive: the patch with positions,
+    /// rotations and focus points, every fixture type's GDTF embedded
+    /// (generated for native types), ready for a console or pre-viz tool.
+    ExportMvr {
+        /// The venue to export, by name.
+        venue: String,
+        /// Output path, relative to the project. Defaults to
+        /// lighting/export/<venue>.mvr.
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Put each fixture on a layer named after its first tag.
+        #[arg(long)]
+        layers_from_tags: bool,
+        /// Project directory.
+        #[arg(short, long, default_value = ".")]
+        project: String,
+        /// Fixture types directory, relative to the project.
+        #[arg(long, default_value = "lighting/fixture_types")]
+        fixture_types_dir: String,
+        /// Venues directory, relative to the project.
+        #[arg(long, default_value = "lighting/venues")]
+        venues_dir: String,
+    },
     /// Verifies the syntax of a light show file.
     VerifyLightShow {
         /// The path to the light show file to verify.
@@ -535,6 +558,21 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
             write,
             name,
             origin.as_deref(),
+            &project,
+            fixture_types_dir,
+            venues_dir,
+        )?,
+        Commands::ExportMvr {
+            venue,
+            output,
+            layers_from_tags,
+            project,
+            fixture_types_dir,
+            venues_dir,
+        } => local::export_mvr(
+            &venue,
+            output,
+            layers_from_tags,
             &project,
             fixture_types_dir,
             venues_dir,

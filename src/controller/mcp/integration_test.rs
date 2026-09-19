@@ -302,6 +302,9 @@ async fn mcp_initialize_list_and_call_tools() -> Result<(), Box<dyn Error>> {
         "get_config",
         "lighting_dsl_reference",
         "validate_lighting",
+        "inspect_mvr",
+        "import_mvr",
+        "export_mvr",
     ] {
         assert!(
             tool_names.contains(&expected),
@@ -835,6 +838,25 @@ async fn mcp_mvr_import_flow() -> Result<(), Box<dyn Error>> {
         venue_text.contains("focus \"Drummer\" (0, 9.8, 1.4)"),
         "{venue_text}"
     );
+
+    // --- export_mvr hands the venue back with the GDTF embedded.
+    let export = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            12,
+            "export_mvr",
+            json!({"venue": "kellys", "output": "outgoing/kellys.mvr"}),
+        )
+        .await,
+    );
+    assert_eq!(export["output"], "outgoing/kellys.mvr");
+    assert_eq!(export["embedded_gdtfs"][0], "Astera_PB15.gdtf");
+    let exported = std::fs::read(fixture.root.join("outgoing/kellys.mvr"))?;
+    let scene = crate::lighting::mvr::parse_archive(&exported)?;
+    assert_eq!(scene.fixtures.len(), 1);
+    assert_eq!(scene.focus_points[0].name, "Drummer");
 
     // --- the venue file tools see the .venue peer.
     let files =

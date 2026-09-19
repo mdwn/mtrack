@@ -183,3 +183,74 @@ fn every_embedded_gdtf_distills_a_rig_per_mode() {
         "the Demoshow/Basic_Festival corpus files carry the Robin Spiider"
     );
 }
+
+/// Import → export → import (design §16.6, P2-3 exit): every corpus venue
+/// exported by mtrack re-imports as a merge that changes nothing.
+#[test]
+#[ignore = "bring-your-own corpus: put .mvr files in tests/mvr-corpus/ and run with --ignored"]
+fn every_corpus_venue_round_trips_through_export() {
+    use mtrack::lighting::export::{export_mvr_bytes, MvrExportOptions};
+    use mtrack::lighting::import::{import_mvr_bytes, inspect_mvr_bytes, MvrImportOptions};
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mvr-corpus");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .expect("readable corpus dir")
+        .filter_map(|entry| {
+            let path = entry.expect("dir entry").path();
+            (path.extension().is_some_and(|e| e == "mvr")).then_some(path)
+        })
+        .collect();
+    files.sort();
+    for path in files {
+        let project = tempfile::tempdir().expect("temp project");
+        let bytes = std::fs::read(&path).expect("readable mvr");
+        let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let options = MvrImportOptions::default();
+        let report = import_mvr_bytes(&bytes, &file_name, &options, project.path())
+            .unwrap_or_else(|e| panic!("{file_name}: import: {e}"));
+        let venue = report.plan.venue_name.clone();
+        let (exported, export) =
+            export_mvr_bytes(&MvrExportOptions::for_venue(&venue), project.path())
+                .unwrap_or_else(|e| panic!("{file_name}: export: {e}"));
+        let before: Vec<_> = report
+            .plan
+            .fixtures
+            .iter()
+            .filter(|f| f.todo.is_none())
+            .collect();
+        assert_eq!(export.fixtures, before.len(), "{file_name}");
+        assert!(
+            export.generated_gdtfs.is_empty(),
+            "{file_name}: {:?}",
+            export.generated_gdtfs
+        );
+
+        let after = inspect_mvr_bytes(&exported, &file_name, &options, project.path())
+            .unwrap_or_else(|e| panic!("{file_name}: re-import: {e}"));
+        assert!(after.merge, "{file_name}");
+        assert!(
+            after.fixture_types.iter().all(|t| t.existing),
+            "{file_name}: {:?}",
+            after.fixture_types
+        );
+        assert!(
+            after.removed_fixtures.is_empty(),
+            "{file_name}: {:?}",
+            after.removed_fixtures
+        );
+        let changed: Vec<String> = after
+            .fixtures
+            .iter()
+            .filter(|f| f.change.as_deref().is_some_and(|c| c != "unchanged"))
+            .map(|f| format!("{}: {:?}", f.name, f.change))
+            .collect();
+        assert!(changed.is_empty(), "{file_name}: {changed:?}");
+        assert_eq!(after.fixtures.len(), before.len(), "{file_name}");
+        println!(
+            "{file_name}: {} fixtures, {} focus points, {} GDTFs round-trip",
+            export.fixtures,
+            export.focus_points,
+            export.embedded_gdtfs.len()
+        );
+    }
+}

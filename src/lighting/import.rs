@@ -76,13 +76,13 @@ pub(crate) fn fixture_filename_stem(name: &str) -> String {
 /// [`crate::util::write_file`] with the path and any deploy hint in the
 /// error — a bare "Read-only file system (os error 30)" names no file and
 /// no fix.
-pub(super) fn write(path: &Path, contents: &[u8]) -> Result<(), Box<dyn Error>> {
+pub(crate) fn write(path: &Path, contents: &[u8]) -> Result<(), Box<dyn Error>> {
     crate::util::write_file(path, contents)
         .map_err(|e| annotate(crate::util::WriteTarget::File(path), e))
 }
 
 /// [`crate::util::create_dir_all`] with the same annotation.
-pub(super) fn create_dir(path: &Path) -> Result<(), Box<dyn Error>> {
+pub(crate) fn create_dir(path: &Path) -> Result<(), Box<dyn Error>> {
     crate::util::create_dir_all(path)
         .map_err(|e| annotate(crate::util::WriteTarget::Directory(path), e))
 }

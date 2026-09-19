@@ -765,6 +765,46 @@ pub fn import_mvr(
     Ok(())
 }
 
+pub fn export_mvr(
+    venue: &str,
+    output: Option<String>,
+    layers_from_tags: bool,
+    project: &str,
+    fixture_types_dir: String,
+    venues_dir: String,
+) -> Result<(), Box<dyn Error>> {
+    use crate::lighting::export::{export_mvr, MvrExportOptions};
+
+    let options = MvrExportOptions {
+        venue: venue.to_string(),
+        output,
+        fixture_types_dir,
+        venues_dir,
+        layers_from_tags,
+    };
+    let report = export_mvr(&options, Path::new(project))?;
+    println!(
+        "Venue \"{}\" → {} ({} fixtures, {} focus points)",
+        report.venue, report.output, report.fixtures, report.focus_points
+    );
+    if !report.embedded_gdtfs.is_empty() {
+        println!("  embedded GDTFs:");
+        for entry in &report.embedded_gdtfs {
+            println!("    {entry}");
+        }
+    }
+    if !report.generated_gdtfs.is_empty() {
+        println!("  generated GDTFs (native fixture types, channels only):");
+        for (entry, type_name) in &report.generated_gdtfs {
+            println!("    {entry}  ← \"{type_name}\"");
+        }
+    }
+    for warning in &report.warnings {
+        println!("  warning: {warning}");
+    }
+    Ok(())
+}
+
 pub fn import_gdtf(
     gdtf_path: &str,
     mode: Option<&str>,

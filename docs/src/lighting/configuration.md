@@ -328,7 +328,16 @@ the same name is never overwritten. A patched fixture whose GDTF is missing
 or whose mode cannot be matched is never silently dropped either: it becomes
 a `# TODO` line in the venue file carrying everything the MVR knew about it.
 
-The same flow is available over MCP as `inspect_mvr` and `import_mvr`. Pixel bars and
+Going the other way, `mtrack export-mvr <venue>` writes the venue as an `.mvr` a console or
+pre-viz tool can open: every fixture with its position, rotation (the origin chosen at import
+restored) and address, the focus points, and each fixture type's GDTF embedded from the
+library. A fixture type with no GDTF — a `.light` or hand-written `.fixture` — gets a minimal
+generated one carrying its channels and a box body, enough to patch. The output lands in
+`lighting/export/<venue>.mvr` unless `--output` says otherwise; `--layers-from-tags` puts each
+fixture on a layer named after its first tag. A venue seeded from an MVR round-trips: importing
+the export merges it with nothing changed.
+
+The same flow is available over MCP as `inspect_mvr`, `import_mvr` and `export_mvr`. Pixel bars and
 multi-section fixtures import with their identical sections ganged to one color (the report
 says so); a fixture with sections that differ keeps its first section's channels as its own and
 the rest under section-suffixed names. gdtf.eu publishes sample MVR files from several consoles,

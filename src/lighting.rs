@@ -20,6 +20,7 @@ pub mod distill;
 pub mod effects;
 pub mod engine;
 pub mod evaluate;
+pub mod export;
 pub mod gdtf;
 pub mod import;
 #[cfg(test)]
