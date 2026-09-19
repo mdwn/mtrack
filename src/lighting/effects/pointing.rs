@@ -58,7 +58,14 @@ pub struct Pose {
 ///
 /// `pre` is the rotation the geometry puts before the pan joint, and the
 /// offsets are yaws between the joints and the beam's rest angle in the
-/// head. Derived by [`crate::lighting::gdtf::aim_calibration`].
+/// head. The three translations put the lens where the geometry has it,
+/// so the beam is aimed from the lens, not the mounting point:
+///
+/// ```text
+/// origin = mount_to_pan + pre · Rz(pan) · (pan_to_tilt + Rz(pan_offset) · Rx(tilt) · tilt_to_lens)
+/// ```
+///
+/// Derived by [`crate::lighting::gdtf::aim_calibration`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AimCalibration {
     /// Rotation from the joint frame into the mounting frame (row-major).
@@ -68,19 +75,59 @@ pub struct AimCalibration {
     pub pan_offset: f64,
     /// Likewise for tilt.
     pub tilt_offset: f64,
+    /// The pan joint's position in the mounting frame, meters.
+    pub mount_to_pan: [f64; 3],
+    /// The tilt joint's position in the pan joint's frame.
+    pub pan_to_tilt: [f64; 3],
+    /// The lens's position in the tilt joint's frame.
+    pub tilt_to_lens: [f64; 3],
 }
 
 impl AimCalibration {
-    /// A fixture whose joints are the mounting frame's axes.
+    /// A fixture whose joints are the mounting frame's axes and whose lens
+    /// is at the mounting point.
     pub const IDENTITY: AimCalibration = AimCalibration {
         pre: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         pan_offset: 0.0,
         tilt_offset: 0.0,
+        mount_to_pan: [0.0; 3],
+        pan_to_tilt: [0.0; 3],
+        tilt_to_lens: [0.0; 3],
     };
+
+    /// Where the lens is at a pose, as an offset from the fixture's
+    /// position in stage space (meters).
+    pub fn origin(&self, rotation: [f64; 3], pose: Pose) -> [f64; 3] {
+        // The lens offset is in the tilt joint's frame, so it turns with
+        // the channel tilt; that frame sits `pan_offset` around from the
+        // pan joint's, which turns with the channel pan inside `pre`.
+        let head = rot_x(pose.tilt.to_radians(), self.tilt_to_lens);
+        let in_pan = add(self.pan_to_tilt, rot_z(self.pan_offset.to_radians(), head));
+        let in_mount = add(
+            self.mount_to_pan,
+            mat_vec(self.pre, rot_z(pose.pan.to_radians(), in_pan)),
+        );
+        out_of_frame(rotation, in_mount)
+    }
+
+    /// Whether the lens sits away from the mounting point at all.
+    fn has_lens_offset(&self) -> bool {
+        [self.mount_to_pan, self.pan_to_tilt, self.tilt_to_lens]
+            .iter()
+            .any(|t| t.iter().any(|c| c.abs() > 1e-9))
+    }
 
     /// Whether this is the identity: no geometry correction at all.
     pub fn is_identity(&self) -> bool {
         *self == Self::IDENTITY
+    }
+
+    /// Whether the joints sit on the mounting frame's axes with no
+    /// offsets — the plain convention, whatever the lens's position.
+    pub fn frame_is_identity(&self) -> bool {
+        self.pre == Self::IDENTITY.pre
+            && self.pan_offset.abs() < 1e-9
+            && self.tilt_offset.abs() < 1e-9
     }
 
     /// The direction (stage space, unit) a pose looks along through this
@@ -94,13 +141,33 @@ impl AimCalibration {
     }
 
     /// Both poses aiming at a stage point through this geometry: see
-    /// [`aim_solutions`].
+    /// [`aim_solutions`]. The beam leaves the lens, which moves with the
+    /// pose, so the aim is refined from the lens's position a few times;
+    /// each step corrects a head's length over metres of throw, and the
+    /// solutions settle to well under a hundredth of a degree.
     pub fn aim_solutions(
         &self,
         position: [f64; 3],
         rotation: [f64; 3],
         target: [f64; 3],
     ) -> [Pose; 2] {
+        let mut solutions = self.aim_from(position, rotation, target);
+        if !self.has_lens_offset() {
+            return solutions;
+        }
+        for _ in 0..4 {
+            solutions = [0, 1].map(|i| {
+                let lens = add(position, self.origin(rotation, solutions[i]));
+                self.aim_from(lens, rotation, target)[i]
+            });
+        }
+        solutions
+    }
+
+    /// Both poses sending the beam from `from` to `target`, ignoring the
+    /// lens offset.
+    fn aim_from(&self, from: [f64; 3], rotation: [f64; 3], target: [f64; 3]) -> [Pose; 2] {
+        let position = from;
         let d = [
             target[0] - position[0],
             target[1] - position[1],
@@ -156,6 +223,20 @@ fn wrap_pan(pan: f64) -> f64 {
     } else {
         wrapped
     }
+}
+
+fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn rot_z(angle: f64, v: [f64; 3]) -> [f64; 3] {
+    let (c, s) = (angle.cos(), angle.sin());
+    [c * v[0] - s * v[1], s * v[0] + c * v[1], v[2]]
+}
+
+fn rot_x(angle: f64, v: [f64; 3]) -> [f64; 3] {
+    let (c, s) = (angle.cos(), angle.sin());
+    [v[0], c * v[1] - s * v[2], s * v[1] + c * v[2]]
 }
 
 fn mat_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {

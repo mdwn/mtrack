@@ -134,11 +134,22 @@ struct Aimed(&'static str, u16, u16);
 /// takes whichever solution lies inside its tilt range with the pan
 /// nearest where it was (both ranges ±270° / ±135° here).
 ///
+/// M1 and M2 come from a GDTF whose lens hangs 0.41 m below the mount
+/// (yoke −0.1, head −0.25, lens −0.06) and swings with the head, so they
+/// are aimed from the lens (design §18.6): a first solve from the mount,
+/// then the lens moved to that pose and the solve repeated until it
+/// settles. M3 and M4 are hand-written types with no rig, aimed from the
+/// mount.
+///
 /// t = 1 s, every mover on the drummer (0, 2.8, 1.4):
-/// - M1 at (−2, 3.5, 4.2) yawed 180°: d = (2, −0.7, −2.8); the yaw flips
-///   x and y → (−2, 0.7, −2.8), unit (−0.5675, 0.1986, −0.7994).
-///   tilt = acos(0.7994) = 37.12°, pan = atan2(0.5675, 0.1986) = 70.71°.
-///   Pan → (340.71/540)·65535 = 41349; tilt → (172.12/270)·65535 = 41777.
+/// - M1 at (−2, 3.5, 4.2) yawed 180°. From the mount: d = (2, −0.7, −2.8);
+///   the yaw flips x and y → (−2, 0.7, −2.8), unit (−0.5675, 0.1986,
+///   −0.7994); tilt = acos(0.7994) = 37.12°, pan = atan2(0.5675, 0.1986)
+///   = 70.71°. The pan does not move with the lens (the lens stays in the
+///   pan's plane); the lens at that pose sits at (−1.963, 3.487, 3.805),
+///   0.395 m lower and a little nearer, and from there the drummer is at
+///   tilt 40.86°. Pan → (340.71/540)·65535 = 41349;
+///   tilt → (175.86/270)·65535 = 42684.
 /// - M2 mirrors M1 in x: pan −70.71° → 24186, tilt the same.
 /// - M3 at (0, 0.5, 3) pitched 30° about X: d = (0, 2.3, −1.6);
 ///   Rxᵀ(30°): y' = 2.3cos30 − 1.6sin30 = 1.192, z' = −2.3sin30 − 1.6cos30
@@ -152,8 +163,8 @@ struct Aimed(&'static str, u16, u16);
 ///   pan = atan2(−0.4052, 0.7407) = −28.68° → 29287.
 ///
 /// t = 4 s, every mover on the singer (0.4, 0.9, 1.6):
-/// - M1: pan 42.71° → 37951, tilt 53.69° → 45800.
-/// - M2: pan −31.61° → 28932, tilt 49.58° → 44802.
+/// - M1: pan 42.71° → 37951; from the lens, tilt 57.55° → 46736.
+/// - M2: pan −31.61° → 28932; from the lens, tilt 53.61° → 45780.
 /// - M3: d = (0.4, 0.4, −1.4); Rxᵀ(30°): y' = 0.4cos30 − 1.4sin30 =
 ///   −0.354, z' = −0.4sin30 − 1.4cos30 = −1.412; the singer is behind the
 ///   pitched frame's horizon, so the principal solution is pan
@@ -172,14 +183,14 @@ struct Aimed(&'static str, u16, u16);
 fn expected_pointing() -> [Vec<Aimed>; 3] {
     [
         vec![
-            Aimed("M1", 41349, 41777),
-            Aimed("M2", 24186, 41777),
+            Aimed("M1", 41349, 42684),
+            Aimed("M2", 24186, 42684),
             Aimed("M3", 32768, 38878),
             Aimed("M4", 29287, 46750),
         ],
         vec![
-            Aimed("M1", 37951, 45800),
-            Aimed("M2", 28932, 44802),
+            Aimed("M1", 37951, 46736),
+            Aimed("M2", 28932, 45780),
             Aimed("M3", 38656, 27742),
             Aimed("M4", 33335, 43630),
         ],
@@ -485,8 +496,8 @@ fn the_evaluator_reports_the_same_cells_as_the_wire() {
 /// only the spec's definitions of the axes.
 #[test]
 fn the_rig_kinematics_send_the_beam_where_the_pointing_math_aims() {
-    use crate::lighting::effects::{aim_solutions, direction, Pose};
-    use crate::lighting::gdtf::{beam_direction, distill_rig, parse_description};
+    use crate::lighting::effects::{direction, Pose};
+    use crate::lighting::gdtf::{beam_direction, beam_ray, distill_rig, parse_description};
 
     let description = parse_description(SYNTHETIC_DESCRIPTION).unwrap();
     let rig = distill_rig(&description, "Mover 16bit", &Default::default()).unwrap();
@@ -511,7 +522,9 @@ fn the_rig_kinematics_send_the_beam_where_the_pointing_math_aims() {
     }
 
     // And the golden venue's movers at the drummer, through the joints
-    // and the mounting.
+    // and the mounting, from the lens: the ray the joints produce passes
+    // through the drummer.
+    let calibration = crate::lighting::gdtf::aim_calibration(&rig).unwrap();
     let drummer = [0.0, 2.8, 1.4];
     let mountings: [([f64; 3], [f64; 3]); 3] = [
         ([-2.0, 3.5, 4.2], [0.0, 0.0, 180.0]),
@@ -519,21 +532,29 @@ fn the_rig_kinematics_send_the_beam_where_the_pointing_math_aims() {
         ([3.0, 2.0, 4.0], [0.0, 20.0, 90.0]),
     ];
     for (position, rotation) in mountings {
-        let d = [
-            drummer[0] - position[0],
-            drummer[1] - position[1],
-            drummer[2] - position[2],
-        ];
-        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        for pose in aim_solutions(position, rotation, drummer) {
-            let local = beam_direction(&rig, pose.pan, pose.tilt).unwrap();
-            let stage = crate::lighting::effects::out_of_frame(rotation, local);
-            for i in 0..3 {
-                assert!(
-                    (stage[i] - d[i] / len).abs() < 1e-9,
-                    "{position:?} {rotation:?} {pose:?}: rig beam {stage:?}, target {d:?}"
-                );
-            }
+        for pose in calibration.aim_solutions(position, rotation, drummer) {
+            let (lens, local) = beam_ray(&rig, pose.pan, pose.tilt).unwrap();
+            let lens = crate::lighting::effects::out_of_frame(rotation, lens);
+            let dir = crate::lighting::effects::out_of_frame(rotation, local);
+            let from = [
+                position[0] + lens[0],
+                position[1] + lens[1],
+                position[2] + lens[2],
+            ];
+            let d = [
+                drummer[0] - from[0],
+                drummer[1] - from[1],
+                drummer[2] - from[2],
+            ];
+            let along = d[0] * dir[0] + d[1] * dir[1] + d[2] * dir[2];
+            let miss = (0..3)
+                .map(|i| (d[i] - along * dir[i]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            assert!(
+                miss < 1e-6,
+                "{position:?} {rotation:?} {pose:?}: the rig's beam misses the drummer by {miss} m"
+            );
         }
     }
 }

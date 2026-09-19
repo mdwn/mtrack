@@ -1021,3 +1021,12 @@ Reading: a GDTF `Position` matrix is four rows with the translation in the fourt
 as this parser and Blender DMX (`Matrix(geometry.position.matrix)`) both read it; the
 yawed yoke is `Rz(−90°)` under that reading. The corpus check now aims through each rig's
 calibration and requires every calibrated rig to agree to 0.01°.
+
+Addendum (follow-ups, 2026-09-19): the calibration also carries the three translations of
+the chain — mount to pan joint, pan joint to tilt joint, tilt joint to lens — so the beam is
+aimed from the lens rather than the mounting point (`origin(pose)` in `AimCalibration`; the
+solve is repeated from the lens's position at the previous solution until it settles, four
+rounds being far more than a head's length over metres of throw needs). The plot's footprint
+starts from the lens too. And a song with no audio now ends when its last effect has run
+its course rather than when its last cue fires (`LightingTimeline::show_end`), bounded to
+the audio's length when there is audio so those songs end exactly as before.

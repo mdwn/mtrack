@@ -611,9 +611,8 @@ fn a_target_on_the_pan_axis_holds_the_current_pan() {
 fn a_pitched_lens_does_not_mistake_an_ordinary_target_for_the_pan_axis() {
     let mut fixture = mover("m", [0.0, 0.0, 4.0], [0.0; 3]);
     fixture.aim = Some(AimCalibration {
-        pre: AimCalibration::IDENTITY.pre,
-        pan_offset: 0.0,
         tilt_offset: 30.0,
+        ..AimCalibration::IDENTITY
     });
     // 1 m to stage-right of straight down: a joint tilt of 14.04°, a
     // channel tilt of −15.96° (the lens pitch is more than the joint
