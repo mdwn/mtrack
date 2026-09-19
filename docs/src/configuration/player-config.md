@@ -162,6 +162,13 @@ dmx:
   # them back into line.
   playback_delay: 500ms
 
+  # (Optional) The port of olad's web server, which is not olad's streaming port. mtrack asks it,
+  # at startup and on every reload, whether each universe below has an output port patched to it,
+  # and warns when one does not — olad silently drops frames for a universe nothing is patched to.
+  # Defaults to 9090. Nothing on the output path depends on this; if olad's web server is off, the
+  # check is skipped.
+  ola_http_port: 9090
+
   # Universes here map OLA universe numbers into light show names.
   universes:
   # Any songs with a light show with a universe_name "light-show" will be played on OLA universe 1.

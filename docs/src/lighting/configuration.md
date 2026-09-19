@@ -185,6 +185,11 @@ listing nothing means mtrack's frames are going nowhere, however healthy the con
 Patch your output port to each universe the profile drives (`ola_patch -d <device> -p <port> -u
 1`, or the olad web UI) before expecting light.
 
+mtrack checks this for you: at startup and on every config reload it asks olad's web server
+(port 9090 by default, `dmx.ola_http_port`) about each universe under `dmx.universes`, and warns
+for any that has no output port patched. The check runs off the output path and never delays or
+blocks DMX; if olad's web server is unreachable, it is skipped silently.
+
 ### Rich channel definitions (`*.fixture`)
 
 When a fixture has no GDTF — the manual is all you have — a `.fixture` file can describe
