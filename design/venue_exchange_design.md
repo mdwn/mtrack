@@ -1100,3 +1100,18 @@ Run over the 46 archives in the local corpus (ignored tier) it reports 25 clean;
 break rules the wild treats as advice (`.` and `[]` in mode names, empty `Offset` for
 virtual channels, repeated `NoFeature` channel names — the last two the checker now
 allows, having learned them there).
+
+## 20. OFL import: not built (decided 2026-09-20)
+
+The Open Fixture Library was the optional P2 item (§13). Looked at again after §19: OFL is
+MIT-licensed and broad, but it cannot export GDTF — GDTF is an import format for it — so
+an OFL fixture can only reach mtrack through OFL's own JSON, and that JSON sits at exactly
+the level of the `.fixture` DSL (channels, capability types, a few physical facts, no
+geometry). An importer would be a second import format to maintain for output no richer
+than a hand-written file, for fixtures that increasingly have manufacturer GDTFs anyway.
+
+**Decision:** no OFL importer. The translation is documented as a recipe
+(`configuration.md`, "From an Open Fixture Library definition") with the capability-to-
+channel mapping, and an agent working through mtrack's MCP tools can perform it from OFL's
+JSON export. Manufacturer GDTF first, hand-written or agent-written `.fixture` second,
+mtrack never modelling fixtures itself.
