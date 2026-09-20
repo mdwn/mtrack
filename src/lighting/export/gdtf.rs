@@ -729,7 +729,7 @@ mod tests {
         assert_eq!(bar.footprint(), 10);
         let xml = description(bar).unwrap();
         strict(&xml);
-        assert!(xml.contains("<GeometryReference Name=\"2\" Geometry=\"Cell\" Position=\"{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}\">\n          <Break DMXBreak=\"1\" DMXOffset=\"4\"/>"), "{xml}");
+        assert!(xml.contains("<GeometryReference Name=\"2\" Geometry=\"Cell\" Position=\"{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}\">\n          <Break DMXBreak=\"1\" DMXOffset=\"4\"/>"), "expected text missing from the description");
         let description = gdtf::parse_archive(&generate(bar).unwrap()).unwrap();
         let back = gdtf::distill(&description, MODE_NAME, "Bar")
             .unwrap()
@@ -765,7 +765,7 @@ mod tests {
         strict(&xml);
         assert!(
             xml.contains("<FixtureType Name=\"Wash_ Front 1_2\" ShortName=\"WF12\""),
-            "{xml}"
+            "expected text missing from the description"
         );
         // The archive's name is held to what a console's filesystem takes,
         // which is stricter than the spec's Name charset.
@@ -811,15 +811,15 @@ mod tests {
             xml.contains(
                 "Name=\"Shutter1Strobe\" Pretty=\"shutter1 strobe\" Feature=\"Control.Control\""
             ),
-            "{xml}"
+            "expected text missing from the description"
         );
         assert!(
             xml.contains("Name=\"Shutter1Strobe2\" Pretty=\"Strobe1\" MainAttribute=\"Shutter1\""),
-            "{xml}"
+            "expected text missing from the description"
         );
         assert!(
             xml.contains("Attribute=\"Shutter1Strobe2\" DMXFrom=\"16/1\""),
-            "{xml}"
+            "expected text missing from the description"
         );
         assert!(gdtf::strict::check(&xml).is_empty());
     }

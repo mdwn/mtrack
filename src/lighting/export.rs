@@ -30,7 +30,7 @@
 
 pub mod gdtf;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -183,6 +183,7 @@ pub fn export_mvr_bytes(
     // library archives called Spot.gdtf in different directories are two
     // entries, the second's name disambiguated.
     let mut entries: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut taken: BTreeSet<String> = BTreeSet::new();
     let mut entry_of_source: HashMap<String, String> = HashMap::new();
     let mut gdtf_of: HashMap<&str, (String, String)> = HashMap::new();
     let mut embedded = Vec::new();
@@ -218,7 +219,7 @@ pub fn export_mvr_bytes(
                                 format!("GDTF path \"{}\" has no file name", source.path)
                             })?;
                         let entry =
-                            place(wanted.clone(), source_key, &entries, &mut entry_of_source);
+                            place(wanted.clone(), source_key, &mut taken, &mut entry_of_source);
                         if entry != wanted {
                             warnings.push(format!(
                                 "two library archives are called {wanted}; {} is embedded as {entry}",
@@ -238,7 +239,7 @@ pub fn export_mvr_bytes(
                     Some(entry) => entry.clone(),
                     None => {
                         let wanted = gdtf::archive_name(fixture_type);
-                        let entry = place(wanted, source_key, &entries, &mut entry_of_source);
+                        let entry = place(wanted, source_key, &mut taken, &mut entry_of_source);
                         entries.insert(entry.clone(), gdtf::generate(fixture_type)?);
                         generated.insert(entry.clone(), type_name.to_string());
                         warnings.push(format!(
@@ -313,20 +314,23 @@ fn output_path(options: &MvrExportOptions) -> Result<String, Box<dyn Error>> {
 }
 
 /// A zip entry name for a source: the wanted name, or the first free
-/// `(n)` variant when another source already took it.
+/// `(n)` variant when another source already took it. Decided against the
+/// names taken so far, not the archive map: a name is a name, whatever
+/// bytes sit under it.
 fn place(
     wanted: String,
     source_key: String,
-    entries: &BTreeMap<String, Vec<u8>>,
+    taken: &mut BTreeSet<String>,
     entry_of_source: &mut HashMap<String, String>,
 ) -> String {
     let mut name = wanted.clone();
     let mut n = 1;
-    while entries.contains_key(&name) {
+    while taken.contains(&name) {
         n += 1;
         let stem = wanted.strip_suffix(".gdtf").unwrap_or(&wanted);
         name = format!("{stem} ({n}).gdtf");
     }
+    taken.insert(name.clone());
     entry_of_source.insert(source_key, name.clone());
     name
 }
