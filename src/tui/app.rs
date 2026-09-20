@@ -101,7 +101,7 @@ impl App {
 
         if let Some(current) = playlist.current() {
             self.current_song_name = current.name().to_string();
-            self.current_song_duration = current.duration();
+            self.current_song_duration = current.length();
             self.current_song_tracks = current
                 .tracks()
                 .iter()

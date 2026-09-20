@@ -141,6 +141,9 @@ pub struct Song {
     light_shows: Vec<LightShow>,
     /// The DSL lighting shows (resolved to absolute paths)
     dsl_lighting_shows: Vec<DslLightingShow>,
+    /// When the song's lighting is over — the last effect's real end across
+    /// its shows — which is how long a song with no audio plays.
+    lighting_end: Duration,
     /// The number of channels required to play this song.
     num_channels: u16,
     /// The sample rate of this song.
@@ -271,6 +274,7 @@ impl Song {
             midi_event: config.midi_event()?,
             midi_playback,
             light_shows,
+            lighting_end: lighting_end(&dsl_lighting_shows),
             dsl_lighting_shows,
             num_channels,
             sample_rate,
@@ -516,6 +520,7 @@ impl Song {
             config_path: Some(song_directory.join("song.yaml")),
             midi_playback,
             light_shows,
+            lighting_end: lighting_end(&dsl_lighting_shows),
             dsl_lighting_shows,
             beat_grid,
             tracks,
@@ -608,9 +613,21 @@ impl Song {
         self.sample_format
     }
 
-    /// Gets the duration of the song.
+    /// Gets the duration of the song's audio: zero for a song with none.
     pub fn duration(&self) -> Duration {
         self.duration
+    }
+
+    /// How long the song plays: its audio's duration, or, for a song with no
+    /// audio, when its last lighting effect ends — which is when the DMX
+    /// engine ends such a song. This is what a progress bar and a seek
+    /// bound want; the audio pipeline keeps sizing itself by [`Self::duration`].
+    pub fn length(&self) -> Duration {
+        if self.duration.is_zero() {
+            self.lighting_end
+        } else {
+            self.duration
+        }
     }
 
     /// Gets the number of channels.
@@ -1028,6 +1045,22 @@ impl fmt::Display for Song {
     }
 }
 
+/// When the last effect of any of the song's lighting shows ends, by the
+/// timeline's own reckoning (a `clear` or a `stop sequence` cuts a show
+/// short).
+fn lighting_end(shows: &[DslLightingShow]) -> Duration {
+    shows
+        .iter()
+        .map(|dsl| {
+            crate::lighting::timeline::LightingTimeline::new(
+                dsl.shows().values().cloned().collect(),
+            )
+            .show_end()
+        })
+        .max()
+        .unwrap_or(Duration::ZERO)
+}
+
 impl Default for Song {
     fn default() -> Self {
         Self {
@@ -1038,6 +1071,7 @@ impl Default for Song {
             midi_playback: Default::default(),
             light_shows: Vec::new(),
             dsl_lighting_shows: Vec::new(),
+            lighting_end: Duration::ZERO,
             num_channels: Default::default(),
             sample_rate: Default::default(),
             sample_format: SampleFormat::Int,
@@ -4029,5 +4063,34 @@ pilot:
         let proto = song.to_proto().unwrap();
         assert_eq!(proto.sections[0].start_beat, None);
         assert_eq!(proto.sections[0].end_beat, None);
+    }
+
+    /// A song with no audio is as long as its lighting: the last effect's
+    /// real end, a `clear` counted. With audio, the audio decides.
+    #[test]
+    fn a_song_with_no_audio_is_as_long_as_its_lighting() {
+        use std::time::Duration;
+        let shows = crate::lighting::parser::parse_light_shows(
+            "show \"s\" {\n    @00:00.000\n    spots: static red: 100%, duration: 30s\n    \
+             @00:12.000\n    clear()\n}\n",
+        )
+        .unwrap();
+        let dsls = vec![super::DslLightingShow {
+            file_path: PathBuf::from("show.light"),
+            shows,
+        }];
+        let song = super::Song {
+            lighting_end: super::lighting_end(&dsls),
+            dsl_lighting_shows: dsls,
+            ..Default::default()
+        };
+        assert_eq!(song.duration(), Duration::ZERO, "no audio");
+        assert_eq!(song.length(), Duration::from_secs(12));
+
+        let with_audio = super::Song {
+            duration: Duration::from_secs(200),
+            ..song
+        };
+        assert_eq!(with_audio.length(), Duration::from_secs(200));
     }
 }

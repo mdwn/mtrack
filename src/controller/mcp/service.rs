@@ -1030,8 +1030,8 @@ impl McpServer {
             "name": song.name(),
             "base_path": song.base_path().display().to_string(),
             "config_path": song.config_path().map(|p| p.display().to_string()),
-            "duration": format_duration(song.duration()),
-            "duration_seconds": song.duration().as_secs_f64(),
+            "duration": format_duration(song.length()),
+            "duration_seconds": song.length().as_secs_f64(),
             "num_channels": song.num_channels(),
             "loop_playback": song.loop_playback(),
             "has_midi_playback": song.midi_playback().is_some(),
@@ -3128,7 +3128,7 @@ pub(crate) fn song_summary(song: &crate::songs::Song) -> Value {
         .collect();
     json!({
         "name": song.name(),
-        "duration": format_duration(song.duration()),
+        "duration": format_duration(song.length()),
         "tracks": tracks,
         "sections": sections,
     })

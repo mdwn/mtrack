@@ -66,7 +66,8 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
 
 ![Dashboard](../images/dashboard.png)
 
-- **Playback card** — Play/stop/next/prev with a progress bar showing elapsed and total time.
+- **Playback card** — Play/stop/next/prev with a progress bar showing elapsed and total time
+  (for a song with no audio, the total is when its last lighting effect ends).
   Displays the currently playing song name. The progress bar is clickable: click anywhere to
   seek — while playing everything (audio, MIDI, lighting) restarts in sync at that position;
   while stopped the position is remembered and used by the next Play (shown as a marker on the

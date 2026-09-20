@@ -6,6 +6,7 @@ player state without requiring any external clients:
 
 - **Playlist panel**: Shows the current playlist with the selected song highlighted.
 - **Now Playing panel**: Displays the current song name, a progress bar with elapsed/total
+  (a song with no audio is as long as its lighting show)
   time, and the track listing.
 - **Fixtures panel**: Shows real-time fixture colors from the lighting engine (when DMX is
   configured).
