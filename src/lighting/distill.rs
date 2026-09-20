@@ -159,7 +159,7 @@ fn mesh_file_name(entry: &str, taken: &mut std::collections::HashSet<String>) ->
 
 /// Bumped whenever the distiller's output for the same source can change.
 /// Part of the cache key, so an upgrade regenerates every expansion.
-pub const DISTILLER_VERSION: u32 = 4;
+pub const DISTILLER_VERSION: u32 = 5;
 
 /// The cache's on-disk representation of a distilled fixture type.
 ///

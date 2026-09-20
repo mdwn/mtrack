@@ -982,9 +982,10 @@ A target on the pan axis (straight down or up) keeps the current pan.
    produced.
 3. **The harness check keeps its shape** but its expectation is written down as bytes
    from the hand derivation, not from `aim()`.
-4. **Blender DMX as an oracle, once, by hand**: load the corpus Viper into Blender DMX,
-   set the bytes our golden test expects for the drummer, and photograph the target. Not
-   automatable; one screenshot in the PR.
+4. **Blender DMX as an oracle**: `tools/blender-dmx-check.py` drives Blender DMX headless
+   — a real GDTF, the venue's mounting, mtrack's bytes — and reads the beam emitter's
+   world ray back from Blender's scene graph. Done 2026-09-20 for the Viper (hit, 0.1 mm at
+   5.9 m) and the MagicDot SX (which found the matrix reading above).
 
 ### 18.5 Decisions (settled 2026-09-19)
 
@@ -1017,10 +1018,22 @@ frame. A geometry that does not reduce — a tilt axis not perpendicular to the 
 lens outside the tilt plane — is logged and the plain convention stands in, so nothing is
 worse than before. The identity calibration is the common case and the `.fixture` case.
 
-Reading: a GDTF `Position` matrix is four rows with the translation in the fourth column,
-as this parser and Blender DMX (`Matrix(geometry.position.matrix)`) both read it; the
-yawed yoke is `Rz(−90°)` under that reading. The corpus check now aims through each rig's
-calibration and requires every calibrated rig to agree to 0.01°.
+Reading (corrected 2026-09-20): a GDTF `Position` matrix is four rows with the translation
+in the fourth column, and **the first three values of each row are a node axis** — the
+stored 3×3 is the transpose of the rotation that takes the node's frame into its parent's.
+That is how Blender DMX reads it (`to_3x3().inverted()` after `Matrix(position.matrix)`),
+how MVR's `{u}{v}{w}{o}` spelling is defined, and the only reading under which the
+corpus's rotated `Beam` geometries (the lenses of ROXX's `CLUSTER B4-FC` and `CLUSTER
+B2-FC` blinder bars, yawed 180°) send their light out of the fixture rather than back
+through it — a survey over every beam under a rotated geometry in the local corpus found
+those two fixtures deciding for this reading, three indifferent and none for the other. The first draft of this section read the rows as matrix rows
+and had the MagicDot's yoke as `Rz(−90°)`; aimed in Blender DMX with mtrack's bytes it
+missed the target by 3.4 m, while the Viper (identity rotations throughout) hit it to
+0.1 mm. The yoke is `Rz(+90°)`. The parser now reads every 4×4 this way, so the rig, the
+calibration, cell positions and the 3D view all follow; `RIG_VERSION` 2 and the distiller
+version bump regenerate the caches. The corpus check aims through each rig's calibration
+and requires every calibrated rig to agree to 0.01°, and `tools/blender-dmx-check.py`
+drives Blender DMX headless for the manufacturer's-renderer check on any fixture.
 
 Addendum (follow-ups, 2026-09-19): the calibration also carries the three translations of
 the chain — mount to pan joint, pan joint to tilt joint, tilt joint to lens — so the beam is

@@ -55,8 +55,11 @@ pub struct Description {
     pub thumbnail: Option<String>,
 }
 
-/// A 4×4 transform, row-major, as GDTF writes it: three rows of a rotation
-/// (and scale) with the translation in the fourth column, meters.
+/// A 4×4 transform as this crate uses it: `M · v` takes a point from the
+/// node's frame into its parent's, with the rotation's columns the node's
+/// axes and the translation in the fourth column, meters. Not quite as
+/// GDTF writes it: see [`parse_matrix`] for the reading of the file's
+/// rows, which is Blender DMX's.
 pub type Matrix4 = [[f64; 4]; 4];
 
 /// The identity transform.
@@ -511,9 +514,16 @@ impl Walk {
     }
 }
 
-/// Parses a GDTF matrix: four `{a,b,c,d}` rows, row-major, translation in
-/// the fourth column. Three-value rows (the MVR spelling, columns with the
-/// translation last) are accepted too, since exporters mix them up.
+/// Parses a GDTF matrix: four `{a,b,c,d}` rows with the translation in
+/// the fourth column — and the rotation read as Blender DMX reads it,
+/// which is the reading manufacturers' files have been drawn with for
+/// years: the first three values of each row are a node axis, so the
+/// stored 3×3 is the transpose of the rotation that takes the node's
+/// frame into its parent's (design §18.6). A yoke geometry stored as
+/// `{0,1,0,…}{-1,0,0,…}` is yawed +90°, not −90°; the Ayrton MagicDot SX
+/// aimed in Blender DMX with mtrack's bytes is what settled it. Three-
+/// value rows (the MVR spelling, basis vectors then the translation) are
+/// accepted too, since exporters mix them up; they read the same way.
 fn parse_matrix(text: &str) -> Option<Matrix4> {
     let mut rows: Vec<Vec<f64>> = Vec::with_capacity(4);
     let mut rest = text.trim();
@@ -533,6 +543,13 @@ fn parse_matrix(text: &str) -> Option<Matrix4> {
         let mut m = IDENTITY;
         for (i, row) in rows.iter().enumerate() {
             m[i].copy_from_slice(row);
+        }
+        // The stored rows are the node's axes: the rotation is their
+        // transpose. The translation stays in the fourth column.
+        for (r, c) in [(0, 1), (0, 2), (1, 2)] {
+            let (a, b) = (m[r][c], m[c][r]);
+            m[r][c] = b;
+            m[c][r] = a;
         }
         return Some(m);
     }
@@ -847,11 +864,16 @@ pub(super) mod tests {
     fn matrices_parse_in_both_spellings() {
         let gdtf = parse_matrix("{0.5,0.866,0,-0.047}{-0.866,0.5,0,0.027}{0,0,1,-0.001}{0,0,0,1}")
             .unwrap();
-        assert_eq!(gdtf[0][1], 0.866);
+        // The stored rows are the node's axes, so the rotation is their
+        // transpose; the translation is the fourth column as written.
+        assert_eq!(gdtf[0][1], -0.866);
+        assert_eq!(gdtf[1][0], 0.866);
         assert_eq!(gdtf[0][3], -0.047);
         assert_eq!(gdtf[1][3], 0.027);
         // The MVR column spelling lands the same numbers in the same cells.
-        let mvr = parse_matrix("{0.5,-0.866,0}{0.866,0.5,0}{0,0,1}{-0.047,0.027,-0.001}").unwrap();
+        // MVR's spelling writes the same axes as rows with the translation
+        // last: the same numbers read the same way in both.
+        let mvr = parse_matrix("{0.5,0.866,0}{-0.866,0.5,0}{0,0,1}{-0.047,0.027,-0.001}").unwrap();
         assert_eq!(mvr, gdtf);
         assert!(parse_matrix("{1,0,0}{0,1,0}").is_none());
         assert!(parse_matrix("{1,0,0,x}{0,1,0,0}{0,0,1,0}{0,0,0,1}").is_none());

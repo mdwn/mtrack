@@ -1347,10 +1347,10 @@ mod tests {
         assert_eq!(ft.cells()[5].channels["blue"].offset, 29);
         assert_eq!(ft.footprint(), 29);
         assert_eq!(ft.channel_defs()["red"].mirrors.len(), 5);
-        // Cell positions compose a rotated outer reference: Head1 turns
-        // local +x onto +y and sits at (−0.5, 0, 0.2), so P1 at local x
-        // 0.1 lands at (−0.5, 0.1, 0.2); Head2 is plain, so its P1 is at
-        // (0.6, 0, 0). The template's own Position (a decoy at 9, 9, 9)
+        // Cell positions compose a rotated outer reference: Head1's stored
+        // rows are its axes, its +x pointing along −y, and it sits at
+        // (−0.5, 0, 0.2), so P1 at local x 0.1 lands at (−0.5, −0.1, 0.2);
+        // Head2 is plain, so its P1 is at (0.6, 0, 0). The template's own Position (a decoy at 9, 9, 9)
         // is the reference's to replace and must not leak in.
         let offsets: Vec<(String, [f64; 3])> = ft
             .cells()
@@ -1359,7 +1359,7 @@ mod tests {
             .collect();
         let p1 = ft.cells()[0].offset;
         assert!(
-            (p1[0] + 0.5).abs() < 1e-9 && (p1[1] - 0.1).abs() < 1e-9 && (p1[2] - 0.2).abs() < 1e-9,
+            (p1[0] + 0.5).abs() < 1e-9 && (p1[1] + 0.1).abs() < 1e-9 && (p1[2] - 0.2).abs() < 1e-9,
             "{offsets:?}"
         );
         let p4 = ft.cells()[3].offset;

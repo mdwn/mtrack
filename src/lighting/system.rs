@@ -937,7 +937,7 @@ mod tests {
             .aim()
             .expect("a rig gives a calibration");
         assert!(!yawed.frame_is_identity(), "{yawed:?}");
-        assert!((yawed.pre[1][0] + 1.0).abs() < 1e-6, "{yawed:?}");
+        assert!((yawed.pre[1][0] - 1.0).abs() < 1e-6, "{yawed:?}");
     }
 
     #[test]
