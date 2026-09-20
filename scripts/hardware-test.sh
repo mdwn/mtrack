@@ -104,13 +104,26 @@ if [[ "$SKIP_BUILD" != "true" ]]; then
     echo
 fi
 
-# Mirrors the harness's own release-then-debug lookup for the player: a
-# release-only machine running --no-build would otherwise fail with
-# no-such-file even though a perfectly good binary is present.
-if [[ -x "$PROJECT_ROOT/target/release/mtrack-harness" && "$SKIP_BUILD" == "true" ]]; then
-    HARNESS="$PROJECT_ROOT/target/release/mtrack-harness"
-else
-    HARNESS="$PROJECT_ROOT/target/debug/mtrack-harness"
+# The harness binary: what was just built, or under --no-build the newest of
+# debug and release — the same rule the harness applies to the player. It
+# used to prefer release whenever one existed, and on 2026-09-20 a two-day-old
+# release harness judged a fresh player by an expectation the design had since
+# replaced, and ran one check fewer than the code had; a plausible report
+# about the wrong judge. Its path and age are printed so that is visible.
+HARNESS="$PROJECT_ROOT/target/debug/mtrack-harness"
+if [[ "$SKIP_BUILD" == "true" ]]; then
+    newest=""
+    for candidate in "$PROJECT_ROOT/target/release/mtrack-harness" "$PROJECT_ROOT/target/debug/mtrack-harness"; do
+        [[ -x "$candidate" ]] || continue
+        if [[ -z "$newest" || "$candidate" -nt "$newest" ]]; then
+            newest="$candidate"
+        fi
+    done
+    [[ -n "$newest" ]] && HARNESS="$newest"
+fi
+if [[ -x "$HARNESS" ]]; then
+    harness_age=$(( ( $(date +%s) - $(stat -c %Y "$HARNESS") ) / 60 ))
+    echo "  harness: $HARNESS (${harness_age} minute(s) old)"
 fi
 
 # Pin the player to what this script just built. Under --no-build there is
