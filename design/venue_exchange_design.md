@@ -1110,27 +1110,32 @@ named as the function, so a console's encoder shows `open` / `strobe` rather tha
 values. `movement { max_pan_speed }` becomes `RealFade` on the pan function (travel ÷
 speed), likewise tilt: GDTF's home for it after all, the grammar comment notwithstanding.
 
-**Geometry** (`Models`, `Geometries`). What the type implies, in the conventions §18
-adopted (hanging, pan about Z, tilt about X, beam down −Z), with nominal sizes since the
-DSL carries none:
+**Geometry** (`Models`, `Geometries`). Structure, not a model. mtrack is not a fixture
+modelling tool and must not pretend to be one: a hand-written type carries no dimensions,
+no photometry and no meshes, and the export must not invent any. What GDTF needs to make
+the *channels* meaningful is structure — which geometry a channel sits on, which axis pan
+turns — and that the type does imply:
 
-- A static type: `Body` (0.3 m cube) with a `Beam` child at its face, `BeamType="Wash"`,
-  `BeamAngle="25"`.
-- A type with pan or tilt: `Base` → `Axis "Yoke"` → `Axis "Head"` → `Beam "Lens"`, offsets
-  0.1 / 0.25 / 0.06 m down the chain (the synthetic mover's), `BeamType="Spot"`,
-  `BeamAngle="20"`; pan channels sit on `Yoke`, tilt on `Head`. mtrack's own rig distiller
-  then yields a four-node rig with pan and tilt axes, and the calibration of §18.6 comes
-  out the identity with the lens offset — so a native mover exported and re-imported is
-  aimed exactly as it was.
+- A static type: `Body` with a `Beam` child at the origin. No `Model` sizes, no beam
+  attributes: the spec's own defaults apply, and the file says nothing mtrack does not
+  know.
+- A type with pan or tilt: `Base` → `Axis "Yoke"` → `Axis "Head"` → `Beam "Lens"`, every
+  transform the identity; pan channels on `Yoke`, tilt on `Head`. That is the one shape the
+  spec defines for the attributes (hanging, pan about Z, tilt about X, beam down −Z — §18),
+  and it is what lets a console move the fixture and mtrack's own rig distiller aim it
+  (the §18.6 calibration comes out the identity, lens at the mount).
 - A type with cells: the body's own channels on `Body`; one top-level template geometry
   `Cell` carrying the cell channels as template channels; one `GeometryReference` per
-  cell, named as the cell, at the cell's offset, with `<Break DMXBreak="1" DMXOffset=…>`
-  from the cell's first channel — the structure §17.2's distiller reads back into the
-  same cells. Mirrors are never written directly: a native type's mirrors only ever come
+  cell, named as the cell, with `<Break DMXBreak="1" DMXOffset=…>` from the cell's first
+  channel — the structure §17.2's distiller reads back into the same cells. The
+  reference's `Position` carries the cell's authored offset, which *is* in the DSL (`cell
+  "1" at (x, y, z)`) and is the one physical fact a native type states; nothing else is
+  positioned. Mirrors are never written directly: a native type's mirrors only ever come
   from its cells, and a referential type's from its archive.
 
-Beam angle, body size, lamp data and colour primaries per fixture are not in the DSL and
-are not added by this phase; the nominal values are stated in the `Revisions` note.
+The `Revisions` note and the export report both say the file has no physical model and
+point at the way to get one: the manufacturer's GDTF, imported with `import-gdtf`. Sizes,
+beam angles, lamp data and primaries stay out of the DSL and out of this phase.
 
 ### 19.4 Surfaces
 
@@ -1164,7 +1169,7 @@ The spec is the oracle, not the parser. Three layers:
    identity calibration; export → MVR → import merges with nothing changed (the existing
    corpus round trip, plus the native case).
 
-Manual, once: open a generated mover in Blender DMX and see it patch, move and draw.
+Manual, once: open a generated mover in Blender DMX and see it patch and move.
 
 ### 19.6 Slices
 
@@ -1179,8 +1184,10 @@ Manual, once: open a generated mover in Blender DMX and see it patch, move and d
    manufacturer's name from a lossy distillation.
 2. **Annex B attributes for everything mtrack canonicalises; PascalCase under
    `Control.Control` for the rest.** No invented attribute semantics.
-3. **Geometry is synthesised from what the type implies**, with nominal sizes stated in
-   the file, and no new DSL surface for sizes, beam angles or primaries in this phase.
+3. **Geometry is structure only, never a model.** The axis and beam nodes the channels
+   need, at identity transforms, plus the cell offsets the DSL already states; no sizes,
+   angles, lamp data or primaries invented, and no DSL surface added for them. A physical
+   model is the manufacturer's GDTF, imported.
 4. **Cells export as template geometry plus references; mirrors are never written
    directly.**
 5. **`movement` limits export as `RealFade`.**
