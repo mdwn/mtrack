@@ -222,7 +222,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
 
             (
                 current_song.name().to_string(),
-                current_song.duration().as_millis() as u64,
+                current_song.length().as_millis() as u64,
                 tracks,
                 beat_grid,
                 current_song.loop_playback(),

@@ -55,11 +55,11 @@ impl Player {
             .get_playlist()
             .current()
             .ok_or("Cannot seek: playlist is empty")?;
-        if position > song.duration() {
+        if position > song.length() {
             return Err(format!(
-                "Cannot seek to {:?}: beyond song duration {:?}",
+                "Cannot seek to {:?}: beyond song length {:?}",
                 position,
-                song.duration()
+                song.length()
             )
             .into());
         }
