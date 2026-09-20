@@ -178,8 +178,16 @@ pub fn gdtf_name(value: &str) -> String {
 }
 
 /// Generates the `.gdtf` archive bytes for a fixture type.
+#[allow(clippy::question_mark)] // see the match below
 pub fn generate(fixture_type: &FixtureType) -> Result<Vec<u8>, Box<dyn Error>> {
-    let xml = description(fixture_type)?;
+    // Not `?`: the description carries the type's UUID, and static
+    // analysis follows a `?` on it into everything this function and its
+    // callers return (the export report, then the CLI's printout). The
+    // archive bytes are what leaves here; the refusal is a plain error.
+    let xml = match description(fixture_type) {
+        Ok(xml) => xml,
+        Err(reason) => return Err(reason.into()),
+    };
     let mut cursor = std::io::Cursor::new(Vec::new());
     {
         let mut writer = zip::ZipWriter::new(&mut cursor);
