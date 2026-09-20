@@ -267,6 +267,52 @@ the cells instead says `per: cell` on the effect (`bars: chase pattern:
 linear, per: cell, duration: 10s`); see [Effects: Common Effect
 Parameters](effects.md#common-effect-parameters).
 
+### From an Open Fixture Library definition
+
+The [Open Fixture Library](https://open-fixture-library.org/) (OFL) describes thousands of
+fixtures at the level a manual does — channels, what each does, a few physical facts — under
+the MIT licence. It cannot produce a GDTF (GDTF is a format it imports, not one it exports),
+so an OFL fixture comes into mtrack the way a manual does: as a hand-written `.fixture`.
+The translation is mechanical, and an agent working through mtrack's MCP tools can do it
+from OFL's JSON export, at `https://open-fixture-library.org/<manufacturer>/<fixture>.json`.
+mtrack has no OFL importer of its own, and does not want one: the output is no richer than
+the file you would write, and where a manufacturer GDTF exists it is the better source.
+
+The mapping, from an OFL `mode` and its `availableChannels`:
+
+| OFL capability                                              | mtrack channel                                    |
+| ----------------------------------------------------------- | ------------------------------------------------- |
+| `Intensity`                                                 | `dimmer`                                          |
+| `ColorIntensity` with `color` Red / Green / Blue / White    | `red` / `green` / `blue` / `white`                |
+| … Amber / UV / Warm White / Cold White                      | `amber` / `uv` / `warm_white` / `cool_white`      |
+| `Pan`, `Tilt` (`angleStart`..`angleEnd`)                    | `pan`, `tilt` with `range <start>deg..<end>deg`   |
+| `ShutterStrobe` capabilities over `dmxRange`s               | `strobe` with a `function` per range: `open`, `closed`, `strobe a..b <speed>hz..<speed>hz` |
+| `ColorTemperature`                                          | `ct`                                              |
+| `Zoom`, `Focus`, `Iris`, `Prism`, `Frost`, `Effect`         | `zoom`, `focus`, `iris`, `prism`, `frost`, `effects` |
+| `WheelSlot` / `WheelRotation` on a gobo or colour wheel     | `gobo` (or a name of your own), one `function` per slot |
+| `NoFunction`, `Maintenance`                                 | leave out, or a name of your own                  |
+| a channel listed in `fineChannelAliases`                    | `fine <offset>` on its coarse channel             |
+| `matrix` pixels with `templateChannels`                     | one `cell` block per pixel, its offset from `physical.dimensions` and the matrix layout |
+
+Anything else keeps a name of your own. Offsets are the channel's 1-based position in the
+mode's `channels` list. For example, OFL's Chauvet SlimPAR Pro H USB in its 6-channel mode
+lists `Red, Green, Blue, Amber, White, UV`, each a `ColorIntensity`, so:
+
+```light
+# lighting/fixture_types/slimpar_pro_h.fixture
+fixture_type "SlimPAR Pro H USB" {
+  channel "red"   @ 1
+  channel "green" @ 2
+  channel "blue"  @ 3
+  channel "amber" @ 4
+  channel "white" @ 5
+  channel "uv"    @ 6
+}
+```
+
+OFL's `physical` block (dimensions, beam angle, lumens) has no home in a `.fixture`, which
+carries only what a show needs; the 3D view draws such a type as a stand-in.
+
 ## Venue Definitions (`lighting/venues/`)
 
 ```light
