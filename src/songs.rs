@@ -1045,20 +1045,21 @@ impl fmt::Display for Song {
     }
 }
 
-/// When the last effect of any of the song's lighting shows ends, by the
-/// timeline's own reckoning (a `clear` or a `stop sequence` cuts a show
-/// short).
+/// When the song's lighting ends, by the timeline's own reckoning: every
+/// show from every file merged into one timeline, exactly as the DMX
+/// engine plays them, so a `clear` in one file cuts an effect in another
+/// here as it does there. Computed when the song loads; a `.light` file
+/// edited while the song plays is picked up by the engine's hot reload,
+/// and by this on the next load of the song.
 fn lighting_end(shows: &[DslLightingShow]) -> Duration {
-    shows
+    let all: Vec<ParsedLightShow> = shows
         .iter()
-        .map(|dsl| {
-            crate::lighting::timeline::LightingTimeline::new(
-                dsl.shows().values().cloned().collect(),
-            )
-            .show_end()
-        })
-        .max()
-        .unwrap_or(Duration::ZERO)
+        .flat_map(|dsl| dsl.shows().values().cloned())
+        .collect();
+    if all.is_empty() {
+        return Duration::ZERO;
+    }
+    crate::lighting::timeline::LightingTimeline::new(all).show_end()
 }
 
 impl Default for Song {
@@ -4086,6 +4087,28 @@ pilot:
         };
         assert_eq!(song.duration(), Duration::ZERO, "no audio");
         assert_eq!(song.length(), Duration::from_secs(12));
+
+        // Files merge into one timeline as they do in playback: a clear in
+        // the outro file cuts the main file's bed.
+        let main = crate::lighting::parser::parse_light_shows(
+            "show \"main\" {\n    @00:00.000\n    spots: static red: 100%, duration: 30s\n}\n",
+        )
+        .unwrap();
+        let outro = crate::lighting::parser::parse_light_shows(
+            "show \"outro\" {\n    @00:10.000\n    clear()\n}\n",
+        )
+        .unwrap();
+        let two_files = vec![
+            super::DslLightingShow {
+                file_path: PathBuf::from("main.light"),
+                shows: main,
+            },
+            super::DslLightingShow {
+                file_path: PathBuf::from("outro.light"),
+                shows: outro,
+            },
+        ];
+        assert_eq!(super::lighting_end(&two_files), Duration::from_secs(10));
 
         let with_audio = super::Song {
             duration: Duration::from_secs(200),
