@@ -91,6 +91,7 @@ comments:
     files:
       - ^Makefile$
       - \.sh$
+      - \.py$
       - ^packaging/debian/(postinst|prerm|postrm)$
       - ^packaging/pi-gen/(config|stage-mtrack/EXPORT_IMAGE)$
       - \.toml$

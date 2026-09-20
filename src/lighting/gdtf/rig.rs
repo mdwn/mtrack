@@ -35,7 +35,7 @@ use super::GdtfError;
 
 /// Bumped whenever the rig distilled from the same source can change; part
 /// of the asset cache's file name, so an upgrade regenerates every rig.
-pub const RIG_VERSION: u32 = 1;
+pub const RIG_VERSION: u32 = 2;
 
 /// The deepest chain of geometry references followed. Real fixtures nest
 /// one level (cells in a head); a reference cycle is an attack, not a rig.
@@ -743,9 +743,11 @@ mod tests {
     const YOKE_YAWED: &str =
         r#"<Axis Name="Yoke" Model="Yoke" Position="{0,1,0,0}{-1,0,0,0}{0,0,1,-0.1}{0,0,0,1}">"#;
     const LENS_PLAIN: &str = r#"Position="{1,0,0,0}{0,1,0,0}{0,0,1,-0.06}{0,0,0,1}"/>"#;
-    /// A lens pitched 30° about X in the head: cos30 = 0.866, sin30 = 0.5.
+    /// A lens pitched +30° about X in the head, written as the file
+    /// writes it — the rows are the lens's axes: y = (0, cos30, sin30),
+    /// z = (0, −sin30, cos30).
     const LENS_PITCHED: &str =
-        r#"Position="{1,0,0,0}{0,0.866025,-0.5,0}{0,0.5,0.866025,-0.06}{0,0,0,1}"/>"#;
+        r#"Position="{1,0,0,0}{0,0.866025,0.5,0}{0,-0.5,0.866025,-0.06}{0,0,0,1}"/>"#;
     /// A lens yawed about Y: its beam leaves the tilt plane.
     const LENS_SKEWED: &str =
         r#"Position="{0.866025,0,0.5,0}{0,1,0,0}{-0.5,0,0.866025,-0.06}{0,0,0,1}"/>"#;
@@ -795,9 +797,10 @@ mod tests {
         assert_eq!(plain.tilt_to_lens, [0.0, 0.0, -0.06]);
 
         let yawed = aim_calibration(&mover_rig(YOKE_YAWED, LENS_PLAIN)).unwrap();
-        // Rz(−90°): local x is the parent's −y.
+        // Rz(+90°): the stored rows are the yoke's axes, so its x is the
+        // parent's +y — as Blender DMX turns it.
         assert!(
-            close(yawed.pre[0][1], 1.0) && close(yawed.pre[1][0], -1.0),
+            close(yawed.pre[0][1], -1.0) && close(yawed.pre[1][0], 1.0),
             "{yawed:?}"
         );
         assert!(close(yawed.pan_offset, 0.0) && close(yawed.tilt_offset, 0.0));
