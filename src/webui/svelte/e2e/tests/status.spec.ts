@@ -234,7 +234,6 @@ test.describe("Status Page", () => {
   test("a failed subsystem shows as an error in the nav health indicator", async ({
     page,
   }) => {
-    await page.goto("/#/");
     await page.route("**/api/status", async (route) => {
       const res = await route.fetch();
       const body = await res.json();
@@ -248,7 +247,13 @@ test.describe("Status Page", () => {
       await route.fulfill({ json: body });
     });
 
-    await page.goto("/#/status");
+    // A reload, not a hash navigation: the nav's health comes from the app's
+    // own status poller, a module-level singleton that a route change does not
+    // restart. Hash-navigating back left the indicator waiting for the next
+    // poll, and that poll is 5s apart — the same as the expect timeout, which
+    // made it a coin flip. Reloading with the route already installed means
+    // the poller's very first fetch is the failed one.
+    await page.reload();
     // The indicator carries its verdict in the class and the accessible label;
     // the label is what a person actually reads out.
     await expect(page.locator(".topnav__conn--error")).toBeVisible();
