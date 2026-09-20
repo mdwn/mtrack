@@ -20,8 +20,10 @@
 //! reapplied, so a re-import of the export merges into the same venue
 //! with nothing changed. A venue written by hand exports the first time.
 //! A native fixture type (a `.light` or hand-written `.fixture`) has no
-//! GDTF to embed, so one is generated — one mode, the channel definitions,
-//! no models — enough for the console to patch it (see [`gdtf`]).
+//! GDTF to embed, so one is generated — one mode, its channels and cells
+//! with the spec's attribute definitions, no physical model — valid by
+//! the spec's rules, so a console patches it and groups its encoders
+//! (see [`gdtf`]).
 //!
 //! Everything is resolved before anything is written; a refused export
 //! leaves the project untouched.
@@ -235,13 +237,13 @@ pub fn export_mvr_bytes(
                 let entry = match entry_of_source.get(&source_key) {
                     Some(entry) => entry.clone(),
                     None => {
-                        let wanted = format!("mtrack_{}.gdtf", fixture_filename_stem(type_name));
+                        let wanted = gdtf::archive_name(fixture_type);
                         let entry = place(wanted, source_key, &entries, &mut entry_of_source);
                         entries.insert(entry.clone(), gdtf::generate(fixture_type)?);
                         generated.insert(entry.clone(), type_name.to_string());
                         warnings.push(format!(
-                            "fixture type \"{type_name}\" has no GDTF; a minimal one ({entry}) was \
-                             generated with its channels and no models"
+                            "fixture type \"{type_name}\" has no GDTF; one ({entry}) was generated \
+                             with its channels and cells and no physical model"
                         ));
                         entry
                     }
@@ -785,7 +787,7 @@ mod tests {
         assert_eq!(
             report
                 .generated_gdtfs
-                .get("mtrack_par.gdtf")
+                .get("mtrack@Par.gdtf")
                 .map(String::as_str),
             Some("Par")
         );
@@ -804,7 +806,7 @@ mod tests {
         let scene = mvr::parse_archive(&exported).unwrap();
         let left = scene.fixtures.iter().find(|f| f.name == "Left").unwrap();
         assert_eq!(left.layer, "front");
-        assert_eq!(left.gdtf_spec.as_deref(), Some("mtrack_par.gdtf"));
+        assert_eq!(left.gdtf_spec.as_deref(), Some("mtrack@Par.gdtf"));
         assert_eq!(left.gdtf_mode.as_deref(), Some(gdtf::MODE_NAME));
         let (rotation, exact) = left.matrix.unwrap().rotation_degrees();
         assert!(exact);
@@ -814,7 +816,7 @@ mod tests {
         assert!(spare.matrix.is_none());
 
         // The generated GDTF distills back to the same channels.
-        let gdtf_bytes = mvr::read_gdtf_entry(&exported, "mtrack_par.gdtf").unwrap();
+        let gdtf_bytes = mvr::read_gdtf_entry(&exported, "mtrack@Par.gdtf").unwrap();
         let description = crate::lighting::gdtf::parse_archive(&gdtf_bytes).unwrap();
         let distilled =
             crate::lighting::gdtf::distill(&description, gdtf::MODE_NAME, "Par").unwrap();

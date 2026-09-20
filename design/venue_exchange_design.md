@@ -1031,166 +1031,59 @@ starts from the lens too. And a song with no audio now ends when its last effect
 its course rather than when its last cue fires (`LightingTimeline::show_end`), bounded to
 the audio's length when there is audio so those songs end exactly as before.
 
-## 19. P4 in detail: GDTF export proper (draft 1, 2026-09-19)
+## 19. GDTF export: what MVR export needs, and no more (decided 2026-09-19)
 
-### 19.1 Where export stands
+### 19.1 The question
 
-P2-3 shipped MVR export. A referential fixture type is embedded as its archive, byte for
-byte; a native one — written by hand in a `.fixture` or `.light` file — gets a generated
-GDTF: one mode, its channels, a box body, nothing else (§16.4). That was the seed of this
-phase, and it is enough for a console to patch the fixture. It is not enough for anything
-else, and it is not valid GDTF:
+P2-3's MVR export embeds a generated GDTF for every native fixture type — a hand-written
+`.light` or `.fixture` — so that a console can patch the venue. A phase of "GDTF export
+proper" was drafted: a spec-valid generator with synthesised mover geometry, cells,
+defaults, an `export-gdtf` command and MCP tool, and a strictness checker as the oracle.
 
-- Every attribute is filed under `Feature="Control.Control"`, with no activation groups,
-  the wrong physical units, and no colour primaries, so a console puts pan, dimmer and red
-  in one encoder bank and previz has no gamut.
-- `Shutter1Strobe` and `Shutter1StrobeRandom` are referenced but never declared; every
-  channel's `InitialFunction` points at a function name that does not exist once the
-  channel has functions. Both are dangling node links.
-- A mover has no `Axis` or `Beam` geometry, so nothing can move it or draw its beam; a
-  hand-written pixel bar's cells are not written at all, so it exports as one colour.
-- DMX values are written pre-shifted in byte-mirroring notation; `Default` equals
-  `DMXFrom` everywhere, so "home" puts a mover at the end of its pan travel.
-- Names are only XML-escaped, not held to GDTF's `Name` charset (`.` and `,` are the
-  node-path and matrix separators); `ShortName` can be empty; there are no `Revisions`;
-  the archive is a lone `description.xml` named `mtrack_<stem>.gdtf`.
+### 19.2 The decision
 
-None of this is caught by tests because mtrack's own parser is lenient by design (§5): it
-requires a `FixtureType` with a name and little else, so a round trip through it proves
-only that mtrack can read what mtrack wrote.
+**mtrack is not a fixture-modelling tool, and will not become one.** A standalone GDTF
+export is a fixture-profile authoring surface; consoles have their own, and the right file
+for any fixture is the manufacturer's, from GDTF-Share, imported. Synthesising geometry —
+yoke offsets, beam angles, body sizes — would be mtrack inventing physical facts about a
+fixture it knows nothing physical about. Neither is wanted.
 
-### 19.2 What "proper" means here
+What *is* wanted is that the GDTF embedded in an exported MVR is valid, so a strict console
+does not reject the venue. Before this the generated file was patchable but not valid GDTF:
+every attribute under one `Control` feature, two strobe attributes referenced but never
+declared, every channel's `InitialFunction` a dangling link, DMX values in the wrong byte
+notation, a mover homed at the end of its pan travel, a hand-written pixel bar's cells
+dropped so the footprint was wrong, names unchecked against the spec's charset, no
+revision. And mtrack's own parser, lenient by design (§5), could not tell.
 
-A native fixture type exports as a GDTF that a console or previsualiser accepts and makes
-sense of: patchable, movable, drawable, with the manufacturer's attribute semantics where
-mtrack knows them. The measure is the spec, not our parser.
+So the scope is a **validity fix on the existing generator**, nothing more:
 
-What it does not mean: recovering what import threw away. A referential type's archive is
-the only complete description of it — wheels, channel sets, emitters, meshes, every other
-mode, the manufacturer's own identifiers — and none of that survives distillation (§5,
-§2 "fixture sourcing"). So:
+- Annex B attribute definitions for every channel mtrack canonicalises (feature groups,
+  activation groups, physical units, CIE primaries, `Shutter1Strobe`/`StrobeRandom`
+  declared with their main attribute); custom channels stay PascalCase under
+  `Control.Control`.
+- `InitialFunction` names the real first function; DMX values in byte-mirroring notation
+  on the coarse byte; a gap between authored function ranges filled with a `NoFeature`
+  function (and the distiller reads one as a gap, `DISTILLER_VERSION` 4); `Default` and
+  `Highlight` with intent (dimmer and colour dark at home and full when highlighted, pan
+  and tilt at the centre of travel, a shutter on `open`).
+- Cells as a template geometry plus one `GeometryReference` per cell with its `Break`
+  offset and the cell's authored position — the one physical fact the DSL states — so the
+  footprint is the whole bar and the cells come back on import. Mirrors are never written
+  directly.
+- Names held to the spec's charset, a non-empty `ShortName`, a `Revisions` entry saying
+  the file has no physical model and where to get one, the archive named `mtrack@<Name>`.
+- **No geometry beyond a body**: no axes, no beam, no models, no sizes. A console patches
+  and controls the fixture; it does not move a picture of it. The file says so.
+- **No `export-gdtf` surface.** A referential type is embedded as its archive, as before.
 
-- **A referential type exports as its archive**, copied, as today. It is committed under
-  `lighting/library/`, so a missing archive is a broken project, and export **refuses**
-  rather than regenerating a lesser file under the manufacturer's name.
-- **A native type is regenerated**, properly. The generator is the whole of this phase,
-  and MVR export embeds what it produces, so both surfaces improve together.
+### 19.3 Verification
 
-### 19.3 The generated GDTF
-
-**Identity.** `Name` and `ShortName` held to the spec's `Name` charset (offending
-characters become `_`; an empty short name falls back to the initials, then `FT`);
-`Manufacturer="mtrack"`; `FixtureTypeID` the stable UUID as now; `Thumbnail` unset;
-`Revisions` carrying one entry, "Generated by mtrack <version> from <file>", dated. The
-archive is named `mtrack@<Name>.gdtf` per the spec's convention.
-
-**Attributes** (`AttributeDefinitions`). Every channel mtrack canonicalises on import gets
-its Annex B definition back on export: `Dimmer` in `Dimmer.Dimmer`; `Pan`/`Tilt` in
-`Position.PanTilt` with the `PanTilt` activation group and `Angle`; `ColorAdd_R/G/B/W/
-WW/CW/UV/RY` in `Color.RGB` with `ColorRGB`, `ColorComponent` and the spec's CIE
-primaries; `CTO/CTC/CTB` in `Color.Color` with `Temperature`; `Shutter1` in `Beam.Beam`
-with `Shutter1Strobe` and `Shutter1StrobeRandom` declared beside it, `MainAttribute=
-"Shutter1"`, `Frequency`; `Iris`, `Frost1`, `Prism1` (group `Prism`), `Effects1` in
-`Beam.Beam`; `Zoom` (`Angle`) and `Focus1` in `Focus.Focus`; `Gobo1` in `Gobo.Gobo` with
-group `Gobo1`. A channel mtrack does not know keeps its PascalCase name under
-`Control.Control`, as now, so nothing is invented that Annex B does not define. Feature
-groups are emitted for exactly the features used.
-
-**Channels** (`DMXModes`). One mode, named `mtrack` as now. Each channel is `<Geometry>_
-<Attribute>` on the geometry it belongs to. `Offset` lists coarse then fine. `DMXFrom`
-and `Default` are written in byte-mirroring notation on the coarse byte (`v/1`), which
-the spec extends to the fine byte itself; sub-ranges keep their 8-bit bounds. A gap
-between two functions (`open 0..15`, `strobe 32..255`) is filled with a `NoFeature`
-function so the authored ranges survive the spec's "end is the next start" rule.
-`InitialFunction` names the real first function. `Default` and `Highlight` carry intent:
-dimmer default 0 and highlight full; colours default 0, highlight full; pan and tilt
-default at physical 0 (the centre of travel); strobe default on the `open` function;
-everything else default `DMXFrom` and highlight `None`. One `ChannelSet` per function,
-named as the function, so a console's encoder shows `open` / `strobe` rather than raw
-values. `movement { max_pan_speed }` becomes `RealFade` on the pan function (travel ÷
-speed), likewise tilt: GDTF's home for it after all, the grammar comment notwithstanding.
-
-**Geometry** (`Models`, `Geometries`). Structure, not a model. mtrack is not a fixture
-modelling tool and must not pretend to be one: a hand-written type carries no dimensions,
-no photometry and no meshes, and the export must not invent any. What GDTF needs to make
-the *channels* meaningful is structure — which geometry a channel sits on, which axis pan
-turns — and that the type does imply:
-
-- A static type: `Body` with a `Beam` child at the origin. No `Model` sizes, no beam
-  attributes: the spec's own defaults apply, and the file says nothing mtrack does not
-  know.
-- A type with pan or tilt: `Base` → `Axis "Yoke"` → `Axis "Head"` → `Beam "Lens"`, every
-  transform the identity; pan channels on `Yoke`, tilt on `Head`. That is the one shape the
-  spec defines for the attributes (hanging, pan about Z, tilt about X, beam down −Z — §18),
-  and it is what lets a console move the fixture and mtrack's own rig distiller aim it
-  (the §18.6 calibration comes out the identity, lens at the mount).
-- A type with cells: the body's own channels on `Body`; one top-level template geometry
-  `Cell` carrying the cell channels as template channels; one `GeometryReference` per
-  cell, named as the cell, with `<Break DMXBreak="1" DMXOffset=…>` from the cell's first
-  channel — the structure §17.2's distiller reads back into the same cells. The
-  reference's `Position` carries the cell's authored offset, which *is* in the DSL (`cell
-  "1" at (x, y, z)`) and is the one physical fact a native type states; nothing else is
-  positioned. Mirrors are never written directly: a native type's mirrors only ever come
-  from its cells, and a referential type's from its archive.
-
-The `Revisions` note and the export report both say the file has no physical model and
-point at the way to get one: the manufacturer's GDTF, imported with `import-gdtf`. Sizes,
-beam angles, lamp data and primaries stay out of the DSL and out of this phase.
-
-### 19.4 Surfaces
-
-- `mtrack export-gdtf <fixture type> [--output <name>.gdtf]`: writes
-  `lighting/export/mtrack@<Name>.gdtf` under the same confinement as `export-mvr`, prints
-  what was generated and every nominal value assumed. A referential type is copied to
-  `lighting/export/` under its archive's own name, or refused if the archive is missing.
-- MCP `export_gdtf` with the same report, beside `export_mvr`.
-- `export_mvr` embeds the new generator's output for native types; its report gains the
-  nominal-value notes. No web UI surface: export is an authoring step, and the MCP tool is
-  how an agent does it.
-
-### 19.5 Verification
-
-The spec is the oracle, not the parser. Three layers:
-
-1. **A strictness checker**, `gdtf::strict::check(xml) -> Vec<String>`, in the test tree:
-   mandatory sections present and in order; every node link resolves (attribute →
-   feature and activation group, logical channel → attribute, channel function →
-   attribute, `InitialFunction` → function, mode → top-level geometry, reference →
-   top-level geometry); `Name`-typed values within the charset; DMX offsets within the
-   footprint, unique per break, and covering every byte of `FixtureType::footprint()`;
-   every geometry referenced by a channel exists in the mode's tree. It runs over every
-   generated file in the unit tests and, in the ignored corpus tier, over every real
-   archive — which both validates the checker against manufacturer files and reports how
-   strict the wild actually is.
-2. **A golden XML** for the synthetic native mover and the hand-written cell bar, checked
-   in and diffed, so any change to the generator is a visible change to the file.
-3. **Round trips**: export → parse → distill gives the same channel table, ranges,
-   functions and cells; export → `distill_rig` gives the mover's four-node rig and the
-   identity calibration; export → MVR → import merges with nothing changed (the existing
-   corpus round trip, plus the native case).
-
-Manual, once: open a generated mover in Blender DMX and see it patch and move.
-
-### 19.6 Slices
-
-- **P4-1** — the generator: attributes, channels, defaults, geometry, cells, names,
-  revisions, the strictness checker and goldens. MVR export picks it up unchanged.
-- **P4-2** — `export-gdtf` CLI and MCP tool, refusal for a missing archive, docs, the
-  corpus strictness report.
-
-### 19.7 Decisions
-
-1. **A referential type exports as its archive, or is refused.** No regeneration under a
-   manufacturer's name from a lossy distillation.
-2. **Annex B attributes for everything mtrack canonicalises; PascalCase under
-   `Control.Control` for the rest.** No invented attribute semantics.
-3. **Geometry is structure only, never a model.** The axis and beam nodes the channels
-   need, at identity transforms, plus the cell offsets the DSL already states; no sizes,
-   angles, lamp data or primaries invented, and no DSL surface added for them. A physical
-   model is the manufacturer's GDTF, imported.
-4. **Cells export as template geometry plus references; mirrors are never written
-   directly.**
-5. **`movement` limits export as `RealFade`.**
-6. **The spec is the oracle**: a strictness checker plus goldens gate the generator, and
-   mtrack's own parser is not the test.
-7. **Surfaces are the CLI and MCP; no web UI export.**
+The spec is the oracle. `gdtf::strict::check` reads a description by the spec's rules —
+mandatory sections in order, every node link resolving, `Name` charset, DMX values well
+formed, offsets unique per break — and gates every generated file in the unit tests.
+Round trips through the distiller confirm channels, functions, ranges and cells survive.
+Run over the 46 archives in the local corpus (ignored tier) it reports 25 clean; the rest
+break rules the wild treats as advice (`.` and `[]` in mode names, empty `Offset` for
+virtual channels, repeated `NoFeature` channel names — the last two the checker now
+allows, having learned them there).

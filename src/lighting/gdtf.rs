@@ -35,6 +35,7 @@ mod archive;
 mod description;
 mod distiller;
 mod rig;
+pub mod strict;
 
 #[cfg(test)]
 pub(crate) use archive::tests::build_zip;

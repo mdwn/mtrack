@@ -1942,8 +1942,8 @@ impl McpServer {
     #[tool(description = "Export a venue as an .mvr archive inside the project: \
         the patch with positions, rotations and focus points in MVR \
         coordinates (the venue's recorded origin restored), every fixture \
-        type's GDTF embedded from the library, and a minimal generated GDTF \
-        (channels only, no models) for native fixture types. A venue seeded \
+        type's GDTF embedded from the library, and a generated GDTF (its \
+        channels and cells, no physical model) for native fixture types. A venue seeded \
         from an MVR round-trips: re-importing the export merges with no \
         changes. Returns the output path and what was embedded or generated.")]
     async fn export_mvr(
