@@ -698,6 +698,11 @@ fn convert_functions(
             Some(_) => 0,
             None => u8::MAX,
         };
+        // A `NoFeature` function is a range that does nothing: it ends
+        // the function before it and is not a function of its own.
+        if function.attribute == "NoFeature" {
+            continue;
+        }
         let physical = strobe_hz_range(function);
         converted.push(ChannelFunction {
             name: canonical_function_name(function),

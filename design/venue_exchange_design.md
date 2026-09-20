@@ -1030,3 +1030,60 @@ rounds being far more than a head's length over metres of throw needs). The plot
 starts from the lens too. And a song with no audio now ends when its last effect has run
 its course rather than when its last cue fires (`LightingTimeline::show_end`), bounded to
 the audio's length when there is audio so those songs end exactly as before.
+
+## 19. GDTF export: what MVR export needs, and no more (decided 2026-09-19)
+
+### 19.1 The question
+
+P2-3's MVR export embeds a generated GDTF for every native fixture type — a hand-written
+`.light` or `.fixture` — so that a console can patch the venue. A phase of "GDTF export
+proper" was drafted: a spec-valid generator with synthesised mover geometry, cells,
+defaults, an `export-gdtf` command and MCP tool, and a strictness checker as the oracle.
+
+### 19.2 The decision
+
+**mtrack is not a fixture-modelling tool, and will not become one.** A standalone GDTF
+export is a fixture-profile authoring surface; consoles have their own, and the right file
+for any fixture is the manufacturer's, from GDTF-Share, imported. Synthesising geometry —
+yoke offsets, beam angles, body sizes — would be mtrack inventing physical facts about a
+fixture it knows nothing physical about. Neither is wanted.
+
+What *is* wanted is that the GDTF embedded in an exported MVR is valid, so a strict console
+does not reject the venue. Before this the generated file was patchable but not valid GDTF:
+every attribute under one `Control` feature, two strobe attributes referenced but never
+declared, every channel's `InitialFunction` a dangling link, DMX values in the wrong byte
+notation, a mover homed at the end of its pan travel, a hand-written pixel bar's cells
+dropped so the footprint was wrong, names unchecked against the spec's charset, no
+revision. And mtrack's own parser, lenient by design (§5), could not tell.
+
+So the scope is a **validity fix on the existing generator**, nothing more:
+
+- Annex B attribute definitions for every channel mtrack canonicalises (feature groups,
+  activation groups, physical units, CIE primaries, `Shutter1Strobe`/`StrobeRandom`
+  declared with their main attribute); custom channels stay PascalCase under
+  `Control.Control`.
+- `InitialFunction` names the real first function; DMX values in byte-mirroring notation
+  on the coarse byte; a gap between authored function ranges filled with a `NoFeature`
+  function (and the distiller reads one as a gap, `DISTILLER_VERSION` 4); `Default` and
+  `Highlight` with intent (dimmer and colour dark at home and full when highlighted, pan
+  and tilt at the centre of travel, a shutter on `open`).
+- Cells as a template geometry plus one `GeometryReference` per cell with its `Break`
+  offset and the cell's authored position — the one physical fact the DSL states — so the
+  footprint is the whole bar and the cells come back on import. Mirrors are never written
+  directly.
+- Names held to the spec's charset, a non-empty `ShortName`, a `Revisions` entry saying
+  the file has no physical model and where to get one, the archive named `mtrack@<Name>`.
+- **No geometry beyond a body**: no axes, no beam, no models, no sizes. A console patches
+  and controls the fixture; it does not move a picture of it. The file says so.
+- **No `export-gdtf` surface.** A referential type is embedded as its archive, as before.
+
+### 19.3 Verification
+
+The spec is the oracle. `gdtf::strict::check` reads a description by the spec's rules —
+mandatory sections in order, every node link resolving, `Name` charset, DMX values well
+formed, offsets unique per break — and gates every generated file in the unit tests.
+Round trips through the distiller confirm channels, functions, ranges and cells survive.
+Run over the 46 archives in the local corpus (ignored tier) it reports 25 clean; the rest
+break rules the wild treats as advice (`.` and `[]` in mode names, empty `Offset` for
+virtual channels, repeated `NoFeature` channel names — the last two the checker now
+allows, having learned them there).
