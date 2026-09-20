@@ -40,6 +40,7 @@ import math
 import os
 import shutil
 import sys
+import uuid
 from types import SimpleNamespace
 
 import addon_utils
@@ -72,8 +73,20 @@ def main():
     dmx = bpy.context.scene.dmx
     profiles = os.path.join(dmx.get_addon_path(), "assets", "profiles")
     os.makedirs(profiles, exist_ok=True)
-    profile = "mtrack-check.gdtf"
+    # A name of its own per run, removed afterwards: the profiles folder
+    # is the user's, and two runs at once must not share a file.
+    profile = f"mtrack-check-{uuid.uuid4().hex}.gdtf"
     shutil.copy(args.gdtf, os.path.join(profiles, profile))
+    try:
+        check(args, dmx, profile)
+    finally:
+        try:
+            os.remove(os.path.join(profiles, profile))
+        except OSError:
+            pass
+
+
+def check(args, dmx, profile):
     dmx.new()
 
     position = Vector(args.position)
@@ -86,6 +99,12 @@ def main():
         sys.exit("Blender DMX could not build the fixture; see its log above")
     fixture = dmx.fixtures[0]
     print(f"fixture: {fixture.name} mode {fixture.mode!r}")
+    # Blender DMX falls back to the first mode when the name is unknown,
+    # silently; a check against the wrong channel map proves nothing.
+    if fixture.mode != args.mode:
+        gdtf = sys.modules[MODULE].gdtf_file.DMX_GDTF_File.load_gdtf_profile(profile)
+        modes = [m.name for m in gdtf.dmx_modes]
+        sys.exit(f"mode {args.mode!r} is not one of the fixture's modes {modes}")
 
     data = sys.modules[MODULE].data.DMX_Data
     for pair in args.bytes:
@@ -96,6 +115,7 @@ def main():
 
     target = Vector(args.target)
     worst = None
+    backwards = False
     for ob in fixture.collection.objects:
         mobile = ob.get("mobile_type")
         if mobile in ("yoke", "head"):
@@ -114,8 +134,13 @@ def main():
                 f"target at {along:.2f} m throw"
             )
             worst = miss if worst is None else max(worst, miss)
+            # The line through the target is not enough: the beam must be
+            # going that way, not 180° from it.
+            backwards = backwards or along <= 0
     if worst is None:
         sys.exit("the fixture has no beam geometry")
+    if backwards:
+        sys.exit("MISS: the beam points away from the target")
     if worst > args.tolerance:
         sys.exit(f"MISS: the beam passes {worst:.4f} m from the target")
     print(f"HIT: the beam passes {worst:.4f} m from the target")

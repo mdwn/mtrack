@@ -1023,8 +1023,10 @@ in the fourth column, and **the first three values of each row are a node axis**
 stored 3×3 is the transpose of the rotation that takes the node's frame into its parent's.
 That is how Blender DMX reads it (`to_3x3().inverted()` after `Matrix(position.matrix)`),
 how MVR's `{u}{v}{w}{o}` spelling is defined, and the only reading under which the
-corpus's rotated lens geometries (Roxx's blinder bars) send their light out of the fixture
-rather than back through it. The first draft of this section read the rows as matrix rows
+corpus's rotated `Beam` geometries (the lenses of ROXX's `CLUSTER B4-FC` and `CLUSTER
+B2-FC` blinder bars, yawed 180°) send their light out of the fixture rather than back
+through it — a survey over every beam under a rotated geometry in the local corpus found
+those two fixtures deciding for this reading, three indifferent and none for the other. The first draft of this section read the rows as matrix rows
 and had the MagicDot's yoke as `Rz(−90°)`; aimed in Blender DMX with mtrack's bytes it
 missed the target by 3.4 m, while the Viper (identity rotations throughout) hit it to
 0.1 mm. The yoke is `Rz(+90°)`. The parser now reads every 4×4 this way, so the rig, the
