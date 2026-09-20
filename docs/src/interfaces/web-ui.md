@@ -505,7 +505,9 @@ The config editor provides a profile-based hardware configuration UI with tabs f
 - **MIDI** — Device selection, beat clock, MIDI-to-DMX passthrough mappings with Note Mapper
   and CC Mapper transformer editors
 - **DMX** — OLA host/port, universe mappings
-- **Lighting** — Fixture types, venues, profile settings with constraint editors
+- **Lighting** — Fixture types, venues, profile settings with constraint editors. Both
+  fixture-type file forms are listed: a `.light` type opens in the channel-map form, a
+  `.fixture` type (rich channels, or distilled from a GDTF archive) as the text of its file
 - **Triggers** — Audio and MIDI trigger inputs with calibration
 - **Controllers** — gRPC, OSC, and MIDI controller configuration. The MIDI controller section
   supports full editing of event mappings (play, prev, next, stop, all_songs, playlist) with

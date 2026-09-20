@@ -2174,8 +2174,8 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "List the fixture-type `.light` files in the \
-        configured fixture types directory.")]
+    #[tool(description = "List the fixture-type `.light` or `.fixture` files \
+        in the configured fixture types directory.")]
     async fn list_fixture_type_files(&self) -> Result<CallToolResult, McpError> {
         let dir = self
             .resolve_lighting_dir(LightingDirKind::FixtureTypes)
@@ -2187,7 +2187,8 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Read a fixture-type `.light` file by basename.")]
+    #[tool(description = "Read a fixture-type `.light` or `.fixture` file by \
+        basename.")]
     async fn read_fixture_type(
         &self,
         Parameters(args): Parameters<LightingFileArgs>,
@@ -2204,9 +2205,9 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Validate and write a fixture-type `.light` file into \
-        the configured fixture types directory. The DSL is parsed first; on \
-        failure the file is not written.")]
+    #[tool(description = "Validate and write a fixture-type `.light` or \
+        `.fixture` file into the configured fixture types directory. The DSL \
+        is parsed first; on failure the file is not written.")]
     async fn write_fixture_type(
         &self,
         Parameters(args): Parameters<WriteLightingFileArgs>,
