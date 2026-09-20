@@ -414,16 +414,24 @@ app.get("/api/lighting/venues/:name", (req, res) => {
   });
 });
 
-let lastVenuePut: { name: string; body: unknown } | null = null;
+// Keyed by venue name so parallel tests, each editing its own venue, never
+// read each other's save. A single global slot made the stage-view geometry
+// tests race whenever two of them ran at once.
+const lastVenuePuts = new Map<string, unknown>();
 app.put("/api/lighting/venues/:name", (req, res) => {
-  lastVenuePut = { name: req.params.name, body: req.body };
+  lastVenuePuts.set(req.params.name, req.body);
   savedVenues.set(req.params.name, req.body as VenueBody);
   res.json({ status: "saved" });
 });
-// GET /test/last-venue-put — what the last venue save sent, for tests of
-// the stage view's geometry editing.
-app.get("/test/last-venue-put", (_req, res) => {
-  res.json(lastVenuePut);
+// GET /test/last-venue-put?name=<venue> — what that venue's last save sent,
+// for tests of the stage view's geometry editing.
+app.get("/test/last-venue-put", (req, res) => {
+  const name = String(req.query.name ?? "");
+  if (!lastVenuePuts.has(name)) {
+    res.json(null);
+    return;
+  }
+  res.json({ name, body: lastVenuePuts.get(name) });
 });
 
 app.delete("/api/lighting/venues/:name", (_req, res) => {
@@ -514,10 +522,31 @@ app.delete("/api/calibrate", (_req, res) => {
 // WebSocket connections indexed by wsId query parameter.
 // Tests navigate to /?wsId=xxx, causing the app to connect with /ws?wsId=xxx.
 // sendWsMessage targets a specific wsId so messages don't leak between tests.
-const wsConnections = new Map<string, import("ws").WebSocket>();
+/** A live test connection, and when its canned opening burst is done. */
+type TestConnection = { ws: WebSocket; ready: Promise<void> };
+const wsConnections = new Map<string, TestConnection>();
+
+// A test's POST races the page it just opened on two counts: the browser may
+// not have connected yet, and the connection's canned opening burst (below)
+// may still be in flight — a burst that would overwrite the very state the
+// test is pushing. Waiting for both here makes the endpoint mean "deliver to
+// this wsId", which is what every caller already assumed it meant.
+const WS_WAIT_MS = 5000;
+async function waitForWs(wsId: string): Promise<WebSocket | null> {
+  const deadline = Date.now() + WS_WAIT_MS;
+  for (;;) {
+    const conn = wsConnections.get(wsId);
+    if (conn && conn.ws.readyState === WebSocket.OPEN) {
+      await conn.ready;
+      return conn.ws.readyState === WebSocket.OPEN ? conn.ws : null;
+    }
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
 
 // Send a WebSocket message to the connection identified by wsId.
-app.post("/test/send-ws", (req, res) => {
+app.post("/test/send-ws", async (req, res) => {
   const { _wsId, ...payload } = req.body;
   const wsId = _wsId as string;
   const msg = JSON.stringify(payload);
@@ -535,8 +564,8 @@ app.post("/test/send-ws", (req, res) => {
     return;
   }
 
-  const ws = wsConnections.get(wsId);
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  const ws = await waitForWs(wsId);
+  if (ws) {
     ws.send(msg);
     res.json({ sent: 1, wsId });
   } else {
@@ -549,40 +578,44 @@ app.post("/test/send-ws", (req, res) => {
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
+// The opening burst every connection gets, in the same order as the real
+// server. Resolves once the last message is out: a test's own state push has
+// to land after it, or the burst overwrites what the test just set up.
+function sendInitialState(ws: WebSocket): Promise<void> {
+  ws.send(JSON.stringify(METADATA_STATE));
+  const later: [number, unknown][] = [
+    [50, PLAYBACK_STATE],
+    [100, FIXTURE_STATE],
+    [150, WAVEFORM_DATA],
+    [200, LOG_LINES],
+  ];
+  let last = 0;
+  for (const [delay, message] of later) {
+    last = Math.max(last, delay);
+    setTimeout(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(message));
+      }
+    }, delay);
+  }
+  // Registered after the last send's timer, so it runs after it.
+  return new Promise((resolve) => setTimeout(resolve, last));
+}
+
 wss.on("connection", (ws, req) => {
   // Extract wsId from query parameter for test isolation.
   const url = new URL(req.url ?? "", "http://localhost");
   const wsId = url.searchParams.get("wsId");
+  const ready = sendInitialState(ws);
   if (wsId) {
-    wsConnections.set(wsId, ws);
-    ws.on("close", () => wsConnections.delete(wsId));
+    wsConnections.set(wsId, { ws, ready });
+    // Only if this socket is still the registered one: a reconnect under the
+    // same wsId registers the new socket first, and an unconditional delete
+    // would then evict the live connection.
+    ws.on("close", () => {
+      if (wsConnections.get(wsId)?.ws === ws) wsConnections.delete(wsId);
+    });
   }
-  // Send initial state in the same order as the real server.
-  ws.send(JSON.stringify(METADATA_STATE));
-
-  setTimeout(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(PLAYBACK_STATE));
-    }
-  }, 50);
-
-  setTimeout(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(FIXTURE_STATE));
-    }
-  }, 100);
-
-  setTimeout(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(WAVEFORM_DATA));
-    }
-  }, 150);
-
-  setTimeout(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(LOG_LINES));
-    }
-  }, 200);
 });
 
 const PORT = 3111;

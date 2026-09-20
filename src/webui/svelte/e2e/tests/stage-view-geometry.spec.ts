@@ -26,8 +26,12 @@ async function sendWsMessage(
   });
 }
 
-/** A venue with stage geometry: one placed fixture, one not, one focus point. */
-const GEOMETRY_METADATA = {
+/** A venue with stage geometry: one placed fixture, one not, one focus point.
+ *
+ * The venue name is per test: the mock server remembers saved venues, and the
+ * last PUT, under the name the app sends. Sharing one name let two tests
+ * running at once (two workers, or --repeat-each) read each other's save. */
+const geometryMetadata = (venueName: string) => ({
   type: "metadata",
   fixtures: {
     "front-left": {
@@ -39,17 +43,30 @@ const GEOMETRY_METADATA = {
     "front-right": { tags: ["front", "right"], type: "par", position: null },
   },
   venue: {
-    name: "test-venue",
+    name: venueName,
     dir: null,
     focus_points: { drummer: [0, 2.8, 1.4] },
   },
-};
+});
+
+/** The venue's last save, as the mock server recorded it. */
+async function lastVenuePut(
+  page: import("@playwright/test").Page,
+  venueName: string,
+) {
+  const res = await page.request.get(
+    `http://127.0.0.1:3111/test/last-venue-put?name=${encodeURIComponent(venueName)}`,
+  );
+  return res.json();
+}
 
 test.describe("Stage View geometry", () => {
   let wsId: string;
+  let venueName: string;
 
   test.beforeEach(async ({ page }) => {
     wsId = `geo-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
+    venueName = `venue-${wsId}`;
     await page.goto(`/?wsId=${wsId}#/`);
     await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
@@ -67,7 +84,7 @@ test.describe("Stage View geometry", () => {
   test("positional metadata switches the card to the stage plot", async ({
     page,
   }) => {
-    await sendWsMessage(page, wsId, GEOMETRY_METADATA);
+    await sendWsMessage(page, wsId, geometryMetadata(venueName));
     await expect(page.locator(".stage-card--geometry")).toBeVisible();
     await expect(page.locator(".stage-card__placed")).toContainText(
       "1 of 2 placed",
@@ -83,16 +100,14 @@ test.describe("Stage View geometry", () => {
   });
 
   test("adding a focus point saves it back to the venue", async ({ page }) => {
-    await sendWsMessage(page, wsId, GEOMETRY_METADATA);
+    await sendWsMessage(page, wsId, geometryMetadata(venueName));
     await expect(page.locator(".stage-card--geometry")).toBeVisible();
     await page.locator(".stage-card__add-focus").click();
     await expect(page.locator(".stage-card__reload")).toContainText("Saved");
 
-    const saved = await (
-      await page.request.get("http://127.0.0.1:3111/test/last-venue-put")
-    ).json();
-    expect(saved.name).toBe("test-venue");
-    // The mock venue has no focus points of its own, so the new one is the
+    const saved = await lastVenuePut(page, venueName);
+    expect(saved.name).toBe(venueName);
+    // The mock venue starts with only "drummer", so the new pin takes the
     // first free name; the existing fixture rides along untouched.
     expect(Object.keys(saved.body.focus_points)).toContain("focus-1");
     expect(saved.body.fixtures[0].name).toBe("front-left");
@@ -103,7 +118,7 @@ test.describe("Stage View geometry", () => {
   });
 
   test("renaming a focus point saves the new name", async ({ page }) => {
-    await sendWsMessage(page, wsId, GEOMETRY_METADATA);
+    await sendWsMessage(page, wsId, geometryMetadata(venueName));
     const input = page.locator(
       ".stage-card__focus input.stage-card__focus-name",
     );
@@ -120,9 +135,7 @@ test.describe("Stage View geometry", () => {
     await added.fill("singer");
     await added.press("Enter");
     await expect(page.locator(".stage-card__reload")).toContainText("Saved");
-    const saved = await (
-      await page.request.get("http://127.0.0.1:3111/test/last-venue-put")
-    ).json();
+    const saved = await lastVenuePut(page, venueName);
     expect(Object.keys(saved.body.focus_points).sort()).toEqual([
       "drummer",
       "singer",
