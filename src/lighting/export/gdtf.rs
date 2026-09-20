@@ -67,7 +67,7 @@ fn canonical(channel: &str) -> Option<Attribute> {
         main: None,
     };
     Some(match channel {
-        "dimmer" => plain("Dimmer", "Dim", "Dimmer.Dimmer", "LuminousIntensity"),
+        "dimmer" => plain("Dimmer", "Dim", "Dimmer.Dimmer", "None"),
         "red" => color("ColorAdd_R", "R", "0.64,0.33,21.3"),
         "green" => color("ColorAdd_G", "G", "0.3,0.6,71.5"),
         "blue" => color("ColorAdd_B", "B", "0.15,0.06,7.2"),
@@ -179,7 +179,7 @@ pub fn gdtf_name(value: &str) -> String {
 
 /// Generates the `.gdtf` archive bytes for a fixture type.
 pub fn generate(fixture_type: &FixtureType) -> Result<Vec<u8>, Box<dyn Error>> {
-    let xml = description(fixture_type);
+    let xml = description(fixture_type)?;
     let mut cursor = std::io::Cursor::new(Vec::new());
     {
         let mut writer = zip::ZipWriter::new(&mut cursor);
@@ -192,12 +192,22 @@ pub fn generate(fixture_type: &FixtureType) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(cursor.into_inner())
 }
 
-/// The archive's name by the spec's convention, `<Manufacturer>@<Name>`.
+/// The archive's name by the spec's convention, `<Manufacturer>@<Name>`,
+/// held to what every filesystem a console runs on accepts: letters,
+/// digits, space, `-`, `_`, `@`, `.`.
 pub fn archive_name(fixture_type: &FixtureType) -> String {
-    format!(
-        "mtrack@{}.gdtf",
-        gdtf_name(fixture_type.name()).replace('/', "_")
-    )
+    let stem: String = fixture_type
+        .name()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || " -_".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("mtrack@{}.gdtf", stem.trim())
 }
 
 /// Everything the channels of one geometry contribute: their attribute
@@ -209,13 +219,31 @@ struct Emitted {
 }
 
 impl Emitted {
-    fn declare(&mut self, attribute: Attribute) -> String {
-        if let Some(existing) = self.attributes.iter().find(|a| a.name == attribute.name) {
-            return existing.name.clone();
+    /// Declares an attribute, returning the name it went in under. The
+    /// same definition again is the same attribute; a different one with
+    /// the same name (say `gobo-wheel` and `gobo_wheel`, both
+    /// `GoboWheel`) is suffixed, or the distiller would read the second
+    /// channel back as a mirror of the first. Every attribute goes
+    /// through here, the shutter's function attributes included.
+    fn declare(&mut self, mut attribute: Attribute) -> String {
+        let base = attribute.name.clone();
+        let mut n = 1;
+        loop {
+            match self.attributes.iter().find(|a| a.name == attribute.name) {
+                Some(existing) if existing.pretty == attribute.pretty => {
+                    return existing.name.clone();
+                }
+                Some(_) => {
+                    n += 1;
+                    attribute.name = format!("{base}{n}");
+                }
+                None => {
+                    let name = attribute.name.clone();
+                    self.attributes.push(attribute);
+                    return name;
+                }
+            }
         }
-        let name = attribute.name.clone();
-        self.attributes.push(attribute);
-        name
     }
 }
 
@@ -238,20 +266,6 @@ fn emit_channel(out: &mut Emitted, geometry: &str, name: &str, def: &ChannelDef)
     let is_color = attribute.feature == "Color.RGB";
     let is_pose = attribute.name == "Pan" || attribute.name == "Tilt";
     let is_shutter = attribute.name == "Shutter1";
-    // Two channels folding to one attribute (say `gobo-wheel` and
-    // `gobo_wheel`) must stay two, or the distiller reads the second back
-    // as a mirror of the first.
-    let mut attribute = attribute;
-    let base = attribute.name.clone();
-    let mut n = 1;
-    while out
-        .attributes
-        .iter()
-        .any(|a| a.name == attribute.name && a.pretty != attribute.pretty)
-    {
-        n += 1;
-        attribute.name = format!("{base}{n}");
-    }
     let attribute_name = out.declare(attribute);
 
     let offset = match def.fine {
@@ -360,9 +374,17 @@ fn emit_channel(out: &mut Emitted, geometry: &str, name: &str, def: &ChannelDef)
     for function in &functions {
         // Byte-mirroring notation on the coarse byte: `v/1` means the
         // same coarse value on every wider channel, which is exactly the
-        // 8-bit sub-range the type authored.
+        // 8-bit sub-range the type authored. A function's default is what
+        // it goes to when a console picks it, so it lies in its own range:
+        // the channel's home byte for a channel that is one function, else
+        // the function's start.
+        let own_default = if functions.len() == 1 {
+            default
+        } else {
+            function.from
+        };
         out.channels.push_str(&format!(
-            "              <ChannelFunction Name=\"{}\" Attribute=\"{}\" DMXFrom=\"{from}/1\" Default=\"{default}/1\"{physical}/>\n",
+            "              <ChannelFunction Name=\"{}\" Attribute=\"{}\" DMXFrom=\"{from}/1\" Default=\"{own_default}/1\"{physical}/>\n",
             escape(&function.name),
             escape(&function.attribute),
             from = function.from,
@@ -385,9 +407,40 @@ fn first_byte(cell: &Cell) -> u16 {
     cell.channels.values().map(|d| d.offset).min().unwrap_or(1)
 }
 
-/// The `description.xml` for a fixture type.
-pub fn description(fixture_type: &FixtureType) -> String {
+/// Every channel's byte relative to the cell's first, in name order: two
+/// cells with the same layout have the same shape.
+fn cell_shape(cell: &Cell) -> Vec<(String, u16, Option<u16>)> {
+    let base = first_byte(cell);
+    let mut shape: Vec<(String, u16, Option<u16>)> = cell
+        .channels
+        .iter()
+        .map(|(name, def)| (name.clone(), def.offset - base, def.fine.map(|f| f - base)))
+        .collect();
+    shape.sort();
+    shape
+}
+
+/// The `description.xml` for a fixture type. Fails only for a pixel
+/// fixture whose cells are not laid out alike: a GDTF reference shifts a
+/// whole cell by one offset, so a cell whose bytes sit differently from
+/// the first's has no honest place in the file.
+pub fn description(fixture_type: &FixtureType) -> Result<String, String> {
     let cells = fixture_type.cells();
+    if let Some(first) = cells.first() {
+        let shape = cell_shape(first);
+        for cell in &cells[1..] {
+            if cell_shape(cell) != shape {
+                return Err(format!(
+                    "fixture type \"{}\": cell \"{}\" lays its channels out differently from \
+                     cell \"{}\"; a GDTF shifts a whole cell by one offset, so every cell must \
+                     have the same layout to be exported",
+                    fixture_type.name(),
+                    cell.name,
+                    first.name
+                ));
+            }
+        }
+    }
     let cell_owned: BTreeSet<&String> = cells
         .first()
         .map(|c| c.channels.keys().collect())
@@ -470,7 +523,7 @@ pub fn description(fixture_type: &FixtureType) -> String {
         attribute_xml.push_str(&format!(
             "        <Attribute Name=\"{}\" Pretty=\"{}\"{}{} Feature=\"{}\" PhysicalUnit=\"{}\"{}/>\n",
             escape(&a.name),
-            escape(&gdtf_name(&a.pretty)),
+            escape(&a.pretty),
             a.activation
                 .map(|g| format!(" ActivationGroup=\"{g}\""))
                 .unwrap_or_default(),
@@ -492,7 +545,7 @@ pub fn description(fixture_type: &FixtureType) -> String {
     if short.is_empty() {
         short = "FT".to_string();
     }
-    format!(
+    Ok(format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <GDTF DataVersion=\"1.2\">\n\
          \x20 <FixtureType Name=\"{name}\" ShortName=\"{short}\" LongName=\"{name}\" Manufacturer=\"mtrack\" \
@@ -533,7 +586,7 @@ pub fn description(fixture_type: &FixtureType) -> String {
         channel_xml = emitted.channels,
         version = env!("CARGO_PKG_VERSION"),
         date = revision_date(),
-    )
+    ))
 }
 
 /// Now, as the spec's `Date` (`yyyy-mm-ddThh:mm:ss`, UTC). Civil date
@@ -575,7 +628,7 @@ mod tests {
         let dsl = "fixture_type \"Mover\" {\n  channel \"pan\" @ 1 fine 2 range -270deg..270deg\n  channel \"tilt\" @ 3 fine 4 range -135deg..135deg\n  channel \"dimmer\" @ 5\n  channel \"strobe\" @ 6 {\n    function \"open\" 0..15\n    function \"strobe\" 32..255 1hz..25hz\n  }\n  channel \"red\" @ 7\n  channel \"gobo:wheel\" @ 8\n}\n";
         let types = parse_fixture_types(dsl).unwrap();
         let mover = &types["Mover"];
-        let xml = description(mover);
+        let xml = description(mover).unwrap();
         strict(&xml);
         let bytes = generate(mover).unwrap();
         let description = gdtf::parse_archive(&bytes).unwrap();
@@ -621,6 +674,11 @@ mod tests {
         assert!(xml.contains("Name=\"pan\" Attribute=\"Pan\" DMXFrom=\"0/1\" Default=\"128/1\""));
         assert!(xml.contains("InitialFunction=\"Body_Shutter1.Shutter1.open\""));
         assert!(xml.contains("Name=\"unused 1\" Attribute=\"NoFeature\" DMXFrom=\"16/1\""));
+        // A function's default is in its own range: picking "strobe" on a
+        // console must not reselect "open".
+        assert!(xml.contains(
+            "Name=\"strobe\" Attribute=\"Shutter1Strobe\" DMXFrom=\"32/1\" Default=\"32/1\""
+        ));
         assert!(xml.contains("<Revision Text=\"Generated by mtrack "));
         // Only the custom channel lands in the generic control group.
         assert_eq!(xml.matches("Feature=\"Control.Control\"").count(), 1);
@@ -633,7 +691,7 @@ mod tests {
     fn colliding_custom_names_stay_distinct_channels() {
         let dsl = "fixture_type \"Odd\" {\n  channel \"gobo-wheel\" @ 1\n  channel \"gobo_wheel\" @ 2\n  channel \"dimmer\" @ 3 fine 4 {\n    function \"off\" 0..9\n    function \"on\" 10..255\n  }\n}\n";
         let types = parse_fixture_types(dsl).unwrap();
-        let xml = description(&types["Odd"]);
+        let xml = description(&types["Odd"]).unwrap();
         strict(&xml);
         assert!(xml.contains("Attribute=\"GoboWheel\""), "first attribute");
         assert!(
@@ -669,7 +727,7 @@ mod tests {
         let types = parse_fixture_types(dsl).unwrap();
         let bar = &types["Bar"];
         assert_eq!(bar.footprint(), 10);
-        let xml = description(bar);
+        let xml = description(bar).unwrap();
         strict(&xml);
         assert!(xml.contains("<GeometryReference Name=\"2\" Geometry=\"Cell\" Position=\"{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}\">\n          <Break DMXBreak=\"1\" DMXOffset=\"4\"/>"), "{xml}");
         let description = gdtf::parse_archive(&generate(bar).unwrap()).unwrap();
@@ -703,15 +761,66 @@ mod tests {
             "fixture_type \"Wash, Front 1.2\" {\n  channel \"dimmer\" @ 1\n}\n",
         )
         .unwrap();
-        let xml = description(&types["Wash, Front 1.2"]);
+        let xml = description(&types["Wash, Front 1.2"]).unwrap();
         strict(&xml);
         assert!(
             xml.contains("<FixtureType Name=\"Wash_ Front 1_2\" ShortName=\"WF12\""),
             "{xml}"
         );
+        // The archive's name is held to what a console's filesystem takes,
+        // which is stricter than the spec's Name charset.
         assert_eq!(
             archive_name(&types["Wash, Front 1.2"]),
             "mtrack@Wash_ Front 1_2.gdtf"
         );
+        let odd = parse_fixture_types(
+            "fixture_type \"Chauvet: Slim<PAR>/1\" {\n  channel \"dimmer\" @ 1\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            archive_name(&odd["Chauvet: Slim<PAR>/1"]),
+            "mtrack@Chauvet_ Slim_PAR__1.gdtf"
+        );
+    }
+
+    /// A GDTF reference shifts a whole cell by one offset, so a cell laid
+    /// out unlike the first cannot be written honestly: the export refuses
+    /// rather than address the wrong byte.
+    #[test]
+    fn cells_laid_out_differently_are_refused() {
+        let dsl = "fixture_type \"Bar\" {\n  \
+                   cell \"1\" at (-0.3, 0, 0) { channel \"red\" @ 2  channel \"green\" @ 3  channel \"blue\" @ 4 }\n  \
+                   cell \"2\" at (0.3, 0, 0) { channel \"red\" @ 10  channel \"green\" @ 11  channel \"blue\" @ 13 }\n}\n";
+        let types = parse_fixture_types(dsl).unwrap();
+        let err = description(&types["Bar"]).unwrap_err();
+        assert!(
+            err.contains("cell \"2\" lays its channels out differently"),
+            "{err}"
+        );
+        assert!(generate(&types["Bar"]).is_err());
+    }
+
+    /// A custom channel that happens to spell a shutter function's
+    /// attribute does not capture it: the real one is declared apart.
+    #[test]
+    fn a_custom_channel_cannot_capture_a_shutter_function_attribute() {
+        let dsl = "fixture_type \"Odd\" {\n  channel \"shutter1 strobe\" @ 1\n  channel \"strobe\" @ 2 {\n    function \"open\" 0..15\n    function \"strobe\" 16..255 1hz..25hz\n  }\n}\n";
+        let types = parse_fixture_types(dsl).unwrap();
+        let xml = description(&types["Odd"]).unwrap();
+        assert!(
+            xml.contains(
+                "Name=\"Shutter1Strobe\" Pretty=\"shutter1 strobe\" Feature=\"Control.Control\""
+            ),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("Name=\"Shutter1Strobe2\" Pretty=\"Strobe1\" MainAttribute=\"Shutter1\""),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("Attribute=\"Shutter1Strobe2\" DMXFrom=\"16/1\""),
+            "{xml}"
+        );
+        assert!(gdtf::strict::check(&xml).is_empty());
     }
 }

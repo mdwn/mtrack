@@ -279,7 +279,10 @@ fn check_fixture_type(fixture: &Node, problems: &mut Vec<String>) {
             problems.push(format!("DMXMode {mode_name:?} has no <DMXChannels>"));
             continue;
         };
-        let mut used: HashMap<(String, u32), String> = HashMap::new();
+        // Bytes used, per break — and per geometry for a template's
+        // channels, which repeat per instance by design but must not
+        // collide among themselves.
+        let mut used: HashMap<(String, String, u32), String> = HashMap::new();
         let mut channel_names: HashSet<String> = HashSet::new();
         for channel in channels.children_named("DMXChannel") {
             let geometry = channel.attr("Geometry").unwrap_or("");
@@ -313,14 +316,18 @@ fn check_fixture_type(fixture: &Node, problems: &mut Vec<String>) {
                     for text in offsets.split(',') {
                         match text.trim().parse::<u32>() {
                             Ok(offset) if (1..=512).contains(&offset) => {
-                                if !referenced_templates.contains(geometry) {
-                                    if let Some(other) = used
-                                        .insert((dmx_break.clone(), offset), channel_name.clone())
-                                    {
-                                        problems.push(format!(
-                                            "byte {offset} of break {dmx_break} is used by both {other:?} and {channel_name:?}"
-                                        ));
-                                    }
+                                let scope = if referenced_templates.contains(geometry) {
+                                    geometry.to_string()
+                                } else {
+                                    String::new()
+                                };
+                                if let Some(other) = used.insert(
+                                    (dmx_break.clone(), scope, offset),
+                                    channel_name.clone(),
+                                ) {
+                                    problems.push(format!(
+                                        "byte {offset} of break {dmx_break} is used by both {other:?} and {channel_name:?}"
+                                    ));
                                 }
                             }
                             _ => problems.push(format!(
@@ -495,7 +502,7 @@ mod tests {
             "fixture_type \"Mover\" {\n  channel \"pan\" @ 1 fine 2 range -270deg..270deg\n  channel \"tilt\" @ 3 fine 4 range -135deg..135deg\n  channel \"dimmer\" @ 5\n  channel \"strobe\" @ 6 {\n    function \"open\" 0..15\n    function \"strobe\" 16..255 1hz..25hz\n  }\n}\n",
         )
         .unwrap();
-        crate::lighting::export::gdtf::description(&types["Mover"])
+        crate::lighting::export::gdtf::description(&types["Mover"]).unwrap()
     }
 
     #[test]
