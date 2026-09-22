@@ -241,7 +241,7 @@ pub(super) async fn post_calibrate_start(
     Json(body): Json<CalibrateStartRequest>,
 ) -> impl IntoResponse {
     use cpal::traits::StreamTrait;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
     if body.channel < 1 {
@@ -297,13 +297,11 @@ pub(super) async fn post_calibrate_start(
             buffer_size: cpal::BufferSize::Default,
         };
 
-        let expected_samples = (duration * sample_rate as f32) as usize + 1024;
-        let buffer = Arc::new(calibrate::CaptureBuffer {
-            channels: (0..channels)
-                .map(|_| parking_lot::Mutex::new(Vec::with_capacity(expected_samples)))
-                .collect(),
-            active: AtomicBool::new(true),
-        });
+        let buffer = Arc::new(calibrate::CaptureBuffer::new(
+            channels,
+            duration,
+            sample_rate,
+        ));
 
         let stream = calibrate::build_capture_stream(
             &device,
@@ -387,7 +385,6 @@ pub(super) async fn post_calibrate_start(
 /// POST /api/calibrate/capture — starts hit capture phase.
 pub(super) async fn post_calibrate_capture(State(state): State<WebUiState>) -> impl IntoResponse {
     use cpal::traits::StreamTrait;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
     let mut guard = state.calibration.lock();
@@ -406,13 +403,11 @@ pub(super) async fn post_calibrate_capture(State(state): State<WebUiState>) -> i
     session.hit_stream = None;
     session.hit_buffer = None;
 
-    let hit_capacity = (60.0 * session.sample_rate as f32) as usize;
-    let buffer = Arc::new(calibrate::CaptureBuffer {
-        channels: (0..session.num_device_channels)
-            .map(|_| parking_lot::Mutex::new(Vec::with_capacity(hit_capacity)))
-            .collect(),
-        active: AtomicBool::new(true),
-    });
+    let buffer = Arc::new(calibrate::CaptureBuffer::new(
+        session.num_device_channels,
+        60.0,
+        session.sample_rate,
+    ));
 
     let stream = match calibrate::build_capture_stream(
         &session.device,

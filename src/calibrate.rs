@@ -48,6 +48,34 @@ pub struct CaptureBuffer {
     pub active: AtomicBool,
 }
 
+/// The most samples reserved up front for any one channel: about 87 seconds at
+/// 48kHz, or 16MiB of `f32`s.
+///
+/// Reserving is only a head start on reallocation. Past this the buffers grow
+/// with the audio that actually arrives, so a long capture on a wide, fast
+/// device is paid for as it happens instead of all at once, per channel,
+/// before the stream has even opened.
+const MAX_RESERVED_SAMPLES: usize = 1 << 22;
+
+impl CaptureBuffer {
+    /// An active buffer for `channels` channels, each reserved for `seconds` of
+    /// audio at `sample_rate`, up to [`MAX_RESERVED_SAMPLES`].
+    pub fn new(channels: u16, seconds: f32, sample_rate: u32) -> Self {
+        let expected = (seconds * sample_rate as f32) as usize;
+        let reserved = if expected > MAX_RESERVED_SAMPLES {
+            MAX_RESERVED_SAMPLES
+        } else {
+            expected
+        };
+        Self {
+            channels: (0..channels)
+                .map(|_| Mutex::new(Vec::with_capacity(reserved)))
+                .collect(),
+            active: AtomicBool::new(true),
+        }
+    }
+}
+
 /// Noise floor statistics for a single channel.
 #[derive(serde::Serialize)]
 pub struct NoiseFloorStats {
@@ -110,21 +138,17 @@ pub fn run(config: CalibrationConfig) -> Result<(), Box<dyn Error>> {
         buffer_size: cpal::BufferSize::Default,
     };
 
-    // Pre-allocate capacity for expected duration
-    let expected_samples = (config.noise_floor_duration_secs * sample_rate as f32) as usize + 1024;
-
     // --- Phase 1: Noise floor ---
     eprintln!(
         "\nPhase 1: Measuring noise floor ({:.0}s) -- keep all pads silent...",
         config.noise_floor_duration_secs
     );
 
-    let buffer = Arc::new(CaptureBuffer {
-        channels: (0..channels)
-            .map(|_| Mutex::new(Vec::with_capacity(expected_samples)))
-            .collect(),
-        active: AtomicBool::new(true),
-    });
+    let buffer = Arc::new(CaptureBuffer::new(
+        channels,
+        config.noise_floor_duration_secs,
+        sample_rate,
+    ));
 
     let capture_stream = build_capture_stream(
         &device,
@@ -168,13 +192,7 @@ pub fn run(config: CalibrationConfig) -> Result<(), Box<dyn Error>> {
     eprintln!("         Press Enter when done.");
 
     // Allocate generous buffer for hit capture (up to ~60 seconds)
-    let hit_capacity = (60.0 * sample_rate as f32) as usize;
-    let hit_buffer = Arc::new(CaptureBuffer {
-        channels: (0..channels)
-            .map(|_| Mutex::new(Vec::with_capacity(hit_capacity)))
-            .collect(),
-        active: AtomicBool::new(true),
-    });
+    let hit_buffer = Arc::new(CaptureBuffer::new(channels, 60.0, sample_rate));
 
     let hit_stream = build_capture_stream(
         &device,
@@ -229,4 +247,25 @@ pub fn run(config: CalibrationConfig) -> Result<(), Box<dyn Error>> {
     output::write_yaml(&config.device_name, sample_rate, &calibrations, &crosstalk);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::{CaptureBuffer, MAX_RESERVED_SAMPLES};
+
+    #[test]
+    fn capture_buffer_reserves_the_expected_duration() {
+        let buffer = CaptureBuffer::new(2, 3.0, 48_000);
+        assert_eq!(buffer.channels.len(), 2);
+        for channel in &buffer.channels {
+            assert!(channel.lock().capacity() >= 144_000);
+        }
+    }
+
+    #[test]
+    fn capture_buffer_reservation_is_capped() {
+        // A rate no device runs at: the reservation must not follow it.
+        let buffer = CaptureBuffer::new(1, 30.0, u32::MAX);
+        assert!(buffer.channels[0].lock().capacity() <= MAX_RESERVED_SAMPLES * 2);
+    }
 }
