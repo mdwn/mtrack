@@ -23,6 +23,11 @@ use cpal::traits::DeviceTrait;
 use super::{CalibrationConfig, CaptureBuffer};
 use crate::audio::format::SampleFormat;
 
+/// The range of sample rates a calibration may ask for, generously wider than
+/// any real interface.
+const MIN_SAMPLE_RATE: u32 = 8_000;
+const MAX_SAMPLE_RATE: u32 = 768_000;
+
 /// Resolves stream parameters (channels, sample rate, format) from device and config.
 pub fn resolve_stream_params(
     device: &cpal::Device,
@@ -59,6 +64,16 @@ pub fn resolve_stream_params(
         _ => native_format,
     };
 
+    // A requested rate sizes the capture buffers before the device ever sees
+    // it, so one it could never run at must stop here.
+    if let Some(requested) = config.sample_rate {
+        if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&requested) {
+            return Err(format!(
+                "sample rate {requested} is outside {MIN_SAMPLE_RATE}..={MAX_SAMPLE_RATE}"
+            )
+            .into());
+        }
+    }
     let default_config = device.default_input_config()?;
     let sample_rate = config.sample_rate.unwrap_or(default_config.sample_rate());
 
