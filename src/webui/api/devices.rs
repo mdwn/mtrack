@@ -252,7 +252,16 @@ pub(super) async fn post_calibrate_start(
             .into_response();
     }
 
-    let duration = body.duration.clamp(0.5, 30.0);
+    // Explicit comparisons rather than `clamp`, which passes NaN through; every
+    // comparison with NaN is false, so it lands on the shortest capture. The
+    // duration sizes the capture buffers below, so it must be bounded.
+    let duration = if body.duration > 30.0 {
+        30.0
+    } else if body.duration >= 0.5 {
+        body.duration
+    } else {
+        0.5
+    };
     let device_name = body.device.clone();
     let target_channel = body.channel;
     let sample_rate_opt = body.sample_rate;

@@ -121,7 +121,7 @@ sha2 = "0.10"
 ratatui = "0.30"
 crossterm = "0.29"
 
-rmcp = { version = "1.7", default-features = false, features = [
+rmcp = { version = "3.4", default-features = false, features = [
     "server",
     "macros",
     "schemars",

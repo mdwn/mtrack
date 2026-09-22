@@ -41,10 +41,10 @@ use parking_lot::Mutex;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, GetMeta, Implementation, ListResourcesResult,
-        PaginatedRequestParams, ProtocolVersion, RawResource, ReadResourceRequestParams,
+        CallToolResult, ContentBlock, GetMeta, Implementation, ListResourcesResult,
+        PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
         ReadResourceResult, Resource, ResourceContents, ResourceUpdatedNotification,
-        ResourceUpdatedNotificationParam, ServerCapabilities, ServerInfo, ServerNotification,
+        ResourceUpdatedNotificationParam, ServerCapabilities, ServerConfig, ServerNotification,
         SubscribeRequestParams, UnsubscribeRequestParams,
     },
     service::RequestContext,
@@ -579,7 +579,7 @@ impl McpServer {
             .player
             .format_active_effects()
             .unwrap_or_else(|| "(no effect engine configured)".to_string());
-        Ok(CallToolResult::success(vec![Content::text(summary)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(summary)]))
     }
 
     #[tool(
@@ -1183,7 +1183,7 @@ impl McpServer {
         ALWAYS read this before generating `.light` files."
     )]
     async fn lighting_dsl_reference(&self) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             include_str!("dsl_reference.md").to_string(),
         )]))
     }
@@ -2486,8 +2486,8 @@ impl McpServer {
 
 #[tool_handler]
 impl ServerHandler for McpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
@@ -2512,75 +2512,38 @@ impl ServerHandler for McpServer {
         _request: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        Ok(ListResourcesResult {
-            resources: vec![
-                Resource {
-                    raw: RawResource {
-                        uri: RESOURCE_STATUS_URI.to_string(),
-                        name: "Player Status".to_string(),
-                        title: None,
-                        description: Some(
-                            "Live JSON snapshot of the player: active playlist, \
-                             current song, playing flag, elapsed time."
-                                .to_string(),
-                        ),
-                        mime_type: Some("application/json".to_string()),
-                        size: None,
-                        icons: None,
-                        meta: None,
-                    },
-                    annotations: None,
-                },
-                Resource {
-                    raw: RawResource {
-                        uri: RESOURCE_LIGHTING_URI.to_string(),
-                        name: "Lighting State".to_string(),
-                        title: None,
-                        description: Some(
-                            "Live per-fixture DMX values (0-255, including \
-                             virtual-dimmer RGB scaling), the effects running, \
-                             and which effects drive each fixture. Subscribe for \
-                             pushes instead of polling; notifications are \
-                             coalesced to at most 10 per second and are only sent \
-                             when the state actually changes."
-                                .to_string(),
-                        ),
-                        mime_type: Some("application/json".to_string()),
-                        size: None,
-                        icons: None,
-                        meta: None,
-                    },
-                    annotations: None,
-                },
-                Resource {
-                    raw: RawResource {
-                        uri: RESOURCE_CONFIG_URI.to_string(),
-                        name: "Mtrack Configuration".to_string(),
-                        title: None,
-                        description: Some(
-                            "Full mtrack configuration as YAML, with the current \
-                             checksum for optimistic-concurrency edits."
-                                .to_string(),
-                        ),
-                        mime_type: Some("application/x-yaml".to_string()),
-                        size: None,
-                        icons: None,
-                        meta: None,
-                    },
-                    annotations: None,
-                },
-            ],
-            next_cursor: None,
-            meta: None,
-        })
+        Ok(ListResourcesResult::with_all_items(vec![
+            Resource::new(RESOURCE_STATUS_URI, "Player Status")
+                .with_description(
+                    "Live JSON snapshot of the player: active playlist, \
+                     current song, playing flag, elapsed time.",
+                )
+                .with_mime_type("application/json"),
+            Resource::new(RESOURCE_LIGHTING_URI, "Lighting State")
+                .with_description(
+                    "Live per-fixture DMX values (0-255, including \
+                     virtual-dimmer RGB scaling), the effects running, \
+                     and which effects drive each fixture. Subscribe for \
+                     pushes instead of polling; notifications are \
+                     coalesced to at most 10 per second and are only sent \
+                     when the state actually changes.",
+                )
+                .with_mime_type("application/json"),
+            Resource::new(RESOURCE_CONFIG_URI, "Mtrack Configuration")
+                .with_description(
+                    "Full mtrack configuration as YAML, with the current \
+                     checksum for optimistic-concurrency edits.",
+                )
+                .with_mime_type("application/x-yaml"),
+        ]))
     }
 
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
         _ctx: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, McpError> {
-        match request.uri.as_str() {
+    ) -> Result<ReadResourceResponse, McpError> {
+        let result = match request.uri.as_str() {
             RESOURCE_STATUS_URI => {
                 let json = self.status_snapshot().await?;
                 Ok(ReadResourceResult::new(vec![ResourceContents::text(
@@ -2609,7 +2572,8 @@ impl ServerHandler for McpServer {
                 "unknown resource",
                 Some(json!({"uri": other})),
             )),
-        }
+        };
+        result.map(Into::into)
     }
 
     async fn subscribe(
@@ -2937,7 +2901,7 @@ fn group_names(shows: &[crate::lighting::parser::LightShow]) -> Vec<String> {
 /// Returns a successful tool result wrapping a JSON value as pretty-printed text.
 pub(crate) fn ok_json(value: Value) -> CallToolResult {
     let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
-    CallToolResult::success(vec![Content::text(text)])
+    CallToolResult::success(vec![ContentBlock::text(text)])
 }
 
 /// Derives BPM from a click-track beat grid using the median inter-beat
@@ -3196,9 +3160,7 @@ async fn send_resource_updated(
     meta_key: &str,
     payload: Value,
 ) -> Result<(), rmcp::ServiceError> {
-    let params = ResourceUpdatedNotificationParam {
-        uri: uri.to_string(),
-    };
+    let params = ResourceUpdatedNotificationParam::new(uri);
     let mut notif =
         ServerNotification::ResourceUpdatedNotification(ResourceUpdatedNotification::new(params));
     notif.get_meta_mut().0.insert(meta_key.to_string(), payload);
