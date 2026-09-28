@@ -343,50 +343,55 @@ pub async fn state_poller(
         }
 
         let snapshot = state_rx.borrow_and_update().clone();
-
-        let fixtures: serde_json::Map<String, serde_json::Value> = snapshot
-            .fixtures
-            .iter()
-            .map(|f| {
-                let channels: serde_json::Map<String, serde_json::Value> = f
-                    .channels
-                    .iter()
-                    .map(|(k, v)| (k.clone(), json!(*v)))
-                    .collect();
-                (f.name.clone(), serde_json::Value::Object(channels))
-            })
-            .collect();
-
-        let poses: serde_json::Map<String, serde_json::Value> = snapshot
-            .poses
-            .iter()
-            .map(|p| {
-                (
-                    p.name.clone(),
-                    json!({"pan": p.pan, "tilt": p.tilt, "aim": p.aim, "floor": p.floor}),
-                )
-            })
-            .collect();
-
-        // Per-cell values, by fixture then cell, only for fixtures a
-        // per-cell effect is driving this frame (design §17.4).
-        let cells: serde_json::Map<String, serde_json::Value> = snapshot
-            .fixtures
-            .iter()
-            .filter(|f| !f.cells.is_empty())
-            .map(|f| (f.name.clone(), json!(f.cells)))
-            .collect();
-
-        let msg = json!({
-            "type": "state",
-            "fixtures": fixtures,
-            "active_effects": snapshot.active_effects,
-            "poses": poses,
-            "cells": cells,
-        });
-
-        let _ = tx.send(msg.to_string());
+        let _ = tx.send(build_state_json(&snapshot));
     }
+}
+
+/// Builds the `state` WebSocket message for a snapshot. Also sent to each
+/// client on connect, so one that joins while nothing is changing (an idle
+/// player) still learns the current values.
+pub fn build_state_json(snapshot: &crate::state::StateSnapshot) -> String {
+    let fixtures: serde_json::Map<String, serde_json::Value> = snapshot
+        .fixtures
+        .iter()
+        .map(|f| {
+            let channels: serde_json::Map<String, serde_json::Value> = f
+                .channels
+                .iter()
+                .map(|(k, v)| (k.clone(), json!(*v)))
+                .collect();
+            (f.name.clone(), serde_json::Value::Object(channels))
+        })
+        .collect();
+
+    let poses: serde_json::Map<String, serde_json::Value> = snapshot
+        .poses
+        .iter()
+        .map(|p| {
+            (
+                p.name.clone(),
+                json!({"pan": p.pan, "tilt": p.tilt, "aim": p.aim, "floor": p.floor}),
+            )
+        })
+        .collect();
+
+    // Per-cell values, by fixture then cell, only for fixtures a
+    // per-cell effect is driving this frame (design §17.4).
+    let cells: serde_json::Map<String, serde_json::Value> = snapshot
+        .fixtures
+        .iter()
+        .filter(|f| !f.cells.is_empty())
+        .map(|f| (f.name.clone(), json!(f.cells)))
+        .collect();
+
+    json!({
+        "type": "state",
+        "fixtures": fixtures,
+        "active_effects": snapshot.active_effects,
+        "poses": poses,
+        "cells": cells,
+    })
+    .to_string()
 }
 
 /// Polls the log ring buffer at ~2Hz and broadcasts log lines.
@@ -1190,6 +1195,25 @@ metronome: {}
         }
 
         handle.abort();
+    }
+
+    #[test]
+    fn build_state_json_reports_current_snapshot_without_a_change() {
+        // What a freshly connected client is sent: the current value of the
+        // watch channel, even though nothing has changed since it was made.
+        let (_state_tx, state_rx) = watch::channel(Arc::new(crate::state::StateSnapshot {
+            fixtures: vec![crate::state::FixtureSnapshot {
+                cells: Default::default(),
+                name: "wash1".to_string(),
+                channels: std::collections::HashMap::from([("dimmer".to_string(), 0)]),
+            }],
+            active_effects: Vec::new(),
+            poses: Vec::new(),
+        }));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&build_state_json(&state_rx.borrow())).unwrap();
+        assert_eq!(parsed["type"], "state");
+        assert_eq!(parsed["fixtures"]["wash1"]["dimmer"], 0);
     }
 
     #[tokio::test]

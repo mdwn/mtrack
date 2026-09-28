@@ -418,6 +418,14 @@ async fn handle_ws(socket: WebSocket, state: WebUiState) {
     // Subscribe to state broadcasts
     let mut rx = state.broadcast_tx.subscribe();
 
+    // Send the current fixture state snapshot. The poller only broadcasts on
+    // change, so an idle player would otherwise leave this client with no
+    // state at all until something moved.
+    let state_msg = ws_state::build_state_json(&state.state_rx.borrow().clone());
+    if sender.send(Message::Text(state_msg.into())).await.is_err() {
+        return;
+    }
+
     // Spawn a task to forward broadcasts to this client
     let mut send_task = tokio::spawn(async move {
         loop {
