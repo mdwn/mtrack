@@ -195,9 +195,11 @@ Optional flags:
 
 | Flag | Description |
 |------|-------------|
-| `--sample-rate <Hz>` | Override the input sample rate |
-| `--duration <seconds>` | Noise floor measurement duration (default: 3) |
+| `--sample-rate <Hz>` | Override the input sample rate (8000 to 768000; anything outside is refused) |
+| `--duration <seconds>` | Noise floor measurement duration (default: 3; must be positive) |
 | `--sample-format <int\|float>` | Override the sample format |
 | `--bits-per-sample <16\|32>` | Override bits per sample |
+
+The web UI's calibration uses the same sample-rate limits and clamps the noise floor duration to 0.5–30 seconds.
 
 The generated config includes per-channel `threshold`, `gain`, `scan_time_ms`, `retrigger_time_ms`, and optional `highpass_freq`, `dynamic_threshold_decay_ms`, and device-level `crosstalk_window_ms`/`crosstalk_threshold` — all derived from measured data. Only channels with detected hits are included. Each channel has diagnostic comments showing the number of hits detected, noise floor peak, and max hit amplitude.

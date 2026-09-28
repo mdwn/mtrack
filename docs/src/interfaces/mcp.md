@@ -50,7 +50,7 @@ client's MCP server settings.
 
 ### Tools
 
-Roughly 50 tools are available. They fall into a few groups:
+About 60 tools are available. They fall into a few groups:
 
 - **Status & discovery** — current playback status, host/runtime info, and listings of songs,
   playlists, groups, venues, and fixture types.

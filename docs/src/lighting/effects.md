@@ -182,8 +182,8 @@ past a `move` lands the head where that move ended, every earlier move replayed 
 the turn a head takes is the one it would have taken live. Movement is
 interpolated in degrees and resolved per fixture through its pan/tilt ranges (16-bit where the
 fixture has it), so a slow sweep is smooth. A fixture type that declares
-`movement { max_pan_speed: 240deg/s }` is never driven faster than that; it arrives late
-instead. Pan zero, tilt zero is the fixture's rest direction: straight down out of the
+`movement { max_pan_speed: 240deg/s }` (and likewise `max_tilt_speed`) is never driven faster
+than that; it arrives late instead. Pan zero, tilt zero is the fixture's rest direction: straight down out of the
 mounting frame, as GDTF models it. Positive pan turns counter-clockwise seen from above,
 positive tilt swings the beam from straight down toward upstage, and the venue's
 `rotation` is the mounting those turns happen inside — `(0, 0, 180)` for a hung head

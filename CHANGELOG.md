@@ -9,17 +9,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Raspberry Pi image**: a flashable Raspberry Pi OS Lite image with mtrack installed and running
-  on boot, built as a pi-gen stage and attached to each release. It carries `avahi` so the player
-  answers at `http://mtrack.local:8080` on a machine with no monitor, and `olad` for DMX output.
+- **Stage 3D page, rig models and MVR scenery (#443, #444, #446)**: the dashboard's stage card has a
+  **3D** button that opens `#/stage`, the venue as a room: a deck grid with the audience edge,
+  focus-point markers, an orbit camera with Front of house, Side and Top presets, a Labels toggle
+  (off by default above 40 fixtures) and unplaced fixtures on a tray downstage. Fixtures are drawn
+  from their rig model. Pan turns the pan node and tilt the tilt node, and beams are translucent
+  cones in the fixture's live color and level, styled by GDTF beam type: spots throw to the deck,
+  washes shorter and fainter, LED tiles a haze at the lens. The room is dark whatever the UI theme.
+  Color is read from red, green, blue, white and dimmer channels only. three.js is its own chunk,
+  loaded only with this page.
 
-  The image ships no default username or password: pi-gen leaves the account locked and runs the
-  setup wizard on first boot, so the headless path is Raspberry Pi Imager's customisation dialog,
-  which writes the username, wifi and ssh keys to the boot partition before the card is booted.
+  A GDTF-backed type draws the archive's meshes when it ships them and GDTF primitives with sizes
+  otherwise; a native type gets a generic box with a 20 degree beam. Expanding a referential type
+  writes its rig to `lighting/.cache/assets/<archive sha256>/`, content-addressed and capped, and
+  `GET /api/lighting/assets/{*path}` serves it with an extension allowlist (json, glb, png, svg), a
+  size cap and containment to the asset root.
 
-  Not covered yet: 32-bit Raspberry Pi OS, a library on a USB drive rather than the card, a wifi
-  hotspot fallback, and `apt upgrade` on a running Pi, which waits on the apt archive.
+  A venue seeded from an MVR also gets its scenery: truss, supports, video screens, projectors and
+  scene objects, with their transforms and meshes, distilled to
+  `lighting/.cache/assets/scenery/<mvr hash>/` in stage space and drawn under the fixtures. The deck
+  and framing widen to hold it. Meshes that are not glTF (`.3ds` and others) are reported and
+  skipped, and a mesh over its size cap or past the budget is skipped rather than failing the load.
+  The import report and CLI say how many scenery objects there are and how many meshes the 3D view
+  will not draw.
 
+- **MVR export, with embedded and generated GDTFs (#445)**: `mtrack export-mvr <venue>` and the
+  `export_mvr` MCP tool write a venue as an `.mvr` a console or pre-viz tool can open: every fixture
+  with its address and its position and rotation in MVR millimeters (the import's origin restored),
+  focus points, stable UUIDs derived from SHA-256, one layer (`--layers-from-tags` makes a layer per
+  fixture's first tag), and each fixture type's GDTF embedded from the library. A native type
+  (`.light` or a hand-written `.fixture`) has no GDTF, so one is generated from its channels, with
+  attribute names chosen so mtrack's own importer reads them back as the same channels, 16-bit
+  channels and functions included.
+
+  Exports land in `lighting/export/` under a bare `.mvr` name (`-o` names it; the default is
+  `<venue>.mvr`), and the directory must resolve inside the project, so a symlinked export directory
+  is refused and neither the CLI nor the MCP tool can overwrite another project file. All ten
+  gdtf.eu corpus venues import, export and re-import as a merge with nothing changed.
+
+  Fixed on the way: a one-digit DMX address followed by a trailing comment in a `.venue` captured the
+  comment as part of the number, so an unplaced fixture at address 1 to 9 in a seeded venue failed to
+  parse back.
+
+- **Per-cell control (#448, #449, #450)**: a pixel fixture's cells can be driven separately. Cells
+  live on the fixture type: a GDTF pixel mode does not list its cells as sections, it puts channels
+  on a template geometry once and instantiates it through `GeometryReference`s whose `Break` gives
+  each instance's DMX offset, and the importer now expands that per reference, through nested
+  references. The Spiider's pixel mode goes from no cells to 19, with offsets that follow its Break
+  table. A hand-written type declares them with `cell "n" at (x, y, z) { channel ... }` blocks in a
+  `.fixture` file, from which the fixture-level channels are derived; `.light` refuses them. The
+  fixture-level channels stay ganged, so a show that never asks for cells produces the same DMX as
+  before. Cached expansions regenerate (distiller version 3).
+
+  In a show, `per: cell` on an effect expands a group's fixtures to their cells when the effect
+  starts, so a chase runs along the cells in stage order and a group of mixed fixtures still works;
+  a `move` never expands. `spread: 360deg` offsets each ordered target's phase for `rainbow` and
+  `cycle`, painting one rainbow along a bar. Three lints say when `per: cell` or `spread` does
+  nothing. A cell registers as a sub-fixture named `fixture/cell` inside the engine; live views,
+  the plot and the venue tools see fixtures only.
+
+  Per-cell state is shown where fixture state is shown. The websocket `state` message carries a
+  `cells` map for fixtures with a per-cell effect running, fixture metadata carries each type's
+  cells, and MCP `get_fixture_state` and `evaluate_show` report the same folded state. The stage
+  plot draws a pixel fixture as a segmented bar when its cells lie along a line and a wedge disc
+  when they spread in two directions. In 3D each cell's lens and beam take the cell's color, matched
+  by GDTF geometry name; a cell with no matching lens warns once per fixture in the browser console
+  and falls back to the fixture color.
+
+  One naming change: a section instantiated through a single reference now takes the reference's
+  name, so the Spiider's flower channels are `red:p1_flower` rather than `red:flower`. Only
+  section-suffixed names are affected, and only a `static` naming one would notice.
+
+- **Aiming follows the rig's geometry, from the lens (#454, #455)**: a fixture type with a GDTF rig
+  is aimed through its own joint chain rather than assuming a plain mounting. A manufacturer who
+  yaws the yoke geometry in the file, as the Ayrton MagicDot SX does by 90 degrees, now aims
+  correctly, and a geometry that does not reduce to pan and tilt (a tilt axis not perpendicular to
+  the pan axis, a lens outside the tilt plane) is refused with a reason in the log, with the plain
+  convention standing in. A non-plain calibration is logged at load. The beam is aimed from the
+  lens, which moves with the pose, rather than from the mounting point a head's length away, and
+  the plot's footprint starts from the lens. Against the ten local corpus MVRs, all 56 mover rigs
+  agree with the pointing math in direction and lens position to 0.01 degrees.
+
+  Repeats of a ganged channel (an LED bar's sections mirrored to one color) appear in state
+  snapshots as `<channel>#2`, `<channel>#3` and so on, so `get_fixture_state` and `evaluate_show`
+  show what the wire carries. `#` is now reserved in channel names and the parser refuses it.
+  Snapshots also carry the wire bytes for pan and tilt (`pan`, `pan_fine`, `tilt`, `tilt_fine`), so
+  they can say where a head points; `dark` ignores them.
+
+- **Golden tests from files to bytes, and an example show for movers (#451)**: a new suite runs what
+  a user writes -- a GDTF archive, `.fixture` files, a `.venue` with rotations, a `.light` show --
+  through to the DMX frame, against expectations worked out by hand from the documented
+  conventions: four movers aimed at three focus points, and two pixel bars under one `spread:
+  360deg, per: cell` rainbow. `examples/lighting/shows/movers_demo.light` aims the example venue's
+  movers. `evaluate_show` now receives the venue's focus points; before, every `move focus:`
+  evaluated as unbound.
 
 - **GDTF fixture import (#422, #423, #425, #426)**: fixture types can be built from a
   manufacturer's GDTF archive instead of a hand-written channel map. A type references one with
@@ -138,6 +221,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved becomes a `# TODO` line rather than vanishing. `inspect_mvr` and `import_mvr` expose the
   same flow over MCP.
 
+- **A headless Blender DMX check (#462)**: `tools/blender-dmx-check.py` loads a manufacturer's GDTF
+  in Blender DMX, the GDTF group's own reference renderer, mounts the fixture where the venue has
+  it, writes the DMX bytes mtrack would send, and reads the beam's world ray back from Blender's
+  scene graph, reporting how far the beam passes from the target. It refuses a wrong mode name and
+  a beam pointing away from the target. It needs Blender 4.2 or later with the BlenderDMX extension
+  installed for the user; the script's docstring says how. Against it, the Martin MAC Viper AirFX
+  hits its target to 0.1 mm at 5.9 m, which checks the pointing convention end to end with a real
+  file.
+
+- **Raspberry Pi image**: a flashable Raspberry Pi OS Lite image with mtrack installed and running
+  on boot, built as a pi-gen stage and attached to each release. It carries `avahi` so the player
+  answers at `http://mtrack.local:8080` on a machine with no monitor, and `olad` for DMX output.
+
+  The image ships no default username or password: pi-gen leaves the account locked and runs the
+  setup wizard on first boot, so the headless path is Raspberry Pi Imager's customisation dialog,
+  which writes the username, wifi and ssh keys to the boot partition before the card is booted.
+
+  Not covered yet: 32-bit Raspberry Pi OS, a library on a USB drive rather than the card, a wifi
+  hotspot fallback, and `apt upgrade` on a running Pi, which waits on the apt archive.
+
 - **Debian packages**: `sudo apt install ./mtrack_<version>_arm64.deb` on Debian, Ubuntu or
   Raspberry Pi OS installs the binary, creates the `mtrack` service account, creates and chowns the
   project directory, generates the systemd unit and enables the service — the whole of the
@@ -154,21 +257,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   set with it. Packages are attached to each release; an apt archive for `apt upgrade` is wired up
   behind the `APT_R2_BUCKET` repository variable and dormant until it is set.
 
-### Changed
-
-- **Venue universes the active profile cannot drive are now reported (#424)**: a venue can patch
-  fixtures onto universes the profile configures no output for, and the engine used to drop their
-  DMX silently — three quarters of a four-universe house rig staying dark at a gig with nothing to
-  explain it. Venue registration now reports each unconfigured universe once, naming the fixtures
-  patched there, and the effects loop's routing warns once per universe — not once per 44Hz tick —
-  if commands are dropped anyway.
-
-  The rule this makes visible: shows never mention universes, and every universe a venue references
-  needs an output under `dmx.universes`. A multi-universe example venue and the documentation cover
-  it.
-
-### Added
-
 - **Built Raspberry Pi images are checked before they are published**: a new inspection step mounts
   the image's root filesystem and asserts what the pi-gen stage should have left there — the arm64
   binary, the generated unit and its strict sandbox, the service account and its `audio` membership,
@@ -182,7 +270,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It says nothing about whether the card boots or whether audio and DMX work; those still need
   hardware.
 
+- **`.fixture` types in the web UI's fixture-type panel (#457)**: the panel listed, edited and
+  deleted only `.light` files, so a type made by the GDTF import button was invisible to it and to
+  the venue editor's type dropdown. It now covers both extensions. Cards carry an extension badge
+  and file name, and a referential type (whose channels resolve only at load) is labelled instead
+  of shown as "0 channels". A `.fixture`, rich or referential type opens as a raw text editor; a
+  `.light` card has "Edit as text" and a save-as choice, which is the path from `.light` to
+  `.fixture`; new types choose `.light` (form) or `.fixture` (text, prefilled template). Saving one
+  extension retires a stale twin of the other, so a name never resolves to two files. A save must
+  declare the type the URL names, for venues as well, and a name declared in two files is reported
+  rather than last-wins. A form save of a type that lives in a `.fixture` answers 409 ("edit this
+  type as text").
+
+- **OSC pause and structured timeline feedback (#432)**: `/mtrack/pause` records the current
+  elapsed position and stops playback, and the next Play resumes from it; Stop clears the preserved
+  position. `Player::elapsed()` keeps reporting the preserved position while paused.
+  `/mtrack/timeline`
+  broadcasts elapsed seconds, total duration and one name, start, end tuple per song section
+  (`/mtrack/timeline 18.25 240.0 "Intro" 0.0 12.5 "Verse" 12.5 42.0`). Both addresses are
+  configurable under the OSC controller's `events` (`pause`, `timeline`).
+
+  Also fixed: restarting the OSC controller left its UDP and broadcast tasks alive, so the old task
+  kept the socket and logged `Error sending packet on channel. err="channel closed"`. Both tasks
+  are now aborted with the controller.
+
+- **A warning when olad has no output port patched to a configured universe (#456)**: olad silently
+  drops DMX streamed to a universe with no output port patched. At DMX engine start, and on config
+  reload, mtrack asks olad's web server about each universe under `dmx.universes` and logs one
+  warning per unpatched one, naming the `ola_patch` command to fix it. A universe olad has never
+  seen counts as unpatched. The probe runs on a detached thread with a 2 second deadline and never
+  touches the output path; an unreachable web server ends it quietly at debug level. The web
+  server's port is `dmx.ola_http_port` (default 9090).
+
+- **Open Fixture Library definitions, by hand (#463)**: the fixture documentation gains a "From an
+  Open Fixture Library definition" section with the capability-to-channel mapping and a worked
+  example. There is no OFL importer: its JSON sits at the level of the `.fixture` DSL, so an importer
+  would be a second format to maintain for output no richer than a hand-written file.
+
 ### Changed
+
+- **Pose degrees are GDTF's: rest down, pan counter-clockwise from above, tilt toward +Y (#453)**:
+  pan and tilt in degrees now mean what GDTF says they mean. Rest is the mounting's straight-down
+  direction; positive pan is counter-clockwise seen from above; positive tilt swings the beam toward
+  +Y. Before, tilt 0 was level and positive pan was clockwise, which did not match GDTF's physical
+  degrees or the real Robe and Martin ranges in the corpus: the bytes sent would have put a real head
+  metres off its target. MVR-imported venues were already in GDTF's terms, so the importer was
+  right and the math misread them.
+
+  This changes what existing pose degrees mean, so check them before a show. Explicit `pan:` and
+  `tilt:` values (and `from:` poses) in a `move`, and the degree ranges in your hand-written
+  `.fixture` channels, are read in the new convention: a tilt written as level (0) is now straight
+  down, and a pan you wrote as clockwise is now the other way. Re-express them, and confirm with
+  Stage 3D or the plot's beam footprints. A `move focus:` aims by solving for the pose, so it lands
+  on the same point with the correct bytes. GDTF-imported types need nothing. Fallback travel where
+  no range is declared is +/-270 degrees of pan and +/-135 degrees of tilt, centered on rest.
+
+  Every placed fixture now has a pose, and statics sit at rest, so the plot draws a beam footprint
+  for all of them and the orientation tick is gone. For a target the head can reach two ways, the
+  engine takes the pose inside the tilt range whose pan is nearest where the head is; a target
+  on the pan axis holds the current pan. The documentation's "Mounting and pose convention" section
+  has the diagram, and the example venue is re-authored in the new terms.
+
+- **A GDTF matrix's rows are read as the node's axes, as Blender DMX does (#462)**: the parser read
+  a geometry `Position` matrix as its transpose, so a rotated part turned the wrong way: the
+  Ayrton MagicDot SX's yoke, yawed 90 degrees in its file, was read as -90 and its beam missed the
+  target by 3.4 m; it now hits to 0.1 mm at 6.3 m. Blender DMX reads GDTF and MVR matrices this way,
+  and the corpus agrees: the ROXX blinder bars, whose lens geometries are yawed 180 degrees, send
+  their light out of the fixture only under this reading. The GDTF spec under-specifies the vector
+  convention, so this rests on that evidence rather than on the spec's wording. Only fixtures with
+  rotated geometry parts are affected: nine of 46 archives in the local corpus, including the cell
+  layouts of the Spiider and Cluster. Cached rigs and expansions regenerate on first load (rig
+  version 2, distiller version 5).
+
+- **A song with no audio is as long as its lighting (#455, #459)**: a lighting-only song used to
+  report zero length -- no progress bar in the TUI or web UI, no total in MCP song info, and every
+  seek refused as "beyond song duration" -- and it ended the moment its last cue fired, cutting that
+  cue's fade or hold, so demo shows needed a late terminator cue. Its length is now when the last
+  lighting effect really ends, with every `.light` file of the song merged as the DMX engine merges
+  them; a `clear`, `clear(layer:)` or `stop sequence` cuts an effect short, as it does in playback.
+  The song ends there, and seeks up to it work. A song with audio ends with its audio, as before.
+  Not covered: a MIDI-only song still reports zero length, and a `.light` edited while a
+  lighting-only song plays is picked up by the engine at once but by the reported total on the
+  song's next load.
+
+- **The GDTF generated for MVR export is valid GDTF (#461)**: the file embedded for a hand-written
+  fixture type was patchable but not valid, so a strict console could reject the venue. It now
+  carries the spec's attribute definitions, feature and activation groups and units; initial
+  functions that name real functions; DMX values in byte-mirroring notation on the coarse byte;
+  gaps between authored function ranges as `NoFeature` functions (the importer now reads one as a
+  gap, distiller version 4); movers homed at the center of travel; a `Revisions` entry saying the
+  file has no physical model; and archives named `mtrack@<Name>.gdtf`. Cells become a template
+  geometry plus one reference per cell with its `Break` offset, so the footprint is the whole bar
+  and the cells come back on import. A type whose cells are not laid out alike is refused. mtrack
+  is not a fixture-modelling tool: there is no `export-gdtf` command, and the file has a body and
+  no other geometry or models. A strict checker reads each generated file by the spec's rules
+  in the unit tests.
+
+- **MCP server moves to rmcp 3.4 (#465)**: clears three advisories in rmcp 1.7 -- a session-table
+  leak in the Streamable HTTP server, OAuth protected-resource metadata validation, and custom
+  headers leaking on cross-origin redirects. Older protocol versions, including the `2024-11-05`
+  mtrack
+  advertises, are still served. Web UI dependencies `devalue`, `postcss-selector-parser` and `qs`
+  are updated and `npm audit` is clean.
+
+- **Venue universes the active profile cannot drive are now reported (#424)**: a venue can patch
+  fixtures onto universes the profile configures no output for, and the engine used to drop their
+  DMX silently — three quarters of a four-universe house rig staying dark at a gig with nothing to
+  explain it. Venue registration now reports each unconfigured universe once, naming the fixtures
+  patched there, and the effects loop's routing warns once per universe — not once per 44Hz tick —
+  if commands are dropped anyway.
+
+  The rule this makes visible: shows never mention universes, and every universe a venue references
+  needs an output under `dmx.universes`. A multi-universe example venue and the documentation cover
+  it.
 
 - **protoc is installed directly rather than through a third-party action**: `arduino/setup-protoc`
   supplied a protoc newer than ubuntu-22.04's, which ships 3.12 and refuses the proto3 `optional`
@@ -195,7 +395,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the bundled well-known types -- the player protos import `google/protobuf/duration.proto`,
   which comes from there. The version is now pinned rather than floating on `29.x`, so the protoc
   that compiles a release is a fact rather than whatever was newest that day.
-
 
 - **CI actions are up to date, and off the deprecated Node 20 runtime**: GitHub is removing the
   Node 20 runtime that several pinned actions declared, and runners had already begun forcing them
@@ -213,7 +412,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were already on their newest major. `arduino/setup-protoc@v3` still declares Node 20 and has no
   newer release, so one warning remains until it does.
 
-
 - **`systemctl enable mtrack` no longer reports a failure it did not have**: the generated unit
   carried `Alias=mtrack.service` while being installed as `mtrack.service`, so systemd tried to
   create the alias symlink over the unit file itself. Enabling the service printed
@@ -224,6 +422,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The nonzero exit is what bites: it aborts any `set -e` caller automating the install. An alias
   to a unit's own name conveys nothing, so it is gone rather than worked around. Regenerate your
   unit to pick this up, or let the Debian package do it on the next upgrade.
+
+### Fixed
+
+- **Seeking into a song past a move keeps the head where the move put it (#451)**: the timeline's
+  seek replay dropped every finished effect, moves included, so a seek left a head where it was.
+  Finished moves are now replayed in cue order and committed to pose memory, so a later move's turn
+  is chosen from where the earlier one ended, as live. A layer clear or stopped sequence in the
+  history keeps the pose, as live; a full clear releases it. Also fixed: a settled head vanished
+  from live state when an unrelated MIDI fader moved, because the engine's MIDI-only fast path
+  rebuilt states from the store alone; and snapshots carried no pan or tilt, so `evaluate_show` and
+  `get_fixture_state` could not say where a head points.
+
+- **Calibration capture sizes are bounded (#465, #466)**: `POST /api/calibrate/start` sized its
+  capture buffers from a duration and a sample rate taken straight from the request, for every input
+  channel, and reserved them before the device could refuse a rate it cannot run at. A request with
+  `"sample_rate": 4294967295` asked for hundreds of GB per channel, and a failed allocation aborts
+  the process, so one request could stop a show. Requested rates outside 8k to 768k are now
+  rejected, by the CLI `calibrate` path as well; the duration is compared explicitly, which also
+  fixes a NaN that would have panicked; and each channel's up-front reservation is capped at 4Mi
+  samples (about 87 seconds at 48kHz) and grows with the audio that actually arrives. A 64-channel
+  192kHz hit capture no longer reserves about 2.9GB on valid input.
+
+- **MVR import keeps a fixture's orientation at Y = +90° (#467)**: a matrix whose Y rotation is
+  exactly +90° is gimbal-locked, and the importer folded it into X with the wrong sign, so such a
+  fixture came in turned 180° and the export wrote the wrong rotation back out. Three Robin Tetra2s
+  in a real grandMA3 file were affected. Re-importing the MVR corrects them in the `.venue`. The
+  corpus round-trip check now compares against the source file's matrices, which is why it had
+  not caught this.
+
+- **GDTF mode listings count a template's every reference (#467)**: a mode that repeats a template
+  geometry — the Astera PB15's four-pixel effect mode — listed only one copy of its channels, so
+  `import-gdtf`, MCP `list_gdtf_modes` and the web UI's mode picker showed a footprint of 12 for
+  a mode that occupies 21. Patching by the listing would have overlapped the next fixture.
+
+- **Stage 3D shows an idle rig dark (#468)**: a page opened while the player was idle never
+  received the fixtures' state, and a fixture with no state was drawn at full, so the whole rig
+  looked lit before the first song. The player now sends the current state as a page connects,
+  and a fixture it reports nothing for is drawn dark.
+
+- **The hardware harness's `--no-build` runs the newest harness binary (#464)**:
+  `scripts/hardware-test.sh --no-build` preferred a release `mtrack-harness` whenever one existed,
+  so a stale one judged a fresh player by old expectations and reported correct bytes as failures.
+  The newest of debug and release now wins, as it already did for the player, and the header prints
+  the harness's path and age.
 
 ## [0.16.0] - 2026-08-19
 

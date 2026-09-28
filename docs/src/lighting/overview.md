@@ -37,8 +37,19 @@ you want to.
 - **Tag-Based Group Resolution**: Fixtures are tagged with capabilities and roles.
   The system automatically selects optimal fixtures based on constraints.
 - **Effects Engine**: Built-in effects (static, cycle, chase, strobe, pulse, dimmer,
-  rainbow) with layering, blend modes, and timing control. All effects require an explicit
-  duration — there are no perpetual or permanent effects.
+  rainbow, move) with layering, blend modes, and timing control. All effects require an
+  explicit duration — there are no perpetual or permanent effects.
+- **Movers and Positions**: The `move` effect aims moving heads at named focus points in a
+  `.venue` file, or at explicit pan and tilt angles. See the
+  [Move Effect](effects.md#move-effect) and [Venue files with positions](configuration.md#venue-files-with-positions-venue).
+- **GDTF and MVR**: Import a manufacturer's GDTF file as a fixture type, and a venue's MVR
+  file as a positioned venue; export a venue back out as MVR. See
+  [GDTF-referential fixture types](configuration.md#gdtf-referential-fixture-types-fixture)
+  and [Importing a venue's MVR](configuration.md#importing-a-venues-mvr).
+- **Pixel Fixtures**: Fixtures with cells can be driven per pixel with `per: cell` and
+  `spread`. See [Rich channel definitions](configuration.md#rich-channel-definitions-fixture).
+- **Stage 3D**: The web UI draws the venue as a 3D room with live beams. See
+  [Stage 3D](configuration.md#stage-3d).
 - **Timeline Editor**: Visual DAW-style cue authoring in the web UI with integrated
   audio playback and real-time stage preview.
 - **Sequences**: Reusable cue patterns that can be referenced from multiple shows.

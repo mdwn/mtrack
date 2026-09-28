@@ -1,0 +1,17 @@
+show "The Slow One" {
+    # Song start - gentle front wash
+    @00:00.000
+    front_wash: static color: "#cc99e6", dimmer: 30%, duration: 130s
+
+    # Add back wash for atmosphere
+    @00:30.000
+    back_wash: static color: "#66b3ff", dimmer: 20%, duration: 100s
+
+    # Gentle color fade
+    @01:00.000
+    front_wash: dimmer start: 30%, end: 60%, duration: 30s, curve: linear, layer: foreground
+
+    # Fade to black
+    @02:00.000
+    all_lights: dimmer start: 100%, end: 0%, duration: 10s, curve: linear, layer: foreground
+}
