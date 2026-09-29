@@ -139,6 +139,7 @@ pub fn router() -> Router<WebUiState> {
                 .delete(lighting_api::delete_lighting_file),
         )
         .route("/lighting/validate", post(lighting_api::validate_lighting))
+        .route("/lighting/readiness", get(lighting_api::get_readiness))
         .route("/config/store", get(config_api::get_config_store))
         .route("/config/audio", put(config_api::put_config_audio))
         .route("/config/midi", put(config_api::put_config_midi))
@@ -344,9 +345,25 @@ pub(super) mod test_helpers {
         test_state_inner(songs, None)
     }
 
+    /// Creates a WebUiState whose player runs the given DMX engine.
+    pub fn test_state_with_dmx(
+        songs: std::sync::Arc<crate::songs::Songs>,
+        dmx_engine: std::sync::Arc<crate::dmx::engine::Engine>,
+    ) -> (WebUiState, tempfile::TempDir) {
+        test_state_with_hardware(songs, None, Some(dmx_engine))
+    }
+
     fn test_state_inner(
         songs: std::sync::Arc<crate::songs::Songs>,
         audio: Option<std::sync::Arc<dyn crate::audio::Device>>,
+    ) -> (WebUiState, tempfile::TempDir) {
+        test_state_with_hardware(songs, audio, None)
+    }
+
+    fn test_state_with_hardware(
+        songs: std::sync::Arc<crate::songs::Songs>,
+        audio: Option<std::sync::Arc<dyn crate::audio::Device>>,
+        dmx_engine: Option<std::sync::Arc<crate::dmx::engine::Engine>>,
     ) -> (WebUiState, tempfile::TempDir) {
         use crate::player::PlayerDevices;
         use crate::playlist;
@@ -372,7 +389,7 @@ pub(super) mod test_helpers {
             audio,
             mappings: None,
             midi: None,
-            dmx_engine: None,
+            dmx_engine,
             sample_engine: None,
             trigger_engine: None,
         };

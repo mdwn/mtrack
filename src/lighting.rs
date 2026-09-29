@@ -30,6 +30,7 @@ mod layering_tests;
 pub mod lint;
 pub mod mvr;
 pub mod parser;
+pub mod readiness;
 pub mod system;
 // Tempo lives at the crate root (shared with the metronome and song config);
 // re-exported here so existing `lighting::tempo::…` paths keep working.

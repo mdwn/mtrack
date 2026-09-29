@@ -1487,6 +1487,13 @@ impl SongLoadFailure {
     pub fn error(&self) -> &str {
         &self.error
     }
+
+    /// Whether the song failed because one of its lighting shows would not
+    /// load — the file is missing, unreadable, or does not parse. A song that
+    /// fails to load takes its shows with it, so this is the only trace of them.
+    pub fn concerns_lighting(&self) -> bool {
+        self.error.contains("DSL lighting show")
+    }
 }
 
 /// A registry of songs for use by the multitrack player.

@@ -30,6 +30,16 @@ pub struct LightingSystem {
     /// Global fixture types.
     fixture_types: HashMap<String, FixtureType>,
 
+    /// Why a fixture type named in a file did not load (a GDTF archive that
+    /// would not expand, rich syntax in a `.light` file), by type name.
+    /// Recorded where the loader already knows, so a caller can say why
+    /// instead of only that the type is missing.
+    fixture_type_errors: HashMap<String, String>,
+
+    /// Fixture type files that did not parse at all, as `file: error`. The
+    /// types inside are unnamed, so these explain any type that is missing.
+    fixture_type_file_errors: Vec<String>,
+
     /// Venues.
     venues: HashMap<String, Venue>,
 
@@ -86,6 +96,8 @@ impl LightingSystem {
     pub fn new() -> LightingSystem {
         LightingSystem {
             fixture_types: HashMap::new(),
+            fixture_type_errors: HashMap::new(),
+            fixture_type_file_errors: Vec::new(),
             venues: HashMap::new(),
             current_venue: None,
             inline_fixtures: HashMap::new(),
@@ -214,6 +226,25 @@ impl LightingSystem {
     /// Returns an iterator over the (name, fixture type) pairs known to the system.
     pub fn fixture_types_iter(&self) -> impl Iterator<Item = (&String, &FixtureType)> {
         self.fixture_types.iter()
+    }
+
+    /// Why a fixture of type `name` cannot be patched, or `None` when the type
+    /// loaded. The loader's own reason when it recorded one, otherwise that no
+    /// type by that name exists (with any file that failed to parse, since the
+    /// missing type may have been inside it).
+    pub fn fixture_type_problem(&self, name: &str) -> Option<String> {
+        if self.fixture_types.contains_key(name) {
+            return None;
+        }
+        if let Some(reason) = self.fixture_type_errors.get(name) {
+            return Some(reason.clone());
+        }
+        let mut reason = format!("no fixture type named '{name}' is defined");
+        if !self.fixture_type_file_errors.is_empty() {
+            reason.push_str("; fixture type files that failed to parse: ");
+            reason.push_str(&self.fixture_type_file_errors.join("; "));
+        }
+        Some(reason)
     }
 
     /// Returns an iterator over the (name, logical group) pairs known to the
@@ -350,6 +381,7 @@ impl LightingSystem {
                                     "Failed to expand GDTF-referential fixture type; \
                                      skipping — fixtures of this type will not light"
                                 );
+                                self.fixture_type_errors.insert(name, e.to_string());
                                 continue;
                             }
                         }
@@ -364,6 +396,11 @@ impl LightingSystem {
                             "Rich channel syntax (fine, range, functions) belongs in a \
                              .fixture file; rename the file — skipping this type"
                         );
+                        self.fixture_type_errors.insert(
+                            name,
+                            "rich channel syntax belongs in a .fixture file, not a .light file"
+                                .to_string(),
+                        );
                         continue;
                     } else {
                         info!(fixture_type = name, "Loading fixture type");
@@ -374,6 +411,10 @@ impl LightingSystem {
             }
             Err(e) => {
                 warn!(file = %path.display(), error = %e, "Failed to parse fixture type file");
+                self.fixture_type_file_errors.push(format!(
+                    "{}: {e}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                ));
             }
         }
 
@@ -1026,6 +1067,31 @@ mod tests {
             "a failed expansion must not register an empty shell"
         );
         assert!(system.fixture_types.contains_key("Par"));
+    }
+
+    #[test]
+    fn a_type_that_did_not_load_says_why() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path();
+        let ft_dir = base.join("lighting/fixture_types");
+        std::fs::create_dir_all(&ft_dir).expect("mkdir");
+        std::fs::write(
+            ft_dir.join("mixed.fixture"),
+            "fixture_type \"Ghost\"\n  from gdtf(\"lighting/library/missing.gdtf\", mode \"X\")\n{ }\n\nfixture_type \"Par\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n",
+        )
+        .expect("write");
+        std::fs::write(ft_dir.join("broken.light"), "fixture_type {{{").expect("write");
+
+        let mut system = LightingSystem::new();
+        system
+            .load_fixture_types_directory(&ft_dir, base)
+            .expect("loads");
+        assert_eq!(system.fixture_type_problem("Par"), None);
+        let ghost = system.fixture_type_problem("Ghost").expect("ghost failed");
+        assert!(ghost.contains("missing.gdtf"), "{ghost}");
+        let nope = system.fixture_type_problem("Nope").expect("nope is absent");
+        assert!(nope.contains("no fixture type named 'Nope'"), "{nope}");
+        assert!(nope.contains("broken.light"), "{nope}");
     }
 
     #[test]

@@ -59,6 +59,60 @@ enum ProbeError {
     Unreadable(String),
 }
 
+/// What olad's web server said about a set of universes.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PatchReport {
+    /// Whether olad's web server answered at all. `false` means nothing was
+    /// learned about any universe.
+    pub reachable: bool,
+    /// Why it did not answer, when it did not.
+    pub unreachable_reason: Option<String>,
+    /// Universes olad has no output port patched to.
+    pub unpatched: Vec<u16>,
+    /// Universes whose answer could not be read, with why. Not a finding
+    /// either way: olad answered, but not in a shape that settles the question.
+    pub unreadable: Vec<(u16, String)>,
+}
+
+/// Asks olad's web server about each universe, once, in a settled order.
+///
+/// Blocking, and bounded: every request has [`PROBE_DEADLINE`], and an
+/// unreachable server ends the run at the first universe rather than timing
+/// out once per universe. Callers on an async runtime belong on the blocking
+/// pool.
+pub fn probe_universes(http_port: u16, universes: &[u16]) -> PatchReport {
+    probe_universes_at(OLAD_HOST, http_port, universes)
+}
+
+fn probe_universes_at(host: &str, http_port: u16, universes: &[u16]) -> PatchReport {
+    // The same universe can appear under several devices; ask about each one
+    // once, and in a settled order.
+    let mut universes = universes.to_vec();
+    universes.sort_unstable();
+    universes.dedup();
+
+    let mut report = PatchReport {
+        reachable: true,
+        ..Default::default()
+    };
+    for universe in universes {
+        match probe_universe(host, http_port, universe) {
+            Ok(true) => report.unpatched.push(universe),
+            Ok(false) => {}
+            // Nothing answered, so nothing will: stop rather than asking again.
+            Err(ProbeError::Unreachable(e)) => {
+                report.reachable = false;
+                report.unreachable_reason = Some(e);
+                break;
+            }
+            // This universe alone is unreadable. The next one may not be, and
+            // it may be the one the operator is about to run.
+            Err(ProbeError::Unreadable(e)) => report.unreadable.push((universe, e)),
+        }
+    }
+    report
+}
+
 /// Warns about every configured universe olad would silently drop frames for.
 ///
 /// Runs detached: the probe must never delay engine startup or DMX output.
@@ -67,12 +121,6 @@ enum ProbeError {
 /// engine, ends on its own within seconds, and the only thing a shutdown could
 /// gain by waiting for it is a warning nobody is left to read.
 pub fn warn_unpatched_universes(http_port: u16, universes: Vec<u16>) {
-    // The same universe can appear under several devices; ask about each one
-    // once, and in a settled order.
-    let mut universes = universes;
-    universes.sort_unstable();
-    universes.dedup();
-
     if universes.is_empty() {
         return;
     }
@@ -80,34 +128,29 @@ pub fn warn_unpatched_universes(http_port: u16, universes: Vec<u16>) {
     let spawned = thread::Builder::new()
         .name("olad-patch-check".to_string())
         .spawn(move || {
-            for universe in universes {
-                match probe_universe(OLAD_HOST, http_port, universe) {
-                    Ok(true) => warn!(
-                        universe,
-                        "Universe {universe} is configured under dmx.universes but has no output \
-                         port patched in olad — olad will silently drop every frame mtrack \
-                         streams there. Patch one (ola_patch -d <device> -p <port> -u {universe}, \
-                         or olad's web UI on :{http_port})."
-                    ),
-                    Ok(false) => {}
-                    // Nothing answered, so nothing will: stop, and say so once
-                    // rather than once per universe. olad's web server is
-                    // optional and this check is advisory, so debug is loud
-                    // enough.
-                    Err(ProbeError::Unreachable(e)) => {
-                        debug!(
-                            "could not reach olad's web server on {OLAD_HOST}:{http_port} to \
-                             verify patch state: {e}"
-                        );
-                        return;
-                    }
-                    // This universe alone is unreadable. The next one may not
-                    // be, and it may be the one the operator is about to run.
-                    Err(ProbeError::Unreadable(e)) => debug!(
-                        universe,
-                        "could not verify olad patch state for universe {universe}: {e}"
-                    ),
-                }
+            let report = probe_universes(http_port, &universes);
+            for universe in &report.unpatched {
+                warn!(
+                    universe,
+                    "Universe {universe} is configured under dmx.universes but has no output \
+                     port patched in olad — olad will silently drop every frame mtrack \
+                     streams there. Patch one (ola_patch -d <device> -p <port> -u {universe}, \
+                     or olad's web UI on :{http_port})."
+                );
+            }
+            for (universe, e) in &report.unreadable {
+                debug!(
+                    universe,
+                    "could not verify olad patch state for universe {universe}: {e}"
+                );
+            }
+            // olad's web server is optional and this check is advisory, so
+            // debug is loud enough.
+            if let Some(e) = &report.unreachable_reason {
+                debug!(
+                    "could not reach olad's web server on {OLAD_HOST}:{http_port} to \
+                     verify patch state: {e}"
+                );
             }
         });
 
@@ -370,6 +413,44 @@ mod test {
             probe_universe("127.0.0.1", port, 1),
             Err(ProbeError::Unreachable(_))
         ));
+    }
+
+    #[test]
+    fn a_report_lists_what_olad_said_about_each_universe() {
+        // Three universes, three connections: patched, never-heard-of, garbage.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        let answers = [
+            http("HTTP/1.1 200 OK", PATCHED_BODY),
+            http("HTTP/1.1 500 Server Error", OLAD_MISSING_UNIVERSE),
+            "not an http response at all".to_string(),
+        ];
+        thread::spawn(move || {
+            for answer in answers {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut request = [0u8; 1024];
+                    let _ = stream.read(&mut request);
+                    let _ = stream.write_all(answer.as_bytes());
+                }
+            }
+        });
+        // Out of order and duplicated: asked once each, in a settled order.
+        let report = probe_universes_at("127.0.0.1", port, &[3, 1, 2, 1]);
+        assert!(report.reachable);
+        assert_eq!(report.unpatched, vec![2]);
+        assert_eq!(report.unreadable.len(), 1);
+        assert_eq!(report.unreadable[0].0, 3);
+    }
+
+    #[test]
+    fn a_report_from_a_dead_web_server_is_unreachable_and_stops_early() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+        let report = probe_universes_at("127.0.0.1", port, &[1, 2, 3]);
+        assert!(!report.reachable);
+        assert!(report.unreachable_reason.is_some());
+        assert!(report.unpatched.is_empty() && report.unreadable.is_empty());
     }
 
     #[test]
