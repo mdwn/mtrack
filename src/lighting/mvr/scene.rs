@@ -130,8 +130,10 @@ impl Matrix {
         let (rx, rz) = if ry.cos().abs() > 1e-6 {
             (r32.atan2(r33), r21.atan2(r11))
         } else {
-            // Gimbal lock: fold the whole rotation into X.
-            ((-v[0]).atan2(v[1]), 0.0)
+            // Gimbal lock: fold the whole rotation into X. With rz = 0,
+            // R = Ry·Rx and v = (sin(ry)·sin x, cos x, 0), where
+            // sin(ry) = -r31 = ±1.
+            ((-r31 * v[0]).atan2(v[1]), 0.0)
         };
         ([rx.to_degrees(), ry.to_degrees(), rz.to_degrees()], exact)
     }
@@ -880,6 +882,23 @@ pub(super) mod tests {
         xml.push_str("</GeneralSceneDescription>");
         let err = parse_scene(&xml).unwrap_err().to_string();
         assert!(err.contains("nests deeper"), "{err}");
+    }
+
+    #[test]
+    fn gimbal_lock_keeps_the_sign_of_x_at_either_pole() {
+        // Robin Tetra2 in Template_Stage1: Y = +90°, so column v is
+        // (sin x, cos x, 0) and X must come out −90°, not +90°.
+        let m = Matrix {
+            u: [0.0, 0.0, -1.0],
+            v: [-1.0, 0.0, 0.0],
+            w: [0.0, 1.0, 0.0],
+            o: [0.0; 3],
+        };
+        let (r, exact) = m.rotation_degrees();
+        assert!(exact);
+        for (got, want) in r.iter().zip([-90.0, 90.0, 0.0]) {
+            assert!((got - want).abs() < 1e-9, "{r:?}");
+        }
     }
 
     #[test]

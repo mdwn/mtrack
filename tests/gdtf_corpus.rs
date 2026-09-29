@@ -80,6 +80,13 @@ fn pixelbrick_rgbs_matches_the_hand_written_definition() {
     assert_eq!(ft.footprint(), 4);
     // The three numbers hand-transcribed from the manual, recovered from
     // the manufacturer's own file.
+    // The effect mode references a template four times; its summary must
+    // reserve the expanded footprint, not the template's raw offsets.
+    let effect = gdtf::mode_summaries(&description)
+        .into_iter()
+        .find(|s| s.name == "16: Effect Mode RGB")
+        .expect("the PB15 has the effect mode");
+    assert_eq!(effect.footprint, 21);
     assert_eq!(ft.strobe_dmx_offset(), Some(7));
     assert_eq!(ft.min_strobe_frequency(), Some(0.4));
     assert_eq!(ft.max_strobe_frequency(), Some(25.0));

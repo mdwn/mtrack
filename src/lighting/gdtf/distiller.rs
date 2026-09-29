@@ -53,20 +53,49 @@ pub struct ModeSummary {
     pub channel_count: usize,
 }
 
-/// Summarizes every mode in a description.
+/// Summarizes every mode in a description. A channel on a template geometry
+/// counts once per `GeometryReference`, shifted by that reference's Break —
+/// the same placement [`distill`] makes — so the footprint is the one a
+/// patch must actually reserve.
 pub fn mode_summaries(description: &Description) -> Vec<ModeSummary> {
     description
         .modes
         .iter()
-        .map(|mode| ModeSummary {
-            name: mode.name.clone(),
-            footprint: mode
-                .channels
-                .iter()
-                .flat_map(|c| c.offsets.iter().copied())
-                .max()
-                .unwrap_or(0),
-            channel_count: mode.channels.len(),
+        .map(|mode| {
+            let mut footprint: u32 = 0;
+            let mut channel_count = 0usize;
+            // Placement warnings are the distiller's to report, not ours.
+            let mut ignored = Vec::new();
+            for channel in &mode.channels {
+                let top = channel.offsets.iter().copied().max().unwrap_or(0) as u32;
+                match instances_of(
+                    description,
+                    &channel.geometry,
+                    &channel.dmx_break,
+                    0,
+                    &mut ignored,
+                ) {
+                    Some(instances) if !channel.offsets.is_empty() => {
+                        for shift in instances.iter().filter_map(|i| i.shift) {
+                            // A byte past the universe is skipped by the
+                            // distiller, so it reserves nothing here.
+                            if top + shift as u32 <= 512 {
+                                channel_count += 1;
+                                footprint = footprint.max(top + shift as u32);
+                            }
+                        }
+                    }
+                    _ => {
+                        channel_count += 1;
+                        footprint = footprint.max(top);
+                    }
+                }
+            }
+            ModeSummary {
+                name: mode.name.clone(),
+                footprint: footprint as u16,
+                channel_count,
+            }
         })
         .collect()
 }
@@ -1231,6 +1260,19 @@ mod tests {
     <DMXChannel Offset="13" Geometry="Lens"><LogicalChannel Attribute="ColorAdd_W"><ChannelFunction Name="W" Attribute="ColorAdd_W" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
   </DMXChannels></DMXMode></DMXModes>
 </FixtureType></GDTF>"#;
+
+    #[test]
+    fn mode_summary_counts_template_references() {
+        let description = parse_description(TEMPLATE_PIXELS).unwrap();
+        let summary = &mode_summaries(&description)[0];
+        let distilled = distill(&description, "Pixel", "Templ").unwrap();
+        // Background channels 1-5 (three of them), then the four Lens
+        // channels at 10-13 once per reference; P3's Break puts its bytes
+        // 8 past the template's (offsets 18-21).
+        assert_eq!(summary.channel_count, 3 + 4 * 3);
+        assert_eq!(summary.footprint, 21);
+        assert_eq!(summary.footprint, distilled.fixture_type.footprint());
+    }
 
     #[test]
     fn template_channels_expand_per_reference_and_gang_by_shape() {
