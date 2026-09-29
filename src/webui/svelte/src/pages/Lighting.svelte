@@ -79,12 +79,7 @@
   </nav>
 
   {#if route.sub === "overview"}
-    <LightingOverview
-      profileName={running?.profileName ?? null}
-      currentVenue={running?.lighting?.current_venue ?? null}
-      fixtureTypesDir={ftDir}
-      venuesDir={venueDir}
-    />
+    <LightingOverview profileName={running?.profileName ?? null} />
   {:else if route.sub === "fixtures"}
     <FixtureTypesPanel dir={ftDir} />
   {:else if route.sub === "venues"}

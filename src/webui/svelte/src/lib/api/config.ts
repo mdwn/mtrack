@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Readiness } from "../lighting/readiness";
 import {
   get,
   post,
@@ -494,6 +495,13 @@ export async function fetchLightingGroups(): Promise<
   if (!res.ok) throw await apiError(res, "Failed to fetch lighting groups");
   const data = await res.json();
   return data.groups ?? [];
+}
+
+/** The facts behind the Lighting overview's five checks. */
+export async function fetchLightingReadiness(): Promise<Readiness> {
+  const res = await get("/lighting/readiness");
+  if (!res.ok) throw await apiError(res, "Failed to fetch lighting readiness");
+  return res.json();
 }
 
 /** A `.light` file in a lighting directory that could not be parsed. */

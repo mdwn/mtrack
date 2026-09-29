@@ -305,6 +305,32 @@ export const PLAYBACK_STATE = {
   active_section: null,
 };
 
+/** The readiness facts of a rig where everything lines up. Specs that need a
+ *  problem route their own copy of this with `page.route`; nothing mutates it. */
+export const READINESS = {
+  dmx: true,
+  venue: {
+    name: "test-venue",
+    fixtures: 8,
+    placed: 8,
+    focus_points: ["center"],
+  },
+  fixture_types: { in_use: ["par", "mover"], unresolved: [] },
+  groups: [{ name: "front_wash", fixtures: 4, songs: ["Test Song Alpha"] }],
+  shows: [
+    {
+      song: "Test Song Alpha",
+      files: ["show.light"],
+      warnings: [],
+    },
+  ],
+  output: {
+    universes: [1],
+    unconfigured: [],
+    olad: { reachable: true, unpatched: [] },
+  },
+};
+
 export const METADATA_STATE = {
   type: "metadata",
   fixtures: {

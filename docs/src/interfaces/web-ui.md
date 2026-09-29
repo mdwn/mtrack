@@ -503,7 +503,7 @@ five pages, shown as tabs across the top. Each page has its own address, so you 
 
 | Page | Address | What it holds |
 |---|---|---|
-| Overview | `#/lighting` | The current venue, how many fixture types and venues there are, and links to the other pages |
+| Overview | `#/lighting` | The readiness checks: will your show reach the lights? |
 | Fixture Types | `#/lighting/fixtures` | The kinds of fixture in your rig |
 | Venues | `#/lighting/venues` | Where fixtures sit, and the stage plot |
 | Groups | `#/lighting/groups` | Logical groups and the current venue, for one hardware profile |
@@ -522,6 +522,43 @@ for the profile you pick. It starts on the profile the player is running (the on
 on another profile. Saving goes through the same API as the Config page: a profile file when the
 config sets `profiles_dir`, otherwise the profile inside `mtrack.yaml`. A profile with no DMX
 section has nothing to edit here; the page links to Config to enable lighting first.
+
+### Overview: will your show reach the lights?
+
+The Overview answers one question, and says what to fix when the answer is no. It shows five
+checks, numbered in the order a show needs them, then a **Needs attention** list, then the live
+stage. Every check is something mtrack already works out; the Overview gathers them in one place.
+
+| Check | Ready when |
+|---|---|
+| 1. Fixture types | Every fixture in the current venue has a type that loaded. A type made from a GDTF file counts only if the file could be read. |
+| 2. Venue | A current venue is chosen and loaded. |
+| 3. Groups | Every group your songs' shows use finds at least one fixture in the current venue. |
+| 4. Shows | Every song's light shows load, and nothing stops a cue from doing what it says (for example, a strobe sent to fixtures that cannot strobe, or a cue aimed at a focus point the venue does not have). |
+| 5. Output | Every universe the venue's fixtures use has an output under `dmx.universes`, and olad has an output port patched to each. |
+
+Each check is in one of four states, always written out in words and not only shown by colour:
+
+- **Ready**: nothing to do.
+- **Needs attention**: the show plays, but something will not do what it says.
+- **Blocked**: nothing reaches the lights. There is no venue, no DMX output, a fixture type that
+  did not load, a show that does not load, or a universe with no output.
+- **Unknown**: mtrack could not find out. This happens when a check depends on another that is
+  blocked (a fixture type cannot be checked with no venue), and when olad's web server does not
+  answer, so the patch cannot be read.
+
+A ready check shows a one-line summary, such as "8 fixtures, all placed". A check that is not
+ready shows how many things need fixing.
+
+The **Needs attention** list has one entry per finding, grouped by check, and each entry links
+to where it is fixed: Fixture types, Venues or Groups in this area, the song's lighting editor
+for a show, and the running profile's DMX settings in Config for output. Some notes from a
+song's show checks, such as a cue that starts after the song ends, are listed under the song
+marked **Note**. They are worth reading, but they do not change a check's state.
+
+The page checks again when the venue or the configuration reloads, so after you fix something,
+the check turns ready without a refresh. A profile with no DMX output shows only the Output check
+as blocked, with a link to enable it.
 
 ### Fixture Types
 

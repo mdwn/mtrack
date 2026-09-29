@@ -13,135 +13,367 @@
      *
      * -->
 <script lang="ts">
+  import { untrack } from "svelte";
   import { t } from "svelte-i18n";
-  import { fetchFixtureTypes, fetchVenues } from "../../lib/api/config";
+  import { fetchLightingReadiness } from "../../lib/api/config";
+  import {
+    evaluateReadiness,
+    type Check,
+    type Finding,
+    type Readiness,
+  } from "../../lib/lighting/readiness";
+  import { metadataStore, reloadStore, venueStore } from "../../lib/ws/stores";
+  import StageView from "../StageView.svelte";
 
   interface Props {
-    /** The running profile's name, once known. */
+    /** The running profile's name, once known: the DMX settings link needs it. */
     profileName: string | null;
-    /** The running profile's current venue, if it selects one. */
-    currentVenue: string | null;
-    fixtureTypesDir: string;
-    venuesDir: string;
   }
 
-  let { profileName, currentVenue, fixtureTypesDir, venuesDir }: Props =
-    $props();
+  let { profileName }: Props = $props();
 
-  let typeCount = $state<number | null>(null);
-  let venueCount = $state<number | null>(null);
+  let readiness = $state<Readiness | null>(null);
+  let error = $state<string | null>(null);
 
+  // A refresh that arrives while one is running is folded into a single
+  // follow-up: a reload sends both a reload and a metadata message, and the
+  // second answer is the one that matters.
+  let inflight = false;
+  let again = false;
+  async function refresh() {
+    if (inflight) {
+      again = true;
+      return;
+    }
+    inflight = true;
+    try {
+      readiness = await fetchLightingReadiness();
+      error = null;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      inflight = false;
+      if (again) {
+        again = false;
+        refresh();
+      }
+    }
+  }
+
+  // Re-check when the venue or the config reloads (the server broadcasts
+  // metadata after either), not on a timer. The stores' first values, set on
+  // connect, also land here, which is the initial load.
   $effect(() => {
-    const dir = fixtureTypesDir;
-    fetchFixtureTypes(dir || undefined)
-      .then((r) => (typeCount = Object.keys(r.fixtureTypes).length))
-      .catch(() => (typeCount = null));
+    void $metadataStore;
+    void $venueStore;
+    void $reloadStore;
+    untrack(refresh);
   });
 
-  $effect(() => {
-    const dir = venuesDir;
-    fetchVenues(dir || undefined)
-      .then((r) => (venueCount = Object.keys(r.venues).length))
-      .catch(() => (venueCount = null));
-  });
-
-  let groupsHref = $derived(
-    profileName
-      ? `#/lighting/groups?profile=${encodeURIComponent(profileName)}`
-      : "#/lighting/groups",
+  let checks = $derived<Check[]>(
+    readiness ? evaluateReadiness(readiness, { profileName }) : [],
   );
+  let withFindings = $derived(checks.filter((c) => c.findings.length > 0));
+
+  /** A check's findings, grouped under their song where they have one. */
+  function grouped(
+    findings: Finding[],
+  ): { song: string | null; items: Finding[] }[] {
+    const out: { song: string | null; items: Finding[] }[] = [];
+    for (const f of findings) {
+      const song = f.song ?? null;
+      let group = out.find((g) => g.song === song);
+      if (!group) {
+        group = { song, items: [] };
+        out.push(group);
+      }
+      group.items.push(f);
+    }
+    return out;
+  }
 </script>
 
-<div class="overview" data-testid="lighting-overview">
-  <dl class="overview__facts">
-    <div>
-      <dt>{$t("lighting.overview.currentVenue")}</dt>
-      <dd data-testid="overview-venue">
-        {currentVenue ?? $t("lighting.overview.noVenue")}
-      </dd>
-    </div>
-    <div>
-      <dt>{$t("lighting.fixtureTypes")}</dt>
-      <dd data-testid="overview-types">{typeCount ?? "-"}</dd>
-    </div>
-    <div>
-      <dt>{$t("lighting.venues")}</dt>
-      <dd data-testid="overview-venues">{venueCount ?? "-"}</dd>
-    </div>
-  </dl>
+<div class="hub" data-testid="lighting-overview">
+  <p class="hub__lede">{$t("lighting.hub.lede")}</p>
 
-  <ul class="overview__links">
-    <li>
-      <a href="#/lighting/fixtures">{$t("lighting.fixtureTypes")}</a>
-      <span>{$t("lighting.overview.fixturesHint")}</span>
-    </li>
-    <li>
-      <a href="#/lighting/venues">{$t("lighting.venues")}</a>
-      <span>{$t("lighting.overview.venuesHint")}</span>
-    </li>
-    <li>
-      <a href={groupsHref}>{$t("lighting.area.groups")}</a>
-      <span>{$t("lighting.overview.groupsHint")}</span>
-    </li>
-    <li>
-      <a href="#/lighting/stage">{$t("lighting.area.stage")}</a>
-      <span>{$t("lighting.overview.stageHint")}</span>
-    </li>
-  </ul>
+  {#if error}
+    <p class="hub__error" role="alert" data-testid="hub-error">
+      {$t("lighting.hub.error", { values: { error } })}
+      <button class="btn btn--sm" onclick={refresh}>{$t("common.retry")}</button
+      >
+    </p>
+  {/if}
+
+  {#if !readiness && !error}
+    <p class="hub__loading" data-testid="hub-loading">
+      {$t("lighting.hub.loading")}
+    </p>
+  {/if}
+
+  {#if readiness}
+    <ol class="hub__strip" aria-label={$t("lighting.hub.checksLabel")}>
+      {#each checks as check, i (check.key)}
+        <li
+          class="check check--{check.state}"
+          data-testid="check-{check.key}"
+          data-state={check.state}
+        >
+          <span class="check__num" aria-hidden="true">{i + 1}</span>
+          <h2 class="check__title">{$t(`lighting.hub.check.${check.key}`)}</h2>
+          <span class="check__state" data-testid="check-{check.key}-state">
+            <span class="check__dot" aria-hidden="true"></span>
+            {$t(`lighting.hub.state.${check.state}`)}
+          </span>
+          <p class="check__summary">
+            {$t(check.summary.key, { values: check.summary.params })}
+          </p>
+        </li>
+      {/each}
+    </ol>
+
+    <section class="hub__attention" aria-labelledby="hub-attention-title">
+      <h2 id="hub-attention-title" class="hub__section-title">
+        {$t("lighting.hub.attention.title")}
+      </h2>
+      {#if withFindings.length === 0}
+        <p class="hub__none" data-testid="hub-none">
+          {$t("lighting.hub.attention.none")}
+        </p>
+      {:else}
+        {#each withFindings as check (check.key)}
+          <div class="finding-group" data-testid="findings-{check.key}">
+            <h3 class="finding-group__title">
+              {$t(`lighting.hub.check.${check.key}`)}
+            </h3>
+            {#each grouped(check.findings) as group (group.song ?? "")}
+              {#if group.song}
+                <p class="finding-group__song">{group.song}</p>
+              {/if}
+              <ul class="findings">
+                {#each group.items as finding, n (n)}
+                  <li class="finding finding--{finding.severity}">
+                    <span class="finding__text">
+                      {#if finding.severity === "note"}
+                        <span class="finding__tag"
+                          >{$t("lighting.hub.note")}</span
+                        >
+                      {/if}
+                      {$t(finding.msg.key, { values: finding.msg.params })}
+                    </span>
+                    <a class="finding__fix" href={finding.href}
+                      >{$t(finding.linkKey)}</a
+                    >
+                  </li>
+                {/each}
+              </ul>
+            {/each}
+          </div>
+        {/each}
+      {/if}
+    </section>
+  {/if}
+
+  <section class="hub__stage" aria-labelledby="hub-stage-title">
+    <h2 id="hub-stage-title" class="hub__section-title">
+      {$t("lighting.hub.live")}
+    </h2>
+    <StageView />
+  </section>
 </div>
 
 <style>
-  .overview {
+  .hub {
     display: flex;
     flex-direction: column;
     gap: 20px;
   }
-  .overview__facts {
+  .hub__lede {
+    margin: 0;
+    color: var(--text-muted);
+  }
+  .hub__error {
+    margin: 0;
+    padding: 12px 16px;
+    border: 1px solid var(--border-danger);
+    background: var(--bg-danger);
+    border-radius: var(--nc-radius-md);
     display: flex;
     flex-wrap: wrap;
-    gap: 12px 32px;
-    padding: 16px 20px;
+    gap: 8px 12px;
+    align-items: center;
+  }
+  .hub__loading {
+    margin: 0;
+    color: var(--text-dim);
+  }
+  .hub__section-title {
+    margin: 0 0 8px;
+    font-family: var(--nc-font-display);
+    font-size: 16px;
+    font-weight: 700;
+  }
+
+  /* The strip: five cards in a row, wrapping to fewer columns as the width
+     drops and to one on a phone. */
+  .hub__strip {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 12px;
+  }
+  .check {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-areas:
+      "num title"
+      "state state"
+      "summary summary";
+    gap: 4px 10px;
+    align-items: center;
+    padding: 14px 16px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-top: 4px solid var(--check-color, var(--border));
+    border-radius: var(--nc-radius-md);
+    min-width: 0;
+  }
+  .check--ready {
+    --check-color: var(--green);
+  }
+  .check--attention {
+    --check-color: var(--yellow);
+  }
+  .check--blocked {
+    --check-color: var(--red);
+  }
+  .check--unknown {
+    --check-color: var(--text-dim);
+  }
+  .check__num {
+    grid-area: num;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: var(--nc-radius-pill);
+    background: var(--bg-surface);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .check__title {
+    grid-area: title;
+    margin: 0;
+    font-family: var(--nc-font-display);
+    font-size: 15px;
+    font-weight: 700;
+  }
+  .check__state {
+    grid-area: state;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .check__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: var(--nc-radius-pill);
+    background: var(--check-color, var(--border));
+  }
+  .check__summary {
+    grid-area: summary;
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+  }
+
+  .hub__attention,
+  .hub__stage {
     background: var(--card-bg);
     border: 1px solid var(--card-border);
     border-radius: var(--nc-radius-md);
-    margin: 0;
+    padding: 16px 20px;
   }
-  .overview__facts dt {
+  .hub__none {
+    margin: 0;
+    color: var(--text-muted);
+  }
+  .finding-group + .finding-group {
+    margin-top: 16px;
+  }
+  .finding-group__title {
+    margin: 0 0 6px;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-muted);
   }
-  .overview__facts dd {
-    margin: 2px 0 0;
-    font-size: 18px;
-    font-family: var(--nc-font-display);
-    font-weight: 700;
+  .finding-group__song {
+    margin: 8px 0 4px;
+    font-weight: 600;
   }
-  .overview__links {
+  .findings {
     list-style: none;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
   }
-  .overview__links li {
+  .finding {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 12px 20px;
-    background: var(--card-bg);
-    border: 1px solid var(--card-border);
-    border-radius: var(--nc-radius-md);
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 8px 12px;
+    background: var(--inset-bg);
+    border-left: 3px solid var(--border);
+    border-radius: var(--nc-radius-xs);
   }
-  .overview__links a {
+  .finding--blocked {
+    border-left-color: var(--red);
+  }
+  .finding--attention {
+    border-left-color: var(--yellow);
+  }
+  .finding__text {
+    flex: 1 1 260px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .finding__tag {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--nc-radius-pill);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .finding__fix {
     font-weight: 600;
     color: var(--accent);
+    white-space: nowrap;
   }
-  .overview__links span {
-    font-size: 13px;
-    color: var(--text-dim);
+
+  @media (max-width: 600px) {
+    .hub__strip {
+      grid-template-columns: 1fr;
+    }
+    .hub__attention,
+    .hub__stage {
+      padding: 12px 14px;
+    }
   }
 </style>
