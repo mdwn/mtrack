@@ -150,3 +150,66 @@ section loses its lighting subsection and points there.
 4. **The dashboard's stage card stops being an editor** and links to Venues.
    *Alternative:* keep editing in both — rejected by §2's one-place rule.
 5. **`#/stage` redirects** rather than being removed.
+
+## 8. L2 in detail: the readiness hub (draft 1, 2026-09-29)
+
+The Overview becomes the pitch's hub: five checks in the order a show needs
+them, each saying what is wrong in plain words and linking to where it is fixed.
+Every check is one mtrack already runs somewhere; L2 gathers them in one place.
+
+### 8.1 The five checks
+
+| Check | Ready when | Reads | Fixed at |
+|---|---|---|---|
+| **Fixture types** | every fixture in the current venue has a type that loaded (a GDTF type's archive expanded) | the loaded lighting system | Fixture types |
+| **Venue** | a current venue is selected and loaded | the loaded lighting system | Groups (choose), Venues (edit) |
+| **Groups** | every group a show uses finds at least one fixture in the current venue | show files + group resolution, as lint's `empty-group` | Groups; L3 later |
+| **Shows** | every song's light shows parse, and lint finds nothing that stops a cue doing what it says (`capability-gap`, `unbound-focus-point`) | each song's shows through the same lint MCP's `validate_lighting` runs | the song's lighting editor |
+| **Output** | every universe the venue's fixtures use has an output under `dmx.universes`, and olad reports an output port patched to each | lint's `unconfigured-universe`, the olad patch probe (#456) | Config → DMX; olad (`ola_patch`) |
+
+A check is **ready**, **needs attention** (the show plays but something will not
+do what it says), **blocked** (nothing reaches the lights: no venue, no DMX, a
+show that does not load), or **unknown** (its input is missing, e.g. olad's web
+server does not answer). Lint's advisory kinds (`unused-parameter`,
+`tempo-grid-mismatch`, `past-end-of-song` …) are listed under the song but do
+not change a check's state.
+
+### 8.2 `GET /api/lighting/readiness`
+
+Facts, not verdicts — the UI turns them into the states above, so wording and
+rules live in one place and are translatable.
+
+```json
+{
+  "dmx": true,
+  "venue": {"name": "built-in", "fixtures": 8, "placed": 8, "focus_points": ["center"]},
+  "fixture_types": {"in_use": ["Astera-PixelBrick"], "unresolved": [{"fixture": "Brick9", "type": "Nope", "reason": "…"}]},
+  "groups": [{"name": "front_wash", "fixtures": 4, "songs": ["Legions of Decay"]}],
+  "shows": [{"song": "Esaweg", "files": ["show.light"], "error": "Effect 'static' requires a 'duration' …",
+             "warnings": [{"kind": "capability-gap", "message": "…"}]}],
+  "output": {"universes": [1], "unconfigured": [], "olad": {"reachable": true, "unpatched": []}}
+}
+```
+
+- `venue` is `null` when none is current; `dmx` is `false` when the running
+  profile has no DMX, and the other sections are then empty.
+- `shows` lists every song with lighting, loaded or not; `error` is present
+  only when a file does not parse.
+- `olad` is `null` without DMX; `reachable: false` when its web server does not
+  answer within the probe's deadline (the same two seconds as the startup
+  probe).
+
+The lint context that MCP's `validate_lighting` builds (group counts and
+capabilities, focus points, universe coverage) moves into one function both
+call, so the hub and MCP can never disagree. The olad probe gains a function
+that returns what it found instead of only logging it; the startup warning
+keeps using it.
+
+### 8.3 The page
+
+The mockup's hub: the five checks as a numbered strip, then a **Needs
+attention** list — one entry per finding, grouped by check, each with its fix
+link — and the live stage card (not editable). A blocked or attention check
+shows its count; ready shows a one-line summary ("8 fixtures, all placed").
+The page refreshes when the venue or config reloads (the existing websocket
+metadata broadcast), not on a timer.
