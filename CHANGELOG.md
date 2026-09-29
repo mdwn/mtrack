@@ -9,243 +9,196 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Stage 3D page, rig models and MVR scenery (#443, #444, #446)**: the dashboard's stage card has a
-  **3D** button that opens `#/stage`, the venue as a room: a deck grid with the audience edge,
-  focus-point markers, an orbit camera with Front of house, Side and Top presets, a Labels toggle
-  (off by default above 40 fixtures) and unplaced fixtures on a tray downstage. Fixtures are drawn
-  from their rig model. Pan turns the pan node and tilt the tilt node, and beams are translucent
-  cones in the fixture's live color and level, styled by GDTF beam type: spots throw to the deck,
-  washes shorter and fainter, LED tiles a haze at the lens. The room is dark whatever the UI theme.
-  A beam shows the colour and level the engine sends the fixture, a CMY mover's included; a
-  fixture with no colour to mix, a wheel-only spot among them, draws white. three.js is its own chunk,
-  loaded only with this page.
-
-  A GDTF-backed type draws the archive's meshes when it ships them and GDTF primitives with sizes
-  otherwise; a native type gets a generic box with a 20 degree beam. Expanding a referential type
-  writes its rig to `lighting/.cache/assets/<archive sha256>/`, content-addressed and capped, and
-  `GET /api/lighting/assets/{*path}` serves it with an extension allowlist (json, glb, png, svg), a
-  size cap and containment to the asset root.
-
-  A venue seeded from an MVR also gets its scenery: truss, supports, video screens, projectors and
-  scene objects, with their transforms and meshes, distilled to
-  `lighting/.cache/assets/scenery/<mvr hash>/` in stage space and drawn under the fixtures. The deck
-  and framing widen to hold it. Meshes that are not glTF (`.3ds` and others) are reported and
-  skipped, and a mesh over its size cap or past the budget is skipped rather than failing the load.
-  The import report and CLI say how many scenery objects there are and how many meshes the 3D view
-  will not draw.
-
-- **MVR export links fixed fixtures to the focus point they are aimed at**: pre-viz tools
-  aim a fixture with no pan or tilt at its MVR `<Focus>` and, with none, at the origin — Blender
-  DMX turns every such fixture to face (0, 0, 0) whatever its rotation says, so an exported
-  house rig of eight floor-mounted bricks aimed at center stage opened with all eight pointing
-  at the origin. The export now links each fixed fixture to the venue focus point its beam
-  passes within a degree of, nearest first. Movers stay unlinked, since their aim is their
-  pose, and a fixed fixture aimed at no named point is left as before. Checked in Blender DMX:
-  linked, the bricks' beams meet center stage.
-
-- **MVR export, with embedded and generated GDTFs (#445)**: `mtrack export-mvr <venue>` and the
-  `export_mvr` MCP tool write a venue as an `.mvr` a console or pre-viz tool can open: every fixture
-  with its address and its position and rotation in MVR millimeters (the import's origin restored),
-  focus points, stable UUIDs derived from SHA-256, one layer (`--layers-from-tags` makes a layer per
-  fixture's first tag), and each fixture type's GDTF embedded from the library. A native type
-  (`.light` or a hand-written `.fixture`) has no GDTF, so one is generated from its channels, with
-  attribute names chosen so mtrack's own importer reads them back as the same channels, 16-bit
-  channels and functions included.
-
-  Exports land in `lighting/export/` under a bare `.mvr` name (`-o` names it; the default is
-  `<venue>.mvr`), and the directory must resolve inside the project, so a symlinked export directory
-  is refused and neither the CLI nor the MCP tool can overwrite another project file. All ten
-  gdtf.eu corpus venues import, export and re-import as a merge with nothing changed.
-
-  Fixed on the way: a one-digit DMX address followed by a trailing comment in a `.venue` captured the
-  comment as part of the number, so an unplaced fixture at address 1 to 9 in a seeded venue failed to
-  parse back.
-
-- **Per-cell control (#448, #449, #450)**: a pixel fixture's cells can be driven separately. Cells
-  live on the fixture type: a GDTF pixel mode does not list its cells as sections, it puts channels
-  on a template geometry once and instantiates it through `GeometryReference`s whose `Break` gives
-  each instance's DMX offset, and the importer now expands that per reference, through nested
-  references. The Spiider's pixel mode goes from no cells to 19, with offsets that follow its Break
-  table. A hand-written type declares them with `cell "n" at (x, y, z) { channel ... }` blocks in a
-  `.fixture` file, from which the fixture-level channels are derived; `.light` refuses them. The
-  fixture-level channels stay ganged, so a show that never asks for cells produces the same DMX as
-  before. Cached expansions regenerate (distiller version 3).
-
-  In a show, `per: cell` on an effect expands a group's fixtures to their cells when the effect
-  starts, so a chase runs along the cells in stage order and a group of mixed fixtures still works;
-  a `move` never expands. `spread: 360deg` offsets each ordered target's phase for `rainbow` and
-  `cycle`, painting one rainbow along a bar. Three lints say when `per: cell` or `spread` does
-  nothing. A cell registers as a sub-fixture named `fixture/cell` inside the engine; live views,
-  the plot and the venue tools see fixtures only.
-
-  Per-cell state is shown where fixture state is shown. The websocket `state` message carries a
-  `cells` map for fixtures with a per-cell effect running, fixture metadata carries each type's
-  cells, and MCP `get_fixture_state` and `evaluate_show` report the same folded state. The stage
-  plot draws a pixel fixture as a segmented bar when its cells lie along a line and a wedge disc
-  when they spread in two directions. In 3D each cell's lens and beam take the cell's color, matched
-  by GDTF geometry name; a cell with no matching lens warns once per fixture in the browser console
-  and falls back to the fixture color.
-
-  One naming change: a section instantiated through a single reference now takes the reference's
-  name, so the Spiider's flower channels are `red:p1_flower` rather than `red:flower`. Only
-  section-suffixed names are affected, and only a `static` naming one would notice.
-
-- **Aiming follows the rig's geometry, from the lens (#454, #455)**: a fixture type with a GDTF rig
-  is aimed through its own joint chain rather than assuming a plain mounting. A manufacturer who
-  yaws the yoke geometry in the file, as the Ayrton MagicDot SX does by 90 degrees, now aims
-  correctly, and a geometry that does not reduce to pan and tilt (a tilt axis not perpendicular to
-  the pan axis, a lens outside the tilt plane) is refused with a reason in the log, with the plain
-  convention standing in. A non-plain calibration is logged at load. The beam is aimed from the
-  lens, which moves with the pose, rather than from the mounting point a head's length away, and
-  the plot's footprint starts from the lens. Against the ten local corpus MVRs, all 56 mover rigs
-  agree with the pointing math in direction and lens position to 0.01 degrees.
-
-  Repeats of a ganged channel (an LED bar's sections mirrored to one color) appear in state
-  snapshots as `<channel>#2`, `<channel>#3` and so on, so `get_fixture_state` and `evaluate_show`
-  show what the wire carries. `#` is now reserved in channel names and the parser refuses it.
-  Snapshots also carry the wire bytes for pan and tilt (`pan`, `pan_fine`, `tilt`, `tilt_fine`), so
-  they can say where a head points; `dark` ignores them.
-
-- **Golden tests from files to bytes, and an example show for movers (#451)**: a new suite runs what
-  a user writes -- a GDTF archive, `.fixture` files, a `.venue` with rotations, a `.light` show --
-  through to the DMX frame, against expectations worked out by hand from the documented
-  conventions: four movers aimed at three focus points, and two pixel bars under one `spread:
-  360deg, per: cell` rainbow. `examples/lighting/shows/movers_demo.light` aims the example venue's
-  movers. `evaluate_show` now receives the venue's focus points; before, every `move focus:`
-  evaluated as unbound.
-
-- **GDTF fixture import (#422, #423, #425, #426)**: fixture types can be built from a
-  manufacturer's GDTF archive instead of a hand-written channel map. A type references one with
-  `from gdtf("lighting/library/x.gdtf", mode "8: RGBS")` in a `.fixture` file — which loads beside
-  `.light` as a peer — carrying only overrides in its body. A referential type that declares its
-  own `channel_map` is a parse error: its channels come from the archive.
+- **Fixture types from GDTF (#422, #423, #425, #426, #441, #448, #462, #467, #470, #474)**: a
+  fixture type can be built from a manufacturer's GDTF archive instead of a hand-written channel
+  map. A type references one with `from gdtf("lighting/library/x.gdtf", mode "8: RGBS")` in a
+  `.fixture` file, carrying only overrides in its body; a referential type that declares its own
+  `channel_map` is a parse error, since its channels come from the archive.
 
   Import from wherever you work. `mtrack import-gdtf <file>` lists an archive's modes and `--mode`
-  imports one; `list_gdtf_modes` and `import_gdtf` expose the same flow over MCP; and the web UI's
-  fixture-types tab takes an upload, offers a mode picker showing each mode's channel count and
-  footprint, and reports the written files, the resolved channels and every distillation warning.
-  All three go through one importer, and nothing is written until the chosen mode distills.
+  imports one; `list_gdtf_modes` and `import_gdtf` do the same over MCP; and the web UI's
+  fixture-types tab takes an upload, offers a mode picker, and reports the files written, the
+  resolved channels and every distillation warning. All three go through one importer, and nothing
+  is written until the chosen mode distills. A mode's listed footprint counts every copy of a
+  repeated section, so it is the one to patch by: the Astera PB15's four-pixel effect mode lists 21.
 
-  Distilled modes are cached per project under `lighting/.cache/`, keyed on the archive bytes, the
-  mode, the distiller version and any overrides. A cold cache fills loudly at load rather than
-  mid-show. Commit the archive and gitignore the cache — and note that `lighting/.cache` must be
-  writable under `ProtectSystem=strict`, or referential fixtures cannot expand.
+  Real fixtures are more than a channel list, and the import follows what their files say. Sections
+  that repeat exactly — a pixel bar's cells, a batten's segments — are ganged: the fixture shows one
+  colour across them, and they are recorded as cells for per-cell control. Sections that differ keep
+  their own channels under section-suffixed names (`dimmer:background`), with the fixture's own
+  `dimmer` and `strobe` the master's, on the head, yoke or base, so a show's `dimmer: 80%` on a Robe
+  Spiider lights the beam and not its background ring. Colour follows how the fixture mixes it:
+  RGB(W) fixtures take a show's colours directly; a mover with CMY flags (a MAC Viper, Encore or
+  Ultra, a Robe Esprite or LedPOINTE) imports them as `cyan`, `magenta` and `yellow` and takes the
+  same colours as their complement, so `color: "red"` opens cyan and closes magenta and yellow. A
+  colour wheel is not driven by `color:`, a colour cycle or a rainbow; a `static` naming the wheel's
+  channel chooses a slot, and lint reports a colour cue on a group with nothing to mix. A
+  geometry's `Position` matrix is read with its rows as the node's axes, as Blender DMX reads it,
+  so a manufacturer's yawed yoke or lens points the way the file means. GDTF's `NoFeature`
+  placeholder is skipped.
 
-  A mode that would import as something other than what it is refuses rather than half-importing:
-  pixel and matrix modes are rejected with a reason, and an archive or fixture name that collides
-  with one already in the library says what collided and leaves the project untouched. Both
-  untrusted-input layers — the zip archive and the description XML — carry hard size and nesting
-  caps and have cargo-fuzz targets.
+  Distilled modes are cached per project under `lighting/.cache/`, keyed on the archive, the mode,
+  the distiller and any overrides; a cold cache fills loudly at load rather than mid-show. Commit
+  the archive and gitignore the cache, and note that `lighting/.cache` must be writable under
+  `ProtectSystem=strict`, or referential fixtures cannot expand. Pixel and matrix modes the
+  distiller cannot represent are refused with a reason, a name that collides with the library says
+  what collided and leaves the project untouched, and both untrusted-input layers — the zip archive
+  and the description XML — carry hard size and nesting caps and have cargo-fuzz targets.
 
-  Colour follows how the fixture mixes it. RGB(W) fixtures take a show's colours directly. A mover
-  with CMY flags — a MAC Viper, Encore or Ultra, a Robe Esprite or LedPOINTE — imports them as
-  `cyan`, `magenta` and `yellow` and takes the same colours as their complement: `color: "red"`
-  opens cyan and closes magenta and yellow. A hand-written `.fixture` can name those channels too.
-  A colour wheel is not driven by `color:`, a colour cycle or a rainbow; a `static` naming the
-  wheel's channel chooses a slot, and lint reports a colour cue on a group with nothing to mix.
+- **Rich `.fixture` files (#439, #448, #457, #474)**: a hand-written fixture type can say what a
+  GDTF would: `channel "pan" @ 1 fine 2 range -270deg..270deg`, and `function` lines dividing a
+  channel into DMX sub-ranges with their physical spans (`function "strobe" 16..255 0.5hz..20hz`).
+  This is what a `move` resolves degrees through, with 16-bit precision where the fixture has it.
+  A pixel fixture declares its cells with `cell "n" at (x, y, z) { channel ... }` blocks, and a CMY
+  mover names `cyan`, `magenta` and `yellow`. `.fixture` files load beside `.light` as peers and
+  nothing renames or migrates; the rich form lives in `.fixture` files only, and the loader and the
+  MCP fixture-type tools refuse it in a `.light` file and say where it belongs. `#` is reserved in
+  channel names. A `cheap_mover.fixture` example shows the syntax.
 
-- **Real-world MVR corpus, and pixel fixtures import**: run against ten console and pre-viz
-  exports from gdtf.eu (grandMA3, Capture, festival and arena rigs, 146 to 176 fixtures each),
-  the importer now seeds every one with a single TODO across all ten — a fixture with no GDTF
-  mode in its file — where a third of the fixtures used to be refused. Three real-world shapes
-  drove the changes. Fixtures whose geometries repeat an attribute — the cells of a pixel bar,
-  the identical sections of an LED batten — are **ganged**: the first section's channels are the
-  fixture's and every other section mirrors them, so the whole fixture shows one color until
-  per-cell control exists; sections that differ (a master beside per-section controls) keep the
-  first as the fixture's channel and the rest under section-suffixed names. Both are reported.
-  GDTF's placeholder `NoFeature` attribute is skipped. Consoles name every fixture by its type
-  and tell them apart by fixture ID, so a repeated name takes its ID ("Robe Spiider 12"), and a
-  reference written without the manufacturer prefix ("Cluster S2" for `Roxx@Cluster S2.gdtf`)
-  resolves. Import warnings are collapsed to one line per kind. Cached expansions regenerate
-  (distiller version 2).
+  The web UI's fixture-type panel covers both extensions: cards carry an extension badge and file
+  name, a referential type is labelled rather than shown as "0 channels", and a `.fixture`, rich or
+  referential type opens as a text editor. A `.light` card has "Edit as text" and a save-as choice,
+  which is the path from `.light` to `.fixture`; new types choose `.light` (form) or `.fixture`
+  (text, prefilled template). Saving one extension retires a stale twin of the other, so a name
+  never resolves to two files, a save must declare the type the URL names, and a name declared in
+  two files is reported rather than last-wins.
 
-- **Beams on the stage plot, and DMX read back on the hardware harness (P1c-4)**: the stage
-  view draws each aimed mover's beam in the color it is showing, from the fixture to its
-  footprint on the deck, from the engine's live pan and tilt. The hardware harness gains a
-  `dmx-output` area that reads what olad is outputting back through its web server and asserts
-  on the bytes: a hardware strobe lands in its strobe function's range, a slow pan sweep is
-  continuous across both bytes of a 16-bit channel, a declared slew limit bounds a sweep on the
-  wire, and a focus point resolves to the pan and tilt the pointing math predicts through the
-  venue's placement. Runs wherever olad's web server answers; skips, loudly, where it does not.
-  Found on the way: olad silently drops streamed frames for a universe nobody has created, and a
-  fresh olad has none — so mtrack's output on such a rig goes nowhere without a word. The harness
-  patches the Dummy Device's output port to the universe for the run and says so; a real rig needs
-  its output port patched to the universe (`ola_patch`) or the lights stay dark.
-
-- **Rich channel syntax in `.fixture` files (P1c-3)**: a hand-written fixture type can now
-  say what a GDTF would — `channel "pan" @ 1 fine 2 range -270deg..270deg`, and a block of
-  `function` lines dividing a channel into DMX sub-ranges with their physical spans (`function
-  "strobe" 16..255 0.5hz..20hz`). This is what a `move` resolves degrees through, with 16-bit
-  precision where the fixture has it. The form lives in `.fixture` files only; the loader and
-  the MCP fixture-type tools refuse it in a `.light` file and say where it belongs. A type
-  renders in whichever form it needs, so the rich form round-trips. `channel_map` stays valid
-  forever. A `cheap_mover.fixture` example shows the syntax.
-
-- **`move` effect, focus-point aiming, pose memory (P1c-2)**: shows can move fixtures.
-  `spots: move focus: "drummer", duration: 2s, easing: smooth` aims a group at a venue focus
-  point through each fixture's position and mounting rotation (pan zero, tilt zero is the
-  mounting direction, level — the stage plot's orientation tick); `pan: 45deg, tilt: -20deg`
-  aims explicitly; `from:` names a starting point, else the move starts from wherever each
-  fixture is. Travel is interpolated in degrees, resolved through the fixture's pan/tilt
-  ranges with 16-bit precision, and the nearest turn of pan is chosen the way a desk does. A
-  mover holds its pose after arriving until the next move or a `clear`; a fixture type that
-  declares `movement { max_pan_speed }` is never driven faster than that. New lint:
-  `unbound-focus-point`, `move-without-positions`, `move-imprecise`, and `capability-gap` for
-  a group that cannot move. The timeline editor's effect form offers `move` with the venue's
-  focus points to pick from.
-
-- **Physical resolution layer (P1c-1, internal)**: fixture state carries pan and tilt in
-  degrees beside its normalized channels, resolved into bytes only when DMX is produced,
-  through the fixture type's channel definitions — the pan/tilt range, or a function carrying
-  one, with linear interpolation and clamping. Sixteen-bit channels (GDTF-imported movers)
-  fan one value out over coarse and fine bytes, monotonically. Nothing produces a physical
-  intent yet; that is the `move` effect of the next slice. The one visible change: a
-  normalized write to a 16-bit channel (`static pan: 50%` on an imported mover) now writes the
-  fine byte too, where it used to be left at whatever the last frame held. Eight-bit channels
-  emit exactly the bytes they always did.
-
-- **Positional stage view, focus-point editing, spatial chases, venue lint**: when the current
-  venue places its fixtures, the dashboard's stage view is a top-down stage plot to scale — meter
-  grid, audience at the bottom, orientation ticks, focus points as pins — and an editor: dragging
-  a fixture or a pin writes the coordinates to the venue file, a **+ Focus point** button and a
-  list beneath the plot add, rename and delete pins, and unplaced fixtures wait in a tray to be
-  dragged onto the stage. The running engine reloads the venue after every save (also after MCP
-  `write_venue`/`patch_venue`) and pushes fresh geometry to every open stage view. The timeline
-  editor's preview draws the same plot, read-only. Venues without positions keep the tag layout.
-
-  Chase directions now mean what they say when every fixture in the group is placed:
-  `left_to_right` runs stage-right to stage-left as the audience sees it, `top_to_bottom`
-  upstage to downstage, `clockwise` around the group's center. Unplaced or partially placed
-  groups keep list order. Lint gains `capability-gap` (a `strobe`, `dimmer`, `pulse`, `cycle` or
-  `rainbow` on a group none of whose fixtures has the channel for it) and
-  `unconfigured-universe` (venue fixtures the active profile has no output for), and
+- **Venues that know where things are (#433, #434, #453)**: a venue can say where its fixtures
+  hang — `position (x, y, z)` and `rotation (rx, ry, rz)` per fixture, in meters and degrees from a
+  downstage-center origin — and name the stage points a show may aim at with
+  `focus "drummer" (0, 2.8, 1.4)`. Files using this syntax take the `.venue` extension and load
+  beside `.light` venues as peers; the web UI, MCP venue tools and the loader see both, and
   `list_venues` reports placed-fixture counts, focus points and MVR provenance.
 
-- **Venue positions, focus points and MVR import (#433, #434)**: venues can say where
-  their fixtures hang — `position (x, y, z)` and `rotation (rx, ry, rz)` per fixture, in meters
-  and degrees from a downstage-center origin — and name the stage points a show may aim at with
-  `focus "drummer" (0, 2.8, 1.4)`. Files using this syntax take the `.venue` extension and load
-  beside `.light` venues as peers; nothing renames or migrates. The web UI, MCP venue tools and
-  the loader all see both.
+  The mounting and pose convention is GDTF's, so an MVR's rotations come through unchanged: an
+  unrotated fixture points straight down, positive pan is counter-clockwise seen from above,
+  positive tilt swings the beam toward +Y (upstage), and a `.fixture`'s pan and tilt ranges are in
+  the same degrees. A mover hung facing downstage is `rotation (0, 0, 180)`; one standing on the
+  deck is `rotation (180, 0, 0)`. The documentation's "Mounting and pose convention" section has
+  the diagram and a worked example of aiming a fixed fixture at a point.
 
-  `mtrack import-mvr <file>` seeds a `.venue` from the MVR a venue sends, importing every embedded
-  GDTF as a referential `.fixture` on the way; `--origin x,y,z` (millimeters) picks the point that
-  becomes downstage-center, and the bare form reports the whole plan without writing. The seeded
-  file records `imported from mvr(...)` as provenance, not a reference — the player never opens the
-  MVR — and re-running the import merges a revised MVR into it: rig facts from the new file, tags
-  and focus names kept, fixtures the venue removed dropped and reported, hand additions kept. A
-  hand-written venue is never overwritten, and a patched fixture whose GDTF or mode cannot be
-  resolved becomes a `# TODO` line rather than vanishing. `inspect_mvr` and `import_mvr` expose the
-  same flow over MCP.
+- **MVR import (#433, #434, #441, #467)**: `mtrack import-mvr <file>` seeds a `.venue` from the MVR
+  a venue or console sends, importing every embedded GDTF as a referential `.fixture` on the way;
+  `--origin x,y,z` (millimeters) picks the point that becomes downstage-center, and the bare form
+  reports the whole plan without writing. `inspect_mvr` and `import_mvr` do the same over MCP. The
+  seeded file records `imported from mvr(...)` as provenance, not a reference — the player never
+  opens the MVR — and re-running the import merges a revised MVR into it: rig facts from the new
+  file, tags and focus names kept, fixtures the venue removed dropped and reported, hand additions
+  kept. A hand-written venue is never overwritten.
 
-- **A headless Blender DMX check (#462)**: `tools/blender-dmx-check.py` loads a manufacturer's GDTF
-  in Blender DMX, the GDTF group's own reference renderer, mounts the fixture where the venue has
-  it, writes the DMX bytes mtrack would send, and reads the beam's world ray back from Blender's
-  scene graph, reporting how far the beam passes from the target. It refuses a wrong mode name and
-  a beam pointing away from the target. It needs Blender 4.2 or later with the BlenderDMX extension
-  installed for the user; the script's docstring says how. Against it, the Martin MAC Viper AirFX
-  hits its target to 0.1 mm at 5.9 m, which checks the pointing convention end to end with a real
-  file.
+  Positions and rotations come through exactly, gimbal-locked mountings included. Consoles name
+  every fixture by its type and tell them apart by fixture ID, so a repeated name takes its ID
+  ("Robe Spiider 12"), and a reference written without the manufacturer prefix ("Cluster S2" for
+  `Roxx@Cluster S2.gdtf`) resolves. A patched fixture whose GDTF or mode cannot be resolved becomes
+  a `# TODO` line carrying what the MVR knew rather than vanishing, and import warnings collapse to
+  one line per kind. Against ten console and pre-viz exports from gdtf.eu (grandMA3, Capture,
+  festival and arena rigs, 146 to 176 fixtures each) every file imports, with one TODO across all
+  ten: a fixture whose file has no GDTF mode.
+
+- **MVR export (#445, #461, #471)**: `mtrack export-mvr <venue>` and the `export_mvr` MCP tool write
+  a venue as an `.mvr` a console or pre-viz tool can open: every fixture with its address, position
+  and rotation (the import's origin restored), focus points, stable UUIDs, one layer
+  (`--layers-from-tags` makes one per fixture's first tag), fixture IDs from the number a name ends
+  in, and each fixture type's GDTF embedded from the library. A fixture with no pan or tilt is linked
+  to the focus point its beam passes within a degree of, because pre-viz tools such as Blender DMX
+  aim a fixed fixture at its linked focus point and, without one, at the origin.
+
+  A native type (`.light` or a hand-written `.fixture`) has no GDTF, so one is generated from its
+  channels, functions, 16-bit channels and cells, with the spec's own attribute definitions so a
+  console patches it and groups its encoders sensibly, and so mtrack's importer reads it back as the
+  same type. It is valid GDTF — a strict checker reads every generated file by the spec's rules in
+  the tests — and says in a `Revisions` entry that it has no physical model: mtrack is not a
+  fixture-modelling tool, and there is no `export-gdtf` command. Exports land in `lighting/export/`
+  under a bare `.mvr` name (`-o` names it; the default is the venue name, file-name-safe), and the
+  directory must resolve inside the project. A venue seeded from an MVR round-trips: importing the
+  export merges it with nothing changed, across all ten corpus files.
+
+- **The `move` effect (#438, #451, #453, #454, #455)**: shows can move fixtures.
+  `spots: move focus: "drummer", duration: 2s, easing: smooth` aims a group at a venue focus point
+  through each fixture's position and mounting; `pan: 45deg, tilt: -20deg` aims explicitly; `from:`
+  names a starting point, else the move starts from wherever each fixture is. Travel is interpolated
+  in degrees and resolved through the fixture's pan and tilt ranges with 16-bit precision (±270° pan
+  and ±135° tilt, centered on rest, where a type declares none). Of the two poses that reach a
+  target, the one inside the tilt range whose pan is nearest where the head is wins, as a desk
+  would. A mover holds its pose until the next move or a `clear`, and a type that declares
+  `movement { max_pan_speed, max_tilt_speed }` is never driven faster.
+
+  A GDTF-backed mover is aimed through its own joint chain — a yoke the manufacturer yaws in the
+  file, as the Ayrton MagicDot SX does, still aims true — and from its lens, which moves with the
+  pose, not from the mounting point; a geometry that does not reduce to pan and tilt is refused with
+  a reason and the plain convention stands in. Seeking into a song replays the moves before the
+  seek point, so a head is where it would have been. Snapshots carry each head's pan and tilt bytes,
+  so `get_fixture_state` and `evaluate_show` say where it points. Lint reports `unbound-focus-point`,
+  `move-without-positions`, `move-imprecise`, and a `move` on a group that cannot move. The timeline
+  editor's effect form offers `move` with the venue's focus points, and
+  `examples/lighting/shows/movers_demo.light` aims the example venue's movers. The pointing was
+  checked against Blender DMX, the GDTF group's reference renderer, with real manufacturer files:
+  the MAC Viper AirFX and MagicDot SX hit their targets to 0.1 mm.
+
+- **Per-cell control (#448, #449, #450)**: a pixel fixture's cells can be driven separately. A GDTF
+  pixel mode's cells come from its template geometry and the `GeometryReference`s that instance it,
+  nested references included — a Robe Spiider's pixel mode has 19 — and a hand-written type
+  declares them in its `.fixture`. In a show, `per: cell` on an effect expands a group's fixtures to
+  their cells when the effect starts, so a chase runs along the cells in stage order and a group of
+  mixed fixtures still works; a `move` never expands. `spread: 360deg` offsets each target's phase
+  for `rainbow` and `cycle`, painting one rainbow along a bar. A show that never asks for cells gets
+  the ganged, one-colour fixture. Lint reports `per: cell` or `spread` doing nothing. The websocket
+  `state` message carries a `cells` map for fixtures with a per-cell effect running, and MCP
+  `get_fixture_state` and `evaluate_show` report the same.
+
+- **The stage plot (#435, #440, #453)**: when the current venue places its fixtures, the
+  dashboard's stage view is a top-down plot to scale — meter grid, audience at the bottom, focus
+  points as pins, each fixture's beam in the colour it is showing from the fixture to its footprint
+  on the deck — and an editor: dragging a fixture or a pin writes the coordinates to the venue file,
+  a **+ Focus point** button and a list beneath the plot add, rename and delete pins, and unplaced
+  fixtures wait in a tray to be dragged onto the stage. The running engine reloads the venue after
+  every save (MCP `write_venue`/`patch_venue` too) and pushes the new geometry to every open view. A
+  pixel fixture draws as a segmented bar or a wedge disc, one segment per cell. The timeline
+  editor's preview draws the same plot, read-only; venues without positions keep the tag layout.
+
+  Chase directions mean what they say when every fixture in the group is placed: `left_to_right`
+  runs stage-right to stage-left as the audience sees it, `top_to_bottom` upstage to downstage,
+  `clockwise` around the group's center. Unplaced or partially placed groups keep list order. Lint
+  gains `capability-gap` (a cue none of the group's fixtures has the channels for) and
+  `unconfigured-universe` (venue fixtures the active profile has no output for).
+
+- **Stage 3D (#443, #444, #446, #450, #468)**: the stage card's **3D** button opens the venue as a
+  room (`#/stage`): the deck with the audience edge, focus-point markers, an orbit camera with Front
+  of house, Side and Top presets, a Labels toggle (off by default above 40 fixtures) and unplaced
+  fixtures on a tray downstage. Fixtures are drawn from their GDTF — the archive's meshes when it
+  ships them, its primitives with their sizes otherwise, a generic box with a 20° beam for a
+  hand-written type — and pan and tilt turn the nodes the GDTF names. Beams are translucent cones
+  in the colour and level the engine sends each fixture, styled by beam type; a fixture with no
+  colour to mix, a wheel-only spot among them, draws white, and a fixture the player has reported
+  nothing for is dark, so an idle rig looks as dark as the real one. A pixel fixture lights each
+  lens in its cell's colour.
+
+  A venue seeded from an MVR shows its scenery too: trusses, supports, screens, projectors and
+  scene objects, where the MVR carries them as glTF; other formats (`.3ds` is common in console
+  exports) are reported and skipped. Models and rig data live in a rebuildable asset store under
+  `lighting/.cache/assets/`, served with an extension allowlist, size caps and containment to the
+  asset root, and three.js loads only with this page. It is a sketch, not a render: no haze, no
+  shadows, no photometrics.
+
+- **OSC pause and structured timeline feedback (#432)**: `/mtrack/pause` records the current
+  elapsed position and stops playback, and the next Play resumes from it; Stop clears the preserved
+  position. `Player::elapsed()` keeps reporting the preserved position while paused.
+  `/mtrack/timeline`
+  broadcasts elapsed seconds, total duration and one name, start, end tuple per song section
+  (`/mtrack/timeline 18.25 240.0 "Intro" 0.0 12.5 "Verse" 12.5 42.0`). Both addresses are
+  configurable under the OSC controller's `events` (`pause`, `timeline`).
+
+  Also fixed: restarting the OSC controller left its UDP and broadcast tasks alive, so the old task
+  kept the socket and logged `Error sending packet on channel. err="channel closed"`. Both tasks
+  are now aborted with the controller.
+
+- **A warning when olad has no output port patched to a configured universe (#456)**: olad silently
+  drops DMX streamed to a universe with no output port patched. At DMX engine start, and on config
+  reload, mtrack asks olad's web server about each universe under `dmx.universes` and logs one
+  warning per unpatched one, naming the `ola_patch` command to fix it. A universe olad has never
+  seen counts as unpatched. The probe runs on a detached thread with a 2 second deadline and never
+  touches the output path; an unreachable web server ends it quietly at debug level. The web
+  server's port is `dmx.ola_http_port` (default 9090).
 
 - **Raspberry Pi image**: a flashable Raspberry Pi OS Lite image with mtrack installed and running
   on boot, built as a pi-gen stage and attached to each release. It carries `avahi` so the player
@@ -287,77 +240,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It says nothing about whether the card boots or whether audio and DMX work; those still need
   hardware.
 
-- **`.fixture` types in the web UI's fixture-type panel (#457)**: the panel listed, edited and
-  deleted only `.light` files, so a type made by the GDTF import button was invisible to it and to
-  the venue editor's type dropdown. It now covers both extensions. Cards carry an extension badge
-  and file name, and a referential type (whose channels resolve only at load) is labelled instead
-  of shown as "0 channels". A `.fixture`, rich or referential type opens as a raw text editor; a
-  `.light` card has "Edit as text" and a save-as choice, which is the path from `.light` to
-  `.fixture`; new types choose `.light` (form) or `.fixture` (text, prefilled template). Saving one
-  extension retires a stale twin of the other, so a name never resolves to two files. A save must
-  declare the type the URL names, for venues as well, and a name declared in two files is reported
-  rather than last-wins. A form save of a type that lives in a `.fixture` answers 409 ("edit this
-  type as text").
-
-- **OSC pause and structured timeline feedback (#432)**: `/mtrack/pause` records the current
-  elapsed position and stops playback, and the next Play resumes from it; Stop clears the preserved
-  position. `Player::elapsed()` keeps reporting the preserved position while paused.
-  `/mtrack/timeline`
-  broadcasts elapsed seconds, total duration and one name, start, end tuple per song section
-  (`/mtrack/timeline 18.25 240.0 "Intro" 0.0 12.5 "Verse" 12.5 42.0`). Both addresses are
-  configurable under the OSC controller's `events` (`pause`, `timeline`).
-
-  Also fixed: restarting the OSC controller left its UDP and broadcast tasks alive, so the old task
-  kept the socket and logged `Error sending packet on channel. err="channel closed"`. Both tasks
-  are now aborted with the controller.
-
-- **A warning when olad has no output port patched to a configured universe (#456)**: olad silently
-  drops DMX streamed to a universe with no output port patched. At DMX engine start, and on config
-  reload, mtrack asks olad's web server about each universe under `dmx.universes` and logs one
-  warning per unpatched one, naming the `ola_patch` command to fix it. A universe olad has never
-  seen counts as unpatched. The probe runs on a detached thread with a 2 second deadline and never
-  touches the output path; an unreachable web server ends it quietly at debug level. The web
-  server's port is `dmx.ola_http_port` (default 9090).
-
 - **Open Fixture Library definitions, by hand (#463)**: the fixture documentation gains a "From an
   Open Fixture Library definition" section with the capability-to-channel mapping and a worked
   example. There is no OFL importer: its JSON sits at the level of the `.fixture` DSL, so an importer
   would be a second format to maintain for output no richer than a hand-written file.
 
+- **The hardware harness reads DMX back (#440)**: a `dmx-output` area reads what olad is outputting
+  through its web server and asserts on the bytes: a hardware strobe lands in its strobe function's
+  range, a slow pan sweep is continuous across both bytes of a 16-bit channel, a declared slew limit
+  bounds a sweep on the wire, and a focus point resolves to the pan and tilt the pointing math
+  predicts through the venue's placement. It runs wherever olad's web server answers and skips,
+  loudly, where it does not. olad silently drops streamed frames for a universe with no output port
+  patched, and a fresh olad has none, so the harness patches the Dummy Device's output port for the
+  run and says so; a real rig needs its output port patched to the universe (`ola_patch`).
+
+- **A headless Blender DMX check (#462)**: `tools/blender-dmx-check.py` loads a manufacturer's GDTF
+  in Blender DMX, the GDTF group's own reference renderer, mounts the fixture where the venue has
+  it, writes the DMX bytes mtrack would send, and reads the beam's world ray back from Blender's
+  scene graph, reporting how far the beam passes from the target. It refuses a wrong mode name and
+  a beam pointing away from the target. It needs Blender 4.2 or later with the BlenderDMX extension
+  installed for the user; the script's docstring says how. Against it, the Martin MAC Viper AirFX
+  hits its target to 0.1 mm at 5.9 m, which checks the pointing convention end to end with a real
+  file.
+
 ### Changed
-
-- **Pose degrees are GDTF's: rest down, pan counter-clockwise from above, tilt toward +Y (#453)**:
-  pan and tilt in degrees now mean what GDTF says they mean. Rest is the mounting's straight-down
-  direction; positive pan is counter-clockwise seen from above; positive tilt swings the beam toward
-  +Y. Before, tilt 0 was level and positive pan was clockwise, which did not match GDTF's physical
-  degrees or the real Robe and Martin ranges in the corpus: the bytes sent would have put a real head
-  metres off its target. MVR-imported venues were already in GDTF's terms, so the importer was
-  right and the math misread them.
-
-  This changes what existing pose degrees mean, so check them before a show. Explicit `pan:` and
-  `tilt:` values (and `from:` poses) in a `move`, and the degree ranges in your hand-written
-  `.fixture` channels, are read in the new convention: a tilt written as level (0) is now straight
-  down, and a pan you wrote as clockwise is now the other way. Re-express them, and confirm with
-  Stage 3D or the plot's beam footprints. A `move focus:` aims by solving for the pose, so it lands
-  on the same point with the correct bytes. GDTF-imported types need nothing. Fallback travel where
-  no range is declared is +/-270 degrees of pan and +/-135 degrees of tilt, centered on rest.
-
-  Every placed fixture now has a pose, and statics sit at rest, so the plot draws a beam footprint
-  for all of them and the orientation tick is gone. For a target the head can reach two ways, the
-  engine takes the pose inside the tilt range whose pan is nearest where the head is; a target
-  on the pan axis holds the current pan. The documentation's "Mounting and pose convention" section
-  has the diagram, and the example venue is re-authored in the new terms.
-
-- **A GDTF matrix's rows are read as the node's axes, as Blender DMX does (#462)**: the parser read
-  a geometry `Position` matrix as its transpose, so a rotated part turned the wrong way: the
-  Ayrton MagicDot SX's yoke, yawed 90 degrees in its file, was read as -90 and its beam missed the
-  target by 3.4 m; it now hits to 0.1 mm at 6.3 m. Blender DMX reads GDTF and MVR matrices this way,
-  and the corpus agrees: the ROXX blinder bars, whose lens geometries are yawed 180 degrees, send
-  their light out of the fixture only under this reading. The GDTF spec under-specifies the vector
-  convention, so this rests on that evidence rather than on the spec's wording. Only fixtures with
-  rotated geometry parts are affected: nine of 46 archives in the local corpus, including the cell
-  layouts of the Spiider and Cluster. Cached rigs and expansions regenerate on first load (rig
-  version 2, distiller version 5).
 
 - **A song with no audio is as long as its lighting (#455, #459)**: a lighting-only song used to
   report zero length -- no progress bar in the TUI or web UI, no total in MCP song info, and every
@@ -369,19 +275,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Not covered: a MIDI-only song still reports zero length, and a `.light` edited while a
   lighting-only song plays is picked up by the engine at once but by the reported total on the
   song's next load.
-
-- **The GDTF generated for MVR export is valid GDTF (#461)**: the file embedded for a hand-written
-  fixture type was patchable but not valid, so a strict console could reject the venue. It now
-  carries the spec's attribute definitions, feature and activation groups and units; initial
-  functions that name real functions; DMX values in byte-mirroring notation on the coarse byte;
-  gaps between authored function ranges as `NoFeature` functions (the importer now reads one as a
-  gap, distiller version 4); movers homed at the center of travel; a `Revisions` entry saying the
-  file has no physical model; and archives named `mtrack@<Name>.gdtf`. Cells become a template
-  geometry plus one reference per cell with its `Break` offset, so the footprint is the whole bar
-  and the cells come back on import. A type whose cells are not laid out alike is refused. mtrack
-  is not a fixture-modelling tool: there is no `export-gdtf` command, and the file has a body and
-  no other geometry or models. A strict checker reads each generated file by the spec's rules
-  in the unit tests.
 
 - **MCP server moves to rmcp 3.4 (#465)**: clears three advisories in rmcp 1.7 -- a session-table
   leak in the Streamable HTTP server, OAuth protected-resource metadata validation, and custom
@@ -442,26 +335,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A GDTF fixture's `dimmer` and `strobe` are its masters**: where a fixture repeats an
-  attribute on differing sections, the first section in the file kept the plain name — and on
-  Robe's pixel movers that is the background ring, not the head. A show's `dimmer: 80%` on a
-  Spiider, Tetra2 or TetraX lit the ring and left the beam dark, and its `strobe` worked the
-  ring's shutter. The section nearest the root of the geometry now claims `dimmer` and `strobe`
-  (the master sits on the head, yoke or base); the ring keeps its own under a section name such
-  as `dimmer:background`. Colour is unchanged: it belongs to the emitters, and on a Spiider the
-  wash zones, not the flower above them, stay the fixture's `red`, `green` and `blue`. Across the
-  ten-file corpus exactly those five Robe modes change. Cached expansions regenerate (distiller
-  version 6); a `static` that named `dimmer:head` or `dimmer:yoke` now wants `dimmer`.
-
-- **Seeking into a song past a move keeps the head where the move put it (#451)**: the timeline's
-  seek replay dropped every finished effect, moves included, so a seek left a head where it was.
-  Finished moves are now replayed in cue order and committed to pose memory, so a later move's turn
-  is chosen from where the earlier one ended, as live. A layer clear or stopped sequence in the
-  history keeps the pose, as live; a full clear releases it. Also fixed: a settled head vanished
-  from live state when an unrelated MIDI fader moved, because the engine's MIDI-only fast path
-  rebuilt states from the store alone; and snapshots carried no pan or tilt, so `evaluate_show` and
-  `get_fixture_state` could not say where a head points.
-
 - **Calibration capture sizes are bounded (#465, #466)**: `POST /api/calibrate/start` sized its
   capture buffers from a duration and a sample rate taken straight from the request, for every input
   channel, and reserved them before the device could refuse a rate it cannot run at. A request with
@@ -472,30 +345,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   samples (about 87 seconds at 48kHz) and grows with the audio that actually arrives. A 64-channel
   192kHz hit capture no longer reserves about 2.9GB on valid input.
 
-- **MVR import keeps a fixture's orientation at Y = +90° (#467)**: a matrix whose Y rotation is
-  exactly +90° is gimbal-locked, and the importer folded it into X with the wrong sign, so such a
-  fixture came in turned 180° and the export wrote the wrong rotation back out. Three Robin Tetra2s
-  in a real grandMA3 file were affected. Re-importing the MVR corrects them in the `.venue`. The
-  corpus round-trip check now compares against the source file's matrices, which is why it had
-  not caught this.
-
-- **GDTF mode listings count a template's every reference (#467)**: a mode that repeats a template
-  geometry — the Astera PB15's four-pixel effect mode — listed only one copy of its channels, so
-  `import-gdtf`, MCP `list_gdtf_modes` and the web UI's mode picker showed a footprint of 12 for
-  a mode that occupies 21. Patching by the listing would have overlapped the next fixture.
-
-- **Stage 3D shows an idle rig dark (#468)**: a page opened while the player was idle never
-  received the fixtures' state, and a fixture with no state was drawn at full, so the whole rig
-  looked lit before the first song. The player now sends the current state as a page connects,
-  and a fixture it reports nothing for is drawn dark.
-
 - **The hardware harness's `--no-build` runs the newest harness binary (#464)**:
   `scripts/hardware-test.sh --no-build` preferred a release `mtrack-harness` whenever one existed,
   so a stale one judged a fresh player by old expectations and reported correct bytes as failures.
   The newest of debug and release now wins, as it already did for the player, and the header prints
   the harness's path and age.
 
-- **The hardware harness builds the web UI, or says it could not**: the player serves its web UI
+- **The hardware harness builds the web UI, or says it could not (#472)**: the player serves its web UI
   from `src/webui/svelte/dist`, which cargo does not build, and `scripts/hardware-test.sh` only
   ran cargo. On the test rig the UI was two months old at a bless, so Stage 3D answered "Not
   Found" and the report said nothing. The script now builds it with `make build-ui` wherever npm
