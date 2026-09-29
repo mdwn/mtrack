@@ -16,14 +16,7 @@ import { test, expect } from "@playwright/test";
 
 test.describe("Venues Management", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/#/config");
-    await page.locator(".profile-row", { hasText: "test-host" }).click();
-    await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
-    await page.locator(".tab", { hasText: "Lighting" }).click();
-    await expect(page.locator(".tab.active")).toContainText("Lighting");
-    await page.getByRole("button", { name: "Enable Lighting" }).click();
-    // Navigate to Venues sub-tab.
-    await page.locator(".sub-tab", { hasText: "Venues" }).click();
+    await page.goto("/#/lighting/venues");
   });
 
   test("a venue file that will not parse is named, and the rest still list", async ({

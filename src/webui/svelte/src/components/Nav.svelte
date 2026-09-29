@@ -55,6 +55,7 @@
     { hash: "#/", labelKey: "nav.dashboard" },
     { hash: "#/songs", labelKey: "nav.songs" },
     { hash: "#/playlists", labelKey: "nav.playlists" },
+    { hash: "#/lighting", labelKey: "nav.lighting" },
     { hash: "#/config", labelKey: "nav.config" },
     { hash: "#/status", labelKey: "nav.status" },
   ];

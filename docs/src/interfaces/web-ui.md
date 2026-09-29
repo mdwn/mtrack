@@ -99,12 +99,9 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   each placed fixture — its beam, drawn in the color it is showing from the fixture to where the
   beam meets the deck (a dashed heading when it points up or level). A static fixture gets a beam
   too, out of its rest pose through its mounting, so the plot shows which way it is hung. Fixtures the venue has not placed
-  wait in a tray along the bottom; drag one onto the stage to place it. Dragging a fixture or a
-  focus pin writes the new coordinates to the venue file, the running engine reloads the venue,
-  and every open stage view redraws from the file. The **+ Focus point** button adds a pin, and
-  the list beneath the plot renames or deletes them — focus points are the stage points a show
-  aims at, so name them for what they are ("drummer", "center-stage"). A fixture dragged from the
-  tray is hung at 3 m; edit the venue file to correct its height. Without positions the view is
+  wait in a tray along the bottom. On the dashboard the plot is a live view only; placing
+  fixtures and editing focus points happens on the Lighting area's
+  [Venues](#venues) page, and the card's **Edit** button goes there. Without positions the view is
   the older layout organized by tags (left, right, front, back), and dragging only rearranges the
   picture in this browser's localStorage. The stage card's **3D** button opens the venue as a
   room; see [Stage 3D](../lighting/configuration.md#stage-3d).
@@ -499,6 +496,66 @@ playlist is always present and auto-generated from the song repository.
 Use the **Activate** button to switch the player to a playlist. This can also be done from
 the dashboard's playlist dropdown.
 
+## Lighting
+
+The **Lighting** item in the top navigation holds everything about lights, in one place. It has
+five pages, shown as tabs across the top. Each page has its own address, so you can bookmark it:
+
+| Page | Address | What it holds |
+|---|---|---|
+| Overview | `#/lighting` | The current venue, how many fixture types and venues there are, and links to the other pages |
+| Fixture Types | `#/lighting/fixtures` | The kinds of fixture in your rig |
+| Venues | `#/lighting/venues` | Where fixtures sit, and the stage plot |
+| Groups | `#/lighting/groups` | Logical groups and the current venue, for one hardware profile |
+| 3D | `#/lighting/stage` | The venue as a room |
+
+Two kinds of state live here, and they are stored differently.
+
+**Project files** — fixture types and venues — are the same whichever hardware profile is
+running. Fixture Types and Venues edit them directly. The directories they are read from come
+from the running profile's lighting settings, or the defaults if it sets none.
+
+**Profile settings** — logical groups and the current venue — belong to one hardware profile,
+because the rig at home and the rig on tour select different venues. The Groups page edits them
+for the profile you pick. It starts on the profile the player is running (the one whose
+`hostname` matches the Status page). A link such as `#/lighting/groups?profile=my-host` opens it
+on another profile. Saving goes through the same API as the Config page: a profile file when the
+config sets `profiles_dir`, otherwise the profile inside `mtrack.yaml`. A profile with no DMX
+section has nothing to edit here; the page links to Config to enable lighting first.
+
+### Fixture Types
+
+Both fixture-type file forms are listed. A `.light` type opens in the channel-map form; a
+`.fixture` type (rich channels, or distilled from a GDTF archive) opens as the text of its file.
+**Import GDTF** uploads a `.gdtf` archive, lists its DMX modes to pick from, and writes the
+referential `.fixture` (the same as `mtrack import-gdtf`; see
+[GDTF-referential fixture types](../lighting/configuration.md#gdtf-referential-fixture-types-fixture)).
+
+### Venues
+
+Lists the venues and edits their fixtures: name, type, universe, start channel and tags. Saving
+a venue keeps everything the form does not show — fixture positions and rotations, focus points,
+and where an MVR import came from.
+
+Beneath the list is the stage plot, the same view as the dashboard's stage card but editable.
+Drag a fixture from the tray onto the stage to place it, or drag a placed fixture or a focus pin
+to move it. Each drag writes the new coordinates to the venue file, the running engine reloads
+the venue, and every open stage view redraws from the file. The **+ Focus point** button adds a
+pin, and the list beneath the plot renames or deletes them. Focus points are the stage points a
+show aims at, so name them for what they are ("drummer", "center-stage"). A fixture dragged from
+the tray is hung at 3 m; edit the venue file to correct its height.
+
+### Groups
+
+Directories, the current venue, inline fixtures and logical groups with their constraints. Pick
+the profile at the top. **Save** writes that profile; leaving the page with unsaved edits asks
+first.
+
+### 3D
+
+The venue as a room; see [Stage 3D](../lighting/configuration.md#stage-3d). The old address
+`#/stage` still works and redirects here.
+
 ## Configuration Editor
 
 The config editor provides a profile-based hardware configuration UI with tabs for:
@@ -507,12 +564,9 @@ The config editor provides a profile-based hardware configuration UI with tabs f
 - **MIDI** — Device selection, beat clock, MIDI-to-DMX passthrough mappings with Note Mapper
   and CC Mapper transformer editors
 - **DMX** — OLA host/port, universe mappings
-- **Lighting** — Fixture types, venues, profile settings with constraint editors. Both
-  fixture-type file forms are listed: a `.light` type opens in the channel-map form, a
-  `.fixture` type (rich channels, or distilled from a GDTF archive) as the text of its file.
-  **Import GDTF** uploads a `.gdtf` archive, lists its DMX modes to pick from, and writes the
-  referential `.fixture` (the same as `mtrack import-gdtf`; see
-  [GDTF-referential fixture types](../lighting/configuration.md#gdtf-referential-fixture-types-fixture))
+- **Lighting** — The DMX hardware: OLA host and port, universe mappings. Below it, a summary of
+  the profile's current venue and group count, with an **Edit in Lighting** link. Fixture types,
+  venues and groups are edited in the [Lighting](#lighting) area
 - **Triggers** — Audio and MIDI trigger inputs with calibration
 - **Controllers** — gRPC, OSC, and MIDI controller configuration. The MIDI controller section
   supports full editing of event mappings (play, prev, next, stop, all_songs, playlist) with

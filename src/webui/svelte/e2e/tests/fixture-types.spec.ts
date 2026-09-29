@@ -24,14 +24,8 @@ function card(page: Page, name: string) {
 
 test.describe("Fixture Types Management", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/#/config");
-    await page.locator(".profile-row", { hasText: "test-host" }).click();
-    await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
-    await page.locator(".tab", { hasText: "Lighting" }).click();
-    await expect(page.locator(".tab.active")).toContainText("Lighting");
-    await page.getByRole("button", { name: "Enable Lighting" }).click();
-    // Navigate to Fixture Types sub-tab.
-    await page.locator(".sub-tab", { hasText: "Fixture Types" }).click();
+    await page.goto("/#/lighting/fixtures");
+    await expect(page.getByTestId("import-gdtf")).toBeVisible();
   });
 
   test("a fixture type file that will not parse is named, and the rest still list", async ({
@@ -309,7 +303,7 @@ test.describe("Fixture Types Management", () => {
   test("the venue editor offers .fixture types too", async ({ page }) => {
     // A type the panel could not list was also missing from this dropdown,
     // which is where a venue's fixtures pick one.
-    await page.locator(".sub-tab", { hasText: "Venues" }).click();
+    await page.goto("/#/lighting/venues");
     await page.locator(".item-card").first().click();
     await expect(page.locator(".editor-form")).toBeVisible();
     const options = page.locator(".editor-form select option");
@@ -320,12 +314,7 @@ test.describe("Fixture Types Management", () => {
 
 test.describe("GDTF Import", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/#/config");
-    await page.locator(".profile-row", { hasText: "test-host" }).click();
-    await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
-    await page.locator(".tab", { hasText: "Lighting" }).click();
-    await page.getByRole("button", { name: "Enable Lighting" }).click();
-    await page.locator(".sub-tab", { hasText: "Fixture Types" }).click();
+    await page.goto("/#/lighting/fixtures");
   });
 
   test("import flows from file pick through mode choice to a report", async ({

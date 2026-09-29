@@ -16,7 +16,7 @@ import { test, expect } from "@playwright/test";
 
 test.describe("Smoke: Stage View", () => {
   test("stage view page loads without errors", async ({ page }) => {
-    await page.goto("/#/stage");
+    await page.goto("/#/lighting/stage");
 
     // Give the page a moment to render.
     await page.waitForTimeout(2000);

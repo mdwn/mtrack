@@ -30,6 +30,7 @@ test.describe("Navigation", () => {
   test("shows all nav links", async () => {
     await expect(nav.dashboardLink).toBeVisible();
     await expect(nav.configLink).toBeVisible();
+    await expect(nav.lightingLink).toBeVisible();
     await expect(nav.songsLink).toBeVisible();
     await expect(nav.playlistsLink).toBeVisible();
     await expect(nav.statusLink).toBeVisible();
@@ -45,6 +46,9 @@ test.describe("Navigation", () => {
 
     await nav.playlistsLink.click();
     await expect(nav.activeLink()).toHaveAttribute("href", "#/playlists");
+
+    await nav.lightingLink.click();
+    await expect(nav.activeLink()).toHaveAttribute("href", "#/lighting");
 
     await nav.configLink.click();
     await expect(nav.activeLink()).toHaveAttribute("href", "#/config");
@@ -64,6 +68,9 @@ test.describe("Navigation", () => {
 
     await nav.playlistsLink.click();
     await expect(page).toHaveTitle(/Playlists - mtrack/);
+
+    await nav.lightingLink.click();
+    await expect(page).toHaveTitle(/Lighting - mtrack/);
 
     await nav.configLink.click();
     await expect(page).toHaveTitle(/Config - mtrack/);

@@ -20,15 +20,26 @@
   import SongBrowser from "./pages/SongBrowser.svelte";
   import PlaylistEditor from "./pages/PlaylistEditor.svelte";
   import StatusPage from "./pages/StatusPage.svelte";
-  import Stage3D from "./pages/Stage3D.svelte";
+  import Lighting from "./pages/Lighting.svelte";
   import NotFound from "./pages/NotFound.svelte";
   import ConfirmDialog from "./components/ConfirmDialog.svelte";
   import { playbackStore } from "./lib/ws/stores";
   import { confirmNavigation, hasDirty } from "./lib/dirtyGuard";
+  import { lightingRoute, redirectLegacyHash } from "./lib/lightingRoute";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
-  let currentHash = $state(window.location.hash || "#/");
+  /**
+   * Rewrites a legacy address (`#/stage`) to its current place, replacing the
+   * history entry so Back does not bounce through the old one.
+   */
+  function normalizeHash(hash: string): string {
+    const next = redirectLegacyHash(hash);
+    if (next !== hash) window.history.replaceState(null, "", next);
+    return next;
+  }
+
+  let currentHash = $state(normalizeHash(window.location.hash || "#/"));
 
   /**
    * Returns the routing "scope" for a hash — the portion that drives which
@@ -43,11 +54,14 @@
     if (page === "songs" && parts[1]) return `songs/${parts[1]}`;
     if (page === "playlists" && parts[1]) return `playlists/${parts[1]}`;
     if (page === "config" && parts[1]) return `config/${parts[1]}`;
+    // Each Lighting sub-page is its own scope, so moving between them with
+    // unsaved Groups edits asks first; a `?profile=` change does not.
+    if (page === "lighting") return `lighting/${lightingRoute(hash).sub}`;
     return page;
   }
 
   async function onHashChange() {
-    const next = window.location.hash || "#/";
+    const next = normalizeHash(window.location.hash || "#/");
     if (next === currentHash) return;
 
     const sameScope = pageScope(next) === pageScope(currentHash);
@@ -93,8 +107,18 @@
         : get(t)("nav.playlists");
     } else if (currentHash.startsWith("#/status")) {
       pageTitle = get(t)("nav.status");
-    } else if (currentHash.startsWith("#/stage")) {
-      pageTitle = get(t)("stage3d.title");
+    } else if (currentHash.startsWith("#/lighting")) {
+      const sub = lightingRoute(currentHash).sub;
+      const subTitle: Record<string, string> = {
+        overview: "",
+        fixtures: get(t)("lighting.fixtureTypes"),
+        venues: get(t)("lighting.venues"),
+        groups: get(t)("lighting.area.groups"),
+        stage: get(t)("lighting.area.stage"),
+      };
+      pageTitle = subTitle[sub]
+        ? `${get(t)("nav.lighting")} - ${subTitle[sub]}`
+        : get(t)("nav.lighting");
     }
 
     const song = $playbackStore.song_name;
@@ -121,8 +145,8 @@
     <PlaylistEditor {currentHash} />
   {:else if currentHash.startsWith("#/status")}
     <StatusPage />
-  {:else if currentHash.startsWith("#/stage")}
-    <Stage3D />
+  {:else if currentHash.startsWith("#/lighting")}
+    <Lighting {currentHash} />
   {:else}
     <NotFound />
   {/if}

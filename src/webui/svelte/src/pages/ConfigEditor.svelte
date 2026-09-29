@@ -22,14 +22,9 @@
     fetchConfigStore,
     fetchAudioDevices,
     fetchMidiDevices,
-    addProfile,
-    updateProfile,
     deleteProfile,
     updateSamples,
     updateMetronomeDefaults,
-    fetchProfileFiles,
-    fetchProfileFile,
-    saveProfileFile,
     deleteProfileFile,
     type AudioDeviceInfo,
     type MidiDeviceInfo,
@@ -39,6 +34,13 @@
   import { fetchSongs } from "../lib/api/songs";
   import { showConfirm, showPrompt } from "../lib/dialog.svelte";
   import { registerDirtyGuard } from "../lib/dirtyGuard";
+  import {
+    fileProfileName,
+    inlineProfileName,
+    loadProfileFileList,
+    readProfile,
+    writeProfile,
+  } from "../lib/profileStore";
   import { playbackStore } from "../lib/ws/stores";
   import ProfileCard from "../components/config/ProfileCard.svelte";
   import ProfileEditor from "../components/config/ProfileEditor.svelte";
@@ -201,12 +203,7 @@
   }
 
   async function loadProfileFiles() {
-    try {
-      profileFiles = await fetchProfileFiles();
-    } catch (e: any) {
-      console.error("Failed to load profile files:", e);
-      profileFiles = [];
-    }
+    profileFiles = await loadProfileFileList();
   }
 
   async function loadDevices() {
@@ -276,12 +273,12 @@
     dirty = false;
     isNew = false;
     try {
-      const data = await fetchProfileFile(filename);
+      const profile = await readProfile({ kind: "file", filename }, []);
       selectedFilename = filename;
       selectedIndex = 0;
-      profiles = [data.profile as any];
+      profiles = [profile];
 
-      updateConfigUrl(filename.replace(/\.\w+$/, ""), section);
+      updateConfigUrl(fileProfileName(filename), section);
     } catch (e: any) {
       error = e.message;
     }
@@ -307,7 +304,11 @@
     saveMsg = "";
     saveOk = false;
     try {
-      await saveProfileFile(selectedFilename, profiles[selectedIndex]);
+      await writeProfile(
+        { kind: "file", filename: selectedFilename },
+        profiles[selectedIndex],
+        checksum,
+      );
 
       isNew = false;
       dirty = false;
@@ -366,7 +367,7 @@
     dirty = false;
     saveMsg = "";
     saveOk = false;
-    const name = profiles[index]?.hostname || `Profile #${index}`;
+    const name = inlineProfileName(profiles[index], index);
     updateConfigUrl(name, section);
   }
 
@@ -412,13 +413,13 @@
     saveOk = false;
     try {
       const profile = profiles[selectedIndex];
-      let snapshot;
-      if (isNew) {
-        snapshot = await addProfile(profile, checksum);
-      } else {
-        snapshot = await updateProfile(selectedIndex, profile, checksum);
-      }
-      applySnapshot(snapshot);
+      const snapshot = await writeProfile(
+        { kind: "inline", index: selectedIndex },
+        profile,
+        checksum,
+        isNew,
+      );
+      if (snapshot) applySnapshot(snapshot);
       isNew = false;
       dirty = false;
       saveOk = true;
@@ -785,6 +786,9 @@
         {trackNames}
         {sampleNames}
         initialSection={routeSection}
+        profileName={isNew || !selectedFilename
+          ? undefined
+          : fileProfileName(selectedFilename)}
         onrefreshDevices={loadDevices}
         onchange={onProfileChange}
         onsectionchange={(section) =>
@@ -968,6 +972,9 @@
       {trackNames}
       {sampleNames}
       initialSection={routeSection}
+      profileName={isNew
+        ? undefined
+        : inlineProfileName(profiles[selectedIndex], selectedIndex)}
       onrefreshDevices={loadDevices}
       onchange={onProfileChange}
       onnotifbrowse={onNotifBrowse}

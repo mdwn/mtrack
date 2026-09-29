@@ -64,7 +64,7 @@ test.describe("Stage cells (design §17.4)", () => {
     const errors: string[] = [];
     page.on("pageerror", (err) => errors.push(String(err)));
 
-    await page.goto(`/?wsId=${wsId}#/stage`);
+    await page.goto(`/?wsId=${wsId}#/lighting/stage`);
     await expect(page.locator(".stage3d__viewport")).toBeVisible();
     await expect(page.locator(".stage3d__viewport")).toHaveAttribute(
       "data-renderer",

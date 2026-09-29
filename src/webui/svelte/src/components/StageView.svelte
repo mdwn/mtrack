@@ -47,6 +47,14 @@
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
+  interface Props {
+    /** Whether positions and focus points can be edited here. The dashboard
+     *  shows the stage as a live view; editing lives on the Venues page. */
+    editable?: boolean;
+  }
+
+  let { editable = false }: Props = $props();
+
   const FIXTURE_RADIUS = 22;
   const GLOW_RADIUS = 50;
   const PADDING = 60;
@@ -522,7 +530,7 @@
   function beginDrag(pt: Pt): boolean {
     // In geometry mode a drag ends in a save; one at a time, so nothing
     // is silently lost while the previous save is in flight.
-    if (frame && saving) return false;
+    if (frame && (saving || !editable)) return false;
     const target = hit(pt.x, pt.y);
     if (!target) return false;
     drag = target;
@@ -737,7 +745,8 @@
     if (drag) {
       moveDrag(pt);
     } else {
-      canvasEl!.style.cursor = hit(pt.x, pt.y) ? "grab" : "default";
+      canvasEl!.style.cursor =
+        hit(pt.x, pt.y) && (editable || !frame) ? "grab" : "default";
     }
   }
 
@@ -802,7 +811,16 @@
     <div>
       <div class="overline">{$t("stage.title")}</div>
       <div class="stage-card__title">
-        {$t("stage.title")} · {Object.keys($metadataStore).length} fixtures
+        {#if editable && venue}
+          <span data-testid="stage-venue-label"
+            >{$t("stage.currentVenueLive", {
+              values: { name: venue.name },
+            })}</span
+          >
+          · {Object.keys($metadataStore).length} fixtures
+        {:else}
+          {$t("stage.title")} · {Object.keys($metadataStore).length} fixtures
+        {/if}
         {#if geometryMode}
           <span class="stage-card__placed">
             · {$t("stage.placed", {
@@ -834,10 +852,15 @@
             : `Error: ${$reloadStore.error}`}
         </span>
       {/if}
-      <a href="#/stage" class="btn btn-sm stage-card__3d">
+      <a href="#/lighting/stage" class="btn btn-sm stage-card__3d">
         {$t("stage3d.open")}
       </a>
-      {#if venue}
+      {#if !editable}
+        <a href="#/lighting/venues" class="btn btn-sm stage-card__edit">
+          {$t("stage.editInVenues")}
+        </a>
+      {/if}
+      {#if venue && editable}
         <button
           class="btn btn-sm stage-card__add-focus"
           type="button"
@@ -849,22 +872,28 @@
       {/if}
     </div>
   </header>
-  <div class="stage-card__viewport">
-    <div class="stage-card__caption" aria-hidden="true">
-      {$t("stage.label")}
+  {#if editable && !venue}
+    <p class="stage-card__no-venue" data-testid="stage-no-venue">
+      {$t("stage.noCurrentVenue")}
+    </p>
+  {:else}
+    <div class="stage-card__viewport">
+      <div class="stage-card__caption" aria-hidden="true">
+        {$t("stage.label")}
+      </div>
+      <canvas
+        bind:this={canvasEl}
+        onmousedown={onMouseDown}
+        onmousemove={onMouseMove}
+        onmouseup={onMouseUp}
+        onmouseleave={onMouseLeave}
+        ontouchstart={onTouchStart}
+        ontouchmove={onTouchMove}
+        ontouchend={onTouchEnd}
+      ></canvas>
     </div>
-    <canvas
-      bind:this={canvasEl}
-      onmousedown={onMouseDown}
-      onmousemove={onMouseMove}
-      onmouseup={onMouseUp}
-      onmouseleave={onMouseLeave}
-      ontouchstart={onTouchStart}
-      ontouchmove={onTouchMove}
-      ontouchend={onTouchEnd}
-    ></canvas>
-  </div>
-  {#if venue && (geometryMode || focusNames.length > 0)}
+  {/if}
+  {#if editable && venue && (geometryMode || focusNames.length > 0)}
     <div class="stage-card__focus">
       <div class="overline">{$t("stage.focusPoints")}</div>
       {#if focusNames.length === 0}
@@ -948,7 +977,12 @@
   .stage-card__viewport {
     position: relative;
     flex: 1;
-    width: 100%;
+    /* The card pads it with a margin, so size it to what is left; a
+       max width keeps a wide card from stretching the plot past what fits. */
+    width: calc(100% - 32px);
+    max-width: 960px;
+    align-self: center;
+    box-sizing: border-box;
     min-height: 240px;
     height: 35vh;
     max-height: 450px;
@@ -961,6 +995,11 @@
   .stage-card--geometry .stage-card__viewport {
     height: 45vh;
     max-height: 560px;
+  }
+  .stage-card__no-venue {
+    margin: 16px 20px;
+    color: var(--nc-fg-3);
+    font-size: 14px;
   }
   .stage-card__caption {
     position: absolute;

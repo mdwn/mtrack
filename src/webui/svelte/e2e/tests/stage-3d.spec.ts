@@ -66,7 +66,7 @@ test.describe("Stage 3D", () => {
     await page.goto(`/?wsId=${wsId}#/`);
     await expect(page.locator(".stage-card")).toBeVisible();
     await page.locator(".stage-card__3d").click();
-    await expect(page).toHaveURL(/#\/stage$/);
+    await expect(page).toHaveURL(/#\/lighting\/stage$/);
     await expect(page.locator(".stage3d .page__title")).toHaveText("Stage 3D");
   });
 
@@ -88,7 +88,7 @@ test.describe("Stage 3D", () => {
         console.log(`[asset ${r.status()}] ${r.url()}`);
       }
     });
-    await page.goto(`/?wsId=${wsId}#/stage`);
+    await page.goto(`/?wsId=${wsId}#/lighting/stage`);
     await expect(page.locator(".stage3d__viewport")).toBeVisible();
     // The renderer decides: WebGL, or the fallback message — never a blank.
     await expect(page.locator(".stage3d__viewport")).toHaveAttribute(
