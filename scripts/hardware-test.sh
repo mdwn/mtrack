@@ -92,6 +92,37 @@ done
 
 cd "$PROJECT_ROOT" || { echo "Cannot enter $PROJECT_ROOT" >&2; exit 1; }
 
+# The player serves the web UI from src/webui/svelte/dist, which cargo does not
+# build. On the test rig it was two months old at a bless on 2026-09-28: the
+# Stage 3D page answered "Not Found", and nothing in the report said so. Build
+# it where npm exists (make skips it when the sources are unchanged), and
+# wherever the stamp make leaves does not match the sources, say so loudly at
+# both ends of the report. The checks do not drive the UI, so this warns
+# rather than fails: the UI simply is not what this run vetted.
+SVELTE_DIR="$PROJECT_ROOT/src/webui/svelte"
+# The same hash as the Makefile's FRONTEND_HASH, so its stamp compares:
+# generated src/gen left out, as it is there.
+ui_hash() {
+    find "$SVELTE_DIR/src" "$PROJECT_ROOT/src/proto" -type f -not -path "$SVELTE_DIR/src/gen/*" \
+        2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin
+}
+if [[ "$SKIP_BUILD" != "true" ]] && command -v npm >/dev/null 2>&1; then
+    echo "=== Building the web UI ==="
+    if ! make -C "$PROJECT_ROOT" build-ui; then
+        echo "Web UI build failed." >&2
+        exit 1
+    fi
+    echo
+fi
+UI_WARNING=""
+if [[ "$LIST_ONLY" != "true" && "$(cat "$SVELTE_DIR/dist/.build-stamp" 2>/dev/null)" != "$(ui_hash)" ]]; then
+    UI_WARNING="WARNING: the web UI the player serves ($SVELTE_DIR/dist) was not built
+from this tree's sources, or its provenance is unknown (no .build-stamp). This run
+vetted the player, not its web UI. On a machine with npm, run 'make build-ui' and
+copy src/webui/svelte/dist, .build-stamp included, into this checkout."
+    printf '%s\n\n' "$UI_WARNING" >&2
+fi
+
 if [[ "$SKIP_BUILD" != "true" ]]; then
     echo "=== Building mtrack and the harness ==="
     # The harness runs the real binary, so both must be current.
@@ -147,8 +178,12 @@ if [[ "$LIST_ONLY" == "true" ]]; then
     exec "$HARNESS" --list "${ARGS[@]}"
 fi
 
+# Not exec'd, so a stale web UI is repeated under the report, where it is read.
 if [[ "$SELF_TEST" == "true" ]]; then
-    exec "$HARNESS" --self-test "${ARGS[@]}"
+    "$HARNESS" --self-test "${ARGS[@]}"
+else
+    "$HARNESS" "${ARGS[@]}"
 fi
-
-exec "$HARNESS" "${ARGS[@]}"
+status=$?
+[[ -n "$UI_WARNING" ]] && printf '\n%s\n' "$UI_WARNING" >&2
+exit "$status"

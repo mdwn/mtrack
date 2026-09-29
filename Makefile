@@ -31,7 +31,9 @@ setup-dev:
 build: build-ui build-rust
 
 ## Compute a hash of all frontend inputs (source, proto, lockfile).
-FRONTEND_HASH := $(shell find $(SVELTE_DIR)/src $(ROOT_DIR)/src/proto -type f 2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin)
+# src/gen is generated from src/proto (hashed here already) and gitignored, so it is left
+# out: a checkout that has never run buf would otherwise never match a stamp built elsewhere.
+FRONTEND_HASH := $(shell find $(SVELTE_DIR)/src $(ROOT_DIR)/src/proto -type f -not -path '$(SVELTE_DIR)/src/gen/*' 2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin)
 FRONTEND_STAMP := $(SVELTE_DIR)/dist/.build-stamp
 
 ## Install frontend dependencies
