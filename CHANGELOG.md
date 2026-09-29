@@ -467,6 +467,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The newest of debug and release now wins, as it already did for the player, and the header prints
   the harness's path and age.
 
+- **The hardware harness builds the web UI, or says it could not**: the player serves its web UI
+  from `src/webui/svelte/dist`, which cargo does not build, and `scripts/hardware-test.sh` only
+  ran cargo. On the test rig the UI was two months old at a bless, so Stage 3D answered "Not
+  Found" and the report said nothing. The script now builds it with `make build-ui` wherever npm
+  exists, and wherever the build stamp does not match the sources it prints a warning above and
+  below the report: the run vetted the player, not its web UI.
+
 ## [0.16.0] - 2026-08-19
 
 ### Added
