@@ -643,10 +643,11 @@ mod tests {
         let spot = &types["Spot"];
         let xml = description(spot).unwrap();
         strict(&xml);
-        assert!(
-            xml.contains("ColorSub_C") && xml.contains("ColorSub_Y"),
-            "{xml}"
-        );
+        // Name the missing attribute rather than print the description: it
+        // carries a generated UUID, which CodeQL treats as sensitive.
+        for attribute in ["ColorSub_C", "ColorSub_M", "ColorSub_Y"] {
+            assert!(xml.contains(attribute), "no {attribute} in the description");
+        }
         let bytes = generate(spot).unwrap();
         let description = gdtf::parse_archive(&bytes).unwrap();
         let back = gdtf::distill(&description, MODE_NAME, "Spot")
