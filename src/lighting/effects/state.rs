@@ -294,6 +294,29 @@ impl FixtureState {
                 }
             }
         }
+        // A CMY fixture has no red, green or blue of its own: the engine's
+        // colour, kept in RGB so layers blend alike everywhere, goes out as
+        // its complement — cyan removes red, so full red is cyan at 0. A
+        // primary no effect drives is left alone, open, as a colour-less
+        // fixture is. Written after the named channels, so an effect's
+        // colour wins over a `static` naming the flag directly.
+        if super::fixture::has_cmy(&fixture_info.channel_defs) {
+            for (rgb, cmy) in super::fixture::CMY_OF_RGB {
+                let (Some(state), Some(def)) =
+                    (self.channels.get(rgb), fixture_info.channel_defs.get(cmy))
+                else {
+                    continue;
+                };
+                let value = self.effective_channel_value(rgb, state, has_dedicated_dimmer);
+                for (offset, byte) in super::physical::resolve_normalized(def, 1.0 - value) {
+                    commands.push(DmxCommand {
+                        universe: fixture_info.universe,
+                        channel: fixture_info.address + offset - 1,
+                        value: byte,
+                    });
+                }
+            }
+        }
         for cell in &fixture_info.cells {
             for (channel_name, value) in self.cell_values(cell, cell_state(&cell.name)) {
                 let def = &cell.channels[&channel_name];
@@ -691,6 +714,30 @@ mod tests {
             ch,
             None,
         )
+    }
+
+    #[test]
+    fn a_fixture_with_its_own_rgb_gets_no_cmy_complement() {
+        // RGB and CMY both: the RGB is written, the flags are left alone.
+        let fixture = make_fixture_info(
+            vec![
+                ("red", 1),
+                ("green", 2),
+                ("blue", 3),
+                ("cyan", 4),
+                ("magenta", 5),
+                ("yellow", 6),
+            ],
+            1,
+        );
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        let cmds = fs.to_dmx_commands(&fixture);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!((cmds[0].channel, cmds[0].value), (1, 255));
     }
 
     #[test]

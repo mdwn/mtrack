@@ -76,6 +76,9 @@ fn canonical(channel: &str) -> Option<Attribute> {
         "cool_white" => color("ColorAdd_CW", "CW", "0.306,0.329,97.9"),
         "uv" => color("ColorAdd_UV", "UV", "0.176,0.005,0.6"),
         "amber" => color("ColorAdd_RY", "Amber", "0.477,0.460,57.0"),
+        "cyan" => plain("ColorSub_C", "C", "Color.Color", "None"),
+        "magenta" => plain("ColorSub_M", "M", "Color.Color", "None"),
+        "yellow" => plain("ColorSub_Y", "Y", "Color.Color", "None"),
         "pan" => Attribute {
             activation: Some("PanTilt"),
             ..plain("Pan", "P", "Position.PanTilt", "Angle")
@@ -629,6 +632,30 @@ mod tests {
     fn strict(xml: &str) {
         let problems = gdtf::strict::check(xml);
         assert!(problems.is_empty(), "not valid GDTF: {problems:#?}");
+    }
+
+    #[test]
+    fn a_cmy_type_round_trips_as_subtractive_colour() {
+        // GDTF's ColorSub_C/M/Y out, cyan/magenta/yellow back: the names
+        // the engine writes RGB's complement to.
+        let dsl = "fixture_type \"Spot\" {\n  channel \"dimmer\" @ 1\n  channel \"cyan\" @ 2\n  channel \"magenta\" @ 3\n  channel \"yellow\" @ 4\n}\n";
+        let types = parse_fixture_types(dsl).unwrap();
+        let spot = &types["Spot"];
+        let xml = description(spot).unwrap();
+        strict(&xml);
+        // Name the missing attribute rather than print the description: it
+        // carries a generated UUID, which CodeQL treats as sensitive.
+        for attribute in ["ColorSub_C", "ColorSub_M", "ColorSub_Y"] {
+            assert!(xml.contains(attribute), "no {attribute} in the description");
+        }
+        let bytes = generate(spot).unwrap();
+        let description = gdtf::parse_archive(&bytes).unwrap();
+        let back = gdtf::distill(&description, MODE_NAME, "Spot")
+            .unwrap()
+            .fixture_type;
+        assert_eq!(back.channels()["cyan"], 2);
+        assert_eq!(back.channels()["magenta"], 3);
+        assert_eq!(back.channels()["yellow"], 4);
     }
 
     #[test]

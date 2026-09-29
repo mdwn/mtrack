@@ -21,6 +21,11 @@ DMX is expected to be well supported through OLA, but the devices that have been
 - RatPac Satellite (Art-Net and sACN)
 - Cinelex Skycast A (sACN)
 
+Colour effects drive RGB(W) and CMY fixtures. Colour wheels are not modelled: `color:`, colour
+cycles and rainbows leave a wheel-only fixture white, and Stage 3D draws it white whatever slot it
+is on. A slot can still be chosen with a `static` naming the wheel's channel. See
+[GDTF-referential fixture types](../lighting/configuration.md#gdtf-referential-fixture-types-fixture).
+
 ## MIDI Beat Clock
 
 The MIDI beat clock uses a dedicated real-time thread to deliver 24-ppqn timing

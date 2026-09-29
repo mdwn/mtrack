@@ -211,8 +211,10 @@ export function beamLength(
 /**
  * The colour and level a fixture's channels show, as the 2D view reads
  * them: `red`/`green`/`blue` (+ `white`) mixed by `dimmer`, or a warm
- * white by `dimmer` alone. Other colour systems (CMY, amber, colour
- * wheels) are not read — their fixtures show as a dimmer-only white.
+ * white by `dimmer` alone. A CMY fixture's state carries the engine's RGB
+ * (its flags take the complement at output), so it shows its colour here
+ * too. A colour wheel is not read: the engine sends it no colour, and the
+ * fixture shows as a dimmer-only white.
  * `undefined` (nothing reported for the fixture) is dark, not full.
  */
 export function beamLook(

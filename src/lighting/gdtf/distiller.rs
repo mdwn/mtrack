@@ -683,6 +683,11 @@ fn canonical_channel_name(attribute: &str) -> Option<&'static str> {
         "ColorAdd_WW" => "warm_white",
         "ColorAdd_CW" => "cool_white",
         "ColorAdd_UV" => "uv",
+        // Subtractive mixing (a mover's CMY flags). The engine keeps colour in
+        // RGB and writes these as its complement at output.
+        "ColorSub_C" => "cyan",
+        "ColorSub_M" => "magenta",
+        "ColorSub_Y" => "yellow",
         "Pan" => "pan",
         "Tilt" => "tilt",
         "Zoom" => "zoom",

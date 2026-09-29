@@ -147,6 +147,15 @@ Notes:
   pixel/matrix modes) is skipped or refused with a clear message.
 - `.fixture` and `.light` fixture files load side by side; nothing renames
   or migrates.
+- How colour reaches a fixture depends on how it mixes. RGB(W) fixtures take
+  a show's colours directly. A mover with CMY flags — `cyan`, `magenta` and
+  `yellow`, which is how GDTF's `ColorSub_C/M/Y` import — takes the same
+  colours as their complement: `color: "red"` opens cyan fully and closes
+  magenta and yellow. A colour wheel is not driven by `color:`, a colour
+  cycle or a rainbow: those leave a wheel-only fixture white, lint says so,
+  and Stage 3D draws it white. Choose a wheel slot with a `static` naming
+  the channel (`color1: 40%`), at a level inside the slot's DMX range from
+  the fixture's manual.
 - Patch by the footprint the mode listing gives. It counts every copy of a
   repeated section: the PB15's `16: Effect Mode RGB` repeats one pixel's three
   colour channels four times over, so it lists `21 channels, footprint 21`, and

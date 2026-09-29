@@ -275,7 +275,7 @@ fn apply_static_effect(
             let channels = parameters
                 .iter()
                 .filter(|(param_name, _)| param_name.as_str() != "dimmer")
-                .filter(|(param_name, _)| fixture.channels.contains_key(*param_name))
+                .filter(|(param_name, _)| fixture.takes_channel(param_name))
                 .map(|(param_name, value)| {
                     let faded_value = *value * crossfade_multiplier;
                     (
