@@ -558,3 +558,110 @@ fn the_rig_kinematics_send_the_beam_where_the_pointing_math_aims() {
         }
     }
 }
+
+/// A CMY mover from its `.fixture`, a venue and a show, run live to the
+/// wire: the universe after each instant in `at`.
+fn cmy_frames(show: &str, at: &[Duration]) -> Vec<[u8; 513]> {
+    frames_for(CMY_SPOT, show, at)
+}
+
+const CMY_SPOT: &str =
+    "fixture_type \"CmySpot\" {\n  channel \"dimmer\" @ 1\n  channel \"cyan\" @ 2\n  \
+     channel \"magenta\" @ 3\n  channel \"yellow\" @ 4\n}\n";
+
+/// One fixture of `fixture_type` (named `CmySpot`) in a room, run live.
+fn frames_for(fixture_type: &str, show: &str, at: &[Duration]) -> Vec<[u8; 513]> {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+    for sub in ["fixture_types", "venues"] {
+        std::fs::create_dir_all(base.join(sub)).unwrap();
+    }
+    std::fs::write(base.join("fixture_types/spot.fixture"), fixture_type).unwrap();
+    std::fs::write(
+        base.join("venues/room.venue"),
+        "venue \"room\" {\n  fixture \"S1\" CmySpot @ 1:1 tags [\"spots\"] position (0, 3, 4)\n}\n",
+    )
+    .unwrap();
+    let groups: HashMap<String, LogicalGroup> = [(
+        "spots".to_string(),
+        LogicalGroup::new(
+            "spots".to_string(),
+            vec![GroupConstraint::AllOf(vec!["spots".to_string()])],
+        ),
+    )]
+    .into_iter()
+    .collect();
+    let config = Lighting::new(
+        Some("room".to_string()),
+        None,
+        Some(groups),
+        Some(Directories::new(
+            Some("fixture_types".to_string()),
+            Some("venues".to_string()),
+        )),
+    );
+    let mut system = LightingSystem::new();
+    system.load(&config, base).unwrap();
+
+    let mut engine = EffectEngine::new();
+    for fixture in system.get_current_venue_fixtures().unwrap() {
+        engine.register_fixture(fixture);
+    }
+    let shows = parse_light_shows(show).unwrap().into_values().collect();
+    let mut timeline = LightingTimeline::new(shows);
+    let mut resolve = |mut effect: crate::lighting::effects::EffectInstance| {
+        effect.target_fixtures = effect
+            .target_fixtures
+            .iter()
+            .flat_map(|g| system.resolve_logical_group_graceful(g))
+            .collect();
+        effect
+    };
+    apply_timeline_update(&mut engine, timeline.start_at(Duration::ZERO), &mut resolve);
+    let step = Duration::from_millis(10);
+    let mut universe = [0u8; 513];
+    let mut frames = Vec::new();
+    let mut now = Duration::ZERO;
+    while now <= *at.last().unwrap() {
+        apply_timeline_update(&mut engine, timeline.update(now), &mut resolve);
+        for command in engine.update(step, Some(now)).unwrap().to_vec() {
+            universe[command.channel as usize] = command.value;
+        }
+        if at.contains(&now) {
+            frames.push(universe);
+        }
+        now += step;
+    }
+    frames
+}
+
+#[test]
+fn a_cmy_fixture_shows_colour_as_its_complement_on_the_wire() {
+    let show = "show \"cmy\" {\n    @00:00.000\n    spots: static color: \"red\", dimmer: 100%, duration: 2s\n    \
+                @00:03.000\n    spots: static dimmer: 100%, duration: 2s\n    \
+                @00:06.000\n    spots: static color: \"#00ff80\", dimmer: 50%, duration: 2s\n}\n";
+    let at = [
+        Duration::from_millis(1000),
+        Duration::from_millis(2500),
+        Duration::from_millis(4000),
+        Duration::from_millis(7000),
+    ];
+    let frames = cmy_frames(show, &at);
+    let cmy = |f: &[u8; 513]| [f[1], f[2], f[3], f[4]];
+    // Red: cyan (which removes red) open, magenta and yellow in full.
+    assert_eq!(cmy(&frames[0]), [255, 0, 255, 255], "red");
+    // Colour holds until something changes it, as on an RGB fixture: the
+    // flags keep red through a dimmer-only cue.
+    assert_eq!(cmy(&frames[1]), [255, 0, 255, 255], "after red ends");
+    assert_eq!(cmy(&frames[2]), [255, 0, 255, 255], "dimmer only");
+    // A mix: green full, blue half, red none.
+    let f = cmy(&frames[3]);
+    assert_eq!(f[0], 127, "dimmer 50%");
+    assert_eq!(f[1], 255, "cyan removes all the red");
+    assert_eq!(f[2], 0, "no magenta: green is full");
+    assert!(
+        (126..=128).contains(&f[3]),
+        "yellow takes half the blue: {}",
+        f[3]
+    );
+}

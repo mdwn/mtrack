@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from their rig model. Pan turns the pan node and tilt the tilt node, and beams are translucent
   cones in the fixture's live color and level, styled by GDTF beam type: spots throw to the deck,
   washes shorter and fainter, LED tiles a haze at the lens. The room is dark whatever the UI theme.
-  Color is read from red, green, blue, white and dimmer channels only. three.js is its own chunk,
+  A beam shows the colour and level the engine sends the fixture, a CMY mover's included; a
+  fixture with no colour to mix, a wheel-only spot among them, draws white. three.js is its own chunk,
   loaded only with this page.
 
   A GDTF-backed type draws the archive's meshes when it ships them and GDTF primitives with sizes
@@ -135,6 +136,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with one already in the library says what collided and leaves the project untouched. Both
   untrusted-input layers — the zip archive and the description XML — carry hard size and nesting
   caps and have cargo-fuzz targets.
+
+  Colour follows how the fixture mixes it. RGB(W) fixtures take a show's colours directly. A mover
+  with CMY flags — a MAC Viper, Encore or Ultra, a Robe Esprite or LedPOINTE — imports them as
+  `cyan`, `magenta` and `yellow` and takes the same colours as their complement: `color: "red"`
+  opens cyan and closes magenta and yellow. A hand-written `.fixture` can name those channels too.
+  A colour wheel is not driven by `color:`, a colour cycle or a rainbow; a `static` naming the
+  wheel's channel chooses a slot, and lint reports a colour cue on a group with nothing to mix.
 
 - **Real-world MVR corpus, and pixel fixtures import**: run against ten console and pre-viz
   exports from gdtf.eu (grandMA3, Capture, festival and arena rigs, 146 to 176 fixtures each),

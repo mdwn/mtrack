@@ -136,8 +136,13 @@ pub enum ColorStrategy {
     /// Use RGB channels for color mixing
     ///
     /// This is the most common strategy, using red, green, and blue channels
-    /// to create colors through additive mixing.
+    /// to create colors through additive mixing. A CMY fixture uses it too:
+    /// its flags take RGB's complement at output.
     Rgb,
+    /// No colour to mix — a dimmer-only fixture, or one whose colour is a
+    /// wheel. Colour effects leave it alone rather than record a colour the
+    /// fixture cannot show (which the stage views would then draw).
+    None,
 }
 
 /// Strategies for handling strobe effects
@@ -232,9 +237,12 @@ impl FixtureProfile {
     }
 
     /// Determine the best color strategy for the given capabilities
-    fn determine_color_strategy(_capabilities: &FixtureCapabilities) -> ColorStrategy {
-        // Currently only RGB is supported, but this is where HSV/CMY detection would go
-        ColorStrategy::Rgb
+    fn determine_color_strategy(capabilities: &FixtureCapabilities) -> ColorStrategy {
+        if capabilities.contains(FixtureCapabilities::RGB_COLOR) {
+            ColorStrategy::Rgb
+        } else {
+            ColorStrategy::None
+        }
     }
 
     /// Determine the best strobe strategy for the given capabilities
@@ -350,6 +358,7 @@ impl FixtureProfile {
                     );
                 }
             }
+            ColorStrategy::None => {}
         }
 
         result
@@ -450,6 +459,21 @@ impl FixtureProfile {
     }
 }
 
+/// Whether a fixture mixes colour subtractively: cyan, magenta and yellow
+/// channels and no red, green and blue of its own.
+pub fn has_cmy<V>(channels: &HashMap<String, V>) -> bool {
+    CMY_OF_RGB
+        .iter()
+        .all(|(_, cmy)| channels.contains_key(*cmy))
+        && !CMY_OF_RGB
+            .iter()
+            .any(|(rgb, _)| channels.contains_key(*rgb))
+}
+
+/// Each additive primary and the subtractive channel that removes it.
+pub const CMY_OF_RGB: [(&str, &str); 3] =
+    [("red", "cyan"), ("green", "magenta"), ("blue", "yellow")];
+
 /// Information about a fixture for the effects engine
 #[derive(Debug, Clone)]
 pub struct FixtureInfo {
@@ -549,10 +573,12 @@ impl FixtureInfo {
     fn derive_capabilities(channels: &HashMap<String, u16>) -> FixtureCapabilities {
         let mut capabilities = FixtureCapabilities::NONE;
 
-        // Check for RGB color capability (requires all three)
-        if channels.contains_key("red")
+        // Colour: an RGB triple, or a CMY one (subtractive mixing, written
+        // as RGB's complement at output — see `FixtureState::to_dmx_commands`).
+        if (channels.contains_key("red")
             && channels.contains_key("green")
-            && channels.contains_key("blue")
+            && channels.contains_key("blue"))
+            || has_cmy(channels)
         {
             capabilities = capabilities.with(FixtureCapabilities::RGB_COLOR);
         }
@@ -596,6 +622,14 @@ impl FixtureInfo {
         }
 
         capabilities
+    }
+
+    /// Whether a named channel value means something to this fixture: one of
+    /// its own channels, or — on a CMY fixture — red, green or blue, which
+    /// reach its flags as their complement at output.
+    pub fn takes_channel(&self, name: &str) -> bool {
+        self.channels.contains_key(name)
+            || (CMY_OF_RGB.iter().any(|(rgb, _)| *rgb == name) && has_cmy(&self.channels))
     }
 
     /// Get cached capabilities
@@ -665,6 +699,32 @@ mod tests {
     }
 
     // ── FixtureCapabilities ──────────────────────────────────────────
+
+    #[test]
+    fn a_cmy_fixture_has_colour_and_takes_rgb() {
+        let cmy = FixtureInfo::new(
+            "spot".to_string(),
+            1,
+            1,
+            "cmy_spot".to_string(),
+            make_channels(&["dimmer", "cyan", "magenta", "yellow"]),
+            None,
+        );
+        assert!(cmy.has_capability(FixtureCapabilities::RGB_COLOR));
+        assert!(cmy.takes_channel("red") && cmy.takes_channel("cyan"));
+        assert!(!cmy.takes_channel("white"));
+        // Two of three flags is not subtractive mixing.
+        let partial = FixtureInfo::new(
+            "spot".to_string(),
+            1,
+            1,
+            "partial".to_string(),
+            make_channels(&["dimmer", "cyan", "magenta"]),
+            None,
+        );
+        assert!(!partial.has_capability(FixtureCapabilities::RGB_COLOR));
+        assert!(!partial.takes_channel("red"));
+    }
 
     #[test]
     fn capabilities_none() {

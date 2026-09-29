@@ -361,13 +361,23 @@ fn capability_coverage(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warnin
             let (needs, have, what): (&str, fn(&GroupCapabilities) -> usize, &str) =
                 match &effect.effect_type {
                     EffectType::Strobe { .. } => ("strobe", |c| c.strobe, "a strobe channel"),
-                    EffectType::Dimmer { .. } | EffectType::Pulse { .. } => {
-                        ("dimmer", |c| c.dimmer + c.rgb, "a dimmer or RGB channels")
-                    }
+                    EffectType::Dimmer { .. } | EffectType::Pulse { .. } => (
+                        "dimmer",
+                        |c| c.dimmer + c.rgb,
+                        "a dimmer or colour channels",
+                    ),
                     EffectType::ColorCycle { .. } | EffectType::Rainbow { .. } => {
-                        ("color", |c| c.rgb, "RGB channels")
+                        ("color", |c| c.rgb, "colour channels (RGB or CMY)")
                     }
                     EffectType::Move { .. } => ("move", |c| c.pan_tilt, "pan or tilt channels"),
+                    // A static's colour arrives as red, green and blue.
+                    EffectType::Static { parameters, .. }
+                        if ["red", "green", "blue"]
+                            .iter()
+                            .any(|c| parameters.contains_key(*c)) =>
+                    {
+                        ("color", |c| c.rgb, "colour channels (RGB or CMY)")
+                    }
                     EffectType::Static { .. } | EffectType::Chase { .. } => continue,
                 };
             for group in &effect.groups {
@@ -811,6 +821,43 @@ show "T" {
             ..Default::default()
         };
         assert!(lint_shows(&shows(source), &ctx).is_empty());
+    }
+
+    #[test]
+    fn a_static_colour_on_a_group_with_no_colour_is_reported() {
+        let shows = shows(
+            r#"
+show "s" {
+    @00:00.000
+    spots: static color: "magenta", dimmer: 100%, duration: 2s
+    @00:03.000
+    spots: static dimmer: 50%, duration: 2s
+}
+"#,
+        );
+        let mut group_capabilities = HashMap::new();
+        group_capabilities.insert(
+            "spots".to_string(),
+            GroupCapabilities {
+                fixtures: 3,
+                rgb: 0,
+                dimmer: 3,
+                ..GroupCapabilities::default()
+            },
+        );
+        let ctx = LintContext {
+            group_capabilities,
+            ..LintContext::default()
+        };
+        let warnings = lint_shows(&shows, &ctx);
+        // The colour cue is flagged once; the dimmer-only cue is fine.
+        assert_eq!(kinds(&warnings), vec!["capability-gap"]);
+        assert!(
+            warnings[0].message.contains("`static` on `spots`")
+                && warnings[0].message.contains("RGB or CMY"),
+            "{}",
+            warnings[0].message
+        );
     }
 
     #[test]
