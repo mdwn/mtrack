@@ -67,10 +67,15 @@ test.describe("Stage View geometry", () => {
   test.beforeEach(async ({ page }) => {
     wsId = `geo-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
     venueName = `venue-${wsId}`;
-    await page.goto(`/?wsId=${wsId}#/`);
-    await expect(page.locator(".playback-card__title")).toContainText(
-      "Test Song Alpha",
-    );
+    // Editing positions and focus points lives on the Venues page.
+    await page.goto(`/?wsId=${wsId}#/lighting/venues`);
+    // The plot draws the current venue; this one has no geometry yet.
+    await sendWsMessage(page, wsId, {
+      type: "metadata",
+      fixtures: { "front-left": { tags: ["front"], type: "par" } },
+      venue: { name: venueName, dir: null },
+    });
+    await expect(page.locator(".stage-card__viewport canvas")).toBeVisible();
   });
 
   test("a venue without geometry shows no focus-point editor", async ({

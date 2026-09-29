@@ -35,6 +35,13 @@
     StageScene,
   } from "../lib/stage/scene3d";
 
+  interface Props {
+    /** Heading level of the page title; Lighting mounts this under its own h1. */
+    heading?: "h1" | "h2";
+  }
+
+  let { heading = "h1" }: Props = $props();
+
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let hostEl: HTMLDivElement | undefined = $state();
   let scene: StageScene | null = $state(null);
@@ -132,7 +139,9 @@
 <div class="stage3d page">
   <div class="page__head stage3d__head">
     <div>
-      <h1 class="page__title">{$t("stage3d.title")}</h1>
+      <svelte:element this={heading} class="page__title"
+        >{$t("stage3d.title")}</svelte:element
+      >
       <p class="page__subtitle stage3d__subtitle">
         {#if $venueStore}
           {$venueStore.name} ·

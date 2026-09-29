@@ -24,7 +24,6 @@
   import DmxSection from "./DmxSection.svelte";
   import TriggerSection from "./TriggerSection.svelte";
   import ControllersSection from "./ControllersSection.svelte";
-  import LightingSection from "./LightingSection.svelte";
   import NotificationsSection from "./NotificationsSection.svelte";
   import type { NotifBrowseTarget } from "./NotificationsSection.svelte";
   import StatusEventsSection from "./StatusEventsSection.svelte";
@@ -36,6 +35,8 @@
     trackNames: string[];
     sampleNames: string[];
     initialSection?: string;
+    /** The profile's name in Lighting URLs; absent for an unsaved draft. */
+    profileName?: string;
     onrefreshDevices: () => void;
     onchange: () => void;
     onsectionchange?: (section: string) => void;
@@ -52,6 +53,7 @@
     trackNames,
     sampleNames,
     initialSection,
+    profileName,
     onrefreshDevices,
     onchange,
     onsectionchange,
@@ -290,8 +292,29 @@
       <div class="panel-body">
         <DmxSection bind:dmx={profile.dmx} {onchange} />
 
-        <div class="lighting-subsection">
-          <LightingSection bind:lighting={profile.dmx.lighting} {onchange} />
+        <div class="lighting-subsection" data-testid="lighting-summary">
+          <h4 class="summary-title">{$t("profile.lightingSummary.title")}</h4>
+          <dl class="summary-list">
+            <div>
+              <dt>{$t("profile.lightingSummary.venue")}</dt>
+              <dd>
+                {profile.dmx.lighting?.current_venue ??
+                  $t("profile.lightingSummary.noVenue")}
+              </dd>
+            </div>
+            <div>
+              <dt>{$t("profile.lightingSummary.groups")}</dt>
+              <dd>{Object.keys(profile.dmx.lighting?.groups ?? {}).length}</dd>
+            </div>
+          </dl>
+          <p class="field-hint">{$t("profile.lightingSummary.hint")}</p>
+          {#if profileName}
+            <a
+              class="btn btn-sm"
+              href={`#/lighting/groups?profile=${encodeURIComponent(profileName)}`}
+              >{$t("profile.lightingSummary.edit")}</a
+            >
+          {/if}
         </div>
       </div>
     {:else if activeTab === "trigger" && profile.trigger}
@@ -448,6 +471,32 @@
     margin-top: 20px;
     padding-top: 16px;
     border-top: 1px solid var(--border);
+  }
+  .summary-title {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .summary-list {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .summary-list dt {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+  }
+  .summary-list dd {
+    margin: 0;
+    font-size: 14px;
+  }
+  .lighting-subsection .btn {
+    margin-top: 8px;
+    display: inline-block;
   }
   .panel-footer {
     display: flex;

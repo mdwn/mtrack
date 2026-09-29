@@ -18,6 +18,7 @@ export class NavPage {
   readonly brand: Locator;
   readonly dashboardLink: Locator;
   readonly configLink: Locator;
+  readonly lightingLink: Locator;
   readonly songsLink: Locator;
   readonly playlistsLink: Locator;
   readonly statusLink: Locator;
@@ -31,6 +32,7 @@ export class NavPage {
     this.brand = page.locator(".topnav__brand");
     this.dashboardLink = page.locator('.topnav__tab[href="#/"]');
     this.configLink = page.locator('.topnav__tab[href="#/config"]');
+    this.lightingLink = page.locator('.topnav__tab[href="#/lighting"]');
     this.songsLink = page.locator('.topnav__tab[href="#/songs"]');
     this.playlistsLink = page.locator('.topnav__tab[href="#/playlists"]');
     this.statusLink = page.locator('.topnav__tab[href="#/status"]');
