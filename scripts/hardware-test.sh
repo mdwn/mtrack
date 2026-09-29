@@ -18,6 +18,11 @@
 # runs the areas it can, and reports the ones it cannot. A machine with only
 # audio, or only MIDI, is a normal run rather than a failure.
 #
+# The build step also builds the web UI where npm is installed. Where it is not
+# (the test rig), build it elsewhere with `make build-ui` and copy
+# src/webui/svelte/dist here, .build-stamp included; a UI that does not match
+# this tree's sources is reported above and below the results.
+#
 # USAGE-BEGIN
 # Usage:
 #   ./scripts/hardware-test.sh                  # everything available

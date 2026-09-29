@@ -147,6 +147,23 @@ Notes:
   pixel/matrix modes) is skipped or refused with a clear message.
 - `.fixture` and `.light` fixture files load side by side; nothing renames
   or migrates.
+- Patch by the footprint the mode listing gives. It counts every copy of a
+  repeated section: the PB15's `16: Effect Mode RGB` repeats one pixel's three
+  colour channels four times over, so it lists `21 channels, footprint 21`, and
+  the next fixture goes at least 21 addresses on.
+- When sections that differ repeat an attribute, the fixture's own `dimmer`
+  and `strobe` are the ones nearest the root of its geometry — the master on
+  the head, yoke or base — and the others keep a section-suffixed name. On a
+  Robe Spiider, `dimmer` is the master and the background ring's is
+  `dimmer:background`, so a show's `dimmer: 80%` lights the beam. Other
+  attributes keep the first section's channel as the fixture's. Nothing
+  drives a suffixed channel unless a `static` names it, quoted:
+
+  ```light
+  spiiders: static color: "blue", dimmer: 100%, "dimmer:background": 40%, duration: 30s
+  ```
+
+  The import report lists every suffixed name.
 - When a GDTF's identical sections (a pixel bar's segments, a batten's
   cells) gang to one channel, the distiller also records them as cells —
   their own channels and a transform-derived offset — the same shape a
@@ -418,6 +435,30 @@ Three mountings are worth memorizing:
   `Rx(30°)` takes the rest beam `(0, 0, −1)` to `(0, sin 30°, −cos 30°)`, up off the deck
   and upstage.
 
+**Aiming a fixed fixture at a point.** A fixture with no pan or tilt points only where its
+mounting sends it, so aiming it is choosing a rotation. Turn the direction to the target into
+a unit vector `d` (target minus position, divided by its length). Then
+
+- tip about X by `a = acos(−d.z)`: 0° keeps the rest direction straight down, 90° is level,
+  more than 90° points up off the deck;
+- turn about Z by `b = atan2(−d.x, d.y)`;
+
+and the mounting is `rotation (a, 0, b)`. For a brick on the deck at `(0.09, −0.1, 0)` aimed at
+head height mid-stage, `(0.7, 1.9, 1.5)`: `d = (0.237, 0.778, 0.583)`, so `a = 125.7°` and
+`b = −17.0°`.
+
+```light
+venue "house" {
+  fixture "Brick4" Astera-PixelBrick @ 1:13 position (0.09, -0.1, 0) rotation (125.7, 0, -17)
+  focus "center" (0.7, 1.9, 1.5)
+}
+```
+
+Name the point as a focus point, as here: [`export-mvr`](#importing-a-venues-mvr) then links
+each fixed fixture aimed at it, which pre-viz tools need to show it aimed. A GDTF fixture whose
+manufacturer models the lens pitched off −Z will not point along this rotation; Stage 3D shows
+where it actually points.
+
 A fixture type imported from a GDTF is aimed through its own geometry: the rig's yoke and
 head axes and the lens's rest angle, read from the file, so a fixture whose manufacturer
 models the yoke yawed or the lens pitched (the Ayrton MagicDot SX yaws its yoke 90°) is
@@ -487,8 +528,10 @@ round-trips: importing the export merges it with nothing changed.
 
 The same flow is available over MCP as `inspect_mvr`, `import_mvr` and `export_mvr`. Pixel bars and
 multi-section fixtures import with their identical sections ganged to one color (the report
-says so); a fixture with sections that differ keeps its first section's channels as its own and
-the rest under section-suffixed names. gdtf.eu publishes sample MVR files from several consoles,
+says so); a fixture with sections that differ keeps its master `dimmer` and `strobe` and its
+first section's other channels as its own, and the rest under section-suffixed names (see the
+notes under [GDTF-referential fixture types](#gdtf-referential-fixture-types-fixture)). gdtf.eu
+publishes sample MVR files from several consoles,
 which are a good way to see what an import of your own rig will look like.
 
 ## Stage 3D
@@ -498,7 +541,9 @@ the audience edge marked, every fixture at its venue position, movers turning as
 drives them, beams in the colour and level the fixture is showing, and focus points as
 markers. Drag to orbit, scroll to zoom, right-drag to pan; the **Front of house**, **Side**
 and **Top** buttons are camera presets, and **Labels** toggles the fixture names (off by
-default on a large rig). A pixel fixture — one with cells — lights its lenses per cell when
+default on a large rig). A fixture the player has reported nothing for is drawn dark, so an
+idle rig before the first song looks as dark as the real one. A pixel fixture — one with
+cells — lights its lenses per cell when
 a show says `per: cell`; the stage plot on the dashboard draws such a fixture as a segmented
 disc, one wedge per cell, coloured from the cell's own state.
 
