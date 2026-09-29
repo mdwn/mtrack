@@ -216,6 +216,31 @@ pub fn distill(
     // them.
     named = expand_templates(named, description, &mut warnings);
 
+    // The intensity masters go to the section nearest the root. A master
+    // dimmer and shutter sit on the head, yoke or base, above the rings and
+    // lenses whose own dimmers repeat the attribute; in document order a
+    // Spiider's background ring comes first, and `dimmer` would light the
+    // ring and leave the beam dark. Only these two: colour belongs to the
+    // emitters, and a Spiider's flower sits above the wash zones whose
+    // colour is the fixture's, so depth would pick the wrong one there.
+    // The shallowest occurrence swaps places with the first, which leaves
+    // every other channel, and so the ganging below, in document order.
+    for master in ["dimmer", "strobe"] {
+        let occurrences: Vec<usize> = (0..named.len())
+            .filter(|&i| named[i].name == master)
+            .collect();
+        let shallowest = occurrences
+            .iter()
+            .copied()
+            .min_by_key(|&i| geometry_depth(description, &named[i].geometry));
+        if let (Some(&first), Some(shallowest)) = (occurrences.first(), shallowest) {
+            let depth = |i: usize| geometry_depth(description, &named[i].geometry);
+            if depth(shallowest) < depth(first) {
+                named.swap(first, shallowest);
+            }
+        }
+    }
+
     // Pass two. Geometries carrying exactly the same attribute set are
     // identical sections — pixels, batten segments — and are ganged: the
     // first section's channels are the fixture's, and every other
@@ -605,6 +630,29 @@ fn geometry_offset(description: &Description, name: &str) -> [f64; 3] {
         }
     }
     [m[0][3], m[1][3], m[2][3]]
+}
+
+/// How far below the root a geometry sits, counted the way
+/// [`geometry_offset`] walks an instance path: the outer chain, then each
+/// inner segment's chain below its template root. Unknown names sort last.
+fn geometry_depth(description: &Description, name: &str) -> usize {
+    let mut depth = 0;
+    for (segment_index, segment) in name.split('/').enumerate() {
+        let Some(mut at) = description
+            .geometries
+            .iter()
+            .position(|g| g.name == segment)
+        else {
+            return usize::MAX;
+        };
+        let mut chain = 1;
+        while let Some(parent) = description.geometries[at].parent {
+            chain += 1;
+            at = parent;
+        }
+        depth += if segment_index > 0 { chain - 1 } else { chain };
+    }
+    depth
 }
 
 /// Row-major 4×4 product `a · b`.
@@ -1055,6 +1103,32 @@ mod tests {
         assert_eq!(defs["pan"].offset, 3);
         assert!(defs["pan"].mirrors.is_empty());
         assert_eq!(defs["pan:head_b"].offset, 6);
+    }
+
+    #[test]
+    fn the_section_nearest_the_root_claims_the_plain_name() {
+        // A Robe Spiider's shape: the background ring sits inside the head
+        // and its dimmer comes first in the file; the master dimmer on the
+        // head comes later. `dimmer` must be the master's, or a show's
+        // dimmer lights the ring and leaves the beam dark.
+        let xml = r#"<GDTF><FixtureType Name="Spider" Manufacturer="m">
+  <Geometries><Geometry Name="Base"><Geometry Name="Yoke"><Geometry Name="Head"><Geometry Name="Background"/></Geometry></Geometry></Geometry></Geometries>
+  <DMXModes>
+    <DMXMode Name="M" Geometry="Base">
+      <DMXChannels>
+        <DMXChannel Offset="1" Geometry="Background"><LogicalChannel Attribute="Dimmer"><ChannelFunction Name="BackgroundDimmer" Attribute="Dimmer" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="2" Geometry="Background"><LogicalChannel Attribute="ColorAdd_R"><ChannelFunction Name="R" Attribute="ColorAdd_R" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+        <DMXChannel Offset="3" Geometry="Head"><LogicalChannel Attribute="Dimmer"><ChannelFunction Name="Master Dimmer" Attribute="Dimmer" DMXFrom="0/1"/></LogicalChannel></DMXChannel>
+      </DMXChannels>
+    </DMXMode>
+  </DMXModes>
+</FixtureType></GDTF>"#;
+        let description = parse_description(xml).unwrap();
+        let distilled = distill(&description, "M", "Spider").unwrap();
+        let defs = distilled.fixture_type.channel_defs();
+        assert_eq!(defs["dimmer"].offset, 3, "the head's master dimmer");
+        assert_eq!(defs["dimmer:background"].offset, 1);
+        assert_eq!(defs["red"].offset, 2);
     }
 
     #[test]

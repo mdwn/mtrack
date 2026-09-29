@@ -425,6 +425,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A GDTF fixture's `dimmer` and `strobe` are its masters**: where a fixture repeats an
+  attribute on differing sections, the first section in the file kept the plain name — and on
+  Robe's pixel movers that is the background ring, not the head. A show's `dimmer: 80%` on a
+  Spiider, Tetra2 or TetraX lit the ring and left the beam dark, and its `strobe` worked the
+  ring's shutter. The section nearest the root of the geometry now claims `dimmer` and `strobe`
+  (the master sits on the head, yoke or base); the ring keeps its own under a section name such
+  as `dimmer:background`. Colour is unchanged: it belongs to the emitters, and on a Spiider the
+  wash zones, not the flower above them, stay the fixture's `red`, `green` and `blue`. Across the
+  ten-file corpus exactly those five Robe modes change. Cached expansions regenerate (distiller
+  version 6); a `static` that named `dimmer:head` or `dimmer:yoke` now wants `dimmer`.
+
 - **Seeking into a song past a move keeps the head where the move put it (#451)**: the timeline's
   seek replay dropped every finished effect, moves included, so a seek left a head where it was.
   Finished moves are now replayed in cue order and committed to pose memory, so a later move's turn
