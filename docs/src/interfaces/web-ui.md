@@ -106,7 +106,8 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   aims at, so name them for what they are ("drummer", "center-stage"). A fixture dragged from the
   tray is hung at 3 m; edit the venue file to correct its height. Without positions the view is
   the older layout organized by tags (left, right, front, back), and dragging only rearranges the
-  picture in this browser's localStorage.
+  picture in this browser's localStorage. The stage card's **3D** button opens the venue as a
+  room; see [Stage 3D](../lighting/configuration.md#stage-3d).
 - **Active effects** — Lists currently running lighting effects by name.
 - **Log panel** — Streaming application logs with level filter pills
   (TRACE/DEBUG/INFO/WARN/ERROR), defaulting to INFO+. ERROR rows get a pink-tinted
@@ -508,7 +509,10 @@ The config editor provides a profile-based hardware configuration UI with tabs f
 - **DMX** — OLA host/port, universe mappings
 - **Lighting** — Fixture types, venues, profile settings with constraint editors. Both
   fixture-type file forms are listed: a `.light` type opens in the channel-map form, a
-  `.fixture` type (rich channels, or distilled from a GDTF archive) as the text of its file
+  `.fixture` type (rich channels, or distilled from a GDTF archive) as the text of its file.
+  **Import GDTF** uploads a `.gdtf` archive, lists its DMX modes to pick from, and writes the
+  referential `.fixture` (the same as `mtrack import-gdtf`; see
+  [GDTF-referential fixture types](../lighting/configuration.md#gdtf-referential-fixture-types-fixture))
 - **Triggers** — Audio and MIDI trigger inputs with calibration
 - **Controllers** — gRPC, OSC, and MIDI controller configuration. The MIDI controller section
   supports full editing of event mappings (play, prev, next, stop, all_songs, playlist) with

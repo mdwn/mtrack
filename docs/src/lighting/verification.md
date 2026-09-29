@@ -17,3 +17,10 @@ This will verify that:
 - The light show syntax is valid
 - All referenced fixture groups exist in your configuration
 - All referenced fixtures exist in your configuration
+
+`verify-light-show` checks `.light` shows only. Fixture types and venues (`.light`, `.fixture`
+and `.venue`) are parsed when the player loads them, and `mtrack import-gdtf` and
+`mtrack import-mvr --write` verify what they write. Over [MCP](../interfaces/mcp.md),
+`validate_lighting` also lints a show against the current venue: focus points the venue does
+not bind, `per: cell` on fixtures with no cells, groups that cannot do what an effect asks, and
+similar mistakes that are legal DSL but do nothing.

@@ -75,6 +75,9 @@ tracks:
     file: Keys.wav
     file_channel: 1
 
+# A song does not need tracks. One with lighting and no audio plays for as long as
+# its lighting does: until its last effect ends, counting any `clear`.
+
 # (Optional) Loop the song indefinitely. Audio crossfades seamlessly at loop
 # boundaries. Press Play or Next to break out and advance the playlist.
 loop_playback: true

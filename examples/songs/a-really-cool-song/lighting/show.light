@@ -1,0 +1,37 @@
+show "A Really Cool Song" {
+    # Song start - all lights off
+    @00:00.000
+    all_lights: static dimmer: 0%, duration: 5s
+
+    # Front wash on
+    @00:05.000
+    front_wash: static color: "#ff8033", dimmer: 80%, duration: 38s
+
+    # Movers join with color cycle
+    @00:10.000
+    movers: cycle color: "red", color: "blue", color: "green", color: "yellow", speed: 2.0, duration: 33s
+
+    # Strobes for impact
+    @00:15.000
+    strobes: strobe frequency: 8, duration: 2s
+
+    # Back wash for depth
+    @00:20.000
+    back_wash: static color: "#4dccff", dimmer: 60%, duration: 23s
+
+    # All premium lights pulse
+    @00:25.000
+    premium_lights: pulse base_level: 30%, pulse_amplitude: 70%, frequency: 1.5, duration: 5s
+
+    # Front stage chase
+    @00:30.000
+    front_stage: chase pattern: linear, speed: 4.0, direction: left_to_right, duration: 5s
+
+    # All lights rainbow effect
+    @00:35.000
+    all_lights: rainbow speed: 1.0, saturation: 100%, brightness: 80%, duration: 5s
+
+    # Fade to black
+    @00:40.000
+    all_lights: dimmer start: 100%, end: 0%, duration: 3s, curve: linear, layer: foreground
+}

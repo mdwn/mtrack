@@ -65,12 +65,10 @@ $ sudo apt install ./mtrack_<version>_arm64.deb
 ```
 
 Installing it through `apt` rather than `dpkg -i` matters: it pulls in
-`libasound2` and `libudev1` for you, and offers `ola` — the Open Lighting
-daemon mtrack talks to for DMX output. Add it if you run lights:
-
-```
-$ sudo apt install ola
-```
+`libasound2` and `libudev1` for you. It also installs `ola` — the Open Lighting
+daemon mtrack talks to for DMX output — because the package recommends it. If you
+do not run lights, skip it with `--no-install-recommends`; if you skipped it and
+later want lights, `sudo apt install ola` adds it.
 
 The service is enabled and started automatically, with its library at
 `/var/lib/mtrack`. Point it somewhere else — an SD card or USB drive — by

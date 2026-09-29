@@ -476,7 +476,8 @@ library. A fixture type with no GDTF — a `.light` or hand-written `.fixture` �
 generated one carrying its channels and cells with the spec's own attribute definitions, so a
 console patches it and groups its encoders sensibly; it has no physical model, because mtrack
 knows none — for one, import the manufacturer's GDTF. Exports always land in
-`lighting/export/`, as `<venue>.mvr` unless `--output` names another file; `--layers-from-tags`
+`lighting/export/`, as `<venue>.mvr` — the venue name made file-name-safe, `kellys-basement`
+becoming `kellys_basement.mvr` — unless `--output` names another file; `--layers-from-tags`
 puts each fixture on a layer named after its first tag. Fixture IDs are the number a fixture's
 name ends in, else the lowest free one. A venue seeded from an MVR round-trips: importing
 the export merges it with nothing changed.
