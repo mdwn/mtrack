@@ -213,15 +213,23 @@ export function beamLength(
  * them: `red`/`green`/`blue` (+ `white`) mixed by `dimmer`, or a warm
  * white by `dimmer` alone. Other colour systems (CMY, amber, colour
  * wheels) are not read — their fixtures show as a dimmer-only white.
+ * `undefined` (nothing reported for the fixture) is dark, not full.
  */
-export function beamLook(channels: {
-  red?: number;
-  green?: number;
-  blue?: number;
-  dimmer?: number;
-  strobe?: number;
-  white?: number;
-}): { rgb: [number, number, number]; intensity: number; strobeOn: boolean } {
+export function beamLook(
+  channels:
+    | {
+        red?: number;
+        green?: number;
+        blue?: number;
+        dimmer?: number;
+        strobe?: number;
+        white?: number;
+      }
+    | undefined,
+): { rgb: [number, number, number]; intensity: number; strobeOn: boolean } {
+  // No state at all for the fixture (idle player, nothing reported yet):
+  // dark. An entry without a `dimmer` key is a dimmer-less fixture, below.
+  if (!channels) return { rgb: [0, 0, 0], intensity: 0, strobeOn: true };
   const dimmer = (channels.dimmer ?? 255) / 255;
   const hasColor =
     channels.red !== undefined ||

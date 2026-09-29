@@ -159,6 +159,19 @@ test.describe("stage rig math", () => {
     expect(dark.intensity).toBe(0);
   });
 
+  test("a fixture with no reported state is dark; one without a dimmer is not", () => {
+    // Idle player: the server has said nothing about the fixture.
+    const idle = beamLook(undefined);
+    expect(idle.intensity).toBe(0);
+    expect(idle.rgb).toEqual([0, 0, 0]);
+    // An RGB-only fixture has an entry but no dimmer key: lit by its RGB.
+    const rgbOnly = beamLook({ red: 0, green: 255, blue: 0 });
+    expect(rgbOnly.rgb[1]).toBe(1);
+    expect(rgbOnly.intensity).toBeGreaterThan(0.3);
+    // An explicit dimmer of zero is dark too.
+    expect(beamLook({ dimmer: 0 }).intensity).toBe(0);
+  });
+
   test("the tray and the deck extent hold everything", () => {
     const tray = trayPositions(["b", "a", "c"]);
     expect(tray.a[0]).toBeLessThan(tray.b[0]);
