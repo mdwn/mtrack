@@ -33,6 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The import report and CLI say how many scenery objects there are and how many meshes the 3D view
   will not draw.
 
+- **MVR export links fixed fixtures to the focus point they are aimed at**: pre-viz tools
+  aim a fixture with no pan or tilt at its MVR `<Focus>` and, with none, at the origin — Blender
+  DMX turns every such fixture to face (0, 0, 0) whatever its rotation says, so an exported
+  house rig of eight floor-mounted bricks aimed at center stage opened with all eight pointing
+  at the origin. The export now links each fixed fixture to the venue focus point its beam
+  passes within a degree of, nearest first. Movers stay unlinked, since their aim is their
+  pose, and a fixed fixture aimed at no named point is left as before. Checked in Blender DMX:
+  linked, the bricks' beams meet center stage.
+
 - **MVR export, with embedded and generated GDTFs (#445)**: `mtrack export-mvr <venue>` and the
   `export_mvr` MCP tool write a venue as an `.mvr` a console or pre-viz tool can open: every fixture
   with its address and its position and rotation in MVR millimeters (the import's origin restored),

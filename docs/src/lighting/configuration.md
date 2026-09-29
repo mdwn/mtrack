@@ -479,8 +479,11 @@ knows none — for one, import the manufacturer's GDTF. Exports always land in
 `lighting/export/`, as `<venue>.mvr` — the venue name made file-name-safe, `kellys-basement`
 becoming `kellys_basement.mvr` — unless `--output` names another file; `--layers-from-tags`
 puts each fixture on a layer named after its first tag. Fixture IDs are the number a fixture's
-name ends in, else the lowest free one. A venue seeded from an MVR round-trips: importing
-the export merges it with nothing changed.
+name ends in, else the lowest free one. A fixture with no pan or tilt is linked to the focus
+point its beam passes through, within a degree, because pre-viz tools such as Blender DMX aim
+a fixed fixture at its linked focus point and, without one, at the origin; aim fixed fixtures
+at a named focus point and they open in pre-viz as they are hung. A venue seeded from an MVR
+round-trips: importing the export merges it with nothing changed.
 
 The same flow is available over MCP as `inspect_mvr`, `import_mvr` and `export_mvr`. Pixel bars and
 multi-section fixtures import with their identical sections ganged to one color (the report

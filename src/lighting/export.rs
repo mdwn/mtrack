@@ -30,7 +30,7 @@
 
 pub mod gdtf;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -40,7 +40,7 @@ use sha2::{Digest, Sha256};
 
 use super::import::fixture_filename_stem;
 use super::parser::{parse_fixture_types, parse_venues};
-use super::types::{Fixture, FixtureType, Vec3, Venue};
+use super::types::{ChannelDef, Fixture, FixtureType, Vec3, Venue};
 
 /// How an export is run.
 #[derive(Clone, Debug)]
@@ -255,6 +255,27 @@ pub fn export_mvr_bytes(
         gdtf_of.insert(type_name, (entry, mode));
     }
 
+    // Which types move: a mover's aim is its pan and tilt, so it links to
+    // no focus point here. A referential type's channels live in its
+    // archive; one that cannot be distilled counts as moving, and so goes
+    // unlinked, which is what every export did before links existed.
+    let moving: HashSet<&str> = gdtf_of
+        .iter()
+        .filter(|(type_name, (entry, mode))| {
+            let fixture_type = &fixture_types[**type_name];
+            if fixture_type.source().is_none() {
+                return has_pose(fixture_type.channel_defs());
+            }
+            entries
+                .get(entry)
+                .and_then(|bytes| super::gdtf::parse_archive(bytes).ok())
+                .and_then(|description| super::gdtf::distill(&description, mode, type_name).ok())
+                .map(|distilled| has_pose(distilled.fixture_type.channel_defs()))
+                .unwrap_or(true)
+        })
+        .map(|(type_name, _)| *type_name)
+        .collect();
+
     let origin_mm = venue
         .source()
         .map(|s| {
@@ -276,6 +297,7 @@ pub fn export_mvr_bytes(
         venue,
         &fixtures,
         &gdtf_of,
+        &moving,
         &origin_mm,
         options.layers_from_tags,
     );
@@ -391,6 +413,7 @@ fn render_scene(
     venue: &Venue,
     fixtures: &[&Fixture],
     gdtf_of: &HashMap<&str, (String, String)>,
+    moving: &HashSet<&str>,
     origin_mm: &Vec3,
     layers_from_tags: bool,
 ) -> String {
@@ -433,6 +456,14 @@ fn render_scene(
             escape(entry),
             escape(mode)
         ));
+        if !moving.contains(fixture.fixture_type()) {
+            if let Some(focus) = aimed_at(fixture, venue) {
+                xml.push_str(&format!(
+                    "            <Focus>{}</Focus>\n",
+                    uuid(venue.name(), "focus", focus)
+                ));
+            }
+        }
         xml.push_str(&format!(
             "            <Addresses>\n              <Address break=\"0\">{}.{}</Address>\n            </Addresses>\n",
             fixture.universe(),
@@ -476,6 +507,51 @@ fn render_scene(
     }
     out.push_str("    </Layers>\n  </Scene>\n</GeneralSceneDescription>\n");
     out
+}
+
+/// Whether a type has a pose to aim: a pan or a tilt channel.
+fn has_pose(channels: &HashMap<String, ChannelDef>) -> bool {
+    channels.contains_key("pan") || channels.contains_key("tilt")
+}
+
+/// How far, in degrees, a fixed fixture's beam may pass from a focus point
+/// and still be aimed at it: rotations written to a tenth of a degree, and a
+/// lens a few centimetres off the mounting point, both fit well inside it.
+const FOCUS_TOLERANCE_DEG: f64 = 1.0;
+
+/// The focus point a fixed fixture is aimed at, if any: the one its beam —
+/// straight down through its mounting, as a fixture at rest points — passes
+/// nearest, within [`FOCUS_TOLERANCE_DEG`]. Pre-viz tools such as Blender DMX
+/// aim a fixed fixture at its MVR `<Focus>` and, without one, at the origin,
+/// so the link is what makes the export look as the rig is hung.
+fn aimed_at<'a>(fixture: &Fixture, venue: &'a Venue) -> Option<&'a str> {
+    let position = fixture.position()?;
+    let [rx, ry, rz] = fixture.rotation().unwrap_or([0.0; 3]).map(f64::to_radians);
+    // −(third column of R = Rz·Ry·Rx): the mounting's −Z in stage space.
+    let beam = [
+        -(rz.cos() * ry.sin() * rx.cos() + rz.sin() * rx.sin()),
+        -(rz.sin() * ry.sin() * rx.cos() - rz.cos() * rx.sin()),
+        -(ry.cos() * rx.cos()),
+    ];
+    venue
+        .focus_points()
+        .iter()
+        .filter_map(|(name, point)| {
+            let to = [
+                point[0] - position[0],
+                point[1] - position[1],
+                point[2] - position[2],
+            ];
+            let length = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+            if length < 1e-6 {
+                return None;
+            }
+            let cos = (beam[0] * to[0] + beam[1] * to[1] + beam[2] * to[2]) / length;
+            let angle = cos.clamp(-1.0, 1.0).acos().to_degrees();
+            (angle <= FOCUS_TOLERANCE_DEG).then_some((name.as_str(), angle))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(b.0)))
+        .map(|(name, _)| name)
 }
 
 /// The MVR transform of a stage pose: the basis of `R = Rz·Ry·Rx` as
@@ -763,6 +839,56 @@ mod tests {
             .focus_points
             .iter()
             .all(|f| f.change.as_deref().is_none_or(|c| c == "unchanged")));
+    }
+
+    #[test]
+    fn a_fixed_fixture_links_to_the_focus_point_it_is_aimed_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().to_path_buf();
+        std::fs::create_dir_all(project.join("lighting/fixture_types")).unwrap();
+        std::fs::create_dir_all(project.join("lighting/venues")).unwrap();
+        std::fs::write(
+            project.join("lighting/fixture_types/types.light"),
+            "fixture_type \"Par\" {\n  channels: 4\n  channel_map: {\"red\": 1, \"green\": 2, \"blue\": 3, \"dimmer\": 4}\n}\n\
+             fixture_type \"Mover\" {\n  channels: 3\n  channel_map: {\"pan\": 1, \"tilt\": 2, \"dimmer\": 3}\n}\n",
+        )
+        .unwrap();
+        // "Aimed" sits on the floor 4 m left of center, tipped up 90° and
+        // turned to face +x: its beam runs level along +x, through "center"
+        // at (0, 0, 0) — and, 0.5° off the axis, still inside the tolerance.
+        // "Down" hangs at rest over a point nobody named. The mover is
+        // aimed at "center" by its mounting too, but its aim is its pose.
+        std::fs::write(
+            project.join("lighting/venues/room.venue"),
+            "venue \"Room\" {\n  fixture \"Aimed\" Par @ 1:1 position (-4, 0.035, 0) rotation (90, 0, -90)\n  fixture \"Down\" Par @ 1:5 position (3, 3, 3)\n  fixture \"Head\" Mover @ 1:9 position (-4, 0, 0) rotation (90, 0, -90)\n  focus \"center\" (0, 0, 0)\n  focus \"far\" (9, 9, 9)\n}\n",
+        )
+        .unwrap();
+        let (bytes, _) = export_mvr_bytes(&MvrExportOptions::for_venue("Room"), &project).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice())).unwrap();
+        let mut xml = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("GeneralSceneDescription.xml").unwrap(),
+            &mut xml,
+        )
+        .unwrap();
+        let fixture_xml = |name: &str| -> String {
+            let start = xml.find(&format!("<Fixture name=\"{name}\"")).unwrap();
+            let end = start + xml[start..].find("</Fixture>").unwrap();
+            xml[start..end].to_string()
+        };
+        let center = uuid("Room", "focus", "center");
+        assert!(
+            fixture_xml("Aimed").contains(&format!("<Focus>{center}</Focus>")),
+            "{}",
+            fixture_xml("Aimed")
+        );
+        assert!(!fixture_xml("Down").contains("<Focus>"), "aimed at nothing");
+        assert!(
+            !fixture_xml("Head").contains("<Focus>"),
+            "a mover aims by pose"
+        );
+        // The link names a focus point the scene carries.
+        assert!(xml.contains(&format!("<FocusPoint name=\"center\" uuid=\"{center}\">")));
     }
 
     #[test]
