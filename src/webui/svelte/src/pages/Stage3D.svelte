@@ -18,6 +18,10 @@
    * their rig models, live pan and tilt, beams from live colour and level,
    * focus markers, an orbit camera. A pre-viz sketch a band can read, fed
    * by the same stores as the stage plot.
+   *
+   * Two sources feed the one scene (design section 12.1): Live, the
+   * stores the engine's state message fills, and Preview, a show
+   * evaluated offline at a scrubbed moment and shaped the same way.
    */
   import { onMount } from "svelte";
   import { t } from "svelte-i18n";
@@ -28,6 +32,14 @@
     poseStore,
     venueStore,
   } from "../lib/ws/stores";
+  import PreviewPanel from "../components/lighting/PreviewPanel.svelte";
+  import {
+    missingBeamCount,
+    previewParams,
+    wheelFixtureCount,
+    type PreviewFrame,
+  } from "../lib/lighting/preview";
+  import { SKY_BEAM_LENGTH } from "../lib/stage/rig";
   import type {
     CameraPreset,
     SceneStats,
@@ -41,6 +53,12 @@
   }
 
   let { heading = "h1" }: Props = $props();
+
+  const start = previewParams(window.location.hash);
+  /** Which source feeds the scene. */
+  let mode: "live" | "preview" = $state(start.preview ? "preview" : "live");
+  /** What Preview last evaluated; null before the first answer. */
+  let feed: PreviewFrame | null = $state(null);
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let hostEl: HTMLDivElement | undefined = $state();
@@ -56,6 +74,21 @@
   let frames = $state(0);
 
   const fixtureCount = $derived(Object.keys($metadataStore).length);
+
+  /** What the scene draws: the engine's state, or the previewed moment. */
+  const shown = $derived(
+    mode === "preview"
+      ? (feed ?? { fixtures: {}, poses: {}, cells: {} })
+      : { fixtures: $fixtureStore, poses: $poseStore, cells: $cellStore },
+  );
+  // Caveats: shown only when they apply.
+  const wheels = $derived(wheelFixtureCount($metadataStore));
+  const misses = $derived(missingBeamCount(shown.poses));
+  const noState = $derived(
+    mode === "live" &&
+      Object.keys($fixtureStore).length === 0 &&
+      Object.keys($poseStore).length === 0,
+  );
 
   function choosePreset(next: CameraPreset) {
     preset = next;
@@ -120,13 +153,13 @@
     if (scene) void scene.setScenery(path);
   });
   $effect(() => {
-    scene?.setChannels($fixtureStore);
+    scene?.setChannels(shown.fixtures);
   });
   $effect(() => {
-    scene?.setPoses($poseStore);
+    scene?.setPoses(shown.poses);
   });
   $effect(() => {
-    scene?.setCells($cellStore);
+    scene?.setCells(shown.cells);
   });
   $effect(() => {
     if (!labelsChosen) labels = fixtureCount <= 40;
@@ -139,9 +172,20 @@
 <div class="stage3d page">
   <div class="page__head stage3d__head">
     <div>
-      <svelte:element this={heading} class="page__title"
-        >{$t("stage3d.title")}</svelte:element
-      >
+      <div class="stage3d__titleline">
+        <svelte:element this={heading} class="page__title"
+          >{$t("stage3d.title")}</svelte:element
+        >
+        <span
+          class="badge stage3d__mode"
+          class:stage3d__mode--preview={mode === "preview"}
+          data-testid="stage3d-mode"
+          data-mode={mode}
+          >{mode === "preview"
+            ? $t("stage3d.modePreview")
+            : $t("stage3d.modeLive")}</span
+        >
+      </div>
       <p class="page__subtitle stage3d__subtitle">
         {#if $venueStore}
           {$venueStore.name} ·
@@ -172,6 +216,24 @@
       </p>
     </div>
     <div class="stage3d__actions">
+      <div
+        class="stage3d__presets"
+        role="group"
+        aria-label={$t("stage3d.source")}
+      >
+        {#each [["live", "stage3d.modeLive"], ["preview", "stage3d.modePreview"]] as [key, label] (key)}
+          <button
+            class="btn btn-sm"
+            class:stage3d__preset--active={mode === key}
+            type="button"
+            aria-pressed={mode === key}
+            data-testid="stage3d-mode-{key}"
+            onclick={() => (mode = key as "live" | "preview")}
+          >
+            {$t(label)}
+          </button>
+        {/each}
+      </div>
       <div class="stage3d__presets" role="group" aria-label="Camera">
         {#each [["foh", "stage3d.foh"], ["side", "stage3d.side"], ["top", "stage3d.top"]] as [key, label] (key)}
           <button
@@ -200,13 +262,44 @@
     </div>
   </div>
 
+  {#if mode === "preview"}
+    <PreviewPanel
+      initialSong={start.song}
+      initialTime={start.time}
+      onfeed={(frame) => (feed = frame)}
+    />
+  {/if}
+
   <div
     class="stage3d__viewport"
     bind:this={hostEl}
     data-renderer={renderer}
     data-frames={frames}
+    data-source={mode}
+    data-fed={mode === "preview" ? JSON.stringify(shown) : undefined}
   >
     <canvas class="stage3d__canvas" bind:this={canvasEl}></canvas>
+    {#if wheels > 0 || misses > 0 || noState}
+      <ul class="stage3d__caveats" data-testid="stage3d-caveats">
+        {#if wheels > 0}
+          <li class="stage3d__pill" data-testid="caveat-wheel">
+            {$t("stage3d.caveatWheel", { values: { count: wheels } })}
+          </li>
+        {/if}
+        {#if misses > 0}
+          <li class="stage3d__pill" data-testid="caveat-beam">
+            {$t("stage3d.caveatBeam", {
+              values: { count: misses, length: SKY_BEAM_LENGTH },
+            })}
+          </li>
+        {/if}
+        {#if noState}
+          <li class="stage3d__pill" data-testid="caveat-nostate">
+            {$t("stage3d.caveatNoState")}
+          </li>
+        {/if}
+      </ul>
+    {/if}
     {#if renderer === "none"}
       <div class="stage3d__fallback">{$t("stage3d.noWebgl")}</div>
     {:else if fixtureCount === 0}
@@ -222,6 +315,40 @@
     flex-direction: column;
     gap: 12px;
     min-height: calc(100vh - 120px);
+  }
+  .stage3d__titleline {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .stage3d__mode--preview {
+    background: var(--accent-subtle);
+    border-color: var(--accent);
+  }
+  .stage3d__caveats {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    z-index: 1;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    pointer-events: none;
+    max-width: calc(100% - 20px);
+  }
+  .stage3d__pill {
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    background: var(--bg-card);
+    color: var(--text);
+    border: 1px solid var(--border);
+    opacity: 0.92;
   }
   .stage3d__subtitle {
     margin: 4px 0 0;

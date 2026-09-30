@@ -54,6 +54,8 @@
     playheadMs?: number | null;
     /** The song's own tempo map, offered as a copy source. */
     songTempo?: TempoSection | null;
+    /** Where to put the cursor when the editor opens, in milliseconds. */
+    initialCursorMs?: number | null;
     onchange: (lightFile: LightFile) => void;
     onplay?: (ms: number) => void;
     onstop?: () => void;
@@ -71,6 +73,7 @@
     isPlaying = false,
     playheadMs = null,
     songTempo = null,
+    initialCursorMs = null,
     onchange,
     onplay,
     onstop,
@@ -109,6 +112,17 @@
     onstop?.();
     scrollToCursorMs(0);
   }
+
+  // Open with the cursor where the address asked (once), scrolled into view
+  // after the spacer has its width.
+  let cursorSeeded = false;
+  $effect(() => {
+    if (cursorSeeded || initialCursorMs == null || !scrollContainer) return;
+    cursorSeeded = true;
+    const ms = initialCursorMs;
+    playCursorMs = ms;
+    void tick().then(() => scrollToCursorMs(ms));
+  });
 
   function scrollToCursorMs(ms: number) {
     if (!scrollContainer) return;

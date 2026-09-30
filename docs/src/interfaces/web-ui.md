@@ -565,8 +565,10 @@ as blocked, with a link to enable it.
 
 Both fixture-type file forms are listed. A `.light` type opens in the channel-map form; a
 `.fixture` type (rich channels, or distilled from a GDTF archive) opens as the text of its file.
-**Import GDTF** uploads a `.gdtf` archive, lists its DMX modes to pick from, and writes the
-referential `.fixture` (the same as `mtrack import-gdtf`; see
+**Import GDTF** uploads a `.gdtf` archive and opens a mode picker: a filterable list of the
+archive's DMX modes with their address counts and cells, and for the selected mode a panel of
+what your shows can do in it, in plain words. A refused mode is listed greyed with its reason.
+**Add fixture type** writes the referential `.fixture` (the same as `mtrack import-gdtf`; see
 [GDTF-referential fixture types](../lighting/configuration.md#gdtf-referential-fixture-types-fixture)).
 
 ### Venues
@@ -711,6 +713,22 @@ suggestion is available to agents as the MCP tool `suggest_group_tags`. A link s
 
 The venue as a room; see [Stage 3D](../lighting/configuration.md#stage-3d). The old address
 `#/stage` still works and redirects here.
+
+The header carries a **Live / Preview** switch, and a badge beside the title says which is
+showing. **Live** draws what the engine is sending. **Preview** draws what a song's show would
+do at a moment you choose, without playing anything: pick a song (any song with lighting that
+loads) and drag the scrubber, or step it with the arrow keys; the song's sections are drawn
+along it as the dashboard's timeline draws them. The show is worked out offline, so a song
+that is playing keeps playing and nothing reaches the lights.
+
+Beneath the scrubber, **At this moment** says in words what each group is doing (for example
+"movers: move, 50% done (2.0 s of 4.0 s)"), **Untouched by this show** counts the fixtures no
+cue targets and names them when expanded, and **Open this cue in the timeline** opens the
+song's lighting editor with its cursor at the scrubbed time (`#/songs/<name>/lighting?t=<seconds>`).
+Small notes over the scene appear only when they apply: fixtures whose colour comes from a
+wheel are drawn white, beams that miss the deck are drawn at a fixed length, and in Live,
+that nothing has been received from the engine yet. `#/lighting/stage?mode=preview&song=<name>&t=<seconds>`
+opens the page in Preview at a moment.
 
 ## Configuration Editor
 

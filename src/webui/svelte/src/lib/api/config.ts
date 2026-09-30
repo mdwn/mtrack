@@ -384,16 +384,36 @@ export async function fetchFixtureTypes(dir?: string): Promise<{
   };
 }
 
-export interface GdtfModeSummary {
+/** One DMX mode of a GDTF archive, as the inspect endpoint describes it. */
+export interface GdtfMode {
   name: string;
   channel_count: number;
+  /** DMX addresses the mode occupies. */
   footprint: number;
+  /** What a show can do in the mode, named as the fit endpoint names
+   *  capabilities: `color`, `dimmer`, `strobe`, `pan_tilt`, `white`, `zoom`,
+   *  `focus`, `gobo`, `color_wheel`. Absent on a refused mode. */
+  capabilities?: string[];
+  /** Cells of a pixel mode (0 for a one-colour fixture). */
+  cells?: number;
+  /** The strobe channel's rate, when it carries one. */
+  strobe_range?: { min_hz: number | null; max_hz: number };
+  /** The channel map: [address offset, name], as the type would have it. */
+  channels?: [number, string][];
+  /** What the distiller skipped or guessed. */
+  warnings?: string[];
+  /** Why the mode cannot be imported; present only when it cannot. */
+  refused?: string;
 }
 
 export interface GdtfInspection {
   fixture: string;
   manufacturer: string;
-  modes: GdtfModeSummary[];
+  /** The archive's fixture name as a safe type name. */
+  suggested_name?: string;
+  /** Where an import writes the `.fixture` file. */
+  fixture_types_dir?: string;
+  modes: GdtfMode[];
 }
 
 export interface GdtfImportReport {

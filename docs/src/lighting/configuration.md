@@ -134,6 +134,14 @@ mtrack import-gdtf downloaded.gdtf                 # list the modes
 mtrack import-gdtf downloaded.gdtf --mode "8: RGBS"
 ```
 
+The web UI's Lighting → Fixture types page does the same with a mode picker. Choosing a mode
+shows what your shows can do in it ("Set any colour", "Dim, through colour" when the mode has
+colour but no dimmer channel, "Strobe, 0.4 to 25 flashes a second", "Move", "Per-pixel effects,
+12 cells", or "Colour from a wheel — pick a slot with a static" when colour comes only from a
+wheel), what the mode lacks and which other mode has it, the addresses it occupies, and the
+name and file the type will be saved under. The channel map and the distiller's warnings sit
+behind a disclosure.
+
 Notes:
 
 - The GDTF archive is part of your project (`lighting/library/`) — commit
@@ -591,6 +599,10 @@ angle the GDTF states — a 5° spot looks like a spot, a 25° wash like a wash.
 written by hand has none of this and is drawn as a box with a 20° beam out of its rest
 direction, the mounting frame's −Z. Fixtures the venue does not place sit on a tray in
 front of the audience edge.
+
+A **Preview** switch in the page's header replaces the live state with a song's show at a
+moment you scrub to, worked out offline (nothing is sent to the lights, and a playing song
+keeps playing); see [3D](../interfaces/web-ui.md#3d).
 
 A venue seeded from an MVR also shows the MVR's scenery — decks, trusses, screens — where
 the MVR carries it as glTF (`.glb`); scenery in other formats (`.3ds` is common in console

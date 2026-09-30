@@ -592,3 +592,53 @@ import the page does today.
 
 Rendering colour wheels, a haze or photometric model, editing the show from
 the preview, and importing a mode the distiller refuses.
+
+### 12.4 As built
+
+- **The endpoint's `untouched` is per song, not per time.** The fixtures no
+  cue targets do not depend on the instant, so `POST /api/lighting/evaluate`
+  answers `{song, evaluations: [...], untouched: [...]}`; each evaluation
+  carries `time`, `fixtures`, `poses`, `cells` and `active_effects`. Each
+  effect names its `groups` (what the cue wrote; the engine's own effect only
+  holds what they resolved to), `kind`, `layer`, `elapsed`, `duration` and the
+  resolved `fixtures`. Times are validated (finite, non-negative, at most 64
+  per request). An unknown song is 404; a song whose lighting failed to load
+  (the registry keeps the failure) or has none is 400, with the failure's
+  message.
+- **One function, two callers.** `lighting::evaluate::evaluate_with_system`
+  resolves the venue, focus points and groups under one short lock and runs
+  `evaluate_show`; MCP's `evaluate_show` and the endpoint both call it, and
+  `registered_shows` supplies the song's shows. `Evaluation` gained `poses`
+  (the live `compute_pose_snapshots`), and the live message and the endpoint
+  build their three maps in one helper, `webui::state::state_maps`.
+- **The scene is driven, not forked.** Stage 3D keeps one drawing path: a
+  derived `shown` is the live stores in Live and the last evaluation in
+  Preview, and the three `scene.set*` effects read it. In Preview the
+  viewport carries `data-source` and `data-fed` (what the scene was handed),
+  which is what the specs assert against.
+- **Capability names grew in `FitFixture::capability_names`** (so the fit
+  page and the fixture metadata both carry them): `color`, `pan_tilt`,
+  `strobe`, `cells` as before, then `dimmer`, `white`, `zoom`, `focus`,
+  `gobo` and `color_wheel`. There was no wheel capability; a fixture is
+  `color_wheel` when it mixes no colour and has a `colorN` channel (what the
+  distiller names a wheel). A dimmer-only fixture now reports `["dimmer"]`
+  where it reported none.
+- **What "refused" means today.** The distiller no longer refuses pixel or
+  matrix modes (it gangs them into cells), and its only error is an unknown
+  mode name, so no real mode fails to distil. The inspect endpoint still
+  carries `refused` for the two cases that exist: a mode the distiller
+  errors on, and a mode sharing a name with an earlier one (the importer
+  takes the first match, so the repeat could only ever import its namesake).
+  Inspect also returns each mode's channel map and warnings, `suggested_name`
+  (the archive's name kept to letters, digits, spaces, hyphens and
+  underscores) and `fixture_types_dir`, so the page can show the file it will
+  write before anything is written.
+- **The picker.** The mode list is a listbox (one tab stop, arrows, Home and
+  End; refused modes are skipped). The type name is filtered as it is typed
+  and the file stem mirrors the server's `fixture_filename_stem`.
+- **The timeline takes a time.** `#/songs/<name>/lighting?t=<seconds>` sets
+  the lighting editor's play cursor and scrolls it into view; a bad `t` is
+  ignored. The preview's link, and `#/lighting/stage?mode=preview&song=&t=`,
+  are the two addresses that carry a moment.
+- **The beam caveat** counts poses with no deck footprint and quotes the
+  spot's sky length (`SKY_BEAM_LENGTH`, 4 m, shared with the scene).
