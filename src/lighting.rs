@@ -21,6 +21,7 @@ pub mod effects;
 pub mod engine;
 pub mod evaluate;
 pub mod export;
+pub mod fit;
 pub mod gdtf;
 #[cfg(test)]
 mod golden_tests;

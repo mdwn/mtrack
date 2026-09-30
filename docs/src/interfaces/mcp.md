@@ -77,6 +77,13 @@ About 60 tools are available. They fall into a few groups:
   (`capability-gap`), and fixtures patched on a universe the active profile has no output for
   (`unconfigured-universe`). `list_venues` reports each venue's placed-fixture count, focus
   points and MVR provenance.
+  `suggest_group_tags` takes a group name some song's show targets and, when the group finds
+  no fixtures in the current venue, suggests which fixtures should carry which tags: the
+  fixtures able to do what the shows ask of the group (move, colour, strobe, cells), the
+  largest cluster by type and by where they hang (deck, low rig, truss; downstage to upstage,
+  when the venue places them) as the `suggestion` with a structured `reason`, the rest as
+  `others`, and, when nothing fits, the wants nothing in the venue meets. It is the same
+  suggestion the web UI's Fit shows page offers, and it changes nothing.
 - **Show comparison** — `diff_shows` reports what changed between two versions of a show: added,
   removed and changed effects by resolved time, plus the dark windows the revision opened and
   closed. It compares resolved effects rather than text, since identical cue text can land in
