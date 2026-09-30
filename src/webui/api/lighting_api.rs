@@ -1410,8 +1410,20 @@ pub(super) async fn put_venue(
             )
                 .into_response()
         })?;
-        venue_json_to_dsl(&name, &json_body)
-            .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response())?
+        let bad = |e: String| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
+        let venue = venue_from_json(&name, &json_body).map_err(bad)?;
+        // An existing file is patched, not regenerated: comments, TODO lines
+        // and the file's own layout survive a save from the UI.
+        let existing_text =
+            existing_venue_file(&dir, &name).and_then(|path| std::fs::read_to_string(path).ok());
+        match existing_text {
+            Some(text)
+                if lighting::parser::parse_venues(&text).is_ok_and(|v| v.contains_key(&name)) =>
+            {
+                lighting::venue_patch::patch_venue(&text, &name, &venue).map_err(bad)?
+            }
+            _ => venue_json_to_dsl(&name, &json_body).map_err(bad)?,
+        }
     } else {
         String::from_utf8(body.to_vec()).map_err(|_| {
             (
@@ -1654,6 +1666,11 @@ fn fixture_type_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<Stri
 
 /// Converts a JSON venue definition to DSL format.
 fn venue_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<String, String> {
+    venue_from_json(name, json).map(|venue| format!("{venue}\n"))
+}
+
+/// Builds the venue a JSON save describes.
+fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::types::Venue, String> {
     use lighting::types::{Fixture, Vec3, Venue, VenueSource};
 
     fn vec3(value: &serde_json::Value, what: &str) -> Result<Vec3, String> {
@@ -1745,10 +1762,9 @@ fn venue_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<String, Str
         }),
     };
 
-    let venue = Venue::new(name.to_string(), by_name)
+    Ok(Venue::new(name.to_string(), by_name)
         .with_focus_points(focus_points)
-        .with_source(source);
-    Ok(format!("{venue}\n"))
+        .with_source(source))
 }
 
 #[cfg(test)]

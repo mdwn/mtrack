@@ -41,7 +41,7 @@ use super::lighting_api::{
 use crate::lighting;
 use crate::lighting::export::{MvrExportOptions, EXPORT_DIR};
 use crate::lighting::import::MvrImportOptions;
-use crate::lighting::types::{fmt_vec3, Vec3};
+use crate::lighting::types::Vec3;
 
 /// The most a text field of an upload may hold.
 const MAX_FIELD_BYTES: usize = 4096;
@@ -554,53 +554,16 @@ fn add_aim_points_blocking(
         return Ok(created);
     }
 
-    let updated = insert_focus_lines(&content, venue_name, &created)
-        .ok_or_else(|| format!("could not find the venue block of \"{venue_name}\" to extend"))?;
-    // The edit must parse back to the same venue plus the new points.
-    let reparsed = lighting::parser::parse_venues(&updated)
-        .map_err(|e| format!("the edited venue would not parse: {e}"))?;
-    let after = reparsed
-        .get(venue_name)
-        .ok_or("the edited venue lost its name")?;
-    if after.fixtures().len() != venue.fixtures().len()
-        || created
-            .iter()
-            .any(|(n, _, _)| !after.focus_points().contains_key(n))
-        || after.source().map(|s| s.origin) != venue.source().map(|s| s.origin)
-    {
-        return Err("the edited venue did not read back as expected; nothing written".to_string());
+    // One textual-edit path: the venue with its new points, patched into the
+    // file (which checks the result reads back before anything is written).
+    let mut focus_points = venue.focus_points().clone();
+    for (point_name, _, point) in &created {
+        focus_points.insert(point_name.clone(), *point);
     }
+    let desired = venue.clone().with_focus_points(focus_points);
+    let updated = lighting::venue_patch::patch_venue(&content, venue_name, &desired)?;
     config_io::staged_write(&path, &updated)?;
     Ok(created)
-}
-
-/// Adds `focus "…" [x, y, z]` lines at the end of a venue's block, leaving
-/// every other byte of the file (comments, TODO lines, layer notes) alone.
-/// `None` when the block cannot be found.
-fn insert_focus_lines(
-    content: &str,
-    venue_name: &str,
-    points: &[(String, String, Vec3)],
-) -> Option<String> {
-    let header = format!("venue \"{venue_name}\"");
-    let lines: Vec<&str> = content.split_inclusive('\n').collect();
-    let start = lines
-        .iter()
-        .position(|l| l.trim_start().starts_with(&header))?;
-    let end = lines[start + 1..].iter().position(|l| l.trim() == "}")? + start + 1;
-    let mut out = String::with_capacity(content.len() + points.len() * 48);
-    for (i, line) in lines.iter().enumerate() {
-        if i == end {
-            for (name, _, point) in points {
-                out.push_str(&format!("  focus \"{name}\" {}\n", fmt_vec3(point)));
-            }
-        }
-        if i == end && !out.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push_str(line);
-    }
-    Some(out)
 }
 
 #[cfg(test)]
@@ -1031,6 +994,65 @@ mod test {
         assert_eq!(std::fs::read_to_string(&venue_path).unwrap(), after);
     }
 
+    #[tokio::test]
+    async fn tagging_an_imported_venue_through_the_venue_save_keeps_its_todo_lines() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        imported(&app).await;
+        let path = dir.path().join("lighting/venues/kellys.venue");
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert!(before.contains("# TODO fixture \"Lost\""), "{before}");
+
+        // What the UI does: read the venue, change a tag, PUT it back as JSON.
+        let response = get(&app, "/lighting/venues/kellys").await;
+        let got: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        let mut venue = got["venue"].clone();
+        let fixtures: Vec<serde_json::Value> = venue["fixtures"]
+            .as_object()
+            .unwrap()
+            .values()
+            .cloned()
+            .map(|mut f| {
+                if f["name"] == "Brick 1" {
+                    f["tags"] = json!(["wash"]);
+                }
+                f
+            })
+            .collect();
+        venue["fixtures"] = json!(fixtures);
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/venues/kellys")
+                    .header("content-type", "application/json")
+                    .body(Body::from(venue.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            after.contains("tags (\"wash\")") || after.contains("\"wash\""),
+            "{after}"
+        );
+        assert!(after.contains("# TODO fixture \"Lost\""), "{after}");
+        assert!(after.contains("# Seeded from Kellys.mvr"), "{after}");
+        assert!(after.contains("# layer \"Front Truss\""), "{after}");
+        assert!(after.contains("imported from mvr("), "{after}");
+        // Brick 2 was not touched, so its line is byte for byte as imported.
+        let line = |text: &str| {
+            text.lines()
+                .find(|l| l.contains("\"Brick 2\""))
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(line(&before), line(&after));
+    }
+
     #[test]
     fn an_aim_point_is_where_the_beam_meets_the_deck_or_three_meters_along_it() {
         use lighting::types::Fixture;
@@ -1076,19 +1098,5 @@ mod test {
             awkward.contains("filename*=UTF-8''B%C3%BChne%20%221%22.mvr"),
             "{awkward}"
         );
-    }
-
-    #[test]
-    fn focus_lines_go_before_the_closing_brace_and_nothing_else_moves() {
-        let text = "# c\nvenue \"v\" {\n  fixture \"A\" x @ 1:1\n  # TODO fixture \"B\"\n}\n";
-        let out = insert_focus_lines(
-            text,
-            "v",
-            &[("A aim".to_string(), "A".to_string(), [0.0, 1.5, 0.0])],
-        )
-        .unwrap();
-        assert!(out.starts_with("# c\nvenue \"v\" {\n  fixture \"A\" x @ 1:1\n  # TODO"));
-        assert!(out.ends_with("  focus \"A aim\" (0, 1.5, 0)\n}\n"), "{out}");
-        assert!(insert_focus_lines(text, "other", &[]).is_none());
     }
 }
