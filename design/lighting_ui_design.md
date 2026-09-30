@@ -448,3 +448,76 @@ Where the build settled a point §10.1–§10.5 left open or got wrong:
   focusing scrolled the page and put the hit test off the fixture. A click
   that does not move a fixture saves nothing, and arrow-key nudges are
   debounced so a burst is one save.
+
+## 11. L5 in detail: MVR import and export in the browser (draft 1, 2026-09-30)
+
+Import and export exist as `mtrack import-mvr` / `export-mvr` and the MCP
+tools `inspect_mvr`, `import_mvr`, `export_mvr`. A band member at a venue with
+a laptop and a browser cannot reach them. L5 puts both in the Lighting area
+over the same library functions (`import::inspect_mvr_bytes`,
+`import::import_mvr_bytes`, `export::export_mvr_bytes`), so the three surfaces
+cannot disagree.
+
+### 11.1 Import: a four-step wizard at `#/lighting/import`
+
+Reached from the Venues page (**Import an MVR**) and the hub.
+
+1. **File** — drop or choose an `.mvr`. The browser keeps the `File`; each
+   step that needs it uploads it, as the GDTF import does — the server holds
+   nothing between steps. The page shows what the file holds: fixtures, fixture
+   types (with and without a GDTF mode), universes, focus points, scenery, and
+   a name for the venue (default: the file stem, editable).
+2. **Stage origin** — a top-down plan of the file's fixtures and scenery (in
+   MVR millimetres, drawn in the page from the inspect report's positions)
+   with the instruction *click the front edge of the deck, in the middle*. A
+   **suggestion** is marked and offered as a button: the centre of the deck's
+   front edge when the scenery carries a deck (a stage-floor object), else the
+   centre of the front edge of the fixtures' footprint (lowest y). The
+   chosen point is the `origin` the import takes.
+3. **Review** — the import's plan, without writing: fixtures to seed, types
+   to import (and which already exist in the library), fixtures that would
+   become `# TODO` lines and why, scenery meshes that will and will not draw,
+   and whether this is a first seed or a **merge** into an existing venue of
+   that name (what merging keeps: tags, focus names, hand additions).
+4. **Import** — writes, then shows the report and two buttons: **Fit your
+   shows** (`#/lighting/fit`, since a seeded venue is untagged) and **Open in
+   Venues**. Importing does not make the venue current; the Groups page does
+   that, and the button says so.
+
+### 11.2 Export: a dialog on the Venues page
+
+**Export an MVR** on a venue opens the pitch's dialog: the file name (default
+`<venue>.mvr`, file-name-safe), **one layer per first tag**, and a summary the
+export computes without writing: fixtures with positions, GDTFs embedded and
+generated, focus points, and how many fixed fixtures are linked to a focus
+point. When fixed fixtures are unlinked, the dialog says pre-viz tools will
+aim them at the origin and offers **Add an aim point per fixture**: for each
+unlinked fixed fixture a focus point named `<fixture> aim` where its rest beam
+meets the deck, or 3 m along the beam when it never does, written to the venue
+through the venue save; the export then links them. **Download** streams the
+`.mvr` to the browser; nothing is written under `lighting/export/` unless the
+user also ticks **keep a copy in the project**.
+
+### 11.3 Endpoints
+
+- `POST /api/lighting/mvr/inspect` — multipart, the file; returns the inspect
+  report plus every fixture's MVR position (mm) and the scenery's deck bounds
+  when found, for the plan and the suggestion.
+- `POST /api/lighting/mvr/import` — multipart: the file, `name`, `origin`
+  (mm), `write` (false = review plan only, true = write); returns the plan or
+  the report. The engine reloads venues after a write as it does after a
+  venue save.
+- `GET /api/lighting/mvr/export?venue=&layers_from_tags=&keep=` — returns the
+  archive (`application/octet-stream`, `Content-Disposition` with the file
+  name); `keep=true` also writes it under `lighting/export/`.
+- `POST /api/lighting/venues/{name}/aim-points` — the aim-point action of
+  §11.2, returning the points created.
+
+All uploads go through the existing upload body limit; the import writes only
+under the project's lighting directories, as the CLI does.
+
+### 11.4 Out of scope
+
+Editing scenery, choosing which fixtures to import, and re-mapping fixture
+IDs: the CLI and MCP do not either. A file the importer refuses (not an MVR,
+over the caps) is refused with its reason at step 1.
