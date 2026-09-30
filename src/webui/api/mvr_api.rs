@@ -308,8 +308,8 @@ pub(super) struct ExportQuery {
     layers_from_tags: Option<bool>,
     /// The archive's file name (bare, `.mvr`); default `<venue>.mvr`.
     file: Option<String>,
-    /// Also write the archive under `lighting/export/`.
-    keep: Option<bool>,
+    /// `keep_export` only: replace a file already in `lighting/export/`.
+    overwrite: Option<bool>,
     venues_dir: Option<String>,
     fixture_types_dir: Option<String>,
 }
@@ -355,45 +355,29 @@ pub(super) async fn export_summary(
     Ok::<_, Response>((StatusCode::OK, Json(body)).into_response())
 }
 
-/// GET /api/lighting/mvr/export?venue=&layers_from_tags=&file=&keep= — the
+/// GET /api/lighting/mvr/export?venue=&layers_from_tags=&file= — the
 /// archive itself, `application/octet-stream` with a `Content-Disposition`
-/// attachment carrying the file name. `keep=true` also writes the archive
-/// under `lighting/export/` (the CLI's location) and names it in
-/// `X-Mtrack-Kept`; without it nothing is written.
+/// attachment carrying the file name. A GET writes nothing; keeping a copy
+/// in the project is [`keep_export`].
 pub(super) async fn export_mvr(
     State(state): State<WebUiState>,
     Query(query): Query<ExportQuery>,
 ) -> impl IntoResponse {
     let options = export_options(&state, &query)?;
     let project = project_root(&state.config_path)?;
-    let keep = query.keep.unwrap_or(false);
-    let (bytes, report, kept) = super::helpers::spawn_blocking_io("export MVR", move || {
-        Ok::<_, String>((|| {
-            let (bytes, report) = lighting::export::export_mvr_bytes(&options, &project)
-                .map_err(|e| e.to_string())?;
-            let kept = if keep {
-                Some(
-                    lighting::export::export_mvr(&options, &project)
-                        .map_err(|e| e.to_string())?
-                        .output,
-                )
-            } else {
-                None
-            };
-            Ok::<_, String>((bytes, report, kept))
-        })())
+    let (bytes, report) = super::helpers::spawn_blocking_io("export MVR", move || {
+        Ok::<_, String>(
+            lighting::export::export_mvr_bytes(&options, &project).map_err(|e| e.to_string()),
+        )
     })
     .await?
     .map_err(bad_request)?;
-    // `report.output` is `<EXPORT_DIR>`-relative only once kept; the file
-    // name is what the download carries either way.
     let file_name = report
         .output
         .rsplit('/')
         .next()
         .unwrap_or(&report.output)
         .to_string();
-    debug_assert!(!EXPORT_DIR.is_empty());
     let mut response = (StatusCode::OK, bytes).into_response();
     let headers = response.headers_mut();
     headers.insert(
@@ -403,10 +387,54 @@ pub(super) async fn export_mvr(
     if let Ok(value) = HeaderValue::from_str(&content_disposition(&file_name)) {
         headers.insert(header::CONTENT_DISPOSITION, value);
     }
-    if let Some(kept) = kept.and_then(|k| HeaderValue::from_str(&k).ok()) {
-        headers.insert("x-mtrack-kept", kept);
-    }
     Ok::<_, Response>(response)
+}
+
+/// POST /api/lighting/mvr/export/keep?venue=&layers_from_tags=&file=&overwrite=
+/// — writes the archive under `lighting/export/` (the CLI's location) and
+/// names it in `kept`. An existing file is left alone with a 409 naming it,
+/// unless `overwrite=true`. It goes through the lock guard: it writes.
+pub(super) async fn keep_export(
+    State(state): State<WebUiState>,
+    Query(query): Query<ExportQuery>,
+) -> impl IntoResponse {
+    let options = export_options(&state, &query)?;
+    let project = project_root(&state.config_path)?;
+    let overwrite = query.overwrite.unwrap_or(false);
+    // Built once: the bytes the download would carry are the bytes written.
+    let result = super::helpers::spawn_blocking_io("keep MVR export", move || {
+        Ok::<_, String>(
+            (|| {
+                let (bytes, report) = lighting::export::export_mvr_bytes(&options, &project)?;
+                lighting::export::write_export(&options, &project, &bytes, report, overwrite)
+            })()
+            .map_err(|e| match e.downcast::<lighting::export::ExportExists>() {
+                Ok(exists) => KeepError::Exists(exists.0),
+                Err(other) => KeepError::Failed(other.to_string()),
+            }),
+        )
+    })
+    .await?;
+    match result {
+        Ok(report) => Ok::<_, Response>(
+            (StatusCode::OK, Json(json!({"kept": report.output}))).into_response(),
+        ),
+        Err(KeepError::Exists(existing)) => Ok((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": format!("{EXPORT_DIR}/{existing} already exists"),
+                "existing": existing,
+            })),
+        )
+            .into_response()),
+        Err(KeepError::Failed(message)) => Err(bad_request(message)),
+    }
+}
+
+/// Why a kept export was not written.
+enum KeepError {
+    Exists(String),
+    Failed(String),
 }
 
 /// `attachment; filename="..."` with an ASCII fallback and, when the name
@@ -942,6 +970,62 @@ mod test {
         assert_eq!(status, StatusCode::OK, "{body}");
     }
 
+    async fn post_empty(app: &axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let text = response_body(response).await;
+        (status, serde_json::from_str(&text).unwrap_or_default())
+    }
+
+    #[tokio::test]
+    async fn keeping_an_export_is_a_post_that_will_not_replace_without_overwrite() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        imported(&app).await;
+        let kept = dir.path().join("lighting/export/tour.mvr");
+        let uri = "/lighting/mvr/export/keep?venue=kellys&file=tour.mvr";
+
+        let (status, body) = post_empty(&app, uri).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["kept"], "lighting/export/tour.mvr");
+        assert!(crate::lighting::mvr::parse_archive(&std::fs::read(&kept).unwrap()).is_ok());
+
+        // A second keep leaves the file alone and names it.
+        std::fs::write(&kept, b"mine").unwrap();
+        let (status, body) = post_empty(&app, uri).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["existing"], "tour.mvr");
+        assert_eq!(std::fs::read(&kept).unwrap(), b"mine");
+
+        let (status, _) = post_empty(&app, &format!("{uri}&overwrite=true")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_ne!(std::fs::read(&kept).unwrap(), b"mine");
+    }
+
+    #[tokio::test]
+    async fn keeping_an_export_is_refused_while_locked() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state.clone());
+        imported(&app).await;
+        state.player.set_locked(true);
+        let app = axum::Router::new()
+            .nest("/api", super::super::guarded_router(&state))
+            .with_state(state);
+        let (status, _) = post_empty(&app, "/api/lighting/mvr/export/keep?venue=kellys").await;
+        assert_eq!(status, StatusCode::LOCKED);
+        assert!(!dir.path().join("lighting/export").exists());
+    }
+
     #[tokio::test]
     async fn export_summary_says_what_is_linked_and_download_sets_its_headers() {
         let (state, dir) = test_state();
@@ -991,7 +1075,7 @@ mod test {
             "nothing is written unless asked"
         );
 
-        // A named file, and keeping a copy in the project.
+        // A GET never writes, whatever the query says.
         let response = get(
             &app,
             "/lighting/mvr/export?venue=kellys&file=tour.mvr&keep=true",
@@ -1002,11 +1086,8 @@ mod test {
             response.headers()["content-disposition"],
             "attachment; filename=\"tour.mvr\""
         );
-        assert_eq!(
-            response.headers()["x-mtrack-kept"],
-            "lighting/export/tour.mvr"
-        );
-        assert!(dir.path().join("lighting/export/tour.mvr").exists());
+        assert!(response.headers().get("x-mtrack-kept").is_none());
+        assert!(!dir.path().join("lighting/export").exists());
 
         // A name that is not a bare .mvr, and a venue that is not there.
         let response = get(&app, "/lighting/mvr/export?venue=kellys&file=..%2Fx.mvr").await;

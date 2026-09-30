@@ -533,6 +533,30 @@ test.describe("MVR export dialog", () => {
     const summaries: Request[] = [];
     const aims: Request[] = [];
     const downloads: Request[] = [];
+    const keeps: Request[] = [];
+    const kept = new Set<string>();
+    await page.route("**/api/lighting/mvr/export/keep*", async (route) => {
+      keeps.push(route.request());
+      const url = new URL(route.request().url());
+      const file = url.searchParams.get("file") ?? "x.mvr";
+      if (kept.has(file) && url.searchParams.get("overwrite") !== "true") {
+        await route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: `lighting/export/${file} already exists`,
+            existing: file,
+          }),
+        });
+        return;
+      }
+      kept.add(file);
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ kept: `lighting/export/${file}` }),
+      });
+    });
     await page.route("**/api/lighting/mvr/export/summary*", async (route) => {
       summaries.push(route.request());
       const summary = structuredClone(MVR_EXPORT_SUMMARY);
@@ -556,7 +580,6 @@ test.describe("MVR export dialog", () => {
         headers: {
           "content-type": "application/octet-stream",
           "content-disposition": `attachment; filename="${file}"`,
-          "x-mtrack-kept": `lighting/export/${file}`,
         },
         body: "PK-mock",
       });
@@ -575,7 +598,7 @@ test.describe("MVR export dialog", () => {
         }),
       });
     });
-    return { summaries, aims, downloads };
+    return { summaries, aims, downloads, keeps };
   }
 
   test("shows the summary and warns about unlinked fixed fixtures", async ({
@@ -618,7 +641,7 @@ test.describe("MVR export dialog", () => {
   test("adds an aim point per fixture, refreshes, then downloads", async ({
     page,
   }) => {
-    const { summaries, aims, downloads } = await routeExport(page);
+    const { summaries, aims, downloads, keeps } = await routeExport(page);
     await page.goto("/#/lighting/venues");
     await page.getByTestId("venue-export-mvr-test-venue").click();
     await expect(page.getByTestId("mvr-export-unlinked")).toBeVisible();
@@ -652,16 +675,34 @@ test.describe("MVR export dialog", () => {
     expect(params.get("venue")).toBe("test-venue");
     expect(params.get("file")).toBe("tour.mvr");
     expect(params.get("layers_from_tags")).toBe("true");
-    expect(params.get("keep")).toBe("true");
+    // A GET never writes: the copy is its own POST, after the download.
+    expect(params.has("keep")).toBe(false);
+    // The copy is requested after the download resolves, so wait for the
+    // note the dialog shows once the POST has answered.
     await expect(page.getByTestId("mvr-export-kept")).toContainText(
       "lighting/export/tour.mvr",
     );
+    expect(keeps).toHaveLength(1);
+    expect(keeps[0].method()).toBe("POST");
+    expect(new URL(keeps[0].url()).searchParams.get("file")).toBe("tour.mvr");
+
+    // Again: the name is taken, so the dialog asks before replacing it.
+    const again = page.waitForEvent("download");
+    await page.getByTestId("mvr-export-download").click();
+    await again;
+    const confirm = page.getByRole("dialog").filter({
+      hasText: "Replace lighting/export/tour.mvr?",
+    });
+    await expect(confirm).toBeVisible();
+    await confirm.getByRole("button", { name: "Confirm" }).click();
+    await expect.poll(() => keeps.length).toBe(3);
+    expect(new URL(keeps[2].url()).searchParams.get("overwrite")).toBe("true");
   });
 
   test("Export as is downloads without adding aim points, keep off by default", async ({
     page,
   }) => {
-    const { aims, downloads } = await routeExport(page);
+    const { aims, downloads, keeps } = await routeExport(page);
     await page.goto("/#/lighting/venues");
     await page.getByTestId("venue-export-mvr-test-venue").click();
 
@@ -673,7 +714,8 @@ test.describe("MVR export dialog", () => {
     expect(downloads).toHaveLength(1);
     const params = new URL(downloads[0].url()).searchParams;
     expect(params.get("layers_from_tags")).toBe("false");
-    expect(params.get("keep")).toBe("false");
+    expect(params.has("keep")).toBe(false);
+    expect(keeps).toHaveLength(0);
   });
 
   test("a file name the server would refuse cannot be downloaded", async ({

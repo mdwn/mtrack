@@ -809,8 +809,20 @@ pub(super) fn validate_lighting_name(name: &str) -> Result<(), axum::response::R
         )
             .into_response());
     }
+    if RESERVED_NAMES.contains(&name) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!(
+                "`{name}` is reserved: it is the name of an API route, so a file called that could not be addressed"
+            )})),
+        )
+            .into_response());
+    }
     Ok(())
 }
+
+/// Path segments the lighting API uses as routes beside `{name}`.
+const RESERVED_NAMES: &[&str] = &["lock", "validate", "activate"];
 
 /// The file types the asset store serves, by extension. Everything in the
 /// store was written by mtrack itself from a GDTF archive; the allowlist
@@ -1338,6 +1350,10 @@ pub(super) async fn get_fit(State(state): State<WebUiState>) -> impl IntoRespons
 /// one; anything near this is a script.
 const MAX_EVALUATE_TIMES: usize = 64;
 
+/// The latest instant one evaluate request may ask for: a week. No song is
+/// longer, and the evaluator steps through every second it is given.
+const MAX_EVALUATE_TIME: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
 /// Body of `POST /api/lighting/evaluate`.
 #[derive(serde::Deserialize)]
 pub(super) struct EvaluateRequest {
@@ -1400,11 +1416,22 @@ pub(super) async fn evaluate_lighting(
         );
     }
     let tempo = song.lighting_tempo_map();
-    let times: Vec<std::time::Duration> = request
+    // Duration::from_secs_f64 panics on what it cannot hold, and the
+    // evaluator steps through every second it is asked for: bound both.
+    // Collected rather than sized up front: the count is already capped
+    // above, and a capacity taken from the request is what CodeQL flags.
+    let times: Vec<std::time::Duration> = match request
         .times
         .iter()
-        .map(|t| std::time::Duration::from_secs_f64(*t))
-        .collect();
+        .map(|t| match std::time::Duration::try_from_secs_f64(*t) {
+            Ok(d) if d <= MAX_EVALUATE_TIME => Some(d),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+    {
+        Some(times) => times,
+        None => return error(StatusCode::BAD_REQUEST, "time out of range".to_string()),
+    };
     let lighting_system = state
         .player
         .dmx_engine()
@@ -2987,6 +3014,14 @@ show "test" {
         assert!(validate_lighting_name("my-fixture").is_ok());
         assert!(validate_lighting_name("Venue_01").is_ok());
         assert!(validate_lighting_name("simple").is_ok());
+    }
+
+    #[test]
+    fn validate_lighting_name_rejects_route_segments() {
+        for name in ["lock", "validate", "activate"] {
+            assert!(validate_lighting_name(name).is_err(), "{name}");
+        }
+        assert!(validate_lighting_name("locker").is_ok());
     }
 
     #[test]
@@ -5599,6 +5634,54 @@ show "test" {
         let (status, _) =
             evaluate(rig.state.clone(), json!({"song": "Song", "times": [-1.0]})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn evaluate_is_a_read_and_works_while_locked() {
+        let rig = rig(
+            &[("mover.light", TYPE_MOVER), ("par.light", TYPE_PAR)],
+            Some(PREVIEW_VENUE),
+            &[("Song", PREVIEW_SHOW)],
+            &[1],
+        );
+        rig.state.player.set_locked(true);
+        let response = super::super::guarded_router(&rig.state)
+            .with_state(rig.state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/lighting/evaluate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"song": "Song", "times": [1.0]}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn evaluate_refuses_times_it_cannot_hold_instead_of_panicking() {
+        let rig = rig(
+            &[("mover.light", TYPE_MOVER), ("par.light", TYPE_PAR)],
+            Some(PREVIEW_VENUE),
+            &[("Song", PREVIEW_SHOW)],
+            &[1],
+        );
+        // Past what a Duration holds: used to panic the handler.
+        let (status, body) =
+            evaluate(rig.state.clone(), json!({"song": "Song", "times": [1e300]})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "time out of range");
+        // Representable but longer than any song.
+        let (status, _) =
+            evaluate(rig.state.clone(), json!({"song": "Song", "times": [1e6]})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, body) =
+            evaluate(rig.state.clone(), json!({"song": "Song", "times": [2.5]})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     // -----------------------------------------------------------------------

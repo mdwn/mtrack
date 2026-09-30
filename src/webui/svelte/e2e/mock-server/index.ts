@@ -451,10 +451,23 @@ app.get("/api/lighting/mvr/export", (req, res) => {
   const file = (req.query.file as string) || "kellys.mvr";
   res.set("Content-Type", "application/octet-stream");
   res.set("Content-Disposition", `attachment; filename="${file}"`);
-  if (req.query.keep === "true") {
-    res.set("X-Mtrack-Kept", `lighting/export/${file}`);
-  }
   res.send(Buffer.from("PK-mock-mvr"));
+});
+
+// Keeping a copy is its own POST; the first keep of a name succeeds and a
+// second is a 409 until `overwrite=true`, like the real server.
+const keptExports = new Set<string>();
+app.post("/api/lighting/mvr/export/keep", (req, res) => {
+  const file = (req.query.file as string) || "kellys.mvr";
+  if (keptExports.has(file) && req.query.overwrite !== "true") {
+    res.status(409).json({
+      error: `lighting/export/${file} already exists`,
+      existing: file,
+    });
+    return;
+  }
+  keptExports.add(file);
+  res.json({ kept: `lighting/export/${file}` });
 });
 
 app.post("/api/lighting/venues/:name/aim-points", (_req, res) => {
@@ -728,11 +741,16 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 // The opening burst every connection gets, in the same order as the real
 // server. Resolves once the last message is out: a test's own state push has
 // to land after it, or the burst overwrites what the test just set up.
-function sendInitialState(ws: WebSocket): Promise<void> {
+// A wsId ending in "-nostate" gets no fixture state: for a test that must
+// see the page before the engine has reported anything, which the burst
+// would otherwise win against on a fast machine.
+function sendInitialState(ws: WebSocket, wsId: string | null): Promise<void> {
   ws.send(JSON.stringify(METADATA_STATE));
   const later: [number, unknown][] = [
     [50, PLAYBACK_STATE],
-    [100, FIXTURE_STATE],
+    ...(wsId?.endsWith("-nostate")
+      ? []
+      : ([[100, FIXTURE_STATE]] as [number, unknown][])),
     [150, WAVEFORM_DATA],
     [200, LOG_LINES],
   ];
@@ -753,7 +771,7 @@ wss.on("connection", (ws, req) => {
   // Extract wsId from query parameter for test isolation.
   const url = new URL(req.url ?? "", "http://localhost");
   const wsId = url.searchParams.get("wsId");
-  const ready = sendInitialState(ws);
+  const ready = sendInitialState(ws, wsId);
   if (wsId) {
     wsConnections.set(wsId, { ws, ready });
     // Only if this socket is still the registered one: a reconnect under the

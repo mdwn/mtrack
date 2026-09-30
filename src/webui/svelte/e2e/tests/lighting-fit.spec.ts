@@ -574,6 +574,29 @@ test.describe("Lighting: Fit shows", () => {
     await expect(page.getByTestId("fit-groups")).toBeVisible();
   });
 
+  test("an answer that is not the fit facts is an error with Retry, not a crash", async ({
+    page,
+  }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (e) => pageErrors.push(e));
+    let broken = true;
+    await page.route("**/api/lighting/fit", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: broken ? "text/html" : "application/json",
+        body: broken ? "<html>gateway</html>" : JSON.stringify(FIT),
+      });
+    });
+    await page.goto("/#/lighting/fit");
+    await expect(page.getByTestId("fit-error")).toContainText(
+      "answer was not understood",
+    );
+    broken = false;
+    await page.getByRole("button", { name: "Retry" }).click();
+    await expect(page.getByTestId("fit-groups")).toBeVisible();
+    expect(pageErrors).toEqual([]);
+  });
+
   test("it works at phone width with the columns stacked", async ({ page }) => {
     await routeFit(page);
     await page.setViewportSize({ width: 375, height: 667 });

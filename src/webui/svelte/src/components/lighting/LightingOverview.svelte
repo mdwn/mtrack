@@ -15,6 +15,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { t } from "svelte-i18n";
+  import { BadAnswerError } from "../../lib/lighting/answer";
   import { fetchLightingReadiness } from "../../lib/api/config";
   import {
     evaluateReadiness,
@@ -50,7 +51,12 @@
       readiness = await fetchLightingReadiness();
       error = null;
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      error =
+        e instanceof BadAnswerError
+          ? $t("lighting.badAnswer")
+          : e instanceof Error
+            ? e.message
+            : String(e);
     } finally {
       inflight = false;
       if (again) {

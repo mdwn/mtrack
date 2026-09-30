@@ -1315,6 +1315,8 @@
   "lighting.mvr.export.changedElsewhere": "The venue changed since this dialog opened (another tab, page or an edit by hand). The summary has been reloaded; add the aim points again.",
   "lighting.mvr.export.keep": "Keep a copy in the project (lighting/export/)",
   "lighting.mvr.export.kept": "Kept a copy at {path}.",
+  "lighting.mvr.export.replace": "Replace {path}?",
+  "lighting.badAnswer": "the server's answer was not understood",
   "lighting.mvr.export.download": "Download",
   "lighting.mvr.export.close": "Close"
 }

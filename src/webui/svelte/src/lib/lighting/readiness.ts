@@ -22,6 +22,17 @@
  * (design/lighting_ui_design.md, section 8.1).
  */
 
+import {
+  arr,
+  hasAny,
+  isObj,
+  num,
+  obj,
+  objOrNull,
+  str,
+  type Obj,
+} from "./answer";
+
 /** What `GET /api/lighting/readiness` returns. */
 export interface Readiness {
   dmx: boolean;
@@ -46,6 +57,72 @@ export interface Readiness {
     universes: number[];
     unconfigured: number[];
     olad: { reachable: boolean; unpatched: number[] } | null;
+  };
+}
+
+/** Guards `GET /api/lighting/readiness`'s answer: every array defaults to
+ *  `[]`, objects to null, `dmx` to false. Null when the body is not an object
+ *  with any of the expected fields (the caller treats that as an error). */
+export function parseReadiness(body: unknown): Readiness | null {
+  if (
+    !hasAny(body, [
+      "dmx",
+      "venue",
+      "fixture_types",
+      "groups",
+      "shows",
+      "output",
+    ])
+  ) {
+    return null;
+  }
+  const venue = objOrNull(body.venue);
+  const types = obj(body.fixture_types);
+  const output = obj(body.output);
+  const olad = objOrNull(output.olad);
+  return {
+    dmx: body.dmx === true,
+    venue: venue
+      ? {
+          name: str(venue.name),
+          fixtures: num(venue.fixtures),
+          placed: num(venue.placed),
+          focus_points: arr<string>(venue.focus_points),
+        }
+      : null,
+    fixture_types: {
+      in_use: arr<string>(types.in_use),
+      unresolved: arr<Readiness["fixture_types"]["unresolved"][number]>(
+        types.unresolved,
+      ).filter(isObj),
+    },
+    groups: arr<Obj>(body.groups)
+      .filter(isObj)
+      .map((g) => ({
+        name: str(g.name),
+        fixtures: num(g.fixtures),
+        songs: arr<string>(g.songs),
+      })),
+    shows: arr<Obj>(body.shows)
+      .filter(isObj)
+      .map((show) => ({
+        song: str(show.song),
+        files: arr<string>(show.files),
+        ...(typeof show.error === "string" ? { error: show.error } : {}),
+        warnings: arr<Readiness["shows"][number]["warnings"][number]>(
+          show.warnings,
+        ).filter(isObj),
+      })),
+    output: {
+      universes: arr<number>(output.universes),
+      unconfigured: arr<number>(output.unconfigured),
+      olad: olad
+        ? {
+            reachable: olad.reachable === true,
+            unpatched: arr<number>(olad.unpatched),
+          }
+        : null,
+    },
   };
 }
 

@@ -15,10 +15,12 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
   import { t } from "svelte-i18n";
+  import { showConfirm } from "../../lib/dialog.svelte";
   import {
     ConflictError,
     addAimPoints,
     downloadMvrExport,
+    keepMvrExport,
     fetchMvrExportSummary,
     fetchVenue,
     type MvrExportSummary,
@@ -56,6 +58,9 @@
   let working = $state(false);
   let addedNote = $state("");
   let keptNote = $state("");
+  /** True while the dialog steps out of modal mode to ask a question: the
+   *  native close event that causes must not count as the user closing. */
+  let asking = false;
 
   let fileValid = $derived(validExportName(fileName));
   let unlinked = $derived(
@@ -115,6 +120,44 @@
     }
   }
 
+  /** Keeps a copy in the project after the download; a file already there is
+   *  replaced only when the user says so. */
+  async function keepCopy() {
+    const options = { file: fileName.trim(), layersFromTags };
+    let result = await keepMvrExport(venue, options, dirs);
+    if (result.status === "exists") {
+      const path = `lighting/export/${result.existing}`;
+      // The app's confirm is a fixed overlay, and a modal <dialog> sits in
+      // the browser's top layer above every z-index, so the question would
+      // render behind this dialog and could not be answered. Leave modal
+      // mode for the question and come back to it after.
+      asking = true;
+      dialogEl?.close();
+      let replace: boolean;
+      try {
+        replace = await showConfirm(
+          $t("lighting.mvr.export.replace", { values: { path } }),
+        );
+      } finally {
+        dialogEl?.showModal();
+        asking = false;
+      }
+      if (!replace) {
+        return;
+      }
+      result = await keepMvrExport(
+        venue,
+        { ...options, overwrite: true },
+        dirs,
+      );
+    }
+    if (result.status === "kept") {
+      keptNote = $t("lighting.mvr.export.kept", {
+        values: { path: result.path },
+      });
+    }
+  }
+
   async function download() {
     if (!fileValid) return;
     working = true;
@@ -123,7 +166,7 @@
     try {
       const result = await downloadMvrExport(
         venue,
-        { file: fileName.trim(), layersFromTags, keep },
+        { file: fileName.trim(), layersFromTags },
         dirs,
       );
       const url = URL.createObjectURL(result.blob);
@@ -134,11 +177,7 @@
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      if (result.kept) {
-        keptNote = $t("lighting.mvr.export.kept", {
-          values: { path: result.kept },
-        });
-      }
+      if (keep) await keepCopy();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -151,7 +190,9 @@
   bind:this={dialogEl}
   class="export"
   aria-labelledby="mvr-export-title"
-  {onclose}
+  onclose={() => {
+    if (!asking) onclose();
+  }}
   data-testid="mvr-export-dialog"
 >
   <h3 id="mvr-export-title" class="export__title">

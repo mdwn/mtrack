@@ -365,6 +365,27 @@ test.describe("Stage 3D Preview", () => {
     await expect(page.getByTestId("preview-activity")).toHaveCount(0);
   });
 
+  test("an evaluation that is not an evaluation says so and draws nothing", async ({
+    page,
+  }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (e) => pageErrors.push(e));
+    await routeSongs(page);
+    await page.route("**/api/lighting/evaluate", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: "{}",
+      });
+    });
+    await page.goto(previewUrl(wsId, "?mode=preview"));
+    await expect(page.getByTestId("preview-error")).toContainText(
+      "answer was not understood",
+    );
+    await expect(page.getByTestId("preview-activity")).toHaveCount(0);
+    expect(pageErrors).toEqual([]);
+  });
+
   test("with no lighting song there is nothing to preview", async ({
     page,
   }) => {
@@ -446,10 +467,14 @@ test.describe("Stage 3D Preview", () => {
     test("'no state yet' appears in Live until the engine reports", async ({
       page,
     }) => {
+      // A wsId the mock sends no fixture state to: the pill must be seen
+      // before any state, and the mock's opening burst would otherwise
+      // beat the assertion on a fast machine.
+      const quiet = `${wsId}-nostate`;
       await routeSongs(page);
-      await page.goto(previewUrl(wsId));
+      await page.goto(previewUrl(quiet));
       await expect(page.getByTestId("caveat-nostate")).toBeVisible();
-      await sendWsMessage(page, wsId, {
+      await sendWsMessage(page, quiet, {
         type: "state",
         fixtures: { "mover-1": { red: 255 } },
         poses: {},

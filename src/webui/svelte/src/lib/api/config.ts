@@ -12,8 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import type { Fit } from "../lighting/fit";
-import type { Readiness } from "../lighting/readiness";
+import { BadAnswerError, readJson } from "../lighting/answer";
+import { parseFit, type Fit } from "../lighting/fit";
+import { parseReadiness, type Readiness } from "../lighting/readiness";
 import {
   get,
   post,
@@ -664,29 +665,60 @@ export async function fetchMvrExportSummary(
   return res.json();
 }
 
-/** Downloads a venue as an MVR: the archive as a blob, and the project path
- *  of the kept copy when `keep` was asked for. */
+/** Downloads a venue as an MVR: the archive as a blob. A GET, so it writes
+ *  nothing; keeping a copy in the project is `keepMvrExport`. */
 export async function downloadMvrExport(
   venue: string,
-  options: { file: string; layersFromTags: boolean; keep: boolean },
+  options: { file: string; layersFromTags: boolean },
   dirs: MvrDirs = {},
-): Promise<{ blob: Blob; fileName: string; kept: string | null }> {
+): Promise<{ blob: Blob; fileName: string }> {
   const params = exportParams(
     venue,
     {
       file: options.file,
       layers_from_tags: String(options.layersFromTags),
-      keep: String(options.keep),
     },
     dirs,
   );
   const res = await get(`/lighting/mvr/export?${params}`);
   if (!res.ok) throw await apiError(res, "Failed to export the venue");
-  return {
-    blob: await res.blob(),
-    fileName: options.file,
-    kept: res.headers.get("x-mtrack-kept"),
-  };
+  return { blob: await res.blob(), fileName: options.file };
+}
+
+/** The project path of a kept copy, or the name of the file a keep would
+ *  have replaced (the server's 409). */
+export type KeepResult =
+  | { status: "kept"; path: string }
+  | { status: "exists"; existing: string };
+
+/** Writes the export under `lighting/export/`. An existing file is left
+ *  alone (`exists`) unless `overwrite` says to replace it. */
+export async function keepMvrExport(
+  venue: string,
+  options: { file: string; layersFromTags: boolean; overwrite?: boolean },
+  dirs: MvrDirs = {},
+): Promise<KeepResult> {
+  const params = exportParams(
+    venue,
+    {
+      file: options.file,
+      layers_from_tags: String(options.layersFromTags),
+      overwrite: options.overwrite ? "true" : undefined,
+    },
+    dirs,
+  );
+  const res = await post(`/lighting/mvr/export/keep?${params}`);
+  if (res.status === 409) {
+    const body = await res.json().catch(() => ({}));
+    return {
+      status: "exists",
+      existing:
+        typeof body.existing === "string" ? body.existing : options.file,
+    };
+  }
+  if (!res.ok) throw await apiError(res, "Failed to keep a copy of the export");
+  const body = await res.json();
+  return { status: "kept", path: String(body.kept) };
 }
 
 export interface AimPointsResult {
@@ -791,14 +823,18 @@ export async function fetchLightingGroups(): Promise<
 export async function fetchLightingReadiness(): Promise<Readiness> {
   const res = await get("/lighting/readiness");
   if (!res.ok) throw await apiError(res, "Failed to fetch lighting readiness");
-  return res.json();
+  const readiness = parseReadiness(await readJson(res, "the readiness checks"));
+  if (!readiness) throw new BadAnswerError("the readiness checks");
+  return readiness;
 }
 
 /** The facts and suggestions behind the Fit shows page. */
 export async function fetchLightingFit(): Promise<Fit> {
   const res = await get("/lighting/fit");
   if (!res.ok) throw await apiError(res, "Failed to fetch lighting fit");
-  return res.json();
+  const fit = parseFit(await readJson(res, "the fit"));
+  if (!fit) throw new BadAnswerError("the fit");
+  return fit;
 }
 
 /** A `.light` file in a lighting directory that could not be parsed. */
