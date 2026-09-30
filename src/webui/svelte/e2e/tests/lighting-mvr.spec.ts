@@ -617,12 +617,14 @@ test.describe("MVR export dialog", () => {
     expect(params.get("layers_from_tags")).toBe("true");
     // A GET never writes: the copy is its own POST, after the download.
     expect(params.has("keep")).toBe(false);
-    expect(keeps).toHaveLength(1);
-    expect(keeps[0].method()).toBe("POST");
-    expect(new URL(keeps[0].url()).searchParams.get("file")).toBe("tour.mvr");
+    // The copy is requested after the download resolves, so wait for the
+    // note the dialog shows once the POST has answered.
     await expect(page.getByTestId("mvr-export-kept")).toContainText(
       "lighting/export/tour.mvr",
     );
+    expect(keeps).toHaveLength(1);
+    expect(keeps[0].method()).toBe("POST");
+    expect(new URL(keeps[0].url()).searchParams.get("file")).toBe("tour.mvr");
 
     // Again: the name is taken, so the dialog asks before replacing it.
     const again = page.waitForEvent("download");
