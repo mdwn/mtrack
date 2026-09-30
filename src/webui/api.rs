@@ -36,24 +36,51 @@ use serde_json::json;
 use super::server::WebUiState;
 use crate::songs as songs_crate;
 
-/// Middleware that rejects mutating requests (non-GET) when the player is locked.
+/// The routes that stay open while the player is locked, by method and the
+/// route's own pattern (never the request path: a venue named `lock` matches
+/// `/lighting/venues/{name}`, not the lock toggle). These are the lock toggle,
+/// validation, playlist activation (a playback control, not an edit), the
+/// controller restart, and the pure reads that happen to be POSTs (a preview
+/// evaluation and the upload inspectors, which write nothing).
+const LOCKED_ALLOWLIST: &[(&str, &str)] = &[
+    ("PUT", "/lock"),
+    ("POST", "/config/validate"),
+    ("POST", "/lighting/validate"),
+    ("POST", "/playlists/{name}/activate"),
+    ("POST", "/controllers/restart"),
+    ("POST", "/lighting/evaluate"),
+    ("POST", "/lighting/gdtf/inspect"),
+    ("POST", "/lighting/mvr/inspect"),
+];
+
+/// True when a request may proceed while the player is locked.
+fn allowed_while_locked(method: &axum::http::Method, pattern: Option<&str>) -> bool {
+    if method == axum::http::Method::GET {
+        return true;
+    }
+    let Some(pattern) = pattern else {
+        return false;
+    };
+    let pattern = pattern.strip_prefix("/api").unwrap_or(pattern);
+    LOCKED_ALLOWLIST
+        .iter()
+        .any(|(m, p)| *m == method.as_str() && *p == pattern)
+}
+
+/// Middleware that rejects mutating requests (non-GET) when the player is locked,
+/// except the exact routes in [`LOCKED_ALLOWLIST`].
 /// Applied at the server layer where the state is available.
 pub(crate) async fn lock_guard(
     State(state): State<WebUiState>,
     request: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let method = request.method().clone();
-    let path = request.uri().path().to_string();
+    let pattern = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|p| p.as_str().to_string());
 
-    // Allow all reads, the lock toggle, validation, and playlist activation
-    // (activation is a playback control, not a state-altering edit).
-    if method == axum::http::Method::GET
-        || path.ends_with("/lock")
-        || path.ends_with("/validate")
-        || path.ends_with("/activate")
-        || path.ends_with("/controllers/restart")
-    {
+    if allowed_while_locked(request.method(), pattern.as_deref()) {
         return next.run(request).await;
     }
 
@@ -66,6 +93,14 @@ pub(crate) async fn lock_guard(
     }
 
     next.run(request).await
+}
+
+/// The API router with the lock guard applied to every route it matches.
+pub(crate) fn guarded_router(state: &WebUiState) -> Router<WebUiState> {
+    router().route_layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        lock_guard,
+    ))
 }
 
 /// Builds the API router for config read/write endpoints.
@@ -193,6 +228,7 @@ pub fn router() -> Router<WebUiState> {
         .route("/lighting/groups", get(lighting_api::get_lighting_groups))
         .route("/lighting/mvr/export", get(mvr_api::export_mvr))
         .route("/lighting/mvr/export/summary", get(mvr_api::export_summary))
+        .route("/lighting/mvr/export/keep", post(mvr_api::keep_export))
         .route(
             "/lighting/venues/{name}/aim-points",
             post(mvr_api::add_aim_points),
@@ -534,5 +570,97 @@ mod test {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_body(response).await;
         assert!(body.contains("Unsupported audio file type"));
+    }
+
+    fn locked_app(state: &WebUiState) -> Router {
+        Router::new()
+            .nest("/api", guarded_router(state))
+            .with_state(state.clone())
+    }
+
+    async fn send(app: &Router, method: &str, uri: &str, body: &str) -> StatusCode {
+        app.clone()
+            .oneshot(
+                http::Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn locked_guard_matches_routes_not_path_suffixes() {
+        let (state, dir) = test_state();
+        state.player.set_locked(true);
+        let app = locked_app(&state);
+
+        // A venue named `lock` used to ride the `/lock` suffix exemption.
+        let status = send(
+            &app,
+            "PUT",
+            "/api/lighting/venues/lock",
+            r#"{"fixtures":[]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::LOCKED);
+        assert!(!dir.path().join("lighting/venues/lock.light").exists());
+        for uri in ["/api/lighting/fixture-types/lock", "/api/songs/activate"] {
+            assert_eq!(
+                send(&app, "PUT", uri, "{}").await,
+                StatusCode::LOCKED,
+                "{uri}"
+            );
+        }
+        // Ordinary edits stay locked.
+        assert_eq!(
+            send(&app, "PUT", "/api/config", "songs: songs\n").await,
+            StatusCode::LOCKED
+        );
+    }
+
+    #[tokio::test]
+    async fn locked_guard_lets_the_allowlisted_routes_through() {
+        let (state, _dir) = test_state();
+        state.player.set_locked(true);
+        let app = locked_app(&state);
+
+        // The real toggle, then the validators, which answer rather than 423.
+        assert_eq!(
+            send(&app, "PUT", "/api/lock", r#"{"locked":true}"#).await,
+            StatusCode::OK
+        );
+        assert_ne!(
+            send(&app, "POST", "/api/lighting/validate", "").await,
+            StatusCode::LOCKED
+        );
+        assert_ne!(
+            send(&app, "POST", "/api/config/validate", "songs: songs\n").await,
+            StatusCode::LOCKED
+        );
+        assert_ne!(
+            send(&app, "POST", "/api/controllers/restart", "").await,
+            StatusCode::LOCKED
+        );
+        assert_ne!(
+            send(&app, "POST", "/api/playlists/all/activate", "").await,
+            StatusCode::LOCKED
+        );
+        // The inspectors and the preview write nothing.
+        for uri in [
+            "/api/lighting/gdtf/inspect",
+            "/api/lighting/mvr/inspect",
+            "/api/lighting/evaluate",
+        ] {
+            assert_ne!(
+                send(&app, "POST", uri, "").await,
+                StatusCode::LOCKED,
+                "{uri}"
+            );
+        }
     }
 }

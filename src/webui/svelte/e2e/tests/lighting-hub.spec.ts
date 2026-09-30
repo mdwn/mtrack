@@ -485,4 +485,37 @@ test.describe("Lighting hub", () => {
     );
     await expect(page.getByTestId("hub-error")).toHaveCount(0);
   });
+
+  for (const [label, body, contentType] of [
+    ["an empty object", "{}", "application/json"],
+    ["an HTML page", "<html><body>gateway</body></html>", "text/html"],
+    ["a JSON array", "[]", "application/json"],
+  ] as const) {
+    test(`${label} answering 200 is an error with Retry, not a crash`, async ({
+      page,
+    }) => {
+      const pageErrors: Error[] = [];
+      page.on("pageerror", (e) => pageErrors.push(e));
+      let broken = true;
+      await page.route("**/api/lighting/readiness", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: broken ? contentType : "application/json",
+          body: broken ? body : JSON.stringify(READINESS),
+        });
+      });
+      await page.goto("/#/lighting");
+      await expect(page.getByTestId("hub-error")).toContainText(
+        "answer was not understood",
+      );
+      await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+      broken = false;
+      await page.getByRole("button", { name: "Retry" }).click();
+      await expect(page.getByTestId("check-venue")).toHaveAttribute(
+        "data-state",
+        "ready",
+      );
+      expect(pageErrors).toEqual([]);
+    });
+  }
 });

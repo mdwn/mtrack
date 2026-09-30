@@ -111,7 +111,32 @@ pub struct FixedFixture {
 /// Exports a venue to a `.mvr` in the project. All validation runs before
 /// the write.
 pub fn export_mvr(options: &MvrExportOptions, project: &Path) -> Result<MvrExport, Box<dyn Error>> {
-    let (bytes, mut report) = export_mvr_bytes(options, project)?;
+    let (bytes, report) = export_mvr_bytes(options, project)?;
+    write_export(options, project, &bytes, report, true)
+}
+
+/// A kept export that would replace a file already in the export directory.
+#[derive(Debug)]
+pub struct ExportExists(pub String);
+
+impl std::fmt::Display for ExportExists {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{EXPORT_DIR}/{} already exists", self.0)
+    }
+}
+
+impl Error for ExportExists {}
+
+/// Writes already-built export bytes into the project's export directory.
+/// Without `overwrite`, an existing file is left alone and [`ExportExists`]
+/// names it.
+pub fn write_export(
+    options: &MvrExportOptions,
+    project: &Path,
+    bytes: &[u8],
+    mut report: MvrExport,
+    overwrite: bool,
+) -> Result<MvrExport, Box<dyn Error>> {
     let output = output_path(options)?;
     // The export directory is the one place an export writes. It is
     // created if missing and then proven to be inside the project (a
@@ -143,7 +168,10 @@ pub fn export_mvr(options: &MvrExportOptions, project: &Path) -> Result<MvrExpor
         )
         .into());
     }
-    super::import::write(&path, &bytes)?;
+    if !overwrite && path.exists() {
+        return Err(Box::new(ExportExists(output)));
+    }
+    super::import::write(&path, bytes)?;
     report.output = format!("{EXPORT_DIR}/{output}");
     Ok(report)
 }

@@ -22,6 +22,7 @@
    */
   import { onDestroy, onMount } from "svelte";
   import { t } from "svelte-i18n";
+  import { BadAnswerError } from "../../lib/lighting/answer";
   import { fetchSongs, type SongSummary } from "../../lib/api/songs";
   import {
     clock,
@@ -113,7 +114,12 @@
       if (mine !== sequence) return;
       evaluation = null;
       untouched = [];
-      error = e instanceof Error ? e.message : String(e);
+      error =
+        e instanceof BadAnswerError
+          ? $t("lighting.badAnswer")
+          : e instanceof Error
+            ? e.message
+            : String(e);
       onfeed(null);
     } finally {
       if (mine === sequence) busy = false;

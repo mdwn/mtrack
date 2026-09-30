@@ -201,10 +201,7 @@ pub async fn start(
     ));
 
     // Build the app router
-    let api_router = super::api::router().route_layer(axum::middleware::from_fn_with_state(
-        webui_state.clone(),
-        super::api::lock_guard,
-    ));
+    let api_router = super::api::guarded_router(&webui_state);
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .nest("/api", api_router)

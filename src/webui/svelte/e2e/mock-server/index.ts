@@ -451,10 +451,23 @@ app.get("/api/lighting/mvr/export", (req, res) => {
   const file = (req.query.file as string) || "kellys.mvr";
   res.set("Content-Type", "application/octet-stream");
   res.set("Content-Disposition", `attachment; filename="${file}"`);
-  if (req.query.keep === "true") {
-    res.set("X-Mtrack-Kept", `lighting/export/${file}`);
-  }
   res.send(Buffer.from("PK-mock-mvr"));
+});
+
+// Keeping a copy is its own POST; the first keep of a name succeeds and a
+// second is a 409 until `overwrite=true`, like the real server.
+const keptExports = new Set<string>();
+app.post("/api/lighting/mvr/export/keep", (req, res) => {
+  const file = (req.query.file as string) || "kellys.mvr";
+  if (keptExports.has(file) && req.query.overwrite !== "true") {
+    res.status(409).json({
+      error: `lighting/export/${file} already exists`,
+      existing: file,
+    });
+    return;
+  }
+  keptExports.add(file);
+  res.json({ kept: `lighting/export/${file}` });
 });
 
 app.post("/api/lighting/venues/:name/aim-points", (_req, res) => {

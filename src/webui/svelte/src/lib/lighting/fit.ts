@@ -19,6 +19,7 @@
  */
 
 import type { Vec3 } from "../api/config";
+import { arr, hasAny, isObj, obj, objOrNull, str, type Obj } from "./answer";
 
 export type Want = "move" | "color" | "strobe" | "cells" | "dimmer";
 export type Height = "deck" | "low" | "truss";
@@ -88,6 +89,91 @@ export interface Fit {
     /** Whether olad's web server answered; null when nothing was asked. */
     reachable: boolean | null;
     ola_http_port: number | null;
+  };
+}
+
+/** Guards `GET /api/lighting/fit`'s answer the way `parseReadiness` guards
+ *  the readiness one: arrays default to `[]`, objects to null. Null when the
+ *  body is not an object with any of the expected fields. */
+export function parseFit(body: unknown): Fit | null {
+  if (!hasAny(body, ["venue", "groups", "focus_points_wanted", "output"])) {
+    return null;
+  }
+  const venue = objOrNull(body.venue);
+  const output = obj(body.output);
+  const cluster = (c: Obj): Cluster => ({
+    fixtures: arr<string>(c.fixtures),
+    type: str(c.type),
+    where: typeof c.where === "string" ? c.where : null,
+    height: (c.height as Height | null) ?? null,
+    depth: (c.depth as Depth | null) ?? null,
+  });
+  return {
+    venue: venue
+      ? {
+          name: str(venue.name),
+          fixtures: arr<Obj>(venue.fixtures)
+            .filter(isObj)
+            .map((f) => ({
+              name: str(f.name),
+              type: str(f.type),
+              tags: arr<string>(f.tags),
+              capabilities: arr<string>(f.capabilities),
+              position: (f.position as Vec3 | null | undefined) ?? null,
+            })),
+          focus_points: arr<string>(venue.focus_points),
+        }
+      : null,
+    groups: arr<Obj>(body.groups)
+      .filter(isObj)
+      .map((g) => {
+        const needs = obj(g.needs);
+        const suggestion = objOrNull(g.suggestion);
+        const reason = obj(suggestion?.reason);
+        return {
+          name: str(g.name),
+          defined: g.defined === true,
+          needs: {
+            all_of: arr<string>(needs.all_of),
+            any_of: arr<string>(needs.any_of),
+            prefer: arr<string>(needs.prefer),
+          },
+          fixtures: arr<string>(g.fixtures),
+          songs: arr<string>(g.songs),
+          wants: arr<Want>(g.wants),
+          suggestion: suggestion
+            ? {
+                fixtures: arr<string>(suggestion.fixtures),
+                tags: arr<string>(suggestion.tags),
+                reason: {
+                  count:
+                    typeof reason.count === "number"
+                      ? reason.count
+                      : arr(suggestion.fixtures).length,
+                  type: str(reason.type),
+                  where: typeof reason.where === "string" ? reason.where : null,
+                  height: (reason.height as Height | null) ?? null,
+                  depth: (reason.depth as Depth | null) ?? null,
+                  can: arr<Want>(reason.can),
+                },
+              }
+            : null,
+          others: arr<Obj>(g.others).filter(isObj).map(cluster),
+          unmet: arr<Want>(g.unmet),
+          unmet_together: g.unmet_together === true,
+        };
+      }),
+    focus_points_wanted: arr<Obj>(body.focus_points_wanted)
+      .filter(isObj)
+      .map((f) => ({ name: str(f.name), songs: arr<string>(f.songs) })),
+    output: {
+      unconfigured: arr<number>(output.unconfigured),
+      unpatched: arr<number>(output.unpatched),
+      reachable:
+        typeof output.reachable === "boolean" ? output.reachable : null,
+      ola_http_port:
+        typeof output.ola_http_port === "number" ? output.ola_http_port : null,
+    },
   };
 }
 

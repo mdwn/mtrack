@@ -15,9 +15,11 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
   import { t } from "svelte-i18n";
+  import { showConfirm } from "../../lib/dialog.svelte";
   import {
     addAimPoints,
     downloadMvrExport,
+    keepMvrExport,
     fetchMvrExportSummary,
     type MvrExportSummary,
   } from "../../lib/api/config";
@@ -99,6 +101,33 @@
     }
   }
 
+  /** Keeps a copy in the project after the download; a file already there is
+   *  replaced only when the user says so. */
+  async function keepCopy() {
+    const options = { file: fileName.trim(), layersFromTags };
+    let result = await keepMvrExport(venue, options, dirs);
+    if (result.status === "exists") {
+      const path = `lighting/export/${result.existing}`;
+      if (
+        !(await showConfirm(
+          $t("lighting.mvr.export.replace", { values: { path } }),
+        ))
+      ) {
+        return;
+      }
+      result = await keepMvrExport(
+        venue,
+        { ...options, overwrite: true },
+        dirs,
+      );
+    }
+    if (result.status === "kept") {
+      keptNote = $t("lighting.mvr.export.kept", {
+        values: { path: result.path },
+      });
+    }
+  }
+
   async function download() {
     if (!fileValid) return;
     working = true;
@@ -107,7 +136,7 @@
     try {
       const result = await downloadMvrExport(
         venue,
-        { file: fileName.trim(), layersFromTags, keep },
+        { file: fileName.trim(), layersFromTags },
         dirs,
       );
       const url = URL.createObjectURL(result.blob);
@@ -118,11 +147,7 @@
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      if (result.kept) {
-        keptNote = $t("lighting.mvr.export.kept", {
-          values: { path: result.kept },
-        });
-      }
+      if (keep) await keepCopy();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
