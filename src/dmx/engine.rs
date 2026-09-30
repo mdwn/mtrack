@@ -102,6 +102,7 @@ pub struct Engine {
     pub(super) effect_engine: Arc<Mutex<EffectEngine>>,
     pub(super) lighting_system: Option<Arc<Mutex<LightingSystem>>>,
     pub(super) lighting_config: Option<config::Lighting>,
+    ola_http_port: u16,
     pub(super) effects_loop_handle: Mutex<Option<JoinHandle<()>>>,
     pub(super) current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
     pub(super) current_song_time: Arc<AtomicU64>,
@@ -224,6 +225,7 @@ impl Engine {
             effects_loop_handle: Mutex::new(None),
             lighting_system,
             lighting_config: lighting_config.cloned(),
+            ola_http_port: config.ola_http_port(),
             current_song_timeline,
             playback_generation,
             current_song_time,
@@ -507,6 +509,11 @@ impl Engine {
         let mut effect_engine = self.effect_engine.lock();
         effect_engine.start_effect(effect)?;
         Ok(())
+    }
+
+    /// The port olad's web server listens on, from the profile.
+    pub fn ola_http_port(&self) -> u16 {
+        self.ola_http_port
     }
 
     /// The universes this profile configures an output for.

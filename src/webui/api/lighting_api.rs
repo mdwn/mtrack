@@ -1049,6 +1049,201 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
     }
 }
 
+/// GET /api/lighting/readiness — the facts behind the Lighting overview's five
+/// checks: does the show reach the lights?
+///
+/// Facts, not verdicts. The UI turns them into ready / needs attention /
+/// blocked / unknown, so the wording and the rules live in one place. Every
+/// piece is something mtrack already knows: the loaded lighting system, the
+/// songs' parsed shows, the same lint MCP's `validate_lighting` runs, and the
+/// olad patch probe. All of it is blocking (the lighting-system mutex is shared
+/// with the effects loop, the probe is HTTP), so it runs off the async worker.
+pub(super) async fn get_readiness(State(state): State<WebUiState>) -> impl IntoResponse {
+    let player = state.player.clone();
+    match tokio::task::spawn_blocking(move || readiness_report(&player)).await {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to gather readiness: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// The readiness facts for the player's running profile.
+fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
+    use crate::lighting::readiness::{group_names, VenueFacts};
+    use std::collections::BTreeSet;
+
+    // Shows are reported with or without DMX: a laptop with no DMX output is
+    // where shows are written, and a show that does not load is broken there
+    // too. Everything that needs a venue or an output is empty without one.
+    let dmx = player.dmx_engine();
+    let configured = dmx
+        .as_ref()
+        .map(|d| d.configured_universes())
+        .unwrap_or_default();
+
+    // Every song with lighting, and the shows its files hold, sorted the way
+    // MCP sorts them. These were parsed at song load with the song's own tempo
+    // map (`Song::lighting_tempo_map`) — the same parse the player plays — so
+    // nothing here re-reads a file.
+    let songs = player.songs();
+    let mut with_lighting = Vec::new();
+    let mut all_shows = Vec::new();
+    for song in songs.sorted_list() {
+        if song.dsl_lighting_shows().is_empty() {
+            continue;
+        }
+        let mut shows: Vec<lighting::parser::LightShow> = song
+            .dsl_lighting_shows()
+            .iter()
+            .flat_map(|dsl| dsl.shows().values().cloned())
+            .collect();
+        shows.sort_by(|a, b| a.name.cmp(&b.name));
+        all_shows.extend(shows.iter().cloned());
+        with_lighting.push((song, shows));
+    }
+    let names = group_names(&all_shows);
+
+    // The lighting system, under its lock for as short a time as it takes to
+    // read what the sections below need.
+    let mut facts = VenueFacts::default();
+    let mut venue = serde_json::Value::Null;
+    let mut in_use: BTreeSet<String> = BTreeSet::new();
+    let mut unresolved = Vec::new();
+    let mut used_universes: BTreeSet<u16> = BTreeSet::new();
+    if let Some(system) = dmx
+        .as_ref()
+        .and_then(|d| d.broadcast_handles().lighting_system)
+    {
+        let mut guard = system.lock();
+        facts = VenueFacts::collect(&mut guard, &names, Some(&configured));
+        if let Some(current) = guard.get_current_venue() {
+            let mut fixtures: Vec<&lighting::types::Fixture> =
+                current.fixtures().values().collect();
+            fixtures.sort_by(|a, b| a.name().cmp(b.name()));
+            for fixture in &fixtures {
+                used_universes.insert(fixture.universe());
+                match guard.fixture_type_problem(fixture.fixture_type()) {
+                    None => {
+                        in_use.insert(fixture.fixture_type().to_string());
+                    }
+                    Some(reason) => unresolved.push(json!({
+                        "fixture": fixture.name(),
+                        "type": fixture.fixture_type(),
+                        "reason": reason,
+                    })),
+                }
+            }
+            venue = json!({
+                "name": current.name(),
+                "fixtures": fixtures.len(),
+                "placed": fixtures.iter().filter(|f| f.position().is_some()).count(),
+                "focus_points": current.focus_points().keys().collect::<Vec<_>>(),
+            });
+        }
+    }
+
+    let groups: Vec<serde_json::Value> = names
+        .iter()
+        .filter(|_| dmx.is_some())
+        .map(|name| {
+            let songs_using: Vec<&str> = with_lighting
+                .iter()
+                .filter(|(_, shows)| group_names(shows).contains(name))
+                .map(|(song, _)| song.name())
+                .collect();
+            json!({
+                "name": name,
+                "fixtures": facts.group_fixture_counts.get(name).copied().unwrap_or(0),
+                "songs": songs_using,
+            })
+        })
+        .collect();
+
+    let mut shows: Vec<serde_json::Value> = with_lighting
+        .iter()
+        .map(|(song, shows)| {
+            let warnings: Vec<serde_json::Value> = facts
+                .lint(shows, Some(song))
+                .into_iter()
+                // Venue-level: the Output section already carries it, and
+                // repeating it under every song would say it once per song.
+                .filter(|w| w.kind != "unconfigured-universe")
+                .map(|w| json!({"kind": w.kind, "message": w.message}))
+                .collect();
+            let files: Vec<String> = song
+                .dsl_lighting_shows()
+                .iter()
+                .map(|dsl| {
+                    let path = dsl.file_path();
+                    path.strip_prefix(song.base_path())
+                        .unwrap_or(path)
+                        .display()
+                        .to_string()
+                })
+                .collect();
+            json!({"song": song.name(), "files": files, "warnings": warnings})
+        })
+        .collect();
+    // A song whose show does not parse never loads (`Song::new` fails as a
+    // whole), so it is not in the list above: the player recorded the failure,
+    // with the parser's own message, and that is the error.
+    for failure in songs.failures() {
+        if failure.concerns_lighting() {
+            shows.push(json!({
+                "song": failure.name(),
+                "files": [],
+                "error": failure.error(),
+                "warnings": [],
+            }));
+        }
+    }
+    shows.sort_by(|a, b| a["song"].as_str().cmp(&b["song"].as_str()));
+
+    let unconfigured: Vec<u16> = used_universes
+        .iter()
+        .copied()
+        .filter(|u| !configured.contains(u))
+        .collect();
+
+    // Ask olad about the universes the venue streams to, when there are any,
+    // else about everything configured. A universe with no output configured is
+    // never streamed to, so asking olad about it would only repeat the
+    // `unconfigured` finding. Nothing to ask means no answer, not a reachable
+    // olad.
+    let to_probe: Vec<u16> = if used_universes.is_empty() {
+        configured.clone()
+    } else {
+        used_universes
+            .iter()
+            .copied()
+            .filter(|u| configured.contains(u))
+            .collect()
+    };
+    let olad = match &dmx {
+        Some(dmx) if !to_probe.is_empty() => {
+            let report = crate::dmx::patch_check::probe_universes(dmx.ola_http_port(), &to_probe);
+            json!({"reachable": report.reachable, "unpatched": report.unpatched})
+        }
+        _ => serde_json::Value::Null,
+    };
+
+    json!({
+        "dmx": dmx.is_some(),
+        "venue": venue,
+        "fixture_types": {"in_use": in_use, "unresolved": unresolved},
+        "groups": groups,
+        "shows": shows,
+        "output": {
+            "universes": used_universes,
+            "unconfigured": unconfigured,
+            "olad": olad,
+        },
+    })
+}
+
 /// The logical group names declared under `dmx.lighting.groups`, read from the
 /// player config when no engine is running to resolve them against.
 async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Response {
@@ -4263,5 +4458,305 @@ show "test" {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /lighting/readiness
+    // -----------------------------------------------------------------------
+
+    const TYPE_PAR: &str =
+        "fixture_type \"Par\" {\n  channels: 2\n  channel_map: { \"dimmer\": 1, \"red\": 2 }\n}\n";
+
+    /// A project on disk plus a player running a DMX engine over it.
+    struct Rig {
+        state: WebUiState,
+        _state_dir: tempfile::TempDir,
+        _project: tempfile::TempDir,
+    }
+
+    /// Writes one song directory per (name, show file body) and loads them.
+    fn song_registry(
+        root: &std::path::Path,
+        songs: &[(&str, &str)],
+    ) -> std::sync::Arc<crate::songs::Songs> {
+        let songs_dir = root.join("songs");
+        std::fs::create_dir_all(&songs_dir).unwrap();
+        for (name, show) in songs {
+            let dir = songs_dir.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            crate::testutil::write_wav(dir.join("kick.wav"), vec![vec![0i32; 4410]], 44100)
+                .unwrap();
+            std::fs::write(dir.join("show.light"), show).unwrap();
+            std::fs::write(
+                dir.join("song.yaml"),
+                format!(
+                    "kind: song\nname: {name}\ntracks:\n  - name: kick\n    file: kick.wav\n\
+                     lighting:\n  - file: show.light\n"
+                ),
+            )
+            .unwrap();
+        }
+        crate::songs::get_all_songs(&songs_dir).unwrap()
+    }
+
+    /// `venue` is the venue file's body (`None` for no current venue), `songs`
+    /// are (directory, show file body) pairs, `universes` the configured
+    /// outputs. olad's web server is pointed at a port nothing listens on so
+    /// the probe never meets a real daemon.
+    fn rig(
+        types: &[(&str, &str)],
+        venue: Option<&str>,
+        songs: &[(&str, &str)],
+        universes: &[u16],
+    ) -> Rig {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        std::fs::create_dir_all(root.join("types")).unwrap();
+        std::fs::create_dir_all(root.join("venues")).unwrap();
+        for (file, body) in types {
+            std::fs::write(root.join("types").join(file), body).unwrap();
+        }
+        if let Some(venue) = venue {
+            std::fs::write(root.join("venues/v.light"), venue).unwrap();
+        }
+        let songs = song_registry(root, songs);
+
+        let dead_port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let universe_yaml: String = universes
+            .iter()
+            .map(|u| format!("  - universe: {u}\n    name: u{u}\n"))
+            .collect();
+        let current_venue = if venue.is_some() {
+            "  current_venue: v\n"
+        } else {
+            ""
+        };
+        let dmx_yaml = format!(
+            "ola_http_port: {dead_port}\nuniverses:\n{universe_yaml}lighting:\n  directories:\n    \
+             fixture_types: types\n    venues: venues\n{current_venue}  groups:\n    washes:\n      \
+             name: washes\n      constraints:\n        - AllOf: [\"wash\"]\n"
+        );
+        let dmx: crate::config::Dmx = config::Config::builder()
+            .add_source(config::File::from_str(&dmx_yaml, config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        let engine = crate::dmx::engine::Engine::new(
+            &dmx,
+            dmx.lighting(),
+            Some(root),
+            crate::dmx::ola_client::OlaClientFactory::create_mock_client(),
+        )
+        .unwrap();
+        let (state, state_dir) = test_state_with_dmx(songs, std::sync::Arc::new(engine));
+        Rig {
+            state,
+            _state_dir: state_dir,
+            _project: project,
+        }
+    }
+
+    async fn readiness(state: WebUiState) -> serde_json::Value {
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/readiness")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_str(&response_body(response).await).unwrap()
+    }
+
+    #[tokio::test]
+    async fn readiness_without_dmx_has_no_venue_but_still_reports_shows() {
+        let project = tempfile::tempdir().unwrap();
+        let songs = song_registry(
+            project.path(),
+            &[
+                (
+                    "Good",
+                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n}\n",
+                ),
+                // No `duration`: the song does not load, DMX or not.
+                (
+                    "Bad",
+                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\"\n}\n",
+                ),
+            ],
+        );
+        let (state, _dir) = test_state_with_registry(songs);
+        let report = readiness(state).await;
+        assert_eq!(report["dmx"], json!(false));
+        assert_eq!(report["venue"], json!(null));
+        assert_eq!(report["groups"], json!([]));
+        assert_eq!(report["output"]["olad"], json!(null));
+        assert_eq!(report["fixture_types"]["unresolved"], json!([]));
+
+        let shows = report["shows"].as_array().unwrap();
+        let bad = shows.iter().find(|s| s["song"] == json!("Bad")).unwrap();
+        assert!(bad["error"].as_str().unwrap().contains("duration"));
+        let good = shows.iter().find(|s| s["song"] == json!("Good")).unwrap();
+        assert!(good.get("error").is_none());
+        // Nothing that needs a venue is guessed at without one.
+        for w in good["warnings"].as_array().unwrap() {
+            assert!(
+                !["empty-group", "unconfigured-universe", "capability-gap"]
+                    .contains(&w["kind"].as_str().unwrap()),
+                "{w}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn readiness_reports_an_untagged_venue_as_groups_with_no_fixtures() {
+        let rig = rig(
+            &[("par.light", TYPE_PAR)],
+            // A is tagged, B is not; a show that targets `washes` finds A and a
+            // show that targets `movers` (declared nowhere) finds nothing.
+            Some("venue \"v\" {\n  fixture \"A\" Par @ 1:1 tags [\"wash\"]\n  fixture \"B\" Par @ 1:3\n}\n"),
+            &[(
+                "Esaweg",
+                "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n    \
+                 movers: static color: \"blue\", duration: 2s\n}\n",
+            )],
+            &[1],
+        );
+        let report = readiness(rig.state.clone()).await;
+
+        assert_eq!(report["dmx"], json!(true));
+        assert_eq!(report["venue"]["name"], json!("v"));
+        assert_eq!(report["venue"]["fixtures"], json!(2));
+        assert_eq!(report["venue"]["placed"], json!(0));
+        assert_eq!(report["venue"]["focus_points"], json!([]));
+        assert_eq!(report["fixture_types"]["in_use"], json!(["Par"]));
+        assert_eq!(report["fixture_types"]["unresolved"], json!([]));
+
+        let groups = report["groups"].as_array().unwrap();
+        let by_name = |name: &str| groups.iter().find(|g| g["name"] == json!(name)).unwrap();
+        assert_eq!(by_name("washes")["fixtures"], json!(1));
+        assert_eq!(by_name("movers")["fixtures"], json!(0));
+        assert_eq!(by_name("movers")["songs"], json!(["Esaweg"]));
+
+        let shows = report["shows"].as_array().unwrap();
+        assert_eq!(shows.len(), 1);
+        assert_eq!(shows[0]["song"], json!("Esaweg"));
+        assert_eq!(shows[0]["files"], json!(["show.light"]));
+        assert!(shows[0].get("error").is_none(), "{report}");
+        let kinds: Vec<&str> = shows[0]["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|w| w["kind"].as_str())
+            .collect();
+        assert!(kinds.contains(&"empty-group"), "{kinds:?}");
+
+        // Nothing listens where olad's web server should be.
+        assert_eq!(report["output"]["universes"], json!([1]));
+        assert_eq!(report["output"]["unconfigured"], json!([]));
+        assert_eq!(report["output"]["olad"]["reachable"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn readiness_reports_a_show_that_does_not_parse() {
+        let rig = rig(
+            &[("par.light", TYPE_PAR)],
+            Some("venue \"v\" {\n  fixture \"A\" Par @ 1:1 tags [\"wash\"]\n}\n"),
+            &[
+                (
+                    "Good",
+                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n}\n",
+                ),
+                // No `duration`: the parser refuses it, and the song with it.
+                (
+                    "Bad",
+                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\"\n}\n",
+                ),
+            ],
+            &[1],
+        );
+        let report = readiness(rig.state.clone()).await;
+        let shows = report["shows"].as_array().unwrap();
+        let bad = shows.iter().find(|s| s["song"] == json!("Bad")).unwrap();
+        let error = bad["error"].as_str().expect("error present");
+        assert!(error.contains("duration"), "{error}");
+        let good = shows.iter().find(|s| s["song"] == json!("Good")).unwrap();
+        assert!(good.get("error").is_none());
+    }
+
+    #[tokio::test]
+    async fn readiness_lists_a_universe_with_no_output() {
+        let rig = rig(
+            &[("par.light", TYPE_PAR)],
+            Some("venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"B\" Par @ 4:1\n}\n"),
+            &[(
+                "Song",
+                "show \"S\" {\n    @00:00.000\n    all: static color: \"red\", duration: 2s\n}\n",
+            )],
+            &[1],
+        );
+        let report = readiness(rig.state.clone()).await;
+        assert_eq!(report["output"]["universes"], json!([1, 4]));
+        assert_eq!(report["output"]["unconfigured"], json!([4]));
+        // Output carries it; no song repeats it.
+        assert_eq!(report["shows"].as_array().unwrap().len(), 1);
+        for show in report["shows"].as_array().unwrap() {
+            for w in show["warnings"].as_array().unwrap() {
+                assert_ne!(w["kind"], json!("unconfigured-universe"), "{report}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn readiness_says_why_a_fixture_type_did_not_load() {
+        let rig = rig(
+            &[
+                ("par.light", TYPE_PAR),
+                (
+                    "ghost.fixture",
+                    "fixture_type \"Ghost\"\n  from gdtf(\"lighting/library/missing.gdtf\", mode \"X\")\n{ }\n",
+                ),
+            ],
+            Some(
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"G\" Ghost @ 1:5\n  \
+                 fixture \"N\" Nope @ 1:9\n}\n",
+            ),
+            &[],
+            &[1],
+        );
+        let report = readiness(rig.state.clone()).await;
+        assert_eq!(report["fixture_types"]["in_use"], json!(["Par"]));
+        let unresolved = report["fixture_types"]["unresolved"].as_array().unwrap();
+        assert_eq!(unresolved.len(), 2);
+        assert_eq!(unresolved[0]["fixture"], json!("G"));
+        assert_eq!(unresolved[0]["type"], json!("Ghost"));
+        assert!(
+            unresolved[0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("missing.gdtf"),
+            "the loader's own reason: {report}"
+        );
+        assert_eq!(unresolved[1]["fixture"], json!("N"));
+        assert!(unresolved[1]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no fixture type named 'Nope'"));
+    }
+
+    #[tokio::test]
+    async fn readiness_without_a_current_venue_has_none() {
+        let rig = rig(&[("par.light", TYPE_PAR)], None, &[], &[1]);
+        let report = readiness(rig.state.clone()).await;
+        assert_eq!(report["dmx"], json!(true));
+        assert_eq!(report["venue"], json!(null));
+        assert_eq!(report["output"]["universes"], json!([]));
     }
 }

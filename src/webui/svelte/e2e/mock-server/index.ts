@@ -30,6 +30,7 @@ import {
   PROFILE_FILE_DETAIL,
   PLAYBACK_STATE,
   METADATA_STATE,
+  READINESS,
   FIXTURE_STATE,
   TEST_RIG,
   TEST_SCENERY,
@@ -244,6 +245,10 @@ app.put("/api/lock", (req, res) => {
 
 app.get("/api/lighting", (_req, res) => {
   res.json({ files: [{ path: "show.light", name: "show.light" }] });
+});
+
+app.get("/api/lighting/readiness", (_req, res) => {
+  res.json(READINESS);
 });
 
 app.get("/api/lighting/validate", (_req, res) => {

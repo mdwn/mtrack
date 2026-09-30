@@ -55,6 +55,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::task::AbortHandle;
 
+use crate::lighting::readiness::{group_names, VenueFacts};
 use crate::player::Player;
 
 /// Resource URI exposing the live player status as JSON. Clients can read it
@@ -1251,50 +1252,12 @@ impl McpServer {
         song: Option<&str>,
     ) -> Result<Vec<Value>, McpError> {
         // Resolved before the song is looked up: `LintContext` borrows the
-        // song, and a borrow of it must not be held across an await.
-        let dmx = self.player.dmx_engine();
-        let configured_universes = dmx.as_ref().map(|d| d.configured_universes());
-        let (group_fixture_counts, group_capabilities, mut venue_warnings, focus_points) =
-            match dmx.and_then(|dmx| dmx.broadcast_handles().lighting_system) {
-                Some(system) => {
-                    let names = group_names(shows);
-                    // The lighting-system mutex is shared with the effects loop
-                    // thread, so taking it belongs off the async worker.
-                    tokio::task::spawn_blocking(move || {
-                        let mut guard = system.lock();
-                        let mut counts = std::collections::HashMap::new();
-                        let mut capabilities = std::collections::HashMap::new();
-                        let mut venue_warnings = Vec::new();
-                        let focus_points: Option<std::collections::HashSet<String>> = guard
-                            .get_current_venue()
-                            .map(|venue| venue.focus_points().keys().cloned().collect());
-                        // Only when a venue is actually loaded. Without one every
-                        // group resolves to nothing, and reporting them all as empty
-                        // would be noise rather than a finding.
-                        if guard.get_current_venue().is_some() {
-                            let fixtures = guard.get_current_venue_fixtures().unwrap_or_default();
-                            for name in names {
-                                let members = guard.resolve_logical_group_graceful(&name);
-                                counts.insert(name.clone(), members.len());
-                                capabilities.insert(
-                                    name,
-                                    crate::lighting::lint::GroupCapabilities::from_fixtures(
-                                        fixtures.iter().filter(|f| members.contains(&f.name)),
-                                    ),
-                                );
-                            }
-                            if let Some(configured) = &configured_universes {
-                                venue_warnings =
-                                    crate::lighting::lint::universe_coverage(&fixtures, configured);
-                            }
-                        }
-                        (counts, capabilities, venue_warnings, focus_points)
-                    })
-                    .await
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?
-                }
-                None => Default::default(),
-            };
+        // song, and a borrow of it must not be held across an await. The
+        // context itself is built by the same code the web UI's readiness hub
+        // uses, so the two cannot disagree.
+        let facts = VenueFacts::from_engine(self.player.dmx_engine(), group_names(shows))
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let song = match song {
             Some(name) => Some(
@@ -1306,17 +1269,8 @@ impl McpServer {
             None => None,
         };
 
-        let ctx = crate::lighting::lint::LintContext {
-            song_duration: song.as_ref().map(|s| s.duration()),
-            beat_grid: song.as_ref().and_then(|s| s.beat_grid()),
-            group_fixture_counts,
-            group_capabilities,
-            focus_points,
-        };
-
-        let mut warnings = crate::lighting::lint::lint_shows(shows, &ctx);
-        warnings.append(&mut venue_warnings);
-        Ok(warnings
+        Ok(facts
+            .lint(shows, song.as_deref())
             .into_iter()
             .map(|w| json!({"kind": w.kind, "message": w.message}))
             .collect())
@@ -2883,19 +2837,6 @@ fn cue_timeline(show: &crate::lighting::parser::LightShow) -> Vec<Value> {
 /// show's tempo map — which tempo block wins would vary between runs.
 fn sort_shows(shows: &mut [crate::lighting::parser::LightShow]) {
     shows.sort_by(|a, b| a.name.cmp(&b.name));
-}
-
-/// Every distinct group name a set of shows targets, deduplicated.
-fn group_names(shows: &[crate::lighting::parser::LightShow]) -> Vec<String> {
-    let mut names: Vec<String> = shows
-        .iter()
-        .flat_map(|show| show.cues.iter())
-        .flat_map(|cue| cue.effects.iter())
-        .flat_map(|effect| effect.groups.iter().cloned())
-        .collect();
-    names.sort();
-    names.dedup();
-    names
 }
 
 /// Returns a successful tool result wrapping a JSON value as pretty-printed text.

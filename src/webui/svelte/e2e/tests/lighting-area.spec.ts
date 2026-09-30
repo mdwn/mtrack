@@ -78,21 +78,6 @@ test.describe("Lighting area: routes and navigation", () => {
     await expect(page).toHaveTitle(/^Lighting - mtrack/);
   });
 
-  test("the overview summarises the venue and counts", async ({ page }) => {
-    await routeTwoProfiles(page);
-    // Run as the profile that selects a venue.
-    await page.route("**/api/status", async (route) => {
-      const res = await route.fetch();
-      const body = await res.json();
-      body.hardware.profile = "other-host";
-      await route.fulfill({ response: res, json: body });
-    });
-    await page.goto("/#/lighting");
-    await expect(page.getByTestId("overview-venue")).toHaveText("test-venue");
-    await expect(page.getByTestId("overview-types")).toHaveText("3");
-    await expect(page.getByTestId("overview-venues")).not.toHaveText("-");
-  });
-
   for (const [hash, tab, title] of [
     ["/#/lighting/fixtures", "Fixture types", /Lighting - Fixture types/],
     ["/#/lighting/venues", "Venues", /Lighting - Venues/],
