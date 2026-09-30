@@ -17,6 +17,7 @@ pub(crate) mod config_api;
 pub(crate) mod devices;
 pub(crate) mod helpers;
 pub(crate) mod lighting_api;
+pub(crate) mod mvr_api;
 pub(crate) mod playlists;
 pub(crate) mod profiles;
 pub(crate) mod songs_api;
@@ -84,11 +85,13 @@ pub fn router() -> Router<WebUiState> {
         .route("/samples/upload/{filename}", put(upload_sample_file))
         .layer(axum::extract::DefaultBodyLimit::disable());
 
-    // GDTF uploads get a bounded raise instead of a disable: the archive
+    // GDTF and MVR uploads get a bounded raise instead of a disable: the archive
     // layer refuses anything past 256MB anyway, so the transport should too.
     let gdtf_routes = Router::new()
         .route("/lighting/gdtf/inspect", post(lighting_api::inspect_gdtf))
         .route("/lighting/gdtf/import", post(lighting_api::import_gdtf))
+        .route("/lighting/mvr/inspect", post(mvr_api::inspect_mvr))
+        .route("/lighting/mvr/import", post(mvr_api::import_mvr))
         .layer(axum::extract::DefaultBodyLimit::max(272 * 1024 * 1024));
 
     // All other routes use the default body limit.
@@ -187,6 +190,12 @@ pub fn router() -> Router<WebUiState> {
                 .delete(lighting_api::delete_fixture_type),
         )
         .route("/lighting/groups", get(lighting_api::get_lighting_groups))
+        .route("/lighting/mvr/export", get(mvr_api::export_mvr))
+        .route("/lighting/mvr/export/summary", get(mvr_api::export_summary))
+        .route(
+            "/lighting/venues/{name}/aim-points",
+            post(mvr_api::add_aim_points),
+        )
         .route(
             "/lighting/assets/{*path}",
             get(lighting_api::get_lighting_asset),

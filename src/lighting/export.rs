@@ -90,8 +90,22 @@ pub struct MvrExport {
     /// GDTF archives generated for native fixture types: entry name →
     /// fixture type.
     pub generated_gdtfs: BTreeMap<String, String>,
+    /// Fixtures with a position (so with a transform in the scene).
+    pub positioned_fixtures: usize,
+    /// The fixed fixtures (types with no pan or tilt) that have a position,
+    /// each with the focus point it is aimed at, if any. A pre-viz tool aims
+    /// the unlinked ones at the origin.
+    pub fixed_fixtures: Vec<FixedFixture>,
     /// What was skipped or approximated.
     pub warnings: Vec<String>,
+}
+
+/// A fixed fixture and the focus point the export links it to.
+#[derive(Clone, Debug, Serialize)]
+pub struct FixedFixture {
+    pub name: String,
+    /// The focus point its rest beam passes within a degree of, if any.
+    pub focus: Option<String>,
 }
 
 /// Exports a venue to a `.mvr` in the project. All validation runs before
@@ -293,6 +307,15 @@ pub fn export_mvr_bytes(
         ));
     }
 
+    let fixed_fixtures: Vec<FixedFixture> = fixtures
+        .iter()
+        .filter(|f| f.position().is_some() && !moving.contains(f.fixture_type()))
+        .map(|f| FixedFixture {
+            name: f.name().to_string(),
+            focus: aimed_at(f, venue).map(str::to_string),
+        })
+        .collect();
+
     let scene = render_scene(
         venue,
         &fixtures,
@@ -311,6 +334,8 @@ pub fn export_mvr_bytes(
             focus_points: venue.focus_points().len(),
             embedded_gdtfs: embedded,
             generated_gdtfs: generated,
+            positioned_fixtures: fixtures.len() - unplaced,
+            fixed_fixtures,
             warnings,
         },
     ))
@@ -519,6 +544,47 @@ fn has_pose(channels: &HashMap<String, ChannelDef>) -> bool {
 /// lens a few centimetres off the mounting point, both fit well inside it.
 const FOCUS_TOLERANCE_DEG: f64 = 1.0;
 
+/// The direction a fixture's beam points at rest, a unit vector in stage
+/// space: −(third column of R = Rz·Ry·Rx), the mounting's −Z. Straight down
+/// for an unrotated fixture.
+pub fn rest_beam(fixture: &Fixture) -> Vec3 {
+    let [rx, ry, rz] = fixture.rotation().unwrap_or([0.0; 3]).map(f64::to_radians);
+    [
+        -(rz.cos() * ry.sin() * rx.cos() + rz.sin() * rx.sin()),
+        -(rz.sin() * ry.sin() * rx.cos() - rz.cos() * rx.sin()),
+        -(ry.cos() * rx.cos()),
+    ]
+}
+
+/// How far along the beam an aim point sits when the beam never meets the
+/// deck, meters.
+const AIM_FALLBACK_M: f64 = 3.0;
+
+/// The farthest a beam may travel to meet the deck (z = 0) and still make
+/// the aim point there, meters.
+const AIM_MAX_REACH_M: f64 = 50.0;
+
+/// The point an unlinked fixed fixture should be aimed at: where its rest
+/// beam meets the deck plane (z = 0), or [`AIM_FALLBACK_M`] along the beam
+/// when it does not meet it within [`AIM_MAX_REACH_M`] (pointing level or up,
+/// mounted at or below the deck, or too shallow). `None` for a fixture with
+/// no position. Rounded to the millimeter, which moves the beam by far less
+/// than the [`FOCUS_TOLERANCE_DEG`] a link allows.
+pub fn aim_point(fixture: &Fixture) -> Option<Vec3> {
+    let position = fixture.position()?;
+    let beam = rest_beam(fixture);
+    let reach = if beam[2] < -1e-9 && position[2] > 0.01 {
+        let t = position[2] / -beam[2];
+        (t <= AIM_MAX_REACH_M).then_some(t)
+    } else {
+        None
+    }
+    .unwrap_or(AIM_FALLBACK_M);
+    Some(std::array::from_fn(|axis| {
+        ((position[axis] + beam[axis] * reach) * 1000.0).round() / 1000.0
+    }))
+}
+
 /// The focus point a fixed fixture is aimed at, if any: the one its beam —
 /// straight down through its mounting, as a fixture at rest points — passes
 /// nearest, within [`FOCUS_TOLERANCE_DEG`]. Pre-viz tools such as Blender DMX
@@ -526,13 +592,7 @@ const FOCUS_TOLERANCE_DEG: f64 = 1.0;
 /// so the link is what makes the export look as the rig is hung.
 fn aimed_at<'a>(fixture: &Fixture, venue: &'a Venue) -> Option<&'a str> {
     let position = fixture.position()?;
-    let [rx, ry, rz] = fixture.rotation().unwrap_or([0.0; 3]).map(f64::to_radians);
-    // −(third column of R = Rz·Ry·Rx): the mounting's −Z in stage space.
-    let beam = [
-        -(rz.cos() * ry.sin() * rx.cos() + rz.sin() * rx.sin()),
-        -(rz.sin() * ry.sin() * rx.cos() - rz.cos() * rx.sin()),
-        -(ry.cos() * rx.cos()),
-    ];
+    let beam = rest_beam(fixture);
     venue
         .focus_points()
         .iter()

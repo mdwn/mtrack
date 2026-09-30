@@ -659,3 +659,104 @@ export const LOG_LINES = {
     },
   ],
 };
+
+/** An MVR as the inspect endpoint reports it (lighting UI design section 11):
+ *  a three-fixture rig over a deck 6 m wide and 4 m deep, whose front edge is
+ *  at y = 1000 mm and whose top is 500 mm up. One fixture has no usable GDTF. */
+export const MVR_INSPECTION = {
+  file_name: "Kellys.mvr",
+  report: {
+    venue_name: "Kellys",
+    venue_file: "lighting/venues/kellys.venue",
+    archive: "lighting/library/Kellys.mvr",
+    merge: false,
+    origin: [0, 0, 0],
+    fixture_types: [
+      {
+        name: "Astera PB15",
+        archive: "lighting/library/Astera_PB15.gdtf",
+        mode: "8: RGBS",
+        existing: false,
+        fixture_file: "lighting/fixture_types/astera_pb15.fixture",
+      },
+    ],
+    fixtures: [
+      {
+        name: "Brick 1",
+        layer: "Front",
+        fixture_type: "Astera PB15",
+        patch: [1, 1],
+        position: [-2, 2.5, 4.2],
+        rotation: null,
+        tags: [],
+        todo: null,
+        change: null,
+      },
+      {
+        name: "Brick 2",
+        layer: "Front",
+        fixture_type: "Astera PB15",
+        patch: [1, 5],
+        position: [2, 2.5, 4.2],
+        rotation: null,
+        tags: [],
+        todo: null,
+        change: null,
+      },
+      {
+        name: "Lost",
+        layer: "Front",
+        fixture_type: null,
+        patch: [2, 1],
+        position: null,
+        rotation: null,
+        tags: [],
+        todo: 'GDTF "Missing.gdtf" is not embedded in the MVR',
+        change: null,
+      },
+    ],
+    removed_fixtures: [],
+    kept_fixtures: [],
+    focus_points: [{ name: "Drummer", point: [0, 5.3, 1.4], change: null }],
+    removed_focus_points: [],
+    kept_focus_points: [],
+    scenery_objects: 2,
+    scenery_meshes_undrawn: 1,
+    warnings: ["1 scenery mesh(es) are in formats the 3D view does not draw"],
+  },
+  scene: {
+    fixtures: [
+      { name: "Brick 1", layer: "Front", position_mm: [-2000, 3500, 4200] },
+      { name: "Brick 2", layer: "Front", position_mm: [2000, 3500, 4200] },
+      { name: "Lost", layer: "Front", position_mm: null },
+    ],
+    focus_points: [{ name: "Drummer", position_mm: [0, 6300, 1400] }],
+    scenery: [
+      {
+        name: "Main Stage",
+        kind: "SceneObject",
+        deck: true,
+        bounds_mm: { min: [-3000, 1000, 0], max: [3000, 5000, 500] },
+      },
+      { name: "Screen", kind: "VideoScreen", deck: false, bounds_mm: null },
+    ],
+    deck_mm: { min: [-3000, 1000, 0], max: [3000, 5000, 500] },
+  },
+};
+
+/** The export summary of a venue with two fixed fixtures, one unlinked. */
+export const MVR_EXPORT_SUMMARY = {
+  venue: "kellys",
+  file_name: "kellys.mvr",
+  output: "kellys.mvr",
+  fixtures: 2,
+  positioned_fixtures: 2,
+  focus_points: 1,
+  embedded_gdtfs: ["Astera_PB15.gdtf"],
+  generated_gdtfs: {},
+  fixed_fixtures: [
+    { name: "Brick 1", focus: "Drummer" },
+    { name: "Brick 2", focus: null },
+  ],
+  warnings: [],
+};

@@ -27,7 +27,7 @@ use crate::lighting;
 
 /// The canonical project root the lighting endpoints write into.
 #[allow(clippy::result_large_err)]
-fn project_root(
+pub(super) fn project_root(
     config_path: &std::path::Path,
 ) -> Result<std::path::PathBuf, axum::response::Response> {
     let canonical = config_path.canonicalize().map_err(|_| {
@@ -393,10 +393,10 @@ pub(super) async fn validate_lighting(
 // ---------------------------------------------------------------------------
 
 /// Default directory for fixture type definitions, relative to project root.
-const DEFAULT_FIXTURE_TYPES_DIR: &str = "lighting/fixture_types";
+pub(super) const DEFAULT_FIXTURE_TYPES_DIR: &str = "lighting/fixture_types";
 
 /// Default directory for venue definitions, relative to project root.
-const DEFAULT_VENUES_DIR: &str = "lighting/venues";
+pub(super) const DEFAULT_VENUES_DIR: &str = "lighting/venues";
 
 /// Fixture type files: `.fixture` (rich channels, GDTF-referential types) and
 /// the v1 `.light`, loaded as peers — the same pair the lighting system reads.
@@ -441,7 +441,7 @@ fn needs_venue_extension(venue: &lighting::types::Venue) -> bool {
 /// Returns an error response if the project root cannot be canonicalized or the
 /// resolved path would escape it.
 #[allow(clippy::result_large_err)]
-fn resolve_lighting_dir(
+pub(super) fn resolve_lighting_dir(
     config_path: &std::path::Path,
     override_dir: Option<&str>,
     default: &str,
@@ -558,7 +558,7 @@ pub(super) struct LightingDirQuery {
 
 /// Validates that a fixture type or venue name is safe for use as a filename.
 #[allow(clippy::result_large_err)]
-fn validate_lighting_name(name: &str) -> Result<(), axum::response::Response> {
+pub(super) fn validate_lighting_name(name: &str) -> Result<(), axum::response::Response> {
     use super::super::safe_path::SafePath;
     if SafePath::validate_name(name).is_err() {
         return Err((
@@ -1476,7 +1476,7 @@ pub(super) async fn put_venue(
 /// web client. Returns whether that happened. A reload failure is logged,
 /// not returned — the save itself is durable and the loader will say the
 /// same thing at next startup.
-async fn reload_if_current_venue(state: &WebUiState, name: &str) -> bool {
+pub(super) async fn reload_if_current_venue(state: &WebUiState, name: &str) -> bool {
     let is_current = state
         .player
         .broadcast_handles()

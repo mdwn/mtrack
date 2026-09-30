@@ -21,6 +21,7 @@
   import VenuesPanel from "../components/lighting/VenuesPanel.svelte";
   import GroupsPage from "../components/lighting/GroupsPage.svelte";
   import FitPage from "../components/lighting/FitPage.svelte";
+  import MvrImportWizard from "../components/lighting/MvrImportWizard.svelte";
   import StageView from "../components/StageView.svelte";
   import Stage3D from "./Stage3D.svelte";
 
@@ -48,6 +49,8 @@
   ] as const;
 
   let route = $derived(lightingRoute(currentHash));
+  // The import wizard has no tab of its own: it is part of Venues.
+  let activeTab = $derived(route.sub === "import" ? "venues" : route.sub);
 
   // The fixture type and venue directories are a profile setting, so the
   // project-file pages read them from the profile the player is running.
@@ -72,9 +75,9 @@
     {#each tabs as tab (tab.key)}
       <a
         class="lighting__tab"
-        class:lighting__tab--active={route.sub === tab.key}
+        class:lighting__tab--active={activeTab === tab.key}
         href={tab.href}
-        aria-current={route.sub === tab.key ? "page" : undefined}
+        aria-current={activeTab === tab.key ? "page" : undefined}
         >{$t(tab.labelKey)}</a
       >
     {/each}
@@ -96,6 +99,8 @@
       groupParam={route.group}
       profileName={running?.profileName ?? null}
     />
+  {:else if route.sub === "import"}
+    <MvrImportWizard fixtureTypesDir={ftDir} venuesDir={venueDir} />
   {:else if route.sub === "stage"}
     <Stage3D heading="h2" />
   {/if}

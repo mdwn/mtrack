@@ -19,6 +19,7 @@ export type LightingSub =
   | "venues"
   | "groups"
   | "fit"
+  | "import"
   | "stage";
 
 export interface LightingRoute {
@@ -34,6 +35,7 @@ const SUBS: readonly LightingSub[] = [
   "venues",
   "groups",
   "fit",
+  "import",
   "stage",
 ];
 
