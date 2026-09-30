@@ -1253,13 +1253,20 @@ pub(super) async fn evaluate_lighting(
     let tempo = song.lighting_tempo_map();
     // Duration::from_secs_f64 panics on what it cannot hold, and the
     // evaluator steps through every second it is asked for: bound both.
-    let mut times: Vec<std::time::Duration> = Vec::with_capacity(request.times.len());
-    for t in &request.times {
-        match std::time::Duration::try_from_secs_f64(*t) {
-            Ok(d) if d <= MAX_EVALUATE_TIME => times.push(d),
-            _ => return error(StatusCode::BAD_REQUEST, "time out of range".to_string()),
-        }
-    }
+    // Collected rather than sized up front: the count is already capped
+    // above, and a capacity taken from the request is what CodeQL flags.
+    let times: Vec<std::time::Duration> = match request
+        .times
+        .iter()
+        .map(|t| match std::time::Duration::try_from_secs_f64(*t) {
+            Ok(d) if d <= MAX_EVALUATE_TIME => Some(d),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+    {
+        Some(times) => times,
+        None => return error(StatusCode::BAD_REQUEST, "time out of range".to_string()),
+    };
     let lighting_system = state
         .player
         .dmx_engine()
