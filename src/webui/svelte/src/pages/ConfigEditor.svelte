@@ -26,6 +26,7 @@
     updateSamples,
     updateMetronomeDefaults,
     deleteProfileFile,
+    ConflictError,
     type AudioDeviceInfo,
     type MidiDeviceInfo,
     type ProfileFileInfo,
@@ -38,7 +39,7 @@
     fileProfileName,
     inlineProfileName,
     loadProfileFileList,
-    readProfile,
+    readProfileVersioned,
     writeProfile,
   } from "../lib/profileStore";
   import { playbackStore } from "../lib/ws/stores";
@@ -101,6 +102,9 @@
   let profilesDir = $state<string | null>(null);
   let profileFiles = $state<ProfileFileInfo[]>([]);
   let selectedFilename = $state<string | null>(null);
+  /** The version of the profile file as read; a save made after the file
+   *  changed elsewhere is refused. Null for a file not yet written. */
+  let fileVersion: string | null = null;
 
   // Samples file awareness
   let samplesFile = $state<string | null>(null);
@@ -273,8 +277,12 @@
     dirty = false;
     isNew = false;
     try {
-      const profile = await readProfile({ kind: "file", filename }, []);
+      const { profile, version } = await readProfileVersioned(
+        { kind: "file", filename },
+        [],
+      );
       selectedFilename = filename;
+      fileVersion = version;
       selectedIndex = 0;
       profiles = [profile];
 
@@ -291,6 +299,7 @@
     profiles = [empty];
     selectedIndex = 0;
     selectedFilename = name;
+    fileVersion = null;
     startDraft(name.replace(/\.\w+$/, ""));
   }
 
@@ -304,11 +313,14 @@
     saveMsg = "";
     saveOk = false;
     try {
-      await writeProfile(
+      const written = await writeProfile(
         { kind: "file", filename: selectedFilename },
         profiles[selectedIndex],
         checksum,
+        false,
+        fileVersion,
       );
+      fileVersion = written.version;
 
       isNew = false;
       dirty = false;
@@ -316,7 +328,14 @@
       setTimeout(() => (saveOk = false), 2000);
       await loadProfileFiles();
     } catch (e: any) {
-      saveMsg = e.message;
+      if (e instanceof ConflictError && selectedFilename) {
+        // The profile file changed since it was opened: reload it and leave
+        // the change to be made again.
+        await selectFileProfile(selectedFilename);
+        saveMsg = get(t)("lighting.groups.changedElsewhere");
+      } else {
+        saveMsg = e.message;
+      }
     } finally {
       saving = false;
     }
@@ -413,7 +432,7 @@
     saveOk = false;
     try {
       const profile = profiles[selectedIndex];
-      const snapshot = await writeProfile(
+      const { snapshot } = await writeProfile(
         { kind: "inline", index: selectedIndex },
         profile,
         checksum,

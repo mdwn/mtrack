@@ -16,9 +16,11 @@
   import { onMount, untrack } from "svelte";
   import { t } from "svelte-i18n";
   import {
+    ConflictError,
     addAimPoints,
     downloadMvrExport,
     fetchMvrExportSummary,
+    fetchVenue,
     type MvrExportSummary,
   } from "../../lib/api/config";
   import { fileStem, validExportName } from "../../lib/lighting/mvrPlan";
@@ -63,10 +65,17 @@
     (summary?.fixed_fixtures.length ?? 0) - unlinked.length,
   );
 
+  /** The venue file's version the summary was read at; adding aim points
+   *  is refused if the file has changed since. */
+  let venueVersion: string | undefined;
+
   async function loadSummary() {
     error = "";
     try {
       summary = await fetchMvrExportSummary(venue, dirs);
+      venueVersion = await fetchVenue(venue, venuesDir || undefined)
+        .then((r) => r.version)
+        .catch(() => undefined);
     } catch (e) {
       summary = null;
       error = e instanceof Error ? e.message : String(e);
@@ -83,7 +92,7 @@
     error = "";
     addedNote = "";
     try {
-      const result = await addAimPoints(venue, dirs);
+      const result = await addAimPoints(venue, dirs, venueVersion);
       addedNote = $t("lighting.mvr.export.added", {
         values: {
           count: result.created.length,
@@ -94,6 +103,13 @@
       await loadSummary();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
+      if (e instanceof ConflictError) {
+        // The venue file changed: show the summary as it is now, and let
+        // the user press the button again.
+        onchanged?.();
+        await loadSummary();
+        error = $t("lighting.mvr.export.changedElsewhere");
+      }
     } finally {
       working = false;
     }

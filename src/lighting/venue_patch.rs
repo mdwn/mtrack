@@ -55,6 +55,7 @@ fn split_comment(line: &str) -> (&str, Option<&str>) {
         match c {
             '"' => quoted = !quoted,
             '#' if !quoted => return (&line[..i], Some(&line[i..])),
+            '/' if !quoted && line[i..].starts_with("//") => return (&line[..i], Some(&line[i..])),
             _ => {}
         }
     }
@@ -190,8 +191,13 @@ pub fn patch_venue(content: &str, name: &str, desired: &Venue) -> Result<String,
         let Some(regenerated) = regenerated else {
             continue; // removed
         };
-        let last = span[span.len() - 1];
-        let (_, comment) = split_comment(last.trim_end_matches(['\n', '\r']));
+        // Every line of a wrapped entry may carry a trailing comment; keep
+        // them all, in order.
+        let comments: Vec<&str> = span
+            .iter()
+            .filter_map(|l| split_comment(l.trim_end_matches(['\n', '\r'])).1)
+            .map(str::trim_end)
+            .collect();
         let code: String = span
             .iter()
             .map(|l| split_comment(l.trim_end_matches(['\n', '\r'])).0)
@@ -201,9 +207,9 @@ pub fn patch_venue(content: &str, name: &str, desired: &Venue) -> Result<String,
             out.extend(span.iter().copied()); // unchanged: keep its bytes
         } else {
             out.push_str(&regenerated);
-            if let Some(comment) = comment {
+            if !comments.is_empty() {
                 out.push_str("  ");
-                out.push_str(comment.trim_end());
+                out.push_str(&comments.join("  "));
             }
             out.push('\n');
         }
@@ -321,6 +327,41 @@ venue "house" {
             "{out}"
         );
         assert!(out.contains("# TODO fixture \"Lost\""));
+    }
+
+    #[test]
+    fn slash_comments_survive_an_edit() {
+        let file = r##"// header
+venue "house" {
+  // leading note
+  fixture "A" brick @ 1:1 tags ["wash"]  // keep me
+  // spare
+  fixture "B" brick @ 1:5
+}
+"##;
+        let v = with_fixture_tags(&venue(file), "A", &["front"]);
+        let out = patch_venue(file, "house", &v).unwrap();
+        assert!(out.starts_with("// header\nvenue"), "{out}");
+        assert!(out.contains("  // leading note\n"), "{out}");
+        assert!(out.contains("tags [\"front\"]  // keep me\n"), "{out}");
+        assert!(out.contains("\n  // spare\n  fixture \"B\""), "{out}");
+    }
+
+    #[test]
+    fn a_block_starting_with_a_slash_comment_is_patched() {
+        let file = "venue \"house\" {\n  // first\n  fixture \"A\" brick @ 1:1\n}\n";
+        let v = with_fixture_tags(&venue(file), "A", &["x"]);
+        let out = patch_venue(file, "house", &v).unwrap();
+        assert!(out.contains("  // first\n"), "{out}");
+    }
+
+    #[test]
+    fn a_wrapped_entry_keeps_every_trailing_comment() {
+        let file = "venue \"house\" {\n  fixture \"A\" brick @ 1:1  # one\n      tags [\"a\"]  // two\n}\n";
+        let v = with_fixture_tags(&venue(file), "A", &["b"]);
+        let out = patch_venue(file, "house", &v).unwrap();
+        assert!(out.contains("# one"), "{out}");
+        assert!(out.contains("// two"), "{out}");
     }
 
     #[test]

@@ -519,10 +519,21 @@ from the running profile's lighting settings, or the defaults if it sets none.
 **Profile settings** — logical groups and the current venue — belong to one hardware profile,
 because the rig at home and the rig on tour select different venues. The Groups page edits them
 for the profile you pick. It starts on the profile the player is running (the one whose
-`hostname` matches the Status page). A link such as `#/lighting/groups?profile=my-host` opens it
-on another profile. Saving goes through the same API as the Config page: a profile file when the
-config sets `profiles_dir`, otherwise the profile inside `mtrack.yaml`. A profile with no DMX
-section has nothing to edit here; the page links to Config to enable lighting first.
+`hostname` matches the Status page). When no profile matches this host, or the status cannot be
+read, nothing is selected: the page says so, and Save stays disabled until you choose a profile
+from the list. (It never falls back to the first profile, which could be another machine's.) A
+link such as `#/lighting/groups?profile=my-host` opens it on another profile. Saving goes through
+the same API as the Config page: a profile file when the config sets `profiles_dir`, otherwise the
+profile inside `mtrack.yaml`. A profile with no DMX section has nothing to edit here; the page
+links to Config to enable lighting first.
+
+Saving rewrites the profile. **Comments in the YAML are not kept**, because the YAML library
+does not preserve them. A profile *file* keeps the keys mtrack does not model (they are copied
+across from the existing file); the profile inside `mtrack.yaml` is rewritten whole, so it loses
+comments and unknown keys alike. Keep notes you care about somewhere other than a profile the web
+UI saves. A profile file saved from two pages or tabs at once is protected: the page reads the
+file's version, and a save made after the file changed is refused. The page reloads the profile
+and asks you to make the change again.
 
 ### Overview: will your show reach the lights?
 
@@ -576,6 +587,20 @@ what your shows can do in it, in plain words. A refused mode is listed greyed wi
 Lists the venues and edits their fixtures: name, type, universe, start channel and tags. Saving
 a venue keeps everything the form does not show — fixture positions and rotations, focus points,
 and where an MVR import came from.
+
+Click a venue in the list to select it; **Edit** opens its fixture form. The plot below shows
+the selected venue. When it is the current venue (marked *current*, or when none is selected),
+the plot is the live stage. When it is any other venue, for example one you just created, the
+plot is a plain view of that venue's file, labelled *not live* and without live fixture colour.
+Placing, arranging and aiming work the same way and save to that venue.
+
+Two tabs or pages can edit one venue. Every venue save carries the version of the file it was
+based on (a hash of its bytes, sent as `If-Match`). If the file changed since it was loaded, the
+save is refused and the page reloads, and you make the change again. Saves never regenerate an
+existing file: the file that defines the venue is found by scanning the venue files for its
+block (its name need not match the file name) and patched in place, keeping comments and `# TODO`
+lines (`#` and `//` comments both). A file that no longer parses is refused with the file's name
+so you can fix it by hand; nothing is overwritten.
 
 Beneath the list is the stage plot, the same view as the dashboard's stage card but editable.
 Drag a fixture from the tray onto the stage to place it, or drag a placed fixture or a focus pin

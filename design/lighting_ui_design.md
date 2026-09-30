@@ -426,10 +426,12 @@ points, as Stage 3D already does.
 
 Where the build settled a point §10.1–§10.5 left open or got wrong:
 
-- **The inspector applies to the plot's venue,** the current one the engine
-  has loaded and the websocket describes. `VenuesPanel`'s editor still edits
-  any venue in the list, and creates and removes fixtures; it was not
-  replaced. One selected fixture shows the same fields there (name, type,
+- **The inspector applies to the plot's venue.** That is the current one the
+  engine has loaded and the websocket describes, or, when the list has
+  another venue selected, that venue read from its file through the venues
+  API (a plain view, marked "not live", with no live colour). Either way
+  edits are one `put_venue`. `VenuesPanel`'s editor still edits any venue in
+  the list, and creates and removes fixtures; it was not replaced. One selected fixture shows the same fields there (name, type,
   universe, channel, tags) with an **Apply**.
 - **Stage left is bearing −90,** toward +x, as the venue files' comments say
   (+x is stage-left); stage right is 90, upstage 0, downstage 180.

@@ -27,7 +27,16 @@
     Vec3,
     VenueMetadata,
   } from "../lib/ws/stores";
-  import { fetchVenue, saveVenue, type VenueData } from "../lib/api/config";
+  import {
+    ConflictError,
+    fetchFixtureTypes,
+    fetchVenue,
+    saveVenue,
+    type FixtureTypeEntry,
+    type VenueData,
+  } from "../lib/api/config";
+  import type { FixturePose } from "../lib/ws/stores";
+  import { deckFootprint, restAim } from "../lib/stage/aim";
   import VenueInspector from "./lighting/VenueInspector.svelte";
   import { nudge } from "../lib/stage/arrange";
   import {
@@ -69,6 +78,13 @@
     /** The fixture types directory override, which the Venues inspector
      *  reads to tell movers from fixed fixtures. */
     fixtureTypesDir?: string;
+    /** A venue to show from its file instead of the live one: set to a venue
+     *  that is not the current one, the plot is a plain view of that file,
+     *  edited through the same save, without live fixture colour. The
+     *  current venue (or nothing) keeps the live plot. */
+    fileVenue?: string | null;
+    /** The venues directory override, for reading and saving `fileVenue`. */
+    venuesDir?: string;
   }
 
   let {
@@ -79,6 +95,8 @@
     placeFocus = null,
     onFocusPlaced,
     fixtureTypesDir = "",
+    fileVenue = null,
+    venuesDir = "",
   }: Props = $props();
 
   const FIXTURE_RADIUS = 22;
@@ -154,11 +172,124 @@
   let saving = $state(false);
   let renaming = $state<Record<string, string>>({});
 
-  let venue = $derived($venueStore);
+  // --- What the plot shows: the live venue from the websocket, or (when
+  // the Venues page picked another one) that venue's file, read through the
+  // venues API. A file view has no live colour and no engine poses.
+  let viewingFile = $derived(!!fileVenue && fileVenue !== $venueStore?.name);
+  let fileView = $state<{
+    name: string;
+    venue: VenueData;
+    version: string | null;
+  } | null>(null);
+  let fileError = $state("");
+  let fileTypes = $state<Record<string, FixtureTypeEntry>>({});
+  /** The version of the file the plot was loaded from; a save made against
+   *  another one is refused by the server. */
+  let fileVersion: string | null = null;
+
+  async function loadFileView(name: string) {
+    fileError = "";
+    try {
+      const got = await fetchVenue(name, venuesDir || undefined);
+      if (fileVenue !== name) return;
+      fileView = {
+        name,
+        venue: { ...got.venue, name },
+        version: got.version ?? null,
+      };
+      fileVersion = got.version ?? null;
+    } catch (e: unknown) {
+      if (fileVenue !== name) return;
+      fileView = null;
+      fileError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  $effect(() => {
+    const name = fileVenue;
+    const dir = venuesDir;
+    void dir;
+    if (viewingFile && name) {
+      untrack(() => {
+        fileView = null;
+        void loadFileView(name);
+      });
+    } else {
+      untrack(() => {
+        fileView = null;
+        fileError = "";
+      });
+    }
+  });
+
+  $effect(() => {
+    if (!viewingFile) return;
+    fetchFixtureTypes(fixtureTypesDir || undefined)
+      .then((r) => (fileTypes = r.fixtureTypes))
+      .catch(() => {
+        // Without types every fixture counts as fixed.
+      });
+  });
+
+  function isMoverType(type: string): boolean {
+    const ch = fileTypes[type]?.fixture_type?.channels ?? {};
+    return "pan" in ch && "tilt" in ch;
+  }
+
+  let fileFixtures = $derived.by<Record<string, FixtureMetadata>>(() => {
+    if (!fileView) return {};
+    return Object.fromEntries(
+      Object.entries(fileView.venue.fixtures).map(([key, f]) => [
+        f.name ?? key,
+        {
+          tags: f.tags ?? [],
+          type: f.fixture_type,
+          position: f.position ?? null,
+          rotation: f.rotation ?? null,
+          capabilities: isMoverType(f.fixture_type) ? ["pan_tilt"] : [],
+        } satisfies FixtureMetadata,
+      ]),
+    );
+  });
+  /** A fixed fixture's beam, from its mounting alone. */
+  let filePoses = $derived.by<Record<string, FixturePose>>(() => {
+    const out: Record<string, FixturePose> = {};
+    for (const [name, f] of Object.entries(fileFixtures)) {
+      if (!f.position || !f.rotation) continue;
+      if (f.capabilities?.includes("pan_tilt")) continue;
+      const aim = restAim(f.rotation);
+      out[name] = {
+        pan: 0,
+        tilt: 0,
+        aim,
+        floor: deckFootprint(f.position, aim),
+      };
+    }
+    return out;
+  });
+  let shownFixtures = $derived<Record<string, FixtureMetadata>>(
+    viewingFile ? fileFixtures : $metadataStore,
+  );
+  let shownVenue = $derived<VenueMetadata | null>(
+    viewingFile
+      ? fileView
+        ? {
+            name: fileView.name,
+            dir: venuesDir || null,
+            focus_points: fileView.venue.focus_points ?? {},
+          }
+        : null
+      : $venueStore,
+  );
+  let shownPoses = $derived<Record<string, FixturePose>>(
+    viewingFile ? filePoses : $poseStore,
+  );
+
+  let venue = $derived(shownVenue);
   let focusPoints = $derived(venue?.focus_points ?? {});
-  let geometryMode = $derived(hasGeometry($metadataStore, focusPoints));
+  let geometryMode = $derived(hasGeometry(shownFixtures, focusPoints));
   let placedCount = $derived(
-    Object.values($metadataStore).filter((f) => f.position != null).length,
+    Object.values(shownFixtures).filter((f) => f.position != null).length,
   );
   let focusNames = $derived(Object.keys(focusPoints).sort());
   /** Selection, the inspector and nudging are for the editing plot of a
@@ -167,7 +298,7 @@
 
   // A fixture the venue no longer has drops out of the selection.
   $effect(() => {
-    const known = $metadataStore;
+    const known = shownFixtures;
     const kept = untrack(() => selection).filter((n) => n in known);
     if (kept.length !== untrack(() => selection).length) selection = kept;
   });
@@ -256,7 +387,7 @@
     prevW = newW;
     prevH = newH;
 
-    computeLayout($metadataStore, $venueStore);
+    computeLayout(shownFixtures, shownVenue);
     publishLayout();
   }
 
@@ -368,10 +499,10 @@
       });
     }
 
-    for (const name of Object.keys($metadataStore)) {
+    for (const name of Object.keys(shownFixtures)) {
       const pos = layoutPositions[name];
       if (!pos) continue;
-      const meta = $metadataStore[name];
+      const meta = shownFixtures[name];
       const isUnplaced = frame !== null && meta.position == null;
 
       const state = fixtureStates[name] || {};
@@ -520,8 +651,8 @@
     // too — pan 0, tilt 0 through their mounting — so the beam is also
     // what says which way a fixture is hung.
     if (frame) {
-      for (const [name, pose] of Object.entries($poseStore)) {
-        const meta = $metadataStore[name];
+      for (const [name, pose] of Object.entries(shownPoses)) {
+        const meta = shownFixtures[name];
         const from = layoutPositions[name];
         if (!meta?.position || !from) continue;
         const end = toPx(frame, beamEnd(meta.position, pose.aim, pose.floor));
@@ -575,7 +706,7 @@
   }
 
   function animLoop() {
-    draw($fixtureStore);
+    draw(viewingFile ? {} : $fixtureStore);
     animFrame = requestAnimationFrame(animLoop);
   }
 
@@ -598,7 +729,7 @@
         return {
           kind: "fixture",
           name,
-          fromTray: frame !== null && $metadataStore[name]?.position == null,
+          fromTray: frame !== null && shownFixtures[name]?.position == null,
         };
       }
     }
@@ -694,14 +825,14 @@
       ) {
         selection = [finished.name];
       }
-      computeLayout($metadataStore, $venueStore);
+      computeLayout(shownFixtures, shownVenue);
       return;
     }
     const activeFrame = frame;
     if (finished.kind === "focus") {
       if (!inPlot(focusPositions[finished.name])) {
         // Dropped off the stage: put it back where the file says.
-        computeLayout($metadataStore, $venueStore);
+        computeLayout(shownFixtures, shownVenue);
         return;
       }
       const [x, y] = toStage(activeFrame, focusPositions[finished.name]);
@@ -718,11 +849,11 @@
     if (!inPlot(dropped)) {
       // Dropped back in the tray, or off the stage: nothing changed. A
       // placed fixture cannot be un-placed from here; edit the file.
-      computeLayout($metadataStore, $venueStore);
+      computeLayout(shownFixtures, shownVenue);
       return;
     }
     const [x, y] = toStage(activeFrame, dropped);
-    const z = $metadataStore[finished.name]?.position?.[2] ?? DEFAULT_TRIM_M;
+    const z = shownFixtures[finished.name]?.position?.[2] ?? DEFAULT_TRIM_M;
     await persist((v) => {
       const fixture = v.fixtures[finished.name];
       if (fixture) fixture.position = [x, y, z];
@@ -732,11 +863,14 @@
   // --- Persistence: the venue file is the truth. Read it, change the one
   // thing, write it back; the server reloads the running venue and pushes
   // fresh metadata, which redraws everything from the file's numbers.
-  // Last write wins: two editors on the same venue (two tabs, or the web
-  // UI racing an MCP patch) can overwrite each other's latest change. A
-  // single operator designing a show is the case this serves.
+  // The write carries the file's version. A file plot is a snapshot, so its
+  // save must be against the version it was loaded at: if the file changed
+  // since (another tab, an edit by hand), nothing is written and the plot
+  // reloads for the user to reapply. The live plot re-reads just before it
+  // writes, so it only guards the gap between that read and the write, and
+  // retries once.
   async function persist(update: (venue: VenueData) => void): Promise<boolean> {
-    const meta = $venueStore;
+    const meta = shownVenue;
     if (!meta) return false;
     if (saving) {
       // Never silently: the caller's edit did not happen.
@@ -746,55 +880,85 @@
           values: { error: get(t)("stage.busy") },
         }),
       };
-      computeLayout($metadataStore, $venueStore);
+      computeLayout(shownFixtures, shownVenue);
       return false;
     }
     saving = true;
     saveMsg = null;
+    const file = viewingFile;
     try {
-      const { venue: current } = await fetchVenue(
-        meta.name,
-        meta.dir ?? undefined,
-      );
-      update(current);
-      await saveVenue(
-        meta.name,
-        {
-          // Keyed by name; the entries carry it too, but a lean server
-          // (or the e2e mock) may leave it out.
-          fixtures: Object.entries(current.fixtures).map(([name, f]) => ({
-            ...f,
-            name: f.name ?? name,
-          })),
-          focus_points: current.focus_points ?? {},
-          source: current.source ?? null,
-        },
-        meta.dir ?? undefined,
-      );
-      // Optimistic: the broadcast metadata will confirm, but a client the
-      // engine cannot reach (no DMX engine running) should still see it.
-      const fixtures = { ...$metadataStore };
-      for (const [name, f] of Object.entries(current.fixtures)) {
-        if (fixtures[name]) {
-          fixtures[name] = {
-            ...fixtures[name],
-            position: f.position ?? null,
-            rotation: f.rotation ?? null,
-          };
+      for (let attempt = 0; ; attempt++) {
+        const { venue: current, version: fresh } = await fetchVenue(
+          meta.name,
+          meta.dir ?? undefined,
+        );
+        if (file && fileVersion && fresh && fileVersion !== fresh) {
+          throw new ConflictError("", fresh);
+        }
+        update(current);
+        try {
+          const saved = await saveVenue(
+            meta.name,
+            {
+              // Keyed by name; the entries carry it too, but a lean server
+              // (or the e2e mock) may leave it out.
+              fixtures: Object.entries(current.fixtures).map(([name, f]) => ({
+                ...f,
+                name: f.name ?? name,
+              })),
+              focus_points: current.focus_points ?? {},
+              source: current.source ?? null,
+            },
+            meta.dir ?? undefined,
+            (file ? fileVersion : null) ?? fresh ?? undefined,
+          );
+          if (file) {
+            fileVersion = saved;
+            fileView = { name: meta.name, venue: current, version: saved };
+          } else {
+            // Optimistic: the broadcast metadata will confirm, but a client
+            // the engine cannot reach (no DMX engine running) should still
+            // see it.
+            const fixtures = { ...shownFixtures };
+            for (const [name, f] of Object.entries(current.fixtures)) {
+              if (fixtures[name]) {
+                fixtures[name] = {
+                  ...fixtures[name],
+                  position: f.position ?? null,
+                  rotation: f.rotation ?? null,
+                };
+              }
+            }
+            metadataStore.set(fixtures);
+            venueStore.set({
+              ...meta,
+              focus_points: current.focus_points ?? {},
+            });
+          }
+          break;
+        } catch (e: unknown) {
+          if (!(e instanceof ConflictError) || file || attempt > 0) throw e;
+          // The live plot's edit is a change to one thing: apply it again to
+          // the file as it is now.
         }
       }
-      metadataStore.set(fixtures);
-      venueStore.set({ ...meta, focus_points: current.focus_points ?? {} });
       saveMsg = { ok: true, text: get(t)("stage.saved") };
       setTimeout(() => (saveMsg = null), 2000);
       return true;
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : String(e);
-      saveMsg = {
-        ok: false,
-        text: get(t)("stage.saveFailed", { values: { error: message } }),
-      };
-      computeLayout($metadataStore, $venueStore);
+      if (e instanceof ConflictError) {
+        // Someone else changed the venue file: show it as it is now and
+        // ask for the change to be made again.
+        saveMsg = { ok: false, text: get(t)("stage.changedElsewhere") };
+        if (file) void loadFileView(meta.name);
+      } else {
+        const message = e instanceof Error ? e.message : String(e);
+        saveMsg = {
+          ok: false,
+          text: get(t)("stage.saveFailed", { values: { error: message } }),
+        };
+      }
+      computeLayout(shownFixtures, shownVenue);
       return false;
     } finally {
       saving = false;
@@ -862,7 +1026,7 @@
       // Move the discs now; the save redraws them from the file.
       for (const name of selection) {
         const at = layoutPositions[name];
-        if (at && $metadataStore[name]?.position) {
+        if (at && shownFixtures[name]?.position) {
           layoutPositions[name] = {
             x: at.x + dx * frame.scale,
             y: at.y - dy * frame.scale,
@@ -1055,7 +1219,7 @@
       // Abandoned mid-drag: put things back where the file says.
       drag = null;
       canvasEl!.style.cursor = "default";
-      if (frame) computeLayout($metadataStore, $venueStore);
+      if (frame) computeLayout(shownFixtures, shownVenue);
     }
   }
 
@@ -1079,7 +1243,7 @@
 
   // Recompute layout when metadata or the venue changes
   $effect(() => {
-    computeLayout($metadataStore, $venueStore);
+    computeLayout(shownFixtures, shownVenue);
     publishLayout();
   });
 </script>
@@ -1091,22 +1255,29 @@
     <div>
       <div class="overline">{$t("stage.title")}</div>
       <div class="stage-card__title">
-        {#if editable && venue}
+        {#if editable && venue && viewingFile}
+          <span data-testid="stage-venue-label"
+            >{$t("stage.venueFileNotLive", {
+              values: { name: venue.name },
+            })}</span
+          >
+          · {Object.keys(shownFixtures).length} fixtures
+        {:else if editable && venue}
           <span data-testid="stage-venue-label"
             >{$t("stage.currentVenueLive", {
               values: { name: venue.name },
             })}</span
           >
-          · {Object.keys($metadataStore).length} fixtures
+          · {Object.keys(shownFixtures).length} fixtures
         {:else}
-          {$t("stage.title")} · {Object.keys($metadataStore).length} fixtures
+          {$t("stage.title")} · {Object.keys(shownFixtures).length} fixtures
         {/if}
         {#if geometryMode}
           <span class="stage-card__placed">
             · {$t("stage.placed", {
               values: {
                 placed: placedCount,
-                total: Object.keys($metadataStore).length,
+                total: Object.keys(shownFixtures).length,
               },
             })}
           </span>
@@ -1122,7 +1293,7 @@
           {saveMsg.text}
         </span>
       {/if}
-      {#if $reloadStore}
+      {#if $reloadStore && !viewingFile}
         <span
           class="badge stage-card__reload"
           class:stage-card__reload--error={$reloadStore.status === "error"}
@@ -1152,7 +1323,20 @@
       {/if}
     </div>
   </header>
-  {#if editable && !venue}
+  {#if viewingFile && venue}
+    <p class="stage-card__no-venue" data-testid="stage-file-hint">
+      {$t("stage.venueFileHint")}
+    </p>
+  {/if}
+  {#if editable && !venue && viewingFile}
+    <p
+      class="stage-card__no-venue"
+      class:stage-card__no-venue--error={!!fileError}
+      data-testid="stage-file-loading"
+    >
+      {fileError || $t("common.loading")}
+    </p>
+  {:else if editable && !venue}
     <p class="stage-card__no-venue" data-testid="stage-no-venue">
       {$t("stage.noCurrentVenue")}
     </p>
@@ -1191,6 +1375,9 @@
           {persist}
           {saving}
           {fixtureTypesDir}
+          fixtures={shownFixtures}
+          venue={shownVenue}
+          live={!viewingFile}
         />
       {/if}
     </div>
@@ -1316,6 +1503,9 @@
     margin: 16px 20px;
     color: var(--nc-fg-3);
     font-size: 14px;
+  }
+  .stage-card__no-venue--error {
+    color: var(--text-danger);
   }
   .stage-card__caption {
     position: absolute;

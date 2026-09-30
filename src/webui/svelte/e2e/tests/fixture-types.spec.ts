@@ -304,7 +304,7 @@ test.describe("Fixture Types Management", () => {
     // A type the panel could not list was also missing from this dropdown,
     // which is where a venue's fixtures pick one.
     await page.goto("/#/lighting/venues");
-    await page.locator(".item-card").first().click();
+    await page.locator('[data-testid^="venue-edit-"]').first().click();
     await expect(page.locator(".editor-form")).toBeVisible();
     const options = page.locator(".editor-form select option");
     await expect(options.filter({ hasText: "pixelbrick" })).toHaveCount(1);

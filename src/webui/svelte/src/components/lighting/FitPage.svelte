@@ -17,6 +17,7 @@
   import { t, locale } from "svelte-i18n";
   import { get } from "svelte/store";
   import {
+    ConflictError,
     fetchLightingFit,
     fetchVenue,
     saveVenue,
@@ -64,6 +65,9 @@
   // follow-up: a reload sends both a reload and a metadata message.
   let inflight = false;
   let again = false;
+  /** The venue file's version the page was loaded at. */
+  let venueVersion: string | undefined;
+
   async function refresh() {
     if (inflight) {
       again = true;
@@ -74,6 +78,20 @@
       fit = await fetchLightingFit();
       error = null;
       settleSelection();
+      // The venue file's version as of what the page now shows: Apply saves
+      // against it, so a file changed since is not overwritten.
+      const shown = fit.venue?.name;
+      if (shown) {
+        fetchVenue(shown, get(venueStore)?.dir ?? undefined)
+          .then((r) => {
+            if (fit?.venue?.name === shown) venueVersion = r.version;
+          })
+          .catch(() => {
+            venueVersion = undefined;
+          });
+      } else {
+        venueVersion = undefined;
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -181,7 +199,10 @@
       // whole, so positions, rotations, focus points and provenance stay as
       // they are. The server reloads the venue after the save.
       const dir = get(venueStore)?.dir ?? undefined;
-      const { venue } = await fetchVenue(venueName, dir);
+      const { venue, version: fresh } = await fetchVenue(venueName, dir);
+      if (venueVersion && fresh && venueVersion !== fresh) {
+        throw new ConflictError("", fresh);
+      }
       const fixtures = Object.entries(venue.fixtures).map(([name, f]) => ({
         ...f,
         name: f.name ?? name,
@@ -195,6 +216,7 @@
           source: venue.source ?? null,
         },
         dir,
+        venueVersion ?? fresh,
       );
       tagMsg = {
         ok: true,
@@ -206,6 +228,15 @@
       picking = false;
       await refresh();
     } catch (e) {
+      if (e instanceof ConflictError) {
+        // The venue file changed since the page loaded: show it as it is
+        // now and leave the tagging to be done again.
+        tagMsg = { ok: false, text: $t("lighting.fit.changedElsewhere") };
+        selection = [];
+        picking = false;
+        await refresh();
+        return;
+      }
       tagMsg = {
         ok: false,
         text: $t("lighting.fit.tagFailed", {

@@ -73,14 +73,23 @@ test.describe("Venues Management", () => {
     await expect(page.locator("#venue-name")).toHaveValue("");
   });
 
-  test("clicking venue opens editor form", async ({ page }) => {
-    await page.locator(".item-card").first().click();
+  test("clicking a venue selects it for the plot and does not open the editor", async ({
+    page,
+  }) => {
+    const card = page.locator(".item-card").first();
+    await card.click();
+    await expect(card).toHaveClass(/item-card--selected/);
+    await expect(page.locator(".editor-form")).not.toBeVisible();
+  });
+
+  test("the Edit button opens the editor form", async ({ page }) => {
+    await page.locator('[data-testid^="venue-edit-"]').first().click();
     await expect(page.locator(".editor-form")).toBeVisible();
     await expect(page.locator("#venue-name")).toBeVisible();
   });
 
   test("Add Fixture adds a fixture row", async ({ page }) => {
-    await page.locator(".item-card").first().click();
+    await page.locator('[data-testid^="venue-edit-"]').first().click();
     await expect(page.locator(".editor-form")).toBeVisible();
     const initialCount = await page.locator(".venue-fixture-card").count();
     await page.getByRole("button", { name: "Add Fixture" }).click();
@@ -90,7 +99,7 @@ test.describe("Venues Management", () => {
   });
 
   test("saving venue calls PUT API", async ({ page }) => {
-    await page.locator(".item-card").first().click();
+    await page.locator('[data-testid^="venue-edit-"]').first().click();
     await expect(page.locator(".editor-form")).toBeVisible();
 
     const requestPromise = page.waitForRequest(
@@ -105,7 +114,7 @@ test.describe("Venues Management", () => {
   });
 
   test("cancel button closes venue editor", async ({ page }) => {
-    await page.locator(".item-card").first().click();
+    await page.locator('[data-testid^="venue-edit-"]').first().click();
     await expect(page.locator(".editor-form")).toBeVisible();
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.locator(".editor-form")).not.toBeVisible();

@@ -24,7 +24,9 @@ import {
   putText,
   postText,
   apiError,
+  versionedError,
 } from "./rest";
+export { ConflictError } from "./rest";
 
 // Calibration types
 export interface NoiseFloorResult {
@@ -208,21 +210,28 @@ export async function fetchProfileFiles(): Promise<ProfileFileInfo[]> {
 
 export async function fetchProfileFile(
   filename: string,
-): Promise<{ profile: object; yaml: string }> {
+): Promise<{ profile: object; yaml: string; version?: string }> {
   const res = await get(`/profiles/${encodeURIComponent(filename)}`);
   if (!res.ok) throw await apiError(res, "Failed to fetch profile");
   return res.json();
 }
 
+/** Saves a profile file. `version` is the one the file was read at; a file
+ *  that has changed since is refused with a `ConflictError`. Returns the
+ *  file's new version. */
 export async function saveProfileFile(
   filename: string,
   profile: object,
-): Promise<void> {
+  version?: string,
+): Promise<string | null> {
   const res = await put(
     `/profiles/${encodeURIComponent(filename)}`,
     JSON.stringify(profile),
+    version ? { "If-Match": version } : undefined,
   );
-  if (!res.ok) throw await apiError(res, "Failed to save profile");
+  if (!res.ok) throw await versionedError(res, "Failed to save profile");
+  const body = await res.json().catch(() => ({}));
+  return body?.version ?? null;
 }
 
 export async function deleteProfileFile(filename: string): Promise<void> {
@@ -658,6 +667,8 @@ export async function downloadMvrExport(
 export interface AimPointsResult {
   created: { name: string; fixture: string; point: Vec3 }[];
   reloaded: boolean;
+  /** The venue file's version after the change. */
+  version?: string;
 }
 
 /** Adds a focus point for each unlinked fixed fixture, where its rest beam
@@ -665,6 +676,7 @@ export interface AimPointsResult {
 export async function addAimPoints(
   venue: string,
   dirs: MvrDirs = {},
+  version?: string,
 ): Promise<AimPointsResult> {
   const params = new URLSearchParams();
   if (dirs.venuesDir) params.set("venues_dir", dirs.venuesDir);
@@ -673,8 +685,10 @@ export async function addAimPoints(
   const query = params.toString();
   const res = await post(
     `/lighting/venues/${encodeURIComponent(venue)}/aim-points${query ? `?${query}` : ""}`,
+    undefined,
+    version ? { "If-Match": version } : undefined,
   );
-  if (!res.ok) throw await apiError(res, "Failed to add aim points");
+  if (!res.ok) throw await versionedError(res, "Failed to add aim points");
   return res.json();
 }
 
@@ -773,20 +787,27 @@ export interface LightingFileError {
  *  A directory is a set of independent files, so one bad file no longer empties
  *  the list — but it must still be reported, or the only signal is a venue
  *  quietly missing. */
-export async function fetchVenues(
-  dir?: string,
-): Promise<{ venues: Record<string, VenueData>; errors: LightingFileError[] }> {
+export async function fetchVenues(dir?: string): Promise<{
+  venues: Record<string, VenueData>;
+  errors: LightingFileError[];
+  /** Each venue file's version, to save against. */
+  versions: Record<string, string>;
+}> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(`/lighting/venues${params}`);
   if (!res.ok) throw await apiError(res, "Failed to fetch venues");
   const data = await res.json();
-  return { venues: data.venues ?? {}, errors: data.errors ?? [] };
+  return {
+    venues: data.venues ?? {},
+    errors: data.errors ?? [],
+    versions: data.versions ?? {},
+  };
 }
 
 export async function fetchVenue(
   name: string,
   dir?: string,
-): Promise<{ venue: VenueData; dsl: string }> {
+): Promise<{ venue: VenueData; dsl: string; version?: string }> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(
     `/lighting/venues/${encodeURIComponent(name)}${params}`,
@@ -811,13 +832,17 @@ export async function saveVenue(
     source?: VenueSource | null;
   },
   dir?: string,
-): Promise<void> {
+  version?: string,
+): Promise<string | null> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await put(
     `/lighting/venues/${encodeURIComponent(name)}${params}`,
     JSON.stringify(data),
+    version ? { "If-Match": version } : undefined,
   );
-  if (!res.ok) throw await apiError(res, "Failed to save venue");
+  if (!res.ok) throw await versionedError(res, "Failed to save venue");
+  const body = await res.json().catch(() => ({}));
+  return body?.version ?? null;
 }
 
 export async function deleteVenue(name: string, dir?: string): Promise<void> {

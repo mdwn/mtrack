@@ -29,8 +29,12 @@
     type FixtureTypeEntry,
     type VenueData,
   } from "../../lib/api/config";
-  import { metadataStore, poseStore, venueStore } from "../../lib/ws/stores";
-  import type { Vec3 } from "../../lib/ws/stores";
+  import { metadataStore, poseStore } from "../../lib/ws/stores";
+  import type {
+    FixtureMetadata,
+    Vec3,
+    VenueMetadata,
+  } from "../../lib/ws/stores";
   import {
     BEARINGS,
     MOVER_MOUNTINGS,
@@ -55,6 +59,14 @@
     saving: boolean;
     /** The fixture types directory override (a profile's setting). */
     fixtureTypesDir?: string;
+    /** The fixtures the plan shows: the live venue's metadata, or a venue
+     *  file's fixtures when the plan is a view of the file. */
+    fixtures: Record<string, FixtureMetadata>;
+    /** The venue the plan shows. */
+    venue: VenueMetadata | null;
+    /** Whether the plan is the running venue; a file view has no engine
+     *  poses to refresh. */
+    live?: boolean;
   }
 
   let {
@@ -63,6 +75,9 @@
     persist,
     saving,
     fixtureTypesDir = "",
+    fixtures: plotFixtures,
+    venue: plotVenue,
+    live = true,
   }: Props = $props();
 
   // --- What the selection is made of
@@ -78,31 +93,29 @@
   });
   let typeNames = $derived(Object.keys(fixtureTypes).sort());
 
-  let allNames = $derived(Object.keys($metadataStore).sort());
-  let focusNames = $derived(
-    Object.keys($venueStore?.focus_points ?? {}).sort(),
-  );
+  let allNames = $derived(Object.keys(plotFixtures).sort());
+  let focusNames = $derived(Object.keys(plotVenue?.focus_points ?? {}).sort());
 
   /** A fixture the engine reports as able to pan or tilt is a mover; anything
    *  else aims only through its mounting. The metadata says so for every
    *  type, GDTF-referential ones included. */
   function isMover(name: string): boolean {
-    return $metadataStore[name]?.capabilities?.includes("pan_tilt") ?? false;
+    return plotFixtures[name]?.capabilities?.includes("pan_tilt") ?? false;
   }
 
-  let picked = $derived(selection.filter((n) => n in $metadataStore));
+  let picked = $derived(selection.filter((n) => n in plotFixtures));
   let movers = $derived(picked.filter(isMover));
   let fixed = $derived(picked.filter((n) => !isMover(n)));
-  let placed = $derived(picked.filter((n) => $metadataStore[n]?.position));
+  let placed = $derived(picked.filter((n) => plotFixtures[n]?.position));
   let single = $derived(picked.length === 1 ? picked[0] : null);
 
   let sharedType = $derived.by(() => {
-    const types = new Set(picked.map((n) => $metadataStore[n]?.type));
+    const types = new Set(picked.map((n) => plotFixtures[n]?.type));
     return types.size === 1 ? [...types][0] : null;
   });
   let sharedTags = $derived.by(() => {
     if (picked.length === 0) return [] as string[];
-    const [first, ...rest] = picked.map((n) => $metadataStore[n]?.tags ?? []);
+    const [first, ...rest] = picked.map((n) => plotFixtures[n]?.tags ?? []);
     return first.filter((tag) => rest.every((tags) => tags.includes(tag)));
   });
 
@@ -128,6 +141,7 @@
   /** The plan draws a fixed fixture's beam from the pose the engine pushes;
    *  until that arrives, draw it from the rotation just saved. */
   function refreshPoses(names: string[]) {
+    if (!live) return;
     const meta = get(metadataStore);
     poseStore.update((poses) => {
       const next = { ...poses };
@@ -268,7 +282,7 @@
 
   /** The rotations of the selection, or null where they differ. */
   let sharedRotation = $derived.by(() => {
-    const rots = picked.map((n) => $metadataStore[n]?.rotation ?? null);
+    const rots = picked.map((n) => plotFixtures[n]?.rotation ?? null);
     if (rots.length === 0) return null;
     const first = rots[0];
     return rots.every(
@@ -314,10 +328,10 @@
   $effect(() => {
     const name = single;
     fields = null;
-    const venue = $venueStore;
-    if (!name || !venue) return;
+    const shown = plotVenue;
+    if (!name || !shown) return;
     let stale = false;
-    fetchVenue(venue.name, venue.dir ?? undefined)
+    fetchVenue(shown.name, shown.dir ?? undefined)
       .then(({ venue: file }) => {
         const f = file.fixtures[name];
         if (stale || !f) return;
@@ -342,7 +356,7 @@
     const to = draft.name.trim();
     status = null;
     if (!to || !draft.fixture_type.trim()) return;
-    if (to !== from && to in $metadataStore) {
+    if (to !== from && to in plotFixtures) {
       status = {
         text: get(t)("venues.inspector.nameTaken", { values: { name: to } }),
         ok: false,
@@ -386,7 +400,7 @@
               onchange={() => toggle(name)}
             />
             <span class="inspector__name">{name}</span>
-            {#if !$metadataStore[name]?.position}
+            {#if !plotFixtures[name]?.position}
               <span class="inspector__dim"
                 >{$t("venues.inspector.unplaced")}</span
               >
