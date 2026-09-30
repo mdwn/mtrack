@@ -421,3 +421,30 @@ Rotating a whole selection as a body, snapping to scenery, and any change to
 the venue file format. Aiming through a GDTF rig's own geometry stays a
 `move` concern; a fixed fixture with a pitched lens is drawn where it really
 points, as Stage 3D already does.
+
+### 10.6 As built
+
+Where the build settled a point §10.1–§10.5 left open or got wrong:
+
+- **The inspector applies to the plot's venue,** the current one the engine
+  has loaded and the websocket describes. `VenuesPanel`'s editor still edits
+  any venue in the list, and creates and removes fixtures; it was not
+  replaced. One selected fixture shows the same fields there (name, type,
+  universe, channel, tags) with an **Apply**.
+- **Stage left is bearing −90,** toward +x, as the venue files' comments say
+  (+x is stage-left); stage right is 90, upstage 0, downstage 180.
+- **Mirror mirrors the aim.** Reflecting x also reflects the beam, so a
+  rotation `(rx, ry, rz)` becomes `(rx, −ry, −rz)` in the same save; the
+  perimeter's left side `(110, 0, −90)` becomes `(110, 0, 90)`. A fixture with
+  no rotation stays without one.
+- **Capabilities come from the metadata.** Each fixture in the websocket
+  metadata carries `capabilities` (`color`, `pan_tilt`, `strobe`, `cells`),
+  named as the fit endpoint names them. A fixture with `pan_tilt` is a mover,
+  so a GDTF-referential type, which lists no channels in the fixture-types
+  API, is still one.
+- **Plot fixes the build needed.** The plot redraws on a `ResizeObserver`,
+  because the inspector narrows it after the first layout. Focusing the plot
+  on a press uses `preventScroll` and reads the press position first, since
+  focusing scrolled the page and put the hit test off the fixture. A click
+  that does not move a fixture saves nothing, and arrow-key nudges are
+  debounced so a burst is one save.

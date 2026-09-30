@@ -83,12 +83,11 @@
     Object.keys($venueStore?.focus_points ?? {}).sort(),
   );
 
-  /** A fixture with pan or tilt channels is a mover; anything else (or a type
-   *  whose channels are not listed) aims only through its mounting. */
+  /** A fixture the engine reports as able to pan or tilt is a mover; anything
+   *  else aims only through its mounting. The metadata says so for every
+   *  type, GDTF-referential ones included. */
   function isMover(name: string): boolean {
-    const type = $metadataStore[name]?.type;
-    const channels = type ? fixtureTypes[type]?.fixture_type.channels : null;
-    return !!channels && ("pan" in channels || "tilt" in channels);
+    return $metadataStore[name]?.capabilities?.includes("pan_tilt") ?? false;
   }
 
   let picked = $derived(selection.filter((n) => n in $metadataStore));
@@ -182,6 +181,9 @@
       .map((n) => ({
         name: n,
         position: [...(venue.fixtures[n].position as Vec3)] as Vec3,
+        ...(venue.fixtures[n].rotation
+          ? { rotation: [...(venue.fixtures[n].rotation as Vec3)] as Vec3 }
+          : {}),
       }));
   }
 
@@ -190,7 +192,14 @@
       const out = fn(placedIn(venue, picked));
       return {
         changes: Object.fromEntries(
-          out.map((p) => [p.name, { position: p.position }]),
+          out.map((p) => [
+            p.name,
+            {
+              position: p.position,
+              // Mirroring turns the aim over too.
+              ...(p.rotation ? { rotation: p.rotation } : {}),
+            },
+          ]),
         ),
       };
     });

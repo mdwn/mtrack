@@ -28,6 +28,7 @@ import {
   alignOnLine,
   dominantAxis,
   mirrorAcrossCentre,
+  mirrorRotation,
   nudge,
   spaceEvenly,
   type Placed,
@@ -169,6 +170,31 @@ test.describe("arrange math", () => {
     expect(
       mirrorAcrossCentre([{ name: "m", position: [0, 1, 2] }])[0].position,
     ).toEqual([0, 1, 2]);
+  });
+
+  test("mirror reflects the aim: (rx, -ry, -rz)", () => {
+    const out = mirrorAcrossCentre([
+      { name: "left", position: [-6.1, 3.87, 0], rotation: [110, 0, -90] },
+      { name: "front", position: [-3.69, 0.01, 0], rotation: [110, 0, 0] },
+      { name: "tilted", position: [1, 1, 0], rotation: [30, 15, 45] },
+      { name: "bare", position: [2, 1, 0] },
+    ]);
+    expect(out[0].rotation).toEqual([110, 0, 90]);
+    expect(out[1].rotation).toEqual([110, 0, 0]);
+    expect(out[2].rotation).toEqual([30, -15, -45]);
+    // A fixture with no rotation stays without one.
+    expect("rotation" in out[3]).toBe(false);
+    // Mirroring twice is the identity.
+    expect(mirrorRotation(mirrorRotation([30, 15, 45]))).toEqual([30, 15, 45]);
+  });
+
+  test("a mirrored beam is the reflection of the original", () => {
+    const rot: [number, number, number] = [110, 20, -70];
+    const [x, y, z] = restAim(rot);
+    const m = restAim(mirrorRotation(rot));
+    expect(m[0]).toBeCloseTo(-x, 9);
+    expect(m[1]).toBeCloseTo(y, 9);
+    expect(m[2]).toBeCloseTo(z, 9);
   });
 
   test("nudge moves by the step without float dust", () => {

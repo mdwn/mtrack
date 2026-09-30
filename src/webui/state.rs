@@ -895,6 +895,12 @@ pub fn build_metadata_json(
                     // when the type has one; the 3D view draws a generic
                     // body without.
                     "rig": fi.rig,
+                    // What the fixture can do (`color`, `pan_tilt`, `strobe`,
+                    // `cells`), named as the fit endpoint names them; the
+                    // Venues inspector tells a mover from a fixed fixture by
+                    // it, whatever its type's channels look like.
+                    "capabilities": crate::lighting::fit::FitFixture::from_info(fi, &tags)
+                        .capability_names(),
                     // The cells of a pixel fixture, in the manufacturer's
                     // order, with their offsets in the fixture's frame:
                     // the plot draws one segment each.
@@ -1776,6 +1782,22 @@ metronome: {}
         assert_eq!(cells[0]["offset"], json!([-0.3, 0.0, 0.0]));
         assert_eq!(cells[1]["name"], "2");
         assert_eq!(cells[1]["offset"], json!([0.3, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn build_metadata_json_carries_capabilities() {
+        let fixture_dsl = "fixture_type \"Head\" {\n  channel \"pan\" @ 1\n  channel \"tilt\" @ 2\n  channel \"red\" @ 3\n  channel \"green\" @ 4\n  channel \"blue\" @ 5\n}\nfixture_type \"Dim\" {\n  channel \"dimmer\" @ 1\n}\n";
+        let venue_dsl =
+            "venue \"v\" {\n  fixture \"head\" Head @ 1:1\n  fixture \"dim\" Dim @ 1:20\n}\n";
+        let (system, _dir) = create_test_lighting_system_fixture(fixture_dsl, venue_dsl, "v");
+        let json = build_metadata_json(Some(&Arc::new(parking_lot::Mutex::new(system))));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            value["fixtures"]["head"]["capabilities"],
+            json!(["color", "pan_tilt"])
+        );
+        assert_eq!(value["fixtures"]["dim"]["capabilities"], json!([]));
     }
 
     #[test]

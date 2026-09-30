@@ -458,8 +458,16 @@ export const FIT = {
 export const METADATA_STATE = {
   type: "metadata",
   fixtures: {
-    "front-left": { tags: ["front", "left"], type: "par" },
-    "front-right": { tags: ["front", "right"], type: "par" },
+    "front-left": {
+      tags: ["front", "left"],
+      type: "par",
+      capabilities: ["color"],
+    },
+    "front-right": {
+      tags: ["front", "right"],
+      type: "par",
+      capabilities: ["color"],
+    },
   },
 };
 

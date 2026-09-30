@@ -88,6 +88,8 @@ const MOVER: FixtureBody = {
 const FIXTURE_TYPES = {
   brick: channels({ red: 1, green: 2, blue: 3 }),
   mover: channels({ pan: 1, tilt: 3, dimmer: 5 }),
+  // A GDTF-referential type lists no channels of its own.
+  gdtfmover: { ...channels({}), referential: true },
 };
 
 function channels(ch: Record<string, number>) {
@@ -172,6 +174,9 @@ async function open(page: Page, venue: VenueBody = houseVenue()) {
         {
           tags: f.tags,
           type: f.fixture_type,
+          capabilities: f.fixture_type.endsWith("mover")
+            ? ["color", "pan_tilt"]
+            : ["color"],
           position: f.position,
           rotation: f.rotation,
         },
@@ -386,6 +391,23 @@ test.describe("Venues: arrange", () => {
     await expect.poll(() => puts.length).toBe(1);
     expect(saved(puts[0], "Brick1").position).toEqual([5.3, 3.87, 0]);
     expect(saved(puts[0], "Brick7").position).toEqual([-6.8, 1.325, 0]);
+  });
+
+  test("mirror across centre mirrors the aim too", async ({ page }) => {
+    const venue = houseVenue();
+    saved(venue, "Brick1").rotation = [110, 0, -90];
+    saved(venue, "Brick7").rotation = [110, 0, 90];
+    saved(venue, "Brick3").rotation = null;
+    const { puts } = await open(page, venue);
+    await selectByList(page, ["Brick1", "Brick7", "Brick3"]);
+    await inspector(page)
+      .getByRole("button", { name: "Mirror across centre" })
+      .click();
+    await expect.poll(() => puts.length).toBe(1);
+    expect(saved(puts[0], "Brick1").rotation).toEqual([110, 0, 90]);
+    expect(saved(puts[0], "Brick7").rotation).toEqual([110, 0, -90]);
+    // No rotation before, none after.
+    expect(saved(puts[0], "Brick3").rotation).toBeNull();
   });
 
   test("arrange needs two, and space evenly three", async ({ page }) => {
@@ -608,6 +630,21 @@ test.describe("Venues: aim", () => {
     await panel.getByRole("button", { name: "Hung, facing downstage" }).click();
     await expect.poll(() => puts.length).toBe(2);
     expect(saved(puts[1], "Mover1").rotation).toEqual([0, 0, 180]);
+  });
+
+  test("a mover of a GDTF-referential type still gets the mountings", async ({
+    page,
+  }) => {
+    const gdtf = { ...MOVER, name: "Gdtf1", fixture_type: "gdtfmover" };
+    const { puts } = await open(page, houseVenue([gdtf]));
+    await selectByList(page, ["Gdtf1"]);
+    const panel = inspector(page);
+    await expect(
+      panel.getByRole("button", { name: "Face this way" }),
+    ).toHaveCount(0);
+    await panel.getByRole("button", { name: "Standing on the deck" }).click();
+    await expect.poll(() => puts.length).toBe(1);
+    expect(saved(puts[0], "Gdtf1").rotation).toEqual([180, 0, 0]);
   });
 
   test("a mixed selection aims the fixed ones and mounts the movers", async ({

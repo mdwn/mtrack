@@ -24,6 +24,9 @@ export type Vec3 = [number, number, number];
 export interface Placed {
   name: string;
   position: Vec3;
+  /** Mounting rotation in degrees, when the fixture has one. Only mirroring
+   *  changes it. */
+  rotation?: Vec3;
 }
 
 const mm = (v: number): number => {
@@ -76,11 +79,22 @@ export function spaceEvenly(items: Placed[]): Placed[] {
   return out;
 }
 
-/** Mirrors each fixture about the centre line x = 0. */
+/** A rotation reflected across x = 0: with M = diag(-1, 1, 1), the mounting
+ *  Rz·Ry·Rx becomes M·Rz·Ry·Rx·M = Rz(-z)·Ry(-y)·Rx(x), so `(rx, -ry, -rz)`. A
+ *  perimeter's left side (110, 0, -90) becomes (110, 0, 90). */
+export function mirrorRotation(rotation: Vec3): Vec3 {
+  const flip = (v: number) => (v === 0 ? 0 : -v);
+  return [rotation[0], flip(rotation[1]), flip(rotation[2])];
+}
+
+/** Mirrors each fixture about the centre line x = 0, and its aim with it: a
+ *  fixture that had a rotation gets the reflected one, one without stays
+ *  without. */
 export function mirrorAcrossCentre(items: Placed[]): Placed[] {
   return items.map((p) => ({
     name: p.name,
     position: [mm(-p.position[0]), p.position[1], p.position[2]],
+    ...(p.rotation ? { rotation: mirrorRotation(p.rotation) } : {}),
   }));
 }
 
