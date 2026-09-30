@@ -125,7 +125,12 @@
             {$t(`lighting.hub.state.${check.state}`)}
           </span>
           <p class="check__summary">
-            {$t(check.summary.key, { values: check.summary.params })}
+            {#each check.summary as part, i (i)}
+              {#if i > 0}
+                <span aria-hidden="true"> · </span>
+              {/if}
+              <span>{$t(part.key, { values: part.params })}</span>
+            {/each}
           </p>
         </li>
       {/each}
@@ -173,12 +178,7 @@
     </section>
   {/if}
 
-  <section class="hub__stage" aria-labelledby="hub-stage-title">
-    <h2 id="hub-stage-title" class="hub__section-title">
-      {$t("lighting.hub.live")}
-    </h2>
-    <StageView />
-  </section>
+  <StageView />
 </div>
 
 <style>
@@ -294,8 +294,7 @@
     overflow-wrap: anywhere;
   }
 
-  .hub__attention,
-  .hub__stage {
+  .hub__attention {
     background: var(--card-bg);
     border: 1px solid var(--card-border);
     border-radius: var(--nc-radius-md);
@@ -371,8 +370,7 @@
     .hub__strip {
       grid-template-columns: 1fr;
     }
-    .hub__attention,
-    .hub__stage {
+    .hub__attention {
       padding: 12px 14px;
     }
   }

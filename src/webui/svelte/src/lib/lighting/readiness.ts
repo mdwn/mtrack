@@ -73,51 +73,68 @@ export interface Finding {
 export interface Check {
   key: CheckKey;
   state: CheckState;
-  /** The one-line summary the card shows. */
-  summary: Msg;
+  /** The card's one-line summary, as parts shown side by side: a check that
+   *  mixes severities says how many of each. */
+  summary: Msg[];
   findings: Finding[];
-  /** Findings that count towards the card's number (everything but notes). */
-  count: number;
 }
 
 /** Lint kinds that stop a cue doing what it says: the Shows check needs
  *  attention for these. */
 const SHOW_BREAKING_KINDS = new Set(["capability-gap", "unbound-focus-point"]);
 
-/** Lint kinds another check already reports, so listing them under the song
- *  as well would say everything twice. */
-const COVERED_ELSEWHERE_KINDS = new Set([
-  "empty-group",
-  "unconfigured-universe",
-]);
+/** Lint kinds the Groups check already reports, so listing them under the
+ *  song as well would say everything twice. (Venue-level coverage is not in a
+ *  song's warnings at all; the Output section carries it.) */
+const COVERED_ELSEWHERE_KINDS = new Set(["empty-group"]);
 
-const SEVERITY_ORDER: Finding["severity"][] = [
-  "blocked",
-  "attention",
-  "unknown",
-];
+function count(findings: Finding[], severity: Finding["severity"]): number {
+  return findings.filter((f) => f.severity === severity).length;
+}
 
 function stateOf(findings: Finding[]): CheckState {
-  for (const s of SEVERITY_ORDER) {
-    if (findings.some((f) => f.severity === s)) return s as CheckState;
-  }
+  if (count(findings, "blocked") > 0) return "blocked";
+  if (count(findings, "attention") > 0) return "attention";
+  if (count(findings, "unknown") > 0) return "unknown";
   return "ready";
 }
 
+/** Builds a check from its findings. `blockedKey` words the blocking count
+ *  (a plural message taking `count`). */
 function finish(
   key: CheckKey,
   findings: Finding[],
-  readySummary: Msg,
-  problemSummary: (count: number) => Msg,
+  ready: Msg,
+  blockedKey = "lighting.hub.summary.blocked",
 ): Check {
-  const count = findings.filter((f) => f.severity !== "note").length;
-  const state = stateOf(findings);
+  const blocked = count(findings, "blocked");
+  const attention = count(findings, "attention");
+  const summary: Msg[] = [];
+  if (blocked > 0)
+    summary.push({ key: blockedKey, params: { count: blocked } });
+  if (attention > 0) {
+    summary.push({
+      key: "lighting.hub.summary.attention",
+      params: { count: attention },
+    });
+  }
+  if (summary.length === 0) {
+    summary.push(
+      count(findings, "unknown") > 0
+        ? { key: "lighting.hub.summary.unknown" }
+        : ready,
+    );
+  }
+  return { key, state: stateOf(findings), findings, summary };
+}
+
+/** A check that cannot be evaluated, and why. */
+function cannot(key: CheckKey, why: string): Check {
   return {
     key,
-    state,
-    findings,
-    count,
-    summary: state === "ready" ? readySummary : problemSummary(count),
+    state: "unknown",
+    findings: [],
+    summary: [{ key: why }],
   };
 }
 
@@ -139,6 +156,51 @@ export interface EvaluateOptions {
   profileName: string | null;
 }
 
+/** The Shows check. It needs no venue or output: a show that does not load is
+ *  broken on a laptop with no DMX too, which is where shows are written. */
+function showsCheck(r: Readiness): Check {
+  const findings: Finding[] = [];
+  for (const show of r.shows) {
+    const href = songLightingHref(show.song);
+    if (show.error) {
+      findings.push({
+        severity: "blocked",
+        msg: {
+          key: "lighting.hub.finding.showError",
+          params: { song: show.song, detail: show.error },
+        },
+        href,
+        linkKey: "lighting.hub.fix.song",
+        song: show.song,
+      });
+    }
+    for (const w of show.warnings) {
+      if (COVERED_ELSEWHERE_KINDS.has(w.kind)) continue;
+      findings.push({
+        severity: SHOW_BREAKING_KINDS.has(w.kind) ? "attention" : "note",
+        msg: {
+          key: "lighting.hub.finding.lint",
+          params: { detail: w.message },
+        },
+        href,
+        linkKey: "lighting.hub.fix.song",
+        song: show.song,
+      });
+    }
+  }
+  return finish(
+    "shows",
+    findings,
+    r.shows.length === 0
+      ? { key: "lighting.hub.summary.showsNone" }
+      : {
+          key: "lighting.hub.summary.showsReady",
+          params: { count: r.shows.length },
+        },
+    "lighting.hub.summary.showsBlocked",
+  );
+}
+
 /** The five checks, in the order a show needs them. */
 export function evaluateReadiness(
   r: Readiness,
@@ -151,46 +213,36 @@ export function evaluateReadiness(
     ? `#/lighting/groups?profile=${encodeURIComponent(profileName)}`
     : "#/lighting/groups";
 
+  const shows = showsCheck(r);
+
   if (!r.dmx) {
-    // No DMX on this profile: there is no lighting system to ask about, so
-    // only the output is known, and it is known to be missing.
-    const needsDmx = (key: CheckKey): Check => ({
-      key,
-      state: "unknown",
-      count: 0,
-      findings: [],
-      summary: { key: "lighting.hub.summary.needsDmx" },
-    });
-    return CHECK_ORDER.map((key) =>
-      key === "output"
-        ? finish(
-            "output",
-            [
-              {
-                severity: "blocked",
-                msg: { key: "lighting.hub.finding.noDmx" },
-                href: configHref,
-                linkKey: "lighting.hub.fix.config",
-              },
-            ],
-            { key: "lighting.hub.summary.needsDmx" },
-            (count) => ({
-              key: "lighting.hub.summary.blocked",
-              params: { count },
-            }),
-          )
-        : needsDmx(key),
-    );
+    // No DMX on this profile: no lighting system exists to ask about, so the
+    // venue-shaped checks cannot run and the output is known to be missing.
+    // The shows still can be.
+    const noDmx = "lighting.hub.summary.noDmx";
+    return [
+      cannot("fixtures", noDmx),
+      cannot("venue", noDmx),
+      cannot("groups", noDmx),
+      shows,
+      finish(
+        "output",
+        [
+          {
+            severity: "blocked",
+            msg: { key: "lighting.hub.finding.noDmx" },
+            href: configHref,
+            linkKey: "lighting.hub.fix.config",
+          },
+        ],
+        { key: noDmx },
+      ),
+    ];
   }
 
   const venue = r.venue;
-  const needsVenue = (key: CheckKey): Check => ({
-    key,
-    state: "unknown",
-    count: 0,
-    findings: [],
-    summary: { key: "lighting.hub.summary.needsVenue" },
-  });
+  const needsVenue = (key: CheckKey) =>
+    cannot(key, "lighting.hub.summary.needsVenue");
 
   // Fixture types.
   const fixtures: Check = venue
@@ -209,7 +261,6 @@ export function evaluateReadiness(
           key: "lighting.hub.summary.typesReady",
           params: { count: r.fixture_types.in_use.length },
         },
-        (count) => ({ key: "lighting.hub.summary.blocked", params: { count } }),
       )
     : needsVenue("fixtures");
 
@@ -249,12 +300,6 @@ export function evaluateReadiness(
           },
         }
       : { key: "lighting.hub.summary.needsVenue" },
-    (count) => ({
-      key: venue
-        ? "lighting.hub.summary.attention"
-        : "lighting.hub.summary.blocked",
-      params: { count },
-    }),
   );
 
   // Groups.
@@ -282,59 +327,8 @@ export function evaluateReadiness(
               key: "lighting.hub.summary.groupsReady",
               params: { count: r.groups.length },
             },
-        (count) => ({
-          key: "lighting.hub.summary.attention",
-          params: { count },
-        }),
       )
     : needsVenue("groups");
-
-  // Shows.
-  const showFindings: Finding[] = [];
-  for (const show of r.shows) {
-    const href = songLightingHref(show.song);
-    if (show.error) {
-      showFindings.push({
-        severity: "blocked",
-        msg: {
-          key: "lighting.hub.finding.showError",
-          params: { song: show.song, detail: show.error },
-        },
-        href,
-        linkKey: "lighting.hub.fix.song",
-        song: show.song,
-      });
-    }
-    for (const w of show.warnings) {
-      if (COVERED_ELSEWHERE_KINDS.has(w.kind)) continue;
-      showFindings.push({
-        severity: SHOW_BREAKING_KINDS.has(w.kind) ? "attention" : "note",
-        msg: {
-          key: "lighting.hub.finding.lint",
-          params: { kind: w.kind, detail: w.message },
-        },
-        href,
-        linkKey: "lighting.hub.fix.song",
-        song: show.song,
-      });
-    }
-  }
-  const shows = finish(
-    "shows",
-    showFindings,
-    r.shows.length === 0
-      ? { key: "lighting.hub.summary.showsNone" }
-      : {
-          key: "lighting.hub.summary.showsReady",
-          params: { count: r.shows.length },
-        },
-    (count) => ({
-      key: showFindings.some((f) => f.severity === "blocked")
-        ? "lighting.hub.summary.blocked"
-        : "lighting.hub.summary.attention",
-      params: { count },
-    }),
-  );
 
   // Output.
   let output: Check;
@@ -374,20 +368,10 @@ export function evaluateReadiness(
         });
       }
     }
-    output = finish(
-      "output",
-      findings,
-      {
-        key: "lighting.hub.summary.outputReady",
-        params: { count: r.output.universes.length },
-      },
-      (count) => ({
-        key: findings.some((f) => f.severity === "blocked")
-          ? "lighting.hub.summary.blocked"
-          : "lighting.hub.summary.unknown",
-        params: { count },
-      }),
-    );
+    output = finish("output", findings, {
+      key: "lighting.hub.summary.outputReady",
+      params: { count: r.output.universes.length },
+    });
   }
 
   return [fixtures, venueCheck, groups, shows, output];

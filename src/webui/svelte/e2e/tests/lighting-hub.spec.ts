@@ -93,6 +93,9 @@ test.describe("Lighting hub", () => {
     // The live stage is there, and it is a view, not an editor.
     await expect(page.locator(".stage-card")).toBeVisible();
     await expect(page.locator(".stage-card__add-focus")).toHaveCount(0);
+    // One heading for it: the stage card's own, not a wrapper's as well.
+    await expect(page.getByText("Live stage")).toHaveCount(0);
+    await expect(page.locator(".stage-card")).toHaveCount(1);
   });
 
   test("a fixture type that did not load blocks, with the reason and a link", async ({
@@ -296,7 +299,7 @@ test.describe("Lighting hub", () => {
     expect((await states(page)).slice(0, 4)).toEqual(Array(4).fill("ready"));
   });
 
-  test("a profile without DMX says so, and only the output is known", async ({
+  test("a profile without DMX says so, but its shows are still checked", async ({
     page,
   }) => {
     await routeReadiness(page, (r) => {
@@ -304,7 +307,14 @@ test.describe("Lighting hub", () => {
       r.venue = null;
       r.fixture_types = { in_use: [], unresolved: [] };
       r.groups = [];
-      r.shows = [];
+      r.shows = [
+        {
+          song: "Esaweg",
+          files: [],
+          error: "Effect 'static' requires a 'duration'",
+          warnings: [],
+        } as never,
+      ];
       r.output = { universes: [], unconfigured: [], olad: null };
     });
     await page.goto("/#/lighting");
@@ -312,9 +322,17 @@ test.describe("Lighting hub", () => {
       "unknown",
       "unknown",
       "unknown",
-      "unknown",
+      "blocked",
       "blocked",
     ]);
+    for (const c of ["fixtures", "venue", "groups"]) {
+      await expect(page.getByTestId(`check-${c}`)).toContainText(
+        "No DMX on this profile",
+      );
+    }
+    await expect(page.getByTestId("findings-shows")).toContainText(
+      "Esaweg does not load",
+    );
     await expect(page.getByTestId("findings-output")).toContainText(
       "This profile has no DMX output",
     );
@@ -323,6 +341,44 @@ test.describe("Lighting hub", () => {
         .getByTestId("findings-output")
         .getByRole("link", { name: "Open DMX settings" }),
     ).toHaveAttribute("href", "#/config/test-host/lighting");
+  });
+
+  test("the shows summary counts what won't load apart from what to check", async ({
+    page,
+  }) => {
+    await routeReadiness(page, (r) => {
+      r.shows = [
+        {
+          song: "Esaweg",
+          files: [],
+          error: "Effect 'static' requires a 'duration'",
+          warnings: [],
+        } as never,
+        {
+          song: "Devoured in Decay",
+          files: ["show.light"],
+          warnings: [
+            {
+              kind: "unbound-focus-point",
+              message:
+                "`move` on drummer aims at a focus point the venue lacks",
+            },
+          ],
+        },
+      ];
+    });
+    await page.goto("/#/lighting");
+    const card = page.getByTestId("check-shows");
+    await expect(card).toHaveAttribute("data-state", "blocked");
+    await expect(card).toContainText("1 song won't load");
+    await expect(card).toContainText("1 to check");
+    await expect(card).not.toContainText("problems stop it");
+    // The lint message is already a sentence: no raw code in front of it.
+    const findings = page.getByTestId("findings-shows");
+    await expect(findings).toContainText(
+      "aims at a focus point the venue lacks",
+    );
+    await expect(findings).not.toContainText("unbound-focus-point");
   });
 
   test("the hub refreshes when the venue reloads, not on a timer", async ({

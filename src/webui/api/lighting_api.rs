@@ -1075,17 +1075,14 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     use crate::lighting::readiness::{group_names, VenueFacts};
     use std::collections::BTreeSet;
 
-    let Some(dmx) = player.dmx_engine() else {
-        return json!({
-            "dmx": false,
-            "venue": null,
-            "fixture_types": {"in_use": [], "unresolved": []},
-            "groups": [],
-            "shows": [],
-            "output": {"universes": [], "unconfigured": [], "olad": null},
-        });
-    };
-    let configured = dmx.configured_universes();
+    // Shows are reported with or without DMX: a laptop with no DMX output is
+    // where shows are written, and a show that does not load is broken there
+    // too. Everything that needs a venue or an output is empty without one.
+    let dmx = player.dmx_engine();
+    let configured = dmx
+        .as_ref()
+        .map(|d| d.configured_universes())
+        .unwrap_or_default();
 
     // Every song with lighting, and the shows its files hold, sorted the way
     // MCP sorts them. These were parsed at song load with the song's own tempo
@@ -1116,7 +1113,10 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     let mut in_use: BTreeSet<String> = BTreeSet::new();
     let mut unresolved = Vec::new();
     let mut used_universes: BTreeSet<u16> = BTreeSet::new();
-    if let Some(system) = dmx.broadcast_handles().lighting_system {
+    if let Some(system) = dmx
+        .as_ref()
+        .and_then(|d| d.broadcast_handles().lighting_system)
+    {
         let mut guard = system.lock();
         facts = VenueFacts::collect(&mut guard, &names, Some(&configured));
         if let Some(current) = guard.get_current_venue() {
@@ -1147,6 +1147,7 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
 
     let groups: Vec<serde_json::Value> = names
         .iter()
+        .filter(|_| dmx.is_some())
         .map(|name| {
             let songs_using: Vec<&str> = with_lighting
                 .iter()
@@ -1167,6 +1168,9 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
             let warnings: Vec<serde_json::Value> = facts
                 .lint(shows, Some(song))
                 .into_iter()
+                // Venue-level: the Output section already carries it, and
+                // repeating it under every song would say it once per song.
+                .filter(|w| w.kind != "unconfigured-universe")
                 .map(|w| json!({"kind": w.kind, "message": w.message}))
                 .collect();
             let files: Vec<String> = song
@@ -1218,15 +1222,16 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
             .filter(|u| configured.contains(u))
             .collect()
     };
-    let olad = if to_probe.is_empty() {
-        serde_json::Value::Null
-    } else {
-        let report = crate::dmx::patch_check::probe_universes(dmx.ola_http_port(), &to_probe);
-        json!({"reachable": report.reachable, "unpatched": report.unpatched})
+    let olad = match &dmx {
+        Some(dmx) if !to_probe.is_empty() => {
+            let report = crate::dmx::patch_check::probe_universes(dmx.ola_http_port(), &to_probe);
+            json!({"reachable": report.reachable, "unpatched": report.unpatched})
+        }
+        _ => serde_json::Value::Null,
     };
 
     json!({
-        "dmx": true,
+        "dmx": dmx.is_some(),
         "venue": venue,
         "fixture_types": {"in_use": in_use, "unresolved": unresolved},
         "groups": groups,
@@ -4469,6 +4474,31 @@ show "test" {
         _project: tempfile::TempDir,
     }
 
+    /// Writes one song directory per (name, show file body) and loads them.
+    fn song_registry(
+        root: &std::path::Path,
+        songs: &[(&str, &str)],
+    ) -> std::sync::Arc<crate::songs::Songs> {
+        let songs_dir = root.join("songs");
+        std::fs::create_dir_all(&songs_dir).unwrap();
+        for (name, show) in songs {
+            let dir = songs_dir.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            crate::testutil::write_wav(dir.join("kick.wav"), vec![vec![0i32; 4410]], 44100)
+                .unwrap();
+            std::fs::write(dir.join("show.light"), show).unwrap();
+            std::fs::write(
+                dir.join("song.yaml"),
+                format!(
+                    "kind: song\nname: {name}\ntracks:\n  - name: kick\n    file: kick.wav\n\
+                     lighting:\n  - file: show.light\n"
+                ),
+            )
+            .unwrap();
+        }
+        crate::songs::get_all_songs(&songs_dir).unwrap()
+    }
+
     /// `venue` is the venue file's body (`None` for no current venue), `songs`
     /// are (directory, show file body) pairs, `universes` the configured
     /// outputs. olad's web server is pointed at a port nothing listens on so
@@ -4489,24 +4519,7 @@ show "test" {
         if let Some(venue) = venue {
             std::fs::write(root.join("venues/v.light"), venue).unwrap();
         }
-        let songs_dir = root.join("songs");
-        for (name, show) in songs {
-            let dir = songs_dir.join(name);
-            std::fs::create_dir_all(&dir).unwrap();
-            crate::testutil::write_wav(dir.join("kick.wav"), vec![vec![0i32; 4410]], 44100)
-                .unwrap();
-            std::fs::write(dir.join("show.light"), show).unwrap();
-            std::fs::write(
-                dir.join("song.yaml"),
-                format!(
-                    "kind: song\nname: {name}\ntracks:\n  - name: kick\n    file: kick.wav\n\
-                     lighting:\n  - file: show.light\n"
-                ),
-            )
-            .unwrap();
-        }
-        let songs = crate::songs::get_all_songs(&songs_dir)
-            .unwrap_or_else(|_| std::sync::Arc::new(crate::songs::Songs::new(Default::default())));
+        let songs = song_registry(root, songs);
 
         let dead_port = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -4563,15 +4576,43 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn readiness_without_dmx_is_just_that() {
-        let (state, _dir) = test_state();
+    async fn readiness_without_dmx_has_no_venue_but_still_reports_shows() {
+        let project = tempfile::tempdir().unwrap();
+        let songs = song_registry(
+            project.path(),
+            &[
+                (
+                    "Good",
+                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n}\n",
+                ),
+                // No `duration`: the song does not load, DMX or not.
+                (
+                    "Bad",
+                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\"\n}\n",
+                ),
+            ],
+        );
+        let (state, _dir) = test_state_with_registry(songs);
         let report = readiness(state).await;
         assert_eq!(report["dmx"], json!(false));
         assert_eq!(report["venue"], json!(null));
         assert_eq!(report["groups"], json!([]));
-        assert_eq!(report["shows"], json!([]));
         assert_eq!(report["output"]["olad"], json!(null));
         assert_eq!(report["fixture_types"]["unresolved"], json!([]));
+
+        let shows = report["shows"].as_array().unwrap();
+        let bad = shows.iter().find(|s| s["song"] == json!("Bad")).unwrap();
+        assert!(bad["error"].as_str().unwrap().contains("duration"));
+        let good = shows.iter().find(|s| s["song"] == json!("Good")).unwrap();
+        assert!(good.get("error").is_none());
+        // Nothing that needs a venue is guessed at without one.
+        for w in good["warnings"].as_array().unwrap() {
+            assert!(
+                !["empty-group", "unconfigured-universe", "capability-gap"]
+                    .contains(&w["kind"].as_str().unwrap()),
+                "{w}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -4655,12 +4696,22 @@ show "test" {
         let rig = rig(
             &[("par.light", TYPE_PAR)],
             Some("venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"B\" Par @ 4:1\n}\n"),
-            &[],
+            &[(
+                "Song",
+                "show \"S\" {\n    @00:00.000\n    all: static color: \"red\", duration: 2s\n}\n",
+            )],
             &[1],
         );
         let report = readiness(rig.state.clone()).await;
         assert_eq!(report["output"]["universes"], json!([1, 4]));
         assert_eq!(report["output"]["unconfigured"], json!([4]));
+        // Output carries it; no song repeats it.
+        assert_eq!(report["shows"].as_array().unwrap().len(), 1);
+        for show in report["shows"].as_array().unwrap() {
+            for w in show["warnings"].as_array().unwrap() {
+                assert_ne!(w["kind"], json!("unconfigured-universe"), "{report}");
+            }
+        }
     }
 
     #[tokio::test]

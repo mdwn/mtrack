@@ -174,6 +174,14 @@ server does not answer). Lint's advisory kinds (`unused-parameter`,
 `tempo-grid-mismatch`, `past-end-of-song` …) are listed under the song but do
 not change a check's state.
 
+When a check's input is missing it is **unknown**, not ready: fixture types,
+groups and output without a venue, and the venue-shaped checks without DMX.
+The venue check itself is **blocked** when none is selected. An unresolved
+fixture type is **blocked**, not merely needs attention, because the engine
+registers a venue's fixtures all or nothing: one fixture whose type did not
+load stops the whole venue registering. A check that mixes severities says
+how many of each ("1 song won't load, 1 to check").
+
 ### 8.2 `GET /api/lighting/readiness`
 
 Facts, not verdicts — the UI turns them into the states above, so wording and
@@ -192,12 +200,23 @@ rules live in one place and are translatable.
 ```
 
 - `venue` is `null` when none is current; `dmx` is `false` when the running
-  profile has no DMX, and the other sections are then empty.
-- `shows` lists every song with lighting, loaded or not; `error` is present
-  only when a file does not parse.
-- `olad` is `null` without DMX; `reachable: false` when its web server does not
-  answer within the probe's deadline (the same two seconds as the startup
-  probe).
+  profile has no DMX. Without DMX, `venue`, `fixture_types`, `groups` and
+  `output` are empty; `shows` is not (see below).
+- `shows` lists every song with lighting, with or without DMX: a show that
+  does not load is as broken on a laptop as on the rig, and a laptop is where
+  shows are written. Without a venue only the lint checks that need none run.
+  A song whose show does not parse never loads (`Song::new` fails as a whole),
+  so it is not among the loaded songs: its entry comes from the player's
+  `SongLoadFailure`, with the parser's own message as `error` and `files: []`.
+- A song's `warnings` do not include `unconfigured-universe`: that finding is
+  about the venue, not the song, and the `output` section carries it. (MCP's
+  `validate_lighting` still reports it, since it validates one show.)
+- `fixture_types.in_use` lists only the types that loaded.
+- `olad` is `null` without DMX, and also when there is nothing to ask about (no
+  venue, no configured universes). The probe covers the universes the venue's
+  fixtures use that have a configured output, else every configured universe.
+  `reachable: false` when its web server does not answer within the probe's
+  deadline (the same two seconds as the startup probe).
 
 The lint context that MCP's `validate_lighting` builds (group counts and
 capabilities, focus points, universe coverage) moves into one function both
