@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Lighting has its own area in the web UI (#476–#486)**: a **Lighting** item in the navigation
+  gathers what was spread across Config, the dashboard, the CLI and MCP. Its **Overview** answers
+  *will my show reach the lights?* with five checks in the order a show needs them — fixture types,
+  venue, groups, shows, output — each ready, needing attention, blocked, or unknown, and a list of
+  everything that needs attention with a link to where it is fixed. **Fixture types** and
+  **Venues** edit the project's files; **Groups** edits a hardware profile's groups and current
+  venue, for the profile the player is running or one you pick; **3D** is Stage 3D. Config keeps the
+  DMX hardware and shows a summary with a link, so nothing has two editors.
+
+  **Fit shows** makes an imported venue work with the shows you have. It lists every group the
+  shows use and how many fixtures each finds, suggests which fixtures to tag and why ("the 11 MAC
+  Viper AirFX on the upstage truss can move and colour, which `movers` needs"), lets you place the
+  focus points the shows aim at, and adds the universes the venue uses to the profile — each
+  applied by you, never by an import. The same suggestion is available over MCP as
+  `suggest_group_tags`.
+
+  On **Venues**, select fixtures on the plan (click, shift-click, marquee) and **arrange** them —
+  align on a line, space evenly, mirror across the stage centre, nudge with the arrow keys — or
+  **aim** them: face a direction with a tilt, or aim at a focus point, and the rotation is written
+  for you; movers get their two standard mountings. Any venue in the list can be edited this way,
+  not only the current one. **Import an MVR** is a four-step wizard: the file, the stage origin
+  clicked on a plan of the file (with the deck's front centre suggested), a review of what the
+  import will do — including, on a re-import, which hand edits it would overwrite, each with a
+  **keep my edits** choice — and the import, which hands you to Fit shows. **Export an MVR**
+  downloads to the browser, says when pre-viz tools will show fixed fixtures aimed at the origin,
+  and offers to add an aim point per fixture.
+
+  Stage 3D gains a **Preview**: pick a song, scrub its timeline, and see the show at that moment
+  evaluated offline — nothing goes to the lights — with the effects active then, the fixtures the
+  show never touches, and the caveats that apply (colour-wheel fixtures shown white, beams that
+  miss the deck drawn a fixed length). Adding a fixture type from GDTF now says what each mode lets
+  shows do ("Set any colour", "Strobe, 0.4 to 25 flashes a second", "Dim, through colour; mode 11
+  adds a real dimmer"), which modes add what this one lacks, and how many addresses to reserve.
+
+  Every web edit of a venue patches the file instead of rewriting it, so comments and an import's
+  `# TODO` lines survive; two browser tabs editing the same venue or profile no longer overwrite
+  each other; and a locked player refuses every write while still answering Preview.
+
 - **Fixture types from GDTF (#422, #423, #425, #426, #441, #448, #462, #467, #470, #474)**: a
   fixture type can be built from a manufacturer's GDTF archive instead of a hand-written channel
   map. A type references one with `from gdtf("lighting/library/x.gdtf", mode "8: RGBS")` in a
@@ -17,7 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Import from wherever you work. `mtrack import-gdtf <file>` lists an archive's modes and `--mode`
   imports one; `list_gdtf_modes` and `import_gdtf` do the same over MCP; and the web UI's
-  fixture-types tab takes an upload, offers a mode picker, and reports the files written, the
+  Fixture types page takes an upload, offers a mode picker, and reports the files written, the
   resolved channels and every distillation warning. All three go through one importer, and nothing
   is written until the chosen mode distills. A mode's listed footprint counts every copy of a
   repeated section, so it is the one to patch by: the Astera PB15's four-pixel effect mode lists 21.
@@ -162,8 +200,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gains `capability-gap` (a cue none of the group's fixtures has the channels for) and
   `unconfigured-universe` (venue fixtures the active profile has no output for).
 
-- **Stage 3D (#443, #444, #446, #450, #468)**: the stage card's **3D** button opens the venue as a
-  room (`#/stage`): the deck with the audience edge, focus-point markers, an orbit camera with Front
+- **Stage 3D (#443, #444, #446, #450, #468)**: Lighting's **3D** page (also the dashboard stage
+  card's **3D** button) opens the venue as a room: the deck with the audience edge, focus-point
+  markers, an orbit camera with Front
   of house, Side and Top presets, a Labels toggle (off by default above 40 fixtures) and unplaced
   fixtures on a tray downstage. Fixtures are drawn from their GDTF — the archive's meshes when it
   ships them, its primitives with their sizes otherwise, a generic box with a 20° beam for a
