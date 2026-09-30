@@ -127,7 +127,7 @@
           <p class="check__summary">
             {#each check.summary as part, i (i)}
               {#if i > 0}
-                <span aria-hidden="true"> · </span>
+                <span class="check__sep" aria-hidden="true">·</span>
               {/if}
               <span>{$t(part.key, { values: part.params })}</span>
             {/each}
@@ -285,6 +285,9 @@
     height: 8px;
     border-radius: var(--nc-radius-pill);
     background: var(--check-color, var(--border));
+  }
+  .check__sep {
+    margin-inline: 0.35em;
   }
   .check__summary {
     grid-area: summary;
