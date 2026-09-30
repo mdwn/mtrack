@@ -259,6 +259,12 @@ pub struct ValidateLightingArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct SuggestGroupTagsArgs {
+    /// A group name some song's show targets (see `list_groups`).
+    pub group: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct EvaluateShowArgs {
     /// Song name as listed by `list_songs`. Alone, evaluates the song's
     /// registered lighting shows. Passed with `source`, supplies that song's
@@ -1666,6 +1672,53 @@ impl McpServer {
             "current_venue": guard.current_venue(),
             "venues": venues,
         })))
+    }
+
+    #[tool(description = "Suggest which venue fixtures should carry which tags \
+        so a group the songs' shows use finds fixtures. Returns the group's \
+        needs (`all_of`, `any_of`, `prefer` tags), what the shows ask of it \
+        (`wants`: move, color, strobe, cells), and — when the group finds no \
+        fixtures — a `suggestion` (the fixtures, the tags to add to them, and \
+        a structured `reason`: count, fixture type, where they hang, what they \
+        can do) plus `others`, the alternative clusters. With no fitting \
+        fixtures the group reports `unmet`: the wants nothing in the venue \
+        meets. Read-only: nothing is tagged until the venue is written. The \
+        web UI's Fit shows page offers exactly this suggestion.")]
+    async fn suggest_group_tags(
+        &self,
+        Parameters(args): Parameters<SuggestGroupTagsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let player = self.player.clone();
+        let report =
+            tokio::task::spawn_blocking(move || crate::lighting::fit::FitReport::gather(&player))
+                .await
+                .map_err(|e| McpError::internal_error(format!("fit task failed: {e}"), None))?;
+        if report.venue.is_none() {
+            return Err(McpError::invalid_params(
+                "no current venue is loaded, so there are no fixtures to tag",
+                None,
+            ));
+        }
+        let group = report
+            .groups
+            .iter()
+            .find(|g| g["name"] == json!(args.group))
+            .cloned()
+            .ok_or_else(|| {
+                let known: Vec<&str> = report
+                    .groups
+                    .iter()
+                    .filter_map(|g| g["name"].as_str())
+                    .collect();
+                McpError::invalid_params(
+                    format!(
+                        "no song's show targets a group named '{}'; groups the shows use: {known:?}",
+                        args.group
+                    ),
+                    None,
+                )
+            })?;
+        Ok(ok_json(group))
     }
 
     #[tool(description = "List every group name valid as a cue target. Groups \

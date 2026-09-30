@@ -82,6 +82,7 @@ test.describe("Lighting area: routes and navigation", () => {
     ["/#/lighting/fixtures", "Fixture types", /Lighting - Fixture types/],
     ["/#/lighting/venues", "Venues", /Lighting - Venues/],
     ["/#/lighting/groups", "Groups", /Lighting - Groups/],
+    ["/#/lighting/fit", "Fit shows", /Lighting - Fit shows/],
     ["/#/lighting/stage", "3D", /Lighting - 3D/],
   ] as const) {
     test(`${hash} renders with its tab current and its title`, async ({
@@ -100,7 +101,7 @@ test.describe("Lighting area: routes and navigation", () => {
   }) => {
     await page.goto("/#/lighting");
     const nav = page.getByRole("navigation", { name: "Lighting sections" });
-    await expect(nav.getByRole("link")).toHaveCount(5);
+    await expect(nav.getByRole("link")).toHaveCount(6);
     await nav.getByRole("link", { name: "Venues" }).focus();
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(/#\/lighting\/venues$/);

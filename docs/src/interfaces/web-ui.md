@@ -499,7 +499,7 @@ the dashboard's playlist dropdown.
 ## Lighting
 
 The **Lighting** item in the top navigation holds everything about lights, in one place. It has
-five pages, shown as tabs across the top. Each page has its own address, so you can bookmark it:
+six pages, shown as tabs across the top. Each page has its own address, so you can bookmark it:
 
 | Page | Address | What it holds |
 |---|---|---|
@@ -507,6 +507,7 @@ five pages, shown as tabs across the top. Each page has its own address, so you 
 | Fixture Types | `#/lighting/fixtures` | The kinds of fixture in your rig |
 | Venues | `#/lighting/venues` | Where fixtures sit, and the stage plot |
 | Groups | `#/lighting/groups` | Logical groups and the current venue, for one hardware profile |
+| Fit shows | `#/lighting/fit` | Fit your shows to the venue and the rig: tags, focus points, outputs |
 | 3D | `#/lighting/stage` | The venue as a room |
 
 Two kinds of state live here, and they are stored differently.
@@ -587,6 +588,41 @@ the tray is hung at 3 m; edit the venue file to correct its height.
 Directories, the current venue, inline fixtures and logical groups with their constraints. Pick
 the profile at the top. **Save** writes that profile; leaving the page with unsaved edits asks
 first.
+
+### Fit shows
+
+An imported venue arrives with no tags, so every group a show uses finds no fixtures; a console's
+focus points carry the console's names; and its universes have no output on this profile. The
+Overview says so, and its findings for groups, unbound focus points and outputs link here. Fit
+shows fixes them in one place, in three columns (stacked on a phone):
+
+- **Groups your shows use** lists every group any song's shows target, with the tags its
+  constraints need, how many fixtures it finds in the current venue and which songs use it.
+  Groups that find nothing come first. Select one to drive the other two columns.
+- **The plan** is the stage plot. A solid ring marks the fixtures the selected group finds; a
+  dashed ring marks the pending selection. Click a fixture to add it to the selection or take it
+  out.
+- **Fixes** starts with a **suggestion** for the selected group: the fixtures that can do what
+  the shows ask of it (a `move` needs pan or tilt, a colour cue colour channels, a `strobe` a
+  strobe channel, `per: cell` cells), grouped by fixture type and, when the venue places them,
+  by where they hang (deck, low rig or truss; downstage, midstage or upstage). The largest set is
+  the suggestion, with the reason in words; if nothing fits it says which need nothing meets.
+  **Apply** adds the group's tags to those fixtures in the venue file, keeping positions,
+  rotations, focus points and the MVR provenance, and the engine reloads the venue. **Pick
+  others** offers the other sets, or lets you choose fixtures by hand on the plan or from a list;
+  **Tag N fixtures** then applies the group's tags to your selection. Nothing is tagged without a
+  click.
+
+  Below that, **focus points your shows aim at** that the venue lacks each have **Place on
+  plan**: the next click on the plan creates a point with that name (pressing Enter on the
+  focused plan puts it at the center). **Output** lists universes the venue uses that the running
+  profile has no output for, with **Add to profile**, which appends `{universe, name: "u<N>"}`
+  to the profile's DMX universes and saves it as Config does; and universes olad has no port
+  patched to, with the `ola_patch` line to run (fill in your device and port).
+
+A footer repeats the Overview's Groups check ("2 of 6 groups find fixtures"). The same
+suggestion is available to agents as the MCP tool `suggest_group_tags`. A link such as
+`#/lighting/fit?group=movers` opens the page with that group selected.
 
 ### 3D
 

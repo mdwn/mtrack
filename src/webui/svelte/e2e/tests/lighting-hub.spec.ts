@@ -177,8 +177,8 @@ test.describe("Lighting hub", () => {
       "Group front_wash finds no fixtures in test-venue. Used by: Test Song Alpha.",
     );
     await expect(
-      findings.getByRole("link", { name: "Open Groups" }),
-    ).toHaveAttribute("href", "#/lighting/groups");
+      findings.getByRole("link", { name: "Open Fit shows" }),
+    ).toHaveAttribute("href", "#/lighting/fit?group=front_wash");
   });
 
   test("a show that does not load blocks and links to the song's lighting editor", async ({
@@ -245,7 +245,7 @@ test.describe("Lighting hub", () => {
     );
   });
 
-  test("a universe with no output blocks and links to the DMX settings", async ({
+  test("a universe with no output blocks and links to Fit shows", async ({
     page,
   }) => {
     await routeReadiness(page, (r) => {
@@ -262,8 +262,8 @@ test.describe("Lighting hub", () => {
       "Universe 4 has fixtures but no output under dmx.universes.",
     );
     await expect(
-      findings.getByRole("link", { name: "Open DMX settings" }),
-    ).toHaveAttribute("href", "#/config/test-host/lighting");
+      findings.getByRole("link", { name: "Open Fit shows" }),
+    ).toHaveAttribute("href", "#/lighting/fit");
   });
 
   test("a universe olad has no port for blocks", async ({ page }) => {
@@ -379,6 +379,14 @@ test.describe("Lighting hub", () => {
       "aims at a focus point the venue lacks",
     );
     await expect(findings).not.toContainText("unbound-focus-point");
+    // An unbound focus point is placed on the plan, on Fit shows; the
+    // song that fails to load is fixed in the song.
+    await expect(
+      findings.getByRole("link", { name: "Open Fit shows" }),
+    ).toHaveAttribute("href", "#/lighting/fit");
+    await expect(
+      findings.getByRole("link", { name: "Open the song's lighting" }),
+    ).toHaveAttribute("href", "#/songs/Esaweg/lighting");
   });
 
   test("the hub refreshes when the venue reloads, not on a timer", async ({
@@ -446,7 +454,7 @@ test.describe("Lighting hub", () => {
     await expect(
       page
         .getByTestId("findings-groups")
-        .getByRole("link", { name: "Open Groups" }),
+        .getByRole("link", { name: "Open Fit shows" }),
     ).toBeVisible();
   });
 

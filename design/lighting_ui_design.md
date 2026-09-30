@@ -232,3 +232,118 @@ link — and the live stage card (not editable). A blocked or attention check
 shows its count; ready shows a one-line summary ("8 fixtures, all placed").
 The page refreshes when the venue or config reloads (the existing websocket
 metadata broadcast), not on a timer.
+
+## 9. L3 in detail: fit your shows (draft 1, 2026-09-30)
+
+An imported venue arrives with no tags, so every group a show uses finds
+nothing; a console's focus points have the console's names; and its universes
+have no output on this profile. L2 says so. L3 fixes it in one place, on a page
+at `#/lighting/fit`, reached from the hub's Groups, Shows and Output findings
+(and, in L5, as the last step of an MVR import).
+
+### 9.1 What the page shows
+
+Three columns, as in the pitch's "Fit your shows" screen:
+
+1. **Groups your shows use** — every group any song's shows target, with the
+   tags its constraints need (`AllOf`, `AnyOf`; `Prefer` shown as "prefers"),
+   how many fixtures it finds in the current venue, and which songs use it.
+   Empty groups first. Selecting a group drives the other two columns.
+2. **The plan** — the stage plot, with the selected group's members
+   highlighted; clicking a fixture toggles it in the pending selection.
+3. **Fixes** — for the selected group, a **suggestion** (below) with
+   **Apply** and **Pick others**; then the **focus points the shows aim at**
+   that the venue lacks, each with **Place on plan** (a click on the plot
+   creates the point with that name); then **Output**: universes the venue's
+   fixtures use that the running profile has no output for, with
+   **Add to profile**, and olad's unpatched ports with the `ola_patch` line
+   for each universe (the device and port are the user's to fill in).
+
+A footer repeats L2's Groups check ("2 of 6 groups find fixtures").
+
+### 9.2 Suggestions
+
+A suggestion is a set of fixtures and the tags that would put them in the
+group, with a reason a user can check. It is computed on the server so the MCP
+tools can offer the same one, and it is explainable or it is not offered:
+
+- **Needs:** the tags the group's `AllOf` require, plus one of `AnyOf`.
+- **Candidates:** fixtures whose capabilities fit what the shows ask of the
+  group: a `move` needs pan and tilt, a colour cue needs colour, a `strobe` a
+  strobe channel, `per: cell` cells. Capabilities come from
+  `FixtureInfo::capabilities()`, needs from the same rules as lint's
+  `capability-gap`.
+- **Cluster:** candidates are grouped by fixture type, then by where they
+  hang: the same height band (deck, low, truss: z < 0.5, < 2.5, above) and
+  the same depth band (downstage, mid, upstage by thirds of the venue's
+  y-extent) when the venue places them. The largest cluster is the
+  suggestion; the rest are offered under **Pick others**.
+- **Reason:** "the 11 MAC Viper AirFX on the upstage truss can move and
+  colour, which `movers` needs".
+
+No cluster fits → no suggestion, and the page says which need no fixture
+meets ("nothing here has a strobe channel").
+
+### 9.3 `GET /api/lighting/fit`
+
+Facts plus suggestions; the actions reuse what exists.
+
+```json
+{
+  "venue": {"name": "basic-festival", "fixtures": [{"name": "…", "type": "…", "tags": [], "position": [x,y,z], "capabilities": ["color","pan_tilt"]}], "focus_points": ["…"]},
+  "groups": [{"name": "movers", "needs": {"all_of": ["moving_head"], "any_of": [], "prefer": []},
+              "fixtures": [], "songs": ["…"], "wants": ["move", "color"],
+              "suggestion": {"fixtures": ["…"], "tags": ["moving_head"], "reason": {"count": 11, "type": "MAC Viper AirFX", "where": "upstage truss", "can": ["move", "color"]}},
+              "others": [{"fixtures": ["…"], "type": "Robin Esprite", "where": "…"}]}],
+  "focus_points_wanted": [{"name": "drummer", "songs": ["…"]}],
+  "output": {"unconfigured": [11, 12], "unpatched": [1], "ola_http_port": 9090}
+}
+```
+
+- **Apply** writes the tags to the venue file through the existing venue save
+  (positions, rotations, focus points and provenance preserved, as the Venues
+  editor does), then the engine reloads it as it does after any venue save.
+- **Place on plan** creates a focus point through the same path the Venues
+  editor's **+ Focus point** uses, with the wanted name preset.
+- **Add to profile** appends `{universe, name: "u<N>"}` entries to the running
+  profile's `dmx.universes` through `lib/profileStore.ts`, then reloads the
+  profile the way Config's save does.
+
+The `reason` is structured so the page can word and translate it; the MCP
+tool (`suggest_group_tags`, L3 too) prints the same fields.
+
+### 9.4 Out of scope
+
+Editing constraints, creating groups, renaming a console's focus points in
+bulk, and any automatic tagging without a click: a suggestion is applied by
+the user, never by the import.
+
+### 9.5 As built
+
+Where the build settled a point §9.1–§9.4 left open or got wrong:
+
+- **Wants follow lint exactly.** A `move` wants pan **or** tilt (lint's
+  `capability-gap` rule, so applying a suggestion clears the gap, not "pan and
+  tilt"). A `dimmer` or `pulse` cue wants a **dimmer** (`wants` value `dimmer`),
+  met by a dimmer channel or colour channels. Colour, strobe and `per: cell`
+  are as in §9.2. A candidate satisfies every want.
+- **Several `AnyOf` constraints are flattened** into one list; the suggestion
+  applies the first tag of it, plus every `AllOf` tag.
+- **Suggestions are computed only for groups the profile defines that find no
+  fixtures.** An undefined group, a group with no `AllOf`/`AnyOf`, and a group
+  that already finds fixtures get none.
+- **Fields added to §9.3:** per group `defined`, `unmet` (the wants no fixture
+  meets) and `unmet_together` (each want is met by some fixture, none meets
+  them all); `output.reachable` (whether olad answered; `null` when nothing was
+  asked); and structured `height` (`deck`/`low`/`truss`) and `depth`
+  (`downstage`/`mid`/`upstage`) beside `where` in `reason` and `others`, so the
+  page words and translates the place itself. The depth band is absent when the
+  venue's y-extent is nil.
+- **"+ Focus point" lives in `StageView`,** not the Venues editor; Place on
+  plan reuses its save path (`createFocusPoint`).
+- **A profile write reloads on its own.** Add to profile writes through
+  `profileStore` and the server reloads; the page does nothing extra.
+- **Test hook:** when the plan is used for choosing fixtures, `StageView` puts
+  their pixel positions on the canvas as `data-positions`, so tests can click a
+  fixture without re-deriving the layout. The page also lists every fixture as
+  a checkbox, so selection does not depend on the canvas.

@@ -114,6 +114,7 @@
         fixtures: get(t)("lighting.fixtureTypes"),
         venues: get(t)("lighting.venues"),
         groups: get(t)("lighting.area.groups"),
+        fit: get(t)("lighting.area.fit"),
         stage: get(t)("lighting.area.stage"),
       };
       pageTitle = subTitle[sub]

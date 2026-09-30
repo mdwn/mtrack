@@ -302,6 +302,7 @@ async fn mcp_initialize_list_and_call_tools() -> Result<(), Box<dyn Error>> {
         "get_config",
         "lighting_dsl_reference",
         "validate_lighting",
+        "suggest_group_tags",
         "inspect_mvr",
         "import_mvr",
         "export_mvr",
@@ -3880,6 +3881,90 @@ async fn mcp_list_groups_surfaces_logical_groups() -> Result<(), Box<dyn Error>>
         .filter_map(|f| f.as_str())
         .collect();
     assert_eq!(left, vec!["Par1"], "`left` should select only Par1: {resp}");
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// suggest_group_tags: the same suggestion the Fit shows page offers
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_suggest_group_tags_proposes_tags_for_an_untagged_venue() -> Result<(), Box<dyn Error>>
+{
+    let fixture = setup_standalone_fixture()?;
+    // The song's shows target `front_wash`; declare it as a tag-selected group
+    // and give the venue fixtures no tags at all, as an MVR import does.
+    let yaml = std::fs::read_to_string(&fixture.config_path)?;
+    std::fs::write(
+        &fixture.config_path,
+        yaml.replace(
+            "      left:\n",
+            "      front_wash:\n        name: \"front_wash\"\n        constraints:\n          - AllOf: [\"wash\"]\n      left:\n",
+        ),
+    )?;
+    std::fs::create_dir_all(fixture.root.join("lighting/venues"))?;
+    std::fs::create_dir_all(fixture.root.join("lighting/fixture_types"))?;
+    copy_dir_recursive(
+        Path::new("examples/lighting/fixture_types"),
+        &fixture.root.join("lighting/fixture_types"),
+    )?;
+    std::fs::write(
+        fixture.root.join("lighting/venues/main_stage.light"),
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1\n  fixture \"Par2\" RGBW_Par @ 1:7\n}\n",
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let body = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1500,
+            "suggest_group_tags",
+            json!({"group": "front_wash"}),
+        )
+        .await,
+    );
+    assert_eq!(body["name"], "front_wash", "{body}");
+    assert_eq!(body["needs"]["all_of"], json!(["wash"]), "{body}");
+    assert_eq!(body["fixtures"], json!([]), "{body}");
+    assert_eq!(body["wants"], json!(["color", "dimmer"]), "{body}");
+    assert_eq!(
+        body["suggestion"]["fixtures"],
+        json!(["Par1", "Par2"]),
+        "{body}"
+    );
+    assert_eq!(body["suggestion"]["tags"], json!(["wash"]), "{body}");
+    assert_eq!(body["suggestion"]["reason"]["count"], 2, "{body}");
+    assert_eq!(body["suggestion"]["reason"]["type"], "RGBW_Par", "{body}");
+
+    // A group no show targets is an error that names the ones that are.
+    let response = call_tool(
+        &client,
+        &url,
+        &session,
+        1501,
+        "suggest_group_tags",
+        json!({"group": "nobody"}),
+    )
+    .await;
+    let text = response.to_string();
+    assert!(text.contains("front_wash"), "{text}");
 
     controller.shutdown();
     Ok(())

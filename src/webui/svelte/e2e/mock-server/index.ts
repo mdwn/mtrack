@@ -30,6 +30,7 @@ import {
   PROFILE_FILE_DETAIL,
   PLAYBACK_STATE,
   METADATA_STATE,
+  FIT,
   READINESS,
   FIXTURE_STATE,
   TEST_RIG,
@@ -249,6 +250,10 @@ app.get("/api/lighting", (_req, res) => {
 
 app.get("/api/lighting/readiness", (_req, res) => {
   res.json(READINESS);
+});
+
+app.get("/api/lighting/fit", (_req, res) => {
+  res.json(FIT);
 });
 
 app.get("/api/lighting/validate", (_req, res) => {

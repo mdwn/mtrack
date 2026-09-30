@@ -43,6 +43,28 @@ pub fn group_names(shows: &[LightShow]) -> Vec<String> {
     names
 }
 
+/// Every song with lighting and the shows its files hold (sorted by name), in
+/// the order the song list shows them.
+///
+/// These were parsed at song load with the song's own tempo map, the same parse
+/// the player plays, so nothing here re-reads a file.
+pub fn songs_with_lighting(songs: &crate::songs::Songs) -> Vec<(Arc<Song>, Vec<LightShow>)> {
+    let mut out = Vec::new();
+    for song in songs.sorted_list() {
+        if song.dsl_lighting_shows().is_empty() {
+            continue;
+        }
+        let mut shows: Vec<LightShow> = song
+            .dsl_lighting_shows()
+            .iter()
+            .flat_map(|dsl| dsl.shows().values().cloned())
+            .collect();
+        shows.sort_by(|a, b| a.name.cmp(&b.name));
+        out.push((song, shows));
+    }
+    out
+}
+
 /// What the loaded venue says about the groups a set of shows targets.
 ///
 /// Everything here is empty when no venue is loaded, which makes the checks

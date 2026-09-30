@@ -1070,6 +1070,28 @@ pub(super) async fn get_readiness(State(state): State<WebUiState>) -> impl IntoR
     }
 }
 
+/// GET /api/lighting/fit — the facts and suggestions behind the "Fit shows"
+/// page: for each group the shows use, what it needs and what would satisfy it;
+/// the focus points the shows aim at that the venue lacks; and the universes
+/// with no output. The suggestion rules live in `lighting::fit`, shared with
+/// MCP's `suggest_group_tags`. Blocking (lighting-system mutex, olad probe), so
+/// off the async worker.
+pub(super) async fn get_fit(State(state): State<WebUiState>) -> impl IntoResponse {
+    let player = state.player.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::lighting::fit::FitReport::gather(&player).to_json()
+    })
+    .await
+    {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to gather fit: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
 /// The readiness facts for the player's running profile.
 fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     use crate::lighting::readiness::{group_names, VenueFacts};
@@ -1084,26 +1106,13 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
         .map(|d| d.configured_universes())
         .unwrap_or_default();
 
-    // Every song with lighting, and the shows its files hold, sorted the way
-    // MCP sorts them. These were parsed at song load with the song's own tempo
-    // map (`Song::lighting_tempo_map`) — the same parse the player plays — so
-    // nothing here re-reads a file.
+    // Every song with lighting, and the shows its files hold.
     let songs = player.songs();
-    let mut with_lighting = Vec::new();
-    let mut all_shows = Vec::new();
-    for song in songs.sorted_list() {
-        if song.dsl_lighting_shows().is_empty() {
-            continue;
-        }
-        let mut shows: Vec<lighting::parser::LightShow> = song
-            .dsl_lighting_shows()
-            .iter()
-            .flat_map(|dsl| dsl.shows().values().cloned())
-            .collect();
-        shows.sort_by(|a, b| a.name.cmp(&b.name));
-        all_shows.extend(shows.iter().cloned());
-        with_lighting.push((song, shows));
-    }
+    let with_lighting = crate::lighting::readiness::songs_with_lighting(&songs);
+    let all_shows: Vec<lighting::parser::LightShow> = with_lighting
+        .iter()
+        .flat_map(|(_, shows)| shows.iter().cloned())
+        .collect();
     let names = group_names(&all_shows);
 
     // The lighting system, under its lock for as short a time as it takes to
@@ -4758,5 +4767,194 @@ show "test" {
         assert_eq!(report["dmx"], json!(true));
         assert_eq!(report["venue"], json!(null));
         assert_eq!(report["output"]["universes"], json!([]));
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /lighting/fit
+    // -----------------------------------------------------------------------
+
+    const TYPE_MOVER: &str = "fixture_type \"Mover\" {\n  channels: 6\n  channel_map: { \"pan\": 1, \"tilt\": 2, \"red\": 3, \"green\": 4, \"blue\": 5, \"dimmer\": 6 }\n}\n";
+
+    const TYPE_WASH: &str = "fixture_type \"Wash\" {\n  channels: 4\n  channel_map: { \"red\": 1, \"green\": 2, \"blue\": 3, \"dimmer\": 4 }\n}\n";
+
+    async fn fit(state: WebUiState) -> serde_json::Value {
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/fit")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_str(&response_body(response).await).unwrap()
+    }
+
+    #[tokio::test]
+    async fn fit_without_dmx_has_no_venue_and_no_groups() {
+        let project = tempfile::tempdir().unwrap();
+        let songs = song_registry(
+            project.path(),
+            &[(
+                "Song",
+                "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n}\n",
+            )],
+        );
+        let (state, _dir) = test_state_with_registry(songs);
+        let report = fit(state).await;
+        assert_eq!(report["venue"], json!(null));
+        assert_eq!(report["groups"], json!([]));
+        assert_eq!(report["focus_points_wanted"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn fit_suggests_tags_for_an_untagged_group_and_lists_wanted_focus_points() {
+        // `washes` needs the `wash` tag and is empty. The shows ask it to move
+        // and to colour, which only the Mover does.
+        let rig = rig(
+            &[("par.light", TYPE_PAR), ("mover.light", TYPE_MOVER)],
+            Some(
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"B\" Par @ 1:3\n  \
+                 fixture \"M\" Mover @ 1:10 tags [\"other\"]\n  focus \"center\" (0, 3, 0)\n}\n",
+            ),
+            &[(
+                "Esaweg",
+                "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n    \
+                 washes: move focus: \"drummer\", duration: 1s\n    \
+                 washes: move focus: \"center\", duration: 1s\n}\n",
+            )],
+            &[1],
+        );
+        let report = fit(rig.state.clone()).await;
+
+        assert_eq!(report["venue"]["name"], json!("v"));
+        assert_eq!(report["venue"]["fixtures"].as_array().unwrap().len(), 3);
+        assert_eq!(report["venue"]["focus_points"], json!(["center"]));
+        let m = report["venue"]["fixtures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == json!("M"))
+            .unwrap();
+        assert_eq!(m["tags"], json!(["other"]));
+        assert_eq!(m["capabilities"], json!(["color", "pan_tilt"]));
+
+        let groups = report["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 1);
+        let washes = &groups[0];
+        assert_eq!(washes["name"], json!("washes"));
+        assert_eq!(washes["defined"], json!(true));
+        assert_eq!(washes["needs"]["all_of"], json!(["wash"]));
+        assert_eq!(washes["fixtures"], json!([]));
+        assert_eq!(washes["songs"], json!(["Esaweg"]));
+        assert_eq!(washes["wants"], json!(["move", "color"]));
+        assert_eq!(washes["suggestion"]["fixtures"], json!(["M"]));
+        assert_eq!(washes["suggestion"]["tags"], json!(["wash"]));
+        assert_eq!(washes["suggestion"]["reason"]["count"], json!(1));
+        assert_eq!(washes["suggestion"]["reason"]["type"], json!("Mover"));
+        assert_eq!(
+            washes["suggestion"]["reason"]["can"],
+            json!(["move", "color"])
+        );
+        assert_eq!(washes["others"], json!([]));
+
+        assert_eq!(
+            report["focus_points_wanted"],
+            json!([{"name": "drummer", "songs": ["Esaweg"]}])
+        );
+    }
+
+    #[tokio::test]
+    async fn fit_offers_other_clusters_and_skips_groups_that_need_no_suggestion() {
+        let rig = rig(
+            &[("par.light", TYPE_PAR), ("mover.light", TYPE_MOVER)],
+            Some(
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"B\" Par @ 1:3\n  \
+                 fixture \"M\" Mover @ 1:10\n  fixture \"W\" Par @ 1:20 tags [\"wash\"]\n}\n",
+            ),
+            &[
+                (
+                    "Untagged",
+                    "show \"S\" {\n    @00:00.000\n    movers: static color: \"red\", duration: 2s\n}\n",
+                ),
+                (
+                    "Tagged",
+                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n}\n",
+                ),
+            ],
+            &[1],
+        );
+        let report = fit(rig.state.clone()).await;
+        let groups = report["groups"].as_array().unwrap();
+        let by_name = |n: &str| groups.iter().find(|g| g["name"] == json!(n)).unwrap();
+        // `movers` is declared nowhere in this rig: nothing to tag for.
+        assert_eq!(by_name("movers")["defined"], json!(false));
+        assert_eq!(by_name("movers")["suggestion"], json!(null));
+        // `washes` already finds W.
+        assert_eq!(by_name("washes")["fixtures"], json!(["W"]));
+        assert_eq!(by_name("washes")["suggestion"], json!(null));
+    }
+
+    #[tokio::test]
+    async fn fit_lists_other_clusters_under_others() {
+        // Three colour-capable candidates in two types: Pars win (two of them),
+        // the Mover is the alternative.
+        let rig = rig(
+            &[("wash.light", TYPE_WASH), ("mover.light", TYPE_MOVER)],
+            Some(
+                "venue \"v\" {\n  fixture \"A\" Wash @ 1:1\n  fixture \"B\" Wash @ 1:7\n  \
+                 fixture \"M\" Mover @ 1:10\n}\n",
+            ),
+            &[(
+                "Song",
+                "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n}\n",
+            )],
+            &[1],
+        );
+        let report = fit(rig.state.clone()).await;
+        let washes = &report["groups"][0];
+        assert_eq!(washes["suggestion"]["fixtures"], json!(["A", "B"]));
+        assert_eq!(washes["others"][0]["type"], json!("Mover"));
+        assert_eq!(washes["others"][0]["fixtures"], json!(["M"]));
+    }
+
+    #[tokio::test]
+    async fn fit_says_which_want_nothing_meets() {
+        let rig = rig(
+            &[("wash.light", TYPE_WASH)],
+            Some("venue \"v\" {\n  fixture \"A\" Wash @ 1:1\n}\n"),
+            &[(
+                "Song",
+                "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n    \
+                 washes: strobe frequency: 8, duration: 1s\n}\n",
+            )],
+            &[1],
+        );
+        let report = fit(rig.state.clone()).await;
+        let washes = &report["groups"][0];
+        assert_eq!(washes["suggestion"], json!(null));
+        assert_eq!(washes["unmet"], json!(["strobe"]));
+        assert_eq!(washes["unmet_together"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn fit_lists_unconfigured_universes_and_the_olad_port() {
+        let rig = rig(
+            &[("par.light", TYPE_PAR)],
+            Some("venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"B\" Par @ 4:1\n}\n"),
+            &[(
+                "Song",
+                "show \"S\" {\n    @00:00.000\n    all: static color: \"red\", duration: 2s\n}\n",
+            )],
+            &[1],
+        );
+        let report = fit(rig.state.clone()).await;
+        assert_eq!(report["output"]["unconfigured"], json!([4]));
+        // Nothing listens where olad's web server should be.
+        assert_eq!(report["output"]["reachable"], json!(false));
+        assert_eq!(report["output"]["unpatched"], json!([]));
+        assert!(report["output"]["ola_http_port"].as_u64().unwrap() > 0);
     }
 }

@@ -331,6 +331,130 @@ export const READINESS = {
   },
 };
 
+/** The Fit shows page's facts: an imported venue with no tags, three groups
+ *  (one with a suggestion and an alternative, one nothing fits, one that
+ *  already finds a fixture), a focus point the venue lacks and a universe
+ *  with no output. Tests serve their own copy with `page.route`. */
+export const FIT = {
+  venue: {
+    name: "fit-venue",
+    fixtures: [
+      {
+        name: "viper1",
+        type: "Viper",
+        tags: [] as string[],
+        position: [-2, 6, 5],
+        capabilities: ["color", "pan_tilt"],
+      },
+      {
+        name: "viper2",
+        type: "Viper",
+        tags: [] as string[],
+        position: [0, 6, 5],
+        capabilities: ["color", "pan_tilt"],
+      },
+      {
+        name: "viper3",
+        type: "Viper",
+        tags: [] as string[],
+        position: [2, 6, 5],
+        capabilities: ["color", "pan_tilt"],
+      },
+      {
+        name: "esprite1",
+        type: "Esprite",
+        tags: ["spot"],
+        position: [0, 1, 1.5],
+        capabilities: ["color", "pan_tilt"],
+      },
+      {
+        name: "par1",
+        type: "Par",
+        tags: ["wash"],
+        position: [-3, 3, 3],
+        capabilities: ["color"],
+      },
+    ],
+    focus_points: ["center"],
+  },
+  groups: [
+    {
+      name: "back_wash",
+      defined: true,
+      needs: {
+        all_of: ["wash"],
+        any_of: [] as string[],
+        prefer: [] as string[],
+      },
+      fixtures: ["par1"],
+      songs: ["Test Song Alpha"],
+      wants: ["color"],
+      suggestion: null,
+      others: [],
+      unmet: [],
+      unmet_together: false,
+    },
+    {
+      name: "movers",
+      defined: true,
+      needs: {
+        all_of: ["moving_head"],
+        any_of: [] as string[],
+        prefer: [] as string[],
+      },
+      fixtures: [] as string[],
+      songs: ["Test Song Alpha"],
+      wants: ["move", "color"],
+      suggestion: {
+        fixtures: ["viper1", "viper2", "viper3"],
+        tags: ["moving_head"],
+        reason: {
+          count: 3,
+          type: "Viper",
+          where: "upstage truss",
+          height: "truss",
+          depth: "upstage",
+          can: ["move", "color"],
+        },
+      },
+      others: [
+        {
+          fixtures: ["esprite1"],
+          type: "Esprite",
+          where: "downstage low rig",
+          height: "low",
+          depth: "downstage",
+        },
+      ],
+      unmet: [],
+      unmet_together: false,
+    },
+    {
+      name: "strobes",
+      defined: true,
+      needs: {
+        all_of: ["strobe"],
+        any_of: [] as string[],
+        prefer: [] as string[],
+      },
+      fixtures: [] as string[],
+      songs: ["Test Song Alpha"],
+      wants: ["strobe"],
+      suggestion: null,
+      others: [],
+      unmet: ["strobe"],
+      unmet_together: false,
+    },
+  ],
+  focus_points_wanted: [{ name: "drummer", songs: ["Test Song Alpha"] }],
+  output: {
+    unconfigured: [11],
+    unpatched: [1],
+    reachable: true,
+    ola_http_port: 9090,
+  },
+};
+
 export const METADATA_STATE = {
   type: "metadata",
   fixtures: {
