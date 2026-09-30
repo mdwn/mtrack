@@ -27,7 +27,9 @@
     Vec3,
     VenueMetadata,
   } from "../lib/ws/stores";
-  import { fetchVenue, saveVenue } from "../lib/api/config";
+  import { fetchVenue, saveVenue, type VenueData } from "../lib/api/config";
+  import VenueInspector from "./lighting/VenueInspector.svelte";
+  import { nudge } from "../lib/stage/arrange";
   import {
     beamEnd,
     cellBar,
@@ -46,6 +48,7 @@
   } from "../lib/stage/layout";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
+  import { untrack } from "svelte";
 
   interface Props {
     /** Whether positions and focus points can be edited here. The dashboard
@@ -63,6 +66,9 @@
     placeFocus?: string | null;
     /** Called once a placement settles, with whether the save succeeded. */
     onFocusPlaced?: (name: string, ok: boolean) => void;
+    /** The fixture types directory override, which the Venues inspector
+     *  reads to tell movers from fixed fixtures. */
+    fixtureTypesDir?: string;
   }
 
   let {
@@ -72,6 +78,7 @@
     onFixtureClick,
     placeFocus = null,
     onFocusPlaced,
+    fixtureTypesDir = "",
   }: Props = $props();
 
   const FIXTURE_RADIUS = 22;
@@ -132,6 +139,16 @@
 
   let animFrame: number | null = null;
 
+  // --- Selection (the editing plot): click, shift-click, marquee.
+  /** Pixels a press may wander and still be a click. */
+  const CLICK_SLOP = 4;
+  let selection = $state<string[]>([]);
+  let marquee: { x0: number; y0: number; x1: number; y1: number } | null = null;
+  let marqueeAdds = false;
+  let pressPt: Pt | null = null;
+  let dragMoved = false;
+  let dragShift = false;
+
   // --- Editing feedback
   let saveMsg = $state<{ ok: boolean; text: string } | null>(null);
   let saving = $state(false);
@@ -144,6 +161,16 @@
     Object.values($metadataStore).filter((f) => f.position != null).length,
   );
   let focusNames = $derived(Object.keys(focusPoints).sort());
+  /** Selection, the inspector and nudging are for the editing plot of a
+   *  venue with stage geometry. */
+  let selectable = $derived(editable && !!venue && geometryMode);
+
+  // A fixture the venue no longer has drops out of the selection.
+  $effect(() => {
+    const known = $metadataStore;
+    const kept = untrack(() => selection).filter((n) => n in known);
+    if (kept.length !== untrack(() => selection).length) selection = kept;
+  });
 
   function computeLayout(
     fixtures: Record<string, FixtureMetadata>,
@@ -471,7 +498,7 @@
         ctx.arc(pos.x, pos.y, radius + 4, 0, Math.PI * 2);
         ctx.stroke();
       }
-      if (selected.includes(name)) {
+      if (selected.includes(name) || selection.includes(name)) {
         ctx.strokeStyle = ringSelected;
         ctx.lineWidth = 3;
         ctx.setLineDash([5, 3]);
@@ -511,6 +538,20 @@
           },
         );
       }
+    }
+
+    if (marquee) {
+      ctx.strokeStyle = ringSelected;
+      ctx.fillStyle = "rgba(90, 169, 255, 0.12)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      const x = Math.min(marquee.x0, marquee.x1);
+      const y = Math.min(marquee.y0, marquee.y1);
+      const w = Math.abs(marquee.x1 - marquee.x0);
+      const h = Math.abs(marquee.y1 - marquee.y0);
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeRect(x, y, w, h);
+      ctx.setLineDash([]);
     }
 
     // Focus points: diamond pins the show can aim at.
@@ -569,14 +610,35 @@
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
 
-  function beginDrag(pt: Pt): boolean {
+  function beginDrag(pt: Pt, shift = false, marqueeOk = false): boolean {
+    // A plot for choosing fixtures or placing a pin is not for dragging.
+    if (onFixtureClick || placeFocus) return false;
+    const picking = selectable && frame !== null;
+    const target = hit(pt.x, pt.y);
+    if (picking && !target && marqueeOk) {
+      // Empty deck: a box that selects what it encloses.
+      marquee = { x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y };
+      marqueeAdds = shift;
+      pressPt = pt;
+      return true;
+    }
     // In geometry mode a drag ends in a save; one at a time, so nothing
     // is silently lost while the previous save is in flight.
     if (frame && (saving || !editable)) return false;
-    // A plot for choosing fixtures or placing a pin is not for dragging.
-    if (onFixtureClick || placeFocus) return false;
-    const target = hit(pt.x, pt.y);
     if (!target) return false;
+    if (picking && target.kind === "fixture") {
+      const name = target.name;
+      if (shift) {
+        selection = selection.includes(name)
+          ? selection.filter((n) => n !== name)
+          : [...selection, name];
+      } else if (!selection.includes(name)) {
+        selection = [name];
+      }
+    }
+    pressPt = pt;
+    dragMoved = false;
+    dragShift = shift;
     drag = target;
     const pos =
       target.kind === "focus"
@@ -589,6 +651,12 @@
 
   function moveDrag(pt: Pt) {
     if (!drag) return;
+    if (
+      pressPt &&
+      Math.hypot(pt.x - pressPt.x, pt.y - pressPt.y) > CLICK_SLOP
+    ) {
+      dragMoved = true;
+    }
     const next = { x: pt.x - dragOffsetX, y: pt.y - dragOffsetY };
     if (drag.kind === "focus") {
       focusPositions[drag.name] = next;
@@ -613,6 +681,20 @@
     if (!finished) return;
     if (!frame) {
       saveManualPositions();
+      return;
+    }
+    if (!dragMoved && selectable) {
+      // A click, not a drag: nothing moved, so nothing to save. A plain
+      // click on a member of a larger selection narrows it to that one.
+      if (
+        finished.kind === "fixture" &&
+        !dragShift &&
+        selection.length > 1 &&
+        selection.includes(finished.name)
+      ) {
+        selection = [finished.name];
+      }
+      computeLayout($metadataStore, $venueStore);
       return;
     }
     const activeFrame = frame;
@@ -653,24 +735,7 @@
   // Last write wins: two editors on the same venue (two tabs, or the web
   // UI racing an MCP patch) can overwrite each other's latest change. A
   // single operator designing a show is the case this serves.
-  async function persist(
-    update: (venue: {
-      fixtures: Record<
-        string,
-        {
-          name: string;
-          fixture_type: string;
-          universe: number;
-          start_channel: number;
-          tags: string[];
-          position?: Vec3 | null;
-          rotation?: Vec3 | null;
-        }
-      >;
-      focus_points?: Record<string, Vec3>;
-      source?: { mvr: string; origin: Vec3 } | null;
-    }) => void,
-  ): Promise<boolean> {
+  async function persist(update: (venue: VenueData) => void): Promise<boolean> {
     const meta = $venueStore;
     if (!meta) return false;
     if (saving) {
@@ -786,18 +851,87 @@
     if (target?.kind === "fixture") onFixtureClick(target.name);
   }
 
+  // --- Nudging: arrow keys, only while the plan itself has focus. Each
+  // burst of presses is one save, so holding a key is not a save per repeat.
+  let pendingNudge: [number, number] = [0, 0];
+  let nudgeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function scheduleNudge(dx: number, dy: number) {
+    pendingNudge = [pendingNudge[0] + dx, pendingNudge[1] + dy];
+    if (frame) {
+      // Move the discs now; the save redraws them from the file.
+      for (const name of selection) {
+        const at = layoutPositions[name];
+        if (at && $metadataStore[name]?.position) {
+          layoutPositions[name] = {
+            x: at.x + dx * frame.scale,
+            y: at.y - dy * frame.scale,
+          };
+        }
+      }
+    }
+    if (nudgeTimer) clearTimeout(nudgeTimer);
+    nudgeTimer = setTimeout(flushNudge, 250);
+  }
+
+  async function flushNudge() {
+    nudgeTimer = null;
+    const [dx, dy] = pendingNudge;
+    if (!dx && !dy) return;
+    if (saving) {
+      // A save is in flight: keep what has piled up and go again shortly.
+      nudgeTimer = setTimeout(flushNudge, 150);
+      return;
+    }
+    pendingNudge = [0, 0];
+    const names = [...selection];
+    await persist((v) => {
+      const items = names
+        .filter((n) => v.fixtures[n]?.position)
+        .map((n) => ({
+          name: n,
+          position: [...(v.fixtures[n].position as Vec3)] as Vec3,
+        }));
+      for (const moved of nudge(items, dx, dy)) {
+        v.fixtures[moved.name].position = moved.position;
+      }
+    });
+  }
+
+  const ARROWS: Record<string, [number, number]> = {
+    ArrowLeft: [-1, 0],
+    ArrowRight: [1, 0],
+    ArrowUp: [0, 1],
+    ArrowDown: [0, -1],
+  };
+
   function onCanvasKeydown(e: KeyboardEvent) {
     if (placeFocus && (e.key === "Enter" || e.key === " ")) {
       e.preventDefault();
       void placeFocusAt(null);
+      return;
+    }
+    if (!selectable || placeFocus) return;
+    const arrow = ARROWS[e.key];
+    if (arrow && selection.length > 0) {
+      e.preventDefault();
+      const step = e.shiftKey ? 1 : 0.1;
+      scheduleNudge(arrow[0] * step, arrow[1] * step);
+    }
+  }
+
+  /** Escape clears the selection wherever focus is. */
+  function onWindowKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape" && selectable && selection.length > 0) {
+      selection = [];
     }
   }
 
   /** Publishes the fixtures' pixel positions on the canvas when it is used
-   *  for choosing, so a test can click a fixture without re-deriving the
+   *  for choosing or selecting, so a test can click a fixture without re-deriving the
    *  layout. */
   function publishLayout() {
-    if (canvasEl && onFixtureClick) {
+    if (canvasEl && (onFixtureClick || editable)) {
       canvasEl.dataset.positions = JSON.stringify(layoutPositions);
     }
   }
@@ -830,15 +964,46 @@
   }
 
   function onMouseDown(e: MouseEvent) {
-    if (beginDrag(canvasCoords(e))) {
-      canvasEl!.style.cursor = "grabbing";
+    // The press is handled here, not by the browser, so focus the plan
+    // ourselves: arrow keys nudge only while it has focus.
+    // Read the press before focusing: focus can scroll the page.
+    const pt = canvasCoords(e);
+    if (selectable) canvasEl!.focus({ preventScroll: true });
+    if (beginDrag(pt, e.shiftKey, true)) {
+      canvasEl!.style.cursor = marquee ? "crosshair" : "grabbing";
       e.preventDefault();
     }
   }
 
+  /** Ends a marquee: what it encloses is selected (added to the selection
+   *  with shift); a box that never grew is a click on the empty deck. */
+  function endMarquee() {
+    const box = marquee;
+    marquee = null;
+    if (!box) return;
+    const wandered =
+      Math.abs(box.x1 - box.x0) > CLICK_SLOP ||
+      Math.abs(box.y1 - box.y0) > CLICK_SLOP;
+    if (!wandered) {
+      if (!marqueeAdds) selection = [];
+      return;
+    }
+    const [x0, x1] = [Math.min(box.x0, box.x1), Math.max(box.x0, box.x1)];
+    const [y0, y1] = [Math.min(box.y0, box.y1), Math.max(box.y0, box.y1)];
+    const inside = Object.entries(layoutPositions)
+      .filter(([, p]) => p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1)
+      .map(([name]) => name);
+    selection = marqueeAdds
+      ? [...selection, ...inside.filter((n) => !selection.includes(n))]
+      : inside;
+  }
+
   function onMouseMove(e: MouseEvent) {
     const pt = canvasCoords(e);
-    if (drag) {
+    if (marquee) {
+      marquee.x1 = pt.x;
+      marquee.y1 = pt.y;
+    } else if (drag) {
       moveDrag(pt);
     } else if (placeFocus) {
       canvasEl!.style.cursor = "crosshair";
@@ -851,7 +1016,10 @@
   }
 
   function onMouseUp() {
-    if (drag) {
+    if (marquee) {
+      canvasEl!.style.cursor = "default";
+      endMarquee();
+    } else if (drag) {
       canvasEl!.style.cursor = "grab";
       void endDrag();
     }
@@ -879,6 +1047,10 @@
   }
 
   function onMouseLeave() {
+    if (marquee) {
+      marquee = null;
+      canvasEl!.style.cursor = "default";
+    }
     if (drag) {
       // Abandoned mid-drag: put things back where the file says.
       drag = null;
@@ -889,13 +1061,18 @@
 
   // Lifecycle
   $effect(() => {
+    let observer: ResizeObserver | undefined;
     if (canvasEl) {
       resizeCanvas();
       animLoop();
       window.addEventListener("resize", resizeCanvas);
+      // The plot also changes size when the inspector opens beside it.
+      observer = new ResizeObserver(() => resizeCanvas());
+      observer.observe(canvasEl);
     }
     return () => {
       window.removeEventListener("resize", resizeCanvas);
+      observer?.disconnect();
       if (animFrame !== null) cancelAnimationFrame(animFrame);
     };
   });
@@ -906,6 +1083,8 @@
     publishLayout();
   });
 </script>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 <section class="card stage-card" class:stage-card--geometry={geometryMode}>
   <header class="stage-card__head">
@@ -978,26 +1157,42 @@
       {$t("stage.noCurrentVenue")}
     </p>
   {:else}
-    <div class="stage-card__viewport">
-      <div class="stage-card__caption" aria-hidden="true">
-        {$t("stage.label")}
+    <div
+      class="stage-card__work"
+      class:stage-card__work--inspect={selectable && !onFixtureClick}
+    >
+      <div class="stage-card__viewport">
+        <div class="stage-card__caption" aria-hidden="true">
+          {$t("stage.label")}
+        </div>
+        <canvas
+          bind:this={canvasEl}
+          onmousedown={onMouseDown}
+          onmousemove={onMouseMove}
+          onmouseup={onMouseUp}
+          onmouseleave={onMouseLeave}
+          onclick={onCanvasClick}
+          onkeydown={onCanvasKeydown}
+          tabindex={placeFocus || selectable ? 0 : undefined}
+          aria-label={placeFocus
+            ? $t("stage.placeHint", { values: { name: placeFocus } })
+            : selectable
+              ? $t("stage.planHint")
+              : undefined}
+          ontouchstart={onTouchStart}
+          ontouchmove={onTouchMove}
+          ontouchend={onTouchEnd}
+        ></canvas>
       </div>
-      <canvas
-        bind:this={canvasEl}
-        onmousedown={onMouseDown}
-        onmousemove={onMouseMove}
-        onmouseup={onMouseUp}
-        onmouseleave={onMouseLeave}
-        onclick={onCanvasClick}
-        onkeydown={onCanvasKeydown}
-        tabindex={placeFocus ? 0 : undefined}
-        aria-label={placeFocus
-          ? $t("stage.placeHint", { values: { name: placeFocus } })
-          : undefined}
-        ontouchstart={onTouchStart}
-        ontouchmove={onTouchMove}
-        ontouchend={onTouchEnd}
-      ></canvas>
+      {#if selectable && !onFixtureClick}
+        <VenueInspector
+          {selection}
+          onSelect={(names) => (selection = names)}
+          {persist}
+          {saving}
+          {fixtureTypesDir}
+        />
+      {/if}
     </div>
   {/if}
   {#if editable && venue && (geometryMode || focusNames.length > 0)}
@@ -1080,6 +1275,20 @@
   .stage-card__placed {
     font-weight: 500;
     color: var(--nc-fg-3);
+  }
+  .stage-card__work {
+    display: contents;
+  }
+  @media (min-width: 1000px) {
+    .stage-card__work--inspect {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      align-items: start;
+    }
+    .stage-card__work--inspect :global(.inspector) {
+      border-top: none;
+      border-left: 1px solid var(--card-border);
+    }
   }
   .stage-card__viewport {
     position: relative;

@@ -87,7 +87,7 @@
   {:else if route.sub === "venues"}
     <VenuesPanel fixtureTypesDir={ftDir} venuesDir={venueDir} />
     <div class="lighting__stage">
-      <StageView editable />
+      <StageView editable fixtureTypesDir={ftDir} />
     </div>
   {:else if route.sub === "groups"}
     <GroupsPage profileParam={route.profile} />

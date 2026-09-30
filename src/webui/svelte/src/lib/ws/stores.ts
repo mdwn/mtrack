@@ -124,6 +124,11 @@ export interface FixtureMetadata {
    */
   rig?: string | null;
   /**
+   * What the fixture can do, as the engine names it: `color`, `pan_tilt`,
+   * `strobe`, `cells`. A fixture with `pan_tilt` is a mover.
+   */
+  capabilities?: string[];
+  /**
    * The cells of a pixel fixture, in the manufacturer's order, with their
    * offsets in the fixture's frame (meters); empty for a one-colour
    * fixture. The plot draws one segment each.

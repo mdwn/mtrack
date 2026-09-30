@@ -347,3 +347,104 @@ Where the build settled a point §9.1–§9.4 left open or got wrong:
   their pixel positions on the canvas as `data-positions`, so tests can click a
   fixture without re-deriving the layout. The page also lists every fixture as
   a checkbox, so selection does not depend on the canvas.
+
+## 10. L4 in detail: arrange and aim in the venue editor (draft 1, 2026-09-30)
+
+Placing a rig by hand today means typing coordinates and solving rotations
+from the formula in the docs. This week's house rig took four rounds of that:
+aim each brick at a point, then face each side inward, then align each side
+on a line, then space the front evenly and mirror the sides. L4 makes each of
+those a control on the Venues page, working on a selection on the plan.
+
+### 10.1 Selection
+
+The Venues plot (StageView, `editable`) gains multi-select: click selects,
+shift-click extends, drag on empty deck marquee-selects, Escape clears. The
+fixture list beside the plot mirrors the selection (and selects from it). An
+inspector panel replaces the per-fixture form for whatever is selected: one
+fixture shows its fields; several show the shared ones (type, tags in
+common) and the Arrange and Aim tools.
+
+### 10.2 Arrange (two or more selected)
+
+All operations write positions through the existing venue save and reload,
+as dragging does; each is one undoable save.
+
+- **Align on a line** — the selection's dominant spread decides the line:
+  spread more along y than x → align x to the selection's mean x (a side
+  column); otherwise align y to the mean y (a row). Z untouched.
+- **Space evenly** — along the same dominant axis, the two extreme fixtures
+  stay and the rest are spread evenly between them, in their current order.
+- **Mirror across centre** — each selected fixture's x becomes −x, about the
+  stage centre line x = 0. (The venue's origin is downstage-centre by
+  definition, so the centre line needs no setting.)
+- **Nudge** — arrow keys move the selection 0.1 m, shift for 1 m.
+
+### 10.3 Aim (fixed fixtures)
+
+For fixtures with no pan or tilt, a rotation is the only aim they have. The
+Aim section offers, for the selection:
+
+- **Face a direction** — a direction across the deck (stage left, stage
+  right, upstage, downstage, or a bearing in degrees) and a **tilt up from
+  the floor** (0° level, 90° straight up; negative aims down, for a hung
+  fixture). Rotation = `(90 + tilt, 0, bearing)` in the convention of §3 of
+  the docs' "Mounting and pose convention": bearing −90 faces +x, 0 faces
+  +y, 90 faces −x, 180 faces −y.
+- **At a focus point** — pick one of the venue's focus points; each selected
+  fixture gets the rotation that points its rest beam at it:
+  `a = acos(−d.z)`, `b = atan2(−d.x, d.y)`, `rotation (a, 0, b)`, with
+  `d` the unit vector from the fixture to the point (the docs' worked
+  example). A fixture at the point itself is skipped and said so.
+- **Rotation** — the raw triple, shown always, editable as the escape hatch.
+
+For movers (pan and tilt), the section offers the two mountings the docs
+name — **hung facing downstage** `(0, 0, 180)` and **standing on the deck**
+`(180, 0, 0)` — and the raw triple. Aiming a mover is the show's job.
+
+The plan draws each fixed fixture's beam from its rotation (as it does now),
+so an aim is checked at once; Stage 3D shows the same.
+
+### 10.4 Where the math lives
+
+Both rotation solvers are pure functions in `src/lib/stage/aim.ts`, unit
+tested against the docs' worked example (brick at `(0.09, −0.1, 0)` aimed at
+`(0.7, 1.9, 1.5)` → `(125.7, 0, −17.0)`) and against the perimeter rig
+(`(110, 0, ∓90)` for the sides, `(110, 0, 0)` for the front). Arrange
+operations are pure functions in `src/lib/stage/arrange.ts`, tested on the
+house rig's measured positions (the same numbers as the venue in
+backing-tracks: align → x = −5.345 / 6.855, space → 2.46 m, mirror about 0).
+
+### 10.5 Out of scope
+
+Rotating a whole selection as a body, snapping to scenery, and any change to
+the venue file format. Aiming through a GDTF rig's own geometry stays a
+`move` concern; a fixed fixture with a pitched lens is drawn where it really
+points, as Stage 3D already does.
+
+### 10.6 As built
+
+Where the build settled a point §10.1–§10.5 left open or got wrong:
+
+- **The inspector applies to the plot's venue,** the current one the engine
+  has loaded and the websocket describes. `VenuesPanel`'s editor still edits
+  any venue in the list, and creates and removes fixtures; it was not
+  replaced. One selected fixture shows the same fields there (name, type,
+  universe, channel, tags) with an **Apply**.
+- **Stage left is bearing −90,** toward +x, as the venue files' comments say
+  (+x is stage-left); stage right is 90, upstage 0, downstage 180.
+- **Mirror mirrors the aim.** Reflecting x also reflects the beam, so a
+  rotation `(rx, ry, rz)` becomes `(rx, −ry, −rz)` in the same save; the
+  perimeter's left side `(110, 0, −90)` becomes `(110, 0, 90)`. A fixture with
+  no rotation stays without one.
+- **Capabilities come from the metadata.** Each fixture in the websocket
+  metadata carries `capabilities` (`color`, `pan_tilt`, `strobe`, `cells`),
+  named as the fit endpoint names them. A fixture with `pan_tilt` is a mover,
+  so a GDTF-referential type, which lists no channels in the fixture-types
+  API, is still one.
+- **Plot fixes the build needed.** The plot redraws on a `ResizeObserver`,
+  because the inspector narrows it after the first layout. Focusing the plot
+  on a press uses `preventScroll` and reads the press position first, since
+  focusing scrolled the page and put the hit test off the fixture. A click
+  that does not move a fixture saves nothing, and arrow-key nudges are
+  debounced so a burst is one save.

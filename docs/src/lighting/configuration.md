@@ -463,6 +463,13 @@ venue "house" {
 }
 ```
 
+The web UI's [Venues page](../interfaces/web-ui.md#venues) does this for you: select fixtures on
+the plot and **Aim** writes the rotation, either facing a direction with a tilt up from the
+floor (`(90 + tilt, 0, bearing)`, where bearing −90 faces +x, 0 faces +y, 90 faces −x and 180
+faces −y) or at a focus point using the formulas above. Its **Arrange** tools align, space and
+mirror the positions. The tools write exactly the numbers on this page, so the formulas remain
+the way to check, or hand-write, what they produce.
+
 Name the point as a focus point, as here: [`export-mvr`](#importing-a-venues-mvr) then links
 each fixed fixture aimed at it, which pre-viz tools need to show it aimed. A GDTF fixture whose
 manufacturer models the lens pitched off −Z will not point along this rotation; Stage 3D shows
