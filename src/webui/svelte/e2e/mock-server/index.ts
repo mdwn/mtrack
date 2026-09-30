@@ -37,6 +37,8 @@ import {
   TEST_SCENERY,
   WAVEFORM_DATA,
   LOG_LINES,
+  MVR_INSPECTION,
+  MVR_EXPORT_SUMMARY,
 } from "./test-data.js";
 
 const app = express();
@@ -380,6 +382,40 @@ app.post("/api/lighting/gdtf/import", (req, res) => {
       [4, "strobe"],
     ],
     warnings: ["skipped virtual channel (no DMX offset): Dimmer"],
+  });
+});
+
+// MVR import and export (lighting UI design section 11). Tests that need a
+// different answer route their own with `page.route`.
+app.post("/api/lighting/mvr/inspect", (_req, res) => {
+  res.json(MVR_INSPECTION);
+});
+
+app.post("/api/lighting/mvr/import", (_req, res) => {
+  res.json({
+    write: false,
+    plan: { ...MVR_INSPECTION.report, origin: [0, 1, 0.5] },
+  });
+});
+
+app.get("/api/lighting/mvr/export/summary", (_req, res) => {
+  res.json(MVR_EXPORT_SUMMARY);
+});
+
+app.get("/api/lighting/mvr/export", (req, res) => {
+  const file = (req.query.file as string) || "kellys.mvr";
+  res.set("Content-Type", "application/octet-stream");
+  res.set("Content-Disposition", `attachment; filename="${file}"`);
+  if (req.query.keep === "true") {
+    res.set("X-Mtrack-Kept", `lighting/export/${file}`);
+  }
+  res.send(Buffer.from("PK-mock-mvr"));
+});
+
+app.post("/api/lighting/venues/:name/aim-points", (_req, res) => {
+  res.json({
+    created: [{ name: "Brick 2 aim", fixture: "Brick 2", point: [2, 2.5, 0] }],
+    reloaded: false,
   });
 });
 

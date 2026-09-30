@@ -505,6 +505,11 @@ the MVR-space point, in millimeters, that becomes downstage-center. The bare
 form prints every fixture's position so you can pick it; a wrong guess is
 corrected by re-running the import with a better one.
 
+The web UI does the same in a browser: **Import an MVR** on the Lighting area's Venues page
+walks through the file, a plan where you click the front edge of the deck to set the origin, a
+review of what will be written, and the import itself. See
+[Import an MVR](../interfaces/web-ui.md#import-an-mvr).
+
 The seeded file is yours: tags start empty (shows target tags, not fixture
 names), the console's focus-point names are there to rename, and positions
 can be corrected by hand. It records where it came from:
@@ -546,6 +551,11 @@ point its beam passes through, within a degree, because pre-viz tools such as Bl
 a fixed fixture at its linked focus point and, without one, at the origin; aim fixed fixtures
 at a named focus point and they open in pre-viz as they are hung. A venue seeded from an MVR
 round-trips: importing the export merges it with nothing changed.
+
+The web UI's **Export an MVR** dialog on the Venues page downloads the archive to the browser
+instead (a copy under `lighting/export/` only if you ask), shows how many fixed fixtures are
+linked, and can add a focus point `<fixture> aim` for each unlinked one where its beam meets the
+deck. See [Export an MVR](../interfaces/web-ui.md#export-an-mvr).
 
 The same flow is available over MCP as `inspect_mvr`, `import_mvr` and `export_mvr`. Pixel bars and
 multi-section fixtures import with their identical sections ganged to one color (the report

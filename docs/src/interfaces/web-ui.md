@@ -616,6 +616,56 @@ fixed fixture's beam from its rotation, so an aim is checked at once.
 Every operation is one save of the venue file, and keeps the focus points, provenance and every
 field the operation did not change.
 
+### Import an MVR
+
+**Import an MVR** on the Venues page (and a link on the Overview) opens a four-step wizard at
+`#/lighting/import`, over the same library as `mtrack import-mvr` and the MCP tools. The
+browser keeps the file and uploads it at each step; the server holds nothing in between, and
+nothing is written until the last step.
+
+1. **File.** Drop an `.mvr` or choose one. The page shows what it holds: fixtures, fixture
+   types that have a GDTF mode and fixtures that do not, universes, focus points and scenery.
+   The venue name defaults to the file's name; an existing venue of that name that came from
+   this MVR is merged into. A file that is not an MVR, or is over the archive caps, is refused
+   here with the reason.
+2. **Stage origin.** A top-down plan of the file's fixtures, focus points and scenery, in the
+   file's own millimeters (up the page is upstage). Click the front edge of the deck, in the
+   middle: that point becomes the stage origin. A ring marks a **suggestion**, and **Use the
+   suggestion** applies it: the middle of the deck's front edge, at the deck's top, when the
+   scenery carries a stage floor; otherwise the middle of the fixtures' front edge at the floor.
+   The X, Y and Z fields hold the chosen point and can be typed in; on the focused plan the arrow
+   keys move it 100 mm (1 m with shift).
+
+   mtrack finds the deck by name: a plain scene object (not a truss, support or screen) whose
+   name or mesh file says *stage*, *deck*, *floor*, *podium*, *riser*, *platform* or the like,
+   sized from the bounds of its glTF (`.glb`) meshes. A file whose stage floor is named
+   otherwise, or drawn only as `.3ds`, has no deck to suggest and falls back to the fixtures.
+3. **Review.** What the import will do, without writing it: whether this seeds a new venue or
+   merges into an existing one (a merge keeps tags, focus names and fixtures you added by hand),
+   fixtures to seed, fixture types to import and which are already in the library, fixtures that
+   become `# TODO` lines with the reason for each, and how much scenery the 3D view can draw.
+4. **Import.** Writes the files and reports them. Two buttons follow: **Fit your shows**, since a
+   seeded venue is untagged, and **Open in Venues**. Importing does not make the venue current;
+   pick it on the Groups page.
+
+### Export an MVR
+
+**Export an MVR** on a venue's card opens a dialog. It takes the file name (default
+`<venue>.mvr`, made file-name-safe), **One layer per first tag**, and shows a summary computed
+without writing anything: fixtures and how many have positions, GDTF files embedded from the
+library and generated for native types, focus points, and how many fixed fixtures are linked to
+a focus point.
+
+Pre-viz tools aim a fixed fixture (one with no pan or tilt) at its linked focus point and,
+without one, at the origin. When some are unlinked the dialog says so and offers **Add an aim
+point per fixture**: for each one, a focus point named `<fixture> aim` is added to the venue
+file where its rest beam meets the deck, or 3 m along the beam when it does not meet the deck
+within 50 m. Fixtures with no position are skipped, and the rest of the file, including
+positions, rotations and comments, is left as it was. The summary is read again and the export
+links them. **Export as is** downloads without adding any. **Download** sends the `.mvr` to the
+browser; nothing is written under `lighting/export/` unless **Keep a copy in the project** is
+ticked.
+
 ### Groups
 
 Directories, the current venue, inline fixtures and logical groups with their constraints. Pick

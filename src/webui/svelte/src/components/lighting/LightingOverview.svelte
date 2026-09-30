@@ -95,6 +95,12 @@
 
 <div class="hub" data-testid="lighting-overview">
   <p class="hub__lede">{$t("lighting.hub.lede")}</p>
+  <p class="hub__lede">
+    <a href="#/lighting/import" data-testid="hub-import-mvr"
+      >{$t("lighting.mvr.import.button")}</a
+    >
+    <span class="hub__hint">{$t("lighting.mvr.import.hubHint")}</span>
+  </p>
 
   {#if error}
     <p class="hub__error" role="alert" data-testid="hub-error">

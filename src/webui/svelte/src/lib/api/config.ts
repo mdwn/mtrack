@@ -428,6 +428,236 @@ export async function importGdtf(
   return res.json();
 }
 
+// --- MVR import and export (lighting UI design section 11) ---
+
+export type Vec3Mm = [number, number, number];
+
+export interface MvrBoundsMm {
+  min: Vec3Mm;
+  max: Vec3Mm;
+}
+
+/** The file seen from above, in the file's own millimeters. */
+export interface MvrSceneView {
+  fixtures: {
+    name: string;
+    layer: string;
+    position_mm: Vec3Mm | null;
+  }[];
+  focus_points: { name: string; position_mm: Vec3Mm | null }[];
+  scenery: {
+    name: string;
+    kind: string;
+    deck: boolean;
+    bounds_mm: MvrBoundsMm | null;
+  }[];
+  /** The stage floor's bounds, when the scenery carries one. */
+  deck_mm: MvrBoundsMm | null;
+}
+
+export interface MvrPlannedType {
+  name: string;
+  archive: string;
+  mode: string;
+  existing: boolean;
+  fixture_file: string;
+}
+
+export interface MvrPlannedFixture {
+  name: string;
+  layer: string;
+  fixture_type: string | null;
+  patch: [number, number] | null;
+  position: Vec3 | null;
+  rotation: Vec3 | null;
+  tags: string[];
+  todo: string | null;
+  change: string | null;
+}
+
+/** What an import would do (and, after a write, did): the MCP plan. */
+export interface MvrPlan {
+  venue_name: string;
+  venue_file: string;
+  archive: string;
+  merge: boolean;
+  origin: Vec3;
+  fixture_types: MvrPlannedType[];
+  fixtures: MvrPlannedFixture[];
+  removed_fixtures: { name: string; tags: string[] }[];
+  kept_fixtures: string[];
+  focus_points: { name: string; point: Vec3; change: string | null }[];
+  removed_focus_points: string[];
+  kept_focus_points: string[];
+  scenery_objects: number;
+  scenery_meshes_undrawn: number;
+  warnings: string[];
+}
+
+export interface MvrImportReport extends MvrPlan {
+  written: string[];
+  distillation_warnings: Record<string, string[]>;
+}
+
+export interface MvrInspection {
+  file_name: string;
+  report: MvrPlan;
+  scene: MvrSceneView;
+}
+
+/** Where the lighting directories are, when a profile moves them. */
+export interface MvrDirs {
+  venuesDir?: string;
+  fixtureTypesDir?: string;
+}
+
+function mvrForm(
+  file: File,
+  fields: Record<string, string | undefined>,
+  dirs: MvrDirs,
+): FormData {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    if (value) form.append(key, value);
+  }
+  if (dirs.venuesDir) form.append("venues_dir", dirs.venuesDir);
+  if (dirs.fixtureTypesDir)
+    form.append("fixture_types_dir", dirs.fixtureTypesDir);
+  form.append("file", file, file.name);
+  return form;
+}
+
+/** Reads an MVR: what an import would do and how the file looks from above.
+ *  Writes nothing; refuses what is not an MVR with the parser's reason. */
+export async function inspectMvr(
+  file: File,
+  name: string | undefined,
+  dirs: MvrDirs = {},
+): Promise<MvrInspection> {
+  const res = await fetch("/api/lighting/mvr/inspect", {
+    method: "POST",
+    body: mvrForm(file, { name }, dirs),
+  });
+  if (!res.ok) throw await apiError(res, "Failed to read the MVR");
+  return res.json();
+}
+
+/** The import's plan (`write` false) or its report (`write` true). */
+export async function importMvr(
+  file: File,
+  options: { name: string; origin: Vec3Mm; write: boolean },
+  dirs: MvrDirs = {},
+): Promise<{
+  write: boolean;
+  plan?: MvrPlan;
+  report?: MvrImportReport;
+  reloaded?: boolean;
+}> {
+  const res = await fetch("/api/lighting/mvr/import", {
+    method: "POST",
+    body: mvrForm(
+      file,
+      {
+        name: options.name,
+        origin: options.origin.join(","),
+        write: options.write ? "true" : "false",
+      },
+      dirs,
+    ),
+  });
+  if (!res.ok) throw await apiError(res, "Failed to import the MVR");
+  return res.json();
+}
+
+export interface MvrExportSummary {
+  venue: string;
+  /** The name a download would carry. */
+  file_name: string;
+  fixtures: number;
+  positioned_fixtures: number;
+  focus_points: number;
+  embedded_gdtfs: string[];
+  generated_gdtfs: Record<string, string>;
+  /** Positioned fixed fixtures, each with the focus point it links to. */
+  fixed_fixtures: { name: string; focus: string | null }[];
+  warnings: string[];
+}
+
+function exportParams(
+  venue: string,
+  extra: Record<string, string | undefined>,
+  dirs: MvrDirs,
+): string {
+  const params = new URLSearchParams({ venue });
+  for (const [key, value] of Object.entries(extra)) {
+    if (value !== undefined) params.set(key, value);
+  }
+  if (dirs.venuesDir) params.set("venues_dir", dirs.venuesDir);
+  if (dirs.fixtureTypesDir)
+    params.set("fixture_types_dir", dirs.fixtureTypesDir);
+  return params.toString();
+}
+
+/** What an export would hold, without sending the archive. */
+export async function fetchMvrExportSummary(
+  venue: string,
+  dirs: MvrDirs = {},
+): Promise<MvrExportSummary> {
+  const res = await get(
+    `/lighting/mvr/export/summary?${exportParams(venue, {}, dirs)}`,
+  );
+  if (!res.ok) throw await apiError(res, "Failed to summarize the export");
+  return res.json();
+}
+
+/** Downloads a venue as an MVR: the archive as a blob, and the project path
+ *  of the kept copy when `keep` was asked for. */
+export async function downloadMvrExport(
+  venue: string,
+  options: { file: string; layersFromTags: boolean; keep: boolean },
+  dirs: MvrDirs = {},
+): Promise<{ blob: Blob; fileName: string; kept: string | null }> {
+  const params = exportParams(
+    venue,
+    {
+      file: options.file,
+      layers_from_tags: String(options.layersFromTags),
+      keep: String(options.keep),
+    },
+    dirs,
+  );
+  const res = await get(`/lighting/mvr/export?${params}`);
+  if (!res.ok) throw await apiError(res, "Failed to export the venue");
+  return {
+    blob: await res.blob(),
+    fileName: options.file,
+    kept: res.headers.get("x-mtrack-kept"),
+  };
+}
+
+export interface AimPointsResult {
+  created: { name: string; fixture: string; point: Vec3 }[];
+  reloaded: boolean;
+}
+
+/** Adds a focus point for each unlinked fixed fixture, where its rest beam
+ *  meets the deck. */
+export async function addAimPoints(
+  venue: string,
+  dirs: MvrDirs = {},
+): Promise<AimPointsResult> {
+  const params = new URLSearchParams();
+  if (dirs.venuesDir) params.set("venues_dir", dirs.venuesDir);
+  if (dirs.fixtureTypesDir)
+    params.set("fixture_types_dir", dirs.fixtureTypesDir);
+  const query = params.toString();
+  const res = await post(
+    `/lighting/venues/${encodeURIComponent(venue)}/aim-points${query ? `?${query}` : ""}`,
+  );
+  if (!res.ok) throw await apiError(res, "Failed to add aim points");
+  return res.json();
+}
+
 export async function fetchFixtureType(
   name: string,
   dir?: string,

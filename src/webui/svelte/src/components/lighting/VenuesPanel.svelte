@@ -19,6 +19,7 @@
   import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "../config/Tooltip.svelte";
   import TagInput from "../config/TagInput.svelte";
+  import MvrExportDialog from "./MvrExportDialog.svelte";
   import {
     fetchFixtureTypes,
     fetchVenues,
@@ -72,6 +73,8 @@
   let editVenueFocusPoints = $state<Record<string, Vec3>>({});
   let editVenueSource = $state<VenueSource | null>(null);
   let isNewVenue = $state(false);
+  /** The venue whose "Export an MVR" dialog is open. */
+  let exportingVenue = $state<string | null>(null);
 
   // Available fixture type names for venue fixture dropdowns
   let fixtureTypeNames = $derived(Object.keys(fixtureTypes).sort());
@@ -362,6 +365,9 @@
         <button class="btn" onclick={loadVenues} disabled={venueLoading}
           >{$t("common.refresh")}</button
         >
+        <a class="btn" href="#/lighting/import" data-testid="venues-import-mvr"
+          >{$t("lighting.mvr.import.button")}</a
+        >
         <button class="btn btn-primary" onclick={startNewVenue}
           >{$t("lighting.newVenue")}</button
         >
@@ -399,13 +405,23 @@
           >
             <div class="item-card-header">
               <span class="item-name">{name}</span>
-              <button
-                class="btn btn-danger btn-sm"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  removeVenue(name);
-                }}>{$t("common.delete")}</button
-              >
+              <span class="item-actions">
+                <button
+                  class="btn btn-sm"
+                  data-testid="venue-export-mvr-{name}"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    exportingVenue = name;
+                  }}>{$t("lighting.mvr.export.button")}</button
+                >
+                <button
+                  class="btn btn-danger btn-sm"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    removeVenue(name);
+                  }}>{$t("common.delete")}</button
+                >
+              </span>
             </div>
             <div class="item-meta">
               {$t("lighting.fixtureCount", {
@@ -424,6 +440,16 @@
     {/if}
   {/if}
 </div>
+
+{#if exportingVenue}
+  <MvrExportDialog
+    venue={exportingVenue}
+    fixtureTypesDir={ftDir}
+    venuesDir={venueDir}
+    onclose={() => (exportingVenue = null)}
+    onchanged={loadVenues}
+  />
+{/if}
 
 <style>
   .sub-panel {
@@ -500,6 +526,19 @@
     justify-content: space-between;
     align-items: center;
     margin-bottom: 4px;
+  }
+
+  .item-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  a.btn {
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
   }
 
   .item-name {
