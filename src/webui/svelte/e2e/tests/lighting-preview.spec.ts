@@ -467,10 +467,14 @@ test.describe("Stage 3D Preview", () => {
     test("'no state yet' appears in Live until the engine reports", async ({
       page,
     }) => {
+      // A wsId the mock sends no fixture state to: the pill must be seen
+      // before any state, and the mock's opening burst would otherwise
+      // beat the assertion on a fast machine.
+      const quiet = `${wsId}-nostate`;
       await routeSongs(page);
-      await page.goto(previewUrl(wsId));
+      await page.goto(previewUrl(quiet));
       await expect(page.getByTestId("caveat-nostate")).toBeVisible();
-      await sendWsMessage(page, wsId, {
+      await sendWsMessage(page, quiet, {
         type: "state",
         fixtures: { "mover-1": { red: 255 } },
         poses: {},

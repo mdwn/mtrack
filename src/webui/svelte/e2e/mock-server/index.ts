@@ -741,11 +741,16 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 // The opening burst every connection gets, in the same order as the real
 // server. Resolves once the last message is out: a test's own state push has
 // to land after it, or the burst overwrites what the test just set up.
-function sendInitialState(ws: WebSocket): Promise<void> {
+// A wsId ending in "-nostate" gets no fixture state: for a test that must
+// see the page before the engine has reported anything, which the burst
+// would otherwise win against on a fast machine.
+function sendInitialState(ws: WebSocket, wsId: string | null): Promise<void> {
   ws.send(JSON.stringify(METADATA_STATE));
   const later: [number, unknown][] = [
     [50, PLAYBACK_STATE],
-    [100, FIXTURE_STATE],
+    ...(wsId?.endsWith("-nostate")
+      ? []
+      : ([[100, FIXTURE_STATE]] as [number, unknown][])),
     [150, WAVEFORM_DATA],
     [200, LOG_LINES],
   ];
@@ -766,7 +771,7 @@ wss.on("connection", (ws, req) => {
   // Extract wsId from query parameter for test isolation.
   const url = new URL(req.url ?? "", "http://localhost");
   const wsId = url.searchParams.get("wsId");
-  const ready = sendInitialState(ws);
+  const ready = sendInitialState(ws, wsId);
   if (wsId) {
     wsConnections.set(wsId, { ws, ready });
     // Only if this socket is still the registered one: a reconnect under the
