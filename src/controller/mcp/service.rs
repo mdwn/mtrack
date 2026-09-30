@@ -1347,12 +1347,7 @@ impl McpServer {
                     .songs()
                     .get(name)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let mut shows: Vec<_> = song
-                    .dsl_lighting_shows()
-                    .iter()
-                    .flat_map(|dsl| dsl.shows().values().cloned())
-                    .collect();
-                sort_shows(&mut shows);
+                let shows = crate::lighting::evaluate::registered_shows(&song);
                 if shows.is_empty() {
                     return Err(McpError::invalid_params(
                         format!(
@@ -1411,53 +1406,13 @@ impl McpServer {
         // with the effects loop thread, and evaluation is pure CPU besides — both
         // belong off the async worker.
         let evaluations = tokio::task::spawn_blocking(move || {
-            // Resolve every group the show mentions once, up front, so the lock
-            // is held for a short bounded step rather than across evaluation.
-            let (fixtures, focus_points, group_map) = match &lighting_system {
-                Some(system) => {
-                    let mut guard = system.lock();
-                    let fixtures = guard.get_current_venue_fixtures().unwrap_or_default();
-                    let focus_points: HashMap<String, [f64; 3]> = guard
-                        .get_current_venue()
-                        .map(|venue| {
-                            venue
-                                .focus_points()
-                                .iter()
-                                .map(|(name, point)| (name.clone(), *point))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let mut group_map: HashMap<String, Vec<String>> = HashMap::new();
-                    for name in group_names(&shows) {
-                        let resolved = guard.resolve_logical_group_graceful(&name);
-                        group_map.insert(name, resolved);
-                    }
-                    (fixtures, focus_points, group_map)
-                }
-                None => (Vec::new(), HashMap::new(), HashMap::new()),
-            };
-
-            crate::lighting::evaluate::evaluate_show(
+            crate::lighting::evaluate::evaluate_with_system(
                 shows,
-                &fixtures,
-                &focus_points,
                 fallback_tempo.as_ref(),
                 &times,
-                |mut effect| {
-                    effect.target_fixtures = effect
-                        .target_fixtures
-                        .iter()
-                        .flat_map(|target| match group_map.get(target) {
-                            Some(resolved) => resolved.clone(),
-                            // Not a known group — already a fixture name, or a
-                            // name that resolves to nothing. Either way, leave it
-                            // for the engine to accept or reject.
-                            None => vec![target.clone()],
-                        })
-                        .collect();
-                    effect
-                },
+                lighting_system.as_deref(),
             )
+            .evaluations
         })
         .await
         .map_err(|e| McpError::internal_error(format!("evaluation failed: {e}"), None))?;

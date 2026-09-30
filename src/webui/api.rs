@@ -144,6 +144,7 @@ pub fn router() -> Router<WebUiState> {
         .route("/lighting/validate", post(lighting_api::validate_lighting))
         .route("/lighting/readiness", get(lighting_api::get_readiness))
         .route("/lighting/fit", get(lighting_api::get_fit))
+        .route("/lighting/evaluate", post(lighting_api::evaluate_lighting))
         .route("/config/store", get(config_api::get_config_store))
         .route("/config/audio", put(config_api::put_config_audio))
         .route("/config/midi", put(config_api::put_config_midi))
