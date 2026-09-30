@@ -35,8 +35,9 @@ use serde_json::json;
 use super::super::config_io;
 use super::super::server::WebUiState;
 use super::lighting_api::{
-    project_root, reload_if_current_venue, resolve_lighting_dir, validate_lighting_name,
-    DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR,
+    content_version, if_match_version, project_root, reload_if_current_venue, resolve_lighting_dir,
+    stale_venue_response, validate_lighting_name, DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR,
+    VENUE_WRITES,
 };
 use crate::lighting;
 use crate::lighting::export::{MvrExportOptions, EXPORT_DIR};
@@ -430,11 +431,14 @@ pub(super) struct AimQuery {
 /// 50 m. Fixtures with no position are skipped. The points are added to the
 /// venue file in place — positions, rotations, tags, provenance and comments
 /// untouched — and the running engine reloads the venue if it is playing it.
-/// Answers `{created: [{name, fixture, point}], reloaded}`.
+/// An `If-Match` version, when sent, must be the venue file's current one
+/// (409 otherwise). Answers `{created: [{name, fixture, point}], reloaded,
+/// version}`.
 pub(super) async fn add_aim_points(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
     Query(query): Query<AimQuery>,
+    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
     let venues_dir = checked_dir(&state, query.venues_dir.as_deref(), DEFAULT_VENUES_DIR)?;
@@ -445,16 +449,22 @@ pub(super) async fn add_aim_points(
     )?;
     let project = project_root(&state.config_path)?;
     let venue_name = name.clone();
-    let created = super::helpers::spawn_blocking_io("add aim points", move || {
+    let expected = if_match_version(&headers);
+    let outcome = super::helpers::spawn_blocking_io("add aim points", move || {
         Ok::<_, String>(add_aim_points_blocking(
             &project,
             &venue_name,
             &venues_dir,
             &fixture_types_dir,
+            expected.as_deref(),
         ))
     })
-    .await?
-    .map_err(bad_request)?;
+    .await?;
+    let (created, version) = match outcome {
+        Ok(done) => done,
+        Err(AimError::Stale(current)) => return Err(stale_venue_response(&name, Some(current))),
+        Err(AimError::Message(e)) => return Err(bad_request(e)),
+    };
     let reloaded = if created.is_empty() {
         false
     } else {
@@ -469,7 +479,7 @@ pub(super) async fn add_aim_points(
     Ok::<_, Response>(
         (
             StatusCode::OK,
-            Json(json!({"created": created, "reloaded": reloaded})),
+            Json(json!({"created": created, "reloaded": reloaded, "version": version})),
         )
             .into_response(),
     )
@@ -478,12 +488,28 @@ pub(super) async fn add_aim_points(
 /// The points created: (focus point name, fixture, position).
 type Created = Vec<(String, String, Vec3)>;
 
+/// Why the aim points were not added.
+enum AimError {
+    Message(String),
+    /// The file's version is not the one the client sent; carries the
+    /// current one.
+    Stale(String),
+}
+
+impl From<String> for AimError {
+    fn from(e: String) -> Self {
+        AimError::Message(e)
+    }
+}
+
+/// Adds the points; returns them with the venue file's version afterwards.
 fn add_aim_points_blocking(
     project: &std::path::Path,
     venue_name: &str,
     venues_dir: &str,
     fixture_types_dir: &str,
-) -> Result<Created, String> {
+    expected_version: Option<&str>,
+) -> Result<(Created, String), AimError> {
     let options = MvrExportOptions {
         fixture_types_dir: fixture_types_dir.to_string(),
         venues_dir: venues_dir.to_string(),
@@ -493,15 +519,13 @@ fn add_aim_points_blocking(
     // already linked, so this can never disagree with the summary.
     let (_, report) =
         lighting::export::export_mvr_bytes(&options, project).map_err(|e| e.to_string())?;
+    let _guard = VENUE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
     let unlinked: Vec<&str> = report
         .fixed_fixtures
         .iter()
         .filter(|f| f.focus.is_none())
         .map(|f| f.name.as_str())
         .collect();
-    if unlinked.is_empty() {
-        return Ok(Vec::new());
-    }
 
     // The file that holds the venue, whatever it is called.
     let dir = project.join(venues_dir);
@@ -530,6 +554,14 @@ fn add_aim_points_blocking(
     let (path, content, venue) =
         found.ok_or_else(|| format!("no venue file in {venues_dir} defines \"{venue_name}\""))?;
 
+    let current = content_version(content.as_bytes());
+    if expected_version.is_some_and(|expected| expected != current) {
+        return Err(AimError::Stale(current));
+    }
+    if unlinked.is_empty() {
+        return Ok((Vec::new(), current));
+    }
+
     let mut taken: std::collections::HashSet<String> =
         venue.focus_points().keys().cloned().collect();
     let mut created: Created = Vec::new();
@@ -551,7 +583,7 @@ fn add_aim_points_blocking(
         created.push((point_name, fixture_name.to_string(), point));
     }
     if created.is_empty() {
-        return Ok(created);
+        return Ok((created, current));
     }
 
     // One textual-edit path: the venue with its new points, patched into the
@@ -563,7 +595,7 @@ fn add_aim_points_blocking(
     let desired = venue.clone().with_focus_points(focus_points);
     let updated = lighting::venue_patch::patch_venue(&content, venue_name, &desired)?;
     config_io::staged_write(&path, &updated)?;
-    Ok(created)
+    Ok((created, content_version(updated.as_bytes())))
 }
 
 #[cfg(test)]
@@ -992,6 +1024,40 @@ mod test {
         let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
         assert!(body["created"].as_array().unwrap().is_empty(), "{body}");
         assert_eq!(std::fs::read_to_string(&venue_path).unwrap(), after);
+    }
+
+    #[tokio::test]
+    async fn aim_points_against_a_stale_version_are_refused_and_change_nothing() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        imported(&app).await;
+        let path = dir.path().join("lighting/venues/kellys.venue");
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let post = |version: String| {
+            app.clone().oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/lighting/venues/kellys/aim-points")
+                    .header("if-match", version)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+        let response = post("not-the-version".to_string()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+
+        let response = post(super::content_version(before.as_bytes()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            body["version"].as_str().unwrap(),
+            super::content_version(after.as_bytes())
+        );
     }
 
     #[tokio::test]

@@ -19,11 +19,12 @@
   import { showConfirm } from "../../lib/dialog.svelte";
   import { registerDirtyGuard } from "../../lib/dirtyGuard";
   import { playbackStore } from "../../lib/ws/stores";
+  import { ConflictError } from "../../lib/api/config";
   import {
     fetchRunningProfile,
     loadProfileSet,
     pickRunningProfile,
-    readProfile,
+    readProfileVersioned,
     writeProfile,
     parseProfileYaml,
     type ProfileEntry,
@@ -44,6 +45,8 @@
   let running = $state<string | null>(null);
   let selected = $state<ProfileEntry | null>(null);
   let profile = $state<any>(null);
+  /** The version of the profile file as read (file profiles only). */
+  let fileVersion: string | null = null;
   let dirty = $state(false);
   let saving = $state(false);
   let saveMsg = $state("");
@@ -68,7 +71,9 @@
     return `#/lighting/groups?profile=${encodeURIComponent(name)}`;
   }
 
-  /** The profile the URL asks for, else the one the player is running. */
+  /** The profile the URL asks for, else the one the player is running.
+   *  With neither, nothing: the user picks, and nothing is preselected, so
+   *  no machine's profile is edited by accident. */
   function target(): ProfileEntry | null {
     if (!set) return null;
     return (
@@ -81,15 +86,18 @@
   async function open(entry: ProfileEntry | null) {
     selected = entry;
     profile = null;
+    fileVersion = null;
     dirty = false;
     saveMsg = "";
     saveOk = false;
     if (!entry || !set) return;
     try {
-      const p = await readProfile(entry.ref, set.inline);
+      const read = await readProfileVersioned(entry.ref, set.inline);
+      const p = read.profile;
       // A profile can carry `dmx` without a `lighting` block yet.
       if (p?.dmx && !p.dmx.lighting) p.dmx.lighting = {};
       profile = p;
+      fileVersion = read.version;
     } catch (e: any) {
       error = e.message;
     }
@@ -154,7 +162,15 @@
     saveMsg = "";
     saveOk = false;
     try {
-      const snapshot = await writeProfile(selected.ref, profile, set.checksum);
+      const written = await writeProfile(
+        selected.ref,
+        profile,
+        set.checksum,
+        false,
+        fileVersion,
+      );
+      fileVersion = written.version;
+      const snapshot = written.snapshot;
       if (snapshot) {
         set.yaml = snapshot.yaml;
         set.checksum = snapshot.checksum;
@@ -164,7 +180,15 @@
       saveOk = true;
       setTimeout(() => (saveOk = false), 2000);
     } catch (e: any) {
-      saveMsg = e.message;
+      if (e instanceof ConflictError) {
+        // The profile file changed since it was opened: show it as it is
+        // now and leave the change to be made again.
+        const again = selected;
+        await open(again);
+        saveMsg = get(t)("lighting.groups.changedElsewhere");
+      } else {
+        saveMsg = e.message;
+      }
     } finally {
       saving = false;
     }
@@ -207,9 +231,12 @@
           id="groups-profile"
           class="input"
           bind:this={selectEl}
-          value={selected?.name}
+          value={selected?.name ?? ""}
           onchange={onPick}
         >
+          {#if !selected}
+            <option value="" disabled>{$t("lighting.groups.choose")}</option>
+          {/if}
           {#each set.entries as entry (entry.name)}
             <option value={entry.name}>
               {entry.name}{entry.hostname && entry.hostname === running
@@ -240,10 +267,19 @@
       </div>
     </div>
 
-    {#if profile && profile.dmx}
+    {#if !selected}
+      <div class="groups-placeholder" data-testid="groups-no-match">
+        <p>{$t("lighting.groups.noMatch")}</p>
+      </div>
+    {:else if profile && profile.dmx}
       <div class="groups-body">
         <ProfileLightingPanel bind:lighting={profile.dmx.lighting} {onchange} />
       </div>
+      <p class="groups-note" data-testid="groups-rewrite-note">
+        {selected.ref.kind === "file"
+          ? $t("lighting.groups.rewriteFile")
+          : $t("lighting.groups.rewriteInline")}
+      </p>
     {:else if profile}
       <div class="groups-placeholder" data-testid="groups-no-dmx">
         <p>{$t("lighting.groups.noDmx")}</p>
@@ -300,6 +336,11 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     padding: 16px;
+  }
+  .groups-note {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-dim);
   }
   .groups-placeholder {
     display: flex;

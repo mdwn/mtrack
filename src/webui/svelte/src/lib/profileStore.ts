@@ -126,47 +126,75 @@ export async function loadProfileSet(): Promise<ProfileSet> {
   };
 }
 
-/** Reads one profile for editing. Inline profiles come from the already
- *  loaded list (`inline`); file profiles are fetched. The result is a copy
- *  the caller may edit freely. */
+/** Reads one profile for editing, with the version of the file it came from
+ *  (file profiles only: an inline profile is guarded by the config checksum).
+ *  Inline profiles come from the already loaded list (`inline`); file
+ *  profiles are fetched. The profile is a copy the caller may edit freely. */
+export async function readProfileVersioned(
+  ref: ProfileRef,
+  inline: any[],
+): Promise<{ profile: any; version: string | null }> {
+  if (ref.kind === "file") {
+    const got = await fetchProfileFile(ref.filename);
+    return { profile: got.profile, version: got.version ?? null };
+  }
+  return {
+    profile: JSON.parse(JSON.stringify(inline[ref.index])),
+    version: null,
+  };
+}
+
 export async function readProfile(
   ref: ProfileRef,
   inline: any[],
 ): Promise<any> {
-  if (ref.kind === "file") {
-    return (await fetchProfileFile(ref.filename)).profile;
-  }
-  return JSON.parse(JSON.stringify(inline[ref.index]));
+  return (await readProfileVersioned(ref, inline)).profile;
 }
 
-/** Writes one profile. Returns the new config snapshot for an inline profile
- *  (whose checksum the next save needs), or null for a file, which has none. */
+/** What a profile write hands back: the new config snapshot for an inline
+ *  profile (whose checksum the next save needs), or the new file version for
+ *  a file profile (which the next save must present). */
+export interface ProfileWrite {
+  snapshot: ConfigSnapshot | null;
+  version: string | null;
+}
+
+/** Writes one profile. Inline profiles are saved against the config
+ *  `checksum`, file profiles against the file `version` they were read at;
+ *  either one changed since is refused with a `ConflictError` (a file
+ *  without a version, such as a new one, is written unconditionally). */
 export async function writeProfile(
   ref: ProfileRef,
   profile: object,
   checksum: string,
   isNew = false,
-): Promise<ConfigSnapshot | null> {
+  version: string | null = null,
+): Promise<ProfileWrite> {
   if (ref.kind === "file") {
-    await saveProfileFile(ref.filename, profile);
-    return null;
+    const saved = await saveProfileFile(
+      ref.filename,
+      profile,
+      version ?? undefined,
+    );
+    return { snapshot: null, version: saved };
   }
-  return isNew
-    ? addProfile(profile, checksum)
-    : updateProfile(ref.index, profile, checksum);
+  const snapshot = isNew
+    ? await addProfile(profile, checksum)
+    : await updateProfile(ref.index, profile, checksum);
+  return { snapshot, version: null };
 }
 
 /** The profile the player is running: the one whose `hostname` matches what
- *  `/api/status` reports as `hardware.profile`, else the first. */
+ *  `/api/status` reports as `hardware.profile`. There is no fallback: when
+ *  the status cannot be read or no profile names this host, the answer is
+ *  null, and the caller has the user choose. Falling back to the first
+ *  profile let one machine's editor write another machine's profile. */
 export function pickRunningProfile(
   entries: ProfileEntry[],
   running: string | null | undefined,
 ): ProfileEntry | null {
-  if (entries.length === 0) return null;
-  return (
-    (running ? entries.find((e) => e.hostname === running) : undefined) ??
-    entries[0]
-  );
+  if (!running) return null;
+  return entries.find((e) => e.hostname === running) ?? null;
 }
 
 /** The running profile's name as `/api/status` reports it, or null when the
@@ -218,13 +246,20 @@ export async function addUniverseToRunningProfile(
     fetchRunningProfile(),
   ]);
   const entry = pickRunningProfile(set.entries, running);
-  if (!entry) throw new Error("No hardware profile to add the universe to");
-  const profile = await readProfile(entry.ref, set.inline);
+  if (!entry) {
+    throw new Error(
+      "No hardware profile matches this host; choose one on the Groups page",
+    );
+  }
+  const { profile, version } = await readProfileVersioned(
+    entry.ref,
+    set.inline,
+  );
   const dmx = (profile.dmx ??= {});
   const universes: any[] = (dmx.universes ??= []);
   if (!universes.some((u) => u?.universe === universe)) {
     universes.push({ universe, name: `u${universe}` });
-    await writeProfile(entry.ref, profile, set.checksum);
+    await writeProfile(entry.ref, profile, set.checksum, false, version);
   }
   return entry.name;
 }

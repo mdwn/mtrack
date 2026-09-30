@@ -213,6 +213,131 @@ test.describe("Lighting area: Groups", () => {
     await expect(page.getByText("Discard unsaved changes?")).toBeVisible();
   });
 
+  test("no profile matching this host: nothing is preselected and Save waits for a choice", async ({
+    page,
+  }) => {
+    await routeTwoProfiles(page);
+    // The player runs a profile that none of these is (or status is down).
+    await page.route("**/api/status", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ hardware: { profile: "some-other-machine" } }),
+      });
+    });
+    await page.goto("/#/lighting/groups");
+    await expect(page.getByTestId("groups-no-match")).toBeVisible();
+    const picker = page.locator("#groups-profile");
+    await expect(picker).toHaveValue("");
+    await expect(picker.locator("option:checked")).toHaveText(
+      "Choose a profile...",
+    );
+    await expect(page.locator(".group-card")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Save", exact: true }),
+    ).toBeDisabled();
+
+    // An explicit choice opens that profile.
+    await picker.selectOption("other-host");
+    await expect(page.getByTestId("groups-no-match")).toHaveCount(0);
+    await expect(page.locator("#lighting-venue")).toHaveValue("test-venue");
+  });
+
+  test("a status that cannot be read selects nothing either", async ({
+    page,
+  }) => {
+    await routeTwoProfiles(page);
+    await page.route("**/api/status", (route) => route.abort());
+    await page.goto("/#/lighting/groups");
+    await expect(page.getByTestId("groups-no-match")).toBeVisible();
+    await expect(page.locator("#groups-profile")).toHaveValue("");
+  });
+
+  test("a file profile changed elsewhere is refused, reloaded, and the note says comments are not kept", async ({
+    page,
+  }) => {
+    const yaml = "songs: songs\nprofiles_dir: profiles\n";
+    await page.route("**/api/config/store", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ yaml, checksum: "c" }),
+      });
+    });
+    await page.route("**/api/profiles", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            filename: "test-host.yaml",
+            hostname: "test-host",
+            has_audio: false,
+            has_midi: false,
+            has_dmx: true,
+            has_trigger: false,
+            has_controllers: false,
+          },
+        ]),
+      });
+    });
+    let version = "v1";
+    const puts: { ifMatch: string | undefined }[] = [];
+    await page.route("**/api/profiles/test-host.yaml", async (route) => {
+      const request = route.request();
+      if (request.method() === "PUT") {
+        const ifMatch = request.headers()["if-match"];
+        if (ifMatch !== version) {
+          await route.fulfill({
+            status: 409,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: "changed since you loaded it",
+              conflict: true,
+              version,
+            }),
+          });
+          return;
+        }
+        puts.push({ ifMatch });
+        version = "v3";
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ status: "saved", version }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          profile: {
+            hostname: "test-host",
+            dmx: { universes: [], lighting: {} },
+          },
+          yaml: "",
+          version,
+        }),
+      });
+    });
+    await page.goto("/#/lighting/groups");
+    await expect(page.getByTestId("groups-rewrite-note")).toContainText(
+      "comments in it are not kept",
+    );
+    // Another tab saves the file first.
+    version = "v2";
+    await page.locator("#lighting-venue").selectOption("test-venue");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByText(/changed since you opened it/)).toBeVisible();
+    expect(puts).toHaveLength(0);
+    // Reloaded at the new version: reapplying saves.
+    await page.locator("#lighting-venue").selectOption("test-venue");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+    expect(puts).toEqual([{ ifMatch: "v2" }]);
+  });
+
   test("a profile without lighting points to Config", async ({ page }) => {
     // The default mock profile (test-host) has no `dmx` block.
     await page.goto("/#/lighting/groups");

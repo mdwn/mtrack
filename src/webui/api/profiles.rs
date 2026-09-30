@@ -28,10 +28,90 @@ use super::config_api::{reject_if_playing, reload_hardware_after_mutation};
 use super::helpers::{
     require_configured_dir, resolve_resource_path, spawn_blocking_io, validate_resource_name,
 };
+use super::lighting_api::{content_version, if_match_version};
 use crate::config::Profile;
 use config::Config;
 
 /// Validates a profile filename for use in file paths.
+/// Serialises every read-check-write of a profile file.
+static PROFILE_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A YAML document as JSON, for merging. `None` when it does not parse.
+fn yaml_to_json(text: &str) -> Option<serde_json::Value> {
+    use yaml_rust2::{Yaml, YamlLoader};
+    fn convert(y: &Yaml) -> serde_json::Value {
+        match y {
+            Yaml::Null | Yaml::BadValue | Yaml::Alias(_) => serde_json::Value::Null,
+            Yaml::Boolean(b) => (*b).into(),
+            Yaml::Integer(i) => (*i).into(),
+            Yaml::Real(r) => r
+                .parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map_or_else(|| r.clone().into(), serde_json::Value::Number),
+            Yaml::String(s) => s.clone().into(),
+            Yaml::Array(a) => a.iter().map(convert).collect(),
+            Yaml::Hash(h) => h
+                .iter()
+                .filter_map(|(k, v)| {
+                    let key = match k {
+                        Yaml::String(s) => s.clone(),
+                        Yaml::Integer(i) => i.to_string(),
+                        Yaml::Real(r) => r.clone(),
+                        Yaml::Boolean(b) => b.to_string(),
+                        _ => return None,
+                    };
+                    Some((key, convert(v)))
+                })
+                .collect(),
+        }
+    }
+    YamlLoader::load_from_str(text).ok()?.first().map(convert)
+}
+
+/// Copies into `new` the keys of the existing profile file that the typed
+/// profile does not know (a key this version does not model, or one added by
+/// hand), so a save from the UI does not silently drop them. Keys are
+/// compared case-insensitively, as the profile loader reads them. Only
+/// mappings are merged; list items are rewritten as the UI sent them.
+/// Comments are not carried: the YAML crate does not keep them.
+fn carry_unknown_keys(path: &std::path::Path, old_bytes: &[u8], new: &mut serde_json::Value) {
+    let Some(raw) = std::str::from_utf8(old_bytes).ok().and_then(yaml_to_json) else {
+        return;
+    };
+    let typed = Config::builder()
+        .add_source(config::File::from(path))
+        .build()
+        .and_then(|c| c.try_deserialize::<Profile>())
+        .ok()
+        .and_then(|p| serde_json::to_value(&p).ok());
+    let Some(typed) = typed else { return };
+    carry(&raw, &typed, new);
+}
+
+fn carry(raw: &serde_json::Value, typed: &serde_json::Value, new: &mut serde_json::Value) {
+    let (Some(raw), Some(typed), Some(new)) =
+        (raw.as_object(), typed.as_object(), new.as_object_mut())
+    else {
+        return;
+    };
+    for (key, value) in raw {
+        let lower = key.to_lowercase();
+        match typed.iter().find(|(k, _)| k.to_lowercase() == lower) {
+            None => {
+                if !new.keys().any(|k| k.to_lowercase() == lower) {
+                    new.insert(key.clone(), value.clone());
+                }
+            }
+            Some((typed_key, typed_value)) => {
+                if let Some(slot) = new.get_mut(typed_key) {
+                    carry(value, typed_value, slot);
+                }
+            }
+        }
+    }
+}
+
 #[allow(clippy::result_large_err)]
 fn validate_profile_filename(name: &str) -> Result<(), axum::response::Response> {
     validate_resource_name(name, "profile", None)
@@ -154,7 +234,11 @@ pub(super) async fn get_profile(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({"profile": profile_json, "yaml": raw})),
+            Json(json!({
+                "profile": profile_json,
+                "yaml": raw,
+                "version": content_version(raw.as_bytes()),
+            })),
         )
             .into_response(),
     )
@@ -164,6 +248,7 @@ pub(super) async fn get_profile(
 pub(super) async fn put_profile(
     State(state): State<WebUiState>,
     Path(filename): Path<String>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     validate_profile_filename(&filename)?;
@@ -189,7 +274,7 @@ pub(super) async fn put_profile(
         return Err((StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response());
     }
 
-    let yaml = crate::util::to_yaml_string(&profile).map_err(|e| {
+    let new_json = serde_json::to_value(&profile).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Failed to serialize profile: {}", e)})),
@@ -203,16 +288,60 @@ pub(super) async fn put_profile(
     // elsewhere is the operator's to set up.
     let profiles_dir = super::helpers::ensure_configured_dir(&profiles_dir, &state).await?;
 
+    // The file the profile already lives in (`.yaml`, else `.yml`, as the
+    // read does), so a save never leaves two files for one profile.
     // codeql[rust/path-injection] filename is validated; path is verified via resolve_resource_path.
-    let file_path = resolve_resource_path(&profiles_dir, &filename, "yaml")?;
+    let yaml_path = resolve_resource_path(&profiles_dir, &filename, "yaml")?;
+    let file_path = if yaml_path.is_file() {
+        yaml_path
+    } else {
+        let yml_path = resolve_resource_path(&profiles_dir, &filename, "yml")?;
+        if yml_path.is_file() {
+            yml_path
+        } else {
+            yaml_path
+        }
+    };
 
-    // Write the file off the async runtime.
+    // Write the file off the async runtime. The version check and the write
+    // happen under one lock so two saves cannot both pass the check.
+    let expected = if_match_version(&headers);
     let fp = file_path;
-    let yaml_owned = yaml;
-    spawn_blocking_io("write profile", move || {
-        config_io::staged_write(&fp, &yaml_owned)
+    let outcome = spawn_blocking_io("write profile", move || {
+        let _guard = PROFILE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::fs::read(&fp).ok();
+        if let Some(expected) = &expected {
+            let current = old.as_deref().map(content_version);
+            if current.as_deref() != Some(expected.as_str()) {
+                return Ok::<_, String>(Err(current));
+            }
+        }
+        let mut merged = new_json;
+        if let Some(old) = &old {
+            carry_unknown_keys(&fp, old, &mut merged);
+        }
+        let yaml = crate::util::to_yaml_string(&merged).map_err(|e| e.to_string())?;
+        config_io::staged_write(&fp, &yaml)?;
+        Ok(Ok(content_version(yaml.as_bytes())))
     })
     .await?;
+    let version = match outcome {
+        Ok(version) => version,
+        Err(current) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": format!(
+                        "profile \"{filename}\" changed since you loaded it (another tab or \
+                         page); it has been reloaded, so reapply your change"
+                    ),
+                    "conflict": true,
+                    "version": current,
+                })),
+            )
+                .into_response());
+        }
+    };
 
     // The store's copy is what the reload re-initialises from, and writing the
     // file did not touch it. Without this the save is acknowledged and then
@@ -242,7 +371,7 @@ pub(super) async fn put_profile(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({"status": "saved", "filename": filename})),
+            Json(json!({"status": "saved", "filename": filename, "version": version})),
         )
             .into_response(),
     )
@@ -572,6 +701,113 @@ mod test {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    const HOST_A: &str =
+        "hostname: host-a\naudio:\n  device: dev-a\n  track_mappings:\n    drums: [1]\n";
+
+    async fn put_host_a(
+        app: &axum::Router,
+        version: Option<&str>,
+        device: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut req = http::Request::builder()
+            .method("PUT")
+            .uri("/profiles/host-a")
+            .header("content-type", "application/json");
+        if let Some(v) = version {
+            req = req.header("if-match", v);
+        }
+        let body = serde_json::json!({
+            "hostname": "host-a",
+            "audio": {"device": device, "track_mappings": {"drums": [1]}}
+        });
+        let response = app
+            .clone()
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let text = response_body(response).await;
+        (status, serde_json::from_str(&text).unwrap_or_default())
+    }
+
+    #[tokio::test]
+    async fn a_stale_profile_version_is_refused_and_the_current_one_saves() {
+        let (mut state, dir) = test_state();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+        write_profile_file(&profiles_dir, "host-a.yaml", HOST_A);
+        state.profiles_dir = Some(profiles_dir.clone());
+        let app = router().with_state(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .uri("/profiles/host-a")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let got: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        let v1 = got["version"].as_str().unwrap().to_string();
+
+        let (status, saved) = put_host_a(&app, Some(&v1), "dev-b").await;
+        assert_eq!(status, StatusCode::OK);
+        let v2 = saved["version"].as_str().unwrap().to_string();
+        let after_first = std::fs::read_to_string(profiles_dir.join("host-a.yaml")).unwrap();
+        assert!(after_first.contains("dev-b"));
+
+        let (status, body) = put_host_a(&app, Some(&v1), "dev-c").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["version"].as_str().unwrap(), v2);
+        assert_eq!(
+            std::fs::read_to_string(profiles_dir.join("host-a.yaml")).unwrap(),
+            after_first
+        );
+
+        let (status, _) = put_host_a(&app, Some(&v2), "dev-c").await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn saving_a_profile_keeps_keys_the_editor_does_not_know() {
+        let (mut state, dir) = test_state();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+        write_profile_file(
+            &profiles_dir,
+            "host-a.yaml",
+            "hostname: host-a\nvenue_notes: front of house\naudio:\n  device: dev-a\n  house_tweak: 3\n  track_mappings:\n    drums: [1]\n",
+        );
+        state.profiles_dir = Some(profiles_dir.clone());
+        let app = router().with_state(state);
+
+        let (status, _) = put_host_a(&app, None, "dev-b").await;
+        assert_eq!(status, StatusCode::OK);
+        let text = std::fs::read_to_string(profiles_dir.join("host-a.yaml")).unwrap();
+        assert!(text.contains("dev-b"), "{text}");
+        assert!(text.contains("venue_notes"), "{text}");
+        assert!(text.contains("house_tweak"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_yml_profile_is_saved_in_place() {
+        let (mut state, dir) = test_state();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+        write_profile_file(&profiles_dir, "host-a.yml", HOST_A);
+        state.profiles_dir = Some(profiles_dir.clone());
+        let app = router().with_state(state);
+
+        let (status, _) = put_host_a(&app, None, "dev-b").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!profiles_dir.join("host-a.yaml").exists());
+        assert!(std::fs::read_to_string(profiles_dir.join("host-a.yml"))
+            .unwrap()
+            .contains("dev-b"));
     }
 
     #[tokio::test]

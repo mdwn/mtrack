@@ -503,6 +503,165 @@ fn existing_venue_file(dir: &std::path::Path, name: &str) -> Option<std::path::P
         .find(|path| path.is_file())
 }
 
+/// Serialises every read-check-write of a venue file, so two saves cannot
+/// interleave between the version check and the write.
+pub(super) static VENUE_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The version of a venue file: a hash of its bytes. A client sends back the
+/// one it read (`If-Match`); a save whose version is no longer the file's is
+/// refused, the same optimistic concurrency the config store has for inline
+/// profiles.
+pub(super) fn content_version(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// A venue file found on disk, whatever it is called.
+pub(super) struct LocatedVenue {
+    pub path: std::path::PathBuf,
+    pub bytes: Vec<u8>,
+    /// Why the file cannot be patched, when it cannot (it does not parse, is
+    /// not UTF-8, or does not define the venue after all).
+    pub broken: Option<String>,
+}
+
+impl LocatedVenue {
+    pub fn version(&self) -> String {
+        content_version(&self.bytes)
+    }
+
+    pub fn file(&self) -> String {
+        crate::util::filename_display(&self.path).to_string()
+    }
+
+    /// The file's text, when it parses and defines the venue.
+    pub fn text(&self) -> Option<&str> {
+        if self.broken.is_some() {
+            return None;
+        }
+        std::str::from_utf8(&self.bytes).ok()
+    }
+}
+
+/// Whether some line of `text` opens a block for venue `name`.
+fn mentions_venue(text: &str, name: &str) -> bool {
+    let header = format!("venue \"{name}\"");
+    text.lines().any(|l| l.trim_start().starts_with(&header))
+}
+
+/// Finds the file that defines venue `name` by scanning every venue file for
+/// the block — the file's stem need not match the name. A file that mentions
+/// the venue but does not parse (or the file at the venue's own stem, which a
+/// save would otherwise overwrite) comes back with `broken` set, so the
+/// caller can refuse rather than replace it. `None` means a genuinely new
+/// venue.
+pub(super) fn locate_venue_file(
+    dir: &std::path::Path,
+    name: &str,
+) -> Result<Option<LocatedVenue>, String> {
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    let stem_file = existing_venue_file(dir, name);
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| VENUE_EXTENSIONS.contains(&e))
+        })
+        .collect();
+    paths.sort();
+    let mut broken: Option<LocatedVenue> = None;
+    for path in paths {
+        let bytes =
+            std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let problem = match std::str::from_utf8(&bytes) {
+            Ok(text) => match lighting::parser::parse_venues(text) {
+                Ok(venues) if venues.contains_key(name) => {
+                    return Ok(Some(LocatedVenue {
+                        path,
+                        bytes,
+                        broken: None,
+                    }))
+                }
+                Ok(_) if stem_file.as_ref() == Some(&path) => {
+                    Some(format!("the file does not define a venue named \"{name}\""))
+                }
+                Ok(_) => None,
+                Err(e) if mentions_venue(text, name) || stem_file.as_ref() == Some(&path) => {
+                    Some(e.to_string())
+                }
+                Err(_) => None,
+            },
+            Err(_) => {
+                let lossy = String::from_utf8_lossy(&bytes);
+                (mentions_venue(&lossy, name) || stem_file.as_ref() == Some(&path))
+                    .then(|| "the file is not valid UTF-8".to_string())
+            }
+        };
+        if let (Some(problem), None) = (problem, &broken) {
+            broken = Some(LocatedVenue {
+                path,
+                bytes,
+                broken: Some(problem),
+            });
+        }
+    }
+    Ok(broken)
+}
+
+/// The `If-Match` version a client sent, unquoted.
+pub(super) fn if_match_version(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("if-match")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.trim()
+                .trim_start_matches("W/")
+                .trim_matches('"')
+                .to_string()
+        })
+        .filter(|v| !v.is_empty())
+}
+
+/// The 409 for a save made against a version that is no longer current.
+pub(super) fn stale_venue_response(
+    name: &str,
+    current: Option<String>,
+) -> axum::response::Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": format!(
+                "venue \"{name}\" changed since you loaded it (another tab, page or an edit by \
+                 hand); it has been reloaded, so reapply your change"
+            ),
+            "conflict": true,
+            "version": current,
+        })),
+    )
+        .into_response()
+}
+
+/// The 409 for a venue file that cannot be patched.
+pub(super) fn broken_venue_response(name: &str, file: &str, why: &str) -> axum::response::Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": format!(
+                "{file} holds venue \"{name}\" but cannot be edited from here ({why}); fix the \
+                 file by hand first"
+            ),
+            "file": file,
+            "broken": true,
+        })),
+    )
+        .into_response()
+}
+
 /// Whether a venue uses syntax only `.venue` files carry.
 fn needs_venue_extension(venue: &lighting::types::Venue) -> bool {
     venue.source().is_some()
@@ -1540,6 +1699,7 @@ pub(super) async fn get_venues(
     }
     let all = super::helpers::spawn_blocking_io("load venues", move || {
         let mut all = std::collections::HashMap::new();
+        let mut versions = std::collections::HashMap::new();
         let mut duplicates = DuplicateNames::new("venue");
         // Both extensions, as the lighting system loads them — so the same
         // name can arrive from a `.light` and a `.venue`.
@@ -1550,19 +1710,20 @@ pub(super) async fn get_venues(
                 if !duplicates.claim(&name, &file) {
                     continue;
                 }
+                versions.insert(name.clone(), content_version(content.as_bytes()));
                 all.insert(name, venue);
             }
             Ok(())
         })
         .map_err(|e| e.to_string())?;
         errors.append(&mut duplicates.errors);
-        Ok::<_, String>((all, errors))
+        Ok::<_, String>((all, errors, versions))
     })
     .await?;
-    let (all, errors) = all;
+    let (all, errors, versions) = all;
     Ok((
         StatusCode::OK,
-        Json(json!({"venues": all, "errors": errors})),
+        Json(json!({"venues": all, "errors": errors, "versions": versions})),
     )
         .into_response())
 }
@@ -1575,17 +1736,29 @@ pub(super) async fn get_venue(
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
     let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
-    let Some(file_path) = existing_venue_file(&dir, &name) else {
+    let located = {
+        let (dir, name) = (dir.clone(), name.clone());
+        super::helpers::spawn_blocking_io("locate venue file", move || {
+            locate_venue_file(&dir, &name)
+        })
+        .await?
+    };
+    let Some(located) = located else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("Venue not found: {}", name)})),
         )
             .into_response());
     };
-    let fp = file_path.clone();
-    let content =
-        super::helpers::spawn_blocking_io("read venue file", move || std::fs::read_to_string(&fp))
-            .await?;
+    if let Some(why) = &located.broken {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to parse venue: {} ({})", why, located.file())})),
+        )
+            .into_response());
+    }
+    let version = located.version();
+    let content = String::from_utf8_lossy(&located.bytes).into_owned();
     let venues = lighting::parser::parse_venues(&content).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1594,7 +1767,11 @@ pub(super) async fn get_venue(
             .into_response()
     })?;
     match venues.get(&name) {
-        Some(v) => Ok((StatusCode::OK, Json(json!({"venue": v, "dsl": content}))).into_response()),
+        Some(v) => Ok((
+            StatusCode::OK,
+            Json(json!({"venue": v, "dsl": content, "version": version})),
+        )
+            .into_response()),
         None => Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("Venue '{}' not found in file", name)})),
@@ -1604,6 +1781,13 @@ pub(super) async fn get_venue(
 }
 
 /// PUT /api/lighting/venues/:name — creates or updates a venue.
+///
+/// The file is found by scanning every venue file for the block, so a venue
+/// defined in a file whose stem differs from its name is patched in place. A
+/// JSON body patches the file (never regenerates an existing one); a file
+/// that does not parse is refused (409) rather than overwritten. An
+/// `If-Match` version, when sent, must be the file's current one (409
+/// otherwise); the response carries the new `version`.
 pub(super) async fn put_venue(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -1618,8 +1802,13 @@ pub(super) async fn put_venue(
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
+    let expected = if_match_version(&headers);
 
-    let dsl = if content_type.contains("application/json") {
+    enum Incoming {
+        Json(serde_json::Value, lighting::types::Venue),
+        Dsl(String),
+    }
+    let incoming = if content_type.contains("application/json") {
         let json_body: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
             (
                 StatusCode::BAD_REQUEST,
@@ -1629,55 +1818,92 @@ pub(super) async fn put_venue(
         })?;
         let bad = |e: String| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
         let venue = venue_from_json(&name, &json_body).map_err(bad)?;
-        // An existing file is patched, not regenerated: comments, TODO lines
-        // and the file's own layout survive a save from the UI.
-        let existing_text =
-            existing_venue_file(&dir, &name).and_then(|path| std::fs::read_to_string(path).ok());
-        match existing_text {
-            Some(text)
-                if lighting::parser::parse_venues(&text).is_ok_and(|v| v.contains_key(&name)) =>
-            {
-                lighting::venue_patch::patch_venue(&text, &name, &venue).map_err(bad)?
-            }
-            _ => venue_json_to_dsl(&name, &json_body).map_err(bad)?,
-        }
+        Incoming::Json(json_body, venue)
     } else {
-        String::from_utf8(body.to_vec()).map_err(|_| {
+        Incoming::Dsl(String::from_utf8(body.to_vec()).map_err(|_| {
             (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"error": "Invalid UTF-8"})),
             )
                 .into_response()
-        })?
+        })?)
     };
-
-    // Validate the DSL parses correctly
-    let venues = lighting::parser::parse_venues(&dsl).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!("Invalid venue DSL: {}", e)})),
-        )
-            .into_response()
-    })?;
-    require_declared_name("venue", &name, &venues)?;
-    let typed = venues.values().any(needs_venue_extension);
 
     let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
-    // The extension is the version marker: a venue using positions, focus
-    // points or MVR provenance is a `.venue`; anything else stays `.light`.
-    // An existing file keeps its extension unless the content outgrows it,
-    // in which case the `.light` twin is retired after the durable write.
-    let stem = sanitize_filename(&name);
-    let existing = existing_venue_file(&dir, &name);
-    let file_path = match &existing {
-        Some(path) if !typed || path.extension().is_some_and(|e| e == "venue") => path.clone(),
-        _ => dir.join(format!("{stem}.{}", if typed { "venue" } else { "light" })),
-    };
-    let stale_twin = existing.filter(|path| path != &file_path);
-    let fp = file_path;
-    let dsl_owned = dsl;
-    super::helpers::spawn_blocking_io("write venue", move || {
-        config_io::staged_write(&fp, &dsl_owned)?;
+    let venue_name = name.clone();
+    let outcome = super::helpers::spawn_blocking_io("write venue", move || {
+        let name = venue_name;
+        let _guard = VENUE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        let reply = |r: axum::response::Response| Ok::<_, String>(Err(r));
+        let bad = |e: String| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
+        let located = locate_venue_file(&dir, &name)?;
+        if let Some(expected) = &expected {
+            let current = located.as_ref().map(LocatedVenue::version);
+            if current.as_deref() != Some(expected.as_str()) {
+                return reply(stale_venue_response(&name, current));
+            }
+        }
+        let dsl = match incoming {
+            Incoming::Dsl(text) => text,
+            // An existing file is patched, not regenerated: comments, TODO
+            // lines and the file's own layout survive a save from the UI.
+            Incoming::Json(json_body, venue) => match &located {
+                Some(l) => match l.text() {
+                    Some(text) => match lighting::venue_patch::patch_venue(text, &name, &venue) {
+                        Ok(patched) => patched,
+                        Err(e) => return reply(bad(e)),
+                    },
+                    None => {
+                        let why = l.broken.as_deref().unwrap_or("not valid UTF-8");
+                        return reply(broken_venue_response(&name, &l.file(), why));
+                    }
+                },
+                None => match venue_json_to_dsl(&name, &json_body) {
+                    Ok(dsl) => dsl,
+                    Err(e) => return reply(bad(e)),
+                },
+            },
+        };
+
+        // Validate the DSL parses correctly
+        let venues = match lighting::parser::parse_venues(&dsl) {
+            Ok(v) => v,
+            Err(e) => return reply(bad(format!("Invalid venue DSL: {e}"))),
+        };
+        if let Err(r) = require_declared_name("venue", &name, &venues) {
+            return reply(r);
+        }
+        let typed = venues.values().any(needs_venue_extension);
+
+        // The extension is the version marker: a venue using positions,
+        // focus points or MVR provenance is a `.venue`; anything else stays
+        // `.light`. An existing file keeps its name and extension unless the
+        // content outgrows `.light`, in which case it moves to `.venue` and
+        // the `.light` original is retired after the durable write.
+        let stem = sanitize_filename(&name);
+        let file_path = match &located {
+            Some(l) if !typed || l.path.extension().is_some_and(|e| e == "venue") => l.path.clone(),
+            Some(l) => l.path.with_extension("venue"),
+            None => dir.join(format!("{stem}.{}", if typed { "venue" } else { "light" })),
+        };
+        let stale_twin = located
+            .as_ref()
+            .map(|l| l.path.clone())
+            .filter(|path| path != &file_path);
+        if stale_twin.is_some() && file_path.exists() {
+            return reply(
+                (
+                    StatusCode::CONFLICT,
+                    Json(json!({"error": format!(
+                        "{} already exists; it would have to be replaced to keep this venue's \
+                         new fields",
+                        crate::util::filename_display(&file_path)
+                    )})),
+                )
+                    .into_response(),
+            );
+        }
+        config_io::staged_write(&file_path, &dsl)?;
         if let Some(twin) = stale_twin {
             // Best effort: the save is durable already, and a leftover
             // `.light` twin surfaces as a duplicate venue name at load.
@@ -1685,16 +1911,19 @@ pub(super) async fn put_venue(
                 tracing::warn!(file = %twin.display(), error = %e, "could not retire the venue's .light twin");
             }
         }
-        Ok::<(), String>(())
+        Ok::<_, String>(Ok(content_version(dsl.as_bytes())))
     })
     .await?;
+    let version = outcome?;
 
     let reloaded = reload_if_current_venue(&state, &name).await;
 
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({"status": "saved", "name": name, "reloaded": reloaded})),
+            Json(
+                json!({"status": "saved", "name": name, "reloaded": reloaded, "version": version}),
+            ),
         )
             .into_response(),
     )
@@ -5433,5 +5662,194 @@ show "test" {
         );
         assert_eq!(suggested_type_name("  A   B "), "A B");
         assert_eq!(suggested_type_name("\"\"{}"), "fixture");
+    }
+}
+
+#[cfg(test)]
+mod venue_file_tests {
+    use super::super::router;
+    use super::super::test_helpers::*;
+    use axum::body::Body;
+    use axum::http::StatusCode;
+    use tower::ServiceExt;
+
+    const REL: &str = "v_files";
+
+    const FILE: &str = "// House rig, do not lose me.\nvenue \"House\" {\n  fixture \"A\" brick @ 1:1 position (1, 2, 3)  // keep me\n  // spare\n  fixture \"B\" brick @ 1:5\n}\n";
+
+    fn body_for(x: f64) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "fixtures": [
+                {"name": "A", "fixture_type": "brick", "universe": 1, "start_channel": 1, "position": [x, 2.0, 3.0]},
+                {"name": "B", "fixture_type": "brick", "universe": 1, "start_channel": 5},
+            ]
+        }))
+        .unwrap()
+    }
+
+    async fn put(
+        app: &axum::Router,
+        version: Option<&str>,
+        body: Vec<u8>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut req = http::Request::builder()
+            .method("PUT")
+            .uri(format!("/lighting/venues/House?dir={REL}"))
+            .header("content-type", "application/json");
+        if let Some(v) = version {
+            req = req.header("if-match", v);
+        }
+        let response = app
+            .clone()
+            .oneshot(req.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let text = response_body(response).await;
+        (status, serde_json::from_str(&text).unwrap_or_default())
+    }
+
+    fn venues_dir(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let d = dir.path().join(REL);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn a_venue_in_a_file_with_another_stem_is_patched_there() {
+        let (state, dir) = test_state();
+        let d = venues_dir(&dir);
+        std::fs::write(d.join("rig_2024.venue"), FILE).unwrap();
+        let app = router().with_state(state);
+
+        let (status, _) = put(&app, None, body_for(9.0)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            std::fs::read_dir(&d).unwrap().count(),
+            1,
+            "no second file may be created"
+        );
+        let text = std::fs::read_to_string(d.join("rig_2024.venue")).unwrap();
+        assert!(
+            text.starts_with("// House rig, do not lose me.\n"),
+            "{text}"
+        );
+        assert!(text.contains("// keep me"), "{text}");
+        assert!(text.contains("\n  // spare\n"), "{text}");
+        assert!(text.contains("position (9, 2, 3)"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_broken_file_is_refused_and_left_byte_identical() {
+        let (state, dir) = test_state();
+        let d = venues_dir(&dir);
+        let broken = "// mine\nvenue \"House\" {\n  fixture \"A\" brick @ !!!\n}\n";
+        std::fs::write(d.join("rig.venue"), broken).unwrap();
+        let app = router().with_state(state);
+
+        let (status, body) = put(&app, None, body_for(1.0)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let msg = body["error"].as_str().unwrap();
+        assert!(
+            msg.contains("rig.venue") && msg.contains("by hand"),
+            "{msg}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.join("rig.venue")).unwrap(),
+            broken
+        );
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_non_utf8_file_at_the_stem_is_refused() {
+        let (state, dir) = test_state();
+        let d = venues_dir(&dir);
+        let bytes: Vec<u8> = vec![0xff, 0xfe, b'v', b'e'];
+        std::fs::write(d.join("house.venue"), &bytes).unwrap();
+        let app = router().with_state(state);
+
+        let (status, _) = put(&app, None, body_for(1.0)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(std::fs::read(d.join("house.venue")).unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn a_new_venue_is_generated() {
+        let (state, dir) = test_state();
+        venues_dir(&dir);
+        let app = router().with_state(state);
+        let (status, body) = put(&app, None, body_for(1.0)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["version"].as_str().is_some_and(|v| v.len() == 64));
+        assert!(dir.path().join(REL).join("house.venue").exists());
+    }
+
+    #[tokio::test]
+    async fn a_stale_version_is_refused_and_the_current_one_saves() {
+        let (state, dir) = test_state();
+        let d = venues_dir(&dir);
+        std::fs::write(d.join("house.venue"), FILE).unwrap();
+        let app = router().with_state(state);
+
+        // GET hands out the version.
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/venues/House?dir={REL}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let got: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        let v1 = got["version"].as_str().unwrap().to_string();
+
+        // Another writer changes the file.
+        let (status, saved) = put(&app, Some(&v1), body_for(4.0)).await;
+        assert_eq!(status, StatusCode::OK);
+        let v2 = saved["version"].as_str().unwrap().to_string();
+        assert_ne!(v1, v2);
+        let after_first = std::fs::read_to_string(d.join("house.venue")).unwrap();
+
+        // The first reader saves against the version it read: refused,
+        // file untouched, current version reported.
+        let (status, body) = put(&app, Some(&v1), body_for(7.0)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["version"].as_str().unwrap(), v2);
+        assert_eq!(
+            std::fs::read_to_string(d.join("house.venue")).unwrap(),
+            after_first
+        );
+
+        // The current version is accepted.
+        let (status, _) = put(&app, Some(&v2), body_for(7.0)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(std::fs::read_to_string(d.join("house.venue"))
+            .unwrap()
+            .contains("position (7, 2, 3)"));
+    }
+
+    #[tokio::test]
+    async fn the_list_carries_each_venues_version() {
+        let (state, dir) = test_state();
+        let d = venues_dir(&dir);
+        std::fs::write(d.join("house.venue"), FILE).unwrap();
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/venues?dir={REL}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let got: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(
+            got["versions"]["House"].as_str().unwrap(),
+            super::content_version(FILE.as_bytes())
+        );
     }
 }

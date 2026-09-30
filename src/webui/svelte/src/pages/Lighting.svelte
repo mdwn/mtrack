@@ -62,6 +62,9 @@
     running?.lighting?.directories?.fixture_types ?? "",
   );
   let venueDir = $derived<string>(running?.lighting?.directories?.venues ?? "");
+  // The venue picked on the Venues page: the plot shows it (its file, unless
+  // it is the current venue). Null leaves the plot on the current venue.
+  let plotVenue = $state<string | null>(null);
 </script>
 
 <div class="lighting page">
@@ -88,9 +91,18 @@
   {:else if route.sub === "fixtures"}
     <FixtureTypesPanel dir={ftDir} />
   {:else if route.sub === "venues"}
-    <VenuesPanel fixtureTypesDir={ftDir} venuesDir={venueDir} />
+    <VenuesPanel
+      fixtureTypesDir={ftDir}
+      venuesDir={venueDir}
+      bind:selected={plotVenue}
+    />
     <div class="lighting__stage">
-      <StageView editable fixtureTypesDir={ftDir} />
+      <StageView
+        editable
+        fixtureTypesDir={ftDir}
+        venuesDir={venueDir}
+        fileVenue={plotVenue}
+      />
     </div>
   {:else if route.sub === "groups"}
     <GroupsPage profileParam={route.profile} />

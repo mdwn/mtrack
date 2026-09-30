@@ -18,11 +18,14 @@ async function request(
   method: string,
   path: string,
   body?: string,
+  headers?: Record<string, string>,
 ): Promise<Response> {
   const opts: RequestInit = { method };
   if (body !== undefined) {
-    opts.headers = { "Content-Type": "application/json" };
+    opts.headers = { "Content-Type": "application/json", ...headers };
     opts.body = body;
+  } else if (headers) {
+    opts.headers = headers;
   }
   return fetch(`${BASE}${path}`, opts);
 }
@@ -31,12 +34,20 @@ export async function get(path: string): Promise<Response> {
   return request("GET", path);
 }
 
-export async function put(path: string, body: string): Promise<Response> {
-  return request("PUT", path, body);
+export async function put(
+  path: string,
+  body: string,
+  headers?: Record<string, string>,
+): Promise<Response> {
+  return request("PUT", path, body, headers);
 }
 
-export async function post(path: string, body?: string): Promise<Response> {
-  return request("POST", path, body);
+export async function post(
+  path: string,
+  body?: string,
+  headers?: Record<string, string>,
+): Promise<Response> {
+  return request("POST", path, body, headers);
 }
 
 export async function uploadFile(path: string, file: File): Promise<Response> {
@@ -78,6 +89,36 @@ export async function apiError(
     body.error ||
     (Array.isArray(body.errors) ? body.errors.join("; ") : undefined);
   return new Error(msg || `${fallback}: ${res.status}`);
+}
+
+/** A save refused because the file changed since the client read it (HTTP 409
+ *  with `conflict: true`). Carries the file's current version. */
+export class ConflictError extends Error {
+  version: string | null;
+  constructor(message: string, version: string | null = null) {
+    super(message);
+    this.name = "ConflictError";
+    this.version = version;
+  }
+}
+
+/** Like `apiError`, but a stale-version refusal comes back as a
+ *  `ConflictError` so the caller can reload and ask for the change again. */
+export async function versionedError(
+  res: Response,
+  fallback: string,
+): Promise<Error> {
+  if (res.status === 409) {
+    const body: { error?: string; conflict?: boolean; version?: string } =
+      await res
+        .clone()
+        .json()
+        .catch(() => ({}));
+    if (body.conflict) {
+      return new ConflictError(body.error || fallback, body.version ?? null);
+    }
+  }
+  return apiError(res, fallback);
 }
 
 export async function putYaml(path: string, body: string): Promise<Response> {

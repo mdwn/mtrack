@@ -20,7 +20,9 @@
   import Tooltip from "../config/Tooltip.svelte";
   import TagInput from "../config/TagInput.svelte";
   import MvrExportDialog from "./MvrExportDialog.svelte";
+  import { venueStore } from "../../lib/ws/stores";
   import {
+    ConflictError,
     fetchFixtureTypes,
     fetchVenues,
     saveVenue,
@@ -36,9 +38,16 @@
     /** Directory overrides (a profile's `lighting.directories`). */
     fixtureTypesDir?: string;
     venuesDir?: string;
+    /** The venue picked in the list; the plot on this page shows it. Null
+     *  leaves the plot on the current venue, live. */
+    selected?: string | null;
   }
 
-  let { fixtureTypesDir = "", venuesDir = "" }: Props = $props();
+  let {
+    fixtureTypesDir = "",
+    venuesDir = "",
+    selected = $bindable(null),
+  }: Props = $props();
   let ftDir = $derived(fixtureTypesDir);
   let venueDir = $derived(venuesDir);
 
@@ -46,6 +55,10 @@
   let fixtureTypes = $state<Record<string, FixtureTypeEntry>>({});
   // --- Venues state ---
   let venues = $state<Record<string, VenueData>>({});
+  /** Each venue file's version as listed; the editor saves against the one
+   *  it was opened at, so a file changed elsewhere is not overwritten. */
+  let venueVersions = $state<Record<string, string>>({});
+  let editVersion = $state<string | undefined>(undefined);
   let venueLoading = $state(false);
   let venueError = $state("");
   /** Files in the venue directory that would not parse. Reported alongside the
@@ -94,6 +107,7 @@
     try {
       const result = await fetchVenues(venueDir || undefined);
       venues = result.venues;
+      venueVersions = result.versions;
       venueFileErrors = result.errors;
     } catch (e: any) {
       venueError = e.message;
@@ -116,6 +130,8 @@
 
   function startEditVenue(name: string) {
     const v = venues[name];
+    selected = name;
+    editVersion = venueVersions[name];
     editingVenue = name;
     editVenueName = name;
     editVenueFixtures = Object.values(v.fixtures)
@@ -142,6 +158,7 @@
     editVenueFixtures = [];
     editVenueFocusPoints = {};
     editVenueSource = null;
+    editVersion = undefined;
     isNewVenue = true;
   }
 
@@ -185,6 +202,10 @@
     const newName = editVenueName.trim();
     const oldName = editingVenue !== "__new__" ? editingVenue : null;
     const isRename = oldName && oldName !== newName;
+    if ((isNewVenue || isRename) && newName in venues) {
+      venueMsg = get(t)("lighting.venueExists", { values: { name: newName } });
+      return;
+    }
     venueSaving = true;
     venueMsg = "";
     try {
@@ -196,16 +217,29 @@
           source: editVenueSource,
         },
         venueDir || undefined,
+        // A new or renamed venue is a new file; an existing one is saved
+        // against the version this form was opened at.
+        isNewVenue || isRename ? undefined : editVersion,
       );
       if (isRename) {
         await deleteVenue(oldName, venueDir || undefined);
       }
       await loadVenues();
+      selected = newName;
       editingVenue = null;
       venueMsg = get(t)("common.saved");
       setTimeout(() => (venueMsg = ""), 2000);
     } catch (e: any) {
-      venueMsg = e.message;
+      if (e instanceof ConflictError) {
+        // The file changed since the form was opened: show it as it is now
+        // and leave the change to be made again.
+        const name = editingVenue;
+        await loadVenues();
+        if (name && name !== "__new__" && name in venues) startEditVenue(name);
+        venueMsg = get(t)("lighting.venueChangedElsewhere");
+      } else {
+        venueMsg = e.message;
+      }
     } finally {
       venueSaving = false;
     }
@@ -221,6 +255,7 @@
       return;
     try {
       await deleteVenue(name, venueDir || undefined);
+      if (selected === name) selected = null;
       await loadVenues();
     } catch (e: any) {
       venueMsg = e.message;
@@ -396,16 +431,32 @@
         {#each Object.entries(venues).sort( ([a], [b]) => a.localeCompare(b), ) as [name, v] (name)}
           <div
             class="item-card"
+            class:item-card--selected={selected === name}
+            data-testid="venue-card-{name}"
             role="button"
             tabindex="0"
-            onclick={() => startEditVenue(name)}
+            aria-pressed={selected === name}
+            onclick={() => (selected = name)}
             onkeydown={(e) => {
-              if (e.key === "Enter") startEditVenue(name);
+              if (e.key === "Enter") selected = name;
             }}
           >
             <div class="item-card-header">
               <span class="item-name">{name}</span>
               <span class="item-actions">
+                {#if $venueStore?.name === name}
+                  <span class="badge" data-testid="venue-live-{name}"
+                    >{$t("lighting.venueLive")}</span
+                  >
+                {/if}
+                <button
+                  class="btn btn-sm"
+                  data-testid="venue-edit-{name}"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    startEditVenue(name);
+                  }}>{$t("lighting.venueEdit")}</button
+                >
                 <button
                   class="btn btn-sm"
                   data-testid="venue-export-mvr-{name}"
@@ -515,6 +566,10 @@
     padding: 12px;
     cursor: pointer;
     transition: border-color 0.15s;
+  }
+
+  .item-card--selected {
+    border-color: var(--accent);
   }
 
   .item-card:hover {
