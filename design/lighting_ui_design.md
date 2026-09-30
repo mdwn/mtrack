@@ -521,3 +521,74 @@ under the project's lighting directories, as the CLI does.
 Editing scenery, choosing which fixtures to import, and re-mapping fixture
 IDs: the CLI and MCP do not either. A file the importer refuses (not an MVR,
 over the caps) is refused with its reason at step 1.
+
+## 12. L6 in detail: preview and the mode picker (draft 1, 2026-09-30)
+
+Two screens from the pitch remain: **Preview**, Stage 3D tied to a show's
+timeline and honest about what it cannot show; and **Add a fixture type**,
+a mode picker that says what a mode lets shows do instead of listing
+channels.
+
+### 12.1 Preview at `#/lighting/stage`
+
+Stage 3D stays the live view: it draws whatever the engine sends. L6 adds a
+**Preview** mode beside it:
+
+- A **show picker** (songs with lighting that load) and a **scrubber** over
+  the song's duration, with the song's sections as the bar the dashboard's
+  timeline draws. Scrubbing evaluates the show **offline** at that instant —
+  `evaluate_show`'s machinery (`lighting::evaluate::evaluate_show`, with the
+  venue's fixtures, focus points and the song's tempo map) — and feeds the
+  scene the same `fixtures`, `poses` and `cells` the live state message
+  carries, so the 3D drawing code is unchanged and preview and live can never
+  differ for the same instant. Nothing is sent to the lights: preview never
+  touches the DMX engine, and a playing song keeps playing (the page says
+  "live" or "preview" in its header).
+- **At this moment**: the effects active at the scrubbed time, per group,
+  in words ("movers: move to drummer, 2 of 4 beats done"; "front_wash:
+  static magenta, 80%"), from the evaluation's `active_effects`.
+- **Untouched by this show**: fixtures no cue in the show targets, counted,
+  so a dark fixture is known to be dark on purpose.
+- **Caveats**, shown only when they apply, as small pills over the scene:
+  *N fixtures use a colour wheel — shown white* (fixtures whose type has a
+  `color1`-style wheel channel and no RGB/CMY: their colour is not modelled,
+  §…), *beams that miss the deck are drawn N m long* (the scene's fixed
+  beam length), and, in live mode, *no state yet* when nothing has been
+  received.
+- **Open this cue in the timeline** links to the song's lighting editor at
+  the scrubbed time (the editor already takes a time in its route, or gains
+  one).
+
+`POST /api/lighting/evaluate` — `{song, times: [seconds]}` (source omitted:
+the song's registered shows) → the evaluation per time in the live state
+message's shape plus `active_effects` with their group, kind, elapsed and
+duration, and `untouched` (fixture names no cue targets). The MCP tool keeps
+its own shape; both call the same function.
+
+### 12.2 The mode picker
+
+`GET /api/lighting/gdtf/inspect` (the upload the fixture-types page already
+makes) gains, per mode, what the distilled mode **can do** — the same
+capability names the fit endpoint and the fixture metadata use (`color`,
+`dimmer`, `strobe`, `pan_tilt`, `cells`, plus `white`, `zoom`, `focus`,
+`gobo`, `color_wheel`) — the cell count, the strobe range when the mode has
+a strobe channel with one, and whether the mode distils at all (a pixel or
+matrix mode the distiller refuses is listed with its reason, not offered).
+Distilling every mode of a 30-mode archive is a few milliseconds each and
+happens once per upload.
+
+The page (§ pitch, "Add a fixture type"): the archive's name, manufacturer
+and mode count; a filterable mode list showing name and **addresses**
+(footprint) and cell count; and for the selected mode a panel of what shows
+can do in it, in plain words, with what is *not* in this mode (and which
+mode adds it, when another mode has that capability); the address strip
+("occupies 4 addresses: red, green, blue, strobe — patch the next fixture at
+least 4 on"); the type name (default: the archive's fixture name, made a
+valid identifier) and the file it will write; and the channel map and
+distillation warnings behind a disclosure. **Add fixture type** performs the
+import the page does today.
+
+### 12.3 Out of scope
+
+Rendering colour wheels, a haze or photometric model, editing the show from
+the preview, and importing a mode the distiller refuses.
