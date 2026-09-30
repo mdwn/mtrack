@@ -227,6 +227,9 @@ pub struct FitFixture {
     pub position: Option<[f64; 3]>,
     pub capabilities: FixtureCapabilities,
     pub cells: bool,
+    /// Colour comes from a wheel (`color1`, `color2`, ...) rather than a
+    /// mix: the engine models no wheel, so it is not `color`.
+    pub color_wheel: bool,
 }
 
 impl FitFixture {
@@ -239,6 +242,8 @@ impl FitFixture {
             position: info.position,
             capabilities: info.capabilities(),
             cells: !info.cells.is_empty(),
+            color_wheel: !info.capabilities().contains(FixtureCapabilities::RGB_COLOR)
+                && info.channels.keys().any(|name| is_wheel_channel(name)),
         }
     }
 
@@ -259,7 +264,10 @@ impl FitFixture {
         }
     }
 
-    /// The capability names the page shows.
+    /// The capability names the pages show: the four shows can ask for
+    /// (`color`, `pan_tilt`, `strobe`, `cells`) first, then what else the
+    /// fixture has — `dimmer`, `white`, `zoom`, `focus`, `gobo` and
+    /// `color_wheel`.
     pub fn capability_names(&self) -> Vec<&'static str> {
         let mut out = Vec::new();
         if self.can(Want::Color) {
@@ -274,8 +282,29 @@ impl FitFixture {
         if self.can(Want::Cells) {
             out.push("cells");
         }
+        for (bit, name) in [
+            (FixtureCapabilities::DIMMING, "dimmer"),
+            (FixtureCapabilities::WHITE_COLOR, "white"),
+            (FixtureCapabilities::ZOOMING, "zoom"),
+            (FixtureCapabilities::FOCUSING, "focus"),
+            (FixtureCapabilities::GOBO, "gobo"),
+        ] {
+            if self.capabilities.contains(bit) {
+                out.push(name);
+            }
+        }
+        if self.color_wheel {
+            out.push("color_wheel");
+        }
         out
     }
+}
+
+/// Whether a channel name is a colour wheel's: `color1`, `color2`, ... (what
+/// the GDTF distiller names an attribute it has no canonical name for).
+fn is_wheel_channel(name: &str) -> bool {
+    name.strip_prefix("color")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Where a cluster hangs. Both `None` when the venue does not place it.
@@ -643,6 +672,7 @@ mod test {
             position,
             capabilities: caps(capabilities),
             cells: false,
+            color_wheel: false,
         }
     }
 
@@ -902,5 +932,35 @@ mod test {
         .suggestion
         .unwrap();
         assert_eq!(s.fixtures, vec!["bar".to_string()]);
+    }
+
+    fn named(channels: &[&str]) -> FitFixture {
+        let map = channels
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.to_string(), i as u16 + 1))
+            .collect();
+        let info = FixtureInfo::new("f".into(), 1, 1, "T".into(), map, None);
+        FitFixture::from_info(&info, &[])
+    }
+
+    #[test]
+    fn capability_names_carry_what_else_the_fixture_has() {
+        assert_eq!(
+            named(&["red", "green", "blue", "white", "dimmer", "zoom"]).capability_names(),
+            vec!["color", "dimmer", "white", "zoom"]
+        );
+        assert_eq!(named(&["pan", "tilt"]).capability_names(), vec!["pan_tilt"]);
+    }
+
+    #[test]
+    fn a_wheel_is_colour_only_when_nothing_mixes() {
+        assert_eq!(
+            named(&["color1", "dimmer"]).capability_names(),
+            vec!["dimmer", "color_wheel"]
+        );
+        // A mixing fixture with a wheel is a colour fixture: the wheel is extra.
+        assert!(!named(&["red", "green", "blue", "color1"]).color_wheel);
+        assert!(!named(&["color"]).color_wheel);
     }
 }

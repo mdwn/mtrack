@@ -333,8 +333,11 @@ test.describe("GDTF Import", () => {
     await expect(picker).toBeVisible();
     await expect(picker).toContainText("PB15 PixelBrick");
     // Mode selection is the human input: both modes are offered.
-    await expect(picker.locator("option")).toHaveCount(2);
-    await picker.locator("select").selectOption("8: RGBS");
+    await expect(picker.getByRole("option")).toHaveCount(2);
+    await picker.getByRole("option", { name: /8: RGBS/ }).click();
+    await expect(page.getByTestId("gdtf-can")).toContainText(
+      "Strobe, 0.4 to 25 flashes a second",
+    );
 
     await page.getByTestId("gdtf-import-confirm").click();
 

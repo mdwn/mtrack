@@ -70,9 +70,11 @@
       | "notifications"
       | "sections"
       | "config";
+    /** Where to put the lighting editor's cursor, from `?t=` in the address. */
+    initialTimeMs?: number | null;
   }
 
-  let { songName, initialTab }: Props = $props();
+  let { songName, initialTab, initialTimeMs = null }: Props = $props();
 
   let song = $state<SongSummary | null>(null);
   let songFiles = $state<SongFile[]>([]);
@@ -1189,6 +1191,7 @@
             bind:dirty={lightingDirty}
             {song}
             songTempo={tempoConfig}
+            initialCursorMs={initialTimeMs}
             onreload={load}
             onaddlightfile={setLightingFile}
             onremovelightfile={removeLightingFile}

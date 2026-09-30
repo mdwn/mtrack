@@ -67,6 +67,8 @@
     /** The song's `tempo:` block, offered as a copy source in the
      * lighting tempo editor. */
     songTempo?: import("../../lib/api/songs").TempoConfig | null;
+    /** Where to put the timeline's cursor when it opens, in milliseconds. */
+    initialCursorMs?: number | null;
   }
 
   let {
@@ -77,6 +79,7 @@
     onaddlightfile,
     onremovelightfile,
     songTempo = null,
+    initialCursorMs = null,
   }: Props = $props();
 
   let error = $state("");
@@ -636,6 +639,7 @@
         hasBeatGrid={!!song.beat_grid}
         hasMidi={song.has_midi}
         songTempo={songTempo ? configToSection(songTempo) : null}
+        {initialCursorMs}
         {isPlaying}
         {playheadMs}
         onchange={onTimelineChange}

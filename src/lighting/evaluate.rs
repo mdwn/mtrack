@@ -59,6 +59,10 @@ pub struct Evaluation {
     pub fixtures: Vec<FixtureSnapshot>,
     /// Effects running at this instant, sorted by id.
     pub active_effects: Vec<EvaluatedEffect>,
+    /// Where every placed fixture points at this instant — the same
+    /// snapshots the live state message carries, so a preview feeds the 3D
+    /// scene exactly what the engine would.
+    pub poses: Vec<crate::state::PoseSnapshot>,
 }
 
 impl Evaluation {
@@ -189,13 +193,122 @@ where
                     .then_with(|| a.fixtures.cmp(&b.fixtures))
             });
 
+            let poses =
+                crate::state::compute_pose_snapshots(engine.poses(), engine.get_fixture_registry());
             Evaluation {
                 time,
                 fixtures,
                 active_effects,
+                poses,
             }
         })
         .collect()
+}
+
+/// The shows a song registers: every show its `.light` files hold, sorted by
+/// name so the order does not depend on hash iteration. Empty when the song
+/// has no DSL lighting loaded.
+pub fn registered_shows(song: &crate::songs::Song) -> Vec<LightShow> {
+    let mut shows: Vec<LightShow> = song
+        .dsl_lighting_shows()
+        .iter()
+        .flat_map(|dsl| dsl.shows().values().cloned())
+        .collect();
+    shows.sort_by(|a, b| a.name.cmp(&b.name));
+    shows
+}
+
+/// An offline evaluation against the loaded lighting system, plus what the
+/// system says about how the shows reach the rig.
+pub struct SystemEvaluation {
+    /// One per requested time, in the order requested.
+    pub evaluations: Vec<Evaluation>,
+    /// Fixtures some cue in the shows targets, once groups are resolved.
+    pub targeted: std::collections::BTreeSet<String>,
+    /// Every fixture the venue places (cell sub-fixtures belong to their
+    /// fixture), sorted.
+    pub venue_fixtures: Vec<String>,
+    /// The groups each effect's cue named, by effect id. An
+    /// [`EvaluatedEffect`] only carries what those groups resolved to.
+    pub effect_groups: HashMap<String, Vec<String>>,
+}
+
+/// Evaluates `shows` against the venue the lighting system has loaded: its
+/// fixtures, focus points and logical groups. With no system (no DMX device)
+/// there is no venue, and every fixture list is empty.
+///
+/// Every group the shows mention is resolved once up front, so the system's
+/// lock is held for a short bounded step rather than across evaluation. Both
+/// MCP's `evaluate_show` and the web UI's preview call this, so the two
+/// resolve groups identically. Blocking: the lock is shared with the effects
+/// loop thread.
+pub fn evaluate_with_system(
+    shows: Vec<LightShow>,
+    fallback_tempo_map: Option<&TempoMap>,
+    times: &[Duration],
+    system: Option<&parking_lot::Mutex<crate::lighting::system::LightingSystem>>,
+) -> SystemEvaluation {
+    let (fixtures, focus_points, group_map) = match system {
+        Some(system) => {
+            let mut guard = system.lock();
+            let fixtures = guard.get_current_venue_fixtures().unwrap_or_default();
+            let focus_points: HashMap<String, [f64; 3]> = guard
+                .get_current_venue()
+                .map(|venue| {
+                    venue
+                        .focus_points()
+                        .iter()
+                        .map(|(name, point)| (name.clone(), *point))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut group_map: HashMap<String, Vec<String>> = HashMap::new();
+            for name in crate::lighting::readiness::group_names(&shows) {
+                let resolved = guard.resolve_logical_group_graceful(&name);
+                group_map.insert(name, resolved);
+            }
+            (fixtures, focus_points, group_map)
+        }
+        None => (Vec::new(), HashMap::new(), HashMap::new()),
+    };
+
+    let targeted = group_map.values().flatten().cloned().collect();
+    let mut venue_fixtures: Vec<String> = fixtures
+        .iter()
+        .filter(|f| f.parent.is_none())
+        .map(|f| f.name.clone())
+        .collect();
+    venue_fixtures.sort();
+
+    let mut effect_groups: HashMap<String, Vec<String>> = HashMap::new();
+    let evaluations = evaluate_show(
+        shows,
+        &fixtures,
+        &focus_points,
+        fallback_tempo_map,
+        times,
+        |mut effect| {
+            effect_groups.insert(effect.id.clone(), effect.target_fixtures.clone());
+            effect.target_fixtures = effect
+                .target_fixtures
+                .iter()
+                .flat_map(|target| match group_map.get(target) {
+                    Some(resolved) => resolved.clone(),
+                    // Not a known group — already a fixture name, or a name
+                    // that resolves to nothing. Either way, leave it for the
+                    // engine to accept or reject.
+                    None => vec![target.clone()],
+                })
+                .collect();
+            effect
+        },
+    );
+    SystemEvaluation {
+        evaluations,
+        targeted,
+        venue_fixtures,
+        effect_groups,
+    }
 }
 
 /// Adds every known fixture that no effect is driving, with all its channels at
@@ -278,10 +391,12 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
     );
     fill_dark_fixtures(&mut fixtures, registry.values());
 
+    let poses = crate::state::compute_pose_snapshots(engine.poses(), registry);
     Evaluation {
         time: at,
         fixtures,
         active_effects,
+        poses,
     }
 }
 
@@ -789,6 +904,7 @@ show "T" {
                 cells: Default::default(),
             }],
             active_effects: Vec::new(),
+            poses: Vec::new(),
         };
         assert_eq!(evaluation.is_dark(), Some(true));
         channels.insert("dimmer".to_string(), 1u8);

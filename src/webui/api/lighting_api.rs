@@ -82,8 +82,28 @@ async fn first_multipart_file(
         .into_response())
 }
 
+/// The archive's fixture name as a fixture type name: letters, digits,
+/// spaces, hyphens and underscores, with everything else dropped and runs of
+/// spaces collapsed (a quote or brace would end the name in the `.fixture`
+/// file). Falls back to `fixture` when nothing is left.
+fn suggested_type_name(name: &str) -> String {
+    let kept: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'))
+        .collect();
+    let collapsed = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        "fixture".to_string()
+    } else {
+        collapsed
+    }
+}
+
 /// POST /api/lighting/gdtf/inspect — parses an uploaded GDTF archive and
-/// returns its modes, for the mode picker. Writes nothing.
+/// returns its modes, for the mode picker: each mode's footprint, what a show
+/// can do in it (capabilities, cells, strobe range), its channel map and the
+/// distiller's warnings, or the reason it cannot be imported. Writes
+/// nothing.
 pub(super) async fn inspect_gdtf(mut multipart: axum::extract::Multipart) -> impl IntoResponse {
     let (_, bytes) = first_multipart_file(&mut multipart).await?;
     let description = lighting::gdtf::parse_archive(&bytes).map_err(|e| {
@@ -93,14 +113,69 @@ pub(super) async fn inspect_gdtf(mut multipart: axum::extract::Multipart) -> imp
         )
             .into_response()
     })?;
-    let modes: Vec<serde_json::Value> = lighting::gdtf::mode_summaries(&description)
-        .into_iter()
-        .map(|summary| {
-            json!({
+    // Distilling every mode is a few milliseconds each (design 12.2), so the
+    // picker can say what each one lets a show do before anything is written.
+    let suggested = suggested_type_name(&description.name);
+    let summaries = lighting::gdtf::mode_summaries(&description);
+    let modes: Vec<serde_json::Value> = summaries
+        .iter()
+        .enumerate()
+        .map(|(index, summary)| {
+            let mut mode = json!({
                 "name": summary.name,
                 "channel_count": summary.channel_count,
                 "footprint": summary.footprint,
-            })
+            });
+            let fields = mode.as_object_mut().expect("a json object");
+            // The importer finds a mode by name and takes the first match, so
+            // a repeat could only ever import its namesake.
+            let repeats = summaries[..index].iter().any(|m| m.name == summary.name);
+            let distilled = if repeats {
+                Err("another mode has this name; an import would take the first".to_string())
+            } else {
+                lighting::gdtf::distill(&description, &summary.name, &suggested)
+                    .map_err(|e| e.to_string())
+            };
+            match distilled {
+                Ok(distilled) => {
+                    let fixture_type = &distilled.fixture_type;
+                    let mut info = lighting::effects::FixtureInfo::new(
+                        suggested.clone(),
+                        1,
+                        1,
+                        suggested.clone(),
+                        fixture_type.channels().clone(),
+                        None,
+                    );
+                    info.cells = fixture_type.cells().to_vec();
+                    fields.insert(
+                        "capabilities".into(),
+                        json!(lighting::fit::FitFixture::from_info(&info, &[]).capability_names()),
+                    );
+                    fields.insert("cells".into(), json!(fixture_type.cells().len()));
+                    if let Some(max_hz) = fixture_type.max_strobe_frequency() {
+                        fields.insert(
+                            "strobe_range".into(),
+                            json!({
+                                "min_hz": fixture_type.min_strobe_frequency(),
+                                "max_hz": max_hz,
+                            }),
+                        );
+                    }
+                    let mut channels: Vec<(&u16, &String)> = fixture_type
+                        .channels()
+                        .iter()
+                        .map(|(name, offset)| (offset, name))
+                        .collect();
+                    channels.sort();
+                    fields.insert("channels".into(), json!(channels));
+                    fields.insert("warnings".into(), json!(distilled.warnings));
+                }
+                Err(reason) => {
+                    fields.insert("refused".into(), json!(reason));
+                }
+            }
+            mode
         })
         .collect();
     Ok::<_, axum::response::Response>(
@@ -109,6 +184,8 @@ pub(super) async fn inspect_gdtf(mut multipart: axum::extract::Multipart) -> imp
             Json(json!({
                 "fixture": description.name,
                 "manufacturer": description.manufacturer,
+                "suggested_name": suggested,
+                "fixture_types_dir": DEFAULT_FIXTURE_TYPES_DIR,
                 "modes": modes,
             })),
         )
@@ -1090,6 +1167,146 @@ pub(super) async fn get_fit(State(state): State<WebUiState>) -> impl IntoRespons
         )
             .into_response(),
     }
+}
+
+/// The most instants one evaluate request may ask for. A scrubber asks for
+/// one; anything near this is a script.
+const MAX_EVALUATE_TIMES: usize = 64;
+
+/// Body of `POST /api/lighting/evaluate`.
+#[derive(serde::Deserialize)]
+pub(super) struct EvaluateRequest {
+    song: String,
+    /// Song times, in seconds.
+    times: Vec<f64>,
+}
+
+/// POST /api/lighting/evaluate — what a song's shows would be doing at each
+/// requested time, offline: the Preview mode's data.
+///
+/// Each evaluation carries the live `state` message's `fixtures`, `poses` and
+/// `cells` (built by the same helper, so the 3D scene is fed one shape from
+/// both sources) plus `active_effects` with the groups each cue named. The
+/// fixtures no cue targets are the same for every instant and come once,
+/// beside the evaluations, as `untouched`. Runs the song's registered shows
+/// through `evaluate_with_system` — the function MCP's `evaluate_show` uses —
+/// and never touches the DMX engine's effect engine, so a playing song plays
+/// on.
+pub(super) async fn evaluate_lighting(
+    State(state): State<WebUiState>,
+    Json(request): Json<EvaluateRequest>,
+) -> impl IntoResponse {
+    let error = |status: StatusCode, message: String| {
+        (status, Json(json!({"error": message}))).into_response()
+    };
+    if request.times.len() > MAX_EVALUATE_TIMES {
+        return error(
+            StatusCode::BAD_REQUEST,
+            format!("at most {MAX_EVALUATE_TIMES} times per request"),
+        );
+    }
+    if request.times.iter().any(|t| !t.is_finite() || *t < 0.0) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "times must be non-negative seconds".to_string(),
+        );
+    }
+
+    let songs = state.player.songs();
+    let song = match songs.get(&request.song) {
+        Ok(song) => song,
+        // A song whose lighting fails to parse never loads: the registry
+        // keeps its failure, and the message says why.
+        Err(_) => {
+            return match songs.failures().iter().find(|f| f.name() == request.song) {
+                Some(failure) => error(StatusCode::BAD_REQUEST, failure.error().to_string()),
+                None => error(
+                    StatusCode::NOT_FOUND,
+                    format!("unknown song: {}", request.song),
+                ),
+            };
+        }
+    };
+    let shows = crate::lighting::evaluate::registered_shows(&song);
+    if shows.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            format!("song `{}` has no lighting loaded", request.song),
+        );
+    }
+    let tempo = song.lighting_tempo_map();
+    let times: Vec<std::time::Duration> = request
+        .times
+        .iter()
+        .map(|t| std::time::Duration::from_secs_f64(*t))
+        .collect();
+    let lighting_system = state
+        .player
+        .dmx_engine()
+        .and_then(|dmx| dmx.broadcast_handles().lighting_system);
+
+    // The lighting system is a `parking_lot` mutex shared with the effects
+    // loop, and evaluation is pure CPU besides: off the async worker.
+    let evaluated = tokio::task::spawn_blocking(move || {
+        crate::lighting::evaluate::evaluate_with_system(
+            shows,
+            tempo.as_ref(),
+            &times,
+            lighting_system.as_deref(),
+        )
+    })
+    .await;
+    let evaluated = match evaluated {
+        Ok(evaluated) => evaluated,
+        Err(e) => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to evaluate: {e}"),
+            )
+        }
+    };
+
+    let untouched: Vec<&String> = evaluated
+        .venue_fixtures
+        .iter()
+        .filter(|name| !evaluated.targeted.contains(*name))
+        .collect();
+    let evaluations: Vec<serde_json::Value> = evaluated
+        .evaluations
+        .iter()
+        .map(|evaluation| {
+            let (fixtures, poses, cells) =
+                super::super::state::state_maps(&evaluation.fixtures, &evaluation.poses);
+            let active: Vec<serde_json::Value> = evaluation
+                .active_effects
+                .iter()
+                .map(|effect| {
+                    json!({
+                        "id": effect.id,
+                        "groups": evaluated.effect_groups.get(&effect.id),
+                        "kind": effect.effect_type,
+                        "layer": format!("{:?}", effect.layer).to_lowercase(),
+                        "elapsed": effect.elapsed.as_secs_f64(),
+                        "duration": effect.duration.as_secs_f64(),
+                        "fixtures": effect.fixtures,
+                    })
+                })
+                .collect();
+            json!({
+                "time": evaluation.time.as_secs_f64(),
+                "fixtures": fixtures,
+                "poses": poses,
+                "cells": cells,
+                "active_effects": active,
+            })
+        })
+        .collect();
+    Json(json!({
+        "song": request.song,
+        "evaluations": evaluations,
+        "untouched": untouched,
+    }))
+    .into_response()
 }
 
 /// The readiness facts for the player's running profile.
@@ -4855,7 +5072,7 @@ show "test" {
             .find(|f| f["name"] == json!("M"))
             .unwrap();
         assert_eq!(m["tags"], json!(["other"]));
-        assert_eq!(m["capabilities"], json!(["color", "pan_tilt"]));
+        assert_eq!(m["capabilities"], json!(["color", "pan_tilt", "dimmer"]));
 
         let groups = report["groups"].as_array().unwrap();
         assert_eq!(groups.len(), 1);
@@ -4972,5 +5189,249 @@ show "test" {
         assert_eq!(report["output"]["reachable"], json!(false));
         assert_eq!(report["output"]["unpatched"], json!([]));
         assert!(report["output"]["ola_http_port"].as_u64().unwrap() > 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // POST /lighting/evaluate (the 3D preview)
+    // -----------------------------------------------------------------------
+
+    const PREVIEW_VENUE: &str = "venue \"v\" {\n  \
+        fixture \"M\" Mover @ 1:1 tags [\"wash\"] position (0, 3.5, 4) rotation (0, 0, 180)\n  \
+        fixture \"P\" Par @ 1:20\n  \
+        focus \"center\" (0, 0, 0)\n}\n";
+
+    const PREVIEW_SHOW: &str = "show \"S\" {\n    @00:00.000\n    \
+        washes: static color: \"red\", duration: 10s\n    \
+        @00:01.000\n    washes: move focus: \"center\", duration: 4s\n}\n";
+
+    async fn evaluate(
+        state: WebUiState,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/lighting/evaluate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        (
+            status,
+            serde_json::from_str(&response_body(response).await).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn evaluate_matches_evaluate_show_and_lists_untouched_fixtures() {
+        let rig = rig(
+            &[("mover.light", TYPE_MOVER), ("par.light", TYPE_PAR)],
+            Some(PREVIEW_VENUE),
+            &[("Song", PREVIEW_SHOW)],
+            &[1],
+        );
+        let (status, body) = evaluate(
+            rig.state.clone(),
+            json!({"song": "Song", "times": [0.5, 3.0]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let evaluations = body["evaluations"].as_array().unwrap();
+        assert_eq!(evaluations.len(), 2);
+
+        // The same shows evaluated directly, with the group resolved by hand.
+        let song = rig.state.player.songs().get("Song").unwrap();
+        let shows = crate::lighting::evaluate::registered_shows(&song);
+        let system = rig
+            .state
+            .player
+            .dmx_engine()
+            .and_then(|dmx| dmx.broadcast_handles().lighting_system)
+            .unwrap();
+        let (fixtures, focus) = {
+            let guard = system.lock();
+            (
+                guard.get_current_venue_fixtures().unwrap(),
+                guard
+                    .get_current_venue()
+                    .unwrap()
+                    .focus_points()
+                    .iter()
+                    .map(|(n, p)| (n.clone(), *p))
+                    .collect::<std::collections::HashMap<_, _>>(),
+            )
+        };
+        let direct = crate::lighting::evaluate::evaluate_show(
+            shows,
+            &fixtures,
+            &focus,
+            None,
+            &[
+                std::time::Duration::from_secs_f64(0.5),
+                std::time::Duration::from_secs_f64(3.0),
+            ],
+            |mut effect| {
+                effect.target_fixtures = vec!["M".to_string()];
+                effect
+            },
+        );
+        for (got, want) in evaluations.iter().zip(&direct) {
+            let (fixtures, poses, cells) =
+                crate::webui::state::state_maps(&want.fixtures, &want.poses);
+            assert_eq!(got["fixtures"], json!(fixtures));
+            // Pan and tilt are exact; the beam's direction and footprint are
+            // trigonometry, which two evaluations agree on to the last bit or
+            // two, not always the last.
+            for (name, want_pose) in &poses {
+                let got_pose = &got["poses"][name];
+                assert_eq!(got_pose["pan"], want_pose["pan"]);
+                assert_eq!(got_pose["tilt"], want_pose["tilt"]);
+                for key in ["aim", "floor"] {
+                    let (g, w) = (got_pose[key].as_array(), want_pose[key].as_array());
+                    assert_eq!(g.map(|a| a.len()), w.map(|a| a.len()), "{name} {key}");
+                    for (g, w) in g.into_iter().flatten().zip(w.into_iter().flatten()) {
+                        assert!((g.as_f64().unwrap() - w.as_f64().unwrap()).abs() < 1e-9);
+                    }
+                }
+            }
+            assert_eq!(got["poses"].as_object().unwrap().len(), poses.len());
+            assert_eq!(got["cells"], json!(cells));
+            assert_eq!(got["time"], json!(want.time.as_secs_f64()));
+        }
+        // The move is under way at 3 s: the mover has left rest.
+        assert_ne!(
+            evaluations[0]["poses"]["M"], evaluations[1]["poses"]["M"],
+            "{body}"
+        );
+        assert_eq!(evaluations[1]["fixtures"]["M"]["red"], json!(255));
+
+        let active = evaluations[1]["active_effects"].as_array().unwrap();
+        let kinds: Vec<&str> = active.iter().filter_map(|e| e["kind"].as_str()).collect();
+        assert!(
+            kinds.contains(&"Static") && kinds.contains(&"Move"),
+            "{kinds:?}"
+        );
+        assert!(active.iter().all(|e| e["groups"] == json!(["washes"])));
+        let mv = active.iter().find(|e| e["kind"] == json!("Move")).unwrap();
+        assert_eq!(mv["elapsed"], json!(2.0));
+        assert_eq!(mv["duration"], json!(4.0));
+
+        // P is in no group the show targets.
+        assert_eq!(body["untouched"], json!(["P"]));
+    }
+
+    #[tokio::test]
+    async fn evaluate_answers_unknown_and_unloadable_songs() {
+        let rig = rig(
+            &[("mover.light", TYPE_MOVER), ("par.light", TYPE_PAR)],
+            Some(PREVIEW_VENUE),
+            &[
+                ("Song", PREVIEW_SHOW),
+                // No `duration`: the show does not parse, so the song does not load.
+                (
+                    "Bad",
+                    "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\"\n}\n",
+                ),
+            ],
+            &[1],
+        );
+        let (status, body) =
+            evaluate(rig.state.clone(), json!({"song": "Nope", "times": [0]})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+        let (status, body) =
+            evaluate(rig.state.clone(), json!({"song": "Bad", "times": [0]})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("duration"),
+            "{body}"
+        );
+
+        let (status, _) =
+            evaluate(rig.state.clone(), json!({"song": "Song", "times": [-1.0]})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    // -----------------------------------------------------------------------
+    // POST /lighting/gdtf/inspect: what each mode can do
+    // -----------------------------------------------------------------------
+
+    async fn inspect(bytes: &[u8]) -> serde_json::Value {
+        let (state, _dir) = test_state();
+        let (content_type, body) = multipart_body("synth.gdtf", bytes);
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/lighting/gdtf/inspect")
+                    .header("content-type", content_type)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_str(&response_body(response).await).unwrap()
+    }
+
+    #[tokio::test]
+    async fn inspect_gdtf_says_what_each_mode_can_do() {
+        let parsed = inspect(&synthetic_gdtf_bytes()).await;
+        assert_eq!(parsed["suggested_name"], "Synth Brick");
+        assert_eq!(parsed["fixture_types_dir"], "lighting/fixture_types");
+        let modes = parsed["modes"].as_array().unwrap();
+        let rgbs = modes.iter().find(|m| m["name"] == "8: RGBS").unwrap();
+        // RGB and a strobe, and a dimmer only as a virtual channel.
+        assert_eq!(rgbs["capabilities"], json!(["color", "strobe"]), "{rgbs}");
+        assert_eq!(rgbs["strobe_range"]["min_hz"], json!(0.4), "{rgbs}");
+        assert_eq!(rgbs["strobe_range"]["max_hz"], json!(25.0), "{rgbs}");
+        assert_eq!(rgbs["cells"], json!(0));
+        assert!(rgbs.get("refused").is_none());
+        assert!(rgbs["channels"]
+            .as_array()
+            .unwrap()
+            .contains(&json!([1, "red"])));
+        assert!(rgbs["warnings"].is_array());
+
+        let mover = modes.iter().find(|m| m["name"] == "Mover 16bit").unwrap();
+        assert_eq!(mover["capabilities"], json!(["pan_tilt"]), "{mover}");
+        assert!(mover.get("strobe_range").is_none());
+        assert_eq!(mover["footprint"], json!(5));
+    }
+
+    #[tokio::test]
+    async fn inspect_gdtf_refuses_a_mode_it_cannot_tell_from_another() {
+        // Two modes with one name: an import takes the first, so the second
+        // is listed with its reason, not offered.
+        let xml = crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.replace("Mover 16bit", "8: RGBS");
+        let bytes = crate::lighting::gdtf::build_zip(&[("description.xml", xml.as_bytes())]);
+        let parsed = inspect(&bytes).await;
+        let modes = parsed["modes"].as_array().unwrap();
+        assert_eq!(modes.len(), 2);
+        assert!(modes[0].get("refused").is_none());
+        assert!(
+            modes[1]["refused"]
+                .as_str()
+                .unwrap()
+                .contains("another mode"),
+            "{modes:?}"
+        );
+        assert!(modes[1].get("capabilities").is_none());
+    }
+
+    #[test]
+    fn a_suggested_type_name_is_safe_in_a_fixture_file() {
+        assert_eq!(
+            suggested_type_name("Spiider \"Pro\" {v2}"),
+            "Spiider Pro v2"
+        );
+        assert_eq!(suggested_type_name("  A   B "), "A B");
+        assert_eq!(suggested_type_name("\"\"{}"), "fixture");
     }
 }

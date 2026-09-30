@@ -347,12 +347,19 @@ pub async fn state_poller(
     }
 }
 
-/// Builds the `state` WebSocket message for a snapshot. Also sent to each
-/// client on connect, so one that joins while nothing is changing (an idle
-/// player) still learns the current values.
-pub fn build_state_json(snapshot: &crate::state::StateSnapshot) -> String {
-    let fixtures: serde_json::Map<String, serde_json::Value> = snapshot
-        .fixtures
+/// The three per-fixture maps of the `state` message — channel values, poses
+/// and per-cell values — from a snapshot's parts. The live message and the
+/// preview's evaluation both build them here, so the 3D scene is fed the same
+/// shape either way and the two cannot drift apart.
+pub fn state_maps(
+    fixtures: &[crate::state::FixtureSnapshot],
+    poses: &[crate::state::PoseSnapshot],
+) -> (
+    serde_json::Map<String, serde_json::Value>,
+    serde_json::Map<String, serde_json::Value>,
+    serde_json::Map<String, serde_json::Value>,
+) {
+    let channels_by_fixture: serde_json::Map<String, serde_json::Value> = fixtures
         .iter()
         .map(|f| {
             let channels: serde_json::Map<String, serde_json::Value> = f
@@ -364,8 +371,7 @@ pub fn build_state_json(snapshot: &crate::state::StateSnapshot) -> String {
         })
         .collect();
 
-    let poses: serde_json::Map<String, serde_json::Value> = snapshot
-        .poses
+    let poses: serde_json::Map<String, serde_json::Value> = poses
         .iter()
         .map(|p| {
             (
@@ -377,13 +383,20 @@ pub fn build_state_json(snapshot: &crate::state::StateSnapshot) -> String {
 
     // Per-cell values, by fixture then cell, only for fixtures a
     // per-cell effect is driving this frame (design §17.4).
-    let cells: serde_json::Map<String, serde_json::Value> = snapshot
-        .fixtures
+    let cells: serde_json::Map<String, serde_json::Value> = fixtures
         .iter()
         .filter(|f| !f.cells.is_empty())
         .map(|f| (f.name.clone(), json!(f.cells)))
         .collect();
 
+    (channels_by_fixture, poses, cells)
+}
+
+/// Builds the `state` WebSocket message for a snapshot. Also sent to each
+/// client on connect, so one that joins while nothing is changing (an idle
+/// player) still learns the current values.
+pub fn build_state_json(snapshot: &crate::state::StateSnapshot) -> String {
+    let (fixtures, poses, cells) = state_maps(&snapshot.fixtures, &snapshot.poses);
     json!({
         "type": "state",
         "fixtures": fixtures,
@@ -1797,7 +1810,7 @@ metronome: {}
             value["fixtures"]["head"]["capabilities"],
             json!(["color", "pan_tilt"])
         );
-        assert_eq!(value["fixtures"]["dim"]["capabilities"], json!([]));
+        assert_eq!(value["fixtures"]["dim"]["capabilities"], json!(["dimmer"]));
     }
 
     #[test]

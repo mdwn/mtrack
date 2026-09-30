@@ -34,6 +34,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
   beamLength,
+  SKY_BEAM_LENGTH,
   beamLook,
   deckExtent,
   genericRig,
@@ -79,7 +80,12 @@ function beamStyle(kind: string): BeamStyle {
     case "spot":
     case "pc":
     case "fresnel":
-      return { maxLength: 24, skyLength: 4, floor: 0.1, gain: 0.2 };
+      return {
+        maxLength: 24,
+        skyLength: SKY_BEAM_LENGTH,
+        floor: 0.1,
+        gain: 0.2,
+      };
     case "wash":
       return { maxLength: 8, skyLength: 2.5, floor: 0.05, gain: 0.1 };
     default:

@@ -361,10 +361,55 @@ app.post("/api/lighting/gdtf/inspect", (_req, res) => {
   res.json({
     fixture: "PB15 PixelBrick",
     manufacturer: "Astera LED Technology",
+    suggested_name: "PB15 PixelBrick",
+    fixture_types_dir: "lighting/fixture_types",
     modes: [
-      { name: "1: RGB", channel_count: 4, footprint: 3 },
-      { name: "8: RGBS", channel_count: 5, footprint: 4 },
+      {
+        name: "1: RGB",
+        channel_count: 4,
+        footprint: 3,
+        capabilities: ["color", "dimmer"],
+        cells: 0,
+        channels: [
+          [1, "red"],
+          [2, "green"],
+          [3, "blue"],
+        ],
+        warnings: [],
+      },
+      {
+        name: "8: RGBS",
+        channel_count: 5,
+        footprint: 4,
+        capabilities: ["color", "dimmer", "strobe"],
+        cells: 0,
+        strobe_range: { min_hz: 0.4, max_hz: 25 },
+        channels: [
+          [1, "red"],
+          [2, "green"],
+          [3, "blue"],
+          [4, "strobe"],
+        ],
+        warnings: ["skipped virtual channel (no DMX offset): Dimmer"],
+      },
     ],
+  });
+});
+
+// The 3D page's Preview: an idle show. Tests that need a moment routed with
+// `page.route`.
+app.post("/api/lighting/evaluate", (req, res) => {
+  const times: number[] = Array.isArray(req.body?.times) ? req.body.times : [];
+  res.json({
+    song: req.body?.song,
+    evaluations: times.map((time) => ({
+      time,
+      fixtures: {},
+      poses: {},
+      cells: {},
+      active_effects: [],
+    })),
+    untouched: [],
   });
 });
 

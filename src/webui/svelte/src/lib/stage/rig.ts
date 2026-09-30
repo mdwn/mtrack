@@ -194,6 +194,10 @@ export function poseRotations(
   };
 }
 
+/** How long a spot's beam is drawn when it points up or level, meters. The
+ *  3D page says so when a beam misses the deck. */
+export const SKY_BEAM_LENGTH = 4;
+
 /** Where a beam meets the deck (z = 0) from a point along a direction. */
 export function beamLength(
   origin: [number, number, number],

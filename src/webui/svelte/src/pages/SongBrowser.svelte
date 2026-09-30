@@ -33,10 +33,21 @@
     "config",
   ];
 
+  // The address's path, without a `?t=` (a time to open the lighting
+  // editor at, in seconds: the 3D preview's "Open this cue in the timeline").
+  let hashPath = $derived(currentHash.split("?", 1)[0]);
+  let initialTimeMs = $derived.by(() => {
+    const raw = new URLSearchParams(currentHash.split("?", 2)[1] ?? "").get(
+      "t",
+    );
+    const seconds = raw === null ? NaN : Number(raw);
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null;
+  });
+
   let songName = $derived.by(() => {
     const prefix = "#/songs/";
-    if (currentHash.startsWith(prefix) && currentHash.length > prefix.length) {
-      const rest = decodeURIComponent(currentHash.slice(prefix.length));
+    if (hashPath.startsWith(prefix) && hashPath.length > prefix.length) {
+      const rest = decodeURIComponent(hashPath.slice(prefix.length));
       for (const tab of allTabs) {
         if (rest.endsWith("/" + tab)) {
           return rest.slice(0, -(tab.length + 1));
@@ -49,8 +60,8 @@
 
   let initialTab = $derived.by(() => {
     const prefix = "#/songs/";
-    if (!currentHash.startsWith(prefix)) return undefined;
-    const segments = currentHash.slice(prefix.length).split("/");
+    if (!hashPath.startsWith(prefix)) return undefined;
+    const segments = hashPath.slice(prefix.length).split("/");
     const last = segments[segments.length - 1];
     if (allTabs.includes(last) && segments.length > 1) {
       return last as
@@ -69,7 +80,7 @@
 </script>
 
 {#if songName}
-  <SongDetail {songName} {initialTab} />
+  <SongDetail {songName} {initialTab} {initialTimeMs} />
 {:else}
   <SongList
     initialSearch={savedSearch}

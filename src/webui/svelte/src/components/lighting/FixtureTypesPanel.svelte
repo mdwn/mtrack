@@ -18,6 +18,7 @@
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "../config/Tooltip.svelte";
+  import GdtfModePicker from "./GdtfModePicker.svelte";
   import {
     fetchFixtureTypes,
     fetchFixtureType,
@@ -197,12 +198,11 @@ fixture_type "Name" {
     editFtStrobeDmxOffset = "";
   }
 
-  // GDTF import flow: pick a file → inspect (modes) → pick a mode → import.
+  // GDTF import flow: pick a file → inspect (modes) → pick a mode in the
+  // picker, which says what each lets a show do → import.
   let gdtfFileInput = $state<HTMLInputElement | null>(null);
   let gdtfFile = $state<File | null>(null);
   let gdtfInspection = $state<GdtfInspection | null>(null);
-  let gdtfMode = $state("");
-  let gdtfName = $state("");
   let gdtfBusy = $state(false);
   let gdtfError = $state("");
   let gdtfReport = $state<GdtfImportReport | null>(null);
@@ -210,8 +210,6 @@ fixture_type "Name" {
   function resetGdtf() {
     gdtfFile = null;
     gdtfInspection = null;
-    gdtfMode = "";
-    gdtfName = "";
     gdtfError = "";
     gdtfReport = null;
   }
@@ -226,8 +224,6 @@ fixture_type "Name" {
     gdtfBusy = true;
     try {
       gdtfInspection = await inspectGdtf(file);
-      gdtfMode = gdtfInspection.modes[0]?.name ?? "";
-      gdtfName = gdtfInspection.fixture;
     } catch (err) {
       gdtfError = err instanceof Error ? err.message : String(err);
       gdtfFile = null;
@@ -236,16 +232,12 @@ fixture_type "Name" {
     }
   }
 
-  async function runGdtfImport() {
-    if (!gdtfFile || !gdtfMode) return;
+  async function runGdtfImport(mode: string, name: string) {
+    if (!gdtfFile || !mode) return;
     gdtfBusy = true;
     gdtfError = "";
     try {
-      gdtfReport = await importGdtf(
-        gdtfFile,
-        gdtfMode,
-        gdtfName.trim() || undefined,
-      );
+      gdtfReport = await importGdtf(gdtfFile, mode, name || undefined);
       gdtfInspection = null;
       gdtfFile = null;
       await loadFixtureTypes();
@@ -612,45 +604,12 @@ fixture_type "Name" {
       <div class="file-errors" data-testid="gdtf-error">{gdtfError}</div>
     {/if}
     {#if gdtfInspection}
-      <div class="editor-form" data-testid="gdtf-mode-picker">
-        <div class="editor-header">
-          <h4 class="editor-title">
-            {gdtfInspection.fixture} — {gdtfInspection.manufacturer}
-          </h4>
-          <div class="editor-actions">
-            <button class="btn" onclick={resetGdtf}
-              >{$t("common.cancel")}</button
-            >
-            <button
-              class="btn btn-primary"
-              data-testid="gdtf-import-confirm"
-              onclick={runGdtfImport}
-              disabled={gdtfBusy || !gdtfMode}
-            >
-              {gdtfBusy ? $t("common.saving") : $t("lighting.importGdtf")}
-            </button>
-          </div>
-        </div>
-        <div class="field">
-          <label for="gdtf-mode">{$t("lighting.gdtfMode")}</label>
-          <select id="gdtf-mode" class="input" bind:value={gdtfMode}>
-            {#each gdtfInspection.modes as mode (mode.name)}
-              <option value={mode.name}>
-                {mode.name} ({mode.channel_count} ch, footprint {mode.footprint})
-              </option>
-            {/each}
-          </select>
-        </div>
-        <div class="field">
-          <label for="gdtf-name">{$t("lighting.name")}</label>
-          <input
-            id="gdtf-name"
-            class="input"
-            bind:value={gdtfName}
-            placeholder={gdtfInspection.fixture}
-          />
-        </div>
-      </div>
+      <GdtfModePicker
+        inspection={gdtfInspection}
+        busy={gdtfBusy}
+        oncancel={resetGdtf}
+        onimport={runGdtfImport}
+      />
     {/if}
     {#if gdtfReport}
       <div class="editor-form" data-testid="gdtf-report">
