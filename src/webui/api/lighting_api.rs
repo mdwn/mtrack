@@ -46,7 +46,7 @@ pub(super) fn project_root(
 /// Pulls the first uploaded file out of a multipart body: (file name, bytes).
 async fn first_multipart_file(
     multipart: &mut axum::extract::Multipart,
-) -> Result<(String, Vec<u8>), axum::response::Response> {
+) -> Result<(String, axum::body::Bytes), axum::response::Response> {
     while let Some(field) = multipart.next_field().await.map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
@@ -73,7 +73,7 @@ async fn first_multipart_file(
             )
                 .into_response()
         })?;
-        return Ok((filename, bytes.to_vec()));
+        return Ok((filename, bytes));
     }
     Err((
         StatusCode::BAD_REQUEST,
@@ -106,13 +106,25 @@ fn suggested_type_name(name: &str) -> String {
 /// nothing.
 pub(super) async fn inspect_gdtf(mut multipart: axum::extract::Multipart) -> impl IntoResponse {
     let (_, bytes) = first_multipart_file(&mut multipart).await?;
-    let description = lighting::gdtf::parse_archive(&bytes).map_err(|e| {
-        (
+    // Parsing the archive and distilling every mode is CPU work (a big GDTF
+    // has dozens of modes); it runs off the async workers.
+    let outcome = super::helpers::spawn_blocking_io("inspect GDTF", move || {
+        Ok::<_, String>(inspect_gdtf_bytes(&bytes))
+    })
+    .await?;
+    match outcome {
+        Ok(body) => Ok::<_, axum::response::Response>((StatusCode::OK, Json(body)).into_response()),
+        Err(e) => Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": format!("Not a parseable GDTF: {}", e)})),
         )
-            .into_response()
-    })?;
+            .into_response()),
+    }
+}
+
+/// The mode picker's answer for a GDTF archive; `Err` is the parse failure.
+fn inspect_gdtf_bytes(bytes: &[u8]) -> Result<serde_json::Value, String> {
+    let description = lighting::gdtf::parse_archive(bytes).map_err(|e| e.to_string())?;
     // Distilling every mode is a few milliseconds each (design 12.2), so the
     // picker can say what each one lets a show do before anything is written.
     let suggested = suggested_type_name(&description.name);
@@ -178,19 +190,13 @@ pub(super) async fn inspect_gdtf(mut multipart: axum::extract::Multipart) -> imp
             mode
         })
         .collect();
-    Ok::<_, axum::response::Response>(
-        (
-            StatusCode::OK,
-            Json(json!({
-                "fixture": description.name,
-                "manufacturer": description.manufacturer,
-                "suggested_name": suggested,
-                "fixture_types_dir": DEFAULT_FIXTURE_TYPES_DIR,
-                "modes": modes,
-            })),
-        )
-            .into_response(),
-    )
+    Ok(json!({
+        "fixture": description.name,
+        "manufacturer": description.manufacturer,
+        "suggested_name": suggested,
+        "fixture_types_dir": DEFAULT_FIXTURE_TYPES_DIR,
+        "modes": modes,
+    }))
 }
 
 /// Query parameters for the GDTF import endpoint.
@@ -1935,17 +1941,26 @@ pub(super) async fn put_venue(
 /// not returned — the save itself is durable and the loader will say the
 /// same thing at next startup.
 pub(super) async fn reload_if_current_venue(state: &WebUiState, name: &str) -> bool {
-    let is_current = state
-        .player
-        .broadcast_handles()
-        .and_then(|h| h.lighting_system)
-        .is_some_and(|system| system.lock().current_venue() == Some(name));
-    if !is_current {
-        return false;
-    }
+    // The lighting system's lock is a blocking mutex and the reload reads
+    // and parses files, so both stay off the async workers.
     let player = state.player.clone();
-    match tokio::task::spawn_blocking(move || player.reload_current_venue()).await {
-        Ok(Ok(())) => true,
+    let venue = name.to_string();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let is_current = player
+            .broadcast_handles()
+            .and_then(|h| h.lighting_system)
+            .is_some_and(|system| system.lock().current_venue() == Some(venue.as_str()));
+        if !is_current {
+            return Ok(false);
+        }
+        player
+            .reload_current_venue()
+            .map(|()| true)
+            .map_err(|e| e.to_string())
+    })
+    .await;
+    match outcome {
+        Ok(Ok(reloaded)) => reloaded,
         Ok(Err(e)) => {
             tracing::warn!(venue = name, error = %e, "venue saved, but the running engine could not reload it");
             false
@@ -5632,6 +5647,35 @@ show "test" {
         assert_eq!(mover["capabilities"], json!(["pan_tilt"]), "{mover}");
         assert!(mover.get("strobe_range").is_none());
         assert_eq!(mover["footprint"], json!(5));
+    }
+
+    #[tokio::test]
+    async fn inspect_gdtf_answers_every_mode_of_a_many_mode_archive() {
+        // A big real GDTF has dozens of modes; all of them are distilled (off
+        // the async worker) and reported.
+        let xml = crate::lighting::gdtf::SYNTHETIC_DESCRIPTION;
+        let start = xml.find("<DMXMode Name=\"8: RGBS\"").unwrap();
+        let end = start + xml[start..].find("</DMXMode>").unwrap() + "</DMXMode>".len();
+        let template = &xml[start..end];
+        let many: String = (1..=30)
+            .map(|n| template.replace("8: RGBS", &format!("Mode {n}")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let xml = format!("{}{many}{}", &xml[..start], &xml[end..]);
+        let bytes = crate::lighting::gdtf::build_zip(&[("description.xml", xml.as_bytes())]);
+
+        let parsed = inspect(&bytes).await;
+        let modes = parsed["modes"].as_array().unwrap();
+        for n in 1..=30 {
+            let mode = modes
+                .iter()
+                .find(|m| m["name"] == format!("Mode {n}").as_str())
+                .unwrap_or_else(|| panic!("Mode {n} missing from {modes:?}"));
+            assert_eq!(mode["capabilities"], json!(["color", "strobe"]), "{mode}");
+            assert!(mode.get("refused").is_none(), "{mode}");
+        }
+        assert!(modes.iter().any(|m| m["name"] == "Mover 16bit"));
+        assert_eq!(modes.len(), 31);
     }
 
     #[tokio::test]

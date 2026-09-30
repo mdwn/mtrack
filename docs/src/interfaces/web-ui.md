@@ -671,6 +671,9 @@ nothing is written until the last step.
    merges into an existing one (a merge keeps tags, focus names and fixtures you added by hand),
    fixtures to seed, fixture types to import and which are already in the library, fixtures that
    become `# TODO` lines with the reason for each, and how much scenery the 3D view can draw.
+   On a merge it also lists the fields you edited by hand that the MVR would overwrite, each with a
+   **Keep my edits** checkbox: positions, rotations and focus points start checked, patch and
+   type start unchecked.
 4. **Import.** Writes the files and reports them. Two buttons follow: **Fit your shows**, since a
    seeded venue is untagged, and **Open in Venues**. Importing does not make the venue current;
    pick it on the Groups page.

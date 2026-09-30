@@ -348,6 +348,66 @@ test.describe("MVR import wizard", () => {
     await expect(keeps).toContainText("Tags and focus point names are kept");
   });
 
+  test("a merge lists hand edits with keep-my-edits checkboxes and sends the keep list", async ({
+    page,
+  }) => {
+    const { imports } = await routeImport(page, {
+      plan: () => ({
+        ...MVR_INSPECTION.report,
+        merge: true,
+        fixtures: MVR_INSPECTION.report.fixtures.map((f, i) =>
+          i === 0
+            ? {
+                ...f,
+                overwrites: [
+                  {
+                    field: "position",
+                    mine: "(-1.5, 7, 4.2)",
+                    mvr: "(-2, 7, 4.2)",
+                  },
+                  { field: "patch", mine: "1:101", mvr: "1:1" },
+                ],
+              }
+            : f,
+        ),
+        focus_points: MVR_INSPECTION.report.focus_points.map((f) => ({
+          ...f,
+          overwrites: [
+            {
+              field: "position",
+              mine: "(0.4, 5.3, 1.4)",
+              mvr: "(0, 5.3, 1.4)",
+            },
+          ],
+        })),
+      }),
+    });
+    await page.goto("/#/lighting/import");
+    await chooseFile(page);
+    await page.getByTestId("mvr-continue").click();
+    await page.getByTestId("mvr-to-review").click();
+
+    const edits = page.getByTestId("mvr-review-edits");
+    await expect(edits).toContainText("Brick 1");
+    await expect(edits).toContainText("(-1.5, 7, 4.2)");
+    // Position starts kept; patch is a rig fact and starts as the MVR's.
+    await expect(page.getByTestId("mvr-keep-Brick 1-position")).toBeChecked();
+    await expect(page.getByTestId("mvr-keep-Brick 1-patch")).not.toBeChecked();
+    await expect(page.getByTestId("mvr-keep-focus-Drummer")).toBeChecked();
+
+    // A change of mind is carried into the write request.
+    await page.getByTestId("mvr-keep-Brick 1-patch").check();
+    await page.getByTestId("mvr-keep-focus-Drummer").uncheck();
+    await page.getByTestId("mvr-do-import").click();
+    await expect(page.getByTestId("mvr-done")).toBeVisible();
+    const f = fields(imports[1]);
+    expect(f.write).toBe("true");
+    expect(JSON.parse(f.keep)).toEqual({
+      fixtures: { "Brick 1": ["position", "patch"] },
+      focus_points: [],
+    });
+  });
+
   test("step 4 writes, reports, and offers Fit your shows and Open in Venues", async ({
     page,
   }) => {

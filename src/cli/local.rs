@@ -643,6 +643,7 @@ pub fn import_mvr(
         origin_mm: origin.map(parse_origin_mm).transpose()?,
         fixture_types_dir,
         venues_dir,
+        keep: Default::default(),
     };
 
     fn print_plan(plan: &MvrPlan) {
@@ -697,6 +698,12 @@ pub fn import_mvr(
                         .unwrap_or_default()
                 ),
             }
+            for edit in &fixture.overwrites {
+                println!(
+                    "        OVERWRITES your {}: {} → {} (hand-edited; the MVR's value wins)",
+                    edit.field, edit.mine, edit.mvr
+                );
+            }
         }
         for removed in &plan.removed_fixtures {
             println!(
@@ -737,6 +744,12 @@ pub fn import_mvr(
                         .map(|c| format!("  [{c}]"))
                         .unwrap_or_default()
                 );
+                for edit in &focus.overwrites {
+                    println!(
+                        "        OVERWRITES your {}: {} → {} (hand-edited; the MVR's value wins)",
+                        edit.field, edit.mine, edit.mvr
+                    );
+                }
             }
             for kept in &plan.kept_focus_points {
                 println!("    KEPT \"{kept}\"");
