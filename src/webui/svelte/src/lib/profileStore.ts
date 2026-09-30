@@ -204,3 +204,27 @@ export async function loadRunningLighting(): Promise<{
     return null;
   }
 }
+
+/** Adds an output for `universe` (`{universe, name: "u<N>"}`) to the running
+ *  profile's `dmx.universes` and saves it the way Config does, which is what
+ *  makes the engine reload. Returns the profile's name. A universe the
+ *  profile already lists is left alone. Throws when there is no profile to
+ *  write to. */
+export async function addUniverseToRunningProfile(
+  universe: number,
+): Promise<string> {
+  const [set, running] = await Promise.all([
+    loadProfileSet(),
+    fetchRunningProfile(),
+  ]);
+  const entry = pickRunningProfile(set.entries, running);
+  if (!entry) throw new Error("No hardware profile to add the universe to");
+  const profile = await readProfile(entry.ref, set.inline);
+  const dmx = (profile.dmx ??= {});
+  const universes: any[] = (dmx.universes ??= []);
+  if (!universes.some((u) => u?.universe === universe)) {
+    universes.push({ universe, name: `u${universe}` });
+    await writeProfile(entry.ref, profile, set.checksum);
+  }
+  return entry.name;
+}

@@ -146,6 +146,13 @@ export const CHECK_ORDER: CheckKey[] = [
   "output",
 ];
 
+/** The Fit shows page, optionally with a group selected. */
+export function fitHref(group?: string): string {
+  return group
+    ? `#/lighting/fit?group=${encodeURIComponent(group)}`
+    : "#/lighting/fit";
+}
+
 /** Where a song's lighting is edited. */
 export function songLightingHref(song: string): string {
   return `#/songs/${encodeURIComponent(song)}/lighting`;
@@ -176,14 +183,18 @@ function showsCheck(r: Readiness): Check {
     }
     for (const w of show.warnings) {
       if (COVERED_ELSEWHERE_KINDS.has(w.kind)) continue;
+      // A focus point the venue does not bind is fitted on the Fit shows
+      // page, where it is placed on the plan; every other finding is fixed
+      // in the song.
+      const unbound = w.kind === "unbound-focus-point";
       findings.push({
         severity: SHOW_BREAKING_KINDS.has(w.kind) ? "attention" : "note",
         msg: {
           key: "lighting.hub.finding.lint",
           params: { detail: w.message },
         },
-        href,
-        linkKey: "lighting.hub.fix.song",
+        href: unbound ? fitHref() : href,
+        linkKey: unbound ? "lighting.hub.fix.fit" : "lighting.hub.fix.song",
         song: show.song,
       });
     }
@@ -318,8 +329,8 @@ export function evaluateReadiness(
                 songs: g.songs.join(", "),
               },
             },
-            href: "#/lighting/groups",
-            linkKey: "lighting.hub.fix.groups",
+            href: fitHref(g.name),
+            linkKey: "lighting.hub.fix.fit",
           })),
         r.groups.length === 0
           ? { key: "lighting.hub.summary.groupsNone" }
@@ -343,8 +354,8 @@ export function evaluateReadiness(
           key: "lighting.hub.finding.universeUnconfigured",
           params: { universe },
         },
-        href: configHref,
-        linkKey: "lighting.hub.fix.config",
+        href: fitHref(),
+        linkKey: "lighting.hub.fix.fit",
       });
     }
     const olad = r.output.olad;
@@ -363,8 +374,8 @@ export function evaluateReadiness(
             key: "lighting.hub.finding.universeUnpatched",
             params: { universe },
           },
-          href: configHref,
-          linkKey: "lighting.hub.fix.config",
+          href: fitHref(),
+          linkKey: "lighting.hub.fix.fit",
         });
       }
     }

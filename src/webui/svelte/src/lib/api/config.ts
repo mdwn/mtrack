@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Fit } from "../lighting/fit";
 import type { Readiness } from "../lighting/readiness";
 import {
   get,
@@ -501,6 +502,13 @@ export async function fetchLightingGroups(): Promise<
 export async function fetchLightingReadiness(): Promise<Readiness> {
   const res = await get("/lighting/readiness");
   if (!res.ok) throw await apiError(res, "Failed to fetch lighting readiness");
+  return res.json();
+}
+
+/** The facts and suggestions behind the Fit shows page. */
+export async function fetchLightingFit(): Promise<Fit> {
+  const res = await get("/lighting/fit");
+  if (!res.ok) throw await apiError(res, "Failed to fetch lighting fit");
   return res.json();
 }
 

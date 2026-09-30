@@ -18,17 +18,26 @@ export type LightingSub =
   | "fixtures"
   | "venues"
   | "groups"
+  | "fit"
   | "stage";
 
 export interface LightingRoute {
   sub: LightingSub;
   /** The `?profile=` value (Groups only). */
   profile: string | null;
+  /** The `?group=` value (Fit shows only): the group to select. */
+  group: string | null;
 }
 
-const SUBS: readonly LightingSub[] = ["fixtures", "venues", "groups", "stage"];
+const SUBS: readonly LightingSub[] = [
+  "fixtures",
+  "venues",
+  "groups",
+  "fit",
+  "stage",
+];
 
-/** Parses `#/lighting[/sub][?profile=name]`. An unknown sub-page is the
+/** Parses `#/lighting[/sub][?profile=name][&group=name]`. An unknown sub-page is the
  *  overview. */
 export function lightingRoute(hash: string): LightingRoute {
   const rest = hash.replace(/^#\/?lighting\/?/, "");
@@ -37,7 +46,8 @@ export function lightingRoute(hash: string): LightingRoute {
   const sub = (SUBS as readonly string[]).includes(first)
     ? (first as LightingSub)
     : "overview";
-  return { sub, profile: new URLSearchParams(query).get("profile") };
+  const params = new URLSearchParams(query);
+  return { sub, profile: params.get("profile"), group: params.get("group") };
 }
 
 /** The old Stage 3D address maps to its place in the Lighting area, keeping

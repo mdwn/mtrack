@@ -519,6 +519,11 @@ the same name is never overwritten. A patched fixture whose GDTF is missing
 or whose mode cannot be matched is never silently dropped either: it becomes
 a `# TODO` line in the venue file carrying everything the MVR knew about it.
 
+An imported venue carries no tags, so the next step is the web UI's
+[Fit shows](../interfaces/web-ui.md#fit-shows) page: it suggests which fixtures should carry
+the tags your groups need, places the focus points your shows aim at, and adds the missing
+universe outputs to your profile.
+
 Going the other way, `mtrack export-mvr <venue>` writes the venue as an `.mvr` a console or
 pre-viz tool can open: every fixture with its position, rotation (the origin chosen at import
 restored) and address, the focus points, and each fixture type's GDTF embedded from the

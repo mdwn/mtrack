@@ -51,9 +51,28 @@
     /** Whether positions and focus points can be edited here. The dashboard
      *  shows the stage as a live view; editing lives on the Venues page. */
     editable?: boolean;
+    /** Fixtures to ring (a group's members, on the Fit shows page). */
+    highlight?: string[];
+    /** Fixtures in a pending selection, ringed apart from the highlight. */
+    selected?: string[];
+    /** Makes fixtures clickable: called with the clicked fixture's name.
+     *  A plot with this set is for choosing, so fixtures do not drag. */
+    onFixtureClick?: (name: string) => void;
+    /** When set, the next click on the plot creates a focus point with this
+     *  name there (Enter on the focused plot puts it at the center). */
+    placeFocus?: string | null;
+    /** Called once a placement settles, with whether the save succeeded. */
+    onFocusPlaced?: (name: string, ok: boolean) => void;
   }
 
-  let { editable = false }: Props = $props();
+  let {
+    editable = false,
+    highlight = [],
+    selected = [],
+    onFixtureClick,
+    placeFocus = null,
+    onFocusPlaced,
+  }: Props = $props();
 
   const FIXTURE_RADIUS = 22;
   const GLOW_RADIUS = 50;
@@ -211,6 +230,7 @@
     prevH = newH;
 
     computeLayout($metadataStore, $venueStore);
+    publishLayout();
   }
 
   function drawPlotChrome(
@@ -292,6 +312,8 @@
     const fixtureStroke = isDark ? "#555" : "#9a9a9a"; // gray-400
     const fixtureLabel = isDark ? "#888" : "#4a4849"; // gray-600
     const focusFill = isDark ? "#d9a441" : "#b8801f";
+    const ringMember = isDark ? "#5aa9ff" : "#1c65c4";
+    const ringSelected = isDark ? "#f0c040" : "#a86400";
 
     // Stage outline
     const inset = frame ? GEO_INSET : PADDING - 20;
@@ -439,6 +461,26 @@
       }
       ctx.setLineDash([]);
 
+      // Rings for the Fit shows page: solid for a group's members, dashed
+      // and wider for the pending selection. (The page also lists both as
+      // text, so colour is never the only signal.)
+      if (highlight.includes(name)) {
+        ctx.strokeStyle = ringMember;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, radius + 4, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (selected.includes(name)) {
+        ctx.strokeStyle = ringSelected;
+        ctx.lineWidth = 3;
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, radius + 9, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
       // Label
       ctx.fillStyle = fixtureLabel;
       ctx.font = "11px monospace";
@@ -531,6 +573,8 @@
     // In geometry mode a drag ends in a save; one at a time, so nothing
     // is silently lost while the previous save is in flight.
     if (frame && (saving || !editable)) return false;
+    // A plot for choosing fixtures or placing a pin is not for dragging.
+    if (onFixtureClick || placeFocus) return false;
     const target = hit(pt.x, pt.y);
     if (!target) return false;
     drag = target;
@@ -626,9 +670,9 @@
       focus_points?: Record<string, Vec3>;
       source?: { mvr: string; origin: Vec3 } | null;
     }) => void,
-  ) {
+  ): Promise<boolean> {
     const meta = $venueStore;
-    if (!meta) return;
+    if (!meta) return false;
     if (saving) {
       // Never silently: the caller's edit did not happen.
       saveMsg = {
@@ -638,7 +682,7 @@
         }),
       };
       computeLayout($metadataStore, $venueStore);
-      return;
+      return false;
     }
     saving = true;
     saveMsg = null;
@@ -678,6 +722,7 @@
       venueStore.set({ ...meta, focus_points: current.focus_points ?? {} });
       saveMsg = { ok: true, text: get(t)("stage.saved") };
       setTimeout(() => (saveMsg = null), 2000);
+      return true;
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       saveMsg = {
@@ -685,25 +730,76 @@
         text: get(t)("stage.saveFailed", { values: { error: message } }),
       };
       computeLayout($metadataStore, $venueStore);
+      return false;
     } finally {
       saving = false;
     }
   }
 
-  async function addFocusPoint() {
-    const name = nextFocusName(focusPoints);
-    // Center of the shown stage, on the deck; a venue with no geometry yet
-    // gets its first pin at downstage-center.
-    const point: Vec3 = frame
+  /** Center of the shown stage, on the deck; a venue with no geometry yet
+   *  gets its first pin at downstage-center. */
+  function centerPoint(): Vec3 {
+    return frame
       ? [
           Math.round(((frame.minX + frame.maxX) / 2) * 100) / 100,
           Math.round(((frame.minY + frame.maxY) / 2) * 100) / 100,
           0,
         ]
       : [0, 1, 0];
-    await persist((v) => {
+  }
+
+  async function createFocusPoint(name: string, point: Vec3): Promise<boolean> {
+    return persist((v) => {
       v.focus_points = { ...(v.focus_points ?? {}), [name]: point };
     });
+  }
+
+  async function addFocusPoint() {
+    await createFocusPoint(nextFocusName(focusPoints), centerPoint());
+  }
+
+  /** A click while `placeFocus` is set: the pin goes where the click landed
+   *  (off the plot, nowhere). */
+  async function placeFocusAt(pt: Pt | null) {
+    const name = placeFocus;
+    if (!name) return;
+    let point = centerPoint();
+    if (pt) {
+      if (frame) {
+        if (!inPlot(pt)) return;
+        const [x, y] = toStage(frame, pt);
+        point = [Math.round(x * 100) / 100, Math.round(y * 100) / 100, 0];
+      }
+    }
+    const ok = await createFocusPoint(name, point);
+    onFocusPlaced?.(name, ok);
+  }
+
+  function onCanvasClick(e: MouseEvent) {
+    const pt = canvasCoords(e);
+    if (placeFocus) {
+      void placeFocusAt(pt);
+      return;
+    }
+    if (!onFixtureClick) return;
+    const target = hit(pt.x, pt.y);
+    if (target?.kind === "fixture") onFixtureClick(target.name);
+  }
+
+  function onCanvasKeydown(e: KeyboardEvent) {
+    if (placeFocus && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      void placeFocusAt(null);
+    }
+  }
+
+  /** Publishes the fixtures' pixel positions on the canvas when it is used
+   *  for choosing, so a test can click a fixture without re-deriving the
+   *  layout. */
+  function publishLayout() {
+    if (canvasEl && onFixtureClick) {
+      canvasEl.dataset.positions = JSON.stringify(layoutPositions);
+    }
   }
 
   async function renameFocusPoint(from: string) {
@@ -744,6 +840,10 @@
     const pt = canvasCoords(e);
     if (drag) {
       moveDrag(pt);
+    } else if (placeFocus) {
+      canvasEl!.style.cursor = "crosshair";
+    } else if (onFixtureClick) {
+      canvasEl!.style.cursor = hit(pt.x, pt.y) ? "pointer" : "default";
     } else {
       canvasEl!.style.cursor =
         hit(pt.x, pt.y) && (editable || !frame) ? "grab" : "default";
@@ -803,6 +903,7 @@
   // Recompute layout when metadata or the venue changes
   $effect(() => {
     computeLayout($metadataStore, $venueStore);
+    publishLayout();
   });
 </script>
 
@@ -887,6 +988,12 @@
         onmousemove={onMouseMove}
         onmouseup={onMouseUp}
         onmouseleave={onMouseLeave}
+        onclick={onCanvasClick}
+        onkeydown={onCanvasKeydown}
+        tabindex={placeFocus ? 0 : undefined}
+        aria-label={placeFocus
+          ? $t("stage.placeHint", { values: { name: placeFocus } })
+          : undefined}
         ontouchstart={onTouchStart}
         ontouchmove={onTouchMove}
         ontouchend={onTouchEnd}

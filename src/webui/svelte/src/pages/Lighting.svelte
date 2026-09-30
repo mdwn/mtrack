@@ -20,6 +20,7 @@
   import FixtureTypesPanel from "../components/lighting/FixtureTypesPanel.svelte";
   import VenuesPanel from "../components/lighting/VenuesPanel.svelte";
   import GroupsPage from "../components/lighting/GroupsPage.svelte";
+  import FitPage from "../components/lighting/FitPage.svelte";
   import StageView from "../components/StageView.svelte";
   import Stage3D from "./Stage3D.svelte";
 
@@ -42,6 +43,7 @@
       href: "#/lighting/groups",
       labelKey: "lighting.area.groups",
     },
+    { key: "fit", href: "#/lighting/fit", labelKey: "lighting.area.fit" },
     { key: "stage", href: "#/lighting/stage", labelKey: "lighting.area.stage" },
   ] as const;
 
@@ -89,6 +91,11 @@
     </div>
   {:else if route.sub === "groups"}
     <GroupsPage profileParam={route.profile} />
+  {:else if route.sub === "fit"}
+    <FitPage
+      groupParam={route.group}
+      profileName={running?.profileName ?? null}
+    />
   {:else if route.sub === "stage"}
     <Stage3D heading="h2" />
   {/if}
