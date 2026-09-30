@@ -483,6 +483,20 @@ export interface MvrPlannedType {
   fixture_file: string;
 }
 
+/** A hand-edited field a merge would overwrite with the MVR's value. */
+export interface MvrHandEdit {
+  /** "position", "rotation", "patch" or "type". */
+  field: string;
+  mine: string;
+  mvr: string;
+}
+
+/** The hand edits a merge keeps instead of overwriting. */
+export interface MvrKeep {
+  fixtures: Record<string, string[]>;
+  focus_points: string[];
+}
+
 export interface MvrPlannedFixture {
   name: string;
   layer: string;
@@ -493,6 +507,10 @@ export interface MvrPlannedFixture {
   tags: string[];
   todo: string | null;
   change: string | null;
+  /** On a merge: hand-edited fields the import would overwrite. */
+  overwrites?: MvrHandEdit[];
+  /** Hand-edited fields the request keeps. */
+  kept_edits?: string[];
 }
 
 /** What an import would do (and, after a write, did): the MCP plan. */
@@ -506,7 +524,13 @@ export interface MvrPlan {
   fixtures: MvrPlannedFixture[];
   removed_fixtures: { name: string; tags: string[] }[];
   kept_fixtures: string[];
-  focus_points: { name: string; point: Vec3; change: string | null }[];
+  focus_points: {
+    name: string;
+    point: Vec3;
+    change: string | null;
+    overwrites?: MvrHandEdit[];
+    kept_edit?: boolean;
+  }[];
   removed_focus_points: string[];
   kept_focus_points: string[];
   scenery_objects: number;
@@ -565,7 +589,7 @@ export async function inspectMvr(
 /** The import's plan (`write` false) or its report (`write` true). */
 export async function importMvr(
   file: File,
-  options: { name: string; origin: Vec3Mm; write: boolean },
+  options: { name: string; origin: Vec3Mm; write: boolean; keep?: MvrKeep },
   dirs: MvrDirs = {},
 ): Promise<{
   write: boolean;
@@ -581,6 +605,7 @@ export async function importMvr(
         name: options.name,
         origin: options.origin.join(","),
         write: options.write ? "true" : "false",
+        keep: options.keep ? JSON.stringify(options.keep) : undefined,
       },
       dirs,
     ),

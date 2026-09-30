@@ -46,6 +46,10 @@ use crate::lighting::types::Vec3;
 /// The most a text field of an upload may hold.
 const MAX_FIELD_BYTES: usize = 4096;
 
+/// The `keep` field lists a name and fields per hand-edited fixture, so it
+/// is allowed to be far longer than the other text fields.
+const MAX_KEEP_BYTES: usize = 1024 * 1024;
+
 fn bad_request(message: impl Into<String>) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -100,7 +104,12 @@ async fn read_form(multipart: &mut axum::extract::Multipart) -> Result<MvrForm, 
                 .text()
                 .await
                 .map_err(|e| bad_request(format!("Failed to read field {key}: {e}")))?;
-            if text.len() > MAX_FIELD_BYTES {
+            let limit = if key == "keep" {
+                MAX_KEEP_BYTES
+            } else {
+                MAX_FIELD_BYTES
+            };
+            if text.len() > limit {
                 return Err(bad_request(format!("Field {key} is too long")));
             }
             fields.insert(key, text);
@@ -164,6 +173,14 @@ fn import_options(state: &WebUiState, form: &MvrForm) -> Result<MvrImportOptions
             DEFAULT_FIXTURE_TYPES_DIR,
         )?,
         venues_dir: checked_dir(state, form.field("venues_dir"), DEFAULT_VENUES_DIR)?,
+        keep: match form.field("keep") {
+            Some(text) => serde_json::from_str(text).map_err(|e| {
+                bad_request(format!(
+                    "keep must be {{\"fixtures\": {{name: [fields]}}, \"focus_points\": [names]}}: {e}"
+                ))
+            })?,
+            None => Default::default(),
+        },
     })
 }
 
@@ -211,7 +228,10 @@ pub(super) async fn inspect_mvr(
 
 /// POST /api/lighting/mvr/import — multipart: the file, `name`, `origin`
 /// ("x,y,z" millimeters), `write` ("true" / "false", required), and
-/// optionally `venues_dir`, `fixture_types_dir`. `write=false` answers
+/// optionally `venues_dir`, `fixture_types_dir` and `keep` (JSON,
+/// `{"fixtures": {"<name>": ["position", ...]}, "focus_points": [...]}`: the
+/// hand edits a merge keeps rather than overwrites; the plan lists them as
+/// `overwrites`). `write=false` answers
 /// `{write: false, plan}` (what `import-mvr` prints without `--write`);
 /// `write=true` performs the import and answers `{write: true, report,
 /// reloaded}`, `reloaded` saying whether the running engine re-read the
@@ -789,6 +809,67 @@ mod test {
         // The same again is a merge.
         let (_, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &fields).await;
         assert_eq!(body["report"]["merge"], true, "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_merge_plan_lists_hand_edits_and_the_keep_list_keeps_them() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        let mvr = synthetic_mvr(true);
+        let write = [
+            ("name", "kellys"),
+            ("origin", "0,1000,0"),
+            ("write", "true"),
+        ];
+        post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &write).await;
+
+        // Hand-move Brick 1 (the MVR puts it at x = -2).
+        let path = dir.path().join("lighting/venues/kellys.venue");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("position (-2, 2.5, 4.2)"), "{text}");
+        std::fs::write(
+            &path,
+            format!(
+                "# mine\n{}",
+                text.replace("position (-2, 2.5, 4.2)", "position (-1, 2.5, 4.2)")
+            ),
+        )
+        .unwrap();
+
+        let plan = [
+            ("name", "kellys"),
+            ("origin", "0,1000,0"),
+            ("write", "false"),
+        ];
+        let (status, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &plan).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let brick1 = body["plan"]["fixtures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == "Brick 1")
+            .unwrap();
+        assert_eq!(brick1["overwrites"][0]["field"], "position", "{brick1}");
+        assert_eq!(brick1["overwrites"][0]["mine"], "(-1, 2.5, 4.2)");
+
+        let keep = r#"{"fixtures":{"Brick 1":["position"]}}"#;
+        let fields = [
+            ("name", "kellys"),
+            ("origin", "0,1000,0"),
+            ("write", "true"),
+            ("keep", keep),
+        ];
+        let (status, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &fields).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.starts_with("# mine\n"), "{after}");
+        assert!(after.contains("position (-1, 2.5, 4.2)"), "{after}");
+
+        // A keep list that is not JSON is refused before anything is written.
+        let bad = [("write", "true"), ("keep", "nope")];
+        let (status, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &bad).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("keep"), "{body}");
     }
 
     #[tokio::test]

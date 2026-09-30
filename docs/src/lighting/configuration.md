@@ -534,10 +534,26 @@ That line is provenance, not a reference — the player never opens the MVR.
 When the venue sends a revised file, re-running the import **merges** it:
 rig facts (types, patch, positions) come from the new MVR, your tags and
 focus names stay, fixtures the venue removed are dropped and reported with
-their tags, and fixtures you added by hand are kept. A hand-written venue of
-the same name is never overwritten. A patched fixture whose GDTF is missing
-or whose mode cannot be matched is never silently dropped either: it becomes
-a `# TODO` line in the venue file carrying everything the MVR knew about it.
+their tags, and fixtures you added by hand are kept. The merge patches the
+venue file in place, so your header, comments and `# TODO` lines survive. A
+hand-written venue of the same name is never overwritten. A patched fixture
+whose GDTF is missing or whose mode cannot be matched is never silently
+dropped either: it becomes a `# TODO` line in the venue file carrying
+everything the MVR knew about it.
+
+A merge does not overwrite your hand edits without saying so. Where the venue
+file differs from the new MVR **and** from what the previous MVR said (so a
+fixture the venue itself moved is not mistaken for one you moved), the report
+lists the field as an overwrite: a fixture's position, rotation, patch or
+type, or a focus point's position. Without a previous copy of the MVR to
+compare against, any difference counts, and so does any difference in a
+fixture's type. In the web UI's review step each one has a **Keep my edits**
+checkbox: position, rotation and focus points start checked, while patch and
+type start unchecked because they are rig facts the MVR owns. `mtrack
+import-mvr` without `--write` lists the overwrites (and writes nothing), and the
+`inspect_mvr` MCP tool reports them per fixture. Only the web UI's import request carries a
+`keep` list naming the fields to hold on to; the CLI and `import_mvr` take none, so they take
+the MVR's values everywhere.
 
 An imported venue carries no tags, so the next step is the web UI's
 [Fit shows](../interfaces/web-ui.md#fit-shows) page: it suggests which fixtures should carry

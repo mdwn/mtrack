@@ -32,8 +32,9 @@ use super::gdtf;
 use super::system::LightingSystem;
 
 pub use mvr::{
-    import_mvr, import_mvr_bytes, inspect_mvr, inspect_mvr_bytes, MvrImport, MvrImportOptions,
-    MvrPlan, PlannedFixture, PlannedFixtureType, PlannedFocusPoint, RemovedFixture,
+    import_mvr, import_mvr_bytes, inspect_mvr, inspect_mvr_bytes, HandEdit, MvrImport,
+    MvrImportOptions, MvrKeep, MvrPlan, PlannedFixture, PlannedFixtureType, PlannedFocusPoint,
+    RemovedFixture,
 };
 
 /// What an import did, for reporting: files written, the channels the

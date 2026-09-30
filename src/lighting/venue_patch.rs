@@ -95,9 +95,29 @@ fn canonical(code: &str) -> String {
     }
 }
 
+/// Text the caller wants written next to what the patch adds: the MVR
+/// importer's `# layer` notes on new fixtures and its `# TODO` lines.
+#[derive(Default)]
+pub struct PatchNotes {
+    /// Trailing comment (with its `#`) for a fixture the patch adds.
+    pub fixture_comments: std::collections::HashMap<String, String>,
+    /// Whole lines, written before the closing brace after everything new.
+    pub trailing_lines: Vec<String>,
+}
+
 /// Patches `content` so the venue `name` in it becomes `desired`. Errors say
 /// why the file could not be patched safely; the caller refuses the save.
 pub fn patch_venue(content: &str, name: &str, desired: &Venue) -> Result<String, String> {
+    patch_venue_with(content, name, desired, &PatchNotes::default())
+}
+
+/// [`patch_venue`] that also writes `notes` alongside what it adds.
+pub fn patch_venue_with(
+    content: &str,
+    name: &str,
+    desired: &Venue,
+    notes: &PatchNotes,
+) -> Result<String, String> {
     let lines: Vec<&str> = content.split_inclusive('\n').collect();
     let header = format!("venue \"{name}\"");
     let open = lines
@@ -228,13 +248,22 @@ pub fn patch_venue(content: &str, name: &str, desired: &Venue) -> Result<String,
     }
     for fixture in desired.fixtures_by_patch() {
         if !seen_fixtures.contains(fixture.name()) {
-            out.push_str(&format!("  {fixture}\n"));
+            out.push_str(&format!("  {fixture}"));
+            if let Some(comment) = notes.fixture_comments.get(fixture.name()) {
+                out.push_str("  ");
+                out.push_str(comment);
+            }
+            out.push('\n');
         }
     }
     for (focus, point) in desired.focus_points() {
         if !seen_focus.contains(focus) {
             out.push_str(&format!("  focus \"{focus}\" {}\n", fmt_vec3(point)));
         }
+    }
+    for line in &notes.trailing_lines {
+        out.push_str(line);
+        out.push('\n');
     }
     out.extend(lines[close..].iter().copied());
 

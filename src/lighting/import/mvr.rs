@@ -35,18 +35,63 @@
 //! patched fixture is never silently dropped: one whose GDTF is missing or
 //! whose mode cannot be matched becomes a `TODO` comment in the venue
 //! file, with everything the MVR knew about it.
+//!
+//! A merge is a **textual patch** of the venue file (see
+//! [`crate::lighting::venue_patch`]), so its comments, `# TODO` lines and
+//! header survive. Fields the venue's owner edited by hand — a moved
+//! fixture, a corrected rotation, a re-patched address, a nudged focus
+//! point — are listed in the plan (`overwrites`) rather than replaced
+//! silently, and [`MvrKeep`] names the ones to keep. A field counts as
+//! hand-edited when the venue differs from the new MVR *and* from what the
+//! previous MVR would have written; when there is no previous MVR to tell
+//! by, or (for the fixture type) the type cannot be traced, any difference
+//! counts.
 
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{create_dir, fixture_filename_stem, gdtf_definition, import_gdtf_bytes, write};
 use crate::lighting::gdtf;
 use crate::lighting::mvr::{self, MvrFixture, Scene};
 use crate::lighting::parser::{parse_fixture_types, parse_venues};
-use crate::lighting::types::{fmt_vec3, Fixture, Vec3, Venue};
+use crate::lighting::types::{fmt_vec3, Fixture, Vec3, Venue, VenueSource};
+use crate::lighting::venue_patch::{patch_venue_with, PatchNotes};
+
+/// The hand edits a merge should keep instead of overwriting with the MVR's
+/// values. A field that is not a listed overwrite is ignored.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct MvrKeep {
+    /// Fixture name → the fields to keep: `position`, `rotation`, `patch`,
+    /// `type`.
+    #[serde(default)]
+    pub fixtures: BTreeMap<String, Vec<String>>,
+    /// Focus points whose position to keep.
+    #[serde(default)]
+    pub focus_points: Vec<String>,
+}
+
+impl MvrKeep {
+    fn keeps(&self, fixture: &str, field: &str) -> bool {
+        self.fixtures
+            .get(fixture)
+            .is_some_and(|fields| fields.iter().any(|f| f == field))
+    }
+}
+
+/// A field of the venue that the merge would replace with the MVR's value,
+/// though it was edited by hand.
+#[derive(Debug, Serialize)]
+pub struct HandEdit {
+    /// `position`, `rotation`, `patch` or `type`.
+    pub field: String,
+    /// The venue file's value, as the file spells it.
+    pub mine: String,
+    /// The MVR's value.
+    pub mvr: String,
+}
 
 /// The choices an MVR import takes from the user.
 #[derive(Clone, Debug)]
@@ -61,6 +106,9 @@ pub struct MvrImportOptions {
     pub fixture_types_dir: String,
     /// Venues directory, relative to the project.
     pub venues_dir: String,
+    /// Hand edits a merge keeps rather than overwrites. Empty means every
+    /// field takes the MVR's value.
+    pub keep: MvrKeep,
 }
 
 impl Default for MvrImportOptions {
@@ -68,6 +116,7 @@ impl Default for MvrImportOptions {
         MvrImportOptions {
             name: None,
             origin_mm: None,
+            keep: MvrKeep::default(),
             fixture_types_dir: "lighting/fixture_types".to_string(),
             venues_dir: "lighting/venues".to_string(),
         }
@@ -150,6 +199,11 @@ pub struct PlannedFixture {
     pub todo: Option<String>,
     /// On a merge, what changed against the existing venue.
     pub change: Option<String>,
+    /// On a merge, hand-edited fields this import overwrites with the MVR's
+    /// values (empty when none, or when the request keeps them).
+    pub overwrites: Vec<HandEdit>,
+    /// Hand-edited fields this import keeps, as the request asked.
+    pub kept_edits: Vec<String>,
 }
 
 /// A fixture the venue removed, with the tags that go with it.
@@ -167,6 +221,11 @@ pub struct PlannedFocusPoint {
     pub point: Vec3,
     /// On a merge, what changed against the existing venue.
     pub change: Option<String>,
+    /// On a merge, the venue's hand-moved position this import overwrites
+    /// (empty when none, or when the request keeps it).
+    pub overwrites: Vec<HandEdit>,
+    /// Whether the request keeps a hand-moved position.
+    pub kept_edit: bool,
 }
 
 /// What an import did.
@@ -620,36 +679,11 @@ fn plan(
         origin_mm[1] / 1000.0,
         origin_mm[2] / 1000.0,
     ];
-    // Consoles name fixtures by type ("Robe Spiider" forty times) and tell
-    // them apart by fixture ID; a name that repeats takes its ID.
-    let mut name_counts: HashMap<String, usize> = HashMap::new();
-    for fixture in &scene.fixtures {
-        *name_counts
-            .entry(fixture.name.trim().to_string())
-            .or_default() += 1;
-    }
-    let mut seen_names: HashMap<String, usize> = HashMap::new();
+    let mut namer = Namer::new(&scene);
     let mut fixtures = Vec::new();
-    let mut numbered = 0usize;
-    let mut ordinal_named: Vec<String> = Vec::new();
     for (index, key, todo) in &resolved {
         let source = &scene.fixtures[*index];
-        let base = source.name.trim();
-        let repeated = name_counts.get(base).is_some_and(|c| *c > 1);
-        let candidate = match (&source.fixture_id, repeated) {
-            (Some(id), true) if !base.is_empty() => {
-                numbered += 1;
-                format!("{base} {}", id.trim())
-            }
-            _ => base.to_string(),
-        };
-        let name = unique_name(
-            &candidate,
-            *index,
-            &mut seen_names,
-            &mut ordinal_named,
-            &mut warnings,
-        );
+        let name = namer.name(source, *index, &mut warnings);
         let (position, rotation) = geometry(source, &origin_mm, &mut warnings);
         let patch = source.addresses.first().copied();
         if source.addresses.len() > 1 {
@@ -673,8 +707,11 @@ fn plan(
             tags: Vec::new(),
             todo,
             change: None,
+            overwrites: Vec::new(),
+            kept_edits: Vec::new(),
         });
     }
+    let (numbered, ordinal_named) = (namer.numbered, namer.ordinal_named);
     if numbered > 0 {
         warnings.push(format!(
             "{numbered} fixtures shared a name with another; each took its console fixture \
@@ -720,6 +757,8 @@ fn plan(
             name,
             point: to_stage(&matrix.o, &origin_mm),
             change: None,
+            overwrites: Vec::new(),
+            kept_edit: false,
         });
     }
 
@@ -738,11 +777,80 @@ fn plan(
                 fmt_vec3(&origin_m)
             ));
         }
+        // What the previous import would have written, to tell a hand edit
+        // from a change the MVR itself made.
+        let previous_origin_mm = existing
+            .source()
+            .map(|s| {
+                [
+                    s.origin[0] * 1000.0,
+                    s.origin[1] * 1000.0,
+                    s.origin[2] * 1000.0,
+                ]
+            })
+            .unwrap_or([0.0; 3]);
+        let prior: Option<HashMap<String, Prior>> = previous_scene.as_ref().map(|prev| {
+            let mut namer = Namer::new(prev);
+            let mut scratch = Vec::new();
+            prev.fixtures
+                .iter()
+                .enumerate()
+                .map(|(index, f)| {
+                    let name = namer.name(f, index, &mut scratch);
+                    let (position, rotation) = geometry(f, &previous_origin_mm, &mut scratch);
+                    let patch = f.addresses.first().copied();
+                    (
+                        name,
+                        Prior {
+                            position,
+                            rotation,
+                            patch,
+                        },
+                    )
+                })
+                .collect()
+        });
+        let prior_focus: Option<HashMap<String, Vec3>> = previous_scene.as_ref().map(|prev| {
+            let mut scratch = Vec::new();
+            prev.focus_points
+                .iter()
+                .filter_map(|f| {
+                    let matrix = f.matrix?;
+                    (!f.name.trim().is_empty()).then(|| {
+                        (
+                            dsl_safe(&f.name, &mut scratch),
+                            to_stage(&matrix.o, &previous_origin_mm),
+                        )
+                    })
+                })
+                .collect()
+        });
         for planned in &mut fixtures {
             match existing.fixtures().get(&planned.name) {
                 Some(theirs) => {
                     planned.tags = theirs.tags().to_vec();
                     planned.change = Some(describe_change(theirs, planned));
+                    let edits = hand_edits(
+                        theirs,
+                        planned,
+                        prior.as_ref().and_then(|p| p.get(&planned.name)),
+                    );
+                    for edit in edits {
+                        if options.keep.keeps(&planned.name, &edit.field) {
+                            match edit.field.as_str() {
+                                "position" => planned.position = theirs.position(),
+                                "rotation" => planned.rotation = theirs.rotation(),
+                                "patch" => {
+                                    planned.patch =
+                                        Some((theirs.universe(), theirs.start_channel()))
+                                }
+                                _ => planned.fixture_type = Some(theirs.fixture_type().to_string()),
+                            }
+                            planned.kept_edits.push(edit.field);
+                        } else {
+                            planned.overwrites.push(edit);
+                        }
+                    }
                 }
                 None => planned.change = Some("added".to_string()),
             }
@@ -774,7 +882,26 @@ fn plan(
         for planned in &mut focus_points {
             planned.change = Some(match existing.focus_points().get(&planned.name) {
                 Some(point) if close(point, &planned.point) => "unchanged".to_string(),
-                Some(point) => format!("moved from {}", fmt_vec3(point)),
+                Some(point) => {
+                    let hand_moved = prior_focus
+                        .as_ref()
+                        .and_then(|p| p.get(&planned.name))
+                        .is_none_or(|previous| !close(point, previous));
+                    let change = format!("moved from {}", fmt_vec3(point));
+                    if hand_moved {
+                        if options.keep.focus_points.contains(&planned.name) {
+                            planned.kept_edit = true;
+                            planned.point = *point;
+                        } else {
+                            planned.overwrites.push(HandEdit {
+                                field: "position".to_string(),
+                                mine: fmt_vec3(point),
+                                mvr: fmt_vec3(&planned.point),
+                            });
+                        }
+                    }
+                    change
+                }
                 // A focus point the band renamed still sits where the
                 // console put it; don't bring the console's name back.
                 None if existing
@@ -801,7 +928,7 @@ fn plan(
         }
     }
 
-    let plan = MvrPlan {
+    let mut plan = MvrPlan {
         venue_name: venue_name.clone(),
         venue_file,
         archive: library_rel.clone(),
@@ -818,7 +945,19 @@ fn plan(
         scenery_meshes_undrawn,
         warnings,
     };
-    let venue_text = render_venue(&plan, archive_file_name, &kept, &kept_focus);
+    let mut venue_text = render_venue(&plan, archive_file_name, &kept, &kept_focus);
+    if let Some((path, _)) = &existing {
+        // A merge patches the file in place, so comments, TODO lines and
+        // the header survive. A file the patcher cannot handle safely is
+        // regenerated, and the plan says so.
+        match patch_existing(path, &plan, &kept, &kept_focus) {
+            Ok(text) => venue_text = text,
+            Err(reason) => plan.warnings.push(format!(
+                "could not patch the venue file in place ({reason}); it was regenerated, so \
+                 its comments are not kept"
+            )),
+        }
+    }
     // Prove the venue parses back, and to the same shape, before anything
     // is written: the loader's check, made while a refusal is still free.
     let parsed = parse_venues(&venue_text).map_err(|e| {
@@ -1010,6 +1149,53 @@ fn name_fixture_types(
     Ok(names)
 }
 
+/// Names a scene's fixtures the way the venue file will state them. Consoles
+/// name fixtures by type ("Robe Spiider" forty times) and tell them apart by
+/// fixture ID; a name that repeats takes its ID.
+struct Namer {
+    counts: HashMap<String, usize>,
+    seen: HashMap<String, usize>,
+    /// Fixtures that took their console fixture ID.
+    numbered: usize,
+    /// Names that needed an ordinal.
+    ordinal_named: Vec<String>,
+}
+
+impl Namer {
+    fn new(scene: &Scene) -> Namer {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for fixture in &scene.fixtures {
+            *counts.entry(fixture.name.trim().to_string()).or_default() += 1;
+        }
+        Namer {
+            counts,
+            seen: HashMap::new(),
+            numbered: 0,
+            ordinal_named: Vec::new(),
+        }
+    }
+
+    /// The name of `fixture`, the `index`th of its scene; call in order.
+    fn name(&mut self, fixture: &MvrFixture, index: usize, warnings: &mut Vec<String>) -> String {
+        let base = fixture.name.trim();
+        let repeated = self.counts.get(base).is_some_and(|c| *c > 1);
+        let candidate = match (&fixture.fixture_id, repeated) {
+            (Some(id), true) if !base.is_empty() => {
+                self.numbered += 1;
+                format!("{base} {}", id.trim())
+            }
+            _ => base.to_string(),
+        };
+        unique_name(
+            &candidate,
+            index,
+            &mut self.seen,
+            &mut self.ordinal_named,
+            warnings,
+        )
+    }
+}
+
 /// A fixture name unique within the venue: the MVR's, made unique on
 /// collision and invented when blank. A name that needed an ordinal is
 /// recorded in `ordinal_named` for one collapsed warning.
@@ -1130,6 +1316,192 @@ fn relative_display(project: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// What the previous MVR put on a fixture, as the previous import stated it.
+struct Prior {
+    position: Option<Vec3>,
+    rotation: Option<Vec3>,
+    patch: Option<(u16, u16)>,
+}
+
+/// The fields of `theirs` (the venue's fixture) that a merge would replace
+/// with the MVR's value although the venue's owner edited them: the venue
+/// differs from the new MVR and from what the previous MVR said. Without a
+/// previous value to compare (`prior` is `None`) any difference is a hand
+/// edit; so is any type difference, since the previous type name is not
+/// recoverable from the previous MVR without re-resolving its GDTFs.
+fn hand_edits(theirs: &Fixture, planned: &PlannedFixture, prior: Option<&Prior>) -> Vec<HandEdit> {
+    let mut edits = Vec::new();
+    if let (Some(mine), Some(mvr)) = (theirs.position(), planned.position) {
+        if !close(&mine, &mvr)
+            && prior
+                .and_then(|p| p.position)
+                .is_none_or(|previous| !close(&mine, &previous))
+        {
+            edits.push(HandEdit {
+                field: "position".to_string(),
+                mine: fmt_vec3(&mine),
+                mvr: fmt_vec3(&mvr),
+            });
+        }
+    }
+    if let (Some(mine), Some(mvr)) = (theirs.rotation(), planned.rotation) {
+        if !close(&mine, &mvr)
+            && prior
+                .and_then(|p| p.rotation)
+                .is_none_or(|previous| !close(&mine, &previous))
+        {
+            edits.push(HandEdit {
+                field: "rotation".to_string(),
+                mine: fmt_vec3(&mine),
+                mvr: fmt_vec3(&mvr),
+            });
+        }
+    }
+    if let Some(mvr) = planned.patch {
+        let mine = (theirs.universe(), theirs.start_channel());
+        if mine != mvr
+            && prior
+                .and_then(|p| p.patch)
+                .is_none_or(|previous| previous != mine)
+        {
+            edits.push(HandEdit {
+                field: "patch".to_string(),
+                mine: format!("{}:{}", mine.0, mine.1),
+                mvr: format!("{}:{}", mvr.0, mvr.1),
+            });
+        }
+    }
+    if let Some(mvr) = &planned.fixture_type {
+        if mvr != theirs.fixture_type() {
+            edits.push(HandEdit {
+                field: "type".to_string(),
+                mine: theirs.fixture_type().to_string(),
+                mvr: mvr.clone(),
+            });
+        }
+    }
+    edits
+}
+
+/// `# layer "..."` for a fixture on an MVR layer.
+fn layer_comment(planned: &PlannedFixture) -> Option<String> {
+    if planned.layer.is_empty() {
+        return None;
+    }
+    let layer: String = planned
+        .layer
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    Some(format!("# layer \"{layer}\""))
+}
+
+/// The `# TODO fixture ...` line for a fixture the import could not resolve.
+fn todo_line(planned: &PlannedFixture) -> String {
+    let reason = planned
+        .todo
+        .clone()
+        .unwrap_or_else(|| "unresolved".to_string());
+    let patch = planned
+        .patch
+        .map(|(u, a)| format!(" @ {u}:{a}"))
+        .unwrap_or_default();
+    let position = planned
+        .position
+        .map(|p| format!(" position {}", fmt_vec3(&p)))
+        .unwrap_or_default();
+    let layer = layer_comment(planned)
+        .map(|c| format!("  {c}"))
+        .unwrap_or_default();
+    format!(
+        "  # TODO fixture \"{}\"{patch}{position}: {reason}{layer}",
+        planned.name
+    )
+}
+
+/// The venue the plan describes, as the parser would hold it.
+fn desired_venue(plan: &MvrPlan, kept: &[Fixture], kept_focus: &BTreeMap<String, Vec3>) -> Venue {
+    let mut fixtures = HashMap::new();
+    for planned in &plan.fixtures {
+        if let (Some(fixture_type), Some((universe, address)), None) =
+            (&planned.fixture_type, planned.patch, &planned.todo)
+        {
+            fixtures.insert(
+                planned.name.clone(),
+                Fixture::new(
+                    planned.name.clone(),
+                    fixture_type.clone(),
+                    universe,
+                    address,
+                    planned.tags.clone(),
+                )
+                .with_position(planned.position)
+                .with_rotation(planned.rotation),
+            );
+        }
+    }
+    for fixture in kept {
+        fixtures.insert(fixture.name().to_string(), fixture.clone());
+    }
+    let mut focus = kept_focus.clone();
+    for planned in &plan.focus_points {
+        focus.insert(planned.name.clone(), planned.point);
+    }
+    Venue::new(plan.venue_name.clone(), fixtures)
+        .with_focus_points(focus)
+        .with_source(Some(VenueSource {
+            mvr: plan.archive.clone(),
+            origin: plan.origin,
+        }))
+}
+
+/// A merge as a textual patch of the existing venue file: comments, the
+/// header and `# TODO` lines the import did not write survive, an unchanged
+/// TODO line stays where it is, and one whose fixture resolved (or changed)
+/// is replaced.
+fn patch_existing(
+    path: &Path,
+    plan: &MvrPlan,
+    kept: &[Fixture],
+    kept_focus: &BTreeMap<String, Vec3>,
+) -> Result<String, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let desired = desired_venue(plan, kept, kept_focus);
+    let by_name: HashMap<&str, &PlannedFixture> =
+        plan.fixtures.iter().map(|f| (f.name.as_str(), f)).collect();
+    let mut notes = PatchNotes::default();
+    let mut present: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut stripped = String::with_capacity(content.len());
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim();
+        let stale = trimmed
+            .strip_prefix("# TODO fixture \"")
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|name| by_name.get_key_value(name))
+            .map(|(name, planned)| {
+                let current = planned.todo.is_some() && todo_line(planned).trim() == trimmed;
+                if current {
+                    present.insert(name);
+                }
+                !current
+            })
+            .unwrap_or(false);
+        if !stale {
+            stripped.push_str(line);
+        }
+    }
+    for planned in &plan.fixtures {
+        if planned.todo.is_some() {
+            if !present.contains(planned.name.as_str()) {
+                notes.trailing_lines.push(todo_line(planned));
+            }
+        } else if let Some(comment) = layer_comment(planned) {
+            notes.fixture_comments.insert(planned.name.clone(), comment);
+        }
+    }
+    patch_venue_with(&stripped, &plan.venue_name, &desired, &notes)
+}
+
 /// The venue file's text: a header for the reader, the provenance line,
 /// one fixture per line with its MVR layer as a trailing comment, TODOs
 /// for what could not be resolved, the focus points.
@@ -1161,16 +1533,9 @@ fn render_venue(
             planned.patch.map(|p| p.1).unwrap_or(u16::MAX),
             planned.name.clone(),
         );
-        let layer = if planned.layer.is_empty() {
-            String::new()
-        } else {
-            let layer: String = planned
-                .layer
-                .chars()
-                .map(|c| if c.is_control() { ' ' } else { c })
-                .collect();
-            format!("  # layer \"{layer}\"")
-        };
+        let layer = layer_comment(planned)
+            .map(|c| format!("  {c}"))
+            .unwrap_or_default();
         let line = match (&planned.fixture_type, planned.patch, &planned.todo) {
             (Some(fixture_type), Some((universe, address)), None) => {
                 let fixture = Fixture::new(
@@ -1184,25 +1549,7 @@ fn render_venue(
                 .with_rotation(planned.rotation);
                 format!("  {fixture}{layer}\n")
             }
-            _ => {
-                let reason = planned
-                    .todo
-                    .clone()
-                    .unwrap_or_else(|| "unresolved".to_string());
-                let patch = planned
-                    .patch
-                    .map(|(u, a)| format!(" @ {u}:{a}"))
-                    .unwrap_or_default();
-                let position = planned
-                    .position
-                    .map(|p| format!(" position {}", fmt_vec3(&p)))
-                    .unwrap_or_default();
-                format!(
-                    "  # TODO fixture \"{}\"{patch}{position}: {reason}{}\n",
-                    planned.name,
-                    layer.trim_end()
-                )
-            }
+            _ => format!("{}\n", todo_line(planned)),
         };
         lines.push((key, line));
     }
@@ -1753,6 +2100,180 @@ mod tests {
             plan.warnings
         );
         assert_eq!(plan.fixtures[0].change.as_deref(), Some("unchanged"));
+    }
+
+    /// Seeds "kellys" from two bricks (and a fixture with no such mode) and
+    /// hand-edits the venue file: a header, comments, a moved Brick 1, a
+    /// re-patched and re-typed Brick 2 and a nudged focus point.
+    fn seeded_and_hand_edited(dir: &Path) -> PathBuf {
+        let lost = r#"<Fixture name="Lost"><GDTFSpec>Astera_PB15.gdtf</GDTFSpec><GDTFMode>99: Nope</GDTFMode>
+<Addresses><Address break="0">1.30</Address></Addresses></Fixture>"#;
+        let first = mvr_bytes(&scene_with(
+            &format!(
+                "{}\n{}\n{lost}",
+                brick("Brick 1", "1.1", -2000.0),
+                brick("Brick 2", "1.5", 2000.0)
+            ),
+            r#"<FocusPoint name="Drummer"><Matrix>{1,0,0}{0,1,0}{0,0,1}{0,6300,1400}</Matrix></FocusPoint>"#,
+        ));
+        import_mvr_bytes(&first, "kellys.mvr", &options(), dir).unwrap();
+        let path = dir.join("lighting/venues/kellys.venue");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let venue = &parse_venues(&text).unwrap()["kellys"];
+        let old_position = fmt_vec3(&venue.fixtures()["Brick 1"].position().unwrap());
+        let edited = format!("# HOUSE NOTE: hung by Sam.\n{text}")
+            .replace(
+                &format!("position {old_position}"),
+                "position (-1.5, 7, 4.2) # moved after the rig check",
+            )
+            .replace("@ 1:5", "@ 1:105")
+            .replace(
+                "focus \"Drummer\" (0, 9.8, 1.4)",
+                "focus \"Drummer\" (0.4, 9.8, 1.4)",
+            )
+            .replace(
+                "venue \"kellys\" {\n",
+                "venue \"kellys\" {\n  # keep this comment\n",
+            );
+        assert_ne!(edited, text);
+        std::fs::write(&path, edited).unwrap();
+        path
+    }
+
+    /// The same rig again — a re-export that changed nothing the venue's
+    /// owner did not also change.
+    fn unchanged_mvr() -> Vec<u8> {
+        let lost = r#"<Fixture name="Lost"><GDTFSpec>Astera_PB15.gdtf</GDTFSpec><GDTFMode>99: Nope</GDTFMode>
+<Addresses><Address break="0">1.30</Address></Addresses></Fixture>"#;
+        // A different file (a note in the scene), so the library copy is
+        // treated as a revision of the same rig.
+        mvr_bytes(&scene_with(
+            &format!(
+                "{}\n{}\n{lost}\n<!-- revised -->",
+                brick("Brick 1", "1.1", -2000.0),
+                brick("Brick 2", "1.5", 2000.0)
+            ),
+            r#"<FocusPoint name="Drummer"><Matrix>{1,0,0}{0,1,0}{0,0,1}{0,6300,1400}</Matrix></FocusPoint>"#,
+        ))
+    }
+
+    #[test]
+    fn a_merge_keeps_the_files_comments_todos_and_header() {
+        let dir = project();
+        let path = seeded_and_hand_edited(dir.path());
+        import_mvr_bytes(&unchanged_mvr(), "kellys.mvr", &options(), dir.path()).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# HOUSE NOTE: hung by Sam.\n"), "{text}");
+        assert!(text.contains("  # keep this comment\n"), "{text}");
+        assert!(text.contains("# moved after the rig check"), "{text}");
+        assert!(text.contains("# layer \"Front Truss\""), "{text}");
+        assert!(
+            text.contains("# TODO fixture \"Lost\" @ 1:30"),
+            "the TODO for a fixture with no mode stays: {text}"
+        );
+        assert_eq!(text.matches("# TODO fixture \"Lost\"").count(), 1, "{text}");
+        assert!(parse_venues(&text).is_ok());
+    }
+
+    #[test]
+    fn a_merge_lists_hand_edits_and_overwrites_them_without_keep() {
+        let dir = project();
+        let path = seeded_and_hand_edited(dir.path());
+        let plan =
+            inspect_mvr_bytes(&unchanged_mvr(), "kellys.mvr", &options(), dir.path()).unwrap();
+        let brick1 = plan.fixtures.iter().find(|f| f.name == "Brick 1").unwrap();
+        assert_eq!(
+            brick1
+                .overwrites
+                .iter()
+                .map(|e| e.field.as_str())
+                .collect::<Vec<_>>(),
+            ["position"],
+            "{brick1:?}"
+        );
+        assert_eq!(brick1.overwrites[0].mine, "(-1.5, 7, 4.2)");
+        let brick2 = plan.fixtures.iter().find(|f| f.name == "Brick 2").unwrap();
+        assert_eq!(
+            brick2
+                .overwrites
+                .iter()
+                .map(|e| (e.field.as_str(), e.mine.as_str(), e.mvr.as_str()))
+                .collect::<Vec<_>>(),
+            [("patch", "1:105", "1:5")]
+        );
+        let focus = plan
+            .focus_points
+            .iter()
+            .find(|f| f.name == "Drummer")
+            .unwrap();
+        assert_eq!(focus.overwrites.len(), 1, "{focus:?}");
+        assert_eq!(focus.overwrites[0].mine, "(0.4, 9.8, 1.4)");
+        // Planning wrote nothing.
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("position (-1.5, 7, 4.2)"));
+
+        // Without a keep list the MVR's values win.
+        import_mvr_bytes(&unchanged_mvr(), "kellys.mvr", &options(), dir.path()).unwrap();
+        let venue = &parse_venues(&std::fs::read_to_string(&path).unwrap()).unwrap()["kellys"];
+        assert_eq!(
+            venue.fixtures()["Brick 1"].position(),
+            Some([-2.0, 7.0, 4.2])
+        );
+        assert_eq!(venue.fixtures()["Brick 2"].start_channel(), 5);
+        assert_eq!(venue.focus_points()["Drummer"], [0.0, 9.8, 1.4]);
+    }
+
+    #[test]
+    fn a_merge_keeps_the_hand_edits_it_is_asked_to() {
+        let dir = project();
+        let path = seeded_and_hand_edited(dir.path());
+        let keep = MvrKeep {
+            fixtures: BTreeMap::from([("Brick 1".to_string(), vec!["position".to_string()])]),
+            focus_points: vec!["Drummer".to_string()],
+        };
+        let options = MvrImportOptions { keep, ..options() };
+        let report =
+            import_mvr_bytes(&unchanged_mvr(), "kellys.mvr", &options, dir.path()).unwrap();
+        let brick1 = report
+            .plan
+            .fixtures
+            .iter()
+            .find(|f| f.name == "Brick 1")
+            .unwrap();
+        assert!(brick1.overwrites.is_empty());
+        assert_eq!(brick1.kept_edits, ["position"]);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let venue = &parse_venues(&text).unwrap()["kellys"];
+        assert_eq!(
+            venue.fixtures()["Brick 1"].position(),
+            Some([-1.5, 7.0, 4.2])
+        );
+        assert_eq!(venue.focus_points()["Drummer"], [0.4, 9.8, 1.4]);
+        // Not on the keep list: Brick 2's patch goes back to the MVR's.
+        assert_eq!(venue.fixtures()["Brick 2"].start_channel(), 5);
+        assert!(text.contains("# moved after the rig check"), "{text}");
+    }
+
+    #[test]
+    fn a_change_the_mvr_made_is_not_a_hand_edit() {
+        let dir = project();
+        let first = mvr_bytes(&scene_with(&brick("Brick 1", "1.1", -2000.0), ""));
+        import_mvr_bytes(&first, "kellys.mvr", &options(), dir.path()).unwrap();
+        // The rig moves and re-patches Brick 1 itself; the venue is untouched.
+        let second = mvr_bytes(&scene_with(&brick("Brick 1", "1.9", -1000.0), ""));
+        let plan = inspect_mvr_bytes(&second, "kellys.mvr", &options(), dir.path()).unwrap();
+        assert!(
+            plan.fixtures[0].overwrites.is_empty(),
+            "{:?}",
+            plan.fixtures[0]
+        );
+        assert!(plan.fixtures[0]
+            .change
+            .as_deref()
+            .unwrap()
+            .contains("patch"));
     }
 
     #[test]

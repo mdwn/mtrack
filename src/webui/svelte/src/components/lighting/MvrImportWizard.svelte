@@ -17,8 +17,10 @@
   import {
     importMvr,
     inspectMvr,
+    type MvrHandEdit,
     type MvrImportReport,
     type MvrInspection,
+    type MvrKeep,
     type MvrPlan,
     type Vec3Mm,
   } from "../../lib/api/config";
@@ -66,6 +68,10 @@
   );
 
   let plan = $state<MvrPlan | null>(null);
+  /** Which hand edits to keep, by "fixture\u0000field" (a focus point is
+   *  "\u0000focus\u0000name"). Position and rotation start kept; patch and
+   *  type are rig facts the venue owns, so they start as the MVR's. */
+  let keeping = $state<Record<string, boolean>>({});
   let report = $state<MvrImportReport | null>(null);
 
   let scene = $derived(inspection?.scene ?? null);
@@ -137,12 +143,56 @@
         dirs,
       );
       plan = result.plan ?? null;
+      keeping = defaultKeeping(plan);
       step = "review";
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
       busy = false;
     }
+  }
+
+  const EDIT_SEP = "\u0000";
+
+  function editKey(fixture: string, field: string): string {
+    return `${fixture}${EDIT_SEP}${field}`;
+  }
+
+  function focusKey(name: string): string {
+    return `${EDIT_SEP}focus${EDIT_SEP}${name}`;
+  }
+
+  function defaultKeeping(p: MvrPlan | null): Record<string, boolean> {
+    const out: Record<string, boolean> = {};
+    for (const f of p?.fixtures ?? []) {
+      for (const e of f.overwrites ?? []) {
+        out[editKey(f.name, e.field)] =
+          e.field === "position" || e.field === "rotation";
+      }
+    }
+    for (const f of p?.focus_points ?? []) {
+      if (f.overwrites?.length) out[focusKey(f.name)] = true;
+    }
+    return out;
+  }
+
+  /** The keep list the import request carries. */
+  function keepRequest(): MvrKeep {
+    const fixtures: Record<string, string[]> = {};
+    for (const f of plan?.fixtures ?? []) {
+      const kept = (f.overwrites ?? [])
+        .map((e) => e.field)
+        .filter((field) => keeping[editKey(f.name, field)]);
+      if (kept.length > 0) fixtures[f.name] = kept;
+    }
+    const focus_points = (plan?.focus_points ?? [])
+      .filter((f) => f.overwrites?.length && keeping[focusKey(f.name)])
+      .map((f) => f.name);
+    return { fixtures, focus_points };
+  }
+
+  function fieldLabel(e: MvrHandEdit): string {
+    return $t(`lighting.mvr.field.${e.field}`);
   }
 
   async function doImport() {
@@ -154,7 +204,7 @@
     try {
       const result = await importMvr(
         file,
-        { name: venueName.trim(), origin, write: true },
+        { name: venueName.trim(), origin, write: true, keep: keepRequest() },
         dirs,
       );
       report = result.report ?? null;
@@ -240,6 +290,12 @@
   );
   let seeded = $derived(plan?.fixtures.filter((f) => !f.todo) ?? []);
   let todos = $derived(plan?.fixtures.filter((f) => f.todo) ?? []);
+  let edited = $derived(
+    plan?.fixtures.filter((f) => f.overwrites?.length) ?? [],
+  );
+  let editedFocus = $derived(
+    plan?.focus_points.filter((f) => f.overwrites?.length) ?? [],
+  );
 
   function metres(mm: number): string {
     return (mm / 1000).toFixed(2);
@@ -680,6 +736,65 @@
         </ul>
       {/if}
 
+      {#if edited.length > 0 || editedFocus.length > 0}
+        <h4 class="panel__sub">
+          {$t("lighting.mvr.review.edits", {
+            values: { count: edited.length + editedFocus.length },
+          })}
+        </h4>
+        <p class="muted">{$t("lighting.mvr.review.editsHint")}</p>
+        <ul class="list list--edits" data-testid="mvr-review-edits">
+          {#each edited as f (f.name)}
+            {#each f.overwrites ?? [] as e (e.field)}
+              <li data-testid="mvr-edit-{f.name}-{e.field}">
+                <label class="check">
+                  <input
+                    type="checkbox"
+                    bind:checked={keeping[editKey(f.name, e.field)]}
+                    data-testid="mvr-keep-{f.name}-{e.field}"
+                  />
+                  <span>
+                    <strong>{f.name}</strong>
+                    {$t("lighting.mvr.review.editRow", {
+                      values: {
+                        field: fieldLabel(e),
+                        mine: e.mine,
+                        mvr: e.mvr,
+                      },
+                    })}
+                    <em>{$t("lighting.mvr.review.keepEdit")}</em>
+                  </span>
+                </label>
+              </li>
+            {/each}
+          {/each}
+          {#each editedFocus as f (f.name)}
+            {#each f.overwrites ?? [] as e (e.field)}
+              <li data-testid="mvr-edit-focus-{f.name}">
+                <label class="check">
+                  <input
+                    type="checkbox"
+                    bind:checked={keeping[focusKey(f.name)]}
+                    data-testid="mvr-keep-focus-{f.name}"
+                  />
+                  <span>
+                    <strong>{f.name}</strong>
+                    {$t("lighting.mvr.review.editRow", {
+                      values: {
+                        field: fieldLabel(e),
+                        mine: e.mine,
+                        mvr: e.mvr,
+                      },
+                    })}
+                    <em>{$t("lighting.mvr.review.keepEdit")}</em>
+                  </span>
+                </label>
+              </li>
+            {/each}
+          {/each}
+        </ul>
+      {/if}
+
       {#if plan.warnings.length > 0}
         <h4 class="panel__sub">{$t("lighting.mvr.review.warnings")}</h4>
         <ul class="list list--warn" data-testid="mvr-review-warnings">
@@ -1072,6 +1187,23 @@
   }
   .list--warn {
     color: var(--yellow);
+  }
+  .list--edits {
+    list-style: none;
+    padding-left: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .check {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .check em {
+    font-style: normal;
+    color: var(--text-muted);
+    margin-left: 6px;
   }
 
   @media (max-width: 600px) {
