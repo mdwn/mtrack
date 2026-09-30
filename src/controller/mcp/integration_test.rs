@@ -3943,7 +3943,7 @@ async fn mcp_suggest_group_tags_proposes_tags_for_an_untagged_venue() -> Result<
     assert_eq!(body["name"], "front_wash", "{body}");
     assert_eq!(body["needs"]["all_of"], json!(["wash"]), "{body}");
     assert_eq!(body["fixtures"], json!([]), "{body}");
-    assert_eq!(body["wants"], json!(["color"]), "{body}");
+    assert_eq!(body["wants"], json!(["color", "dimmer"]), "{body}");
     assert_eq!(
         body["suggestion"]["fixtures"],
         json!(["Par1", "Par2"]),

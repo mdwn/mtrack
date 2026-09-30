@@ -446,6 +446,7 @@
   "lighting.fit.can.color": "mix colour",
   "lighting.fit.can.strobe": "strobe",
   "lighting.fit.can.cells": "address cells",
+  "lighting.fit.can.dimmer": "dim",
   "lighting.fit.where.deck": "deck",
   "lighting.fit.where.low": "low rig",
   "lighting.fit.where.truss": "truss",

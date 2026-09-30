@@ -44,6 +44,8 @@ pub enum Want {
     Strobe,
     /// `per: cell`: a pixel fixture.
     Cells,
+    /// A `dimmer` or `pulse`: a dimmer channel or colour channels.
+    Dimmer,
 }
 
 impl Want {
@@ -54,6 +56,7 @@ impl Want {
             Want::Color => "color",
             Want::Strobe => "strobe",
             Want::Cells => "cells",
+            Want::Dimmer => "dimmer",
         }
     }
 }
@@ -73,6 +76,9 @@ pub fn wants_by_group(shows: &[LightShow]) -> BTreeMap<String, BTreeSet<Want>> {
             }
             EffectType::Move { .. } => {
                 wants.insert(Want::Move);
+            }
+            EffectType::Dimmer { .. } | EffectType::Pulse { .. } => {
+                wants.insert(Want::Dimmer);
             }
             EffectType::ColorCycle { .. } | EffectType::Rainbow { .. } => {
                 wants.insert(Want::Color);
@@ -246,6 +252,10 @@ impl FitFixture {
             Want::Color => self.capabilities.contains(FixtureCapabilities::RGB_COLOR),
             Want::Strobe => self.capabilities.contains(FixtureCapabilities::STROBING),
             Want::Cells => self.cells,
+            Want::Dimmer => {
+                self.capabilities.contains(FixtureCapabilities::DIMMING)
+                    || self.capabilities.contains(FixtureCapabilities::RGB_COLOR)
+            }
         }
     }
 
@@ -675,8 +685,38 @@ mod test {
         assert_eq!(wants["movers"], self::wants(&[Want::Move, Want::Color]));
         assert_eq!(wants["flash"], self::wants(&[Want::Strobe]));
         assert_eq!(wants["bars"], self::wants(&[Want::Color, Want::Cells]));
+        assert!(!wants.contains_key("nobody"));
         // A dimmer asks for nothing worth tagging on.
         assert!(wants["dim"].is_empty());
+    }
+
+    #[test]
+    fn dimmer_and_pulse_want_a_dimmer_or_colour() {
+        let shows = shows(
+            "show \"S\" {\n    @00:00.000\n    a: dimmer start: 100%, end: 0%, duration: 1s\n    \
+             b: pulse frequency: 1, intensity: 0.5, duration: 1s\n}\n",
+        );
+        let wants = wants_by_group(&shows);
+        assert_eq!(wants["a"], self::wants(&[Want::Dimmer]));
+        assert_eq!(wants["b"], self::wants(&[Want::Dimmer]));
+
+        let only_dimmer = fixture("d", "Dim", None, &[FixtureCapabilities::DIMMING]);
+        let only_rgb = fixture("c", "Rgb", None, WASH);
+        let neither = fixture("n", "Pan", None, &[FixtureCapabilities::PANNING]);
+        assert!(only_dimmer.can(Want::Dimmer));
+        assert!(only_rgb.can(Want::Dimmer));
+        assert!(!neither.can(Want::Dimmer));
+
+        // A candidate must satisfy it, so applying leaves no capability-gap.
+        let fixtures = vec![neither, only_dimmer];
+        let s = suggest(
+            &needs(&["g"], &[]),
+            &self::wants(&[Want::Dimmer]),
+            &fixtures,
+        )
+        .suggestion
+        .unwrap();
+        assert_eq!(s.fixtures, vec!["d".to_string()]);
     }
 
     #[test]

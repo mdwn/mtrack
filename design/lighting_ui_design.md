@@ -317,3 +317,33 @@ tool (`suggest_group_tags`, L3 too) prints the same fields.
 Editing constraints, creating groups, renaming a console's focus points in
 bulk, and any automatic tagging without a click: a suggestion is applied by
 the user, never by the import.
+
+### 9.5 As built
+
+Where the build settled a point §9.1–§9.4 left open or got wrong:
+
+- **Wants follow lint exactly.** A `move` wants pan **or** tilt (lint's
+  `capability-gap` rule, so applying a suggestion clears the gap, not "pan and
+  tilt"). A `dimmer` or `pulse` cue wants a **dimmer** (`wants` value `dimmer`),
+  met by a dimmer channel or colour channels. Colour, strobe and `per: cell`
+  are as in §9.2. A candidate satisfies every want.
+- **Several `AnyOf` constraints are flattened** into one list; the suggestion
+  applies the first tag of it, plus every `AllOf` tag.
+- **Suggestions are computed only for groups the profile defines that find no
+  fixtures.** An undefined group, a group with no `AllOf`/`AnyOf`, and a group
+  that already finds fixtures get none.
+- **Fields added to §9.3:** per group `defined`, `unmet` (the wants no fixture
+  meets) and `unmet_together` (each want is met by some fixture, none meets
+  them all); `output.reachable` (whether olad answered; `null` when nothing was
+  asked); and structured `height` (`deck`/`low`/`truss`) and `depth`
+  (`downstage`/`mid`/`upstage`) beside `where` in `reason` and `others`, so the
+  page words and translates the place itself. The depth band is absent when the
+  venue's y-extent is nil.
+- **"+ Focus point" lives in `StageView`,** not the Venues editor; Place on
+  plan reuses its save path (`createFocusPoint`).
+- **A profile write reloads on its own.** Add to profile writes through
+  `profileStore` and the server reloads; the page does nothing extra.
+- **Test hook:** when the plan is used for choosing fixtures, `StageView` puts
+  their pixel positions on the canvas as `data-positions`, so tests can click a
+  fixture without re-deriving the layout. The page also lists every fixture as
+  a checkbox, so selection does not depend on the canvas.

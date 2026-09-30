@@ -20,7 +20,7 @@
 
 import type { Vec3 } from "../api/config";
 
-export type Want = "move" | "color" | "strobe" | "cells";
+export type Want = "move" | "color" | "strobe" | "cells" | "dimmer";
 export type Height = "deck" | "low" | "truss";
 export type Depth = "downstage" | "mid" | "upstage";
 
