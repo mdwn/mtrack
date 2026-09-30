@@ -21,6 +21,7 @@
 //! import is, by construction, a fixture type that will load.
 
 mod mvr;
+pub mod scene_view;
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
