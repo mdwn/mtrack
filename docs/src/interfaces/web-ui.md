@@ -583,6 +583,39 @@ pin, and the list beneath the plot renames or deletes them. Focus points are the
 show aims at, so name them for what they are ("drummer", "center-stage"). A fixture dragged from
 the tray is hung at 3 m; edit the venue file to correct its height.
 
+**Selecting.** Click a fixture on the plot to select it, shift-click to add or remove one, or
+drag a box on the empty deck to select what it encloses (shift adds the box to the selection).
+**Escape** clears it. The inspector beside the plot (below it on a phone) lists every fixture with
+a checkbox that mirrors the selection and drives it. Dragging a fixture moves it as before, and a
+click that does not move saves nothing.
+
+The inspector shows what is selected:
+
+- **One fixture** shows its own fields: name, type, universe, start channel and tags, saved by
+  **Apply**.
+- **Several** show the type and tags they share, and the two tools below.
+
+**Arrange** (two or more placed fixtures) writes positions. **Align on a line** puts a side
+column at its mean x, or a row at its mean y, whichever way the selection spreads more.
+**Space evenly** keeps the two extreme fixtures and spreads the rest evenly between them along
+the same line, in their current order. **Mirror across centre** turns each x into its negative,
+about the centre line at x = 0. While the plot has keyboard focus, the arrow keys nudge the
+selection 0.1 m (1 m with shift); a burst of key presses is one save.
+
+**Aim** writes rotations. A fixture with pan or tilt channels is a mover; everything else is
+fixed. For fixed fixtures, **Face a direction** takes stage left, stage right, upstage,
+downstage or a bearing in degrees, and a **tilt up from the floor** (0 is level, negative aims
+down), and writes the rotation that does it. **At a focus point** picks one of the venue's focus
+points and writes, for each selected fixture, the rotation that points its beam at it (a
+fixture standing on the point is skipped, and the inspector says so). For movers, **Hung,
+facing downstage** and **Standing on the deck** write the two mountings the
+[pose convention](../lighting/configuration.md#mounting-and-pose-convention) names; aiming a
+mover is the show's job. The raw rotation is always shown and editable. The plot draws each
+fixed fixture's beam from its rotation, so an aim is checked at once.
+
+Every operation is one save of the venue file, and keeps the focus points, provenance and every
+field the operation did not change.
+
 ### Groups
 
 Directories, the current venue, inline fixtures and logical groups with their constraints. Pick
