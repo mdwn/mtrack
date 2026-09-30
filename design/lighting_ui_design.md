@@ -551,8 +551,8 @@ Stage 3D stays the live view: it draws whatever the engine sends. L6 adds a
   so a dark fixture is known to be dark on purpose.
 - **Caveats**, shown only when they apply, as small pills over the scene:
   *N fixtures use a colour wheel — shown white* (fixtures whose type has a
-  `color1`-style wheel channel and no RGB/CMY: their colour is not modelled,
-  §…), *beams that miss the deck are drawn N m long* (the scene's fixed
+  `color1`-style wheel channel and no RGB/CMY: their colour is not modelled; see the
+  docs' known limitations), *beams that miss the deck are drawn N m long* (the scene's fixed
   beam length), and, in live mode, *no state yet* when nothing has been
   received.
 - **Open this cue in the timeline** links to the song's lighting editor at
