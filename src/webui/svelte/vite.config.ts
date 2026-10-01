@@ -12,13 +12,42 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 const proxyTarget = process.env.VITE_PROXY_TARGET || "http://127.0.0.1:8080";
 
+/**
+ * The UI's own build identity: the hash of every frontend input, which
+ * `make build-ui` computes for its rebuild stamp and passes in as
+ * MTRACK_UI_BUILD. The bundle carries it (`import.meta.env
+ * .VITE_MTRACK_UI_BUILD`), and `build-info.json` beside it carries the same
+ * value for the server to report, so an open tab can tell whether it is the
+ * UI the server now serves. A build without it (a plain `npm run build`, the
+ * dev server) has none, and the tab falls back to noticing the server's
+ * build time change.
+ */
+const uiBuild = process.env.MTRACK_UI_BUILD?.trim() ?? "";
+
+function buildInfo(): Plugin {
+  return {
+    name: "mtrack-build-info",
+    apply: "build",
+    generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName: "build-info.json",
+        source: JSON.stringify({ ui_build: uiBuild || null }),
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [svelte(), buildInfo()],
+  define: {
+    "import.meta.env.VITE_MTRACK_UI_BUILD": JSON.stringify(uiBuild),
+  },
   build: {
     chunkSizeWarningLimit: 600,
     rollupOptions: {

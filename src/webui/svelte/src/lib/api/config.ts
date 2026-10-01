@@ -13,6 +13,7 @@
 //
 
 import { BadAnswerError, readJson } from "../lighting/answer";
+import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
 import { parseFit, type Fit } from "../lighting/fit";
 import { parseReadiness, type Readiness } from "../lighting/readiness";
 import {
@@ -383,6 +384,9 @@ export interface FixtureTypeEntry {
   /** A GDTF type's default mode; null on a native type and on a GDTF type
    *  with none, whose fixtures each name their own. */
   default_mode?: string | null;
+  /** The addresses a fixture of the type occupies (a GDTF type's in its
+   *  default mode); null when not known. */
+  footprint?: number | null;
   rich: boolean;
   /** A referential type's archive in brief, for its card; null when the
    *  archive is missing or does not parse. Absent on a native type. */
@@ -495,6 +499,7 @@ export async function importGdtf(
   if (name) params.set("name", name);
   const res = await uploadFiles(`/lighting/gdtf/import?${params}`, [file]);
   if (!res.ok) throw await apiError(res, "Failed to import GDTF");
+  fixtureTypesChanged();
   return res.json();
 }
 
@@ -679,6 +684,11 @@ export async function importMvr(
     ),
   });
   if (!res.ok) throw await apiError(res, "Failed to import the MVR");
+  if (options.write) {
+    // A write adds types and writes (or merges into) a venue.
+    fixtureTypesChanged();
+    venueChanged(null);
+  }
   return res.json();
 }
 
@@ -806,6 +816,7 @@ export async function addAimPoints(
     version ? { "If-Match": version } : undefined,
   );
   if (!res.ok) throw await versionedError(res, "Failed to add aim points");
+  venueChanged(venue);
   return res.json();
 }
 
@@ -868,6 +879,112 @@ export async function fetchFixtureTypeGdtf(
   return res.json();
 }
 
+/** Movement limits in degrees per second; null where none is set. */
+export interface MovementLimits {
+  max_pan_speed: number | null;
+  max_tilt_speed: number | null;
+}
+
+/** What a GDTF type's file holds that is the user's: the fixture page's
+ *  settings form. */
+export interface FixtureSettingsData {
+  name: string;
+  default_mode: string | null;
+  movement: MovementLimits;
+  /** The file they are saved in. */
+  file: string;
+  /** The file's version, sent back as `If-Match`. */
+  version: string;
+}
+
+/** What a settings save does (or, planned, would do). */
+export interface FixtureSettingsResult {
+  write: boolean;
+  file: string;
+  version: string;
+  /** The file's text after the save. */
+  dsl: string;
+  /** A rename: every venue line that names the type, by venue. */
+  rename: {
+    from: string;
+    to: string;
+    lines: number;
+    venues: { venue: string; file: string; lines: number }[];
+  } | null;
+  /** A new default: the venue fixtures that take it (they name no mode). */
+  default_change: {
+    from: string | null;
+    to: string | null;
+    /** The new default's addresses; null when unknown or none. */
+    footprint: number | null;
+    count: number;
+    venues: { venue: string; fixtures: string[] }[];
+  } | null;
+  /** Overlaps the new default would cause, not there before. */
+  overlaps: {
+    venue: string;
+    a: string;
+    b: string;
+    a_gang: string[];
+    b_gang: string[];
+    universe: number;
+    from: number;
+    to: number;
+    message: string;
+  }[];
+  overruns: { venue: string; fixture: string; message: string }[];
+  /** The venue files read, by name, with their versions. */
+  venue_versions: Record<string, string>;
+  /** Inline fixtures in the player config that name the type (a rename
+   *  leaves them for the user to change). */
+  config_references: string[];
+  reloaded: boolean;
+  venue_error: VenueError | null;
+}
+
+export async function fetchFixtureSettings(
+  name: string,
+  dir?: string,
+): Promise<FixtureSettingsData> {
+  const params = dirParams(dir);
+  const res = await get(
+    `/lighting/fixture-types/${encodeURIComponent(name)}/settings${params}`,
+  );
+  if (!res.ok)
+    throw await apiError(res, "Failed to read the fixture's settings");
+  return res.json();
+}
+
+/** Plans (`write: false`) or saves a GDTF type's settings. A save sends the
+ *  file's version and the venue files' versions from the plan; either
+ *  having changed is a `ConflictError`. */
+export async function postFixtureSettings(
+  name: string,
+  body: {
+    name: string;
+    default_mode: string | null;
+    movement: MovementLimits;
+    write: boolean;
+    venue_versions?: Record<string, string>;
+  },
+  dirs: { dir?: string; venuesDir?: string },
+  version?: string,
+): Promise<FixtureSettingsResult> {
+  const res = await post(
+    `/lighting/fixture-types/${encodeURIComponent(name)}/settings${dirParams(dirs.dir, dirs.venuesDir)}`,
+    JSON.stringify(body),
+    version ? { "If-Match": version } : undefined,
+  );
+  if (!res.ok)
+    throw await versionedError(res, "Failed to save the fixture's settings");
+  if (body.write) {
+    // A rename rewrites venue lines; a new default changes fixtures' modes.
+    fixtureTypesChanged();
+    venueChanged(null);
+  }
+  return res.json();
+}
+
 export async function saveFixtureType(
   name: string,
   data: {
@@ -884,6 +1001,7 @@ export async function saveFixtureType(
     JSON.stringify(data),
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
+  fixtureTypesChanged();
 }
 
 /** Saves a fixture type as raw DSL. `ext` decides the form a *new* type is
@@ -901,6 +1019,7 @@ export async function saveFixtureTypeText(
     dsl,
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
+  fixtureTypesChanged();
 }
 
 export async function deleteFixtureType(
@@ -912,6 +1031,7 @@ export async function deleteFixtureType(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
   );
   if (!res.ok) throw await apiError(res, "Failed to delete fixture type");
+  fixtureTypesChanged();
 }
 
 /// Group names a cue can target, with the fixtures each currently resolves to.
@@ -1010,6 +1130,7 @@ export async function saveVenue(
     version ? { "If-Match": version } : undefined,
   );
   if (!res.ok) throw await versionedError(res, "Failed to save venue");
+  venueChanged(name);
   const body = await res.json().catch(() => ({}));
   return {
     version: body?.version ?? null,
@@ -1089,6 +1210,7 @@ export async function deleteVenue(name: string, dir?: string): Promise<void> {
     `/lighting/venues/${encodeURIComponent(name)}${params}`,
   );
   if (!res.ok) throw await apiError(res, "Failed to delete venue");
+  venueChanged(name);
 }
 
 // ---- Playlist CRUD ----

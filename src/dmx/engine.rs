@@ -555,6 +555,17 @@ impl Engine {
         self.register_venue_fixtures_safe()
     }
 
+    /// Re-reads the fixture types and the venues from disk and re-registers
+    /// the current venue's fixtures: how an edit to a fixture type's
+    /// settings (a rename, a new default mode) reaches the running engine.
+    pub fn reload_fixture_types(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(lighting_system) = &self.lighting_system else {
+            return Err("no lighting system is loaded".into());
+        };
+        lighting_system.lock().reload_fixture_types()?;
+        self.register_venue_fixtures_safe()
+    }
+
     /// The current venue's last registration outcome; `None` before the
     /// first attempt or without a lighting system.
     pub fn venue_registration(&self) -> Option<VenueRegistration> {

@@ -14,7 +14,7 @@
      * -->
 <script lang="ts">
   import { wsConnected, playbackStore } from "../lib/ws/stores";
-  import { healthStore, venueFailure } from "../lib/ws/status";
+  import { healthStore, uiUpdated, venueFailure } from "../lib/ws/status";
   import { setLocked } from "../lib/api/config";
   import { showConfirm } from "../lib/dialog.svelte";
   import { themeChoice, cycleTheme } from "../lib/theme";
@@ -298,6 +298,19 @@
   </div>
 {/if}
 
+{#if $uiUpdated}
+  <!-- Persistent: a reload is the user's call, not ours. -->
+  <div class="update-banner" role="status" data-testid="ui-updated">
+    <span>{$t("nav.uiUpdated")}</span>
+    <button
+      class="btn btn-sm update-banner__reload"
+      type="button"
+      data-testid="ui-updated-reload"
+      onclick={() => location.reload()}>{$t("nav.uiUpdatedReload")}</button
+    >
+  </div>
+{/if}
+
 {#if $venueFailure}
   <!-- Not dismissible: the rig is dark until the venue is fixed. -->
   <div class="venue-banner" role="alert" data-testid="venue-failed-banner">
@@ -577,6 +590,20 @@
     50% {
       opacity: 0.45;
     }
+  }
+
+  .update-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px 12px;
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    background: var(--accent-subtle);
+    color: var(--text);
+    border-bottom: 1px solid var(--accent);
   }
 
   .venue-banner {

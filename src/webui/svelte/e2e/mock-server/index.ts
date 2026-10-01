@@ -300,7 +300,7 @@ const FIXTURE_TYPES: Record<
   par: {
     fixture_type: {
       name: "par",
-      channels: { red: 0, green: 1, blue: 2, dimmer: 3 },
+      channels: { red: 1, green: 2, blue: 3, dimmer: 4 },
       max_strobe_frequency: null,
       min_strobe_frequency: null,
       strobe_dmx_offset: null,
@@ -309,7 +309,7 @@ const FIXTURE_TYPES: Record<
     extension: "light",
     referential: false,
     rich: false,
-    dsl: "fixture_type par { red: 0, green: 1, blue: 2, dimmer: 3 }",
+    dsl: "fixture_type par { red: 1, green: 2, blue: 3, dimmer: 4 }",
   },
   mover: {
     fixture_type: {
@@ -421,6 +421,62 @@ const GDTF_INSPECTION = {
 
 app.post("/api/lighting/gdtf/inspect", (_req, res) => {
   res.json(GDTF_INSPECTION);
+});
+
+// A GDTF type's own settings, for the fixture page's form. Stateless: a save
+// answers what it did and changes nothing here, so tests never see another
+// test's save. Tests that need overlaps route their own answer.
+app.get("/api/lighting/fixture-types/:name/settings", (req, res) => {
+  const entry = FIXTURE_TYPES[req.params.name];
+  if (!entry || !entry.referential) {
+    return res.status(404).json({ error: "not a GDTF type" });
+  }
+  res.json({
+    name: req.params.name,
+    default_mode: "8: RGBS",
+    movement: { max_pan_speed: null, max_tilt_speed: null },
+    file: entry.file,
+    version: "mock-v1",
+  });
+});
+
+app.post("/api/lighting/fixture-types/:name/settings", (req, res) => {
+  const from = req.params.name;
+  const body = req.body ?? {};
+  const renamed = body.name && body.name !== from;
+  const defaultChanged = body.default_mode !== "8: RGBS";
+  res.json({
+    write: !!body.write,
+    file: FIXTURE_TYPES[from]?.file ?? "x.fixture",
+    version: body.write ? "mock-v2" : "mock-v1",
+    dsl: `fixture_type "${body.name}" from gdtf("library/pb15.gdtf", mode "${body.default_mode}") {\n}\n`,
+    rename: renamed
+      ? {
+          from,
+          to: body.name,
+          lines: 3,
+          venues: [
+            { venue: "built-in", file: "built_in.venue", lines: 2 },
+            { venue: "club", file: "club.venue", lines: 1 },
+          ],
+        }
+      : null,
+    default_change: defaultChanged
+      ? {
+          from: "8: RGBS",
+          to: body.default_mode,
+          footprint: 3,
+          count: 2,
+          venues: [{ venue: "built-in", fixtures: ["Brick1", "Brick2"] }],
+        }
+      : null,
+    overlaps: [],
+    overruns: [],
+    venue_versions: { "built_in.venue": "v-b", "club.venue": "v-c" },
+    config_references: [],
+    reloaded: false,
+    venue_error: null,
+  });
 });
 
 // A referential type's archive, for its details view: the mock's one rig

@@ -20,6 +20,8 @@
    * so it and a drag can never race, and the plan redraws from the reload.
    */
   import { t } from "svelte-i18n";
+  import { untrack } from "svelte";
+  import { fixtureTypeChanges, venueChanges } from "../../lib/lighting/changes";
   import { get } from "svelte/store";
   import TagInput from "../config/TagInput.svelte";
   import Tooltip from "../config/Tooltip.svelte";
@@ -342,6 +344,9 @@
   let fields = $state<Fields | null>(null);
   $effect(() => {
     const name = single;
+    // The file changed (this inspector's save, the venue form, a rename):
+    // the fields show it as it is now.
+    void $venueChanges;
     fields = null;
     patchMsg = null;
     const shown = plotVenue;
@@ -461,6 +466,7 @@
   let patchTick = $state(0);
   $effect(() => {
     void patchTick;
+    void $venueChanges;
     const shown = plotVenue;
     const typesDir = fixtureTypesDir;
     patch = null;
@@ -484,6 +490,10 @@
       ? fields.fixture_type
       : null,
   );
+  // A type changed (renamed, a new default): its modes are re-read.
+  $effect(() => {
+    if ($fixtureTypeChanges > 0) untrack(() => (archives = {}));
+  });
   $effect(() => {
     const type = gdtfType;
     const typesDir = fixtureTypesDir;

@@ -13,6 +13,7 @@
     "test": "playwright test --project=mock",
     "test:e2e": "playwright test --project=e2e",
     "test:mock": "playwright test --project=mock",
+    "test:journeys": "playwright test --config=playwright.journeys.config.ts",
     "screenshots:mock": "playwright test --config=playwright.screenshots.config.ts",
     "screenshots:live": "playwright test --config=playwright.screenshots.live.config.ts",
     "screenshots": "npm run screenshots:mock && npm run screenshots:live"

@@ -665,6 +665,24 @@ the preview, and importing a mode the distiller refuses.
   `StageScene.frameFixtures()`, which fits the camera to the bodies, hides
   the deck and cuts beams to the fixture's size; it always draws the pinned
   mode's rig and names the mode being looked at in its corner.
+- **Settings, not a definition.** A GDTF type's page ends in "Your settings
+  for this fixture": name, default mode (and "Make this the default mode" in a
+  non-default mode's detail), and movement limits when any mode pans or
+  tilts. `GET/POST /api/lighting/fixture-types/{name}/settings`: the POST
+  plans (`write: false`) or saves; the plan answers `rename` (venue lines per
+  venue), `default_change` (the fixtures that take the default, the new
+  footprint) and the overlaps/overruns that footprint newly causes, and the
+  page asks with the app's confirm (a modal `<dialog>` would hide it) when
+  any of those is non-empty. The type file is patched through
+  `lighting::fixture_patch` (pest spans: the name, the mode string beside the
+  archive path, the `movement` block; read back before it is returned). A
+  rename patches every venue file through `venue_patch`, planned in full
+  under `VENUE_WRITES` with `If-Match` for the type file and the plan's venue
+  versions; any file that will not patch writes nothing. Then
+  `LightingSystem::reload_fixture_types` re-reads types and venues once.
+  Inline config fixtures naming the type are reported, not rewritten. The
+  file's text is behind a disclosure with its own save; whichever of form and
+  text has unsaved changes locks the other.
 - **Cards read as a library.** `GET /api/lighting/fixture-types` gives each
   referential type a `gdtf` summary (fixture, manufacturer, mode count,
   pinned mode, beam kind and angle, thumbnail, venue fixtures using it),
@@ -699,6 +717,54 @@ the preview, and importing a mode the distiller refuses.
   names a mode of one archive); the plot, inspector and Fit's tagging spread
   the file's fixtures; aim points and MVR merges patch the file. A mode is
   `.venue` syntax. Each path has a round-trip test.
+- **Nothing is dropped on save.** The venue form saved only rows with a name
+  and a type, so New Venue → Add Fixture twice → Save wrote an empty venue
+  and said "Saved". Now every row is saved or the save is refused: a row with
+  no name, no type, a duplicate name or a universe/address below 1 is marked
+  (`aria-invalid`, a message on the row), the header counts them, the first
+  takes focus, and nothing is PUT (`lib/lighting/venueRows.ts`). The server
+  refuses the same (`venue_from_json`: empty name, empty type, a zero
+  universe or address; a duplicate name was already refused). The audit
+  found the same pattern in the fixture type's channel rows (blank skipped,
+  duplicate collapsed — now refused the same way), the tag input (a tag with
+  no allowed character vanished — now kept, marked), and renames of groups,
+  inline fixtures and focus points (an empty or taken name silently
+  reverted — now said).
+- **Add Fixture continues the patch.** A new row is `Fixture N` (first unused),
+  the last row's type and universe, at the last row's address plus its
+  type's footprint (`footprint` on each listed type: a native type's own, a
+  GDTF type's default mode's, null when unknown — then plus one), starting the
+  next universe when it would pass 512 (`nextPatch` in `lib/lighting/patch.ts`).
+  A row's own mode is not consulted: the form has no archive loaded, so the
+  default's footprint stands in.
+- **One "this changed" signal.** The plot's file view loaded on the selected
+  venue's *name*, so a save from the venue form (same name) left it showing
+  the old file until the user clicked away and back. The API client now
+  raises `venueChanged(name | null)` after every successful venue write
+  (save, delete, aim points, an MVR write, a fixture-settings write) and
+  `fixtureTypesChanged()` after every type write (save, delete, GDTF import,
+  MVR write, settings); `lib/lighting/changes.ts` holds the two stores. The
+  plot's file view, the venue list (cards and versions), the venue form's
+  type list, the inspector (fields, patch, cached archives) and the fixture
+  type list re-read on them. No call site pokes a reload.
+- **A mode per row in the venue form.** GDTF rows get the inspector's Mode
+  select, fed by each distinct type's `/gdtf` answer fetched once per form
+  (lazily; typing never waits). Each row shows its span; Add Fixture steps by
+  the previous row's own mode's footprint (the default's when it has none,
+  else +1), which removes the earlier deviation. Partial overlaps between
+  rows (identical spans gang, as in `patch.ts`) and spans past 512 are marked
+  and asked about once on Save ("Save anyway?"), never blocked or renumbered.
+- **Journeys against the real binary.** `e2e/journeys/` (`make test-journeys`,
+  CI job "Lighting journeys (real server)") starts one `mtrack` per test on a
+  throwaway project — no hardware, the DMX engine on the null client — and
+  checks what persisted on disk and through the API. The synthetic GDTF and
+  MVR are zipped at test time from the strings the Rust tests use. They found
+  two bugs the mock suite could not: the venue editor opened on the list's
+  copy, so after a save from the plot or inspector on the same page its save
+  was refused as "changed elsewhere" (it now re-reads the list when it
+  opens); and a current venue that did not load drew nothing on the Venues
+  plot, so the fixture with the bad mode could not be selected and fixed
+  (the editable plot now shows the failed venue's file).
 - **A venue that does not load is loud.** Saves (PUT venue, aim points, MVR
   import, Fit's tagging, the plot) answer `venue_error: {venue, fixture,
   reason}` when the current venue no longer registers — from the engine after

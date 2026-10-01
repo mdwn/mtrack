@@ -749,6 +749,24 @@ impl Player {
         Ok(())
     }
 
+    /// [`Self::reload_current_venue`] for an edit to a fixture type: re-reads
+    /// the types and the venues, re-registers the current venue's fixtures
+    /// and tells every web client the stage changed. No DMX engine is not an
+    /// error.
+    pub fn reload_fixture_types(&self) -> Result<(), String> {
+        let Some(engine) = self.dmx_engine() else {
+            return Ok(());
+        };
+        engine.reload_fixture_types().map_err(|e| e.to_string())?;
+        let metadata = crate::webui::state::build_metadata_json(
+            engine.broadcast_handles().lighting_system.as_ref(),
+        );
+        if let Some(tx) = self.broadcast_tx.lock().as_ref() {
+            let _ = tx.send(metadata);
+        }
+        Ok(())
+    }
+
     /// Stores the broadcast channel and wires it to the DMX engine if one exists.
     /// If the DMX engine hasn't initialized yet, the channel is stored and will
     /// be wired when the engine comes up during async init.

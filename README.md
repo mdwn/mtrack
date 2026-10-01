@@ -113,6 +113,10 @@ $ make build
 
 Other useful targets: `make test`, `make lint`, `make fmt`, `make docs`, `make docs-serve`.
 
+`make test-journeys` builds the web UI and a debug `mtrack`, then runs the Lighting-area
+journeys (`src/webui/svelte/e2e/journeys/`): Playwright against the real binary, one throwaway
+project and server per test, no hardware needed.
+
 ## Get support!
 
 Need help with mtrack? Join us on [Discord](https://discord.gg/2T7WdRQf5b)!

@@ -12,19 +12,22 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-mod effect_parse;
-mod error;
-pub(crate) mod fixture_venue; // Make accessible for tests
-pub(crate) mod grammar;
-mod show;
-mod tempo_parse;
-mod types;
-pub(crate) mod utils; // Make utils accessible for tests
+import { defineConfig, devices } from "@playwright/test";
 
-#[cfg(test)]
-mod tests;
-
-// Re-export public items
-pub use fixture_venue::{parse_fixture_types, parse_venues};
-pub use show::{parse_light_shows, parse_light_shows_with_tempo};
-pub use types::{Cue, Effect, LayerCommand, LayerCommandType, LightShow};
+// The Lighting-area journeys against the real binary (e2e/journeys): every
+// test starts its own mtrack on a throwaway project, so there is no web
+// server to start here. Run with `make test-journeys`, which builds the
+// binary and the UI first.
+export default defineConfig({
+  testDir: "./e2e/journeys",
+  fullyParallel: true,
+  forbidOnly: !!process.env.CI,
+  retries: 0,
+  reporter: process.env.CI ? [["github"], ["list"]] : "list",
+  timeout: 60000,
+  use: {
+    ...devices["Desktop Chrome"],
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
+  },
+});

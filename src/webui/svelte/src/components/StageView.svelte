@@ -14,6 +14,11 @@
      * -->
 <script lang="ts">
   import {
+    concerns,
+    fixtureTypeChanges,
+    venueChanges,
+  } from "../lib/lighting/changes";
+  import {
     metadataStore,
     fixtureStore,
     cellStore,
@@ -37,6 +42,7 @@
     type VenueError,
   } from "../lib/api/config";
   import type { FixturePose } from "../lib/ws/stores";
+  import { venueFailure } from "../lib/ws/status";
   import { deckFootprint, restAim } from "../lib/stage/aim";
   import VenueInspector from "./lighting/VenueInspector.svelte";
   import { nudge } from "../lib/stage/arrange";
@@ -178,7 +184,15 @@
   // --- What the plot shows: the live venue from the websocket, or (when
   // the Venues page picked another one) that venue's file, read through the
   // venues API. A file view has no live colour and no engine poses.
-  let viewingFile = $derived(!!fileVenue && fileVenue !== $venueStore?.name);
+  // A current venue that did not load has no live fixtures to draw, which
+  // left nothing to select and fix. The editable plot shows its file then,
+  // so the inspector can put it right.
+  let failedLive = $derived(editable ? ($venueFailure?.name ?? null) : null);
+  let shownFile = $derived(fileVenue ?? failedLive);
+  let viewingFile = $derived(
+    !!shownFile &&
+      (shownFile !== $venueStore?.name || shownFile === failedLive),
+  );
   let fileView = $state<{
     name: string;
     venue: VenueData;
@@ -194,7 +208,7 @@
     fileError = "";
     try {
       const got = await fetchVenue(name, venuesDir || undefined);
-      if (fileVenue !== name) return;
+      if (shownFile !== name) return;
       fileView = {
         name,
         venue: { ...got.venue, name },
@@ -202,14 +216,14 @@
       };
       fileVersion = got.version ?? null;
     } catch (e: unknown) {
-      if (fileVenue !== name) return;
+      if (shownFile !== name) return;
       fileView = null;
       fileError = e instanceof Error ? e.message : String(e);
     }
   }
 
   $effect(() => {
-    const name = fileVenue;
+    const name = shownFile;
     const dir = venuesDir;
     void dir;
     if (viewingFile && name) {
@@ -225,8 +239,19 @@
     }
   });
 
+  // A file view follows its file: any save of it (the venue form, a rename
+  // of its types, an import) is re-read at once, not when the name changes.
+  $effect(() => {
+    const change = $venueChanges;
+    untrack(() => {
+      if (viewingFile && shownFile && concerns(change, shownFile))
+        void loadFileView(shownFile);
+    });
+  });
+
   $effect(() => {
     if (!viewingFile) return;
+    void $fixtureTypeChanges;
     fetchFixtureTypes(fixtureTypesDir || undefined)
       .then((r) => (fileTypes = r.fixtureTypes))
       .catch(() => {
@@ -1127,7 +1152,19 @@
     }
     delete renaming[from];
     renaming = { ...renaming };
-    if (!to || to === from || to in focusPoints) return;
+    if (to === from) return;
+    // A refused rename says so: the pin keeps its name, and the message
+    // says why rather than the typed name quietly reverting.
+    if (!to || to in focusPoints) {
+      saveMsg = {
+        ok: false,
+        text: get(t)(
+          !to ? "lighting.renameRefused.empty" : "lighting.renameRefused.taken",
+          { values: { name: !to ? from : to } },
+        ),
+      };
+      return;
+    }
     await persist((v) => {
       const points = { ...(v.focus_points ?? {}) };
       const point = points[from];
