@@ -53,6 +53,9 @@ pub struct Description {
     /// The thumbnail's file stem, when the fixture type names one (the
     /// archive then holds `<stem>.png` and/or `<stem>.svg`).
     pub thumbnail: Option<String>,
+    /// The fixture type's own description (`FixtureType@Description`), the
+    /// manufacturer's words; absent or blank is `None`.
+    pub about: Option<String>,
 }
 
 /// A 4×4 transform as this crate uses it: `M · v` takes a point from the
@@ -117,6 +120,8 @@ pub struct BeamData {
     pub color_temperature: Option<f64>,
     /// Beam (lens) radius in meters.
     pub beam_radius: Option<f64>,
+    /// Power consumption in watts.
+    pub power_consumption: Option<f64>,
 }
 
 /// One node of the geometry tree.
@@ -234,6 +239,7 @@ pub fn parse_description(xml: &str) -> Result<Description, GdtfError> {
             models: Vec::new(),
             geometries: Vec::new(),
             thumbnail: None,
+            about: None,
         },
         current_mode: None,
         current_channel: None,
@@ -359,6 +365,12 @@ impl Walk {
                 self.description.thumbnail = attr(element, "Thumbnail")?
                     .map(|t| t.trim().to_string())
                     .filter(|t| !t.is_empty());
+                // Prose for people, read leniently: nothing depends on it.
+                self.description.about = attr(element, "Description")
+                    .ok()
+                    .flatten()
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty());
             }
             "Model" if in_subtree("Models") => {
                 self.description.models.push(Model {
@@ -460,6 +472,9 @@ impl Walk {
                 attr(element, "ColorTemperature").ok().flatten().as_deref(),
             ),
             beam_radius: parse_finite(attr(element, "BeamRadius").ok().flatten().as_deref()),
+            power_consumption: parse_finite(
+                attr(element, "PowerConsumption").ok().flatten().as_deref(),
+            ),
         });
         let reference = if kind == GeometryKind::Reference {
             let referenced = attr(element, "Geometry")?;
@@ -630,7 +645,7 @@ pub(super) mod tests {
     /// mode. Structure mirrors the real Astera PB15 file.
     pub(crate) const SYNTHETIC_DESCRIPTION: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <GDTF DataVersion="1.2">
-  <FixtureType Name="Synth Brick" ShortName="Brick" Manufacturer="mtrack synthetic">
+  <FixtureType Name="Synth Brick" ShortName="Brick" Manufacturer="mtrack synthetic" Description="  A brick that is not real. ">
     <AttributeDefinitions/>
     <Wheels>
       <Wheel Name="IgnoredWheel"><Slot Name="Open"/></Wheel>
@@ -645,7 +660,7 @@ pub(super) mod tests {
       <Geometry Name="Base" Model="Base" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}">
         <Axis Name="Yoke" Model="Yoke" Position="{1,0,0,0}{0,1,0,0}{0,0,1,-0.1}{0,0,0,1}">
           <Axis Name="Head" Model="Head" Position="{1,0,0,0}{0,1,0,0}{0,0,1,-0.25}{0,0,0,1}">
-            <Beam Name="Lens" Model="Head" BeamAngle="12" FieldAngle="20" BeamType="Spot" LuminousFlux="5000" ColorTemperature="6500" BeamRadius="0.05" Position="{1,0,0,0}{0,1,0,0}{0,0,1,-0.06}{0,0,0,1}"/>
+            <Beam Name="Lens" Model="Head" BeamAngle="12" FieldAngle="20" BeamType="Spot" LuminousFlux="5000" ColorTemperature="6500" BeamRadius="0.05" PowerConsumption="120" Position="{1,0,0,0}{0,1,0,0}{0,0,1,-0.06}{0,0,0,1}"/>
           </Axis>
         </Axis>
         <GeometryReference Name="Pixel 2" Geometry="Cell" Model="Cell" Position="{1,0,0,0.05}{0,1,0,0}{0,0,1,0}{0,0,0,1}">
@@ -856,8 +871,44 @@ pub(super) mod tests {
         assert_eq!(beam.luminous_flux, Some(5000.0));
         assert_eq!(beam.color_temperature, Some(6500.0));
         assert_eq!(beam.beam_radius, Some(0.05));
+        assert_eq!(beam.power_consumption, Some(120.0));
         assert!(g[head].beam.is_none());
+        let cell_beam = g[cell_lens].beam.as_ref().unwrap();
+        assert_eq!(cell_beam.power_consumption, None, "absent is None");
         assert_eq!(description.geometry_reference_names, vec!["Pixel 2"]);
+    }
+
+    #[test]
+    fn the_description_text_is_trimmed_and_blank_is_none() {
+        let description = parse_description(SYNTHETIC_DESCRIPTION).unwrap();
+        assert_eq!(
+            description.about.as_deref(),
+            Some("A brick that is not real.")
+        );
+        let blank = parse_description(&SYNTHETIC_DESCRIPTION.replace(
+            "Description=\"  A brick that is not real. \"",
+            "Description=\"   \"",
+        ))
+        .unwrap();
+        assert_eq!(blank.about, None);
+        let absent = parse_description(
+            &SYNTHETIC_DESCRIPTION.replace(" Description=\"  A brick that is not real. \"", ""),
+        )
+        .unwrap();
+        assert_eq!(absent.about, None);
+    }
+
+    #[test]
+    fn an_unparseable_power_consumption_is_none() {
+        let xml =
+            SYNTHETIC_DESCRIPTION.replace("PowerConsumption=\"120\"", "PowerConsumption=\"lots\"");
+        let description = parse_description(&xml).unwrap();
+        let lens = description
+            .geometries
+            .iter()
+            .find(|g| g.name == "Lens")
+            .unwrap();
+        assert_eq!(lens.beam.as_ref().unwrap().power_consumption, None);
     }
 
     #[test]

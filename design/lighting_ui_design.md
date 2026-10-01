@@ -644,3 +644,31 @@ the preview, and importing a mode the distiller refuses.
   are the two addresses that carry a moment.
 - **The beam caveat** counts poses with no deck footprint and quotes the
   spot's sky length (`SKY_BEAM_LENGTH`, 4 m, shared with the scene).
+- **A referential type shows its archive.** Opening a GDTF-referential
+  type titles the editor with the type's name and the archive's fixture, and
+  puts a details view above its text, from
+  `GET /api/lighting/fixture-types/{name}/gdtf`: the inspect answer for the
+  archive the `.fixture` names (resolved as a save checks it), the pinned
+  mode and the archive mode `match_mode` takes it to, the rig and thumbnail
+  in the asset store (written through the expansion cache as a load would; a
+  rig that cannot be made is `null`, not an error), the pinned mode's first
+  beam (the first `Beam` under the mode's geometry, through its references,
+  else the archive's first) with its flux, colour temperature and power, the
+  archive's own `Description`, and the venues whose fixtures use the type.
+  The parser gained `FixtureType@Description` and `Beam@PowerConsumption`
+  for it; neither reaches a cached format, so no version moved. The page is
+  the approved mockup: viewer beside a facts list (a fact the archive does
+  not state is left out), then a filterable read-only mode listbox beside the
+  selected mode's chips (the picker's own words), channel table and users —
+  every venue fixture is in the pinned mode until modes move to the venue.
+  The 3D view is the Stage 3D scene with a one-fixture venue and
+  `StageScene.frameFixtures()`, which fits the camera to the bodies, hides
+  the deck and cuts beams to the fixture's size; it always draws the pinned
+  mode's rig and names the mode being looked at in its corner.
+- **Cards read as a library.** `GET /api/lighting/fixture-types` gives each
+  referential type a `gdtf` summary (fixture, manufacturer, mode count,
+  pinned mode, beam kind and angle, thumbnail, venue fixtures using it),
+  parsing each archive once per request; a missing or unparseable archive is
+  that card's `null` and the card falls back to "from a GDTF archive". The
+  listing writes nothing: the thumbnail is quoted only when the type's rig is
+  already in the store.

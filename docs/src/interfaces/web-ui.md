@@ -582,6 +582,17 @@ what your shows can do in it, in plain words. A refused mode is listed greyed wi
 **Add fixture type** writes the referential `.fixture` (the same as `mtrack import-gdtf`; see
 [GDTF-referential fixture types](../lighting/configuration.md#gdtf-referential-fixture-types-fixture)).
 
+A type made from a GDTF archive has a card that says what the fixture is: its picture (once the
+type has loaded and its 3D model is made), the manufacturer and fixture name, how many modes the
+archive has and its beam, and the mode in use with how many venue fixtures use the type.
+Opening it shows the fixture first and its definition last: a 3D view of the fixture (drag to turn
+it; the archive's thumbnail stands in when the browser cannot draw 3D) beside what the archive
+states about it — the archive's path, its mode count, the beam, light output, power, which venues
+use it, and the manufacturer's own description. A figure the archive does not state is left out.
+Below that is every mode of the archive, with a filter and the one in use marked. Choose a mode to
+see what your shows could do in it, its channels, and which fixtures use it. The view is
+read-only: to switch modes, change the mode in the `from gdtf(...)` line and save.
+
 ### Venues
 
 Lists the venues and edits their fixtures: name, type, universe, start channel and tags. Saving

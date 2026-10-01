@@ -284,6 +284,16 @@ const FIXTURE_TYPES: Record<
     referential: boolean;
     rich: boolean;
     dsl: string;
+    /** A referential type's archive in brief, for its card. */
+    gdtf?: {
+      fixture: string;
+      manufacturer: string;
+      modes: number;
+      mode: string;
+      beam: { type: string | null; angle: number | null } | null;
+      thumbnail: string | null;
+      used_by: number;
+    } | null;
   }
 > = {
   par: {
@@ -327,6 +337,15 @@ const FIXTURE_TYPES: Record<
     referential: true,
     rich: false,
     dsl: 'fixture_type "pixelbrick" from gdtf("library/pb15.gdtf", mode "8: RGBS") {\n}\n',
+    gdtf: {
+      fixture: "PB15 PixelBrick",
+      manufacturer: "Astera LED Technology",
+      modes: 2,
+      mode: "8: RGBS",
+      beam: { type: "Wash", angle: 13 },
+      thumbnail: null,
+      used_by: 3,
+    },
   },
 };
 
@@ -357,42 +376,81 @@ app.delete("/api/lighting/fixture-types/:name", (_req, res) => {
   res.json({ status: "deleted" });
 });
 
+// The PB15's modes, as the inspect endpoint and the details view answer them.
+const GDTF_INSPECTION = {
+  fixture: "PB15 PixelBrick",
+  manufacturer: "Astera LED Technology",
+  suggested_name: "PB15 PixelBrick",
+  fixture_types_dir: "lighting/fixture_types",
+  modes: [
+    {
+      name: "1: RGB",
+      channel_count: 4,
+      footprint: 3,
+      capabilities: ["color", "dimmer"],
+      cells: 0,
+      channels: [
+        [1, "red"],
+        [2, "green"],
+        [3, "blue"],
+      ],
+      warnings: [],
+    },
+    {
+      name: "8: RGBS",
+      channel_count: 5,
+      footprint: 4,
+      capabilities: ["color", "dimmer", "strobe"],
+      cells: 0,
+      strobe_range: { min_hz: 0.4, max_hz: 25 },
+      channels: [
+        [1, "red"],
+        [2, "green"],
+        [3, "blue"],
+        [4, "strobe"],
+      ],
+      warnings: ["skipped virtual channel (no DMX offset): Dimmer"],
+    },
+  ],
+};
+
 app.post("/api/lighting/gdtf/inspect", (_req, res) => {
+  res.json(GDTF_INSPECTION);
+});
+
+// A referential type's archive, for its details view: the mock's one rig
+// model stands in for the PB15's. Any other type is not a GDTF type.
+app.get("/api/lighting/fixture-types/:name/gdtf", (req, res) => {
+  const entry = FIXTURE_TYPES[req.params.name];
+  if (!entry) {
+    return res.status(404).json({ error: "Fixture type not found" });
+  }
+  if (!entry.referential) {
+    return res.status(404).json({
+      error: `fixture type "${req.params.name}" is not a GDTF type`,
+    });
+  }
   res.json({
-    fixture: "PB15 PixelBrick",
-    manufacturer: "Astera LED Technology",
-    suggested_name: "PB15 PixelBrick",
-    fixture_types_dir: "lighting/fixture_types",
-    modes: [
-      {
-        name: "1: RGB",
-        channel_count: 4,
-        footprint: 3,
-        capabilities: ["color", "dimmer"],
-        cells: 0,
-        channels: [
-          [1, "red"],
-          [2, "green"],
-          [3, "blue"],
-        ],
-        warnings: [],
-      },
-      {
-        name: "8: RGBS",
-        channel_count: 5,
-        footprint: 4,
-        capabilities: ["color", "dimmer", "strobe"],
-        cells: 0,
-        strobe_range: { min_hz: 0.4, max_hz: 25 },
-        channels: [
-          [1, "red"],
-          [2, "green"],
-          [3, "blue"],
-          [4, "strobe"],
-        ],
-        warnings: ["skipped virtual channel (no DMX offset): Dimmer"],
-      },
+    archive: "library/pb15.gdtf",
+    mode: "8: RGBS",
+    matched_mode: "8: RGBS",
+    rig: "test-archive/rig-test-v1.json",
+    thumbnail: null,
+    beam: {
+      type: "Wash",
+      beam_angle: 13,
+      field_angle: 25,
+      luminous_flux: 475,
+      color_temperature: 5500,
+      power: 12,
+    },
+    about:
+      "Battery-powered uplight and spotlight; bricks connect into clusters.",
+    venues: [
+      { name: "built-in", fixtures: ["Brick1", "Brick2"] },
+      { name: "club", fixtures: ["Solo"] },
     ],
+    inspection: GDTF_INSPECTION,
   });
 });
 

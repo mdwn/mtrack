@@ -279,6 +279,8 @@ export class StageScene {
   private cells: CellChannels = {};
   private poses: Record<string, FixturePose> = {};
   private extent: [number, number, number, number] = [-4, 4, 0, 6];
+  /** The longest beam drawn, meters, once `frameFixtures` has set one. */
+  private beamCap: number | null = null;
   private preset: CameraPreset = "foh";
   /** Primitive geometries shared by (kind, size); freed with the scene. */
   private primitives = new Map<string, THREE.BufferGeometry>();
@@ -340,6 +342,51 @@ export class StageScene {
     else this.camera.position.set(reach, midY, reach * 0.35);
     this.controls.target.copy(target);
     this.controls.update();
+  }
+
+  /**
+   * Fits the camera to the fixture bodies alone — not their beams, labels
+   * or the deck — for a close-up of a single fixture (a fixture type's
+   * details view; the Stage 3D page never calls this). A stage-sized deck
+   * and stage-length beams would swamp a 20 cm fixture, so the deck goes
+   * and beams are cut to about the fixture's own size; the orbit may come
+   * close and pass under the fixture, where a hung fixture's lens faces.
+   * False when there is no body to frame.
+   */
+  frameFixtures(): boolean {
+    this.fixtures.updateMatrixWorld(true);
+    const box = new THREE.Box3();
+    this.fixtures.traverse((o) => {
+      if (o instanceof THREE.Mesh && o.geometry !== this.cone)
+        box.expandByObject(o);
+    });
+    if (box.isEmpty()) return false;
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(
+      box.getSize(new THREE.Vector3()).length() / 2,
+      0.05,
+    );
+    // The bounding sphere fits the narrower of the two fields of view.
+    const vertical = (this.camera.fov * Math.PI) / 180;
+    const horizontal =
+      2 * Math.atan(Math.tan(vertical / 2) * this.camera.aspect);
+    const distance =
+      (radius / Math.sin(Math.min(vertical, horizontal) / 2)) * 1.05;
+    // Three-quarters from the front, a little below: a fixture's rest beam
+    // is along −Z, so the lens is seen from underneath.
+    const from = new THREE.Vector3(-0.55, -1, -0.3).normalize();
+    this.camera.position.copy(center).addScaledVector(from, distance);
+    this.camera.near = distance / 100;
+    this.camera.far = distance * 100;
+    this.camera.updateProjectionMatrix();
+    this.controls.target.copy(center);
+    this.controls.minDistance = radius * 0.6;
+    this.controls.maxDistance = distance * 4;
+    this.controls.maxPolarAngle = Math.PI - 0.02;
+    this.deck.visible = false;
+    this.beamCap = radius * 2;
+    this.controls.update();
+    return true;
   }
 
   resize(width: number, height: number) {
@@ -807,10 +854,13 @@ export class StageScene {
         direction
           .set(0, 0, -1)
           .applyQuaternion(beam.node.getWorldQuaternion(rotation));
-        const { length } = beamLength(
-          [origin.x, origin.y, origin.z],
-          [direction.x, direction.y, direction.z],
-          beam.style,
+        const length = Math.min(
+          beamLength(
+            [origin.x, origin.y, origin.z],
+            [direction.x, direction.y, direction.z],
+            beam.style,
+          ).length,
+          this.beamCap ?? Infinity,
         );
         const radius = length * Math.tan((beam.angle * Math.PI) / 360);
         beam.cone.scale.set(radius, radius, length);

@@ -378,13 +378,44 @@ export interface FixtureTypeEntry {
   extension: string;
   referential: boolean;
   rich: boolean;
+  /** A referential type's archive in brief, for its card; null when the
+   *  archive is missing or does not parse. Absent on a native type. */
+  gdtf?: GdtfSummary | null;
 }
 
-export async function fetchFixtureTypes(dir?: string): Promise<{
+/** What a referential type's card says about its archive. */
+export interface GdtfSummary {
+  fixture: string;
+  manufacturer: string;
+  /** How many modes the archive has. */
+  modes: number;
+  /** The mode the `.fixture` pins. */
+  mode: string;
+  /** The pinned mode's first beam, as far as the archive states it. */
+  beam: { type: string | null; angle: number | null } | null;
+  /** In the asset store, once a rig has been made for the type. */
+  thumbnail: string | null;
+  /** Venue fixtures of this type. */
+  used_by: number;
+}
+
+/** `?dir=…&venues_dir=…`, each only when given. */
+function dirParams(dir?: string, venuesDir?: string): string {
+  const params = new URLSearchParams();
+  if (dir) params.set("dir", dir);
+  if (venuesDir) params.set("venues_dir", venuesDir);
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+export async function fetchFixtureTypes(
+  dir?: string,
+  venuesDir?: string,
+): Promise<{
   fixtureTypes: Record<string, FixtureTypeEntry>;
   errors: LightingFileError[];
 }> {
-  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
+  const params = dirParams(dir, venuesDir);
   const res = await get(`/lighting/fixture-types${params}`);
   if (!res.ok) throw await apiError(res, "Failed to fetch fixture types");
   const data = await res.json();
@@ -758,6 +789,50 @@ export async function fetchFixtureType(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
   );
   if (!res.ok) throw await apiError(res, "Failed to fetch fixture type");
+  return res.json();
+}
+
+/** What a referential fixture type's GDTF archive holds, for the type's
+ *  details view. Paths are in the asset store (`/api/lighting/assets/`). */
+export interface FixtureTypeGdtf {
+  /** The archive as the `.fixture` names it, project-relative. */
+  archive: string;
+  /** The mode as the `.fixture` pins it. */
+  mode: string;
+  /** The archive mode that pin resolves to, by its own name; null when it
+   *  resolves to none. */
+  matched_mode: string | null;
+  /** The rig model for the 3D view; null when none could be made. */
+  rig: string | null;
+  thumbnail: string | null;
+  /** The pinned mode's first beam; each figure null when the archive does
+   *  not state it. */
+  beam: {
+    type: string | null;
+    beam_angle: number | null;
+    field_angle: number | null;
+    luminous_flux: number | null;
+    color_temperature: number | null;
+    /** Watts. */
+    power: number | null;
+  } | null;
+  /** The archive's own description of the fixture: a stranger's text. */
+  about: string | null;
+  /** The venues with fixtures of this type, each fixture in patch order. */
+  venues: { name: string; fixtures: string[] }[];
+  inspection: GdtfInspection;
+}
+
+export async function fetchFixtureTypeGdtf(
+  name: string,
+  dir?: string,
+  venuesDir?: string,
+): Promise<FixtureTypeGdtf> {
+  const params = dirParams(dir, venuesDir);
+  const res = await get(
+    `/lighting/fixture-types/${encodeURIComponent(name)}/gdtf${params}`,
+  );
+  if (!res.ok) throw await apiError(res, "Failed to read the GDTF archive");
   return res.json();
 }
 
