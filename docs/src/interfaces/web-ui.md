@@ -512,6 +512,11 @@ six pages, shown as tabs across the top. Each page has its own address, so you c
 | Fit shows | `#/lighting/fit` | Fit your shows to the venue and the rig: tags, focus points, outputs |
 | 3D | `#/lighting/stage` | The venue as a room |
 
+What a page has open is part of its address too: a fixture's page is `#/lighting/fixtures/<name>`,
+the venue selected for the plot is `#/lighting/venues/<name>` (`?edit` when its form is open), and
+a new form is `?new=venue`, `?new=light` or `?new=fixture`. The browser's Back, a reload and a
+shared link land where they say, and a page's tab always returns to its list.
+
 Two kinds of state live here, and they are stored differently.
 
 **Project files** — fixture types and venues — are the same whichever hardware profile is
@@ -576,49 +581,42 @@ as blocked, with a link to enable it.
 
 ### Fixture Types
 
-Both fixture-type file forms are listed. A `.light` type opens in the channel-map form; a
-`.fixture` type (rich channels, or distilled from a GDTF archive) opens as the text of its file.
-**Import GDTF** uploads a `.gdtf` archive and opens a mode picker: a filterable list of the
-archive's DMX modes with their address counts and cells, and for the selected mode a panel of
-what your shows can do in it, in plain words. A refused mode is listed greyed with its reason.
-The mode you choose is the type's **default**: each fixture in a venue can use another mode of the
-archive. **Add fixture type** writes the referential `.fixture` (the same as `mtrack import-gdtf`; see
-[GDTF-referential fixture types](../lighting/configuration.md#gdtf-referential-fixture-types-fixture)).
+A fixture you have a GDTF for needs nothing from you but the GDTF. **Import GDTF** takes a `.gdtf`
+and that is all: the fixture is listed at once, its page opens, and every one of its modes is
+available when you add it to a venue. The result says what you now have ("Imported PB15
+PixelBrick (Astera LED Technology) — 30 modes"). Importing the same file again changes nothing and
+says so. If another fixture already has its name, it is named after its file as well
+("PB15 PixelBrick (pb15)") and the result says so. A different GDTF with the same file name as
+one already imported is refused, because other fixtures may use the one that is there. Copying a
+`.gdtf` into `lighting/library/` by hand does exactly the same as importing it.
 
-A type made from a GDTF archive has a card that says what the fixture is: its picture (once the
-type has loaded and its 3D model is made), the manufacturer and fixture name, how many modes the
-archive has and its beam, and one pill per mode the venues use with how many fixtures use it (the
-three most-used, then "+N more"), or the default mode alone when no fixture uses the type.
-Opening it shows the fixture first and its definition last: a 3D view of the fixture (drag to turn
-it; the archive's thumbnail stands in when the browser cannot draw 3D) beside what the archive
-states about it — the archive's path, its mode count, the beam, light output, power, which venues
-use it, and the manufacturer's own description. A figure the archive does not state is left out.
-Below that is every mode of the archive, with a filter: the type's default is marked
-**default · N in use**, and any other mode a fixture uses says **N in use**. Choose a mode to see
-what your shows could do in it, its channels, and which fixtures use it. A fixture whose mode is
-not in the archive is named in red under the facts. A fixture's mode is chosen in the venue's
-inspector (below).
+A fixture from a GDTF has a card that says what it is: its picture (once a 3D model has been made
+for it), the manufacturer and fixture name, how many modes it has and its beam, and one pill per
+mode the venues use with how many fixtures use it (the three most-used, then "+N more"). Opening it
+shows the fixture: a 3D view (drag to turn it; the GDTF's thumbnail stands in when the browser
+cannot draw 3D) beside what the GDTF states about it — its file, its mode count, the beam, light
+output, power, which venues use it, and the manufacturer's own description. A figure the GDTF does
+not state is left out. Below that is every mode, with a filter; a mode a fixture uses says
+**N in use**. Choose a mode to see what your shows could do in it, its channels, and which fixtures
+use it. A mode mtrack cannot drive is listed greyed with the reason. A venue fixture whose mode is
+not in the GDTF is named in red under the facts.
 
-Below the modes, **Your settings for this fixture** holds the three things in the type's file that
-are yours: its **name** in venues and shows, its **default mode** (the select lists every mode of
-the archive; a mode's detail also has **Make this the default mode**), and, for a fixture that can
-pan or tilt in any mode, its **movement limits** (max pan and tilt speed, in degrees per second;
-blank is no limit). **Save settings** first says what the save will do and asks before writing
-when it matters:
+**Your settings for this fixture** holds what is yours about it: its **name** in venues and shows,
+and, for a fixture that can pan or tilt in any mode, its **movement limits** (max pan and tilt
+speed, in degrees per second; blank is no limit). A rename rewrites every venue line that names the
+fixture, in every venue file, keeping comments and layout, and **Save settings** says first how
+many lines in which venues. If any venue file cannot be rewritten (it does not parse, or it changed
+meanwhile), nothing is written and the message names the file. Inline fixtures in the player
+config that name it are listed for you to change by hand. A fixture's mode is not a setting of the
+fixture: each fixture in a venue names its own.
 
-- A new default changes every venue fixture that takes the default, so it says how many, in which
-  venues ("8 fixtures in built-in use the default and will change to 9: RGBWS"), and checks their
-  new footprint: fixtures it would newly run over are named as a warning.
-- A rename rewrites every venue line that names the type, in every venue file, keeping comments
-  and layout, and says how many lines in which venues. If any venue file cannot be rewritten (it
-  does not parse, or it changed meanwhile), nothing is written and the message names the file.
-  Inline fixtures in the player config that name the type are listed for you to change by hand.
+Deleting a fixture from a GDTF removes its GDTF too, unless another fixture uses the same file.
+If a venue uses it, the confirmation says how many fixtures in which venues, and that those venues
+will stop loading.
 
-The type's file is patched in place: its comments, the archive path as written and anything else in
-it stay. The file itself is behind **Saved as … · show the file**, editable as text with its own
-**Save the file**. Only one of the two may have unsaved changes at a time: while your settings have
-unsaved changes the file is read-only, and while the file has unsaved edits the settings are
-locked. Saving either reloads both. Hand-written types keep the channel-map form or text editor.
+**Define a fixture by hand** is for a fixture with no GDTF: it opens the channel-map form (a
+`.light` file) or the text of a `.fixture` file, which are your own definitions; see
+[the configuration reference](../lighting/configuration.md).
 
 ### Venues
 
@@ -626,11 +624,14 @@ Lists the venues and edits their fixtures: name, type, universe, start channel a
 a venue keeps everything the form does not show — fixture positions and rotations, focus points,
 and where an MVR import came from.
 
-A fixture of a GDTF type has a **Mode** select on its row: *Type default (8: RGBS)* leaves the
-line without a mode, and every other mode of the archive is listed with its footprint (refused
-modes are shown but cannot be chosen), so one venue can mix, say, RGBS and RGBWS bricks. A mode
-saved by hand that the archive does not have is shown as such and kept unless you change it, and
-changing a row's type puts it back on that type's default. Each row says which addresses it
+A fixture from a GDTF has a **Mode** select on its row listing every mode with its footprint
+(modes mtrack cannot drive are shown but cannot be chosen), so one venue can mix, say, RGBS and
+RGBWS bricks; nothing needs setting up on the Fixtures page first. A new row takes the previous
+row's mode when it is the same fixture, otherwise the first mode mtrack can drive, so **Add
+Fixture** then **Save** always writes a line with its mode. Changing a row's fixture picks that
+fixture's first drivable mode. A line read from a file without a mode is marked **Choose a mode for
+this fixture.** and stops the save until one is chosen (the venue does not load without it). A mode
+saved by hand that the GDTF does not have is shown as such and kept unless you change it. Each row says which addresses it
 occupies ("Addresses 5–9"). A row whose addresses run into another row's (rows on exactly the
 same addresses are ganged, which is fine) or past 512 is marked with what it runs into; it does
 not stop you typing, and Save asks "Save anyway?" naming them, so a hand-made venue with overlaps
@@ -681,9 +682,9 @@ click that does not move saves nothing.
 The inspector shows what is selected:
 
 - **One fixture** shows its own fields: name, type, universe, start channel and tags, saved by
-  **Apply**. A fixture of a GDTF type also has a **Mode** select: *Type default (8: RGBS)* leaves
-  the line without a mode, and every other mode of the archive is listed with its footprint
-  (refused modes are shown but cannot be chosen). Choosing a mode saves it at once. Below it a
+  **Apply**. A fixture from a GDTF also has a **Mode** select listing every mode with its
+  footprint (modes mtrack cannot drive are shown but cannot be chosen). Choosing a mode saves it
+  at once; a line read without one shows **Choose a mode** until it is fixed here. Below it a
   strip shows the fixture's universe around it, one cell per address: this fixture, the other
   fixtures (hover a cell for who), and overlaps in red. A mode or an address that would run into
   another fixture's addresses is refused before anything is saved, naming the fixture in the way
@@ -743,11 +744,11 @@ nothing is written until the last step.
    otherwise, or drawn only as `.3ds`, has no deck to suggest and falls back to the fixtures.
 3. **Review.** What the import will do, without writing it: whether this seeds a new venue or
    merges into an existing one (a merge keeps tags, focus names and fixtures you added by hand),
-   fixtures to seed, fixture types to import and which are already in the library, fixtures that
-   become `# TODO` lines with the reason for each, and how much scenery the 3D view can draw.
-   On a merge it also lists the fields you edited by hand that the MVR would overwrite, each with a
-   **Keep my edits** checkbox: positions, rotations and focus points start checked, patch and
-   type start unchecked.
+   fixtures to seed (each with its own mode), the fixtures' GDTFs to add and which are already in
+   the library, fixtures that become `# TODO` lines with the reason for each, and how much scenery
+   the 3D view can draw. On a merge it also lists the fields you edited by hand that the MVR would
+   overwrite, each with a **Keep my edits** checkbox: positions, rotations and focus points start
+   checked, patch, mode and type start unchecked.
 4. **Import.** Writes the files and reports them. Two buttons follow: **Fit your shows**, since a
    seeded venue is untagged, and **Open in Venues**. Importing does not make the venue current;
    pick it on the Groups page.

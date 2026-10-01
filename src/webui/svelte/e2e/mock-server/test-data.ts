@@ -682,12 +682,9 @@ export const MVR_INSPECTION = {
       {
         name: "Astera PB15",
         archive: "lighting/library/Astera_PB15.gdtf",
-        // One type per GDTF (design §21): its default is the mode most of
-        // the file's fixtures use; Brick 2 names its own.
-        mode: "8: RGBS",
+        // One type per GDTF; every fixture line names its own mode.
         modes: ["8: RGBS", "9: RGBWS"],
         existing: false,
-        fixture_file: "lighting/fixture_types/astera_pb15.fixture",
       },
     ],
     fixtures: [
@@ -695,7 +692,7 @@ export const MVR_INSPECTION = {
         name: "Brick 1",
         layer: "Front",
         fixture_type: "Astera PB15",
-        mode: null,
+        mode: "8: RGBS",
         patch: [1, 1],
         position: [-2, 2.5, 4.2],
         rotation: null,

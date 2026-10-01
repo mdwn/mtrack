@@ -16,13 +16,11 @@
   /**
    * What a GDTF-referential fixture type's archive holds, above its text:
    * the fixture in 3D beside the facts the archive states, then every mode
-   * of the archive with the one the `.fixture` pins marked as in use.
-   * Choosing another mode shows what a show could do in it, in the mode
-   * picker's words, its channels, and which venue fixtures use it. Below
+   * of the archive, the default (when there is one) and the modes in use marked.
+   * Choosing a mode shows what a show could do in it, its channels, and which venue fixtures use it. Below
    * them, the user's own settings for the fixture (`FixtureSettingsForm`)
-   * and, behind a disclosure, the file they are saved in.
+   * (mtrack keeps those in a record of its own, never shown as a file).
    */
-  import type { Snippet } from "svelte";
   import { t } from "svelte-i18n";
   import {
     fetchFixtureTypeGdtf,
@@ -50,15 +48,10 @@
     name: string;
     dir?: string;
     venuesDir?: string;
-    /** The file's text has unsaved edits (the settings form waits). */
-    fileDirty?: boolean;
-    onformdirty?: (dirty: boolean) => void;
     /** After the settings are saved, with the type's (new) name. */
     onsaved?: (name: string, notice: { ok: boolean; text: string }) => void;
     /** The last settings save's message, kept across a rename's reload. */
     notice?: { ok: boolean; text: string } | null;
-    /** The file's own editor, shown behind the settings' disclosure. */
-    file?: Snippet;
     /** Bumped after a save: the archive's answer is fetched again (the
      *  default's pill, who uses which mode) without blanking the page. */
     refresh?: number;
@@ -68,16 +61,12 @@
     name,
     dir,
     venuesDir,
-    fileDirty = false,
-    onformdirty,
     onsaved,
     notice = null,
-    file,
     refresh = 0,
   }: Props = $props();
 
   /** The default mode as the settings form is editing it. */
-  let formDefault = $state<string | null>(null);
 
   /** Past this many characters the archive's description is clamped. */
   const LONG_ABOUT = 240;
@@ -113,10 +102,12 @@
         if (!fresh && offered.some((m) => m.name === selected)) return;
         filter = "";
         aboutOpen = false;
+        // Open on the mode the venues use most, else the first offered.
+        const used = modeCounts(answer.venues);
         selected =
-          offered.find((m) => m.name === answer.matched_mode)?.name ??
-          offered[0]?.name ??
-          "";
+          [...offered].sort(
+            (a, b) => (used.get(b.name) ?? 0) - (used.get(a.name) ?? 0),
+          )[0]?.name ?? "";
       })
       .catch((e: unknown) => {
         if (ask !== request) return;
@@ -136,8 +127,6 @@
   const words = $derived(mode ? abilities(mode) : []);
   const more = $derived(mode ? extras(mode) : []);
   const missing = $derived(mode ? missingHere(mode, modes) : []);
-  /** The selected mode is the type's default. */
-  const isDefault = $derived(!!mode && mode.name === data?.matched_mode);
 
   const beam = $derived(beamFacts(data?.beam ?? null));
   const output = $derived(outputFacts(data?.beam ?? null));
@@ -216,8 +205,6 @@
     <p class="ftd__error" data-testid="ft-details-error">
       {$t("lighting.gdtfDetails.error", { values: { error } })}
     </p>
-    <!-- The archive cannot be read, but its file can still be edited. -->
-    {#if file}{@render file()}{/if}
   {:else if data}
     <div class="ftd__top">
       {#key data}
@@ -301,17 +288,6 @@
             </dd>
           {/if}
         </dl>
-        {#if data.mode === null}
-          <p class="ftd__quiet" data-testid="ft-details-no-default">
-            {$t("lighting.gdtfDetails.noDefault")}
-          </p>
-        {:else if !data.matched_mode}
-          <p class="ftd__error" data-testid="ft-details-mode-unmatched">
-            {$t("lighting.gdtfDetails.modeUnmatched", {
-              values: { mode: data.mode },
-            })}
-          </p>
-        {/if}
         {#if unresolved.length > 0}
           <p class="ftd__error" data-testid="ft-details-unresolved">
             {$t("lighting.gdtfDetails.unresolved", {
@@ -391,17 +367,7 @@
               data-mode={m.name}
             >
               <span class="ftd__mode-name">{m.name}</span>
-              {#if m.name === data.matched_mode}
-                <span
-                  class="ftd__pill ftd__pill--default"
-                  data-testid="ft-details-mode-default"
-                  >{counts.get(m.name)
-                    ? $t("lighting.gdtfDetails.defaultInUse", {
-                        values: { count: counts.get(m.name) },
-                      })
-                    : $t("lighting.gdtfDetails.default")}</span
-                >
-              {:else if counts.get(m.name)}
+              {#if counts.get(m.name)}
                 <span class="ftd__pill" data-testid="ft-details-mode-in-use"
                   >{$t("lighting.gdtfDetails.inUseCount", {
                     values: { count: counts.get(m.name) },
@@ -444,11 +410,6 @@
                 values: { count: mode.footprint },
               })}</span
             >
-            {#if isDefault}
-              <span class="ftd__pill ftd__pill--default"
-                >{$t("lighting.gdtfDetails.default")}</span
-              >
-            {/if}
           </div>
 
           <div class="ftd__label">{$t("lighting.gdtfDetails.canUse")}</div>
@@ -524,15 +485,6 @@
             {/if}
           </p>
         {/if}
-        {#if mode && mode.name !== formDefault && !fileDirty}
-          <button
-            class="btn btn-sm ftd__make-default"
-            type="button"
-            data-testid="ft-make-default"
-            onclick={() => (formDefault = mode?.name ?? formDefault)}
-            >{$t("lighting.settings.makeDefault")}</button
-          >
-        {/if}
         <p class="field-hint">{$t("lighting.gdtfDetails.readOnly")}</p>
       </div>
     </div>
@@ -541,12 +493,8 @@
       {dir}
       {venuesDir}
       modes={data.inspection.modes}
-      bind:defaultMode={formDefault}
-      {fileDirty}
-      {onformdirty}
       {onsaved}
       {notice}
-      {file}
     />
   {/if}
 </section>
@@ -701,17 +649,6 @@
     background: var(--accent-subtle);
     color: var(--accent);
     white-space: nowrap;
-  }
-  .ftd__pill--default {
-    background: var(--yellow-dim);
-    color: var(--text);
-  }
-  .ftd__make-default {
-    align-self: flex-start;
-  }
-  .btn-sm {
-    padding: 4px 8px;
-    font-size: 12px;
   }
   .ftd__badge {
     font-family: var(--mono);

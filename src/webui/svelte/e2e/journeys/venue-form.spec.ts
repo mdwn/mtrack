@@ -18,7 +18,7 @@ import { api, expect, synthGdtf, test } from "./harness";
 // The venue form against the real binary: a save shows on the page at once,
 // and a row chooses its own mode.
 
-const BRICK = `fixture_type "Brick" from gdtf("lighting/library/synth.gdtf", mode "8: RGBS") {
+const BRICK = `fixture_type "Brick" from gdtf("lighting/library/synth.gdtf") {
 }
 `;
 const PAR = `fixture_type "Par" {
@@ -89,7 +89,7 @@ test.describe("A mode per fixture in the form", () => {
     },
   });
 
-  test("a default-mode and a moded fixture save as such and reopen the same", async ({
+  test("fixtures in two modes save each with its own mode and reopen the same", async ({
     page,
     project,
   }) => {
@@ -111,7 +111,7 @@ test.describe("A mode per fixture in the form", () => {
     await expect(
       rows(page).nth(2).getByTestId("venue-row-overlap"),
     ).toHaveCount(0);
-    // A new row continues after row 3 (default, 4 addresses).
+    // A new row continues after row 3 (4 addresses), in row 3's mode.
     await page.getByRole("button", { name: "Add Fixture" }).click();
     await expect(rows(page).nth(3).locator("#fix-channel-3")).toHaveValue("14");
     await save(page);
@@ -119,8 +119,12 @@ test.describe("A mode per fixture in the form", () => {
 
     const file = project.read("lighting/venues/mix.venue");
     const lines = file.split("\n").filter((l) => l.includes("fixture "));
-    expect(lines.filter((l) => l.includes(" mode "))).toEqual([
+    // Every line names its mode; only the second is in another.
+    expect(lines).toEqual([
+      '  fixture "Fixture 1" Brick mode "8: RGBS" @ 1:1',
       '  fixture "Fixture 2" Brick mode "Mover 16bit" @ 1:5',
+      '  fixture "Fixture 3" Brick mode "8: RGBS" @ 1:10',
+      '  fixture "Fixture 4" Brick mode "8: RGBS" @ 1:14',
     ]);
     const got = await api<{
       venue: { fixtures: Record<string, { mode?: string }> };
@@ -130,7 +134,7 @@ test.describe("A mode per fixture in the form", () => {
     await page.reload();
     await card(page, "mix").locator('[data-testid^="venue-edit-"]').click();
     await expect(mode(1)).toHaveValue("Mover 16bit");
-    await expect(mode(0)).toHaveValue("");
+    await expect(mode(0)).toHaveValue("8: RGBS");
     await expect(rows(page).nth(1).getByTestId("venue-row-span")).toHaveText(
       "Addresses 5–9",
     );

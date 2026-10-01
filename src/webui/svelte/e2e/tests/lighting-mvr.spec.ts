@@ -281,10 +281,8 @@ test.describe("MVR import wizard", () => {
           {
             name: "Robe Spot",
             archive: "lighting/library/Robe.gdtf",
-            mode: null,
             modes: ["Mode 1"],
             existing: true,
-            fixture_file: "lighting/fixture_types/robe_spot.fixture",
           },
         ],
       }),
@@ -308,18 +306,21 @@ test.describe("MVR import wizard", () => {
     await expect(page.getByTestId("mvr-review-types-existing")).toContainText(
       "Robe Spot",
     );
-    // One type per GDTF: its default mode and the others the file uses; an
-    // existing type with no default says its fixtures name their own.
+    // One type per GDTF, with the modes the file uses; no default.
     await expect(page.getByTestId("mvr-type-Astera PB15")).toContainText(
-      "default 8: RGBS; also 9: RGBWS",
+      "in 8: RGBS, 9: RGBWS",
     );
     await expect(page.getByTestId("mvr-type-Robe Spot")).toContainText(
-      "no default mode",
+      "in Mode 1",
     );
-    // A fixture not in its type's default mode is listed with its mode.
+    await expect(
+      page.locator('section[aria-labelledby="mvr-review-title"]'),
+    ).not.toContainText(/default/i);
+    // Every seeded fixture is listed with its own mode.
     const moded = page.getByTestId("mvr-review-moded");
-    await expect(moded.getByRole("listitem")).toHaveCount(1);
-    await expect(moded).toContainText("Brick 2");
+    await expect(page.getByText("Each fixture's mode (2)")).toBeVisible();
+    await expect(moded.getByRole("listitem")).toHaveCount(2);
+    await expect(moded).toContainText("mode 8: RGBS");
     await expect(moded).toContainText("mode 9: RGBWS");
     await expect(page.getByTestId("mvr-review-todos")).toContainText("Lost");
     await expect(page.getByTestId("mvr-review-todos")).toContainText(

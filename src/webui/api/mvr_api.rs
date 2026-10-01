@@ -592,17 +592,13 @@ fn add_aim_points_blocking(
     // The file that holds the venue, whatever it is called.
     let dir = project.join(venues_dir);
     let mut found: Option<(std::path::PathBuf, String, lighting::types::Venue)> = None;
-    let entries = std::fs::read_dir(&dir).map_err(|e| format!("cannot read {venues_dir}: {e}"))?;
-    let mut paths: Vec<std::path::PathBuf> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e == "venue" || e == "light")
-        })
-        .collect();
-    paths.sort();
-    for path in paths {
+    if !dir.is_dir() {
+        return Err(format!("cannot read {venues_dir}: not a directory").into());
+    }
+    // The venue files the lighting system loads, subdirectories included.
+    for path in
+        lighting::project_files::files_under(&dir, lighting::project_files::VENUE_EXTENSIONS)
+    {
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -1297,25 +1293,22 @@ mod test {
 
     /// The imported venue with `mode "<mode>"` written onto one fixture's
     /// line, after its type, as a hand edit would put it.
+    /// `text` with the mode on `fixture`'s line changed to `mode` — what a
+    /// hand edit of a seeded line does (every seeded GDTF line has one).
     fn with_line_mode(text: &str, fixture: &str, mode: &str) -> String {
         let needle = format!("fixture \"{fixture}\" ");
         text.lines()
-            .map(|line| match line.find(&needle) {
-                Some(at) => {
-                    let rest = &line[at + needle.len()..];
-                    let type_end = if let Some(quoted) = rest.strip_prefix('"') {
-                        quoted.find('"').map(|i| i + 2).unwrap_or(rest.len())
-                    } else {
-                        rest.find(' ').unwrap_or(rest.len())
-                    };
-                    format!(
-                        "{}{} mode \"{mode}\"{}",
-                        &line[..at + needle.len()],
-                        &rest[..type_end],
-                        &rest[type_end..]
-                    )
-                }
-                None => line.to_string(),
+            .map(|line| {
+                let Some(at) = line.find(&needle) else {
+                    return line.to_string();
+                };
+                let from = at
+                    + line[at..]
+                        .find(" mode \"")
+                        .unwrap_or_else(|| panic!("no mode on {line}"))
+                    + " mode \"".len();
+                let to = from + line[from..].find('"').unwrap();
+                format!("{}{mode}{}", &line[..from], &line[to..])
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -1334,15 +1327,10 @@ mod test {
         let (state, dir) = test_state();
         let app = router().with_state(state);
         imported(&app).await;
-        // The type's own default named explicitly: still a fixed fixture
-        // (a mover's mode would take it out of the aim-point set).
+        // A fixed mode: still a fixed fixture (a mover's mode would take it
+        // out of the aim-point set).
         let path = dir.path().join("lighting/venues/kellys.venue");
-        let moded = with_line_mode(
-            &std::fs::read_to_string(&path).unwrap(),
-            "Brick 1",
-            "8: RGBS",
-        );
-        std::fs::write(&path, &moded).unwrap();
+        let moded = std::fs::read_to_string(&path).unwrap();
         assert!(line_of(&moded, "Brick 1").contains("mode \"8: RGBS\""));
 
         let (status, body) = post_empty(&app, "/lighting/venues/kellys/aim-points").await;

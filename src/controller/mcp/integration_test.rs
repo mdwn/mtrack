@@ -712,8 +712,8 @@ async fn mcp_gdtf_import_flow() -> Result<(), Box<dyn Error>> {
         "{escape}"
     );
 
-    // --- import_gdtf writes the library archive, the .fixture ref, and the
-    // cache, and reports channels + warnings.
+    // --- import_gdtf copies the archive into the library, writes a record
+    // for the name it was given, and warms the cache.
     let report = tool_json(
         &call_tool(
             &client,
@@ -721,7 +721,7 @@ async fn mcp_gdtf_import_flow() -> Result<(), Box<dyn Error>> {
             &session,
             12,
             "import_gdtf",
-            json!({"path": "incoming/synth.gdtf", "mode": "8: RGBS", "name": "Brick"}),
+            json!({"path": "incoming/synth.gdtf", "name": "Brick"}),
         )
         .await,
     );
@@ -736,13 +736,8 @@ async fn mcp_gdtf_import_flow() -> Result<(), Box<dyn Error>> {
         .join("lighting/fixture_types/brick.fixture")
         .exists());
     assert!(fixture.root.join("lighting/.cache").is_dir());
-    let warnings = report["warnings"].as_array().expect("warnings");
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.as_str().unwrap_or_default().contains("virtual channel")),
-        "{warnings:?}"
-    );
+    assert_eq!(report["modes"], 2, "{report}");
+    assert!(report.get("default_mode").is_none(), "{report}");
 
     Ok(())
 }
@@ -807,7 +802,8 @@ async fn mcp_mvr_import_flow() -> Result<(), Box<dyn Error>> {
     assert_eq!(plan["focus_points"][0]["name"], "Drummer");
     assert!(!fixture.root.join("lighting/library").exists());
 
-    // --- import_mvr writes the library, the .fixture and the .venue.
+    // --- import_mvr writes the library and the .venue; the archive is the
+    // fixture type, so no record.
     let report = tool_json(
         &call_tool(
             &client,
@@ -831,10 +827,20 @@ async fn mcp_mvr_import_flow() -> Result<(), Box<dyn Error>> {
         "{written:?}"
     );
     assert!(
-        written.contains(&"lighting/fixture_types/synth_brick.fixture"),
+        written.contains(&"lighting/library/Astera_PB15.gdtf"),
+        "{written:?}"
+    );
+    assert!(
+        !written
+            .iter()
+            .any(|w| w.starts_with("lighting/fixture_types")),
         "{written:?}"
     );
     let venue_text = std::fs::read_to_string(fixture.root.join("lighting/venues/kellys.venue"))?;
+    assert!(
+        venue_text.contains("fixture \"Brick 1\" \"Synth Brick\" mode \"8: RGBS\" @ 1:1"),
+        "{venue_text}"
+    );
     assert!(
         venue_text.contains("focus \"Drummer\" (0, 9.8, 1.4)"),
         "{venue_text}"
@@ -3891,7 +3897,7 @@ async fn mcp_list_groups_surfaces_logical_groups() -> Result<(), Box<dyn Error>>
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_lists_a_type_with_no_default_and_says_when_a_write_darkens_the_venue(
+async fn mcp_lists_a_gdtf_type_and_says_when_a_write_darkens_the_venue(
 ) -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     std::fs::create_dir_all(fixture.root.join("lighting/venues"))?;
@@ -3908,7 +3914,7 @@ async fn mcp_lists_a_type_with_no_default_and_says_when_a_write_darkens_the_venu
             crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
         )]),
     )?;
-    // A GDTF type with no default mode: each fixture names its own.
+    // A GDTF type: each fixture names its own mode.
     std::fs::write(
         fixture.root.join("lighting/fixture_types/brick.fixture"),
         "fixture_type \"Brick\"\n  from gdtf(\"lighting/library/synth.gdtf\")\n{\n}\n",
@@ -3948,9 +3954,10 @@ async fn mcp_lists_a_type_with_no_default_and_says_when_a_write_darkens_the_venu
     let brick = types
         .iter()
         .find(|t| t["name"] == "Brick")
-        .unwrap_or_else(|| panic!("a type with no default is listed: {body}"));
+        .unwrap_or_else(|| panic!("a GDTF type is listed: {body}"));
     assert_eq!(brick["gdtf"], true, "{body}");
-    assert!(brick["default_mode"].is_null(), "{body}");
+    assert_eq!(brick["archive"], "lighting/library/synth.gdtf", "{body}");
+    assert_eq!(brick["modes"], json!(["8: RGBS", "Mover 16bit"]), "{body}");
     let par = types.iter().find(|t| t["name"] == "RGBW_Par").expect("par");
     assert_eq!(par["gdtf"], false, "{body}");
 
@@ -3976,7 +3983,7 @@ async fn mcp_lists_a_type_with_no_default_and_says_when_a_write_darkens_the_venu
         body["venue_error"]["reason"]
             .as_str()
             .unwrap_or_default()
-            .contains("has no default mode"),
+            .contains("names no mode"),
         "{body}"
     );
     let status = player.hardware_status().lighting_venue;

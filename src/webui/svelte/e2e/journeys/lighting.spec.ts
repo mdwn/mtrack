@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import * as fs from "node:fs";
 import { type Page } from "@playwright/test";
 import { api, expect, synthGdtf, synthMvr, test } from "./harness";
 
@@ -21,8 +22,9 @@ import { api, expect, synthGdtf, synthMvr, test } from "./harness";
 // itself (the importer naming a file one way and the API looking for it
 // another); these can.
 
-/** The synthetic GDTF's modes: "8: RGBS" is 4 addresses, "Mover 16bit" 5. */
-const BRICK = `fixture_type "Brick" from gdtf("lighting/library/synth.gdtf", mode "8: RGBS") {
+/** The synthetic GDTF's modes: "8: RGBS" is 4 addresses, "Mover 16bit" 5.
+ *  A record names the archive "Brick"; every venue line names its mode. */
+const BRICK = `fixture_type "Brick" from gdtf("lighting/library/synth.gdtf") {
 }
 `;
 const PAR = `fixture_type "Par" {
@@ -70,7 +72,7 @@ async function inspect(page: Page, fixture: string) {
 test.describe("Fixture types", () => {
   test.use({ files: { "lighting/venues/house.light": house([]) } });
 
-  test("a GDTF imported through the UI is listed, opens by its hyphenated name, and shows its modes", async ({
+  test("a GDTF imported through the UI in one step is listed and opens; nothing is written but the archive", async ({
     page,
     project,
   }) => {
@@ -80,31 +82,87 @@ test.describe("Fixture types", () => {
       mimeType: "application/octet-stream",
       buffer: synthGdtf(),
     });
-    await expect(page.getByTestId("gdtf-mode-picker")).toBeVisible();
-    await page.getByTestId("gdtf-type-name").fill("Synth-Brick");
-    await page.getByTestId("gdtf-import-confirm").click();
-    await expect(page.getByTestId("gdtf-report")).toBeVisible();
-
-    // The importer names the file its own way; the API must still find it.
-    expect(project.exists("lighting/fixture_types/synth_brick.fixture")).toBe(
-      true,
+    // One action: the page opens on the imported fixture.
+    await expect(page.getByTestId("gdtf-report")).toContainText(
+      "Imported Synth Brick (mtrack synthetic)",
     );
-    const listed = await api<{ fixture_types: Record<string, unknown> }>(
-      project,
-      "/lighting/fixture-types",
-    );
-    expect(Object.keys(listed.fixture_types)).toContain("Synth-Brick");
-    await api(project, "/lighting/fixture-types/Synth-Brick");
+    await expect(page.getByTestId("ft-title")).toHaveText("Synth Brick");
+    expect(project.exists("lighting/library/synth.gdtf")).toBe(true);
+    expect(fs.readdirSync(`${project.dir}/lighting/fixture_types`)).toEqual([]);
 
-    // A fresh load, then open it: this is where "Fixture type not found"
-    // used to be.
+    // A fresh load of the list, then open it from there.
     await page.goto("/#/lighting/fixtures");
-    await card(page, "Synth-Brick").click();
-    await expect(page.getByTestId("ft-title")).toHaveText("Synth-Brick");
+    await page.reload();
+    await card(page, "Synth Brick").click();
     await expect(page.getByTestId("ft-details-error")).toHaveCount(0);
     const modes = page.getByTestId("ft-details-modes");
     await expect(modes.locator('[data-mode="8: RGBS"]')).toBeVisible();
     await expect(modes.locator('[data-mode="Mover 16bit"]')).toBeVisible();
+
+    // The same archive again: already imported, nothing changes.
+    await page.goto("/#/lighting/fixtures");
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "synth.gdtf",
+      mimeType: "application/octet-stream",
+      buffer: synthGdtf(),
+    });
+    await expect(page.getByTestId("gdtf-report")).toContainText(
+      "already imported",
+    );
+    expect(fs.readdirSync(`${project.dir}/lighting/library`)).toEqual([
+      "synth.gdtf",
+    ]);
+  });
+
+  test("a renamed import writes mtrack's record and the venue lines follow", async ({
+    page,
+    project,
+  }) => {
+    project.write(
+      "lighting/venues/club.venue",
+      'venue "club" {\n  fixture "B1" "Synth Brick" mode "8: RGBS" @ 1:1\n}\n',
+    );
+    await page.goto("/#/lighting/fixtures");
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "synth.gdtf",
+      mimeType: "application/octet-stream",
+      buffer: synthGdtf(),
+    });
+    await expect(page.getByTestId("ft-title")).toHaveText("Synth Brick");
+    await page.getByTestId("ft-set-name").fill("Synth-Brick");
+    await page.getByTestId("ft-set-save").click();
+    await confirmDialog(page).getByRole("button", { name: "Save" }).click();
+    await expect(page.getByTestId("ft-set-msg")).toContainText("Renamed");
+    expect(fs.readdirSync(`${project.dir}/lighting/fixture_types`).length).toBe(
+      1,
+    );
+    const venue = project.read("lighting/venues/club.venue");
+    expect(lineOf(venue, "B1")).toContain('Synth-Brick mode "8: RGBS"');
+    await api(project, "/lighting/fixture-types/Synth-Brick");
+  });
+
+  test("deleting a fixture from a GDTF removes its archive, unless another fixture uses it", async ({
+    page,
+    project,
+  }) => {
+    project.write("lighting/library/synth.gdtf", synthGdtf());
+    project.write("lighting/fixture_types/brick.fixture", BRICK);
+    project.write(
+      "lighting/fixture_types/twin.fixture",
+      'fixture_type "Twin" from gdtf("lighting/library/synth.gdtf") {\n}\n',
+    );
+    await project.restart();
+    await page.goto("/#/lighting/fixtures");
+    await card(page, "Brick").getByRole("button", { name: "Delete" }).click();
+    await confirmDialog(page).getByRole("button", { name: "Confirm" }).click();
+    await expect(card(page, "Brick")).toHaveCount(0);
+    expect(project.exists("lighting/fixture_types/brick.fixture")).toBe(false);
+    expect(project.exists("lighting/library/synth.gdtf")).toBe(true);
+
+    await card(page, "Twin").getByRole("button", { name: "Delete" }).click();
+    await confirmDialog(page).getByRole("button", { name: "Confirm" }).click();
+    await expect(card(page, "Twin")).toHaveCount(0);
+    expect(project.exists("lighting/library/synth.gdtf")).toBe(false);
   });
 
   test("a fixture type and a venue can be deleted", async ({
@@ -177,9 +235,9 @@ test.describe("A fixture's mode", () => {
   test.use({
     files: withBricks(
       house([
-        'fixture "B1" Brick @ 1:1 position (-2, 2, 3)',
-        'fixture "B2" Brick @ 1:10 position (0, 2, 3)',
-        'fixture "B3" Brick @ 1:20 position (2, 2, 3)',
+        'fixture "B1" Brick mode "8: RGBS" @ 1:1 position (-2, 2, 3)',
+        'fixture "B2" Brick mode "8: RGBS" @ 1:10 position (0, 2, 3)',
+        'fixture "B3" Brick mode "8: RGBS" @ 1:20 position (2, 2, 3)',
       ]),
     ),
   });
@@ -248,8 +306,8 @@ test.describe("A colliding mode", () => {
   test.use({
     files: withBricks(
       house([
-        'fixture "B1" Brick @ 1:1 position (-2, 2, 3)',
-        'fixture "B2" Brick @ 1:5 position (0, 2, 3)',
+        'fixture "B1" Brick mode "8: RGBS" @ 1:1 position (-2, 2, 3)',
+        'fixture "B2" Brick mode "8: RGBS" @ 1:5 position (0, 2, 3)',
       ]),
     ),
   });
@@ -261,7 +319,7 @@ test.describe("A colliding mode", () => {
     await expect(page.getByTestId("insp-patch-msg")).toContainText(
       "Mover 16bit needs addresses 1 to 5, and B2 already uses some of them",
     );
-    await expect(page.getByTestId("insp-mode")).toHaveValue("");
+    await expect(page.getByTestId("insp-mode")).toHaveValue("8: RGBS");
     await page.waitForTimeout(500);
     expect(project.read("lighting/venues/house.venue")).toBe(before);
   });
@@ -271,8 +329,8 @@ test.describe("The fixture's settings", () => {
   test.use({
     files: withBricks(
       house([
-        'fixture "B1" Brick @ 1:1 position (-2, 2, 3)  # front left',
-        'fixture "B2" Brick @ 1:100 position (0, 2, 3)',
+        'fixture "B1" Brick mode "8: RGBS" @ 1:1 position (-2, 2, 3)  # front left',
+        'fixture "B2" Brick mode "8: RGBS" @ 1:100 position (0, 2, 3)',
       ]),
     ),
   });
@@ -290,7 +348,7 @@ test.describe("The fixture's settings", () => {
     await expect(page.getByTestId("ft-set-msg")).toContainText("Renamed");
 
     const file = project.read("lighting/venues/house.venue");
-    expect(lineOf(file, "B1")).toContain("Brick-Two @ 1:1");
+    expect(lineOf(file, "B1")).toContain('Brick-Two mode "8: RGBS" @ 1:1');
     expect(lineOf(file, "B1")).toContain("# front left");
     expect(file).toContain("The house rig");
     // The type keeps its file, under its new name.
@@ -302,29 +360,6 @@ test.describe("The fixture's settings", () => {
       hardware: { lighting_venue: { status: string } };
     }>(project, "/status");
     expect(status.hardware.lighting_venue.status).toBe("ok");
-  });
-
-  test("a new default mode, confirmed, changes the fixtures that take it", async ({
-    page,
-    project,
-  }) => {
-    await page.goto("/#/lighting/fixtures");
-    await card(page, "Brick").click();
-    await page.getByTestId("ft-set-default").selectOption("Mover 16bit");
-    await page.getByTestId("ft-set-save").click();
-    await expect(confirmDialog(page)).toContainText(
-      "2 fixtures in house use the default and will change to Mover 16bit.",
-    );
-    await confirmDialog(page).getByRole("button", { name: "Save" }).click();
-    await expect(page.getByTestId("ft-set-msg")).toContainText("Saved");
-
-    expect(project.read("lighting/fixture_types/brick.fixture")).toContain(
-      'mode "Mover 16bit"',
-    );
-    const patch = await api<{
-      spans: { fixture: string; footprint: number }[];
-    }>(project, "/lighting/venues/house/patch");
-    expect(patch.spans.map((s) => s.footprint)).toEqual([5, 5]);
   });
 });
 
@@ -371,10 +406,12 @@ test.describe("MVR import", () => {
 
 test.describe("A venue broken by hand", () => {
   test.use({
-    files: withBricks(house(['fixture "B1" Brick @ 1:1 position (0, 2, 3)'])),
+    files: withBricks(
+      house(['fixture "B1" Brick mode "8: RGBS" @ 1:1 position (0, 2, 3)']),
+    ),
   });
 
-  test("shows the banner after a cold boot, and a fix through the UI clears it", async ({
+  test("a bad mode shows the banner after a cold boot; choosing a mode clears it", async ({
     page,
     project,
   }) => {
@@ -389,12 +426,107 @@ test.describe("A venue broken by hand", () => {
     await expect(banner).toContainText('Venue "house" did not load');
     await expect(banner).toContainText('"B1"');
 
-    // Fixed where a user would fix it: the mode select, back to the default.
+    // Fixed where a user would fix it: the inspector's mode select.
     await inspect(page, "B1");
-    await page.getByTestId("insp-mode").selectOption("");
+    await page.getByTestId("insp-mode").selectOption("8: RGBS");
     await expect(banner).toHaveCount(0, { timeout: 15000 });
-    expect(
-      lineOf(project.read("lighting/venues/house.venue"), "B1"),
-    ).not.toContain("mode");
+    expect(lineOf(project.read("lighting/venues/house.venue"), "B1")).toContain(
+      'mode "8: RGBS"',
+    );
+  });
+
+  test("a line without its mode shows the banner, and the venue form marks the row", async ({
+    page,
+    project,
+  }) => {
+    project.write(
+      "lighting/venues/house.venue",
+      house(['fixture "B1" Brick @ 1:1 position (0, 2, 3)']),
+    );
+    await project.restart();
+    await page.goto("/#/");
+    const banner = page.getByTestId("venue-failed-banner");
+    await expect(banner).toBeVisible({ timeout: 15000 });
+    await expect(banner).toContainText('"B1"');
+
+    await page.goto("/#/lighting/venues");
+    await card(page, "house").locator('[data-testid^="venue-edit-"]').click();
+    await page
+      .locator(".editor-form")
+      .getByRole("button", { name: "Save" })
+      .click();
+    await expect(page.getByTestId("venue-row-error")).toHaveText(
+      "Choose a mode for this fixture.",
+    );
+    await page.getByTestId("venue-row-mode").selectOption("Mover 16bit");
+    await page
+      .locator(".editor-form")
+      .getByRole("button", { name: "Save" })
+      .click();
+    await expect(page.locator(".editor-form")).toHaveCount(0);
+    await expect(banner).toHaveCount(0, { timeout: 15000 });
+  });
+});
+
+test.describe("A GDTF copied into the library by hand", () => {
+  // The ethos as a test: no import, no record — the archive is the fixture.
+  test.use({ files: { "lighting/library/synth.gdtf": synthGdtf() } });
+
+  test("is a fixture: listed, opened, and patched in two modes into the current venue", async ({
+    page,
+    project,
+  }) => {
+    await page.goto("/#/lighting/fixtures");
+    await card(page, "Synth Brick").click();
+    await expect(
+      page.getByTestId("ft-details-modes").locator('[data-mode="Mover 16bit"]'),
+    ).toBeVisible();
+
+    await page.goto("/#/lighting/venues");
+    await page.getByRole("button", { name: "New Venue" }).click();
+    await page.locator("#venue-name").fill("house");
+    await page.getByRole("button", { name: "Add Fixture" }).click();
+    await page.getByRole("button", { name: "Add Fixture" }).click();
+    const mode = (i: number) =>
+      page
+        .getByTestId("venue-fixture-row")
+        .nth(i)
+        .getByTestId("venue-row-mode");
+    await expect(mode(0)).toHaveValue("8: RGBS");
+    await mode(1).selectOption("Mover 16bit");
+    await page
+      .locator(".editor-form")
+      .getByRole("button", { name: "Save" })
+      .click();
+    await expect(page.locator(".editor-form")).toHaveCount(0);
+
+    // A mode is `.venue` syntax: the new venue is a .venue file.
+    const file = project.read("lighting/venues/house.venue");
+    expect(lineOf(file, "Fixture 1")).toContain('mode "8: RGBS"');
+    expect(lineOf(file, "Fixture 2")).toContain('mode "Mover 16bit"');
+    expect(fs.readdirSync(`${project.dir}/lighting/fixture_types`)).toEqual([]);
+
+    const settled = async () => {
+      const patch = await api<{ spans: { footprint: number | null }[] }>(
+        project,
+        "/lighting/venues/house/patch",
+      );
+      expect(patch.spans.map((s) => s.footprint)).toEqual([4, 5]);
+      await expect
+        .poll(
+          async () =>
+            (
+              await api<{ hardware: { lighting_venue: { status: string } } }>(
+                project,
+                "/status",
+              )
+            ).hardware.lighting_venue.status,
+        )
+        .toBe("ok");
+    };
+    await settled();
+    // A cold boot reads it all again from the files.
+    await project.restart();
+    await settled();
   });
 });

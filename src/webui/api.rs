@@ -50,7 +50,6 @@ const LOCKED_ALLOWLIST: &[(&str, &str)] = &[
     ("POST", "/playlists/{name}/activate"),
     ("POST", "/controllers/restart"),
     ("POST", "/lighting/evaluate"),
-    ("POST", "/lighting/gdtf/inspect"),
     ("POST", "/lighting/mvr/inspect"),
 ];
 
@@ -124,7 +123,6 @@ pub fn router() -> Router<WebUiState> {
     // GDTF and MVR uploads get a bounded raise instead of a disable: the archive
     // layer refuses anything past 256MB anyway, so the transport should too.
     let gdtf_routes = Router::new()
-        .route("/lighting/gdtf/inspect", post(lighting_api::inspect_gdtf))
         .route("/lighting/gdtf/import", post(lighting_api::import_gdtf))
         .route("/lighting/mvr/inspect", post(mvr_api::inspect_mvr))
         .route("/lighting/mvr/import", post(mvr_api::import_mvr))
@@ -664,11 +662,7 @@ mod test {
             StatusCode::LOCKED
         );
         // The inspectors and the preview write nothing.
-        for uri in [
-            "/api/lighting/gdtf/inspect",
-            "/api/lighting/mvr/inspect",
-            "/api/lighting/evaluate",
-        ] {
+        for uri in ["/api/lighting/mvr/inspect", "/api/lighting/evaluate"] {
             assert_ne!(
                 send(&app, "POST", uri, "").await,
                 StatusCode::LOCKED,

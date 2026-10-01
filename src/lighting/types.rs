@@ -110,17 +110,11 @@ impl ChannelDef {
 /// A reference to the GDTF archive a fixture type is distilled from.
 ///
 /// The type is the whole archive, not one of its modes (venue-exchange
-/// design §21): a venue fixture may name its own mode, and the mode here is
-/// only the type's default — the one a fixture line without `mode` takes.
-/// It is optional; a type without one makes every fixture of it say which.
+/// design §22): every venue fixture of it states its own mode.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GdtfSource {
     /// Path to the GDTF archive, relative to the config directory.
     pub path: String,
-    /// The default DMX mode name within the archive, when the type has one.
-    /// An expansion (what the distill cache stores) always records here the
-    /// mode it was distilled from.
-    pub mode: Option<String>,
 }
 
 /// Movement limits — not part of GDTF; measured or configured per fixture.
@@ -705,10 +699,11 @@ pub struct Fixture {
     /// in that order. Meaningless without a position.
     rotation: Option<Vec3>,
 
-    /// The GDTF mode this fixture is patched in, when the line names one
-    /// (venue-exchange design §21); absent means its type's default.
-    /// Serialized only when present, so a venue that names no modes reads
-    /// exactly as it always did.
+    /// The GDTF mode this fixture is patched in (venue-exchange design §21):
+    /// required of a GDTF type's fixture, an error on a native one. The
+    /// parser takes the line as written; the loader enforces both. Serialized
+    /// only when present, so a native-only venue reads exactly as it always
+    /// did.
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
 }
@@ -738,8 +733,8 @@ impl Fixture {
         }
     }
 
-    /// Patches the fixture in a named mode of its type (`None` takes the
-    /// type's default).
+    /// Patches the fixture in a named mode of its type (`None` for a native
+    /// type, which has none).
     pub fn with_mode(mut self, mode: Option<String>) -> Fixture {
         self.mode = mode;
         self
@@ -1198,7 +1193,6 @@ mod tests {
         let mut ft = FixtureType::new("Par".to_string(), channels);
         ft.set_source(GdtfSource {
             path: "library/par.gdtf".to_string(),
-            mode: Some("Mode 1".to_string()),
         });
         let json = serde_json::to_value(&ft).unwrap();
         let keys: Vec<&str> = json

@@ -227,20 +227,21 @@ enum Commands {
         /// excepts exactly these paths.
         paths: Vec<String>,
     },
-    /// Imports a GDTF fixture file: lists its modes, or (with --mode)
-    /// copies the archive into the project library and writes a
-    /// GDTF-referential .fixture definition.
+    /// Imports a GDTF fixture file: copies it into the project's library,
+    /// after which a venue fixture can use it in any of its modes (`mode
+    /// "..."` on the fixture line). With --list-modes, only lists the
+    /// archive's modes.
     ImportGdtf {
         /// Path to the .gdtf archive to import.
         gdtf_path: String,
-        /// The DMX mode to distill, which becomes the type's default (a
-        /// venue fixture may name another with `mode "..."`). Omit to list
-        /// the archive's modes.
-        #[arg(short, long)]
-        mode: Option<String>,
-        /// Name for the fixture type (defaults to the GDTF's fixture name).
+        /// Name for the fixture type (defaults to the GDTF's fixture name,
+        /// with the archive's file stem added when another fixture already
+        /// has it).
         #[arg(short, long)]
         name: Option<String>,
+        /// List the archive's modes and their footprints; import nothing.
+        #[arg(long)]
+        list_modes: bool,
         /// Project directory the import writes into.
         #[arg(short, long, default_value = ".")]
         project: String,
@@ -250,8 +251,9 @@ enum Commands {
     },
     /// Imports an MVR venue file: reports what the import would do, or
     /// (with --write) copies the MVR and its embedded GDTFs into the
-    /// project library, writes a .fixture per referenced type, and seeds
-    /// a .venue file — or merges a revised MVR into one seeded earlier.
+    /// project library (each GDTF is a fixture type; every fixture line
+    /// states its mode), and seeds a .venue file — or merges a revised MVR
+    /// into one seeded earlier.
     ImportMvr {
         /// Path to the .mvr archive to import.
         mvr_path: String,
@@ -536,14 +538,14 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
         )?,
         Commands::ImportGdtf {
             gdtf_path,
-            mode,
             name,
+            list_modes,
             project,
             fixture_types_dir,
         } => local::import_gdtf(
             &gdtf_path,
-            mode.as_deref(),
             name.as_deref(),
+            list_modes,
             &project,
             &fixture_types_dir,
         )?,

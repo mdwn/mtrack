@@ -421,8 +421,12 @@
       const next = {
         ...current,
         // A mode names a mode of its type's archive: a fixture moved to
-        // another type takes that type's default.
-        mode: type === current.fixture_type ? (current.mode ?? null) : null,
+        // another type takes that type's default — or, for a fixture with
+        // no default, its first drivable mode, so the line stays valid.
+        mode:
+          type === current.fixture_type
+            ? (current.mode ?? null)
+            : modeForNewType(type),
         name: to,
         fixture_type: type,
         universe: Number(draft.universe),
@@ -506,15 +510,20 @@
       });
   });
   let archive = $derived(gdtfType ? (archives[gdtfType] ?? null) : null);
-  /** The type's default, as the archive spells it when it resolves. */
-  let defaultMode = $derived(archive?.matched_mode ?? archive?.mode ?? null);
-
-  /** The addresses a mode occupies; `""` is the type's default. */
-  function footprintOf(mode: string): number | null {
-    const name = mode || defaultMode;
-    if (!archive || !name) return null;
+  /** The mode a fixture moved to `type` takes: for a fixture from a GDTF,
+   *  the first mode mtrack can drive; a hand-written type has none. */
+  function modeForNewType(type: string): string | null {
+    if (!fixtureTypes[type]?.referential) return null;
     return (
-      archive.inspection.modes.find((m) => m.name === name)?.footprint ?? null
+      archives[type]?.inspection.modes.find((m) => !isRefused(m))?.name ?? null
+    );
+  }
+
+  /** The addresses a mode occupies. */
+  function footprintOf(mode: string): number | null {
+    if (!archive || !mode) return null;
+    return (
+      archive.inspection.modes.find((m) => m.name === mode)?.footprint ?? null
     );
   }
 
@@ -548,7 +557,7 @@
               : "venues.inspector.modeRefusedNoRoom",
             {
               values: {
-                mode: next || defaultMode || "",
+                mode: next,
                 from: candidate.address,
                 to: candidate.address + footprint - 1,
                 names: names.join(", "),
@@ -636,12 +645,7 @@
         {#if typeNames.length > 0}
           <select id="insp-type" class="input" bind:value={fields.fixture_type}>
             {#each typeNames as name (name)}
-              <option value={name}
-                >{fixtureTypes[name]?.referential &&
-                fixtureTypes[name]?.default_mode === null
-                  ? $t("lighting.typeNoDefault", { values: { name } })
-                  : name}</option
-              >
+              <option value={name}>{name}</option>
             {/each}
             {#if !typeNames.includes(fields.fixture_type)}
               <option value={fields.fixture_type}>{fields.fixture_type}</option>
@@ -668,13 +672,13 @@
               onchange={(e) =>
                 chooseMode(e.currentTarget.value, e.currentTarget)}
             >
-              <option value=""
-                >{defaultMode
-                  ? $t("venues.inspector.modeDefault", {
-                      values: { mode: defaultMode },
-                    })
-                  : $t("venues.inspector.modeDefaultNone")}</option
-              >
+              {#if !fields.mode}
+                <!-- A line read without its mode: the venue does not load
+                     until one is chosen here. -->
+                <option value="" disabled
+                  >{$t("venues.inspector.modeChoose")}</option
+                >
+              {/if}
               {#each archive.inspection.modes as m (m.name)}
                 <option
                   value={m.name}

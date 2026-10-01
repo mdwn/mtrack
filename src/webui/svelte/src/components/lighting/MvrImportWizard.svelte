@@ -296,25 +296,14 @@
   );
   let seeded = $derived(plan?.fixtures.filter((f) => !f.todo) ?? []);
   let todos = $derived(plan?.fixtures.filter((f) => f.todo) ?? []);
-  /** Fixtures whose line names a mode: not in their type's default. */
+  /** Every seeded fixture names its own mode. */
   let moded = $derived(plan?.fixtures.filter((f) => !f.todo && f.mode) ?? []);
 
-  /** A type's modes in words: its default (or that it has none) and the
-   *  other modes the file patches it in. */
+  /** The modes the file patches a fixture type in, in words. */
   function typeModes(ft: MvrPlannedType): string {
-    const parts = [
-      ft.mode
-        ? $t("lighting.mvr.review.typeDefault", { values: { mode: ft.mode } })
-        : $t("lighting.mvr.review.typeNoDefault"),
-    ];
-    const others = (ft.modes ?? []).filter((m) => m !== ft.mode);
-    if (others.length > 0)
-      parts.push(
-        $t("lighting.mvr.review.typeOtherModes", {
-          values: { modes: others.join(", ") },
-        }),
-      );
-    return parts.join("; ");
+    return $t("lighting.mvr.review.typeModes", {
+      values: { modes: (ft.modes ?? []).join(", ") },
+    });
   }
   let edited = $derived(
     plan?.fixtures.filter((f) => f.overwrites?.length) ?? [],
@@ -326,6 +315,9 @@
   function metres(mm: number): string {
     return (mm / 1000).toFixed(2);
   }
+  let writtenShown = $derived(
+    (report?.written ?? []).filter((w) => !w.endsWith(".fixture")),
+  );
 </script>
 
 <div class="wizard" data-testid="mvr-wizard">
@@ -901,11 +893,13 @@
         </p>
         <h4 class="panel__sub">
           {$t("lighting.mvr.done.written", {
-            values: { count: report.written.length },
+            values: { count: writtenShown.length },
           })}
         </h4>
+        <!-- mtrack's own records of the fixtures it imported are not the
+             user's files: the venue and the GDTFs are what to list. -->
         <ul class="list" data-testid="mvr-done-written">
-          {#each report.written as w (w)}
+          {#each writtenShown as w (w)}
             <li><code>{w}</code></li>
           {/each}
         </ul>

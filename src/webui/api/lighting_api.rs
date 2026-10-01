@@ -82,53 +82,14 @@ async fn first_multipart_file(
         .into_response())
 }
 
-/// The archive's fixture name as a fixture type name: letters, digits,
-/// spaces, hyphens and underscores, with everything else dropped and runs of
-/// spaces collapsed (a quote or brace would end the name in the `.fixture`
-/// file). Falls back to `fixture` when nothing is left.
-fn suggested_type_name(name: &str) -> String {
-    let kept: String = name
-        .chars()
-        .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'))
-        .collect();
-    let collapsed = kept.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.is_empty() {
-        "fixture".to_string()
-    } else {
-        collapsed
-    }
-}
+// The archive's fixture name as a fixture type name: the importer's rule,
+// so the name the picker suggests is the name an import writes.
+use lighting::import::suggested_type_name;
 
-/// POST /api/lighting/gdtf/inspect — parses an uploaded GDTF archive and
-/// returns its modes, for the mode picker: each mode's footprint, what a show
-/// can do in it (capabilities, cells, strobe range), its channel map and the
-/// distiller's warnings, or the reason it cannot be imported. Writes
-/// nothing.
-pub(super) async fn inspect_gdtf(mut multipart: axum::extract::Multipart) -> impl IntoResponse {
-    let (_, bytes) = first_multipart_file(&mut multipart).await?;
-    // Parsing the archive and distilling every mode is CPU work (a big GDTF
-    // has dozens of modes); it runs off the async workers.
-    let outcome = super::helpers::spawn_blocking_io("inspect GDTF", move || {
-        Ok::<_, String>(inspect_gdtf_bytes(&bytes))
-    })
-    .await?;
-    match outcome {
-        Ok(body) => Ok::<_, axum::response::Response>((StatusCode::OK, Json(body)).into_response()),
-        Err(e) => Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!("Not a parseable GDTF: {}", e)})),
-        )
-            .into_response()),
-    }
-}
-
-/// The mode picker's answer for a GDTF archive; `Err` is the parse failure.
-fn inspect_gdtf_bytes(bytes: &[u8]) -> Result<serde_json::Value, String> {
-    let description = lighting::gdtf::parse_archive(bytes).map_err(|e| e.to_string())?;
-    Ok(inspect_description(&description))
-}
-
-/// [`inspect_gdtf_bytes`] for an archive already parsed.
+/// A GDTF archive's modes, as its fixture page shows them: each mode's
+/// footprint, what a show can do in it (capabilities, cells, strobe range),
+/// its channel map and the distiller's warnings, or the reason it cannot be
+/// imported.
 fn inspect_description(description: &lighting::gdtf::Description) -> serde_json::Value {
     // Distilling every mode is a few milliseconds each (design 12.2), so the
     // picker can say what each one lets a show do before anything is written.
@@ -140,7 +101,6 @@ fn inspect_description(description: &lighting::gdtf::Description) -> serde_json:
         .map(|(index, summary)| {
             let mut mode = json!({
                 "name": summary.name,
-                "channel_count": summary.channel_count,
                 "footprint": summary.footprint,
             });
             let fields = mode.as_object_mut().expect("a json object");
@@ -186,7 +146,6 @@ fn inspect_description(description: &lighting::gdtf::Description) -> serde_json:
                         .collect();
                     channels.sort();
                     fields.insert("channels".into(), json!(channels));
-                    fields.insert("warnings".into(), json!(distilled.warnings));
                 }
                 Err(reason) => {
                     fields.insert("refused".into(), json!(reason));
@@ -195,26 +154,25 @@ fn inspect_description(description: &lighting::gdtf::Description) -> serde_json:
             mode
         })
         .collect();
-    json!({
-        "fixture": description.name,
-        "manufacturer": description.manufacturer,
-        "suggested_name": suggested,
-        "fixture_types_dir": DEFAULT_FIXTURE_TYPES_DIR,
-        "modes": modes,
-    })
+    json!({ "modes": modes })
 }
 
 /// Query parameters for the GDTF import endpoint.
 #[derive(serde::Deserialize)]
 pub(super) struct GdtfImportQuery {
-    mode: String,
+    /// A name for the fixture; given, a record pins it.
     name: Option<String>,
 }
 
-/// POST /api/lighting/gdtf/import?mode=...&name=... — imports one mode of an
-/// uploaded GDTF archive through the shared importer (the same one behind
-/// the CLI and MCP): archive into lighting/library/, a referential .fixture
-/// definition, and a warmed expansion cache. Returns the import report.
+/// POST /api/lighting/gdtf/import[?name=...] — imports an uploaded GDTF
+/// archive through the shared importer (the same one behind the CLI and
+/// MCP): a copy into lighting/library/, where it is a fixture (design §22),
+/// and a warmed rig for its page. One step: a venue fixture can use any of
+/// its modes straight away. Answers the import report
+/// (`already_imported` when the same archive was imported before and
+/// nothing was written; `renamed_from` when the archive's fixture name was
+/// taken). A different archive of the same file name already in the library
+/// is a 409; anything else refused is a 400.
 pub(super) async fn import_gdtf(
     State(state): State<WebUiState>,
     Query(query): Query<GdtfImportQuery>,
@@ -223,23 +181,29 @@ pub(super) async fn import_gdtf(
     let (filename, bytes) = first_multipart_file(&mut multipart).await?;
     let project = project_root(&state.config_path)?;
     // The inner Result survives spawn_blocking_io so an import refusal (bad
-    // mode, name collision, archive conflict) surfaces as the caller error
+    // archive, name collision, archive conflict) surfaces as the caller error
     // it is, not a 500.
     let report = super::helpers::spawn_blocking_io("import gdtf", move || {
         Ok::<_, String>(
             lighting::import::import_gdtf_bytes(
                 &bytes,
                 &filename,
-                &query.mode,
                 query.name.as_deref(),
                 &project,
                 DEFAULT_FIXTURE_TYPES_DIR,
             )
-            .map_err(|e| e.to_string()),
+            .map_err(|e| {
+                let status = if e.downcast_ref::<lighting::import::LibraryClash>().is_some() {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::BAD_REQUEST
+                };
+                (status, e.to_string())
+            }),
         )
     })
     .await?
-    .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response())?;
+    .map_err(|(status, e)| (status, Json(json!({"error": e}))).into_response())?;
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
@@ -486,9 +450,9 @@ pub(super) const DEFAULT_FIXTURE_TYPES_DIR: &str = "lighting/fixture_types";
 /// Default directory for venue definitions, relative to project root.
 pub(super) const DEFAULT_VENUES_DIR: &str = "lighting/venues";
 
-/// Fixture type files: `.fixture` (rich channels, GDTF-referential types) and
-/// the v1 `.light`, loaded as peers — the same pair the lighting system reads.
-const FIXTURE_TYPE_EXTENSIONS: &[&str] = &["light", "fixture"];
+/// Fixture type files: `.fixture` (rich channels, GDTF records) and the v1
+/// `.light`, loaded as peers — the same pair the lighting system reads.
+const FIXTURE_TYPE_EXTENSIONS: &[&str] = lighting::project_files::FIXTURE_TYPE_EXTENSIONS;
 
 /// The fixture type names a file declares; none if it cannot be read or
 /// does not parse.
@@ -500,46 +464,26 @@ fn declared_fixture_types(path: &std::path::Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The file a fixture type of this name lives in, if one exists. The file at
-/// the name's own stem is tried first (`.fixture`, then `.light`), then every
-/// other fixture type file is read for the declaration — the file's stem need
-/// not match the name: `import-gdtf` writes `astera_pixelbrick.fixture` for
-/// "Astera-PixelBrick", and a file written by hand is called whatever its
-/// author liked. A stem file that does not declare the name is still the
+/// The file a fixture type of this name lives in, if one exists, in the
+/// directory or any subdirectory — the file the lighting system loads it
+/// from, by the same reader ([`lighting::project_files::type_files`]). The
+/// file's stem need not match the name: an import writes
+/// `astera_pixelbrick.fixture` for "Astera-PixelBrick", and a file written
+/// by hand is called whatever its author liked. A file at the name's own
+/// stem (`.fixture`, then `.light`) that does not declare it is still the
 /// answer when no file does, so the caller can say what is wrong with it.
 pub(super) fn existing_fixture_type_file(
     dir: &std::path::Path,
     name: &str,
 ) -> Option<std::path::PathBuf> {
+    if let Some(declared) = lighting::project_files::type_files(dir).get(name) {
+        return Some(declared.file.clone());
+    }
     let stem = sanitize_filename(name);
-    let stem_files: Vec<std::path::PathBuf> = ["fixture", "light"]
+    ["fixture", "light"]
         .iter()
         .map(|extension| dir.join(format!("{stem}.{extension}")))
-        .filter(|path| path.is_file())
-        .collect();
-    let declares =
-        |path: &std::path::PathBuf| declared_fixture_types(path).iter().any(|n| n == name);
-    if let Some(path) = stem_files.iter().find(|path| declares(path)) {
-        return Some(path.clone());
-    }
-    let mut others: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| {
-            path.is_file()
-                && !stem_files.contains(path)
-                && path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| FIXTURE_TYPE_EXTENSIONS.contains(&e))
-        })
-        .collect();
-    others.sort();
-    others
-        .into_iter()
-        .find(declares)
-        .or_else(|| stem_files.into_iter().next())
+        .find(|path| path.is_file())
 }
 
 /// [`existing_fixture_type_file`] with the file it found and the other
@@ -590,7 +534,7 @@ fn shared_fixture_type_file_response(
 
 /// Venue files: `.venue` (positions, focus points, MVR provenance) and the
 /// v1 `.light`, loaded as peers.
-pub(super) const VENUE_EXTENSIONS: &[&str] = &["light", "venue"];
+pub(super) const VENUE_EXTENSIONS: &[&str] = lighting::project_files::VENUE_EXTENSIONS;
 
 /// The file a venue of this name lives in, if one exists: `.venue` first,
 /// then `.light`.
@@ -648,8 +592,9 @@ fn mentions_venue(text: &str, name: &str) -> bool {
     text.lines().any(|l| l.trim_start().starts_with(&header))
 }
 
-/// Finds the file that defines venue `name` by scanning every venue file for
-/// the block — the file's stem need not match the name. A file that mentions
+/// Finds the file that defines venue `name` by scanning every venue file (in
+/// the directory and its subdirectories) for the block — the file's stem
+/// need not match the name. A file that mentions
 /// the venue but does not parse (or the file at the venue's own stem, which a
 /// save would otherwise overwrite) comes back with `broken` set, so the
 /// caller can refuse rather than replace it. `None` means a genuinely new
@@ -662,17 +607,9 @@ pub(super) fn locate_venue_file(
         return Ok(None);
     }
     let stem_file = existing_venue_file(dir, name);
-    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
-        .map_err(|e| e.to_string())?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.is_file()
-                && p.extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| VENUE_EXTENSIONS.contains(&e))
-        })
-        .collect();
-    paths.sort();
+    // Every venue file at any depth, in path order: the files the lighting
+    // system loads ([`lighting::project_files::venues`]).
+    let paths = lighting::project_files::files_under(dir, VENUE_EXTENSIONS);
     let mut broken: Option<LocatedVenue> = None;
     for path in paths {
         let bytes =
@@ -1060,11 +997,6 @@ pub(super) async fn get_fixture_types(
         DEFAULT_FIXTURE_TYPES_DIR,
     )
     .map_err(|e| e.into_response())?;
-    if !dir.is_dir() {
-        return Ok::<_, axum::response::Response>(
-            (StatusCode::OK, Json(json!({"fixture_types": {}}))).into_response(),
-        );
-    }
     let venues_dir = resolve_lighting_dir(
         &state.config_path,
         query.venues_dir.as_deref(),
@@ -1074,56 +1006,83 @@ pub(super) async fn get_fixture_types(
     let all = super::helpers::spawn_blocking_io("load fixture types", move || {
         let mut all = std::collections::HashMap::new();
         let mut referential = Vec::new();
-        let mut duplicates = DuplicateNames::new("fixture type");
-        // Both extensions, as the lighting system loads them. A type's file
-        // travels with it: the form a type is in decides how it may be
-        // edited, and a referential type parsed from a file has no expanded
-        // channels to show — only the system's expansion has those.
-        let mut errors =
-            load_light_files_from_dir(&dir, FIXTURE_TYPE_EXTENSIONS, |content, path| {
-                let types = lighting::parser::parse_fixture_types(content)?;
-                let file = crate::util::filename_display(path).to_string();
-                let extension = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or_default()
-                    .to_string();
-                for (name, fixture_type) in types {
-                    // The rest of this file still lists; only a name another
-                    // file already claimed is skipped.
-                    if !duplicates.claim(&name, &file) {
-                        continue;
-                    }
-                    if let Some(source) = fixture_type.source() {
-                        referential.push((name.clone(), source.clone()));
-                    }
-                    all.insert(
-                        name,
-                        json!({
-                            "referential": fixture_type.source().is_some(),
-                            // A GDTF type's default mode; null on a native
-                            // type and on a GDTF type with none (its
-                            // fixtures each name their own).
-                            "default_mode": fixture_type.source().and_then(|s| s.mode.clone()),
-                            // The addresses a fixture of the type occupies
-                            // (a GDTF type's, in its default mode, is filled
-                            // in below); the venue editor continues the
-                            // patch with it.
-                            "footprint": fixture_type
-                                .source()
-                                .is_none()
-                                .then(|| fixture_type.footprint()),
-                            "rich": fixture_type.uses_rich_channels(),
-                            "fixture_type": fixture_type,
-                            "file": file,
-                            "extension": extension,
-                        }),
-                    );
-                }
-                Ok(())
+        // The project's one reader of fixture types (the lighting system
+        // loads through it too): every type file in the directory and its
+        // subdirectories, then every GDTF in the library no record points
+        // at. A type's file travels with it: the form a type is in decides
+        // how it may be edited.
+        let project = lighting::project_files::fixture_types(&root, Some(&dir));
+        let shown = |path: &std::path::Path| lighting::project_files::display_in(&dir, path);
+        let mut errors: Vec<FileError> = project
+            .files
+            .problems
+            .iter()
+            .map(|p| FileError {
+                file: shown(&p.file),
+                error: p.error.clone(),
             })
-            .map_err(|e| e.to_string())?;
-        errors.append(&mut duplicates.errors);
+            .collect();
+        for declared in &project.files.items {
+            let fixture_type = &declared.item;
+            if let Some(source) = fixture_type.source() {
+                referential.push((declared.name.clone(), source.clone()));
+            }
+            all.insert(
+                declared.name.clone(),
+                json!({
+                    "referential": fixture_type.source().is_some(),
+                    // A native type's addresses, for the venue editor's
+                    // patch; a GDTF fixture's are its mode's, so null here.
+                    "footprint": fixture_type
+                        .source()
+                        .is_none()
+                        .then(|| fixture_type.footprint()),
+                    "rich": fixture_type.uses_rich_channels(),
+                    "fixture_type": fixture_type,
+                    "file": shown(&declared.file),
+                    "extension": declared
+                        .file
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or_default(),
+                }),
+            );
+        }
+        let library = project.library;
+        // An archive that will not read is the listing's error; a name
+        // collision is already resolved (the second fixture is renamed).
+        for finding in &library.findings {
+            if finding.kind == "gdtf-unreadable" {
+                errors.push(FileError {
+                    file: finding.file.clone(),
+                    error: finding.message.clone(),
+                });
+            }
+        }
+        for library_type in &library.types {
+            if all.contains_key(&library_type.name) {
+                continue;
+            }
+            let declared = lighting::library::declared(library_type);
+            referential.push((
+                library_type.name.clone(),
+                declared
+                    .source()
+                    .cloned()
+                    .expect("a library type is GDTF-sourced"),
+            ));
+            all.insert(
+                library_type.name.clone(),
+                json!({
+                    "referential": true,
+                    "footprint": null,
+                    "rich": false,
+                    "fixture_type": declared,
+                    "file": null,
+                    "extension": null,
+                }),
+            );
+        }
         // What each referential type's archive says, for its card. One bad
         // archive is that card's `gdtf: null`, never the listing's failure.
         let usage = fixtures_by_type(&venues_dir);
@@ -1138,30 +1097,23 @@ pub(super) async fn get_fixture_types(
                 .collect();
             let parsed = archives.get(&root, &name, &source);
             let summary = parsed.map(|(bytes, description)| {
-                gdtf_list_summary(&cache, bytes, description, &name, &source, &fixtures)
-            });
-            // The default mode's footprint, as the engine distils it; null
-            // with no default or when it does not distil.
-            let footprint = parsed.and_then(|(_, description)| {
-                let mode = source.mode.as_deref()?;
-                lighting::gdtf::distill(description, mode, &name)
-                    .ok()
-                    .map(|d| d.fixture_type.footprint())
+                gdtf_list_summary(&cache, bytes, description, &name, &fixtures)
             });
             if let Some(entry) = all.get_mut(&name).and_then(|e| e.as_object_mut()) {
                 entry.insert("gdtf".into(), summary.unwrap_or(serde_json::Value::Null));
-                entry.insert("footprint".into(), json!(footprint));
             }
         }
         Ok::<_, String>((all, errors))
     })
     .await?;
     let (all, errors) = all;
-    Ok((
-        StatusCode::OK,
-        Json(json!({"fixture_types": all, "errors": errors})),
+    Ok::<_, axum::response::Response>(
+        (
+            StatusCode::OK,
+            Json(json!({"fixture_types": all, "errors": errors})),
+        )
+            .into_response(),
     )
-        .into_response())
 }
 
 /// GET /api/lighting/fixture-types/:name — returns a single fixture type.
@@ -1177,11 +1129,36 @@ pub(super) async fn get_fixture_type(
         DEFAULT_FIXTURE_TYPES_DIR,
     )?;
     let Some((file_path, _)) = locate_fixture_type_file(&dir, &name).await? else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Fixture type not found: {}", name)})),
-        )
-            .into_response());
+        // A GDTF in the library with no record: a fixture with no file.
+        let root = canonical_project_root(&project_root(&state.config_path)?)?;
+        let (types_dir, wanted) = (dir.clone(), name.clone());
+        let found = super::helpers::spawn_blocking_io("read the GDTF library", move || {
+            Ok::<_, String>(
+                lighting::library::unrecorded_types(&root, Some(&types_dir))
+                    .get(&wanted)
+                    .map(lighting::library::declared),
+            )
+        })
+        .await?;
+        return match found {
+            Some(declared) => Ok((
+                StatusCode::OK,
+                Json(json!({
+                    "referential": true,
+                    "rich": false,
+                    "fixture_type": declared,
+                    "dsl": null,
+                    "file": null,
+                    "extension": null,
+                })),
+            )
+                .into_response()),
+            None => Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Fixture type not found: {}", name)})),
+            )
+                .into_response()),
+        };
     };
     let fp = file_path.clone();
     let content = super::helpers::spawn_blocking_io("read fixture type", move || {
@@ -1216,13 +1193,58 @@ pub(super) async fn get_fixture_type(
     }
 }
 
-/// GET /api/lighting/fixture-types/:name/gdtf — what a referential type's
-/// archive holds, for the details view: every mode as the mode picker shows
-/// it, which of them the `.fixture` pins, and the rig model and thumbnail
-/// the 3D view draws (paths in the asset store). The rig is written through
-/// the expansion cache as the lighting system would write it, so opening a
-/// type warms what loading it would; a rig that cannot be made is not an
-/// error here — the modes are still worth showing.
+/// The GDTF source of a fixture type: its record's, or — for a GDTF in the
+/// library with no record — its archive's, from the one function the engine
+/// loads them with. `Ok(None)`: no such type; `Err`: a native type (the
+/// 404 the caller answers).
+async fn gdtf_source_of(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    name: &str,
+) -> Result<Option<lighting::types::GdtfSource>, axum::response::Response> {
+    if let Some((file_path, _)) = locate_fixture_type_file(dir, name).await? {
+        let content = super::helpers::spawn_blocking_io("read fixture type", move || {
+            std::fs::read_to_string(&file_path)
+        })
+        .await?;
+        let types = lighting::parser::parse_fixture_types(&content).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to parse fixture type: {}", e)})),
+            )
+                .into_response()
+        })?;
+        let Some(fixture_type) = types.get(name) else {
+            return Ok(None);
+        };
+        return match fixture_type.source() {
+            Some(source) => Ok(Some(source.clone())),
+            None => Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("fixture type \"{}\" is not a GDTF type", name)})),
+            )
+                .into_response()),
+        };
+    }
+    let (root, dir, name) = (root.to_path_buf(), dir.to_path_buf(), name.to_string());
+    super::helpers::spawn_blocking_io("read the GDTF library", move || {
+        Ok::<_, String>(
+            lighting::library::unrecorded_types(&root, Some(&dir))
+                .get(&name)
+                .and_then(|t| lighting::library::declared(t).source().cloned()),
+        )
+    })
+    .await
+}
+
+/// GET /api/lighting/fixture-types/:name/gdtf — what a GDTF fixture's
+/// archive holds, for its page: every mode as the mode picker shows it,
+/// the venue fixtures using it in their
+/// own modes, and the rig model and thumbnail the 3D view draws (paths in
+/// the asset store) — drawn in the first mode it can drive. The rig is
+/// written through the expansion cache as the lighting system would write
+/// it; a rig that cannot be made is not an error here — the modes are still
+/// worth showing.
 pub(super) async fn get_fixture_type_gdtf(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -1234,39 +1256,14 @@ pub(super) async fn get_fixture_type_gdtf(
         query.dir.as_deref(),
         DEFAULT_FIXTURE_TYPES_DIR,
     )?;
-    let Some((file_path, _)) = locate_fixture_type_file(&dir, &name).await? else {
+    let root = canonical_project_root(&project_root(&state.config_path)?)?;
+    let Some(source) = gdtf_source_of(&root, &dir, &name).await? else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("Fixture type not found: {}", name)})),
         )
             .into_response());
     };
-    let content = super::helpers::spawn_blocking_io("read fixture type", move || {
-        std::fs::read_to_string(&file_path)
-    })
-    .await?;
-    let types = lighting::parser::parse_fixture_types(&content).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to parse fixture type: {}", e)})),
-        )
-            .into_response()
-    })?;
-    let Some(fixture_type) = types.get(&name) else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Fixture type '{}' not found in file", name)})),
-        )
-            .into_response());
-    };
-    let Some(source) = fixture_type.source().cloned() else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("fixture type \"{}\" is not a GDTF type", name)})),
-        )
-            .into_response());
-    };
-    let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let archive = resolve_referential_archive(&root, &name, &source)?;
     let venues_dir = resolve_lighting_dir(
         &state.config_path,
@@ -1282,15 +1279,11 @@ pub(super) async fn get_fixture_type_gdtf(
             Ok(description) => description,
             Err(e) => return Ok::<_, std::io::Error>(Err(e.to_string())),
         };
-        let matched_mode = source
-            .mode
-            .as_deref()
-            .and_then(|mode| resolve_mode(&description, mode));
         let cache = lighting::distill::DistillCache::new(root.join("lighting").join(".cache"));
-        // The rig is the default mode's. A type with no default has no mode
-        // of its own to draw, so it is drawn in the first mode the archive
-        // offers that distils — the body is the same in every mode.
-        let rig_mode = drawn_mode(&description, source.mode.as_deref(), &name);
+        // A GDTF fixture has no mode of its own: it is drawn in the first
+        // mode the archive offers that distils — the body is the same in
+        // every mode.
+        let rig_mode = drawn_mode(&description, &name);
         // Only the type's name goes in the log: everything else here is the
         // archive's own text.
         let rig = rig_mode.as_deref().and_then(|mode| {
@@ -1309,7 +1302,7 @@ pub(super) async fn get_fixture_type_gdtf(
             let (dir, _) = rel.rsplit_once('/')?;
             Some(format!("{dir}/{file}"))
         });
-        let beam = pinned_beam(&description, matched_mode.as_deref()).map(|b| {
+        let beam = pinned_beam(&description, rig_mode.as_deref()).map(|b| {
             json!({
                 "type": b.beam_type,
                 "beam_angle": b.beam_angle,
@@ -1319,9 +1312,8 @@ pub(super) async fn get_fixture_type_gdtf(
                 "power": b.power_consumption,
             })
         });
-        // Each fixture in the mode it is driven in: its own, else the type's
-        // default, spelled as the archive spells it (null when it names no
-        // mode of the archive).
+        // Each fixture in its own mode, spelled as the archive spells it
+        // (null when it names none, or none of the archive's).
         let venues: Vec<serde_json::Value> = fixtures_by_type(&venues_dir)
             .remove(&name)
             .unwrap_or_default()
@@ -1330,10 +1322,9 @@ pub(super) async fn get_fixture_type_gdtf(
                 let fixtures: Vec<serde_json::Value> = fixtures
                     .into_iter()
                     .map(|(fixture, mode)| {
-                        let effective = mode.as_deref().or(source.mode.as_deref());
                         json!({
                             "name": fixture,
-                            "mode": effective.and_then(|m| resolve_mode(&description, m)),
+                            "mode": mode.as_deref().and_then(|m| resolve_mode(&description, m)),
                         })
                     })
                     .collect();
@@ -1342,8 +1333,6 @@ pub(super) async fn get_fixture_type_gdtf(
             .collect();
         Ok(Ok(json!({
             "archive": source.path,
-            "mode": source.mode,
-            "matched_mode": matched_mode,
             "rig": rig,
             "thumbnail": thumbnail,
             "beam": beam,
@@ -1418,15 +1407,12 @@ fn first_beam_under<'a>(
 /// file that does not parse, or a missing directory, contributes nothing:
 /// this answers "who uses it", not whether the venues are well.
 fn fixtures_by_type(dir: &std::path::Path) -> FixturesByType {
-    let mut venues = std::collections::BTreeMap::new();
-    if dir.is_dir() {
-        let _ = load_light_files_from_dir(dir, VENUE_EXTENSIONS, |content, _| {
-            for (name, venue) in lighting::parser::parse_venues(content)? {
-                venues.entry(name).or_insert(venue);
-            }
-            Ok(())
-        });
-    }
+    let venues: std::collections::BTreeMap<String, lighting::types::Venue> =
+        lighting::project_files::venues(dir)
+            .items
+            .into_iter()
+            .map(|d| (d.name, d.item))
+            .collect();
     let mut by_type = FixturesByType::new();
     for (venue_name, venue) in venues {
         let mut of_type: std::collections::BTreeMap<&str, Vec<(String, Option<String>)>> =
@@ -1459,21 +1445,11 @@ fn resolve_mode(description: &lighting::gdtf::Description, mode: &str) -> Option
         .map(|m| m.name)
 }
 
-/// The mode a type is drawn in: its default as the `.fixture` writes it
-/// (the rig path is keyed by that spelling), else the first mode of the
-/// archive that distils.
-fn drawn_mode(
-    description: &lighting::gdtf::Description,
-    default: Option<&str>,
-    type_name: &str,
-) -> Option<String> {
-    default.map(str::to_string).or_else(|| {
-        description
-            .modes
-            .iter()
-            .find(|m| lighting::gdtf::distill(description, &m.name, type_name).is_ok())
-            .map(|m| m.name.clone())
-    })
+/// The mode a GDTF fixture is drawn in (its 3D view, thumbnail and quoted
+/// beam): the first mode of the archive that distils — the importer warms
+/// exactly that rig.
+fn drawn_mode(description: &lighting::gdtf::Description, type_name: &str) -> Option<String> {
+    lighting::import::first_drivable_mode(description, type_name)
 }
 
 /// GDTF archives read and parsed once per listing, by the path a `.fixture`
@@ -1512,15 +1488,15 @@ fn gdtf_list_summary(
     bytes: &[u8],
     description: &lighting::gdtf::Description,
     type_name: &str,
-    source: &lighting::types::GdtfSource,
     fixtures: &[Option<&str>],
 ) -> serde_json::Value {
-    let default = source.mode.as_deref();
-    let matched = default.and_then(|m| resolve_mode(description, m));
-    let beam = pinned_beam(description, matched.as_deref())
+    // The fixture is drawn, and its beam quoted, in the first mode it can
+    // drive: a GDTF fixture has no mode of its own.
+    let drawn = drawn_mode(description, type_name);
+    let beam = pinned_beam(description, drawn.as_deref())
         .map(|b| json!({"type": b.beam_type, "angle": b.beam_angle}));
     // The thumbnail of the rig the details view draws, if it was drawn.
-    let thumbnail = drawn_mode(description, default, type_name).and_then(|mode| {
+    let thumbnail = drawn.and_then(|mode| {
         let rel = lighting::distill::DistillCache::rig_path(bytes, &mode);
         let rig = cache.load_rig(&rel).ok()?;
         let file = rig.thumbnail?;
@@ -1530,11 +1506,9 @@ fn gdtf_list_summary(
     // How many venue fixtures use each mode, by the archive's spelling (a
     // mode that resolves to none is counted as written).
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    for mode in fixtures {
-        if let Some(mode) = mode.or(default) {
-            let mode = resolve_mode(description, mode).unwrap_or_else(|| mode.to_string());
-            *counts.entry(mode).or_default() += 1;
-        }
+    for mode in fixtures.iter().flatten() {
+        let mode = resolve_mode(description, mode).unwrap_or_else(|| mode.to_string());
+        *counts.entry(mode).or_default() += 1;
     }
     let mut in_use: Vec<(String, usize)> = counts.into_iter().collect();
     in_use.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -1542,7 +1516,6 @@ fn gdtf_list_summary(
         "fixture": description.name,
         "manufacturer": description.manufacturer,
         "modes": description.modes.len(),
-        "mode": default,
         "beam": beam,
         "thumbnail": thumbnail,
         "used_by": fixtures.len(),
@@ -1705,12 +1678,17 @@ pub(super) async fn put_fixture_type(
     // directory that was made, not the spelling.
     let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
 
-    // A type is one file: whichever form it is saved in, the other one is
-    // retired, or the loader would register the name twice.
-    let file_path = dir.join(format!("{stem}.{extension}"));
+    // An existing type stays in its own folder, at any depth; a new one is
+    // born at the top. A type is one file: whichever form it is saved in, the
+    // other one is retired, or the loader would register the name twice.
+    let folder = located
+        .as_ref()
+        .and_then(|(path, _)| path.parent())
+        .map_or(dir, std::path::Path::to_path_buf);
+    let file_path = folder.join(format!("{stem}.{extension}"));
     let stale_twin = FIXTURE_TYPE_EXTENSIONS
         .iter()
-        .map(|extension| dir.join(format!("{stem}.{extension}")))
+        .map(|extension| folder.join(format!("{stem}.{extension}")))
         .find(|path| path != &file_path && path.is_file());
     let fp = file_path;
     let dsl_owned = dsl;
@@ -1748,12 +1726,37 @@ pub(super) async fn delete_fixture_type(
         query.dir.as_deref(),
         DEFAULT_FIXTURE_TYPES_DIR,
     )?;
+    let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let Some((file_path, others)) = locate_fixture_type_file(&dir, &name).await? else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Fixture type not found: {}", name)})),
-        )
-            .into_response());
+        // A GDTF in the library with no record is a fixture of its own;
+        // deleting it is deleting the archive.
+        let (types_dir, wanted, root) = (dir.clone(), name.clone(), root.clone());
+        let removed = super::helpers::spawn_blocking_io("delete a GDTF", move || {
+            let library = lighting::library::unrecorded_types(&root, Some(&types_dir));
+            match library.get(&wanted) {
+                Some(found) => std::fs::remove_file(root.join(&found.archive))
+                    .map(|()| Some(found.archive.clone())),
+                None => Ok(None),
+            }
+        })
+        .await?;
+        return match removed {
+            Some(archive) => Ok((
+                StatusCode::OK,
+                Json(json!({
+                    "status": "deleted",
+                    "name": name,
+                    "archive_removed": archive,
+                    "archive_kept": false,
+                })),
+            )
+                .into_response()),
+            None => Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Fixture type not found: {}", name)})),
+            )
+                .into_response()),
+        };
     };
     if !others.is_empty() {
         return Err(shared_fixture_type_file_response(
@@ -1764,15 +1767,76 @@ pub(super) async fn delete_fixture_type(
         ));
     }
     let fp = file_path;
-    super::helpers::spawn_blocking_io("delete fixture type", move || std::fs::remove_file(&fp))
+    let deleted = name.clone();
+    let (archive_removed, archive_kept) =
+        super::helpers::spawn_blocking_io("delete fixture type", move || {
+            // A GDTF fixture's archive is mtrack's to keep, not the user's:
+            // read which one this type uses before its record goes.
+            let archive = std::fs::read_to_string(&fp)
+                .ok()
+                .and_then(|text| lighting::parser::parse_fixture_types(&text).ok())
+                .and_then(|types| types.get(&deleted).and_then(|t| t.source().cloned()));
+            std::fs::remove_file(&fp)?;
+            Ok::<_, std::io::Error>(match archive {
+                Some(source) => remove_unused_archive(&root, &dir, &source.path),
+                None => (None, false),
+            })
+        })
         .await?;
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({"status": "deleted", "name": name})),
+            Json(json!({
+                "status": "deleted",
+                "name": name,
+                "archive_removed": archive_removed,
+                "archive_kept": archive_kept,
+            })),
         )
             .into_response(),
     )
+}
+
+/// After a GDTF fixture's record is deleted: its archive in
+/// `lighting/library/`, removed when no other fixture type in `types_dir`
+/// uses it — otherwise archives the user cannot see pile up. Returns the
+/// removed archive (project-relative) and whether it was kept because
+/// another type still uses it. An archive outside the library is never
+/// touched, and neither is the expansion cache (it is keyed by content and
+/// rebuilt on demand).
+fn remove_unused_archive(
+    root: &std::path::Path,
+    types_dir: &std::path::Path,
+    archive_rel: &str,
+) -> (Option<String>, bool) {
+    let library = root.join("lighting").join("library");
+    let Ok(target) = root.join(archive_rel).canonicalize() else {
+        return (None, false);
+    };
+    let in_library = library
+        .canonicalize()
+        .is_ok_and(|library| target.starts_with(library));
+    if !in_library {
+        return (None, false);
+    }
+    let still_used = lighting::import::existing_types(types_dir)
+        .values()
+        .flatten()
+        .any(|other| {
+            root.join(other)
+                .canonicalize()
+                .is_ok_and(|other| other == target)
+        });
+    if still_used {
+        return (None, true);
+    }
+    match std::fs::remove_file(&target) {
+        Ok(()) => (Some(archive_rel.to_string()), false),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not remove a deleted fixture's GDTF archive");
+            (None, false)
+        }
+    }
 }
 
 /// The tempo a `.light` file at this path will be loaded with, found by
@@ -2069,6 +2133,7 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     let mut venue = serde_json::Value::Null;
     let mut in_use: BTreeSet<String> = BTreeSet::new();
     let mut unresolved = Vec::new();
+    let mut library = Vec::new();
     let mut used_universes: BTreeSet<u16> = BTreeSet::new();
     if let Some(system) = dmx
         .as_ref()
@@ -2076,6 +2141,13 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     {
         let mut guard = system.lock();
         facts = VenueFacts::collect(&mut guard, &names, Some(&configured));
+        // The library's own findings: two archives that would share a name,
+        // an archive that cannot be read. Neither stops a load.
+        library = guard
+            .library_findings()
+            .iter()
+            .map(|f| json!({"kind": f.kind, "file": f.file, "message": f.message}))
+            .collect();
         if let Some(current) = guard.get_current_venue() {
             let mut fixtures: Vec<&lighting::types::Fixture> =
                 current.fixtures().values().collect();
@@ -2207,7 +2279,7 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
         "venue": venue,
         "venue_error": facts.venue_error,
         "patch_warnings": patch_warnings,
-        "fixture_types": {"in_use": in_use, "unresolved": unresolved},
+        "fixture_types": {"in_use": in_use, "unresolved": unresolved, "library": library},
         "groups": groups,
         "shows": shows,
         "output": {
@@ -2287,25 +2359,25 @@ pub(super) async fn get_venues(
         );
     }
     let all = super::helpers::spawn_blocking_io("load venues", move || {
+        // The lighting system's own reader: both extensions, the directory
+        // and its subdirectories, the first file to claim a name keeps it.
+        let read = lighting::project_files::venues(&dir);
         let mut all = std::collections::HashMap::new();
         let mut versions = std::collections::HashMap::new();
-        let mut duplicates = DuplicateNames::new("venue");
-        // Both extensions, as the lighting system loads them — so the same
-        // name can arrive from a `.light` and a `.venue`.
-        let mut errors = load_light_files_from_dir(&dir, VENUE_EXTENSIONS, |content, path| {
-            let venues = lighting::parser::parse_venues(content)?;
-            let file = crate::util::filename_display(path).to_string();
-            for (name, venue) in venues {
-                if !duplicates.claim(&name, &file) {
-                    continue;
-                }
-                versions.insert(name.clone(), content_version(content.as_bytes()));
-                all.insert(name, venue);
+        for declared in read.items {
+            if let Ok(bytes) = std::fs::read(&declared.file) {
+                versions.insert(declared.name.clone(), content_version(&bytes));
             }
-            Ok(())
-        })
-        .map_err(|e| e.to_string())?;
-        errors.append(&mut duplicates.errors);
+            all.insert(declared.name, declared.item);
+        }
+        let errors: Vec<FileError> = read
+            .problems
+            .iter()
+            .map(|p| FileError {
+                file: lighting::project_files::display_in(&dir, &p.file),
+                error: p.error.clone(),
+            })
+            .collect();
         Ok::<_, String>((all, errors, versions))
     })
     .await?;
@@ -2671,79 +2743,12 @@ pub(super) async fn delete_venue(
 // Lighting helpers
 // ---------------------------------------------------------------------------
 
-/// Reads every file of the given extensions from a directory, calling the
-/// processor with each one's content and path.
-fn load_light_files_from_dir(
-    dir: &std::path::Path,
-    extensions: &[&str],
-    mut processor: impl FnMut(&str, &std::path::Path) -> Result<(), Box<dyn std::error::Error>>,
-) -> Result<Vec<FileError>, Box<dyn std::error::Error>> {
-    let mut errors = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let extension = path.extension().and_then(|e| e.to_str());
-        if path.is_file() && extension.is_some_and(|e| extensions.contains(&e)) {
-            let content = std::fs::read_to_string(&path)?;
-            // Per-file, not fatal: a directory is a set of independent files,
-            // and one that no longer parses must not hide the rest. The caller
-            // reports them so the UI can say which file and why.
-            if let Err(e) = processor(&content, &path) {
-                errors.push(FileError {
-                    file: crate::util::filename_display(&path).to_string(),
-                    error: e.to_string(),
-                });
-            }
-        }
-    }
-    Ok(errors)
-}
-
 /// A file in a lighting directory that could not be parsed, reported alongside
 /// the ones that could.
 #[derive(serde::Serialize)]
 struct FileError {
     file: String,
     error: String,
-}
-
-/// Tracks which file each name came from while a directory's files are
-/// merged. A directory is a set of independent files, and two of them can
-/// claim the same name — across the two extensions especially. Last-wins
-/// would show one file and hide the other while the lighting system
-/// registers the name twice, so the first file to claim a name keeps it and
-/// the clash is reported against both.
-struct DuplicateNames {
-    kind: &'static str,
-    seen: std::collections::HashMap<String, String>,
-    errors: Vec<FileError>,
-}
-
-impl DuplicateNames {
-    fn new(kind: &'static str) -> Self {
-        Self {
-            kind,
-            seen: std::collections::HashMap::new(),
-            errors: Vec::new(),
-        }
-    }
-
-    /// Whether this name is still free. A name already taken is recorded as
-    /// an error naming both files, and the caller skips it.
-    fn claim(&mut self, name: &str, file: &str) -> bool {
-        if let Some(previous) = self.seen.get(name) {
-            self.errors.push(FileError {
-                file: file.to_string(),
-                error: format!(
-                    "{} \"{}\" is defined in both {} and {}",
-                    self.kind, name, previous, file
-                ),
-            });
-            return false;
-        }
-        self.seen.insert(name.to_string(), file.to_string());
-        true
-    }
 }
 
 /// Converts a name to a safe filename (lowercase, spaces to underscores).
@@ -3756,9 +3761,7 @@ show "test" {
     /// A GDTF-referential type. It parses without the archive — expansion
     /// happens in the lighting system, so its `channels` map is empty here.
     fn sample_referential_fixture_type_dsl(name: &str) -> String {
-        format!(
-            "fixture_type \"{name}\" from gdtf(\"library/synth.gdtf\", mode \"8: RGBS\") {{\n}}\n"
-        )
+        format!("fixture_type \"{name}\" from gdtf(\"library/synth.gdtf\") {{\n}}\n")
     }
 
     // Helper function to create a venue DSL string for tests.
@@ -3965,37 +3968,6 @@ show "test" {
             ]
         });
         assert!(venue_json_to_dsl("Bad", &json).is_err());
-    }
-
-    // -----------------------------------------------------------------------
-    // Unit tests: load_light_files_from_dir
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn load_light_files_from_dir_processes_light_files() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.light"), sample_fixture_type_dsl("TypeA")).unwrap();
-        std::fs::write(dir.path().join("b.txt"), "not a light file").unwrap();
-
-        let mut count = 0;
-        load_light_files_from_dir(dir.path(), &["light"], |_content, _path| {
-            count += 1;
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn load_light_files_from_dir_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut count = 0;
-        load_light_files_from_dir(dir.path(), &["light"], |_content, _path| {
-            count += 1;
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(count, 0);
     }
 
     // -----------------------------------------------------------------------
@@ -4443,41 +4415,6 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn inspect_gdtf_lists_modes_and_writes_nothing() {
-        let (state, dir) = test_state();
-        let app = router().with_state(state);
-        let (content_type, body) = multipart_body("synth.gdtf", &synthetic_gdtf_bytes());
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/lighting/gdtf/inspect")
-                    .header("content-type", content_type)
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&response_body(response).await).unwrap();
-        assert_eq!(parsed["fixture"], "Synth Brick");
-        assert!(
-            parsed["modes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|m| m["name"] == "8: RGBS"),
-            "{parsed}"
-        );
-        assert!(
-            !dir.path().join("lighting").exists(),
-            "inspect must not write"
-        );
-    }
-
-    #[tokio::test]
     async fn import_gdtf_writes_and_reports_through_the_shared_importer() {
         let (state, dir) = test_state();
         let app = router().with_state(state);
@@ -4489,7 +4426,7 @@ show "test" {
             .oneshot(
                 http::Request::builder()
                     .method("POST")
-                    .uri("/lighting/gdtf/import?mode=8%3A%20RGBS&name=Brick")
+                    .uri("/lighting/gdtf/import?name=Brick")
                     .header("content-type", content_type)
                     .body(Body::from(body))
                     .unwrap(),
@@ -4511,29 +4448,206 @@ show "test" {
             .exists());
         assert!(dir.path().join("lighting/.cache").is_dir());
 
-        // A bad mode is the caller's error, not a server fault.
-        let (content_type, body) = multipart_body("synth.gdtf", &synthetic_gdtf_bytes());
+        // A name another fixture has is the caller's error, not a server
+        // fault.
+        let other = crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
+                .replace("Synth Brick", "Other Brick")
+                .as_bytes(),
+        )]);
+        let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=Brick").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{parsed}");
+        assert!(
+            parsed["error"].as_str().unwrap().contains("already exists"),
+            "{parsed}"
+        );
+    }
+
+    /// Uploads an archive to the import endpoint; the status and the answer.
+    async fn import_upload(
+        app: &axum::Router,
+        file: &str,
+        bytes: &[u8],
+        query: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let (content_type, body) = multipart_body(file, bytes);
         let response = app
+            .clone()
             .oneshot(
                 http::Request::builder()
                     .method("POST")
-                    .uri("/lighting/gdtf/import?mode=Nope")
+                    .uri(format!("/lighting/gdtf/import{query}"))
                     .header("content-type", content_type)
                     .body(Body::from(body))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&response_body(response).await).unwrap();
+        let status = response.status();
+        (
+            status,
+            serde_json::from_str(&response_body(response).await).unwrap_or_default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn an_import_with_no_mode_is_one_step_and_says_what_the_user_has() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state.clone());
+
+        let (status, parsed) = import_upload(&app, "synth.gdtf", &synthetic_gdtf_bytes(), "").await;
+
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(parsed["type_name"], "Synth Brick");
+        assert_eq!(parsed["fixture"], "Synth Brick");
+        assert_eq!(parsed["manufacturer"], "mtrack synthetic");
+        assert_eq!(parsed["modes"], 2);
+        assert_eq!(parsed["archive"], "lighting/library/synth.gdtf");
+        assert_eq!(parsed["already_imported"], false);
+        assert!(parsed["renamed_from"].is_null());
+        assert_eq!(parsed["refused_modes"], serde_json::json!([]));
+        assert!(parsed.get("warnings").is_none(), "{parsed}");
+        assert!(parsed.get("replaced_archive").is_none(), "{parsed}");
         assert!(
-            parsed["error"]
-                .as_str()
-                .unwrap()
-                .contains("no mode matching"),
-            "{parsed}"
+            !dir.path().join("lighting/fixture_types").exists(),
+            "an import is a copy; no record"
         );
+
+        // The same archive again: nothing written, and it says so.
+        let (status, parsed) = import_upload(&app, "copy.gdtf", &synthetic_gdtf_bytes(), "").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(parsed["already_imported"], true);
+        assert_eq!(parsed["type_name"], "Synth Brick");
+        assert!(!dir.path().join("lighting/library/copy.gdtf").exists());
+
+        // Another archive of the same fixture name gets its file stem.
+        let other = crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
+                .replace("mtrack synthetic", "someone else")
+                .as_bytes(),
+        )]);
+        let (status, parsed) = import_upload(&app, "brick-v2.gdtf", &other, "").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(parsed["type_name"], "Synth Brick (brick-v2)");
+        assert_eq!(parsed["renamed_from"], "Synth Brick");
+        let pin = std::fs::read_to_string(
+            dir.path()
+                .join("lighting/fixture_types/synth_brick_brick_v2.fixture"),
+        )
+        .unwrap_or_else(|e| panic!("the newcomer's name is pinned: {e}"));
+        assert!(
+            pin.contains("from gdtf(\"lighting/library/brick-v2.gdtf\")"),
+            "{pin}"
+        );
+
+        // A different archive of a name the library already has: 409, in
+        // the user's terms, and nothing written.
+        let third = crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
+                .replace("Synth Brick", "Third Brick")
+                .as_bytes(),
+        )]);
+        let (status, parsed) = import_upload(&app, "synth.gdtf", &third, "").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        let error = parsed["error"].as_str().unwrap();
+        assert!(error.contains("Rename your file"), "{error}");
+        assert!(!error.contains(".fixture"), "{error}");
+
+        // The fixture page takes it with no record.
+        let (status, parsed) = fixture_type_request(
+            state,
+            "GET",
+            "/lighting/fixture-types/Synth%20Brick/gdtf".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert!(parsed.get("mode").is_none(), "{parsed}");
+        assert!(parsed["rig"].is_string(), "{parsed}");
+    }
+
+    #[tokio::test]
+    async fn deleting_a_gdtf_fixture_removes_its_archive_unless_another_uses_it() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state.clone());
+        let delete = |name: &str| {
+            fixture_type_request(
+                state.clone(),
+                "DELETE",
+                format!("/lighting/fixture-types/{}", name.replace(' ', "%20")),
+                "text/plain",
+                Body::empty(),
+            )
+        };
+
+        // A fixture that is its archive alone: deleting it removes the archive.
+        let (status, _) = import_upload(&app, "synth.gdtf", &synthetic_gdtf_bytes(), "").await;
+        assert_eq!(status, StatusCode::OK);
+        let archive = dir.path().join("lighting/library/synth.gdtf");
+        let (status, parsed) = delete("Synth Brick").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "status": "deleted",
+                "name": "Synth Brick",
+                "archive_removed": "lighting/library/synth.gdtf",
+                "archive_kept": false,
+            })
+        );
+        assert!(!archive.exists());
+
+        // Two records of one archive: the first delete keeps it.
+        let (status, _) = import_upload(&app, "synth.gdtf", &synthetic_gdtf_bytes(), "").await;
+        assert_eq!(status, StatusCode::OK);
+        let types = dir.path().join("lighting/fixture_types");
+        std::fs::create_dir_all(&types).unwrap();
+        for (file, name) in [("a.fixture", "Brick A"), ("b.fixture", "Brick B")] {
+            std::fs::write(
+                types.join(file),
+                format!("fixture_type \"{name}\"\n  from gdtf(\"lighting/library/synth.gdtf\")\n{{\n}}\n"),
+            )
+            .unwrap();
+        }
+        let (status, parsed) = delete("Brick A").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert!(parsed["archive_removed"].is_null());
+        assert_eq!(parsed["archive_kept"], true);
+        assert!(archive.exists(), "Brick B still uses it");
+        assert!(!types.join("a.fixture").exists());
+
+        let (status, parsed) = delete("Brick B").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(parsed["archive_removed"], "lighting/library/synth.gdtf");
+        assert_eq!(parsed["archive_kept"], false);
+        assert!(!archive.exists());
+        assert!(
+            dir.path().join("lighting/.cache").is_dir(),
+            "the cache is left alone"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_hand_written_type_touches_no_archive() {
+        let (state, dir) = test_state();
+        let types = dir.path().join("lighting/fixture_types");
+        std::fs::create_dir_all(&types).unwrap();
+        std::fs::write(types.join("par.light"), sample_fixture_type_dsl("Par")).unwrap();
+        let (status, parsed) = fixture_type_request(
+            state,
+            "DELETE",
+            "/lighting/fixture-types/Par".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert!(parsed["archive_removed"].is_null());
+        assert_eq!(parsed["archive_kept"], false);
     }
 
     #[tokio::test]
@@ -5246,12 +5360,13 @@ show "test" {
 
         assert_eq!(status, StatusCode::OK, "{parsed}");
         assert_eq!(parsed["archive"], "library/synth.gdtf");
-        assert_eq!(parsed["mode"], "8: RGBS");
-        assert_eq!(parsed["matched_mode"], "8: RGBS");
+        assert!(
+            parsed.get("mode").is_none(),
+            "a type names no mode: {parsed}"
+        );
         let modes = parsed["inspection"]["modes"].as_array().expect("modes");
         assert!(!modes.is_empty(), "{parsed}");
         assert!(modes.iter().any(|m| m["name"] == "8: RGBS"), "{parsed}");
-        assert_eq!(parsed["inspection"]["fixture"], "Synth Brick");
         let rig = parsed["rig"].as_str().expect("a rig path");
         assert!(
             _dir.path()
@@ -5281,8 +5396,8 @@ show "test" {
         std::fs::create_dir_all(&venues).unwrap();
         std::fs::write(
             venues.join("stage.light"),
-            "venue \"stage\" {\n  fixture \"Brick2\" Brick @ 1:5\n  \
-             fixture \"Brick1\" Brick @ 1:1\n  fixture \"Par\" GenericPar @ 1:20\n}\n",
+            "venue \"stage\" {\n  fixture \"Brick2\" Brick mode \"8: RGBS\" @ 1:5\n  \
+             fixture \"Brick1\" Brick mode \"8: RGBS\" @ 1:1\n  fixture \"Par\" GenericPar @ 1:20\n}\n",
         )
         .unwrap();
         std::fs::write(
@@ -5294,6 +5409,258 @@ show "test" {
         )
         .unwrap();
         std::fs::write(venues.join("broken.light"), "venue {{{").unwrap();
+    }
+
+    /// A fixture types directory with types at the top and in
+    /// subdirectories: a native type in each, a GDTF record in `rig/`, a
+    /// second declaration of `Top` further down, and an unrecorded archive
+    /// in the library.
+    fn project_with_nested_types(project: &std::path::Path, ft_rel: &str) {
+        let library = project.join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::write(library.join("synth.gdtf"), synthetic_gdtf_bytes()).unwrap();
+        let shelf = project.join("lighting/library");
+        std::fs::create_dir_all(&shelf).unwrap();
+        std::fs::write(shelf.join("loose.gdtf"), synthetic_gdtf_bytes()).unwrap();
+        let ft = project.join(ft_rel);
+        std::fs::create_dir_all(ft.join("rig/old")).unwrap();
+        std::fs::write(ft.join("top.light"), sample_fixture_type_dsl("Top")).unwrap();
+        std::fs::write(ft.join("rig/wash.light"), sample_fixture_type_dsl("Wash")).unwrap();
+        std::fs::write(
+            ft.join("rig/brick.fixture"),
+            sample_referential_fixture_type_dsl("Brick"),
+        )
+        .unwrap();
+        std::fs::write(ft.join("rig/old/top.light"), sample_fixture_type_dsl("Top")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_fixture_type_in_a_subdirectory_lists_opens_saves_in_place_and_deletes() {
+        let (state, dir) = test_state();
+        let ft = dir.path().join("ft_nested");
+        project_with_nested_types(dir.path(), "ft_nested");
+
+        let (status, list) = fixture_type_request(
+            state.clone(),
+            "GET",
+            "/lighting/fixture-types?dir=ft_nested".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{list}");
+        let types = &list["fixture_types"];
+        assert_eq!(types["Wash"]["file"], "rig/wash.light", "{list}");
+        assert_eq!(types["Brick"]["file"], "rig/brick.fixture", "{list}");
+        // The second `Top` is reported the way any duplicate is, against
+        // both files; the first in path order keeps the name.
+        assert_eq!(types["Top"]["file"], "rig/old/top.light", "{list}");
+        let errors = list["errors"].as_array().unwrap();
+        assert!(
+            errors.iter().any(|e| e["file"] == "top.light"
+                && e["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("\"Top\" is defined in both rig/old/top.light and top.light")),
+            "{list}"
+        );
+
+        for uri in [
+            "/lighting/fixture-types/Wash?dir=ft_nested",
+            "/lighting/fixture-types/Brick?dir=ft_nested",
+            "/lighting/fixture-types/Brick/gdtf?dir=ft_nested",
+        ] {
+            let (status, parsed) = fixture_type_request(
+                state.clone(),
+                "GET",
+                uri.to_string(),
+                "text/plain",
+                Body::empty(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {parsed}");
+        }
+
+        let form = serde_json::json!({"channels": {"dimmer": 1}});
+        let (status, parsed) = fixture_type_request(
+            state.clone(),
+            "PUT",
+            "/lighting/fixture-types/Wash?dir=ft_nested".to_string(),
+            "application/json",
+            Body::from(serde_json::to_vec(&form).unwrap()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        let saved = std::fs::read_to_string(ft.join("rig/wash.light")).unwrap();
+        assert!(saved.contains("dimmer"), "{saved}");
+        assert!(
+            !ft.join("wash.light").exists(),
+            "saved beside, not in place"
+        );
+
+        let (status, parsed) = fixture_type_request(
+            state.clone(),
+            "DELETE",
+            "/lighting/fixture-types/Wash?dir=ft_nested".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert!(!ft.join("rig/wash.light").exists());
+        assert!(ft.join("rig/brick.fixture").exists());
+    }
+
+    #[tokio::test]
+    async fn the_engine_and_the_fixture_types_list_read_the_same_tree() {
+        let (state, dir) = test_state();
+        project_with_nested_types(dir.path(), "ft_agree");
+        let venues = dir.path().join("v_agree");
+        std::fs::create_dir_all(venues.join("tour/old")).unwrap();
+        std::fs::write(venues.join("house.light"), sample_venue_dsl("house")).unwrap();
+        std::fs::write(venues.join("tour/club.light"), sample_venue_dsl("club")).unwrap();
+        std::fs::write(
+            venues.join("tour/old/house.light"),
+            sample_venue_dsl("house"),
+        )
+        .unwrap();
+
+        let mut system = lighting::system::LightingSystem::new();
+        system
+            .load(
+                &crate::config::Lighting::new(
+                    None,
+                    None,
+                    None,
+                    Some(crate::config::lighting::Directories::new(
+                        Some("ft_agree".into()),
+                        Some("v_agree".into()),
+                    )),
+                ),
+                dir.path(),
+            )
+            .unwrap();
+        let mut engine: Vec<String> = system
+            .fixture_types_iter()
+            .chain(system.gdtf_types_iter())
+            .map(|(name, _)| name.clone())
+            .collect();
+        engine.sort();
+        let mut engine_venues: Vec<String> =
+            system.venues_iter().map(|(name, _)| name.clone()).collect();
+        engine_venues.sort();
+
+        let (status, list) = fixture_type_request(
+            state.clone(),
+            "GET",
+            "/lighting/fixture-types?dir=ft_agree".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{list}");
+        let mut web: Vec<String> = list["fixture_types"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        web.sort();
+        assert_eq!(engine, web);
+        assert_eq!(web, ["Brick", "Synth Brick", "Top", "Wash"]);
+
+        let (status, list) = fixture_type_request(
+            state,
+            "GET",
+            "/lighting/venues?dir=v_agree".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{list}");
+        let mut web_venues: Vec<String> = list["venues"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        web_venues.sort();
+        assert_eq!(engine_venues, web_venues);
+        assert_eq!(web_venues, ["club", "house"]);
+    }
+
+    #[tokio::test]
+    async fn a_venue_in_a_subdirectory_lists_opens_saves_in_place_and_deletes() {
+        let (state, dir) = test_state();
+        let venues = dir.path().join("v_nested");
+        std::fs::create_dir_all(venues.join("tour/old")).unwrap();
+        std::fs::write(venues.join("house.light"), sample_venue_dsl("house")).unwrap();
+        std::fs::write(venues.join("tour/club.light"), sample_venue_dsl("club")).unwrap();
+        std::fs::write(
+            venues.join("tour/old/house.light"),
+            sample_venue_dsl("house"),
+        )
+        .unwrap();
+
+        let (status, list) = fixture_type_request(
+            state.clone(),
+            "GET",
+            "/lighting/venues?dir=v_nested".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{list}");
+        assert!(list["venues"]["club"].is_object(), "{list}");
+        let errors = list["errors"].as_array().unwrap();
+        assert!(
+            errors.iter().any(|e| e["file"] == "tour/old/house.light"
+                && e["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("\"house\" is defined in both house.light and tour/old/house.light")),
+            "{list}"
+        );
+
+        let (status, parsed) = fixture_type_request(
+            state.clone(),
+            "GET",
+            "/lighting/venues/club?dir=v_nested".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+
+        let edited = sample_venue_dsl("club").replace("@ 1:5", "@ 1:9");
+        let (status, parsed) = fixture_type_request(
+            state.clone(),
+            "PUT",
+            "/lighting/venues/club?dir=v_nested".to_string(),
+            "text/plain",
+            Body::from(edited.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(
+            std::fs::read_to_string(venues.join("tour/club.light")).unwrap(),
+            edited
+        );
+        assert!(
+            !venues.join("club.light").exists(),
+            "saved beside, not in place"
+        );
+
+        let (status, parsed) = fixture_type_request(
+            state,
+            "DELETE",
+            "/lighting/venues/club?dir=v_nested".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert!(!venues.join("tour/club.light").exists());
     }
 
     #[tokio::test]
@@ -5361,7 +5728,7 @@ show "test" {
         project_with_bricks(_dir.path(), "ft_list_gdtf", "v_list_gdtf");
         std::fs::write(
             _dir.path().join("ft_list_gdtf").join("lost.fixture"),
-            "fixture_type \"Lost\" from gdtf(\"library/gone.gdtf\", mode \"8: RGBS\") {\n}\n",
+            "fixture_type \"Lost\" from gdtf(\"library/gone.gdtf\") {\n}\n",
         )
         .unwrap();
         std::fs::write(
@@ -5385,15 +5752,15 @@ show "test" {
         assert_eq!(brick["fixture"], "Synth Brick");
         assert_eq!(brick["manufacturer"], "mtrack synthetic");
         assert!(brick["modes"].as_u64().unwrap() > 0, "{brick}");
-        assert_eq!(brick["mode"], "8: RGBS");
+        assert!(brick.get("mode").is_none(), "{brick}");
         assert_eq!(
             brick["beam"],
             serde_json::json!({"type": "Spot", "angle": 12.0})
         );
         assert_eq!(brick["used_by"], 4);
         assert!(
-            types["Brick"]["footprint"].as_u64().unwrap() > 0,
-            "the default mode's footprint: {parsed}"
+            types["Brick"]["footprint"].is_null(),
+            "a GDTF type's footprint is each fixture's mode's: {parsed}"
         );
         assert!(types["Lost"]["footprint"].is_null(), "unknown is null");
         assert!(
@@ -5425,11 +5792,11 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn a_type_with_no_default_is_listed_and_drawn_in_its_first_mode() {
+    async fn an_unused_gdtf_type_is_listed_and_drawn_in_its_first_mode() {
         let (state, _dir) = test_state();
-        project_with_bricks(_dir.path(), "ft_nodefault", "v_nodefault");
+        project_with_bricks(_dir.path(), "ft_unused", "v_unused");
         std::fs::write(
-            _dir.path().join("ft_nodefault").join("bare.fixture"),
+            _dir.path().join("ft_unused").join("bare.fixture"),
             "fixture_type \"Bare\" from gdtf(\"library/synth.gdtf\") {\n}\n",
         )
         .unwrap();
@@ -5437,7 +5804,7 @@ show "test" {
         let (status, parsed) = fixture_type_request(
             state.clone(),
             "GET",
-            "/lighting/fixture-types?dir=ft_nodefault&venues_dir=v_nodefault".to_string(),
+            "/lighting/fixture-types?dir=ft_unused&venues_dir=v_unused".to_string(),
             "text/plain",
             Body::empty(),
         )
@@ -5445,25 +5812,20 @@ show "test" {
         assert_eq!(status, StatusCode::OK, "{parsed}");
         let bare = &parsed["fixture_types"]["Bare"];
         assert_eq!(bare["referential"], true, "{parsed}");
-        assert!(bare["default_mode"].is_null(), "{bare}");
-        assert!(bare["gdtf"]["mode"].is_null(), "{bare}");
+        assert!(bare["footprint"].is_null(), "{bare}");
+        assert!(bare.get("default_mode").is_none(), "{bare}");
         assert_eq!(bare["gdtf"]["in_use"], serde_json::json!([]));
-        assert_eq!(
-            parsed["fixture_types"]["Brick"]["default_mode"], "8: RGBS",
-            "a type with a default says it"
-        );
 
         let (status, parsed) = fixture_type_request(
             state,
             "GET",
-            "/lighting/fixture-types/Bare/gdtf?dir=ft_nodefault&venues_dir=v_nodefault".to_string(),
+            "/lighting/fixture-types/Bare/gdtf?dir=ft_unused&venues_dir=v_unused".to_string(),
             "text/plain",
             Body::empty(),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{parsed}");
-        assert!(parsed["mode"].is_null());
-        assert!(parsed["matched_mode"].is_null());
+        assert_eq!(parsed["venues"], serde_json::json!([]));
         assert!(
             parsed["rig"].is_string(),
             "drawn in the first mode: {parsed}"
@@ -5489,7 +5851,8 @@ show "test" {
         project_with_current_venue(_dir.path(), &state.config_path);
         let body = serde_json::json!({
             "fixtures": [
-                {"name": "B1", "fixture_type": "Brick", "universe": 1, "start_channel": 1},
+                {"name": "B1", "fixture_type": "Brick", "universe": 1, "start_channel": 1,
+                 "mode": "8: RGBS"},
                 {"name": "B2", "fixture_type": "Brick", "universe": 1, "start_channel": 20,
                  "mode": "Nope"},
             ]
@@ -5523,7 +5886,8 @@ show "test" {
         // Fixed: the error goes.
         let body = serde_json::json!({
             "fixtures": [
-                {"name": "B1", "fixture_type": "Brick", "universe": 1, "start_channel": 1},
+                {"name": "B1", "fixture_type": "Brick", "universe": 1, "start_channel": 1,
+                 "mode": "8: RGBS"},
                 {"name": "B2", "fixture_type": "Brick", "universe": 1, "start_channel": 20,
                  "mode": "Mover 16bit"},
             ]
@@ -5578,9 +5942,12 @@ show "test" {
         // mode, one whose mode does not load, and one past the universe end.
         std::fs::write(
             _dir.path().join("v_patch").join("p.venue"),
-            "venue \"p\" {\n  fixture \"G1\" Brick @ 1:1\n  fixture \"G2\" Brick @ 1:1\n  \
-             fixture \"Part\" Brick @ 1:3\n  fixture \"Wide\" Brick mode \"Mover 16bit\" @ 1:100\n  \
-             fixture \"Odd\" Brick mode \"Nope\" @ 1:200\n  fixture \"End\" Brick @ 1:511\n}\n",
+            "venue \"p\" {\n  fixture \"G1\" Brick mode \"8: RGBS\" @ 1:1\n  \
+             fixture \"G2\" Brick mode \"8: RGBS\" @ 1:1\n  \
+             fixture \"Part\" Brick mode \"8: RGBS\" @ 1:3\n  \
+             fixture \"Wide\" Brick mode \"Mover 16bit\" @ 1:100\n  \
+             fixture \"Odd\" Brick mode \"Nope\" @ 1:200\n  fixture \"Bare\" Brick @ 1:300\n  \
+             fixture \"End\" Brick mode \"8: RGBS\" @ 1:511\n}\n",
         )
         .unwrap();
 
@@ -5598,12 +5965,16 @@ show "test" {
         let rgbs = span("G1")["footprint"].as_u64().unwrap();
         assert!(rgbs > 0, "{parsed}");
         assert_eq!(span("G1")["type"], "Brick");
-        assert!(span("G1")["mode"].is_null());
+        assert_eq!(span("G1")["mode"], "8: RGBS");
         assert_eq!(span("Wide")["mode"], "Mover 16bit");
         assert_ne!(span("Wide")["footprint"], span("G1")["footprint"]);
         assert!(
             span("Odd")["footprint"].is_null(),
             "never guessed: {parsed}"
+        );
+        assert!(
+            span("Bare")["footprint"].is_null() && span("Bare")["mode"].is_null(),
+            "a GDTF fixture with no mode has no footprint: {parsed}"
         );
 
         // The gang is quiet; the partial overlap names the gang once.
@@ -5702,7 +6073,7 @@ show "test" {
         let (state, _dir) = test_state();
         let rel = "ft_escaping_archive";
         let app = router().with_state(state);
-        let dsl = "fixture_type \"Brick\" from gdtf(\"../../etc/passwd\", mode \"8: RGBS\") {\n}\n";
+        let dsl = "fixture_type \"Brick\" from gdtf(\"../../etc/passwd\") {\n}\n";
 
         let response = app
             .oneshot(
@@ -6737,8 +7108,23 @@ show "test" {
         songs: &[(&str, &str)],
         universes: &[u16],
     ) -> Rig {
+        rig_with_library(types, venue, songs, universes, &[])
+    }
+
+    /// [`rig`], with these archives in `lighting/library/` before it loads.
+    fn rig_with_library(
+        types: &[(&str, &str)],
+        venue: Option<&str>,
+        songs: &[(&str, &str)],
+        universes: &[u16],
+        library: &[(&str, &[u8])],
+    ) -> Rig {
         let project = tempfile::tempdir().unwrap();
         let root = project.path();
+        std::fs::create_dir_all(root.join("lighting/library")).unwrap();
+        for (file, bytes) in library {
+            std::fs::write(root.join("lighting/library").join(file), bytes).unwrap();
+        }
         std::fs::create_dir_all(root.join("types")).unwrap();
         std::fs::create_dir_all(root.join("venues")).unwrap();
         for (file, body) in types {
@@ -7006,11 +7392,11 @@ show "test" {
                 ("par.light", TYPE_PAR),
                 (
                     "ghost.fixture",
-                    "fixture_type \"Ghost\"\n  from gdtf(\"lighting/library/missing.gdtf\", mode \"X\")\n{ }\n",
+                    "fixture_type \"Ghost\"\n  from gdtf(\"lighting/library/missing.gdtf\")\n{ }\n",
                 ),
             ],
             Some(
-                "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"G\" Ghost @ 1:5\n  \
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"G\" Ghost mode \"M\" @ 1:5\n  \
                  fixture \"N\" Nope @ 1:9\n}\n",
             ),
             &[],
@@ -7034,6 +7420,46 @@ show "test" {
             .as_str()
             .unwrap()
             .contains("no fixture type named 'Nope'"));
+    }
+
+    #[tokio::test]
+    async fn readiness_lists_the_library_s_name_collisions_and_unreadable_archives() {
+        let archive = synthetic_gdtf_bytes();
+        let rig = rig_with_library(
+            &[("par.light", TYPE_PAR)],
+            Some(
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  \
+                 fixture \"B\" \"Synth Brick (b)\" mode \"8: RGBS\" @ 1:5\n}\n",
+            ),
+            &[],
+            &[1],
+            &[
+                ("a.gdtf", archive.as_slice()),
+                ("b.gdtf", archive.as_slice()),
+                ("junk.gdtf", b"not a zip".as_slice()),
+            ],
+        );
+        let report = readiness(rig.state.clone()).await;
+        assert!(report["venue_error"].is_null(), "{report}");
+        let library = report["fixture_types"]["library"].as_array().unwrap();
+        let kinds: Vec<(&str, &str)> = library
+            .iter()
+            .map(|f| (f["kind"].as_str().unwrap(), f["file"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("gdtf-name-collision", "b.gdtf"),
+                ("gdtf-unreadable", "junk.gdtf")
+            ],
+            "{report}"
+        );
+        // One finding per renamed archive, naming both.
+        let collision = library[0]["message"].as_str().unwrap();
+        assert!(
+            collision.contains("a.gdtf") && collision.contains("\"Synth Brick (b)\""),
+            "{collision}"
+        );
     }
 
     #[tokio::test]
@@ -7449,33 +7875,16 @@ show "test" {
     }
 
     // -----------------------------------------------------------------------
-    // POST /lighting/gdtf/inspect: what each mode can do
+    // A GDTF's modes, as the fixture page shows them
     // -----------------------------------------------------------------------
 
     async fn inspect(bytes: &[u8]) -> serde_json::Value {
-        let (state, _dir) = test_state();
-        let (content_type, body) = multipart_body("synth.gdtf", bytes);
-        let response = router()
-            .with_state(state)
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/lighting/gdtf/inspect")
-                    .header("content-type", content_type)
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        serde_json::from_str(&response_body(response).await).unwrap()
+        inspect_description(&lighting::gdtf::parse_archive(bytes).unwrap())
     }
 
     #[tokio::test]
     async fn inspect_gdtf_says_what_each_mode_can_do() {
         let parsed = inspect(&synthetic_gdtf_bytes()).await;
-        assert_eq!(parsed["suggested_name"], "Synth Brick");
-        assert_eq!(parsed["fixture_types_dir"], "lighting/fixture_types");
         let modes = parsed["modes"].as_array().unwrap();
         let rgbs = modes.iter().find(|m| m["name"] == "8: RGBS").unwrap();
         // RGB and a strobe, and a dimmer only as a virtual channel.
@@ -7488,7 +7897,7 @@ show "test" {
             .as_array()
             .unwrap()
             .contains(&json!([1, "red"])));
-        assert!(rgbs["warnings"].is_array());
+        assert!(rgbs.get("warnings").is_none(), "nothing reads them");
 
         let mover = modes.iter().find(|m| m["name"] == "Mover 16bit").unwrap();
         assert_eq!(mover["capabilities"], json!(["pan_tilt"]), "{mover}");

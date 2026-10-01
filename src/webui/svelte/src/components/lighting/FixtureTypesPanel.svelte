@@ -19,24 +19,24 @@
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "../config/Tooltip.svelte";
-  import GdtfModePicker from "./GdtfModePicker.svelte";
   import FixtureTypeDetails from "./FixtureTypeDetails.svelte";
   import { trimNumber } from "../../lib/lighting/fixtureFacts";
+  import { lightingHref } from "../../lib/lightingRoute";
+  import { untrack } from "svelte";
   import {
     channelProblems,
     type ChannelProblem,
   } from "../../lib/lighting/venueRows";
   import {
+    fetchFixtureTypeGdtf,
     fetchFixtureTypes,
     fetchFixtureType,
     saveFixtureType,
     saveFixtureTypeText,
     deleteFixtureType,
-    inspectGdtf,
     importGdtf,
     type FixtureTypeEntry,
     type GdtfSummary,
-    type GdtfInspection,
     type GdtfImportReport,
     type LightingFileError,
   } from "../../lib/api/config";
@@ -46,9 +46,31 @@
     dir?: string;
     /** Venues directory override: which venue fixtures use each type. */
     venuesDir?: string;
+    /** The fixture type the address opens; null is the list. */
+    open?: string | null;
+    /** `text` opens a hand-written type's file as text. */
+    as?: string | null;
+    /** A new hand-written type's form: `light` or `fixture`. */
+    creating?: string | null;
   }
 
-  let { dir = "", venuesDir = "" }: Props = $props();
+  let {
+    dir = "",
+    venuesDir = "",
+    open = null,
+    as = null,
+    creating = null,
+  }: Props = $props();
+
+  // What is open is the address (`#/lighting/fixtures/<name>`, `?as=text`,
+  // `?new=light|fixture`): every way in — a card, the section's link, the
+  // browser's Back, a reload, a shared link — goes through the URL, and the
+  // panel follows it.
+  const go = (hash: string) => {
+    if (window.location.hash !== hash) window.location.hash = hash;
+  };
+  const toList = () => go(lightingHref("fixtures"));
+  const toType = (name: string) => go(lightingHref("fixtures", name));
   let ftDir = $derived(dir);
 
   // --- Fixture Types state ---
@@ -88,15 +110,10 @@
     return beam ? `${modes} · ${beam}` : modes;
   }
 
-  /** An existing GDTF type opens on the fixture, its text last. */
+  /** A fixture from a GDTF opens on the fixture itself. mtrack keeps its
+   *  record (name, an optional default mode, movement limits) and writes it
+   *  through the settings form; it is never shown or edited as a file. */
   const showFtDetails = $derived(editFtReferential && !isNewFt);
-  /** The file's text as last read, so its edits can be told apart. */
-  let ftDslSaved = $state("");
-  /** A GDTF type's page has two ways to change its file: the settings form
-   *  and the file's text. Only one may have unsaved changes at a time —
-   *  each locks the other — and a save of either reloads both. */
-  let ftTextDirty = $derived(showFtDetails && editFtDsl !== ftDslSaved);
-  let ftFormDirty = $state(false);
   /** The settings form's last word, kept across a rename's reload. */
   let ftNotice = $state<{ ok: boolean; text: string } | null>(null);
   /** Bumped after a save, so the page re-reads the archive's answer. */
@@ -111,20 +128,10 @@
     ftNotice = notice;
     editingFt = name;
     editFtName = name;
-    ftFormDirty = false;
+    // A rename moves the page to its new address.
+    toType(name);
     await loadFixtureTypes();
-    await openFtAsText(name);
     ftDetailsTick++;
-  }
-
-  /** Saves the file's text from the GDTF type's page and stays on it. */
-  async function saveFtFile() {
-    const name = editFtDslName;
-    if (await saveFtText(true)) {
-      editFtName = name;
-      await openFtAsText(name);
-      ftDetailsTick++;
-    }
   }
   const editingGdtf = $derived(
     editingFt ? (fixtureTypes[editingFt]?.gdtf ?? null) : null,
@@ -193,6 +200,52 @@ fixture_type "Name" {
 
   // --- Fixture Type editing ---
 
+  /** Follows the address: opens what it names, or shows the list. It acts
+   *  when the address changes (and, for a name, once the list has loaded),
+   *  never on the panel's own reloads — those must not reopen anything. */
+  let appliedRoute: string | null = null;
+  $effect(() => {
+    const want = open;
+    const asText = as === "text";
+    const kind =
+      creating === "light" || creating === "fixture" ? creating : null;
+    const key = JSON.stringify([want, asText, kind]);
+    const loaded = !ftLoading;
+    void fixtureTypes;
+    untrack(() => {
+      if (key === appliedRoute) return;
+      if (kind) {
+        appliedRoute = key;
+        if (!(isNewFt && editFtExt === kind)) startNewFt(kind);
+        return;
+      }
+      if (!want) {
+        appliedRoute = key;
+        if (editingFt !== null) {
+          editingFt = null;
+          newFtChoice = false;
+        }
+        return;
+      }
+      // Wait for the list before deciding a name does not exist.
+      if (!loaded || (Object.keys(fixtureTypes).length === 0 && !ftError))
+        return;
+      appliedRoute = key;
+      if (!fixtureTypes[want]) {
+        editingFt = null;
+        ftMsg = get(t)("lighting.fixtureTypeMissing", {
+          values: { name: want },
+        });
+        return;
+      }
+      const textNow = ftMode === "text" && !editFtReferential;
+      if (editingFt !== want || (asText && !textNow)) {
+        if (asText) void editFtAsText(want);
+        else void startEditFt(want);
+      }
+    });
+  });
+
   async function startEditFt(name: string) {
     const entry = fixtureTypes[name];
     ftNotice = null;
@@ -203,8 +256,11 @@ fixture_type "Name" {
     editFtExt = entry.extension === "fixture" ? "fixture" : "light";
     editFtReferential = entry.referential;
     editFtRich = entry.rich;
+    importNotice = importNotice?.name === name ? importNotice : null;
 
-    if (editFtExt === "fixture" || entry.rich || entry.referential) {
+    // A fixture from a GDTF is its page: no file, no text.
+    if (entry.referential) return;
+    if (editFtExt === "fixture" || entry.rich) {
       await openFtAsText(name);
       return;
     }
@@ -232,7 +288,6 @@ fixture_type "Name" {
     try {
       const full = await fetchFixtureType(name, ftDir || undefined);
       editFtDsl = full.dsl;
-      ftDslSaved = full.dsl;
     } catch (e: any) {
       ftMsg = e.message;
     } finally {
@@ -275,20 +330,43 @@ fixture_type "Name" {
     editFtStrobeDmxOffset = "";
   }
 
-  // GDTF import flow: pick a file → inspect (modes) → pick a mode in the
-  // picker, which says what each lets a show do → import.
+  // Importing a GDTF is one step: choose the file and it is imported — no
+  // mode to pick, no name to type. The fixture is usable in a venue in any
+  // of its modes at once, and its page opens on what was imported.
   let gdtfFileInput = $state<HTMLInputElement | null>(null);
-  let gdtfFile = $state<File | null>(null);
-  let gdtfInspection = $state<GdtfInspection | null>(null);
   let gdtfBusy = $state(false);
   let gdtfError = $state("");
-  let gdtfReport = $state<GdtfImportReport | null>(null);
+  /** What the last import did, said on the fixture's page it opened. */
+  let importNotice = $state<{ name: string; text: string } | null>(null);
 
-  function resetGdtf() {
-    gdtfFile = null;
-    gdtfInspection = null;
-    gdtfError = "";
-    gdtfReport = null;
+  function importText(report: GdtfImportReport): string {
+    const tr = get(t);
+    if (report.already_imported)
+      return tr("lighting.gdtfImport.already", {
+        values: { name: report.type_name },
+      });
+    const parts = [
+      tr("lighting.gdtfImport.done", {
+        values: {
+          fixture: report.fixture,
+          manufacturer: report.manufacturer,
+          count: report.modes,
+        },
+      }),
+    ];
+    if (report.renamed_from)
+      parts.push(
+        tr("lighting.gdtfImport.renamed", {
+          values: { name: report.type_name, taken: report.renamed_from },
+        }),
+      );
+    if (report.refused_modes.length > 0)
+      parts.push(
+        tr("lighting.gdtfImport.refused", {
+          values: { count: report.refused_modes.length },
+        }),
+      );
+    return parts.join(" ");
   }
 
   async function onGdtfFileChosen(e: Event) {
@@ -296,28 +374,13 @@ fixture_type "Name" {
     const file = input.files?.[0];
     input.value = "";
     if (!file) return;
-    resetGdtf();
-    gdtfFile = file;
-    gdtfBusy = true;
-    try {
-      gdtfInspection = await inspectGdtf(file);
-    } catch (err) {
-      gdtfError = err instanceof Error ? err.message : String(err);
-      gdtfFile = null;
-    } finally {
-      gdtfBusy = false;
-    }
-  }
-
-  async function runGdtfImport(mode: string, name: string) {
-    if (!gdtfFile || !mode) return;
-    gdtfBusy = true;
     gdtfError = "";
+    gdtfBusy = true;
     try {
-      gdtfReport = await importGdtf(gdtfFile, mode, name || undefined);
-      gdtfInspection = null;
-      gdtfFile = null;
+      const report = await importGdtf(file);
       await loadFixtureTypes();
+      importNotice = { name: report.type_name, text: importText(report) };
+      toType(report.type_name);
     } catch (err) {
       gdtfError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -329,6 +392,7 @@ fixture_type "Name" {
     ftNotice = null;
     editingFt = null;
     newFtChoice = false;
+    toList();
   }
 
   function addFtChannel() {
@@ -414,6 +478,7 @@ fixture_type "Name" {
       }
       await loadFixtureTypes();
       editingFt = null;
+      toList();
       ftMsg = get(t)("common.saved");
       setTimeout(() => (ftMsg = ""), 2000);
     } catch (e: any) {
@@ -423,9 +488,8 @@ fixture_type "Name" {
     }
   }
 
-  /** Saves the file's text; `stay` keeps the type open afterwards (the GDTF
-   *  page's file disclosure). Whether it saved. */
-  async function saveFtText(stay = false): Promise<boolean> {
+  /** Saves a hand-written type's text. Whether it saved. */
+  async function saveFtText(): Promise<boolean> {
     // The text is the file, so the name it declares is the name to save
     // under: a URL naming anything else would write a file the panel could
     // never reach again, and the server refuses that outright.
@@ -449,7 +513,8 @@ fixture_type "Name" {
         await deleteFixtureType(oldName, ftDir || undefined);
       }
       await loadFixtureTypes();
-      editingFt = stay ? newName : null;
+      editingFt = null;
+      toList();
       ftMsg = get(t)("common.saved");
       setTimeout(() => (ftMsg = ""), 2000);
       return true;
@@ -461,17 +526,38 @@ fixture_type "Name" {
     }
   }
 
+  /** Deleting a fixture from a GDTF names the venues that use it first:
+   *  they stop loading. Its GDTF goes too unless another fixture uses it. */
   async function removeFt(name: string) {
-    if (
-      !(await showConfirm(
-        get(t)("lighting.deleteFixtureType", { values: { name } }),
-        { danger: true },
-      ))
-    )
-      return;
+    const tr = get(t);
+    const entry = fixtureTypes[name];
+    let question = tr("lighting.deleteFixtureType", { values: { name } });
+    if (entry?.referential) {
+      const uses = await fetchFixtureTypeGdtf(
+        name,
+        ftDir || undefined,
+        venuesDir || undefined,
+      )
+        .then((g) => g.venues.filter((v) => v.fixtures.length > 0))
+        .catch(() => []);
+      question = tr("lighting.deleteGdtfFixture", { values: { name } });
+      if (uses.length > 0)
+        question +=
+          "\n\n" +
+          uses
+            .map((v) =>
+              tr("lighting.deleteGdtfFixtureUsed", {
+                values: { count: v.fixtures.length, venue: v.name },
+              }),
+            )
+            .join("\n");
+    }
+    if (!(await showConfirm(question, { danger: true }))) return;
     try {
       await deleteFixtureType(name, ftDir || undefined);
       await loadFixtureTypes();
+      ftMsg = tr("lighting.deletedFixture", { values: { name } });
+      setTimeout(() => (ftMsg = ""), 3000);
     } catch (e: any) {
       ftMsg = e.message;
     }
@@ -527,57 +613,20 @@ fixture_type "Name" {
       </div>
 
       {#if showFtDetails}
-        <!-- The fixture first, the user's settings for it, and the file
-             they are saved in behind a disclosure. -->
+        {#if importNotice?.name === editingFt}
+          <p class="import-notice" role="status" data-testid="gdtf-report">
+            {importNotice.text}
+          </p>
+        {/if}
+        <!-- The fixture, then the user's settings for it. -->
         <FixtureTypeDetails
           name={editingFt}
           dir={ftDir || undefined}
           venuesDir={venuesDir || undefined}
-          fileDirty={ftTextDirty}
-          onformdirty={(dirty) => (ftFormDirty = dirty)}
           onsaved={onSettingsSaved}
           notice={ftNotice}
           refresh={ftDetailsTick}
-        >
-          {#snippet file()}
-            <div class="field" data-testid="ft-text-editor">
-              <p class="field-hint" data-testid="ft-referential-note">
-                {$t("lighting.fixtureTypeReferential")}
-              </p>
-              {#if ftTextLoading}
-                <p class="status-text">{$t("common.loading")}</p>
-              {:else}
-                <textarea
-                  class="raw-textarea"
-                  data-testid="ft-dsl"
-                  bind:value={editFtDsl}
-                  readonly={ftFormDirty}
-                  spellcheck="false"
-                ></textarea>
-              {/if}
-              <div class="editor-actions">
-                <button
-                  class="btn btn-primary btn-sm"
-                  type="button"
-                  data-testid="ft-file-save"
-                  disabled={!ftTextDirty || ftSaving}
-                  onclick={saveFtFile}
-                  >{ftSaving
-                    ? $t("common.saving")
-                    : $t("lighting.settings.saveFile")}</button
-                >
-                {#if ftTextDirty}
-                  <button
-                    class="btn btn-sm"
-                    type="button"
-                    onclick={() => (editFtDsl = ftDslSaved)}
-                    >{$t("common.discard")}</button
-                  >
-                {/if}
-              </div>
-            </div>
-          {/snippet}
-        </FixtureTypeDetails>
+        />
       {/if}
 
       {#if !showFtDetails}
@@ -613,13 +662,7 @@ fixture_type "Name" {
                 values: { ext: editFtExt },
               })}</span
             >
-            {#if editFtReferential}
-              <p class="field-hint" data-testid="ft-referential-note">
-                {$t("lighting.fixtureTypeReferential")}
-              </p>
-            {:else}
-              <p class="field-hint">{$t("lighting.fixtureTypeTextHint")}</p>
-            {/if}
+            <p class="field-hint">{$t("lighting.fixtureTypeTextHint")}</p>
             {#if ftExtChoosable}
               <!-- The one way out of v1: a plain type may be saved back as
                      a `.light` or converted to a `.fixture`. A rich or
@@ -775,8 +818,11 @@ fixture_type "Name" {
         <button
           class="btn"
           data-testid="import-gdtf"
+          disabled={gdtfBusy}
           onclick={() => gdtfFileInput?.click()}
-          >{$t("lighting.importGdtf")}</button
+          >{gdtfBusy
+            ? $t("lighting.gdtfImport.busy")
+            : $t("lighting.importGdtf")}</button
         >
         <button
           class="btn btn-primary"
@@ -796,56 +842,21 @@ fixture_type "Name" {
       <!-- The form a type is born in is a choice, not a default: the
                channel map cannot say what a .fixture file holds. -->
       <div class="new-ft-choice" data-testid="new-ft-choice">
-        <button class="btn" onclick={() => startNewFt("light")}
+        <button
+          class="btn"
+          onclick={() => go(lightingHref("fixtures", null, { new: "light" }))}
           >{$t("lighting.newFixtureTypeLight")}</button
         >
         <button
           class="btn"
           data-testid="new-ft-fixture"
-          onclick={() => startNewFt("fixture")}
+          onclick={() => go(lightingHref("fixtures", null, { new: "fixture" }))}
           >{$t("lighting.newFixtureTypeFixture")}</button
         >
       </div>
     {/if}
     {#if gdtfError}
       <div class="file-errors" data-testid="gdtf-error">{gdtfError}</div>
-    {/if}
-    {#if gdtfInspection}
-      <GdtfModePicker
-        inspection={gdtfInspection}
-        busy={gdtfBusy}
-        oncancel={resetGdtf}
-        onimport={runGdtfImport}
-      />
-    {/if}
-    {#if gdtfReport}
-      <div class="editor-form" data-testid="gdtf-report">
-        <div class="editor-header">
-          <h4 class="editor-title">
-            {$t("lighting.gdtfImported", {
-              values: { name: gdtfReport.type_name },
-            })}
-          </h4>
-          <div class="editor-actions">
-            <button class="btn" onclick={resetGdtf}>{$t("common.close")}</button
-            >
-          </div>
-        </div>
-        <div class="field-hint">{gdtfReport.fixture_file}</div>
-        <ul>
-          {#each gdtfReport.channels as [offset, channel] (offset)}
-            <li>channel {offset}: {channel}</li>
-          {/each}
-        </ul>
-        {#if gdtfReport.warnings.length > 0}
-          <div class="field-hint">{$t("lighting.gdtfWarnings")}</div>
-          <ul class="file-errors">
-            {#each gdtfReport.warnings as warning (warning)}
-              <li>{warning}</li>
-            {/each}
-          </ul>
-        {/if}
-      </div>
     {/if}
     {#if ftFileErrors.length > 0}
       <ul class="file-errors" data-testid="fixture-type-file-errors">
@@ -874,9 +885,9 @@ fixture_type "Name" {
             class:item-card--gdtf={entry.referential}
             role="button"
             tabindex="0"
-            onclick={() => startEditFt(name)}
+            onclick={() => toType(name)}
             onkeydown={(e) => {
-              if (e.key === "Enter") startEditFt(name);
+              if (e.key === "Enter") toType(name);
             }}
           >
             {#if entry.referential}
@@ -898,9 +909,15 @@ fixture_type "Name" {
             <div class="card-body">
               <div class="item-card-header">
                 <span class="item-name">{name}</span>
-                <span class="ext-badge" data-testid="ft-ext"
-                  >.{entry.extension}</span
-                >
+                {#if !entry.referential}
+                  <!-- A hand-written type's file is the user's own; a
+                       fixture from a GDTF has no file to speak of. -->
+                  <span class="ext-badge" data-testid="ft-ext"
+                    >.{entry.extension}</span
+                  >
+                {:else}
+                  <span class="card-spacer"></span>
+                {/if}
                 {#if entry.extension === "light"}
                   <!-- The channel map is the default way in; this is the
                            way out of it, and the only path from v1 to the
@@ -910,7 +927,7 @@ fixture_type "Name" {
                     data-testid="ft-edit-text"
                     onclick={(e) => {
                       e.stopPropagation();
-                      editFtAsText(name);
+                      go(lightingHref("fixtures", name, { as: "text" }));
                     }}>{$t("lighting.editAsText")}</button
                   >
                 {/if}
@@ -922,7 +939,9 @@ fixture_type "Name" {
                   }}>{$t("common.delete")}</button
                 >
               </div>
-              <div class="item-meta item-file">{entry.file}</div>
+              {#if !entry.referential}
+                <div class="item-meta item-file">{entry.file}</div>
+              {/if}
               {#if entry.referential && entry.gdtf}
                 {@const g = entry.gdtf}
                 <div class="item-meta" data-testid="ft-card-fixture">
@@ -946,14 +965,6 @@ fixture_type "Name" {
                         })}</span
                       >
                     {/if}
-                  {:else if g.mode}
-                    <span class="mode-pill" data-testid="ft-card-mode"
-                      >{g.mode}</span
-                    >
-                  {:else}
-                    <span class="item-meta" data-testid="ft-card-mode"
-                      >{$t("lighting.ftCard.noDefault")}</span
-                    >
                   {/if}
                 </div>
               {:else if entry.referential}
@@ -1134,6 +1145,19 @@ fixture_type "Name" {
 
   .item-file {
     font-family: var(--mono);
+  }
+
+  .card-spacer {
+    margin-right: auto;
+  }
+
+  .import-notice {
+    margin: 0;
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    background: var(--accent-subtle);
+    color: var(--text);
+    font-size: 13px;
   }
 
   .ext-badge {

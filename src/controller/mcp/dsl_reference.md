@@ -227,21 +227,24 @@ fixture_type "RGBW_Par" {
 }
 ```
 
-Fixture types can also reference a manufacturer GDTF archive (`.fixture`
-files) instead of hand-written channel maps:
+A fixture type can also be a manufacturer GDTF archive: every `.gdtf` in
+`lighting/library/` is a fixture type, named from the fixture name inside it.
+Each venue fixture of a GDTF type states its own mode, after the type:
 
 ```
-fixture_type "PB15 PixelBrick"
-  from gdtf("lighting/library/pb15.gdtf", mode "8: RGBS")
-{
-}
+fixture "Brick1" "PB15 PixelBrick" mode "8: RGBS" @ 1:1
 ```
 
-Prefer the MCP import flow over writing these by hand: download the GDTF
-into the project, call `list_gdtf_modes` to pick the mode against the
-venue's patch sheet, then `import_gdtf` — it copies the archive into
-`lighting/library/`, writes the `.fixture` file, and returns the resolved
-channels plus every distillation warning.
+A fixture of a GDTF type with no `mode` fails the venue. A `.fixture` record
+(`fixture_type "Name" from gdtf("lighting/library/x.gdtf") { movement { ... } }`)
+holds only what the GDTF does not say — another name, movement limits — and
+never a mode.
+
+Prefer the MCP import flow over copying archives by hand: download the GDTF
+into the project, call `list_gdtf_modes` to choose modes against the venue's
+patch sheet, then `import_gdtf` — it copies the archive into
+`lighting/library/` (with `name`, it also writes the record). Then write
+each venue line with its `mode "…"`.
 
 ## Venue (rarely written from MCP)
 

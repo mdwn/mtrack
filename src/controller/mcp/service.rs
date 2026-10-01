@@ -336,9 +336,8 @@ pub struct ListGdtfModesArgs {
 pub struct ImportGdtfArgs {
     /// Path to a .gdtf archive, relative to the project directory.
     pub path: String,
-    /// The DMX mode to distill (see list_gdtf_modes).
-    pub mode: String,
-    /// Name for the fixture type; defaults to the GDTF's fixture name.
+    /// Name for the fixture type; defaults to the GDTF's fixture name (with
+    /// the archive's file stem added when another fixture has that name).
     pub name: Option<String>,
 }
 
@@ -1751,30 +1750,53 @@ impl McpServer {
             Some(s) => s,
             None => return Ok(ok_json(json!({ "fixture_types": [] }))),
         };
-        let guard = system.lock();
-        // Every type the system declares: a GDTF type is the whole archive,
-        // listed with its default mode (null when it has none — its
-        // fixtures each name their own, and it has no channels until one
-        // does). A native type has no modes.
-        let mut types: Vec<Value> = guard
-            .fixture_types_iter()
-            .map(|(name, ft)| {
-                json!({
-                    "name": name,
-                    "channels": ft.channels(),
-                    "gdtf": ft.source().is_some(),
-                    "default_mode": ft.source().and_then(|s| s.mode.as_deref()),
+        // A native type has its own channels. A GDTF type is the whole
+        // archive: its channels are a mode's, and each venue fixture states
+        // its mode — so it is listed with the archive and its modes.
+        let (natives, gdtf): (Vec<Value>, Vec<(String, String)>) = {
+            let guard = system.lock();
+            (
+                guard
+                    .fixture_types_iter()
+                    .map(|(name, ft)| {
+                        json!({
+                            "name": name,
+                            "channels": ft.channels(),
+                            "gdtf": false,
+                        })
+                    })
+                    .collect(),
+                guard
+                    .gdtf_types_iter()
+                    .filter_map(|(name, ft)| ft.source().map(|s| (name.clone(), s.path.clone())))
+                    .collect(),
+            )
+        };
+        let project = self
+            .config_store()
+            .map(|store| crate::util::project_dir_of(store.path()))
+            .ok();
+        let gdtf = tokio::task::spawn_blocking(move || {
+            gdtf.into_iter()
+                .map(|(name, archive)| {
+                    let modes: Vec<String> = project
+                        .as_ref()
+                        .and_then(|project| std::fs::read(project.join(&archive)).ok())
+                        .and_then(|bytes| crate::lighting::gdtf::parse_archive(&bytes).ok())
+                        .map(|d| d.modes.into_iter().map(|m| m.name).collect())
+                        .unwrap_or_default();
+                    json!({
+                        "name": name,
+                        "gdtf": true,
+                        "archive": archive,
+                        "modes": modes,
+                    })
                 })
-            })
-            .chain(guard.fixture_types_without_default().map(|(name, _)| {
-                json!({
-                    "name": name,
-                    "channels": {},
-                    "gdtf": true,
-                    "default_mode": null,
-                })
-            }))
-            .collect();
+                .collect::<Vec<Value>>()
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("listing task failed: {e}"), None))?;
+        let mut types: Vec<Value> = natives.into_iter().chain(gdtf).collect();
         types.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
         Ok(ok_json(json!({ "fixture_types": types })))
     }
@@ -1800,8 +1822,9 @@ impl McpServer {
     }
 
     #[tool(description = "List the DMX modes of a GDTF fixture archive, with \
-        channel counts and DMX footprints. Mode selection is the one human \
-        input a GDTF import needs; pick against the venue's patch sheet.")]
+        channel counts and DMX footprints. Each venue fixture of a GDTF type \
+        states one of these on its line (`mode \"...\"`); pick against the \
+        venue's patch sheet.")]
     async fn list_gdtf_modes(
         &self,
         Parameters(args): Parameters<ListGdtfModesArgs>,
@@ -1829,12 +1852,15 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Import one mode of a GDTF fixture archive: copies \
-        the archive into lighting/library/, writes a GDTF-referential \
-        .fixture definition, and warms the expansion cache through the same \
-        path the player loads with. Returns the resolved channels and every \
-        distillation warning. The archive must already be inside the \
-        project directory (download it there first).")]
+    #[tool(description = "Import a GDTF fixture archive: copies it into \
+        lighting/library/, where it is a fixture type that a venue fixture can \
+        use in any of its modes (`mode \"...\"` on every fixture line of it). \
+        An archive already imported is reported (already_imported) and left \
+        alone; a name another fixture has gets the archive's file stem added \
+        (renamed_from). `name` writes a record giving the type that name. \
+        Returns the type name, the mode count and the modes it cannot drive \
+        and why. The archive must already be inside the project directory \
+        (download it there first).")]
     async fn import_gdtf(
         &self,
         Parameters(args): Parameters<ImportGdtfArgs>,
@@ -1844,7 +1870,6 @@ impl McpServer {
         let report = tokio::task::spawn_blocking(move || {
             crate::lighting::import::import_gdtf(
                 &path,
-                &args.mode,
                 args.name.as_deref(),
                 &project,
                 "lighting/fixture_types",
@@ -1870,8 +1895,8 @@ impl McpServer {
     #[tool(description = "Resolve an MVR venue archive against the project and \
         report what importing it would do, writing nothing: the venue file it \
         would seed or merge into, every referenced fixture type (and whether \
-        a .fixture already covers it), each patched fixture with its stage \
-        position, TODOs for fixtures whose GDTF or mode cannot be resolved, \
+        the library already has its archive), each patched fixture with its \
+        mode and stage position, TODOs for fixtures whose GDTF or mode cannot be resolved, \
         and — on a re-import — what changed. Pick `origin_mm` from the report's \
         positions so downstage-center lands at (0, 0, 0), then call import_mvr.")]
     async fn inspect_mvr(
@@ -1894,9 +1919,10 @@ impl McpServer {
     }
 
     #[tool(description = "Import an MVR venue archive: copies the MVR and its \
-        embedded GDTFs into lighting/library/, writes a GDTF-referential \
-        .fixture per referenced fixture type, and seeds a .venue file with \
-        positions, rotations and focus points in stage coordinates. A venue \
+        embedded GDTFs into lighting/library/ (each GDTF is a fixture type; \
+        an archive already there is reused), and seeds a .venue file whose \
+        every fixture line states its mode, with positions, rotations and \
+        focus points in stage coordinates. A venue \
         seeded earlier from the same MVR is merged instead — rig facts from \
         the new file, tags and focus names kept. Tags are empty on a fresh \
         seed: the venue file is the user's to tag afterwards. All validation \

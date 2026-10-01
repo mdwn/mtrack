@@ -1,5 +1,5 @@
 # A hand-written moving head in the rich channel form. Where a GDTF exists,
-# `mtrack import-gdtf` writes a referential .fixture instead; this form is
+# copy it into lighting/library/ (`mtrack import-gdtf`) instead; this form is
 # for the fixture whose manual is all you have.
 #
 #   channel "name" @ coarse [fine N] [range a..b] [{ function ... }]

@@ -15,19 +15,13 @@
 <script lang="ts">
   /**
    * "Your settings for this fixture" (lighting UI design §12.4): the three
-   * things in a GDTF type's file that are the user's — the name venues and
-   * shows call it by, its default mode, and its movement limits — as a
-   * form. A save is planned first: a rename says which venue lines it
-   * rewrites, a new default says which fixtures take it and what they would
-   * newly overlap, and the user confirms before anything is written. The
-   * file itself sits behind a disclosure (the `file` snippet), its own
-   * editor with its own save.
-   *
-   * Only one of the two may have unsaved changes: while the form does, the
-   * file's text is read-only (`onformdirty`); while the text does, the form
-   * is disabled (`fileDirty`). A save of either reloads both.
+   * things about a fixture from a GDTF that are the user's — the name
+   * venues and shows call it by, and its movement limits — as a form. (Its
+   * mode is each venue fixture's own choice.) A save is planned first: a
+   * rename says which venue lines it rewrites, and the user confirms before
+   * anything is written. mtrack keeps these in a record of its own; the user never sees
+   * or edits it as a file.
    */
-  import type { Snippet } from "svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
@@ -39,41 +33,21 @@
     type FixtureSettingsResult,
     type GdtfMode,
   } from "../../lib/api/config";
-  import { isRefused } from "../../lib/lighting/modes";
 
   interface Props {
     name: string;
     dir?: string;
     venuesDir?: string;
-    /** The archive's modes, for the default select. */
+    /** The archive's modes: whether any can pan or tilt. */
     modes: GdtfMode[];
-    /** The default being edited, as the archive spells it; the mode detail's
-     *  "Make this the default mode" sets it too. */
-    defaultMode?: string | null;
-    /** The file's text has unsaved edits: the form waits. */
-    fileDirty?: boolean;
-    onformdirty?: (dirty: boolean) => void;
     /** After a save, with the type's (possibly new) name. */
     onsaved?: (name: string, notice: { ok: boolean; text: string }) => void;
     /** What the last save said, kept by the page across the reload a rename
      *  makes (this form is rebuilt for the new name). */
     notice?: { ok: boolean; text: string } | null;
-    /** The file, behind the disclosure. */
-    file?: Snippet;
   }
 
-  let {
-    name,
-    dir,
-    venuesDir,
-    modes,
-    defaultMode = $bindable(null),
-    fileDirty = false,
-    onformdirty,
-    onsaved,
-    notice = null,
-    file,
-  }: Props = $props();
+  let { name, dir, venuesDir, modes, onsaved, notice = null }: Props = $props();
 
   let saved = $state<FixtureSettingsData | null>(null);
   let loadError = $state<string | null>(null);
@@ -84,25 +58,12 @@
   let saving = $state(false);
   let message = $state<{ ok: boolean; text: string } | null>(null);
 
-  /** The archive's spelling of a written mode, when it has one. */
-  const spelled = (mode: string | null) =>
-    mode === null
-      ? null
-      : (modes.find((m) => m.name === mode)?.name ??
-        modes.find(
-          (m) =>
-            m.name.toLowerCase().replace(/[^a-z0-9]/g, "") ===
-            mode.toLowerCase().replace(/[^a-z0-9]/g, ""),
-        )?.name ??
-        mode);
-
   const asNumber = (v: number | string | null | undefined) =>
     v === null || v === undefined || v === "" ? null : Number(v);
 
   function reset(from: FixtureSettingsData) {
     saved = from;
     typeName = from.name;
-    defaultMode = spelled(from.default_mode);
     pan = from.movement.max_pan_speed;
     tilt = from.movement.max_tilt_speed;
   }
@@ -132,11 +93,9 @@
   let dirty = $derived(
     !!saved &&
       (typeName.trim() !== saved.name ||
-        defaultMode !== spelled(saved.default_mode) ||
         asNumber(pan) !== saved.movement.max_pan_speed ||
         asNumber(tilt) !== saved.movement.max_tilt_speed),
   );
-  $effect(() => onformdirty?.(dirty));
 
   let speedsValid = $derived(
     [pan, tilt].every((v) => {
@@ -148,7 +107,6 @@
   function body(write: boolean, versions?: Record<string, string>) {
     return {
       name: typeName.trim(),
-      default_mode: defaultMode,
       movement: canMove
         ? { max_pan_speed: asNumber(pan), max_tilt_speed: asNumber(tilt) }
         : (saved?.movement ?? { max_pan_speed: null, max_tilt_speed: null }),
@@ -183,39 +141,6 @@
         }),
       );
     }
-    const change = plan.default_change;
-    if (change && change.count > 0) {
-      for (const v of change.venues) {
-        lines.push(
-          tr(
-            change.to
-              ? "lighting.settings.confirmDefault"
-              : "lighting.settings.confirmNoDefault",
-            {
-              values: {
-                count: v.fixtures.length,
-                venue: v.venue,
-                mode: change.to ?? "",
-              },
-            },
-          ),
-        );
-      }
-    }
-    for (const o of plan.overlaps) {
-      lines.push(
-        tr("lighting.settings.confirmOverlap", {
-          values: { venue: o.venue, detail: o.message },
-        }),
-      );
-    }
-    for (const o of plan.overruns) {
-      lines.push(
-        tr("lighting.settings.confirmOverlap", {
-          values: { venue: o.venue, detail: o.message },
-        }),
-      );
-    }
     return lines.length > 0 ? lines.join("\n\n") : null;
   }
 
@@ -243,13 +168,9 @@
       );
       const asked = consequences(plan);
       if (asked) {
-        const warn = plan.overlaps.length + plan.overruns.length > 0;
         const go = await showConfirm(
           `${asked}\n\n${tr("lighting.settings.confirmQuestion")}`,
-          {
-            danger: warn,
-            confirmLabel: tr("lighting.settings.saveAnyway"),
-          },
+          { confirmLabel: tr("lighting.settings.saveAnyway") },
         );
         if (!go) {
           message = { ok: false, text: tr("lighting.settings.notSaved") };
@@ -304,7 +225,7 @@
     message = null;
   }
 
-  let locked = $derived(fileDirty || saving);
+  let locked = $derived(saving);
 </script>
 
 <section
@@ -318,11 +239,6 @@
   {#if loadError}
     <p class="settings__error">{loadError}</p>
   {:else if saved}
-    {#if fileDirty}
-      <p class="field-hint" data-testid="ft-settings-locked">
-        {$t("lighting.settings.lockedByFile")}
-      </p>
-    {/if}
     <div class="settings__grid">
       <div class="settings__field">
         <label for="ft-set-name">{$t("lighting.settings.name")}</label>
@@ -334,31 +250,6 @@
           data-testid="ft-set-name"
         />
         <span class="field-hint">{$t("lighting.settings.nameHint")}</span>
-      </div>
-      <div class="settings__field">
-        <label for="ft-set-default">{$t("lighting.settings.defaultMode")}</label
-        >
-        <select
-          id="ft-set-default"
-          class="input settings__mono"
-          value={defaultMode ?? ""}
-          onchange={(e) => (defaultMode = e.currentTarget.value || null)}
-          disabled={locked}
-          data-testid="ft-set-default"
-        >
-          <option value="">{$t("lighting.settings.noDefault")}</option>
-          {#each modes as m (m.name)}
-            <option
-              value={m.name}
-              disabled={isRefused(m)}
-              title={m.refused ?? undefined}>{m.name}</option
-            >
-          {/each}
-          {#if defaultMode && !modes.some((m) => m.name === defaultMode)}
-            <option value={defaultMode}>{defaultMode}</option>
-          {/if}
-        </select>
-        <span class="field-hint">{$t("lighting.settings.defaultHint")}</span>
       </div>
       <div class="settings__field">
         <span class="settings__label">{$t("lighting.settings.movement")}</span>
@@ -426,21 +317,6 @@
         >
       {/if}
     </div>
-    {#if file}
-      <details class="settings__file" data-testid="ft-file">
-        <summary
-          >{$t("lighting.settings.savedAs", {
-            values: { file: saved.file },
-          })}</summary
-        >
-        {#if dirty}
-          <p class="field-hint" data-testid="ft-file-locked">
-            {$t("lighting.settings.fileLockedByForm")}
-          </p>
-        {/if}
-        {@render file()}
-      </details>
-    {/if}
   {/if}
 </section>
 
@@ -477,10 +353,6 @@
     gap: 4px;
     min-width: 0;
   }
-  .settings__mono {
-    font-family: var(--mono);
-    font-size: 12px;
-  }
   .settings__speeds {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -515,11 +387,6 @@
     color: var(--red);
     font-size: 13px;
     margin: 0;
-  }
-  .settings__file summary {
-    cursor: pointer;
-    font-size: 12px;
-    color: var(--text-dim);
   }
   .field-hint {
     margin: 0;

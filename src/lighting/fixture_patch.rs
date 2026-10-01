@@ -12,16 +12,15 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! A GDTF-sourced fixture type's file, patched in place (venue-exchange
-//! design §21, lighting UI design §12.4): the three things in it that are
-//! the user's — the type's name, its default mode and its movement limits —
-//! are changed where they are written, and nothing else moves. The leading
+//! A GDTF fixture's record, patched in place (venue-exchange design §22,
+//! lighting UI design §12.4): the two things in it that are the user's —
+//! the type's name and its movement limits — are changed where they are
+//! written, and nothing else moves. The leading
 //! comments, the archive path as written, other types in the file and any
 //! body the settings do not own survive byte for byte. The result is parsed
 //! back before it is handed over, so a patch that would not load is an
 //! error, never a file.
 
-use pest::iterators::Pair;
 use pest::Parser;
 
 use super::parser::grammar::{LightingParser, Rule};
@@ -33,9 +32,6 @@ use super::types::MovementLimits;
 pub struct FixtureSettings {
     /// The type's name: what venue fixture lines and shows call it.
     pub name: String,
-    /// The default mode, as the archive spells it; `None` leaves the type
-    /// without one (each venue fixture names its own).
-    pub default_mode: Option<String>,
     /// Movement limits; both `None` removes the block.
     pub movement: MovementLimits,
 }
@@ -56,9 +52,6 @@ pub fn patch_fixture_type(
         }
     };
     plain("name", &settings.name)?;
-    if let Some(mode) = &settings.default_mode {
-        plain("default mode", mode)?;
-    }
     for (what, value) in [
         ("max pan speed", settings.movement.max_pan_speed),
         ("max tilt speed", settings.movement.max_tilt_speed),
@@ -97,7 +90,7 @@ pub fn patch_fixture_type(
         }
     }
     let name = name.ok_or("the declaration has no name")?;
-    let source = source.ok_or_else(|| {
+    source.ok_or_else(|| {
         format!("fixture type \"{current}\" is not GDTF-sourced; edit it as text")
     })?;
 
@@ -107,29 +100,6 @@ pub fn patch_fixture_type(
         name.as_span().end(),
         format!("\"{}\"", settings.name),
     ));
-
-    // The default mode: changed, added or removed beside the archive path,
-    // which is kept exactly as written.
-    let strings: Vec<Pair<Rule>> = source
-        .clone()
-        .into_inner()
-        .filter(|p| p.as_rule() == Rule::string)
-        .collect();
-    let path_end = strings
-        .first()
-        .ok_or("the gdtf(...) source names no archive")?
-        .as_span()
-        .end();
-    match (strings.get(1), &settings.default_mode) {
-        (Some(old), Some(mode)) => edits.push((
-            old.as_span().start(),
-            old.as_span().end(),
-            format!("\"{mode}\""),
-        )),
-        (None, Some(mode)) => edits.push((path_end, path_end, format!(", mode \"{mode}\""))),
-        (Some(old), None) => edits.push((path_end, old.as_span().end(), String::new())),
-        (None, None) => {}
-    }
 
     // Movement limits: the block replaced, removed (with its line, when it
     // had the line to itself) or added on a line of its own before the
@@ -181,8 +151,7 @@ pub fn patch_fixture_type(
     let patched = types
         .get(&settings.name)
         .ok_or("the patched file lost the declaration")?;
-    let ok = patched.source().map(|s| s.mode.as_deref()) == Some(settings.default_mode.as_deref())
-        && *patched.movement() == settings.movement;
+    let ok = patched.source().is_some() && *patched.movement() == settings.movement;
     if !ok {
         return Err("the patched file does not read back as the settings".to_string());
     }
@@ -193,10 +162,9 @@ pub fn patch_fixture_type(
 pub fn current_settings(content: &str, name: &str) -> Option<FixtureSettings> {
     let types = parse_fixture_types(content).ok()?;
     let fixture_type = types.get(name)?;
-    let source = fixture_type.source()?;
+    fixture_type.source()?;
     Some(FixtureSettings {
         name: name.to_string(),
-        default_mode: source.mode.clone(),
         movement: *fixture_type.movement(),
     })
 }
@@ -230,19 +198,13 @@ mod tests {
     const FILE: &str = "# Imported from pb15.gdtf (\"PB15\" by Astera).\n\
                         # Channels come from the GDTF; this file carries only overrides.\n\
                         fixture_type \"Astera-PixelBrick\"\n  \
-                        from gdtf(\"lighting/library/pb15.gdtf\",   mode \"8: RGBS\")\n{\n  \
+                        from gdtf(\"lighting/library/pb15.gdtf\"  )\n{\n  \
                         # measured on the rig\n  \
                         special_cases: [\"Wash\"]\n}\n";
 
-    fn settings(
-        name: &str,
-        mode: Option<&str>,
-        pan: Option<f64>,
-        tilt: Option<f64>,
-    ) -> FixtureSettings {
+    fn settings(name: &str, pan: Option<f64>, tilt: Option<f64>) -> FixtureSettings {
         FixtureSettings {
             name: name.to_string(),
-            default_mode: mode.map(str::to_string),
             movement: MovementLimits {
                 max_pan_speed: pan,
                 max_tilt_speed: tilt,
@@ -253,7 +215,7 @@ mod tests {
     #[test]
     fn the_current_settings_are_unchanged_by_a_patch_to_themselves() {
         let current = current_settings(FILE, "Astera-PixelBrick").unwrap();
-        assert_eq!(current.default_mode.as_deref(), Some("8: RGBS"));
+        assert_eq!(current.name, "Astera-PixelBrick");
         assert_eq!(
             patch_fixture_type(FILE, "Astera-PixelBrick", &current).unwrap(),
             FILE
@@ -261,24 +223,9 @@ mod tests {
     }
 
     #[test]
-    fn a_new_default_changes_only_the_mode_string() {
-        let out = patch_fixture_type(
-            FILE,
-            "Astera-PixelBrick",
-            &settings("Astera-PixelBrick", Some("9: RGBWS"), None, None),
-        )
-        .unwrap();
-        assert_eq!(out, FILE.replace("\"8: RGBS\"", "\"9: RGBWS\""));
-    }
-
-    #[test]
     fn a_rename_keeps_comments_path_and_body() {
-        let out = patch_fixture_type(
-            FILE,
-            "Astera-PixelBrick",
-            &settings("Brick", Some("8: RGBS"), None, None),
-        )
-        .unwrap();
+        let out =
+            patch_fixture_type(FILE, "Astera-PixelBrick", &settings("Brick", None, None)).unwrap();
         assert_eq!(
             out,
             FILE.replace(
@@ -289,35 +236,11 @@ mod tests {
     }
 
     #[test]
-    fn the_default_can_be_removed_and_added_back() {
-        let none = patch_fixture_type(
-            FILE,
-            "Astera-PixelBrick",
-            &settings("Astera-PixelBrick", None, None, None),
-        )
-        .unwrap();
-        assert!(
-            none.contains("from gdtf(\"lighting/library/pb15.gdtf\")"),
-            "{none}"
-        );
-        let back = patch_fixture_type(
-            &none,
-            "Astera-PixelBrick",
-            &settings("Astera-PixelBrick", Some("8: RGBS"), None, None),
-        )
-        .unwrap();
-        assert!(
-            back.contains("from gdtf(\"lighting/library/pb15.gdtf\", mode \"8: RGBS\")"),
-            "{back}"
-        );
-    }
-
-    #[test]
     fn movement_limits_are_added_replaced_and_removed_on_their_own_line() {
         let added = patch_fixture_type(
             FILE,
             "Astera-PixelBrick",
-            &settings("Astera-PixelBrick", Some("8: RGBS"), Some(240.0), None),
+            &settings("Astera-PixelBrick", Some(240.0), None),
         )
         .unwrap();
         assert!(
@@ -329,12 +252,7 @@ mod tests {
         let replaced = patch_fixture_type(
             &added,
             "Astera-PixelBrick",
-            &settings(
-                "Astera-PixelBrick",
-                Some("8: RGBS"),
-                Some(240.0),
-                Some(180.5),
-            ),
+            &settings("Astera-PixelBrick", Some(240.0), Some(180.5)),
         )
         .unwrap();
         assert!(
@@ -345,7 +263,7 @@ mod tests {
         let removed = patch_fixture_type(
             &replaced,
             "Astera-PixelBrick",
-            &settings("Astera-PixelBrick", Some("8: RGBS"), None, None),
+            &settings("Astera-PixelBrick", None, None),
         )
         .unwrap();
         assert_eq!(removed, FILE);
@@ -353,15 +271,14 @@ mod tests {
 
     #[test]
     fn an_empty_body_gains_its_block_inside_the_braces() {
-        let file = "fixture_type \"B\" from gdtf(\"a.gdtf\", mode \"m\") {\n}\n";
-        let out =
-            patch_fixture_type(file, "B", &settings("B", Some("m"), None, Some(90.0))).unwrap();
+        let file = "fixture_type \"B\" from gdtf(\"a.gdtf\") {\n}\n";
+        let out = patch_fixture_type(file, "B", &settings("B", None, Some(90.0))).unwrap();
         assert_eq!(
             out,
-            "fixture_type \"B\" from gdtf(\"a.gdtf\", mode \"m\") {\n  movement { max_tilt_speed: 90deg/s }\n}\n"
+            "fixture_type \"B\" from gdtf(\"a.gdtf\") {\n  movement { max_tilt_speed: 90deg/s }\n}\n"
         );
         let one_line = "fixture_type \"B\" from gdtf(\"a.gdtf\") {}\n";
-        let out = patch_fixture_type(one_line, "B", &settings("B", None, Some(1.0), None)).unwrap();
+        let out = patch_fixture_type(one_line, "B", &settings("B", Some(1.0), None)).unwrap();
         assert!(
             current_settings(&out, "B").unwrap().movement.max_pan_speed == Some(1.0),
             "{out}"
@@ -370,13 +287,11 @@ mod tests {
 
     #[test]
     fn another_type_in_the_file_is_left_alone() {
-        let file =
-            format!("{FILE}\nfixture_type \"Other\" from gdtf(\"b.gdtf\", mode \"x\") {{\n}}\n");
-        let out =
-            patch_fixture_type(&file, "Other", &settings("Other", Some("y"), None, None)).unwrap();
+        let file = format!("{FILE}\nfixture_type \"Other\" from gdtf(\"b.gdtf\") {{\n}}\n");
+        let out = patch_fixture_type(&file, "Other", &settings("Renamed", None, None)).unwrap();
         assert!(out.starts_with(FILE), "{out}");
         assert!(
-            out.ends_with("from gdtf(\"b.gdtf\", mode \"y\") {\n}\n"),
+            out.ends_with("fixture_type \"Renamed\" from gdtf(\"b.gdtf\") {\n}\n"),
             "{out}"
         );
     }
@@ -385,17 +300,14 @@ mod tests {
     fn refusals_say_why() {
         let bad =
             |s: FixtureSettings| patch_fixture_type(FILE, "Astera-PixelBrick", &s).unwrap_err();
-        assert!(bad(settings("a\"b", None, None, None)).contains("name"));
-        assert!(bad(settings("B", Some(""), None, None)).contains("default mode"));
-        assert!(bad(settings("B", None, Some(-1.0), None)).contains("pan"));
-        assert!(
-            patch_fixture_type(FILE, "Nope", &settings("B", None, None, None))
-                .unwrap_err()
-                .contains("Nope")
-        );
+        assert!(bad(settings("a\"b", None, None)).contains("name"));
+        assert!(bad(settings("B", Some(-1.0), None)).contains("pan"));
+        assert!(patch_fixture_type(FILE, "Nope", &settings("B", None, None))
+            .unwrap_err()
+            .contains("Nope"));
         let native = "fixture_type \"Par\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n";
         assert!(
-            patch_fixture_type(native, "Par", &settings("Par", None, None, None))
+            patch_fixture_type(native, "Par", &settings("Par", None, None))
                 .unwrap_err()
                 .contains("not GDTF-sourced")
         );

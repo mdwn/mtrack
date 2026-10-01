@@ -73,6 +73,8 @@ function rig(): VenueBody {
       tags: ["wash"],
       position: [-6 + i * 1.6, 2, 0] as [number, number, number],
       rotation: null,
+      // Every fixture of a GDTF type names its own mode.
+      mode: "8: RGBS" as string | null,
     })),
     focus_points: {},
     source: null,
@@ -129,7 +131,7 @@ async function routeAll(page: Page, name: string, initial: VenueBody) {
             fixture: f.name,
             universe: f.universe,
             address: f.start_channel,
-            footprint: FOOTPRINT[f.mode ?? "8: RGBS"],
+            footprint: f.mode ? FOOTPRINT[f.mode] : null,
             type: f.fixture_type,
             mode: f.mode ?? null,
           })),
@@ -155,7 +157,7 @@ async function routeAll(page: Page, name: string, initial: VenueBody) {
             file: "brick.fixture",
             extension: "fixture",
             referential: true,
-            default_mode: "8: RGBS",
+            footprint: null,
             rich: false,
             gdtf: null,
           },
@@ -168,8 +170,6 @@ async function routeAll(page: Page, name: string, initial: VenueBody) {
     route.fulfill(
       json({
         archive: "library/pb15.gdtf",
-        mode: "8: RGBS",
-        matched_mode: "8: RGBS",
         rig: null,
         thumbnail: null,
         beam: null,
@@ -186,9 +186,10 @@ async function routeAll(page: Page, name: string, initial: VenueBody) {
   return { puts };
 }
 
-async function open(page: Page) {
+async function open(page: Page, change: (v: VenueBody) => void = () => {}) {
   const name = `l21-${test.info().parallelIndex}-${++counter}-${Date.now()}`;
   const venue = rig();
+  change(venue);
   const served = await routeAll(page, name, venue);
   await page.goto(`/?wsId=${name}#/lighting/venues`);
   await expect(page.locator(".item-card").first()).toBeVisible();
@@ -218,16 +219,18 @@ async function open(page: Page) {
 }
 
 test.describe("Venue inspector: a fixture's mode", () => {
-  test("the select offers the type default and every mode with its footprint", async ({
+  test("the select shows the fixture's own mode among every mode with its footprint", async ({
     page,
   }) => {
     await open(page);
     const select = page.getByTestId("insp-mode");
-    await expect(select).toHaveValue("");
+    await expect(select).toHaveValue("8: RGBS");
+    // No "type default": a mode is always the fixture's own choice.
     const options = select.locator("option");
-    await expect(options).toHaveCount(MODES.length + 1);
-    await expect(options.nth(0)).toHaveText("Type default (8: RGBS)");
-    await expect(options.nth(3)).toHaveText("9: RGBWS — 5 addresses");
+    await expect(options).toHaveCount(MODES.length);
+    await expect(options.nth(0)).toHaveText("1: RGB — 3 addresses");
+    await expect(options.nth(2)).toHaveText("9: RGBWS — 5 addresses");
+    await expect(select).not.toContainText(/default/i);
     // A refused mode is listed, not offered, its reason on hover.
     const broken = select.locator('option[value="99: Broken"]');
     await expect(broken).toBeDisabled();
@@ -260,7 +263,7 @@ test.describe("Venue inspector: a fixture's mode", () => {
       "Not saved. 13: DIM RGBAWS needs addresses 9 to 15, and Brick4 already uses some of them. Move Brick4 or pick a mode of 4 addresses or fewer.",
     );
     // The select goes back to what is saved, and nothing was PUT.
-    await expect(select).toHaveValue("");
+    await expect(select).toHaveValue("8: RGBS");
     await page.waitForTimeout(300);
     expect(puts).toHaveLength(0);
   });
@@ -274,14 +277,34 @@ test.describe("Venue inspector: a fixture's mode", () => {
     expect(brick3.mode).toBe("1: RGB");
     // Nobody else's mode was touched.
     expect(
-      puts[0].fixtures.filter((f) => f.name !== "Brick3").every((f) => !f.mode),
+      puts[0].fixtures
+        .filter((f) => f.name !== "Brick3")
+        .every((f) => f.mode === "8: RGBS"),
     ).toBe(true);
     await expect(select).toHaveValue("1: RGB");
 
-    // Back to the type default: the mode leaves the line.
-    await select.selectOption("");
+    // And back: the line names that mode again.
+    await select.selectOption("8: RGBS");
     await expect.poll(() => puts.length).toBe(2);
-    expect(puts[1].fixtures.find((f) => f.name === "Brick3")!.mode).toBeNull();
+    expect(puts[1].fixtures.find((f) => f.name === "Brick3")!.mode).toBe(
+      "8: RGBS",
+    );
+  });
+
+  test("a fixture read without its mode asks for one, and choosing it saves", async ({
+    page,
+  }) => {
+    const { puts } = await open(page, (v) => (v.fixtures[2].mode = null));
+    const select = page.getByTestId("insp-mode");
+    await expect(select).toHaveValue("");
+    const choose = select.locator('option[value=""]');
+    await expect(choose).toHaveText("Choose a mode");
+    await expect(choose).toBeDisabled();
+    await select.selectOption("1: RGB");
+    await expect.poll(() => puts.length).toBe(1);
+    expect(puts[0].fixtures.find((f) => f.name === "Brick3")!.mode).toBe(
+      "1: RGB",
+    );
   });
 
   test("moving onto a neighbour's addresses is refused before the save", async ({

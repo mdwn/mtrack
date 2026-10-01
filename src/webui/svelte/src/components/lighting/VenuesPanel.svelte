@@ -23,7 +23,9 @@
   import MvrExportDialog from "./MvrExportDialog.svelte";
   import { venueStore } from "../../lib/ws/stores";
   import { collisions, lastAddress, nextPatch } from "../../lib/lighting/patch";
+  import { isRefused } from "../../lib/lighting/modes";
   import { untrack } from "svelte";
+  import { lightingHref } from "../../lib/lightingRoute";
   import {
     nextFixtureName,
     rowProblems,
@@ -48,16 +50,45 @@
     /** Directory overrides (a profile's `lighting.directories`). */
     fixtureTypesDir?: string;
     venuesDir?: string;
-    /** The venue picked in the list; the plot on this page shows it. Null
-     *  leaves the plot on the current venue, live. */
+    /** The venue picked in the list (the address's `#/lighting/venues/<name>`);
+     *  the plot on this page shows it. Null leaves the plot on the current
+     *  venue, live. */
     selected?: string | null;
+    /** `?edit`: the selected venue's form is open. */
+    edit?: boolean;
+    /** `?new=venue`: a new venue's form is open. */
+    creating?: string | null;
   }
 
   let {
     fixtureTypesDir = "",
     venuesDir = "",
-    selected = $bindable(null),
+    selected = null,
+    edit = false,
+    creating = null,
   }: Props = $props();
+
+  // The selection and an open form are the address, so the section's link,
+  // Back and a reload land where they say; every action navigates.
+  const go = (hash: string) => {
+    if (window.location.hash !== hash) window.location.hash = hash;
+  };
+  const select = (name: string | null) => go(lightingHref("venues", name));
+
+  $effect(() => {
+    const want = selected;
+    const editing = edit;
+    const fresh = creating === "venue";
+    untrack(() => {
+      if (fresh) {
+        if (editingVenue !== "__new__") startNewVenue();
+      } else if (editing && want) {
+        if (editingVenue !== want) void startEditVenue(want);
+      } else if (editingVenue !== null) {
+        editingVenue = null;
+      }
+    });
+  });
   let ftDir = $derived(fixtureTypesDir);
   let venueDir = $derived(venuesDir);
 
@@ -90,11 +121,13 @@
        *  stage view, not here, and a save must not drop them. */
       position?: Vec3 | null;
       rotation?: Vec3 | null;
-      /** The fixture's own GDTF mode, carried through like its position;
-       *  it belongs to the type it was chosen for (`modeOfType`), so a
-       *  fixture moved to another type takes that type's default. */
+      /** The fixture's own GDTF mode; it belongs to the type it was chosen
+       *  for (`modeOfType`), so a fixture moved to another type takes that
+       *  type's first drivable mode. */
       mode?: string | null;
       modeOfType?: string;
+      /** Added or re-typed: take the first drivable mode once known. */
+      pickFirst?: boolean;
     }[]
   >([]);
   /** Likewise carried through: the venue's focus points and MVR provenance. */
@@ -106,10 +139,8 @@
 
   // Available fixture type names for venue fixture dropdowns
   let fixtureTypeNames = $derived(Object.keys(fixtureTypes).sort());
-  /** A GDTF type with no default mode: each of its fixtures names its own
-   *  (in the stage view's inspector), or the venue does not load. */
-  const noDefaultMode = (entry: FixtureTypeEntry | undefined) =>
-    !!entry?.referential && entry.default_mode === null;
+  /** A fixture from a GDTF: every row of it names its own mode. */
+  const fromGdtf = (type: string) => !!fixtureTypes[type]?.referential;
 
   async function loadFixtureTypes() {
     try {
@@ -160,7 +191,6 @@
     await loadVenues();
     const v = venues[name];
     if (!v) return;
-    selected = name;
     editVersion = venueVersions[name];
     editingVenue = name;
     editVenueName = name;
@@ -198,6 +228,7 @@
 
   function cancelEditVenue() {
     editingVenue = null;
+    select(isNewVenue ? null : selected);
   }
 
   /** The addresses a fixture of `type` occupies, in its type's default
@@ -246,27 +277,34 @@
       ? (archives[row.fixture_type]?.inspection.modes ?? null)
       : null;
 
-  /** The type's default, as the archive spells it. */
-  const defaultModeOf = (row: Row) => {
-    const archive = archives[row.fixture_type];
-    return archive?.matched_mode ?? archive?.mode ?? null;
-  };
+  /** The first mode of a type's GDTF that mtrack can drive, once read. */
+  const firstDrivable = (type: string) =>
+    archives[type]?.inspection.modes.find((m) => !isRefused(m))?.name ?? null;
 
-  /** The addresses a row occupies: its own mode's footprint when the
-   *  archive is read, else the type's default's; null when not known. */
+  // A row added or switched to a fixture from a GDTF takes the first mode
+  // mtrack can drive as soon as its GDTF's modes are known (`pickFirst`),
+  // so Add Fixture → Save always writes a line with its mode. A row read
+  // from a file without one is not filled in: it is marked to be chosen.
+  $effect(() => {
+    for (const row of editVenueFixtures) {
+      if (!row.pickFirst || row.mode) continue;
+      const first = firstDrivable(row.fixture_type);
+      if (first) {
+        row.mode = first;
+        row.pickFirst = false;
+      }
+    }
+  });
+
+  /** The addresses a row occupies: a fixture from a GDTF, its mode's (once
+   *  the GDTF has been read); a hand-written one, its type's; null when not
+   *  known. */
   function rowFootprint(row: Row): number | null {
-    const modes = modesOf(row);
+    if (!fromGdtf(row.fixture_type)) return footprintOf(row.fixture_type);
     const own = row.mode ?? null;
-    if (own && modes) {
-      const found = modes.find((m) => m.name === own);
-      if (found) return found.footprint;
-    }
-    if (!own && modes) {
-      const def = defaultModeOf(row);
-      const found = modes.find((m) => m.name === def);
-      if (found) return found.footprint;
-    }
-    return own ? null : footprintOf(row.fixture_type);
+    return (
+      (own && modesOf(row)?.find((m) => m.name === own)?.footprint) || null
+    );
   }
 
   /** Each row's span, for the strip of words under it and the overlap check. */
@@ -296,8 +334,11 @@
   /** A changed type takes its own default mode: a mode names a mode of one
    *  archive. */
   function typeChanged(row: Row) {
-    row.mode = null;
     row.modeOfType = row.fixture_type;
+    row.mode = fromGdtf(row.fixture_type)
+      ? firstDrivable(row.fixture_type)
+      : null;
+    row.pickFirst = fromGdtf(row.fixture_type) && !row.mode;
   }
 
   /** A new row continues the patch from the last row: its type, its
@@ -306,6 +347,14 @@
   function addVenueFixture() {
     const last = editVenueFixtures[editVenueFixtures.length - 1];
     const type = last?.fixture_type || fixtureTypeNames[0] || "";
+    // A fixture from a GDTF: the previous row's mode when it is the same
+    // fixture, else its first drivable mode (or, until its GDTF has been
+    // read, whatever the effect above fills in).
+    const mode = fromGdtf(type)
+      ? last?.fixture_type === type && last.mode
+        ? last.mode
+        : firstDrivable(type)
+      : null;
     const at = nextPatch(
       last
         ? {
@@ -314,7 +363,7 @@
             footprint: rowFootprint(last),
           }
         : null,
-      footprintOf(type),
+      rowFootprint({ fixture_type: type, mode } as Row),
     );
     editVenueFixtures = [
       ...editVenueFixtures,
@@ -324,8 +373,9 @@
         universe: at.universe,
         start_channel: at.address,
         tags: [],
-        mode: null,
+        mode,
         modeOfType: type,
+        pickFirst: fromGdtf(type) && !mode,
       },
     ];
   }
@@ -335,7 +385,7 @@
   let checkRows = $state(false);
   let problems = $derived(
     checkRows
-      ? rowProblems(editVenueFixtures)
+      ? rowProblems(editVenueFixtures, fromGdtf)
       : new Map<number, RowProblem[]>(),
   );
 
@@ -376,7 +426,7 @@
     }
     // Every row is saved or the save is refused: a row that cannot be
     // saved is marked, never left out.
-    const found = rowProblems(editVenueFixtures);
+    const found = rowProblems(editVenueFixtures, fromGdtf);
     if (found.size > 0) {
       checkRows = true;
       venueMsg = get(t)("lighting.venueRowsNeedAttention", {
@@ -448,8 +498,8 @@
         await deleteVenue(oldName, venueDir || undefined);
       }
       await loadVenues();
-      selected = newName;
       editingVenue = null;
+      select(newName);
       if (saved.venueError) {
         // Saved, and the venue no longer loads: said here, and left up.
         venueMsg = get(t)("lighting.venueError.saved", {
@@ -486,7 +536,7 @@
       return;
     try {
       await deleteVenue(name, venueDir || undefined);
-      if (selected === name) selected = null;
+      if (selected === name) select(null);
       await loadVenues();
     } catch (e: any) {
       venueMsg = e.message;
@@ -573,13 +623,7 @@
                 >
                   <option value="">{$t("lighting.selectType")}</option>
                   {#each fixtureTypeNames as ftName (ftName)}
-                    <option value={ftName}
-                      >{noDefaultMode(fixtureTypes[ftName])
-                        ? $t("lighting.typeNoDefault", {
-                            values: { name: ftName },
-                          })
-                        : ftName}</option
-                    >
+                    <option value={ftName}>{ftName}</option>
                   {/each}
                 </select>
               {:else}
@@ -638,7 +682,6 @@
             </div>
             {#if modesOf(fix)}
               {@const modes = modesOf(fix) ?? []}
-              {@const def = defaultModeOf(fix)}
               <div class="venue-fixture-row">
                 <div class="field compact-field" style="flex: 2;">
                   <label for={`fix-mode-${i}`}
@@ -651,13 +694,13 @@
                     value={fix.mode ?? ""}
                     onchange={(e) => (fix.mode = e.currentTarget.value || null)}
                   >
-                    <option value=""
-                      >{def
-                        ? $t("venues.inspector.modeDefault", {
-                            values: { mode: def },
-                          })
-                        : $t("venues.inspector.modeDefaultNone")}</option
-                    >
+                    {#if !fix.mode}
+                      <!-- A mode is always chosen; this shows only for a
+                           line read without one, which blocks the save. -->
+                      <option value="" disabled
+                        >{$t("venues.inspector.modeChoose")}</option
+                      >
+                    {/if}
                     {#each modes as m (m.name)}
                       <option
                         value={m.name}
@@ -736,7 +779,9 @@
         <a class="btn" href="#/lighting/import" data-testid="venues-import-mvr"
           >{$t("lighting.mvr.import.button")}</a
         >
-        <button class="btn btn-primary" onclick={startNewVenue}
+        <button
+          class="btn btn-primary"
+          onclick={() => go(lightingHref("venues", null, { new: "venue" }))}
           >{$t("lighting.newVenue")}</button
         >
       </div>
@@ -769,9 +814,9 @@
             role="button"
             tabindex="0"
             aria-pressed={selected === name}
-            onclick={() => (selected = name)}
+            onclick={() => select(name)}
             onkeydown={(e) => {
-              if (e.key === "Enter") selected = name;
+              if (e.key === "Enter") select(name);
             }}
           >
             <div class="item-card-header">
@@ -787,7 +832,7 @@
                   data-testid="venue-edit-{name}"
                   onclick={(e) => {
                     e.stopPropagation();
-                    void startEditVenue(name);
+                    go(lightingHref("venues", name, { edit: "" }));
                   }}>{$t("lighting.venueEdit")}</button
                 >
                 <button

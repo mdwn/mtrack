@@ -44,7 +44,7 @@ you want to.
   [Move Effect](effects.md#move-effect) and [Venue files with positions](configuration.md#venue-files-with-positions-venue).
 - **GDTF and MVR**: Import a manufacturer's GDTF file as a fixture type, and a venue's MVR
   file as a positioned venue; export a venue back out as MVR. See
-  [GDTF-referential fixture types](configuration.md#gdtf-referential-fixture-types-fixture)
+  [GDTF fixture types](configuration.md#gdtf-fixture-types)
   and [Importing a venue's MVR](configuration.md#importing-a-venues-mvr).
 - **Pixel Fixtures**: Fixtures with cells can be driven per pixel with `per: cell` and
   `spread`. See [Rich channel definitions](configuration.md#rich-channel-definitions-fixture).

@@ -12,15 +12,21 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! A GDTF fixture type's own settings — its name, its default mode and its
-//! movement limits — as the fixture page's form edits them (lighting UI
-//! design §12.4). The type's file is patched, not regenerated
-//! ([`lighting::fixture_patch`]). A rename rewrites every venue line that
-//! names the type, planned in full before anything is written; a new default
-//! says which venue fixtures take it and what they would newly overlap, so
-//! the page can ask before it saves.
+//! A GDTF fixture's own settings — its name and its movement limits — as the
+//! fixture page's form edits them (lighting UI design §12.4, venue-exchange
+//! design §22). They live in mtrack's record of the fixture, which exists
+//! only once something is set: a GDTF in the library with no record is a
+//! fixture named from its archive, and the first change writes the record
+//! (the importer's writer), then patches it ([`lighting::fixture_patch`]).
+//! A rename rewrites every venue line that names the type, planned in full
+//! before anything is written.
 
 use std::collections::{BTreeMap, HashMap};
+
+/// The version a fixture with no record answers, and a save to it sends as
+/// `If-Match`: "no record yet". A save against it refuses if a record has
+/// appeared since.
+pub(super) const UNRECORDED: &str = "unrecorded";
 use std::path::{Path as FsPath, PathBuf};
 
 use axum::{
@@ -35,13 +41,12 @@ use super::super::config_io;
 use super::super::server::WebUiState;
 use super::lighting_api::{
     canonical_project_root, content_version, existing_fixture_type_file, if_match_version,
-    locate_fixture_type_file, project_root, resolve_lighting_dir, system_from_files,
-    validate_lighting_name, venue_error_after_save, DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR,
-    VENUE_EXTENSIONS, VENUE_WRITES,
+    locate_fixture_type_file, project_root, resolve_lighting_dir, validate_lighting_name,
+    venue_error_after_save, DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR, VENUE_EXTENSIONS,
+    VENUE_WRITES,
 };
 use crate::lighting;
 use crate::lighting::fixture_patch::{current_settings, patch_fixture_type, FixtureSettings};
-use crate::lighting::patch::{venue_overlaps, venue_overruns, PatchSpan};
 use crate::lighting::types::{Fixture, MovementLimits, Venue};
 
 /// The directories a settings request works in.
@@ -55,7 +60,6 @@ pub(super) struct SettingsQuery {
 #[derive(serde::Deserialize)]
 pub(super) struct SettingsRequest {
     name: String,
-    default_mode: Option<String>,
     #[serde(default)]
     movement: MovementLimits,
     /// `false` answers what the save would do and writes nothing.
@@ -77,9 +81,11 @@ fn error(status: StatusCode, message: String) -> Response {
         .into_response()
 }
 
-/// GET /api/lighting/fixture-types/:name/settings — the settings a GDTF
-/// type's file holds, for the form: `{name, default_mode, movement, file,
-/// version}`. A native type is a 404 here (it is edited as before).
+/// GET /api/lighting/fixture-types/:name/settings — a GDTF fixture's
+/// settings, for the form: `{name, movement, version}`. A fixture that is
+/// its archive alone (no record) answers its derived name, no limits and the
+/// version [`UNRECORDED`]. A native type
+/// is a 404 here (it is edited as before).
 pub(super) async fn get_settings(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -91,11 +97,31 @@ pub(super) async fn get_settings(
         query.dir.as_deref(),
         DEFAULT_FIXTURE_TYPES_DIR,
     )?;
+    let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let Some((path, _)) = locate_fixture_type_file(&dir, &name).await? else {
-        return Err(error(
-            StatusCode::NOT_FOUND,
-            format!("Fixture type not found: {name}"),
-        ));
+        let (dir, wanted) = (dir.clone(), name.clone());
+        let unrecorded = super::helpers::spawn_blocking_io("read the GDTF library", move || {
+            Ok::<_, String>(
+                lighting::library::unrecorded_types(&root, Some(&dir))
+                    .get(&wanted)
+                    .is_some(),
+            )
+        })
+        .await?;
+        if !unrecorded {
+            return Err(error(
+                StatusCode::NOT_FOUND,
+                format!("Fixture type not found: {name}"),
+            ));
+        }
+        return Ok::<_, Response>(
+            Json(json!({
+                "name": name,
+                "movement": MovementLimits::default(),
+                "version": UNRECORDED,
+            }))
+            .into_response(),
+        );
     };
     let read = path.clone();
     let content = super::helpers::spawn_blocking_io("read fixture type", move || {
@@ -111,9 +137,7 @@ pub(super) async fn get_settings(
     Ok::<_, Response>(
         Json(json!({
             "name": settings.name,
-            "default_mode": settings.default_mode,
             "movement": settings.movement,
-            "file": crate::util::filename_display(&path),
             "version": content_version(content.as_bytes()),
         }))
         .into_response(),
@@ -138,31 +162,24 @@ struct Plan {
     rewrites: Vec<VenueRewrite>,
     /// Every venue file read, by file name, with its version.
     venue_versions: BTreeMap<String, String>,
-    default_change: Option<serde_json::Value>,
-    overlaps: Vec<serde_json::Value>,
-    overruns: Vec<serde_json::Value>,
     config_references: Vec<String>,
+    /// The record is new: written for the first time by this save.
+    new_record: bool,
+    /// Records pinning the current names of the library fixtures that share
+    /// this one's name (a rename would otherwise move theirs): (path, text).
+    pins: Vec<(PathBuf, String)>,
+    /// Nothing differs from what is there: a save writes nothing.
+    unchanged: bool,
 }
 
 /// A planning refusal: the status and the message.
 type Refusal = (StatusCode, String);
 
-/// The venue files of a directory (both extensions), sorted, each with its
-/// text; one that cannot be read is an error naming it.
+/// The venue files of a directory and its subdirectories (both
+/// extensions), in path order — the files the lighting system loads — each
+/// with its text; one that cannot be read is an error naming it.
 fn venue_files(dir: &FsPath) -> Result<Vec<(PathBuf, String)>, Refusal> {
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.is_file()
-                && p.extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| VENUE_EXTENSIONS.contains(&e))
-        })
-        .collect();
-    paths.sort();
-    paths
+    crate::lighting::project_files::files_under(dir, VENUE_EXTENSIONS)
         .into_iter()
         .map(|p| {
             std::fs::read_to_string(&p)
@@ -172,7 +189,7 @@ fn venue_files(dir: &FsPath) -> Result<Vec<(PathBuf, String)>, Refusal> {
                         StatusCode::CONFLICT,
                         format!(
                             "venue file {} cannot be read ({e}); nothing was written",
-                            crate::util::filename_display(&p)
+                            crate::lighting::project_files::display_in(dir, &p)
                         ),
                     )
                 })
@@ -223,16 +240,37 @@ fn plan(
     expected_type_version: Option<&str>,
 ) -> Result<Plan, Refusal> {
     let bad = |m: String| (StatusCode::BAD_REQUEST, m);
-    let type_path = existing_fixture_type_file(types_dir, name).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            format!("Fixture type not found: {name}"),
-        )
-    })?;
-    let content = std::fs::read_to_string(&type_path)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let type_version = content_version(content.as_bytes());
-    let type_file = crate::util::filename_display(&type_path).to_string();
+    let library = lighting::library::unrecorded_types(root, Some(types_dir));
+    let mut claimed = Vec::new();
+    // The record, or — for a GDTF in the library with none yet — the one
+    // the importer would write, to be created by this save.
+    let (type_path, content, type_version, new_record) =
+        match existing_fixture_type_file(types_dir, name) {
+            Some(path) => {
+                let content = std::fs::read_to_string(&path)
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                let version = content_version(content.as_bytes());
+                (path, content, version, false)
+            }
+            None => {
+                let unrecorded = library.get(name).ok_or_else(|| {
+                    (
+                        StatusCode::NOT_FOUND,
+                        format!("Fixture type not found: {name}"),
+                    )
+                })?;
+                // Named for the name it will hold: a rename's new one.
+                let (path, content) = new_record_for(
+                    root,
+                    types_dir,
+                    unrecorded,
+                    request.name.trim(),
+                    &mut claimed,
+                )?;
+                (path, content, UNRECORDED.to_string(), true)
+            }
+        };
+    let type_file = crate::lighting::project_files::display_in(types_dir, &type_path);
     if expected_type_version.is_some_and(|v| v != type_version) {
         return Err((
             StatusCode::CONFLICT,
@@ -253,7 +291,9 @@ fn plan(
                  hyphens and underscores; not a route name)"
             ))
         })?;
-        if existing_fixture_type_file(types_dir, &new_name).is_some() {
+        if existing_fixture_type_file(types_dir, &new_name).is_some()
+            || library.get(&new_name).is_some()
+        {
             return Err((
                 StatusCode::CONFLICT,
                 format!("there is already a fixture type named \"{new_name}\""),
@@ -262,15 +302,29 @@ fn plan(
     }
     let settings = FixtureSettings {
         name: new_name.clone(),
-        default_mode: request
-            .default_mode
-            .as_deref()
-            .map(str::trim)
-            .filter(|m| !m.is_empty())
-            .map(str::to_string),
         movement: request.movement,
     };
+    let unchanged = settings == current;
     let patched = patch_fixture_type(&content, name, &settings).map_err(bad)?;
+    // A library fixture renamed away from a name it shares with another
+    // (`Name` and `Name (stem)`) would move the other's: pin theirs too.
+    let mut pins = Vec::new();
+    if renaming && new_record {
+        let base = library
+            .get(name)
+            .map(|t| t.renamed_from.clone().unwrap_or_else(|| t.name.clone()));
+        for sibling in library.types.iter().filter(|t| {
+            t.name != name && Some(t.renamed_from.clone().unwrap_or_else(|| t.name.clone())) == base
+        }) {
+            pins.push(new_record_for(
+                root,
+                types_dir,
+                sibling,
+                &sibling.name,
+                &mut claimed,
+            )?);
+        }
+    }
 
     // Every venue file: read, versioned, and — for a rename — patched.
     let files = if venues_dir.is_dir() {
@@ -282,7 +336,9 @@ fn plan(
     let mut rewrites = Vec::new();
     let mut parsed: Vec<(String, Venue)> = Vec::new();
     for (path, text) in &files {
-        let file = crate::util::filename_display(path).to_string();
+        // Relative to the venues directory: two subdirectories may each
+        // hold a `club.light`, and each needs its own version.
+        let file = crate::lighting::project_files::display_in(venues_dir, path);
         let version = content_version(text.as_bytes());
         if let Some(expected) = request.venue_versions.get(&file) {
             if *expected != version {
@@ -347,120 +403,6 @@ fn plan(
         }
     }
 
-    // A new default: the fixtures that take it, and what they would newly
-    // overlap or run past at its footprint.
-    let mut default_change = None;
-    let mut overlaps = Vec::new();
-    let mut overruns = Vec::new();
-    if settings.default_mode != current.default_mode {
-        let takers: Vec<(String, Vec<&Fixture>)> = parsed
-            .iter()
-            .map(|(venue_name, venue)| {
-                let fixtures: Vec<&Fixture> = venue
-                    .fixtures_by_patch()
-                    .into_iter()
-                    .filter(|f| f.fixture_type() == name && f.mode().is_none())
-                    .collect();
-                (venue_name.clone(), fixtures)
-            })
-            .filter(|(_, f)| !f.is_empty())
-            .collect();
-        let count: usize = takers.iter().map(|(_, f)| f.len()).sum();
-        let new_footprint = match &settings.default_mode {
-            Some(mode) if count > 0 => {
-                let declared = lighting::parser::parse_fixture_types(&content)
-                    .ok()
-                    .and_then(|t| t.get(name).cloned());
-                declared.and_then(|d| {
-                    lighting::system::LightingSystem::expand_mode(name, &d, mode, root)
-                        .ok()
-                        .map(|(t, _)| t.footprint())
-                })
-            }
-            _ => None,
-        };
-        if count > 0 {
-            let system = system_from_files(root, types_dir, venues_dir).ok();
-            for (venue_name, fixtures) in &takers {
-                let Some(venue) = parsed.iter().find(|(n, _)| n == venue_name).map(|(_, v)| v)
-                else {
-                    continue;
-                };
-                let changed: Vec<&str> = fixtures.iter().map(|f| f.name()).collect();
-                let span = |f: &Fixture, footprint: Option<u16>| {
-                    footprint.map(|footprint| PatchSpan {
-                        fixture: f.name().to_string(),
-                        universe: f.universe(),
-                        address: f.start_channel(),
-                        footprint,
-                    })
-                };
-                let now = |f: &Fixture| {
-                    system
-                        .as_ref()
-                        .and_then(|s| s.resolve_fixture_type(f).ok())
-                        .map(|t| t.footprint())
-                };
-                let before: Vec<PatchSpan> = venue
-                    .fixtures_by_patch()
-                    .into_iter()
-                    .filter_map(|f| span(f, now(f)))
-                    .collect();
-                let after: Vec<PatchSpan> = venue
-                    .fixtures_by_patch()
-                    .into_iter()
-                    .filter_map(|f| {
-                        if changed.contains(&f.name()) {
-                            span(f, new_footprint)
-                        } else {
-                            span(f, now(f))
-                        }
-                    })
-                    .collect();
-                let was = venue_overlaps(&before);
-                for o in venue_overlaps(&after) {
-                    if was.contains(&o) {
-                        continue;
-                    }
-                    overlaps.push(json!({
-                        "venue": venue_name,
-                        "a": o.first,
-                        "b": o.second,
-                        "a_gang": o.first_gang,
-                        "b_gang": o.second_gang,
-                        "universe": o.universe,
-                        "from": o.from,
-                        "to": o.to,
-                        "message": o.to_string(),
-                    }));
-                }
-                let was = venue_overruns(&before);
-                for o in venue_overruns(&after) {
-                    if !was.contains(&o) {
-                        overruns.push(json!({
-                            "venue": venue_name,
-                            "fixture": o.fixture,
-                            "message": o.to_string(),
-                        }));
-                    }
-                }
-            }
-        }
-        default_change = Some(json!({
-            "from": current.default_mode,
-            "to": settings.default_mode,
-            "footprint": new_footprint,
-            "count": count,
-            "venues": takers
-                .iter()
-                .map(|(venue, f)| json!({
-                    "venue": venue,
-                    "fixtures": f.iter().map(|f| f.name()).collect::<Vec<_>>(),
-                }))
-                .collect::<Vec<_>>(),
-        }));
-    }
-
     // Inline fixtures in the player config name their type by string too;
     // the config is the user's to edit, so they are reported, not rewritten.
     let mut config_references = Vec::new();
@@ -485,11 +427,50 @@ fn plan(
         patched,
         rewrites,
         venue_versions,
-        default_change,
-        overlaps,
-        overruns,
         config_references,
+        new_record,
+        pins,
+        unchanged,
     })
+}
+
+/// The record the importer would write for a library fixture with none: a
+/// fresh file in the types directory named after `file_name_for`, never over
+/// an existing one or one this save already `claimed`.
+fn new_record_for(
+    root: &FsPath,
+    types_dir: &FsPath,
+    library_type: &lighting::library::LibraryType,
+    file_name_for: &str,
+    claimed: &mut Vec<PathBuf>,
+) -> Result<(PathBuf, String), Refusal> {
+    let bytes = std::fs::read(root.join(&library_type.archive)).map_err(|e| {
+        (
+            StatusCode::CONFLICT,
+            format!("{} cannot be read: {e}", library_type.file_name),
+        )
+    })?;
+    let description = lighting::gdtf::parse_archive(&bytes).map_err(|e| {
+        (
+            StatusCode::CONFLICT,
+            format!("{} is not a readable GDTF: {e}", library_type.file_name),
+        )
+    })?;
+    let stem = lighting::import::fixture_filename_stem(file_name_for);
+    let mut path = types_dir.join(format!("{stem}.fixture"));
+    let mut n = 2;
+    while path.exists() || claimed.contains(&path) {
+        path = types_dir.join(format!("{stem}_{n}.fixture"));
+        n += 1;
+    }
+    claimed.push(path.clone());
+    let text = lighting::import::gdtf_definition(
+        &library_type.name,
+        &library_type.archive,
+        &library_type.file_name,
+        &description,
+    );
+    Ok((path, text))
 }
 
 /// The name of the venue the player plays against: the engine's, else the
@@ -512,17 +493,17 @@ fn current_venue_name(state: &WebUiState) -> Option<String> {
 }
 
 /// POST /api/lighting/fixture-types/:name/settings — plans (`write: false`)
-/// or saves (`write: true`) a GDTF type's settings: `{name, default_mode,
-/// movement: {max_pan_speed, max_tilt_speed}}`. The type's file is patched in
-/// place; a rename rewrites every venue line that names the type, in every
-/// venue file, or — when any file cannot be rewritten — nothing at all. An
-/// `If-Match` header carries the type file's version and `venue_versions`
-/// the venue files' from the plan; either having changed is a 409. A save
-/// holds the venue write lock, writes the venue files then the type file,
-/// and reloads the running engine's types and venues once. The answer says
-/// what changed (or would): `{write, file, version, rename, default_change,
-/// overlaps, overruns, venue_versions, config_references, reloaded,
-/// venue_error}`.
+/// or saves (`write: true`) a GDTF fixture's settings: `{name, movement:
+/// {max_pan_speed, max_tilt_speed}}`. The record is patched in place, or —
+/// for a fixture with none — written by the importer's writer first; a
+/// rename rewrites every venue line that names the type, in every venue
+/// file, or — when any file cannot be rewritten — nothing at all. An
+/// `If-Match` header carries the record's version ([`UNRECORDED`] for none)
+/// and `venue_versions` the venue files' from the plan; either having
+/// changed is a 409. A save holds the venue write lock, writes the venue
+/// files then the record, and reloads the running engine's types and venues
+/// once. The answer says what changed (or would): `{version, rename,
+/// venue_versions, config_references, venue_error}`.
 pub(super) async fn post_settings(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -562,7 +543,15 @@ pub(super) async fn post_settings(
             Ok(plan) => plan,
             Err(refusal) => return Ok::<_, String>(Err(refusal)),
         };
-        if write {
+        if write && !plan.unchanged {
+            if plan.new_record || !plan.pins.is_empty() {
+                std::fs::create_dir_all(&types_dir)
+                    .map_err(|e| format!("creating {}: {e}", types_dir.display()))?;
+            }
+            for (path, text) in &plan.pins {
+                config_io::staged_write(path, text)
+                    .map_err(|e| format!("writing {}: {e}", path.display()))?;
+            }
             for rewrite in &plan.rewrites {
                 config_io::staged_write(&rewrite.path, &rewrite.content)
                     .map_err(|e| format!("writing {}: {e}", rewrite.file))?;
@@ -576,29 +565,26 @@ pub(super) async fn post_settings(
     let (plan, new_name) = outcome.map_err(|(status, message)| error(status, message))?;
 
     let renamed = new_name != name;
-    let mut reloaded = false;
     let mut venue_error = serde_json::Value::Null;
     if write {
         // One reload after every write: types and venues together, so the
         // engine never sees a venue naming a type it has not read yet.
         let player = state.player.clone();
-        reloaded = match tokio::task::spawn_blocking(move || player.reload_fixture_types()).await {
-            Ok(Ok(())) => state.player.dmx_engine().is_some(),
-            Ok(Err(e)) => {
-                tracing::warn!(fixture_type = %new_name, error = %e, "fixture type saved, but the running engine could not reload it");
-                false
-            }
-            Err(_) => false,
-        };
+        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || player.reload_fixture_types()).await
+        {
+            tracing::warn!(fixture_type = %new_name, error = %e, "fixture type saved, but the running engine could not reload it");
+        }
         if let Some(current) = current_venue_name(&state) {
             venue_error = venue_error_after_save(&state, &current, &venues_dir).await;
         }
     }
-    let version = content_version(if write {
-        plan.patched.as_bytes()
+    let version = if write && !plan.unchanged {
+        content_version(plan.patched.as_bytes())
+    } else if plan.new_record {
+        UNRECORDED.to_string()
     } else {
-        plan.type_version.as_bytes()
-    });
+        plan.type_version.clone()
+    };
     let rename = renamed.then(|| {
         let venues: Vec<serde_json::Value> = plan
             .rewrites
@@ -625,17 +611,10 @@ pub(super) async fn post_settings(
     }
     Ok::<_, Response>(
         Json(json!({
-            "write": write,
-            "file": plan.type_file,
             "version": version,
-            "dsl": plan.patched,
             "rename": rename,
-            "default_change": plan.default_change,
-            "overlaps": plan.overlaps,
-            "overruns": plan.overruns,
             "venue_versions": venue_versions,
             "config_references": plan.config_references,
-            "reloaded": reloaded,
             "venue_error": venue_error,
         }))
         .into_response(),
@@ -651,7 +630,7 @@ mod test {
     use tower::ServiceExt;
 
     const TYPE_FILE: &str = "# Imported from synth.gdtf.\n# Keep this.\nfixture_type \"Brick\"\n  \
-                             from gdtf(\"library/synth.gdtf\", mode \"8: RGBS\")\n{\n}\n";
+                             from gdtf(\"library/synth.gdtf\")\n{\n}\n";
 
     /// A project: the synthetic archive, `Brick` in `types/brick.fixture`,
     /// a comment-heavy `.venue` and a `.light` venue using it, and a venue
@@ -673,14 +652,14 @@ mod test {
         std::fs::write(
             root.join("venues/house.venue"),
             "# The house rig.\n# Measured 2026-09.\nvenue \"house\" {\n  # front truss\n  \
-             fixture \"B1\" Brick @ 1:1 tags [\"wash\"]  # left\n  \
+             fixture \"B1\" Brick mode \"8: RGBS\" @ 1:1 tags [\"wash\"]  # left\n  \
              fixture \"B2\" Brick mode \"Mover 16bit\" @ 1:40\n  \
              fixture \"P\" Other @ 1:100\n  focus \"center\" (0, 1, 1)\n}\n",
         )
         .unwrap();
         std::fs::write(
             root.join("venues/club.light"),
-            "venue \"club\" {\n  fixture \"C1\" Brick @ 2:1\n}\n",
+            "venue \"club\" {\n  fixture \"C1\" Brick mode \"8: RGBS\" @ 2:1\n}\n",
         )
         .unwrap();
         std::fs::write(
@@ -699,7 +678,8 @@ mod test {
         let mut request = http::Request::builder()
             .method("POST")
             .uri(format!(
-                "/lighting/fixture-types/{name}/settings?dir=types&venues_dir=venues"
+                "/lighting/fixture-types/{}/settings?dir=types&venues_dir=venues",
+                encoded(name)
             ))
             .header("content-type", "application/json");
         if let Some(v) = if_match {
@@ -713,6 +693,13 @@ mod test {
         let status = response.status();
         let text = response_body(response).await;
         (status, serde_json::from_str(&text).unwrap_or_default())
+    }
+
+    /// A fixture name as a path segment.
+    fn encoded(name: &str) -> String {
+        name.replace(' ', "%20")
+            .replace('(', "%28")
+            .replace(')', "%29")
     }
 
     fn read(root: &FsPath, rel: &str) -> String {
@@ -739,8 +726,7 @@ mod test {
         let response = get("Brick").await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
-        assert_eq!(body["default_mode"], "8: RGBS");
-        assert_eq!(body["file"], "brick.fixture");
+        assert_eq!(body["name"], "Brick");
         assert!(body["movement"]["max_pan_speed"].is_null(), "{body}");
         assert_eq!(body["version"], content_version(TYPE_FILE.as_bytes()));
         assert_eq!(get("Par").await.unwrap().status(), StatusCode::NOT_FOUND);
@@ -753,7 +739,7 @@ mod test {
         let root = dir.path();
         let before_house = read(root, "venues/house.venue");
         let before_other = read(root, "venues/other.light");
-        let body = json!({"name": "PixelBrick", "default_mode": "8: RGBS", "write": false});
+        let body = json!({"name": "PixelBrick", "write": false});
 
         // The plan writes nothing and says what it would touch.
         let (status, plan) = post(state.clone(), "Brick", body.clone(), None).await;
@@ -766,7 +752,6 @@ mod test {
                 {"venue": "house", "file": "house.venue", "lines": 2},
             ])
         );
-        assert!(plan["default_change"].is_null());
         assert_eq!(read(root, "types/brick.fixture"), TYPE_FILE);
 
         let mut save = body.clone();
@@ -790,11 +775,12 @@ mod test {
         assert_eq!(
             house,
             before_house
-                .replace("\"B1\" Brick @", "\"B1\" PixelBrick @")
+                .replace("\"B1\" Brick mode", "\"B1\" PixelBrick mode")
                 .replace("\"B2\" Brick mode", "\"B2\" PixelBrick mode"),
             "only the type changes, comments and layout stay"
         );
-        assert!(read(root, "venues/club.light").contains("fixture \"C1\" PixelBrick @ 2:1"));
+        assert!(read(root, "venues/club.light")
+            .contains("fixture \"C1\" PixelBrick mode \"8: RGBS\" @ 2:1"));
         assert_eq!(read(root, "venues/other.light"), before_other);
     }
 
@@ -808,7 +794,7 @@ mod test {
         let (status, body) = post(
             state,
             "Brick",
-            json!({"name": "PixelBrick", "default_mode": "8: RGBS", "write": true}),
+            json!({"name": "PixelBrick", "write": true}),
             None,
         )
         .await;
@@ -826,7 +812,7 @@ mod test {
         let (state, dir) = test_state();
         project(dir.path());
         let root = dir.path();
-        let body = json!({"name": "PixelBrick", "default_mode": "8: RGBS", "write": true});
+        let body = json!({"name": "PixelBrick", "write": true});
         let (status, _) = post(state.clone(), "Brick", body.clone(), Some("not-it")).await;
         assert_eq!(status, StatusCode::CONFLICT);
         let mut stale = body.clone();
@@ -849,7 +835,7 @@ mod test {
         let (status, body) = post(
             state,
             "Brick",
-            json!({"name": "Other", "default_mode": "8: RGBS", "write": false}),
+            json!({"name": "Other", "write": false}),
             None,
         )
         .await;
@@ -857,90 +843,181 @@ mod test {
     }
 
     #[tokio::test]
-    async fn a_new_default_says_who_takes_it_and_what_it_would_overlap() {
+    async fn movement_limits_are_patched_into_the_record() {
         let (state, dir) = test_state();
         project(dir.path());
-        let root = dir.path();
-        let (status, plan) = post(
-            state.clone(),
-            "Brick",
-            json!({"name": "Brick", "default_mode": "Mover 16bit", "write": false}),
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{plan}");
-        let change = &plan["default_change"];
-        assert_eq!(change["from"], "8: RGBS");
-        assert_eq!(change["to"], "Mover 16bit");
-        // B2 names its own mode, so only B1 and C1 take the default.
-        assert_eq!(change["count"], 2, "{plan}");
-        assert_eq!(
-            change["venues"],
-            json!([
-                {"venue": "club", "fixtures": ["C1"]},
-                {"venue": "house", "fixtures": ["B1"]},
-            ])
-        );
-        let footprint = change["footprint"]
-            .as_u64()
-            .expect("the new mode's footprint");
-        // B1 at 1:1 runs into B2 at 1:40 only when the mover mode is that wide.
-        let overlaps = plan["overlaps"].as_array().unwrap();
-        assert_eq!(!overlaps.is_empty(), footprint >= 40, "{plan}");
-
-        // Saved: only the mode string changes.
         let (status, saved) = post(
             state,
             "Brick",
-            json!({"name": "Brick", "default_mode": "Mover 16bit", "write": true,
+            json!({"name": "Brick", "write": true,
                    "movement": {"max_pan_speed": 240, "max_tilt_speed": null}}),
-            None,
+            Some(&content_version(TYPE_FILE.as_bytes())),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{saved}");
+        assert!(saved["rename"].is_null(), "{saved}");
         assert_eq!(
-            read(root, "types/brick.fixture"),
+            read(dir.path(), "types/brick.fixture"),
             "# Imported from synth.gdtf.\n# Keep this.\nfixture_type \"Brick\"\n  \
-             from gdtf(\"library/synth.gdtf\", mode \"Mover 16bit\")\n{\n  \
+             from gdtf(\"library/synth.gdtf\")\n{\n  \
              movement { max_pan_speed: 240deg/s }\n}\n"
         );
     }
 
-    #[tokio::test]
-    async fn a_new_default_that_overlaps_names_the_fixtures() {
-        let (state, dir) = test_state();
-        project(dir.path());
-        // Two default bricks back to back: any wider default overlaps.
-        let wide = {
-            let (_, plan) = post(
-                state.clone(),
-                "Brick",
-                json!({"name": "Brick", "default_mode": "Mover 16bit", "write": false}),
-                None,
-            )
-            .await;
-            plan["default_change"]["footprint"].as_u64().unwrap()
-        };
+    /// A project whose fixture is its archive alone: `lighting/library/` in
+    /// the config's directory, no record, and a venue using its derived
+    /// name. The archive is copied twice under two file names so one name
+    /// is shared — "Synth Brick" and "Synth Brick (twin)".
+    fn library_project(root: &FsPath) {
+        let library = root.join("lighting/library");
+        std::fs::create_dir_all(&library).unwrap();
+        let archive = crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+        )]);
+        std::fs::write(library.join("synth.gdtf"), &archive).unwrap();
+        std::fs::write(library.join("twin.gdtf"), &archive).unwrap();
+        std::fs::create_dir_all(root.join("types")).unwrap();
+        std::fs::create_dir_all(root.join("venues")).unwrap();
         std::fs::write(
-            dir.path().join("venues/club.light"),
-            "venue \"club\" {\n  fixture \"C1\" Brick @ 2:1\n  fixture \"C2\" Brick @ 2:5\n}\n",
+            root.join("venues/house.venue"),
+            "venue \"house\" {\n  fixture \"B1\" \"Synth Brick\" mode \"8: RGBS\" @ 1:1\n}\n",
         )
         .unwrap();
-        let (_, plan) = post(
-            state,
-            "Brick",
-            json!({"name": "Brick", "default_mode": "Mover 16bit", "write": false}),
-            None,
+    }
+
+    async fn get_settings(state: WebUiState, name: &str) -> (StatusCode, serde_json::Value) {
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!(
+                        "/lighting/fixture-types/{}/settings?dir=types",
+                        encoded(name)
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        (
+            status,
+            serde_json::from_str(&response_body(response).await).unwrap_or_default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn an_unrecorded_fixture_answers_its_derived_name_and_a_save_writes_its_record() {
+        let (state, dir) = test_state();
+        let root = dir.path();
+        library_project(root);
+        let (status, body) = get_settings(state.clone(), "Synth Brick").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body,
+            json!({
+                "name": "Synth Brick",
+                "movement": {"max_pan_speed": null, "max_tilt_speed": null},
+                "version": "unrecorded",
+            })
+        );
+
+        // A plan writes nothing, and nothing to change writes nothing.
+        let (status, plan) = post(
+            state.clone(),
+            "Synth Brick",
+            json!({"name": "Synth Brick", "write": true}),
+            Some("unrecorded"),
         )
         .await;
-        // 8: RGBS is 4 addresses, so C2 at 2:5 is adjacent; the mover mode
-        // is wider and runs into it.
-        assert!(wide > 4, "the mover mode is the wider: {wide}");
-        let overlaps = plan["overlaps"].as_array().unwrap();
-        assert_eq!(overlaps.len(), 1, "{plan}");
-        assert_eq!(overlaps[0]["venue"], "club");
-        assert_eq!(overlaps[0]["a"], "C1");
-        assert_eq!(overlaps[0]["b"], "C2");
-        assert!(overlaps[0]["message"].as_str().unwrap().contains("\"C2\""));
+        assert_eq!(status, StatusCode::OK, "{plan}");
+        assert_eq!(plan["version"], "unrecorded");
+        assert_eq!(std::fs::read_dir(root.join("types")).unwrap().count(), 0);
+
+        // A change writes the record the importer would have, then patches it.
+        let (status, saved) = post(
+            state.clone(),
+            "Synth Brick",
+            json!({"name": "Synth Brick", "write": true,
+                   "movement": {"max_pan_speed": 120, "max_tilt_speed": null}}),
+            Some("unrecorded"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        let record = read(root, "types/synth_brick.fixture");
+        assert!(record.starts_with("# Imported from synth.gdtf"), "{record}");
+        assert!(
+            record.contains(
+                "fixture_type \"Synth Brick\"\n  from gdtf(\"lighting/library/synth.gdtf\")"
+            ),
+            "{record}"
+        );
+        assert!(record.contains("max_pan_speed: 120deg/s"), "{record}");
+        assert_eq!(saved["version"], content_version(record.as_bytes()));
+
+        // "No record yet" is stale once there is one.
+        let (status, _) = post(
+            state.clone(),
+            "Synth Brick",
+            json!({"name": "Synth Brick", "write": true}),
+            Some("unrecorded"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (_, body) = get_settings(state, "Synth Brick").await;
+        assert_ne!(body["version"], "unrecorded");
+        assert_eq!(body["movement"]["max_pan_speed"], 120.0);
+    }
+
+    #[tokio::test]
+    async fn renaming_an_unrecorded_fixture_pins_the_one_that_shares_its_name() {
+        let (state, dir) = test_state();
+        let root = dir.path();
+        library_project(root);
+        let (status, _) = get_settings(state.clone(), "Synth Brick (twin)").await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, saved) = post(
+            state,
+            "Synth Brick",
+            json!({"name": "House Brick", "write": true}),
+            Some("unrecorded"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        assert_eq!(saved["rename"]["lines"], 1, "{saved}");
+        assert!(read(root, "venues/house.venue")
+            .contains("fixture \"B1\" \"House Brick\" mode \"8: RGBS\" @ 1:1"));
+        let record = read(root, "types/house_brick.fixture");
+        assert!(
+            record.contains(
+                "fixture_type \"House Brick\"\n  from gdtf(\"lighting/library/synth.gdtf\")"
+            ),
+            "{record}"
+        );
+        // Without its pin, the twin would take the freed name on the next load.
+        let pin = read(root, "types/synth_brick_twin.fixture");
+        assert!(
+            pin.contains(
+                "fixture_type \"Synth Brick (twin)\"\n  from gdtf(\"lighting/library/twin.gdtf\")"
+            ),
+            "{pin}"
+        );
+        let library = crate::lighting::library::unrecorded_types(root, Some(&root.join("types")));
+        assert!(library.types.is_empty(), "{:?}", library.types);
+    }
+
+    #[tokio::test]
+    async fn a_rename_onto_a_library_fixture_s_name_is_refused() {
+        let (state, dir) = test_state();
+        library_project(dir.path());
+        let (status, body) = post(
+            state,
+            "Synth Brick",
+            json!({"name": "Synth Brick (twin)", "write": false}),
+            Some("unrecorded"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
     }
 }

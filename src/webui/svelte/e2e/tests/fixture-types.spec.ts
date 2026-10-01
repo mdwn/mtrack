@@ -89,6 +89,17 @@ test.describe("Fixture Types Management", () => {
     await expect(card(page, "mover")).toContainText("mover.fixture");
   });
 
+  test("a fixture from a GDTF shows no file and no extension", async ({
+    page,
+  }) => {
+    // mtrack's record of it is an implementation detail, never shown.
+    const brick = card(page, "pixelbrick");
+    await expect(brick.getByTestId("ft-ext")).toHaveCount(0);
+    const text = await brick.innerText();
+    expect(text).not.toContain(".fixture");
+    expect(text).not.toMatch(/definition/i);
+  });
+
   test("a referential type says where it comes from, not '0 channels'", async ({
     page,
   }) => {
@@ -120,7 +131,7 @@ test.describe("Fixture Types Management", () => {
     await expect(card(page, "par")).toContainText("4 channels");
   });
 
-  test("a referential card whose archive is unreadable falls back, and a used-by of 0 is not shown", async ({
+  test("a GDTF card whose archive is unreadable falls back, and a used-by of 0 shows no pill", async ({
     page,
   }) => {
     const entry = (gdtf: unknown) => ({
@@ -142,7 +153,6 @@ test.describe("Fixture Types Management", () => {
               fixture: "PB15 PixelBrick",
               manufacturer: "Astera LED Technology",
               modes: 1,
-              mode: "8: RGBS",
               beam: null,
               thumbnail: "abc/thumbnail.png",
               used_by: 0,
@@ -152,7 +162,6 @@ test.describe("Fixture Types Management", () => {
               fixture: "PB15 PixelBrick",
               manufacturer: "Astera LED Technology",
               modes: 9,
-              mode: null,
               beam: null,
               thumbnail: null,
               used_by: 10,
@@ -169,7 +178,9 @@ test.describe("Fixture Types Management", () => {
       }),
     );
     await page.getByRole("button", { name: "Refresh" }).first().click();
-    await expect(card(page, "lost")).toContainText("GDTF archive");
+    await expect(card(page, "lost")).toContainText(
+      "Its GDTF cannot be read right now.",
+    );
     // At most three modes, then how many more.
     await expect(card(page, "busy").getByTestId("ft-card-mode")).toHaveText([
       "a × 4",
@@ -179,8 +190,9 @@ test.describe("Fixture Types Management", () => {
     await expect(card(page, "busy").getByTestId("ft-card-more")).toHaveText(
       "+1 more",
     );
-    await expect(card(page, "unused").getByTestId("ft-card-mode")).toHaveText(
-      "8: RGBS",
+    // Nothing uses it: no pill (there is no default to show instead).
+    await expect(card(page, "unused").getByTestId("ft-card-mode")).toHaveCount(
+      0,
     );
     await expect(card(page, "unused").getByTestId("ft-card-modes")).toHaveText(
       /^1 mode\s/,
@@ -211,14 +223,13 @@ test.describe("Fixture Types Management", () => {
     await expect(page.locator(".channel-row")).toHaveCount(0);
   });
 
-  test("a referential type is edited as text, with its gdtf line kept", async ({
+  test("a fixture from a GDTF opens on its page, with no text to edit", async ({
     page,
   }) => {
     await card(page, "pixelbrick").click();
-    await expect(page.getByTestId("ft-referential-note")).toContainText(
-      "from gdtf",
-    );
-    await expect(page.getByTestId("ft-dsl")).toHaveValue(/from gdtf\(/);
+    await expect(page.getByTestId("ft-details")).toBeVisible();
+    await expect(page.getByTestId("ft-dsl")).toHaveCount(0);
+    await expect(page.getByTestId("ft-referential-note")).toHaveCount(0);
   });
 
   test("saving a .fixture type PUTs the DSL as text", async ({ page }) => {
@@ -267,18 +278,9 @@ test.describe("Fixture Types Management", () => {
     expect(request.url()).toContain("ext=fixture");
   });
 
-  test("a rich or referential type is not offered the .light form", async ({
-    page,
-  }) => {
+  test("a rich type is not offered the .light form", async ({ page }) => {
     // v2 syntax in a `.light` file is skipped by the loader, so there is no
     // choice to offer.
-    await card(page, "pixelbrick").click();
-    // A GDTF type's file sits behind its page's disclosure.
-    await page.getByTestId("ft-file").locator("summary").click();
-    await expect(page.getByTestId("ft-dsl")).toBeVisible();
-    await expect(page.getByTestId("ft-ext-select")).toHaveCount(0);
-
-    await page.getByRole("button", { name: "Back" }).click();
     await card(page, "mover").click();
     await expect(page.getByTestId("ft-dsl")).toBeVisible();
     await expect(page.getByTestId("ft-ext-select")).toHaveCount(0);
@@ -319,8 +321,10 @@ test.describe("Fixture Types Management", () => {
     await deletePromise;
   });
 
-  test("New Fixture Type offers both forms", async ({ page }) => {
-    await page.getByRole("button", { name: "New Fixture Type" }).click();
+  test("Define a fixture by hand offers both forms", async ({ page }) => {
+    await page
+      .getByRole("button", { name: "Define a fixture by hand" })
+      .click();
     await expect(page.getByTestId("new-ft-choice")).toBeVisible();
     await page.getByRole("button", { name: ".light (channel map)" }).click();
     await expect(page.locator(".editor-form")).toBeVisible();
@@ -328,7 +332,9 @@ test.describe("Fixture Types Management", () => {
   });
 
   test("a new .fixture starts from a commented template", async ({ page }) => {
-    await page.getByRole("button", { name: "New Fixture Type" }).click();
+    await page
+      .getByRole("button", { name: "Define a fixture by hand" })
+      .click();
     await page.getByTestId("new-ft-fixture").click();
     await expect(page.getByTestId("ft-dsl")).toHaveValue(
       /channel "dimmer" @ 1/,
@@ -373,19 +379,38 @@ test.describe("Fixture Types Management", () => {
     expect(saveCalled).toBe(true);
   });
 
-  test("deleting a .fixture type calls DELETE", async ({ page }) => {
+  test("deleting a fixture from a GDTF names the venues that use it, then DELETEs", async ({
+    page,
+  }) => {
+    const deletes: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "DELETE") deletes.push(req.url());
+    });
+    await card(page, "pixelbrick")
+      .getByRole("button", { name: "Delete" })
+      .click();
+    const dialog = page.locator(".dialog-overlay");
+    await expect(dialog).toContainText('Delete the fixture "pixelbrick"?');
+    await expect(dialog).toContainText(
+      "2 fixtures in built-in use it, and that venue will stop loading.",
+    );
+    await expect(dialog).toContainText(
+      "1 fixture in club uses it, and that venue will stop loading.",
+    );
+    // Cancelled: nothing is deleted.
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await page.waitForTimeout(300);
+    expect(deletes).toHaveLength(0);
+
+    await card(page, "pixelbrick")
+      .getByRole("button", { name: "Delete" })
+      .click();
     const requestPromise = page.waitForRequest(
       (req) =>
         req.url().includes("/api/lighting/fixture-types/pixelbrick") &&
         req.method() === "DELETE",
     );
-    await card(page, "pixelbrick")
-      .getByRole("button", { name: "Delete" })
-      .click();
-    await page
-      .locator(".dialog-overlay")
-      .getByRole("button", { name: "Confirm" })
-      .click();
+    await dialog.getByRole("button", { name: "Confirm" }).click();
     await requestPromise;
   });
 
@@ -413,42 +438,80 @@ test.describe("GDTF Import", () => {
     await page.goto("/#/lighting/fixtures");
   });
 
-  test("import flows from file pick through mode choice to a report", async ({
+  test("choosing a file imports it in one step and opens the fixture", async ({
     page,
   }) => {
-    // Pick a file; the inspect response drives the mode picker.
-    const chooser = page.getByTestId("import-gdtf");
-    await expect(chooser).toBeVisible();
+    const imports: string[] = [];
+    page.on("request", (req) => {
+      if (req.url().includes("/api/lighting/gdtf/")) imports.push(req.url());
+    });
     await page.locator('input[type="file"]').setInputFiles({
       name: "pb15.gdtf",
       mimeType: "application/octet-stream",
-      buffer: Buffer.from("not inspected by the mock"),
+      buffer: Buffer.from("not read by the mock"),
     });
-
-    const picker = page.getByTestId("gdtf-mode-picker");
-    await expect(picker).toBeVisible();
-    await expect(picker).toContainText("PB15 PixelBrick");
-    // Mode selection is the human input: both modes are offered.
-    await expect(picker.getByRole("option")).toHaveCount(2);
-    await picker.getByRole("option", { name: /8: RGBS/ }).click();
-    await expect(page.getByTestId("gdtf-can")).toContainText(
-      "Strobe, 0.4 to 25 flashes a second",
-    );
-
-    await page.getByTestId("gdtf-import-confirm").click();
-
-    // The report shows what was written and what the distiller skipped.
     const report = page.getByTestId("gdtf-report");
-    await expect(report).toBeVisible();
-    await expect(report).toContainText(
-      "lighting/fixture_types/pb15_pixelbrick.fixture",
+    await expect(report).toHaveText(
+      "Imported PB15 PixelBrick (Astera LED Technology) — 2 modes.",
     );
-    await expect(report).toContainText("channel 4: strobe");
-    await expect(report).toContainText("virtual channel");
+    // One request: the import itself, with no mode and no name.
+    expect(imports).toHaveLength(1);
+    const url = new URL(imports[0]);
+    expect(url.pathname).toBe("/api/lighting/gdtf/import");
+    expect(url.searchParams.get("mode")).toBeNull();
+    expect(url.searchParams.get("name")).toBeNull();
+    // The fixture's page is open.
+    await expect(page.getByTestId("ft-title")).toHaveText("pixelbrick");
+    await expect(page.getByTestId("ft-details")).toBeVisible();
+    // In the user's terms: no file, no "definition".
+    const text = await report.innerText();
+    expect(text).not.toContain(".fixture");
+    expect(text).not.toMatch(/definition/i);
   });
 
+  for (const [what, answer, said] of [
+    [
+      "already imported",
+      { already_imported: true },
+      "pixelbrick was already imported from this GDTF; nothing changed.",
+    ],
+    [
+      "renamed",
+      { renamed_from: "PB15 PixelBrick" },
+      "Imported PB15 PixelBrick (Astera LED Technology) — 2 modes. Named pixelbrick, because a fixture called PB15 PixelBrick already exists.",
+    ],
+  ] as const) {
+    test(`an import that was ${what} says so`, async ({ page }) => {
+      await page.route("**/api/lighting/gdtf/import*", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            type_name: "pixelbrick",
+            fixture: "PB15 PixelBrick",
+            manufacturer: "Astera LED Technology",
+            modes: 2,
+            archive: "lighting/library/pb15.gdtf",
+            already_imported: false,
+            renamed_from: null,
+            refused_modes: [],
+            warnings: [],
+            ...answer,
+          }),
+        }),
+      );
+      await page.locator('input[type="file"]').setInputFiles({
+        name: "pb15.gdtf",
+        mimeType: "application/octet-stream",
+        buffer: Buffer.from("not read by the mock"),
+      });
+      await expect(page.getByTestId("gdtf-report")).toHaveText(said);
+      await expect(page.getByTestId("ft-title")).toHaveText("pixelbrick");
+    });
+  }
+
   test("an unparseable upload surfaces the error", async ({ page }) => {
-    await page.route("**/api/lighting/gdtf/inspect", async (route) => {
+    await page.route("**/api/lighting/gdtf/import*", async (route) => {
       await route.fulfill({
         status: 400,
         contentType: "application/json",

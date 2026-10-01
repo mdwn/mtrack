@@ -66,7 +66,8 @@ const PIXEL_GDTF: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 /// The GDTF mover: pan 1/2 over -270..270°, tilt 3/4 over -135..135°
 /// (from the synthetic description's "Mover 16bit" mode).
-const MOVER_FIXTURE: &str = "fixture_type \"Mover\"\n  from gdtf(\"lighting/library/mover.gdtf\", mode \"Mover 16bit\")\n{ }\n";
+const MOVER_FIXTURE: &str =
+    "fixture_type \"Mover\"\n  from gdtf(\"lighting/library/mover.gdtf\")\n{ }\n";
 
 /// A hand-written mover with the same travel and a slew limit, so both
 /// sources of a degree range are on the wire.
@@ -77,7 +78,7 @@ const CHEAP_FIXTURE: &str = "fixture_type \"Cheap\" {\n  \
   movement { max_pan_speed: 240deg/s }\n}\n";
 
 const BAR_FIXTURE: &str =
-    "fixture_type \"Bar\"\n  from gdtf(\"lighting/library/pixel.gdtf\", mode \"Pixel\")\n{ }\n";
+    "fixture_type \"Bar\"\n  from gdtf(\"lighting/library/pixel.gdtf\")\n{ }\n";
 
 /// The same bar in the hand-written cell form, cells 0.3 m apart.
 const HAND_BAR_FIXTURE: &str = "fixture_type \"HandBar\" {\n  channel \"dimmer\" @ 1\n  \
@@ -92,11 +93,11 @@ const HAND_BAR_FIXTURE: &str = "fixture_type \"HandBar\" {\n  channel \"dimmer\"
 /// stage-left with a yaw and a pitch, so the rotation order matters.
 /// Bar2 is hung backwards, so its cell "1" ends up furthest stage-left.
 const VENUE: &str = "venue \"golden\" {\n  \
-  fixture \"M1\" Mover @ 1:1 tags [\"movers\", \"rear\"] position (-2, 3.5, 4.2) rotation (0, 0, 180)\n  \
-  fixture \"M2\" Mover @ 1:11 tags [\"movers\", \"rear\"] position (2, 3.5, 4.2) rotation (0, 0, 180)\n  \
+  fixture \"M1\" Mover mode \"Mover 16bit\" @ 1:1 tags [\"movers\", \"rear\"] position (-2, 3.5, 4.2) rotation (0, 0, 180)\n  \
+  fixture \"M2\" Mover mode \"Mover 16bit\" @ 1:11 tags [\"movers\", \"rear\"] position (2, 3.5, 4.2) rotation (0, 0, 180)\n  \
   fixture \"M3\" Cheap @ 1:21 tags [\"movers\", \"front\"] position (0, 0.5, 3.0) rotation (30, 0, 0)\n  \
   fixture \"M4\" Cheap @ 1:31 tags [\"movers\", \"front\"] position (3, 2, 4) rotation (0, 20, 90)\n  \
-  fixture \"Bar1\" Bar @ 1:101 tags [\"bars\"] position (-1, 1, 0.5)\n  \
+  fixture \"Bar1\" Bar mode \"Pixel\" @ 1:101 tags [\"bars\"] position (-1, 1, 0.5)\n  \
   fixture \"Bar2\" HandBar @ 1:121 tags [\"bars\"] position (1, 1, 0.5) rotation (0, 0, 180)\n  \
   focus \"drummer\" (0, 2.8, 1.4)\n  \
   focus \"singer\" (0.4, 0.9, 1.6)\n  \

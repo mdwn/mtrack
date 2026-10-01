@@ -35,7 +35,7 @@ const MODES = [
   { name: "99: Broken", channel_count: 1, footprint: 1, refused: "no" },
 ];
 
-function typeEntry(referential: boolean, footprint: number) {
+function typeEntry(referential: boolean, footprint: number | null) {
   return {
     fixture_type: {
       name: "t",
@@ -47,7 +47,6 @@ function typeEntry(referential: boolean, footprint: number) {
     file: referential ? "brick.fixture" : "par.light",
     extension: referential ? "fixture" : "light",
     referential,
-    default_mode: referential ? "8: RGBS" : null,
     rich: false,
     footprint,
     gdtf: null,
@@ -108,7 +107,7 @@ async function serve(page: Page, initial: Record<string, Fixture[]>) {
     return route.fulfill(
       json({
         fixture_types: {
-          brick: typeEntry(true, 4),
+          brick: typeEntry(true, null),
           par: typeEntry(false, 3),
         },
         errors: [],
@@ -119,8 +118,6 @@ async function serve(page: Page, initial: Record<string, Fixture[]>) {
     route.fulfill(
       json({
         archive: "library/pb15.gdtf",
-        mode: "8: RGBS",
-        matched_mode: "8: RGBS",
         rig: null,
         thumbnail: null,
         beam: null,
@@ -198,47 +195,92 @@ test.describe("A mode per fixture in the venue form", () => {
     await page.getByRole("button", { name: "Add Fixture" }).click();
     await rows(page).nth(0).getByLabel("Fixture type").selectOption("brick");
     const mode = (i: number) => rows(page).nth(i).getByTestId("venue-row-mode");
-    await expect(mode(0)).toHaveValue("");
+    // A fixture from a GDTF always has a mode: the first one mtrack drives.
+    await expect(mode(0)).toHaveValue("8: RGBS");
     await expect(mode(0).locator("option").first()).toHaveText(
-      "Type default (8: RGBS)",
+      "8: RGBS — 4 addresses",
     );
+    await expect(mode(0)).not.toContainText(/default/i);
     await expect(mode(0).locator('option[value="99: Broken"]')).toBeDisabled();
     await expect(rows(page).nth(0).getByTestId("venue-row-span")).toHaveText(
       "Addresses 1–4",
     );
 
+    // The next row of the same fixture takes its mode, after its addresses.
     await page.getByRole("button", { name: "Add Fixture" }).click();
     await expect(rows(page).nth(1).locator("#fix-channel-1")).toHaveValue("5");
+    await expect(mode(1)).toHaveValue("8: RGBS");
     await mode(1).selectOption("9: RGBWS");
     await expect(rows(page).nth(1).getByTestId("venue-row-span")).toHaveText(
       "Addresses 5–9",
     );
-    // The next row continues after the 5-address mode, not the default's 4.
+    // The next row continues after the 5-address mode, in that mode.
     await page.getByRole("button", { name: "Add Fixture" }).click();
     await expect(rows(page).nth(2).locator("#fix-channel-2")).toHaveValue("10");
-    await expect(mode(2)).toHaveValue("");
+    await expect(mode(2)).toHaveValue("9: RGBWS");
+
+    // In the user's terms: nothing of a file or a "definition".
+    const text = await page.locator(".editor-form").innerText();
+    expect(text).not.toContain(".fixture");
+    expect(text).not.toMatch(/definition/i);
 
     await save(page);
     await expect.poll(() => puts.length).toBe(1);
     expect(
       puts[0].fixtures.map((f) => [f.name, f.start_channel, f.mode ?? null]),
     ).toEqual([
-      ["Fixture 1", 1, null],
+      ["Fixture 1", 1, "8: RGBS"],
       ["Fixture 2", 5, "9: RGBWS"],
-      ["Fixture 3", 10, null],
+      ["Fixture 3", 10, "9: RGBWS"],
     ]);
 
     // Reopened, the form shows the same.
     await card(page, "mix").locator('[data-testid^="venue-edit-"]').click();
     await expect(mode(1)).toHaveValue("9: RGBWS");
-    await expect(mode(0)).toHaveValue("");
+    await expect(mode(0)).toHaveValue("8: RGBS");
+  });
+
+  test("a row read without its mode is marked and blocks the save", async ({
+    page,
+  }) => {
+    const { puts } = await serve(page, {
+      bare: [
+        { ...placed("A", 1), fixture_type: "brick", mode: "8: RGBS" },
+        { ...placed("B", 5), fixture_type: "brick" },
+      ],
+    });
+    await card(page, "bare").locator('[data-testid^="venue-edit-"]').click();
+    const mode = rows(page).nth(1).getByTestId("venue-row-mode");
+    // Not filled in for the user: the line had no mode.
+    await expect(mode).toHaveValue("");
+    await expect(mode.locator('option[value=""]')).toHaveText("Choose a mode");
+    await save(page);
+    await expect(page.locator(".save-msg")).toHaveText(
+      "Not saved: 1 fixture needs attention.",
+    );
+    await expect(rows(page).nth(1).getByTestId("venue-row-error")).toHaveText(
+      "Choose a mode for this fixture.",
+    );
+    await page.waitForTimeout(300);
+    expect(puts).toHaveLength(0);
+
+    await mode.selectOption("9: RGBWS");
+    await expect(rows(page).nth(1).getByTestId("venue-row-error")).toHaveCount(
+      0,
+    );
+    await save(page);
+    await expect.poll(() => puts.length).toBe(1);
+    expect(puts[0].fixtures.map((f) => f.mode)).toEqual([
+      "8: RGBS",
+      "9: RGBWS",
+    ]);
   });
 
   test("an overlap is marked, and the save asks first", async ({ page }) => {
     const { puts } = await serve(page, {
       rig: [
-        { ...placed("A", 1), fixture_type: "brick" },
-        { ...placed("B", 5), fixture_type: "brick" },
+        { ...placed("A", 1), fixture_type: "brick", mode: "8: RGBS" },
+        { ...placed("B", 5), fixture_type: "brick", mode: "8: RGBS" },
       ],
     });
     await card(page, "rig").locator('[data-testid^="venue-edit-"]').click();
@@ -283,7 +325,7 @@ test.describe("A mode per fixture in the venue form", () => {
     expect(puts[0].fixtures[0].mode).toBe("7: Gone");
   });
 
-  test("a native type has no mode select, and a type change resets the mode", async ({
+  test("a native type has no mode select, and a type change picks the first mode", async ({
     page,
   }) => {
     const { puts } = await serve(page, {
@@ -295,9 +337,9 @@ test.describe("A mode per fixture in the venue form", () => {
     await row.getByLabel("Fixture type").selectOption("par");
     await expect(row.getByTestId("venue-row-mode")).toHaveCount(0);
     await row.getByLabel("Fixture type").selectOption("brick");
-    await expect(row.getByTestId("venue-row-mode")).toHaveValue("");
+    await expect(row.getByTestId("venue-row-mode")).toHaveValue("8: RGBS");
     await save(page);
     await expect.poll(() => puts.length).toBe(1);
-    expect(puts[0].fixtures[0].mode ?? null).toBeNull();
+    expect(puts[0].fixtures[0].mode).toBe("8: RGBS");
   });
 });

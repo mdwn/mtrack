@@ -664,26 +664,17 @@ pub fn import_mvr(
         );
         println!("  fixture types:");
         for ft in &plan.fixture_types {
-            let default = match &ft.mode {
-                Some(mode) => format!("default mode \"{mode}\""),
-                None => "no default mode".to_string(),
-            };
-            let others: Vec<String> = ft
-                .modes
-                .iter()
-                .filter(|m| Some(*m) != ft.mode.as_ref())
-                .map(|m| format!("\"{m}\""))
-                .collect();
-            let others = if others.is_empty() {
-                String::new()
-            } else {
-                format!(" (also {})", others.join(", "))
-            };
+            let modes: Vec<String> = ft.modes.iter().map(|m| format!("\"{m}\"")).collect();
             println!(
-                "    {:40} {} {default}{others}{}",
+                "    {:40} {} in {}{}",
                 format!("\"{}\"", ft.name),
                 ft.archive,
-                if ft.existing { " (existing)" } else { "" }
+                modes.join(", "),
+                if ft.existing {
+                    " (already in the library)"
+                } else {
+                    ""
+                }
             );
         }
         println!("  fixtures:");
@@ -853,15 +844,14 @@ pub fn export_mvr(
 
 pub fn import_gdtf(
     gdtf_path: &str,
-    mode: Option<&str>,
     name: Option<&str>,
+    list_modes: bool,
     project: &str,
     fixture_types_dir: &str,
 ) -> Result<(), Box<dyn Error>> {
     use crate::lighting::gdtf;
 
-    let Some(mode) = mode else {
-        // Mode selection is human input: list what the archive offers.
+    if list_modes {
         let bytes = std::fs::read(gdtf_path)
             .map_err(|e| format!("cannot read GDTF archive {gdtf_path}: {e}"))?;
         let description = gdtf::parse_archive(&bytes)?;
@@ -879,42 +869,41 @@ pub fn import_gdtf(
                 summary.footprint
             );
         }
-        println!("\nRe-run with --mode <name> to import one.");
         return Ok(());
-    };
+    }
 
     let report = crate::lighting::import::import_gdtf(
         Path::new(gdtf_path),
-        mode,
         name,
         Path::new(project),
         fixture_types_dir,
     )?;
 
-    println!(
-        "Imported \"{}\" (mode \"{}\"):",
-        report.type_name, report.mode
-    );
-    println!(
-        "  archive: {}{}",
-        report.archive,
-        if report.replaced_archive {
-            " (replaced existing)"
-        } else {
-            ""
-        }
-    );
-    println!("  fixture: {}", report.fixture_file);
-    for (offset, channel) in &report.channels {
-        println!("  channel {offset}: {channel}");
+    if report.already_imported {
+        println!(
+            "\"{}\" ({}) is already imported as \"{}\"; nothing changed.",
+            report.fixture, report.manufacturer, report.type_name
+        );
+        return Ok(());
     }
-    if report.warnings.is_empty() {
-        println!("  no distillation warnings");
-    } else {
-        println!("  {} warning(s):", report.warnings.len());
-        for warning in &report.warnings {
-            println!("    {warning}");
-        }
+    println!(
+        "Imported \"{}\" ({}) as \"{}\" — {} modes.",
+        report.fixture, report.manufacturer, report.type_name, report.modes
+    );
+    if let Some(from) = &report.renamed_from {
+        println!(
+            "  another fixture is already called \"{from}\", so this one is \"{}\"",
+            report.type_name
+        );
+    }
+    println!("  archive: {}", report.archive);
+    println!(
+        "  patch it in a venue in any of its modes, e.g.\n    \
+         fixture \"Spot 1\" \"{}\" mode \"<mode>\" @ 1:1",
+        report.type_name
+    );
+    for refused in &report.refused_modes {
+        println!("  cannot drive \"{}\": {}", refused.mode, refused.reason);
     }
     Ok(())
 }
@@ -946,7 +935,7 @@ mod import_gdtf_tests {
         import_gdtf(
             gdtf.to_str().unwrap(),
             None,
-            None,
+            true,
             project.to_str().unwrap(),
             "lighting/fixture_types",
         )
@@ -955,7 +944,7 @@ mod import_gdtf_tests {
     }
 
     #[test]
-    fn importing_delegates_to_the_shared_importer() {
+    fn importing_copies_the_archive_and_writes_no_record() {
         let dir = tempfile::tempdir().unwrap();
         let gdtf = write_synthetic_gdtf(dir.path());
         let project = dir.path().join("project");
@@ -963,15 +952,37 @@ mod import_gdtf_tests {
 
         import_gdtf(
             gdtf.to_str().unwrap(),
-            Some("8: RGBS"),
-            Some("Brick"),
+            None,
+            false,
             project.to_str().unwrap(),
             "lighting/fixture_types",
         )
         .unwrap();
-        assert!(project
-            .join("lighting/fixture_types/brick.fixture")
-            .exists());
+        assert!(project.join("lighting/library/synth.gdtf").is_file());
+        assert!(!project.join("lighting/fixture_types").exists());
+    }
+
+    #[test]
+    fn a_name_writes_a_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let gdtf = write_synthetic_gdtf(dir.path());
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        import_gdtf(
+            gdtf.to_str().unwrap(),
+            Some("Brick"),
+            false,
+            project.to_str().unwrap(),
+            "lighting/fixture_types",
+        )
+        .unwrap();
+        let record =
+            std::fs::read_to_string(project.join("lighting/fixture_types/brick.fixture")).unwrap();
+        assert!(
+            record.contains("fixture_type \"Brick\"\n  from gdtf(\"lighting/library/synth.gdtf\")"),
+            "{record}"
+        );
     }
 }
 
