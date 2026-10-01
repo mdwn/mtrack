@@ -50,7 +50,7 @@ build-ui:
 		echo "Frontend up to date, skipping build."; \
 	else \
 		$(MAKE) install-ui gen-proto && \
-		cd $(SVELTE_DIR) && npm run build && \
+		cd $(SVELTE_DIR) && MTRACK_UI_BUILD=$(FRONTEND_HASH) npm run build && \
 		echo "$(FRONTEND_HASH)" > "$(FRONTEND_STAMP)"; \
 	fi
 

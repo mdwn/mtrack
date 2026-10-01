@@ -14,6 +14,11 @@
      * -->
 <script lang="ts">
   import {
+    concerns,
+    fixtureTypeChanges,
+    venueChanges,
+  } from "../lib/lighting/changes";
+  import {
     metadataStore,
     fixtureStore,
     cellStore,
@@ -234,8 +239,19 @@
     }
   });
 
+  // A file view follows its file: any save of it (the venue form, a rename
+  // of its types, an import) is re-read at once, not when the name changes.
+  $effect(() => {
+    const change = $venueChanges;
+    untrack(() => {
+      if (viewingFile && shownFile && concerns(change, shownFile))
+        void loadFileView(shownFile);
+    });
+  });
+
   $effect(() => {
     if (!viewingFile) return;
+    void $fixtureTypeChanges;
     fetchFixtureTypes(fixtureTypesDir || undefined)
       .then((r) => (fileTypes = r.fixtureTypes))
       .catch(() => {

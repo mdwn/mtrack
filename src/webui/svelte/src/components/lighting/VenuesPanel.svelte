@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import { fixtureTypeChanges, venueChanges } from "../../lib/lighting/changes";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
@@ -21,7 +22,8 @@
   import TagInput from "../config/TagInput.svelte";
   import MvrExportDialog from "./MvrExportDialog.svelte";
   import { venueStore } from "../../lib/ws/stores";
-  import { nextPatch } from "../../lib/lighting/patch";
+  import { collisions, lastAddress, nextPatch } from "../../lib/lighting/patch";
+  import { untrack } from "svelte";
   import {
     nextFixtureName,
     rowProblems,
@@ -29,11 +31,13 @@
   } from "../../lib/lighting/venueRows";
   import {
     ConflictError,
+    fetchFixtureTypeGdtf,
     fetchFixtureTypes,
     fetchVenues,
     saveVenue,
     deleteVenue,
     type FixtureTypeEntry,
+    type FixtureTypeGdtf,
     type VenueData,
     type VenueSource,
     type Vec3,
@@ -131,13 +135,18 @@
     }
   }
 
+  // Re-read on a directory change, and whenever a fixture type or a venue
+  // changed anywhere on the page (the plot, the inspector, the fixture
+  // page): the cards, the type list and the versions follow the files.
   $effect(() => {
     void ftDir;
+    void $fixtureTypeChanges;
     loadFixtureTypes();
   });
 
   $effect(() => {
     void venueDir;
+    void $venueChanges;
     loadVenues();
   });
 
@@ -198,6 +207,99 @@
     return fixtureTypes[type]?.footprint ?? null;
   }
 
+  // --- A row's own mode (design §21): each GDTF type's modes, fetched once
+  // per type for the life of the form, lazily, never blocking typing.
+
+  let archives = $state<Record<string, FixtureTypeGdtf | null>>({});
+  $effect(() => {
+    if ($fixtureTypeChanges > 0) untrack(() => (archives = {}));
+  });
+  let gdtfTypes = $derived(
+    editingVenue
+      ? [
+          ...new Set(
+            editVenueFixtures
+              .map((f) => f.fixture_type)
+              .filter((type) => fixtureTypes[type]?.referential),
+          ),
+        ]
+      : [],
+  );
+  $effect(() => {
+    const dir = ftDir;
+    for (const type of gdtfTypes) {
+      if (untrack(() => type in archives)) continue;
+      archives[type] = null;
+      fetchFixtureTypeGdtf(type, dir || undefined)
+        .then((answer) => (archives[type] = answer))
+        .catch(() => {
+          // No select for this type: its rows keep the mode they have.
+        });
+    }
+  });
+
+  type Row = (typeof editVenueFixtures)[number];
+
+  /** The modes a row may choose, when its type's archive has been read. */
+  const modesOf = (row: Row) =>
+    fixtureTypes[row.fixture_type]?.referential
+      ? (archives[row.fixture_type]?.inspection.modes ?? null)
+      : null;
+
+  /** The type's default, as the archive spells it. */
+  const defaultModeOf = (row: Row) => {
+    const archive = archives[row.fixture_type];
+    return archive?.matched_mode ?? archive?.mode ?? null;
+  };
+
+  /** The addresses a row occupies: its own mode's footprint when the
+   *  archive is read, else the type's default's; null when not known. */
+  function rowFootprint(row: Row): number | null {
+    const modes = modesOf(row);
+    const own = row.mode ?? null;
+    if (own && modes) {
+      const found = modes.find((m) => m.name === own);
+      if (found) return found.footprint;
+    }
+    if (!own && modes) {
+      const def = defaultModeOf(row);
+      const found = modes.find((m) => m.name === def);
+      if (found) return found.footprint;
+    }
+    return own ? null : footprintOf(row.fixture_type);
+  }
+
+  /** Each row's span, for the strip of words under it and the overlap check. */
+  let rowSpans = $derived(
+    editVenueFixtures.map((row, i) => ({
+      fixture: String(i),
+      universe: Number(row.universe),
+      address: Number(row.start_channel),
+      footprint: rowFootprint(row),
+    })),
+  );
+
+  /** What each row runs into: other rows it partly overlaps (identical spans
+   *  gang, as on the server), and the end of the universe. */
+  let rowClashes = $derived(
+    rowSpans.map((span) => {
+      const hits = collisions(rowSpans, span).map((c) => ({
+        row: Number(c.fixture),
+        from: c.from,
+        to: c.to,
+      }));
+      const last = lastAddress(span);
+      return { hits, overrun: last !== null && last > 512 ? last : null };
+    }),
+  );
+
+  /** A changed type takes its own default mode: a mode names a mode of one
+   *  archive. */
+  function typeChanged(row: Row) {
+    row.mode = null;
+    row.modeOfType = row.fixture_type;
+  }
+
   /** A new row continues the patch from the last row: its type, its
    *  universe, and the address after it. It gets the first unused
    *  `Fixture N`, so adding and saving just works. */
@@ -209,7 +311,7 @@
         ? {
             universe: Number(last.universe),
             address: Number(last.start_channel),
-            footprint: footprintOf(last.fixture_type),
+            footprint: rowFootprint(last),
           }
         : null,
       footprintOf(type),
@@ -222,6 +324,8 @@
         universe: at.universe,
         start_channel: at.address,
         tags: [],
+        mode: null,
+        modeOfType: type,
       },
     ];
   }
@@ -234,6 +338,28 @@
       ? rowProblems(editVenueFixtures)
       : new Map<number, RowProblem[]>(),
   );
+
+  /** Words for what a row runs into. */
+  function clashMessage(i: number): string {
+    const clash = rowClashes[i];
+    if (!clash) return "";
+    const parts = clash.hits.map((h) =>
+      get(t)("lighting.venueRow.runsInto", {
+        values: {
+          name: editVenueFixtures[h.row]?.name || `#${h.row + 1}`,
+          from: h.from,
+          to: h.to,
+        },
+      }),
+    );
+    if (clash.overrun !== null)
+      parts.push(
+        get(t)("lighting.venueRow.overrun", {
+          values: { last: clash.overrun },
+        }),
+      );
+    return parts.join(" ");
+  }
 
   function rowMessage(list: RowProblem[]): string {
     return list.map((p) => get(t)(`lighting.venueRow.${p}`)).join(" ");
@@ -265,6 +391,26 @@
           ?.focus(),
       );
       return;
+    }
+    // Overlaps and overruns do not block (a hand-made venue may have them),
+    // but a save with any asks first, naming them.
+    const clashing = rowClashes
+      .map((c, i) => ({ c, i }))
+      .filter(({ c }) => c.hits.length > 0 || c.overrun !== null);
+    if (clashing.length > 0) {
+      const list = clashing
+        .map(
+          ({ i }) =>
+            `${editVenueFixtures[i].name || `#${i + 1}`}: ${clashMessage(i)}`,
+        )
+        .join("\n");
+      if (
+        !(await showConfirm(
+          get(t)("lighting.venueRow.saveAnyway", { values: { list } }),
+          { danger: true },
+        ))
+      )
+        return;
     }
     const fixtures = editVenueFixtures.map((f) => ({
       name: f.name.trim(),
@@ -423,6 +569,7 @@
                   aria-label={$t("lighting.fixtureType")}
                   aria-invalid={bad("noType")}
                   bind:value={fix.fixture_type}
+                  onchange={() => typeChanged(fix)}
                 >
                   <option value="">{$t("lighting.selectType")}</option>
                   {#each fixtureTypeNames as ftName (ftName)}
@@ -489,6 +636,71 @@
                 />
               </div>
             </div>
+            {#if modesOf(fix)}
+              {@const modes = modesOf(fix) ?? []}
+              {@const def = defaultModeOf(fix)}
+              <div class="venue-fixture-row">
+                <div class="field compact-field" style="flex: 2;">
+                  <label for={`fix-mode-${i}`}
+                    >{$t("venues.inspector.mode")}</label
+                  >
+                  <select
+                    id={`fix-mode-${i}`}
+                    class="input mode-select"
+                    data-testid="venue-row-mode"
+                    value={fix.mode ?? ""}
+                    onchange={(e) => (fix.mode = e.currentTarget.value || null)}
+                  >
+                    <option value=""
+                      >{def
+                        ? $t("venues.inspector.modeDefault", {
+                            values: { mode: def },
+                          })
+                        : $t("venues.inspector.modeDefaultNone")}</option
+                    >
+                    {#each modes as m (m.name)}
+                      <option
+                        value={m.name}
+                        disabled={m.refused !== undefined}
+                        title={m.refused ?? undefined}
+                        >{$t("venues.inspector.modeOption", {
+                          values: { name: m.name, count: m.footprint },
+                        })}</option
+                      >
+                    {/each}
+                    {#if fix.mode && !modes.some((m) => m.name === fix.mode)}
+                      <!-- Saved, but not a mode of this archive: kept unless
+                           changed, and said so. -->
+                      <option value={fix.mode}
+                        >{$t("lighting.venueRow.unknownMode", {
+                          values: { mode: fix.mode },
+                        })}</option
+                      >
+                    {/if}
+                  </select>
+                </div>
+              </div>
+            {/if}
+            {#if rowSpans[i]?.footprint}
+              {@const span = rowSpans[i]}
+              <p class="row-span" data-testid="venue-row-span">
+                {span.footprint === 1
+                  ? $t("lighting.venueRow.spanOne", {
+                      values: { from: span.address },
+                    })
+                  : $t("lighting.venueRow.span", {
+                      values: {
+                        from: span.address,
+                        to: span.address + (span.footprint ?? 1) - 1,
+                      },
+                    })}
+              </p>
+            {/if}
+            {#if (rowClashes[i]?.hits.length ?? 0) > 0 || rowClashes[i]?.overrun}
+              <p class="row-warning" data-testid="venue-row-overlap">
+                {clashMessage(i)}
+              </p>
+            {/if}
             {#if rowIssues.length > 0}
               <p
                 class="row-error"
@@ -770,6 +982,24 @@
 
   .venue-fixture-card :global([aria-invalid="true"]) {
     border-color: var(--red);
+  }
+
+  .row-span {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .row-warning {
+    margin: 0;
+    font-size: 12px;
+    color: var(--yellow, var(--text));
+  }
+
+  .mode-select {
+    font-family: var(--mono);
+    font-size: 12px;
   }
 
   .row-error {

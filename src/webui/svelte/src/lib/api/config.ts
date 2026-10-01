@@ -13,6 +13,7 @@
 //
 
 import { BadAnswerError, readJson } from "../lighting/answer";
+import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
 import { parseFit, type Fit } from "../lighting/fit";
 import { parseReadiness, type Readiness } from "../lighting/readiness";
 import {
@@ -498,6 +499,7 @@ export async function importGdtf(
   if (name) params.set("name", name);
   const res = await uploadFiles(`/lighting/gdtf/import?${params}`, [file]);
   if (!res.ok) throw await apiError(res, "Failed to import GDTF");
+  fixtureTypesChanged();
   return res.json();
 }
 
@@ -682,6 +684,11 @@ export async function importMvr(
     ),
   });
   if (!res.ok) throw await apiError(res, "Failed to import the MVR");
+  if (options.write) {
+    // A write adds types and writes (or merges into) a venue.
+    fixtureTypesChanged();
+    venueChanged(null);
+  }
   return res.json();
 }
 
@@ -809,6 +816,7 @@ export async function addAimPoints(
     version ? { "If-Match": version } : undefined,
   );
   if (!res.ok) throw await versionedError(res, "Failed to add aim points");
+  venueChanged(venue);
   return res.json();
 }
 
@@ -969,6 +977,11 @@ export async function postFixtureSettings(
   );
   if (!res.ok)
     throw await versionedError(res, "Failed to save the fixture's settings");
+  if (body.write) {
+    // A rename rewrites venue lines; a new default changes fixtures' modes.
+    fixtureTypesChanged();
+    venueChanged(null);
+  }
   return res.json();
 }
 
@@ -988,6 +1001,7 @@ export async function saveFixtureType(
     JSON.stringify(data),
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
+  fixtureTypesChanged();
 }
 
 /** Saves a fixture type as raw DSL. `ext` decides the form a *new* type is
@@ -1005,6 +1019,7 @@ export async function saveFixtureTypeText(
     dsl,
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
+  fixtureTypesChanged();
 }
 
 export async function deleteFixtureType(
@@ -1016,6 +1031,7 @@ export async function deleteFixtureType(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
   );
   if (!res.ok) throw await apiError(res, "Failed to delete fixture type");
+  fixtureTypesChanged();
 }
 
 /// Group names a cue can target, with the fixtures each currently resolves to.
@@ -1114,6 +1130,7 @@ export async function saveVenue(
     version ? { "If-Match": version } : undefined,
   );
   if (!res.ok) throw await versionedError(res, "Failed to save venue");
+  venueChanged(name);
   const body = await res.json().catch(() => ({}));
   return {
     version: body?.version ?? null,
@@ -1193,6 +1210,7 @@ export async function deleteVenue(name: string, dir?: string): Promise<void> {
     `/lighting/venues/${encodeURIComponent(name)}${params}`,
   );
   if (!res.ok) throw await apiError(res, "Failed to delete venue");
+  venueChanged(name);
 }
 
 // ---- Playlist CRUD ----

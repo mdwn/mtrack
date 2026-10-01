@@ -27,6 +27,8 @@ pub(super) async fn get_status(State(state): State<WebUiState>) -> impl IntoResp
             "version": build_info::VERSION,
             "git_hash": build_info::GIT_HASH,
             "build_time": build_info::BUILD_TIME,
+            // The web UI this server serves (null when its build had none).
+            "ui_build": super::super::server::ui_build(),
         },
         "hardware": hardware,
         "controllers": controllers,
@@ -113,6 +115,8 @@ mod test {
         assert!(parsed["build"]["version"].is_string());
         assert!(parsed["build"]["git_hash"].is_string());
         assert!(parsed["build"]["build_time"].is_string());
+        let ui_build = &parsed["build"]["ui_build"];
+        assert!(ui_build.is_string() || ui_build.is_null(), "{ui_build}");
 
         // Hardware section is present with all subsystems.
         assert!(parsed["hardware"]["init_done"].is_boolean());

@@ -14,6 +14,7 @@
 
 import { derived, writable } from "svelte/store";
 import { wsConnected } from "./stores";
+import { uiOutdated, type ServerBuild } from "../buildCheck";
 
 export interface SubsystemStatus {
   status:
@@ -39,6 +40,8 @@ export interface StatusData {
     version: string;
     git_hash: string;
     build_time: string;
+    /** The UI the server serves; null when its build stamped none. */
+    ui_build?: string | null;
   };
   hardware: {
     init_done: boolean;
@@ -67,6 +70,21 @@ export interface LightingVenueStatus {
 export type Health = "ok" | "warn" | "error" | "unknown";
 
 export const statusStore = writable<StatusData | null>(null);
+
+/** The server's build as first seen by this page. */
+let firstSeen: ServerBuild | null = null;
+statusStore.subscribe((s) => {
+  if (s && !firstSeen) firstSeen = { ...s.build };
+});
+
+/** The UI this bundle was built as; empty for a build that stamped none. */
+const UI_BUILD: string = import.meta.env.VITE_MTRACK_UI_BUILD ?? "";
+
+/** This tab runs an older UI than the server now serves: reload for the
+ *  new one. Never reloads by itself — someone may be mid-edit. */
+export const uiUpdated = derived(statusStore, ($status) =>
+  uiOutdated(UI_BUILD, firstSeen, $status?.build ?? null),
+);
 
 /** The current venue, when it did not load. */
 export const venueFailure = derived(statusStore, ($status) => {

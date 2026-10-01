@@ -43,6 +43,20 @@ use super::state as ws_state;
 #[allow_missing = true]
 struct WebUiAssets;
 
+/// The identity of the web UI this server serves — the hash of its frontend
+/// inputs, which the UI build writes to `build-info.json` and also compiles
+/// into the bundle. An open tab compares the two to know it is running an
+/// older UI than the server now serves. `None` when the UI was built without
+/// one (a plain `npm run build`) or there is no UI.
+pub(crate) fn ui_build() -> Option<String> {
+    let info = WebUiAssets::get("build-info.json")?;
+    let parsed: serde_json::Value = serde_json::from_slice(&info.data).ok()?;
+    parsed["ui_build"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// Configuration for the web server (address + port).
 #[derive(Debug, Clone)]
 pub struct WebConfig {
@@ -291,12 +305,17 @@ async fn grpc_web_handler(
 /// Serves the embedded index.html for the SPA.
 async fn index_handler() -> impl IntoResponse {
     match WebUiAssets::get("index.html") {
-        Some(content) => Html(
-            std::str::from_utf8(content.data.as_ref())
-                .unwrap_or("<h1>Error loading web UI</h1>")
-                .to_string(),
+        // The shell names the content-hashed bundle, so it is never reused
+        // unchecked: a reload after an upgrade must fetch the new one.
+        Some(content) => (
+            [(header::CACHE_CONTROL, "no-cache")],
+            Html(
+                std::str::from_utf8(content.data.as_ref())
+                    .unwrap_or("<h1>Error loading web UI</h1>")
+                    .to_string(),
+            ),
         )
-        .into_response(),
+            .into_response(),
         None => (StatusCode::NOT_FOUND, "Web UI assets not found").into_response(),
     }
 }
@@ -320,6 +339,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
         if let Some(content) = WebUiAssets::get("index.html") {
             return Response::builder()
                 .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .header(header::CACHE_CONTROL, "no-cache")
                 .body(axum::body::Body::from(content.data.to_vec()))
                 .unwrap();
         }
@@ -603,6 +623,8 @@ mod test {
 
         let resp = reqwest::get(&base_url).await.unwrap();
         assert_eq!(resp.status(), 200);
+        // A reload after an upgrade must not reuse the old shell.
+        assert_eq!(resp.headers()["cache-control"], "no-cache");
         let body = resp.text().await.unwrap();
         assert!(body.contains("html"), "expected HTML response");
     }
@@ -616,6 +638,7 @@ mod test {
             .unwrap();
         // SPA routes should return index.html
         assert_eq!(resp.status(), 200);
+        assert_eq!(resp.headers()["cache-control"], "no-cache");
     }
 
     #[tokio::test]

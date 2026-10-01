@@ -626,9 +626,21 @@ Lists the venues and edits their fixtures: name, type, universe, start channel a
 a venue keeps everything the form does not show — fixture positions and rotations, focus points,
 and where an MVR import came from.
 
+A fixture of a GDTF type has a **Mode** select on its row: *Type default (8: RGBS)* leaves the
+line without a mode, and every other mode of the archive is listed with its footprint (refused
+modes are shown but cannot be chosen), so one venue can mix, say, RGBS and RGBWS bricks. A mode
+saved by hand that the archive does not have is shown as such and kept unless you change it, and
+changing a row's type puts it back on that type's default. Each row says which addresses it
+occupies ("Addresses 5–9"). A row whose addresses run into another row's (rows on exactly the
+same addresses are ganged, which is fine) or past 512 is marked with what it runs into; it does
+not stop you typing, and Save asks "Save anyway?" naming them, so a hand-made venue with overlaps
+stays editable. Nothing is ever renumbered for you. A save shows at once everywhere on the page:
+the venue's card, the plot (its fixtures and count) and the inspector read the saved file, and
+the next edit starts from it.
+
 **Add Fixture** continues the patch from the last row: the new fixture is named `Fixture N` (the
 first number not taken), takes the last row's type and universe, and starts straight after it
-(its address plus its type's footprint, so a 3-channel fixture at 1 is followed at 4). A fixture
+(its address plus its footprint in its own mode, so a 3-channel fixture at 1 is followed at 4). A fixture
 that would run past address 512 starts the next universe at 1. Changing an earlier row never
 renumbers the rows after it. Nothing you added is dropped on save: a row with no name, no type,
 a name another row has, or a universe or address below 1 stops the save, is outlined with what

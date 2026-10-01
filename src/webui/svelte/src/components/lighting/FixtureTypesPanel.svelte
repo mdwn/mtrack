@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import { fixtureTypeChanges, venueChanges } from "../../lib/lighting/changes";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
@@ -184,6 +185,9 @@ fixture_type "Name" {
     // Re-load when the directory changes
     void ftDir;
     void venuesDir;
+    // A venue edit changes which modes are in use; a type edit, the list.
+    void $venueChanges;
+    void $fixtureTypeChanges;
     loadFixtureTypes();
   });
 

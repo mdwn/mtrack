@@ -737,6 +737,23 @@ the preview, and importing a mode the distiller refuses.
   next universe when it would pass 512 (`nextPatch` in `lib/lighting/patch.ts`).
   A row's own mode is not consulted: the form has no archive loaded, so the
   default's footprint stands in.
+- **One "this changed" signal.** The plot's file view loaded on the selected
+  venue's *name*, so a save from the venue form (same name) left it showing
+  the old file until the user clicked away and back. The API client now
+  raises `venueChanged(name | null)` after every successful venue write
+  (save, delete, aim points, an MVR write, a fixture-settings write) and
+  `fixtureTypesChanged()` after every type write (save, delete, GDTF import,
+  MVR write, settings); `lib/lighting/changes.ts` holds the two stores. The
+  plot's file view, the venue list (cards and versions), the venue form's
+  type list, the inspector (fields, patch, cached archives) and the fixture
+  type list re-read on them. No call site pokes a reload.
+- **A mode per row in the venue form.** GDTF rows get the inspector's Mode
+  select, fed by each distinct type's `/gdtf` answer fetched once per form
+  (lazily; typing never waits). Each row shows its span; Add Fixture steps by
+  the previous row's own mode's footprint (the default's when it has none,
+  else +1), which removes the earlier deviation. Partial overlaps between
+  rows (identical spans gang, as in `patch.ts`) and spans past 512 are marked
+  and asked about once on Save ("Save anyway?"), never blocked or renumbered.
 - **Journeys against the real binary.** `e2e/journeys/` (`make test-journeys`,
   CI job "Lighting journeys (real server)") starts one `mtrack` per test on a
   throwaway project — no hardware, the DMX engine on the null client — and
