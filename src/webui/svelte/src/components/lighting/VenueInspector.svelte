@@ -21,6 +21,7 @@
    */
   import { t } from "svelte-i18n";
   import { untrack } from "svelte";
+  import { guardUnsaved } from "../../lib/dirtyGuard";
   import { fixtureTypeChanges, venueChanges } from "../../lib/lighting/changes";
   import { get } from "svelte/store";
   import TagInput from "../config/TagInput.svelte";
@@ -342,6 +343,28 @@
     mode: string | null;
   }
   let fields = $state<Fields | null>(null);
+  // Unapplied edits to the fields (the mode select saves at once, so it is
+  // not one of them): leaving with some asks first.
+  let fieldsSnapshot = $state("");
+  const fieldsState = (f: Fields | null) =>
+    f
+      ? JSON.stringify([
+          f.name,
+          f.fixture_type,
+          Number(f.universe),
+          Number(f.start_channel),
+          f.tags,
+        ])
+      : "";
+  let fieldsDirty = $derived(
+    !!fields && fieldsState(fields) !== fieldsSnapshot,
+  );
+  $effect(() =>
+    guardUnsaved(
+      () => fieldsDirty,
+      get(t)("lighting.discard.inspector", { values: { name: single ?? "" } }),
+    ),
+  );
   $effect(() => {
     const name = single;
     // The file changed (this inspector's save, the venue form, a rename):
@@ -364,6 +387,7 @@
           tags: [...f.tags],
           mode: f.mode ?? null,
         };
+        fieldsSnapshot = fieldsState(fields);
       })
       .catch(() => {
         // The fields stay hidden; position, aim and the list still work.

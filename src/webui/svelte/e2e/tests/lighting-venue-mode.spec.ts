@@ -366,3 +366,21 @@ test("a fixture ganged on the same addresses is not a collision", async ({
     .click();
   await expect.poll(() => puts.length).toBe(1);
 });
+
+test("unapplied inspector edits ask before the page is left", async ({
+  page,
+}) => {
+  await open(page);
+  await page.locator("#insp-channel").fill("40");
+  await page
+    .locator(".lighting__tabs")
+    .getByRole("link", { name: "Fixture types" })
+    .click();
+  const dialog = page.locator(".dialog-overlay");
+  await expect(dialog).toContainText(
+    "Discard the changes to Brick3 you have not applied?",
+  );
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(page).toHaveURL(/#\/lighting\/venues/);
+  await expect(page.locator("#insp-channel")).toHaveValue("40");
+});

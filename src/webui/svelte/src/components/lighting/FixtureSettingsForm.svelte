@@ -25,6 +25,7 @@
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
+  import { guardUnsaved } from "../../lib/dirtyGuard";
   import {
     ConflictError,
     fetchFixtureSettings,
@@ -88,6 +89,15 @@
   /** Whether the fixture can pan or tilt in any mode. */
   let canMove = $derived(
     modes.some((m) => (m.capabilities ?? []).includes("pan_tilt")),
+  );
+
+  // Leaving with unsaved settings asks first (the app's guard, and the
+  // browser's for a reload or a closed tab).
+  $effect(() =>
+    guardUnsaved(
+      () => dirty,
+      get(t)("lighting.discard.fixture", { values: { name } }),
+    ),
   );
 
   let dirty = $derived(
@@ -207,6 +217,15 @@
         message = { ok: true, text: said.join(" ") };
       }
       const next = done.rename?.to ?? typeName.trim();
+      // Saved: the form is clean before anything navigates (a rename moves
+      // the page to the new name's address, which must not ask).
+      const sent = body(true);
+      saved = {
+        ...saved,
+        name: next,
+        movement: sent.movement,
+        version: done.version,
+      };
       onsaved?.(next, message);
       if (next === name) await load();
     } catch (e) {

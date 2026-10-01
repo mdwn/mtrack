@@ -22,6 +22,7 @@
   import FixtureTypeDetails from "./FixtureTypeDetails.svelte";
   import { trimNumber } from "../../lib/lighting/fixtureFacts";
   import { lightingHref } from "../../lib/lightingRoute";
+  import { guardUnsaved } from "../../lib/dirtyGuard";
   import { untrack } from "svelte";
   import {
     channelProblems,
@@ -224,6 +225,7 @@ fixture_type "Name" {
         if (editingFt !== null) {
           editingFt = null;
           newFtChoice = false;
+          ftNotice = null;
         }
         return;
       }
@@ -276,6 +278,7 @@ fixture_type "Name" {
       ft.min_strobe_frequency != null ? String(ft.min_strobe_frequency) : "";
     editFtStrobeDmxOffset =
       ft.strobe_dmx_offset != null ? String(ft.strobe_dmx_offset) : "";
+    markClean();
   }
 
   /** Opens a type as the text of its file, whatever form it is in. The
@@ -292,6 +295,7 @@ fixture_type "Name" {
       ftMsg = e.message;
     } finally {
       ftTextLoading = false;
+      markClean();
     }
   }
 
@@ -321,6 +325,7 @@ fixture_type "Name" {
     if (ext === "fixture") {
       ftMode = "text";
       editFtDsl = NEW_FIXTURE_TEMPLATE;
+      markClean();
       return;
     }
     ftMode = "form";
@@ -328,6 +333,7 @@ fixture_type "Name" {
     editFtMaxStrobe = "";
     editFtMinStrobe = "";
     editFtStrobeDmxOffset = "";
+    markClean();
   }
 
   // Importing a GDTF is one step: choose the file and it is imported — no
@@ -388,12 +394,42 @@ fixture_type "Name" {
     }
   }
 
+  /** Back to the list, through the address: leaving unsaved edits asks
+   *  first (the app's guard), and staying keeps them. */
   function cancelEditFt() {
-    ftNotice = null;
-    editingFt = null;
-    newFtChoice = false;
     toList();
   }
+
+  // --- Unsaved edits of a hand-written type (a GDTF fixture's settings
+  // guard themselves): what the form or text held when it was opened.
+  let ftSnapshot = $state("");
+  const ftState = () =>
+    JSON.stringify([
+      ftMode,
+      editFtName,
+      editFtChannels,
+      editFtMaxStrobe,
+      editFtMinStrobe,
+      editFtStrobeDmxOffset,
+      editFtDsl,
+      editFtExt,
+    ]);
+  function markClean() {
+    ftSnapshot = ftState();
+  }
+  let ftDirty = $derived(
+    !!editingFt && !showFtDetails && !ftTextLoading && ftState() !== ftSnapshot,
+  );
+  $effect(() =>
+    guardUnsaved(
+      () => ftDirty,
+      isNewFt
+        ? get(t)("lighting.discard.newFixture")
+        : get(t)("lighting.discard.fixture", {
+            values: { name: editingFt ?? "" },
+          }),
+    ),
+  );
 
   function addFtChannel() {
     const nextOffset =

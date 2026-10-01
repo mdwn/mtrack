@@ -80,3 +80,23 @@ export async function confirmNavigation(): Promise<boolean> {
   }
   return true;
 }
+
+/**
+ * Registers an editor with the navigation guard and with the browser's own
+ * leave-page prompt (`beforeunload`), for as long as the returned function
+ * is not called. Call it from a `$effect` and return what it returns.
+ */
+export function guardUnsaved(
+  isDirty: () => boolean,
+  message: string,
+): () => void {
+  const unregister = registerDirtyGuard(isDirty, message);
+  const onBeforeUnload = (e: BeforeUnloadEvent) => {
+    if (isDirty()) e.preventDefault();
+  };
+  window.addEventListener("beforeunload", onBeforeUnload);
+  return () => {
+    unregister();
+    window.removeEventListener("beforeunload", onBeforeUnload);
+  };
+}

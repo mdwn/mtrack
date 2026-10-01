@@ -26,6 +26,7 @@
   import { isRefused } from "../../lib/lighting/modes";
   import { untrack } from "svelte";
   import { lightingHref } from "../../lib/lightingRoute";
+  import { guardUnsaved } from "../../lib/dirtyGuard";
   import {
     nextFixtureName,
     rowProblems,
@@ -213,6 +214,7 @@
     editVenueSource = v.source ?? null;
     isNewVenue = false;
     checkRows = false;
+    markVenueClean();
   }
 
   function startNewVenue() {
@@ -224,12 +226,33 @@
     editVenueSource = null;
     editVersion = undefined;
     isNewVenue = true;
+    markVenueClean();
   }
 
+  /** Closes the form through the address: unsaved edits ask first (the
+   *  app's guard), and staying keeps them. */
   function cancelEditVenue() {
-    editingVenue = null;
     select(isNewVenue ? null : selected);
   }
+
+  // --- Unsaved edits: the form as it was opened.
+  let venueSnapshot = $state("");
+  const venueState = () =>
+    JSON.stringify([editVenueName, editVenueFixtures, editVenueFocusPoints]);
+  function markVenueClean() {
+    venueSnapshot = venueState();
+  }
+  let venueDirty = $derived(!!editingVenue && venueState() !== venueSnapshot);
+  $effect(() =>
+    guardUnsaved(
+      () => venueDirty,
+      isNewVenue
+        ? get(t)("lighting.discard.newVenue")
+        : get(t)("lighting.discard.venue", {
+            values: { name: editingVenue ?? "" },
+          }),
+    ),
+  );
 
   /** The addresses a fixture of `type` occupies, in its type's default
    *  mode (a row's own mode is not known here without its archive); null

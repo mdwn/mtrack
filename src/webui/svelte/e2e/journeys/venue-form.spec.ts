@@ -140,3 +140,40 @@ test.describe("A mode per fixture in the form", () => {
     );
   });
 });
+
+test.describe("Unsaved venue edits", () => {
+  test.use({
+    files: {
+      "lighting/fixture_types/par.light": PAR,
+      "lighting/venues/club.light":
+        'venue "club" {\n  fixture "A" Par @ 1:1\n  fixture "B" Par @ 1:4\n}\n',
+    },
+  });
+
+  test("Back asks; Stay keeps the edit; the save writes it", async ({
+    page,
+    project,
+  }) => {
+    await page.goto("/#/lighting/venues");
+    await card(page, "club").click();
+    await card(page, "club").locator('[data-testid^="venue-edit-"]').click();
+    await expect(page).toHaveURL(/#\/lighting\/venues\/club\?edit$/);
+    await page.getByRole("button", { name: "Add Fixture" }).click();
+    await expect(rows(page)).toHaveCount(3);
+
+    await page.goBack();
+    const dialog = page.locator(".dialog-overlay");
+    await expect(dialog).toContainText(
+      "Discard your unsaved changes to the venue club?",
+    );
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(page).toHaveURL(/#\/lighting\/venues\/club\?edit$/);
+    await expect(rows(page)).toHaveCount(3);
+
+    await save(page);
+    await expect(page.locator(".editor-form")).toHaveCount(0);
+    expect(project.read("lighting/venues/club.light")).toContain(
+      'fixture "Fixture 1" Par @ 1:7',
+    );
+  });
+});
