@@ -83,7 +83,6 @@ test.describe("Lighting area: routes and navigation", () => {
     ["/#/lighting/venues", "Venues", /Lighting - Venues/],
     ["/#/lighting/groups", "Groups", /Lighting - Groups/],
     ["/#/lighting/fit", "Fit shows", /Lighting - Fit shows/],
-    ["/#/lighting/stage", "3D", /Lighting - 3D/],
   ] as const) {
     test(`${hash} renders with its tab current and its title`, async ({
       page,
@@ -101,29 +100,36 @@ test.describe("Lighting area: routes and navigation", () => {
   }) => {
     await page.goto("/#/lighting");
     const nav = page.getByRole("navigation", { name: "Lighting sections" });
-    await expect(nav.getByRole("link")).toHaveCount(6);
+    await expect(nav.getByRole("link")).toHaveCount(5);
     await nav.getByRole("link", { name: "Venues" }).focus();
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(/#\/lighting\/venues$/);
   });
 
-  test("#/stage redirects to #/lighting/stage and Back skips it", async ({
+  test("an old Stage 3D address lands on Venues in 3D, and Back skips it", async ({
     page,
   }) => {
     await page.goto("/#/");
     await page.evaluate(() => {
-      window.location.hash = "#/stage";
+      window.location.hash = "#/lighting/stage";
     });
-    await expect(page).toHaveURL(/#\/lighting\/stage$/);
-    await expect(page.locator(".stage3d .page__title")).toHaveText("Stage 3D");
+    await expect(page).toHaveURL(/#\/lighting\/venues\?view=3d$/);
+    const nav = page.getByRole("navigation", { name: "Lighting sections" });
+    await expect(nav.locator('[aria-current="page"]')).toHaveText("Venues");
+    await expect(
+      nav.getByRole("link", { name: "3D", exact: true }),
+    ).toHaveCount(0);
     await page.goBack();
     await expect(page).toHaveURL(/#\/$/);
   });
 
-  test("a bookmarked #/stage loads Stage 3D", async ({ page }) => {
-    await page.goto("/#/stage");
-    await expect(page).toHaveURL(/#\/lighting\/stage$/);
-    await expect(page.locator(".stage3d .page__title")).toHaveText("Stage 3D");
+  test("a bookmarked #/stage preview keeps its song and time", async ({
+    page,
+  }) => {
+    await page.goto("/#/stage?mode=preview&song=Test%20Song%20Alpha&t=12.5");
+    await expect(page).toHaveURL(
+      /#\/lighting\/venues\?view=3d&mode=preview&song=Test\+Song\+Alpha&t=12\.5$/,
+    );
   });
 
   test("the area works at phone width", async ({ page }) => {
@@ -469,17 +475,4 @@ test.describe("Lighting area: Venues stage plot", () => {
       expect(drawn[1]).toBeCloseTo(canvas.height, 0);
     });
   }
-});
-
-test.describe("Lighting area: headings", () => {
-  test("3D has one h1 and its own title is an h2", async ({ page }) => {
-    await page.goto("/#/lighting/stage");
-    await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText(
-      "Lighting",
-    );
-    await expect(
-      page.getByRole("heading", { level: 2, name: "Stage 3D" }),
-    ).toBeVisible();
-  });
 });

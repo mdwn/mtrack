@@ -59,6 +59,8 @@
     edit?: boolean;
     /** `?new=venue`: a new venue's form is open. */
     creating?: string | null;
+    /** `?view=3d`: the stage card shows 3D; kept across this panel's moves. */
+    view?: "plot" | "3d";
   }
 
   let {
@@ -67,6 +69,7 @@
     selected = null,
     edit = false,
     creating = null,
+    view = "plot",
   }: Props = $props();
 
   // The selection and an open form are the address, so the section's link,
@@ -74,7 +77,12 @@
   const go = (hash: string) => {
     if (window.location.hash !== hash) window.location.hash = hash;
   };
-  const select = (name: string | null) => go(lightingHref("venues", name));
+  /** The stage card's view travels with the venue: another venue, or its
+   *  form, keeps 3D showing when it was. */
+  const keep = (extra: Record<string, string> = {}) =>
+    view === "3d" ? { ...extra, view: "3d" } : extra;
+  const select = (name: string | null) =>
+    go(lightingHref("venues", name, keep()));
 
   $effect(() => {
     const want = selected;
@@ -804,7 +812,8 @@
         >
         <button
           class="btn btn-primary"
-          onclick={() => go(lightingHref("venues", null, { new: "venue" }))}
+          onclick={() =>
+            go(lightingHref("venues", null, keep({ new: "venue" })))}
           >{$t("lighting.newVenue")}</button
         >
       </div>
@@ -855,7 +864,7 @@
                   data-testid="venue-edit-{name}"
                   onclick={(e) => {
                     e.stopPropagation();
-                    go(lightingHref("venues", name, { edit: "" }));
+                    go(lightingHref("venues", name, keep({ edit: "" })));
                   }}>{$t("lighting.venueEdit")}</button
                 >
                 <button

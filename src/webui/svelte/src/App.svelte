@@ -23,18 +23,19 @@
   import Lighting from "./pages/Lighting.svelte";
   import NotFound from "./pages/NotFound.svelte";
   import ConfirmDialog from "./components/ConfirmDialog.svelte";
-  import { playbackStore } from "./lib/ws/stores";
+  import { playbackStore, venueStore } from "./lib/ws/stores";
   import { confirmNavigation, hasDirty } from "./lib/dirtyGuard";
-  import { lightingRoute, redirectLegacyHash } from "./lib/lightingRoute";
+  import { lightingRoute, redirectRetiredHash } from "./lib/lightingRoute";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
   /**
-   * Rewrites a legacy address (`#/stage`) to its current place, replacing the
-   * history entry so Back does not bounce through the old one.
+   * Rewrites a retired address (Stage 3D's `#/stage` and `#/lighting/stage`)
+   * to the venue card's 3D view, replacing the history entry so Back does
+   * not bounce through the old one.
    */
   function normalizeHash(hash: string): string {
-    const next = redirectLegacyHash(hash);
+    const next = redirectRetiredHash(hash, get(venueStore)?.name ?? null);
     if (next !== hash) window.history.replaceState(null, "", next);
     return next;
   }
@@ -121,7 +122,6 @@
         groups: get(t)("lighting.area.groups"),
         fit: get(t)("lighting.area.fit"),
         import: get(t)("lighting.mvr.import.title"),
-        stage: get(t)("lighting.area.stage"),
       };
       pageTitle = subTitle[sub]
         ? `${get(t)("nav.lighting")} - ${subTitle[sub]}`

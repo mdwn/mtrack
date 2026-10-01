@@ -13,7 +13,7 @@
 //
 
 /**
- * The 3D page's Preview mode (lighting UI design, section 12.1): a show
+ * The 3D view's Preview mode (lighting UI design, section 12.1): a show
  * evaluated offline at a moment, in the shape the live `state` message has,
  * so the scene is fed the same way from either source.
  */
@@ -216,20 +216,4 @@ export function timelineLink(song: string, seconds: number): string {
   return `#/songs/${encodeURIComponent(song)}/lighting?t=${
     Math.round(seconds * 1000) / 1000
   }`;
-}
-
-/** The Preview's starting point from `#/lighting/stage?mode=preview&song=..&t=..`. */
-export function previewParams(hash: string): {
-  preview: boolean;
-  song: string | null;
-  time: number | null;
-} {
-  const query = hash.split("?", 2)[1] ?? "";
-  const params = new URLSearchParams(query);
-  const t = Number(params.get("t"));
-  return {
-    preview: params.get("mode") === "preview",
-    song: params.get("song"),
-    time: params.has("t") && Number.isFinite(t) && t >= 0 ? t : null,
-  };
 }

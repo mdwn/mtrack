@@ -493,7 +493,7 @@ app.get("/api/lighting/fixture-types/:name/gdtf", (req, res) => {
   });
 });
 
-// The 3D page's Preview: an idle show. Tests that need a moment routed with
+// The 3D view's Preview: an idle show. Tests that need a moment routed with
 // `page.route`.
 app.post("/api/lighting/evaluate", (req, res) => {
   const times: number[] = Array.isArray(req.body?.times) ? req.body.times : [];
@@ -578,7 +578,7 @@ const TEST_BOX_GLB = readFileSync(
   nodePath.resolve(process.cwd(), "e2e/mock-server/box.glb"),
 );
 
-// The asset store (design §16.2): one rig model for tests of the 3D page;
+// The asset store (design §16.2): one rig model for tests of the 3D view;
 // anything else is a 404 like the real store.
 app.get("/api/lighting/assets/{*path}", (req, res) => {
   const path = (req.params as { path?: string | string[] }).path;
@@ -669,7 +669,7 @@ app.get("/api/lighting/venues/:name", (req, res) => {
   });
 });
 
-// What the 3D page draws for a venue that is not the current one: the
+// What the 3D view draws for a venue that is not the current one: the
 // venue's file in the metadata's shape. No rigs here (every fixture draws
 // generically); "nowhere" is a venue the server does not have.
 app.get("/api/lighting/venues/:name/scene", (req, res) => {

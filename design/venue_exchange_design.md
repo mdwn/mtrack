@@ -737,8 +737,10 @@ conversion unless it proves cheap.
 
 ### 16.8 As built: any venue in 3D, and true size (2026-10-01)
 
-**Any venue.** The page's venue is part of its address, `#/lighting/stage/<venue>`; a
-venue's plot links there. No venue named, or the engine's current venue, is drawn live as
+**Any venue.** (The page has since gone: 3D is a view on the venue's stage card,
+`#/lighting/venues/<venue>?view=3d` — lighting UI design §13. The source rules below are
+unchanged.) The page's venue was part of its address, `#/lighting/stage/<venue>`; a
+venue's plot linked there. No venue named, or the engine's current venue, is drawn live as
 before. Any other venue is drawn from its file through `GET
 /api/lighting/venues/<name>/scene`, which answers in the shape of the websocket's metadata
 (per fixture: type, mode, position, rotation, rig path; the venue's focus points and

@@ -62,7 +62,11 @@
     type Rect,
     type StageFrame,
   } from "../lib/stage/layout";
-  import { lightingHref } from "../lib/lightingRoute";
+  import { venue3dHref, withParams } from "../lib/lightingRoute";
+  // Types only: the 3D view and the preview panel load the first time 3D
+  // is pressed, and three.js with them.
+  import type { Stage3DInfo } from "./stage/Stage3DView.svelte";
+  import type { PreviewFrame } from "../lib/lighting/preview";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { untrack } from "svelte";
@@ -93,6 +97,14 @@
     fileVenue?: string | null;
     /** The venues directory override, for reading and saving `fileVenue`. */
     venuesDir?: string;
+    /** `?view=3d` (the Venues page only): the card shows the venue in 3D
+     *  in place of the plot; the inspector and the header stay. */
+    view?: "plot" | "3d";
+    /** `?mode=preview&song=&t=`: the 3D view previews a song's show at a
+     *  moment (the current venue only). */
+    previewMode?: "live" | "preview";
+    previewSong?: string | null;
+    previewTime?: number | null;
   }
 
   let {
@@ -105,7 +117,47 @@
     fixtureTypesDir = "",
     fileVenue = null,
     venuesDir = "",
+    view = "plot",
+    previewMode = "live",
+    previewSong = null,
+    previewTime = null,
   }: Props = $props();
+
+  // --- Plot | 3D. The view is the address, so Back, a reload and a shared
+  // link keep it; leaving 3D drops a preview's moment with it.
+  function setView(next: "plot" | "3d") {
+    window.location.hash = withParams(
+      window.location.hash,
+      next === "3d"
+        ? { view: "3d" }
+        : { view: null, mode: null, song: null, t: null },
+    );
+  }
+  function setMode(next: "live" | "preview") {
+    window.location.hash = withParams(
+      window.location.hash,
+      next === "preview"
+        ? { mode: "preview" }
+        : { mode: null, song: null, t: null },
+    );
+  }
+  /** The previewed moment is kept in the address without a history entry
+   *  per scrub, so a reload or a shared link opens at it. */
+  function rememberMoment(song: string, time: number) {
+    window.history.replaceState(
+      null,
+      "",
+      withParams(window.location.hash, {
+        song,
+        t: String(Math.round(time * 10) / 10),
+      }),
+    );
+  }
+  /** What the 3D view is showing (its stats line reads it). */
+  let info3d = $state<Stage3DInfo | undefined>();
+  /** The previewed moment; null until the first evaluation. */
+  let feed = $state<PreviewFrame | null>(null);
+  const EMPTY_FRAME: PreviewFrame = { fixtures: {}, poses: {}, cells: {} };
 
   const FIXTURE_RADIUS = 22;
   const GLOW_RADIUS = 50;
@@ -310,6 +362,8 @@
         : null
       : $venueStore,
   );
+  let is3d = $derived(editable && view === "3d" && !!shownVenue);
+  let previewing = $derived(is3d && !viewingFile && previewMode === "preview");
   let shownPoses = $derived<Record<string, FixturePose>>(
     viewingFile ? filePoses : $poseStore,
   );
@@ -1360,18 +1414,42 @@
             : `Error: ${$reloadStore.error}`}
         </span>
       {/if}
-      <!-- From a venue, the 3D page shows that venue (its file when it is
-           not the current one); the dashboard's live plot opens the live
-           scene. -->
-      <a
-        href={editable && venue
-          ? lightingHref("stage", venue.name)
-          : "#/lighting/stage"}
-        class="btn btn-sm stage-card__3d"
-        data-testid="stage-3d-link"
-      >
-        {$t("stage3d.open")}
-      </a>
+      {#if editable && venue}
+        <div
+          class="stage-card__views"
+          role="group"
+          aria-label={$t("stage.viewLabel")}
+        >
+          <button
+            class="btn btn-sm"
+            class:stage-card__view--active={!is3d}
+            type="button"
+            aria-pressed={!is3d}
+            data-testid="stage-view-plot"
+            onclick={() => setView("plot")}>{$t("stage.viewPlot")}</button
+          >
+          <button
+            class="btn btn-sm"
+            class:stage-card__view--active={is3d}
+            type="button"
+            aria-pressed={is3d}
+            data-testid="stage-view-3d"
+            onclick={() => setView("3d")}>{$t("stage.view3d")}</button
+          >
+        </div>
+      {:else if !editable}
+        <!-- The dashboard's live plot opens the current venue in 3D on
+             the Venues page. -->
+        <a
+          href={$venueStore
+            ? venue3dHref($venueStore.name)
+            : "#/lighting/venues"}
+          class="btn btn-sm stage-card__3d"
+          data-testid="stage-3d-link"
+        >
+          {$t("stage3d.open")}
+        </a>
+      {/if}
       {#if !editable}
         <a href="#/lighting/venues" class="btn btn-sm stage-card__edit">
           {$t("stage.editInVenues")}
@@ -1411,28 +1489,118 @@
       class="stage-card__work"
       class:stage-card__work--inspect={selectable && !onFixtureClick}
     >
-      <div class="stage-card__viewport">
-        <div class="stage-card__caption" aria-hidden="true">
-          {$t("stage.label")}
+      <div class="stage-card__main">
+        <div class="stage-card__viewport" class:stage-card__viewport--3d={is3d}>
+          {#if is3d}
+            {#await import("./stage/Stage3DView.svelte") then { default: Stage3DView }}
+              <Stage3DView
+                venue={viewingFile ? shownFile : null}
+                {fixtureTypesDir}
+                {venuesDir}
+                previewFrame={previewing ? (feed ?? EMPTY_FRAME) : null}
+                {selection}
+                onSelect={(names) => (selection = names)}
+                hint={$t("stage.hint3d")}
+                oninfo={(i) => (info3d = i)}
+              />
+            {/await}
+          {:else}
+            <div class="stage-card__caption" aria-hidden="true">
+              {$t("stage.label")}
+            </div>
+            <canvas
+              bind:this={canvasEl}
+              onmousedown={onMouseDown}
+              onmousemove={onMouseMove}
+              onmouseup={onMouseUp}
+              onmouseleave={onMouseLeave}
+              onclick={onCanvasClick}
+              onkeydown={onCanvasKeydown}
+              tabindex={placeFocus || selectable ? 0 : undefined}
+              aria-label={placeFocus
+                ? $t("stage.placeHint", { values: { name: placeFocus } })
+                : selectable
+                  ? $t("stage.planHint")
+                  : undefined}
+              ontouchstart={onTouchStart}
+              ontouchmove={onTouchMove}
+              ontouchend={onTouchEnd}
+            ></canvas>
+          {/if}
         </div>
-        <canvas
-          bind:this={canvasEl}
-          onmousedown={onMouseDown}
-          onmousemove={onMouseMove}
-          onmouseup={onMouseUp}
-          onmouseleave={onMouseLeave}
-          onclick={onCanvasClick}
-          onkeydown={onCanvasKeydown}
-          tabindex={placeFocus || selectable ? 0 : undefined}
-          aria-label={placeFocus
-            ? $t("stage.placeHint", { values: { name: placeFocus } })
-            : selectable
-              ? $t("stage.planHint")
-              : undefined}
-          ontouchstart={onTouchStart}
-          ontouchmove={onTouchMove}
-          ontouchend={onTouchEnd}
-        ></canvas>
+        {#if is3d}
+          <div class="stage-card__three" data-testid="stage-3d-under">
+            {#if info3d && (info3d.stats?.generic || info3d.scenery || info3d.sceneryError)}
+              <p class="stage-card__three-stats" data-testid="stage3d-stats">
+                {#if info3d.stats && info3d.stats.generic > 0}
+                  <span
+                    >{$t("stage3d.generic", {
+                      values: { count: info3d.stats.generic },
+                    })}</span
+                  >
+                {/if}
+                {#if info3d.sceneryError}
+                  <span>{$t("stage3d.sceneryError")}</span>
+                {/if}
+                {#if info3d.scenery}
+                  <span
+                    >{$t("stage3d.scenery", {
+                      values: { count: info3d.scenery.drawn },
+                    })}
+                    {#if info3d.scenery.skipped > 0}
+                      {$t("stage3d.sceneryUndrawn", {
+                        values: {
+                          count: info3d.scenery.skipped,
+                          formats: info3d.scenery.formats
+                            .map((f) => "." + f)
+                            .join(", "),
+                        },
+                      })}
+                    {/if}</span
+                  >
+                {/if}
+              </p>
+            {/if}
+            {#if viewingFile}
+              <p
+                class="stage-card__three-note"
+                data-testid="stage3d-no-preview"
+              >
+                {$t("stage3d.noPreviewFile")}
+                <a href="#/lighting/groups">{$t("stage3d.makeCurrent")}</a>
+              </p>
+            {:else}
+              <div
+                class="stage-card__views"
+                role="group"
+                aria-label={$t("stage3d.source")}
+              >
+                {#each [["live", "stage3d.modeLive"], ["preview", "stage3d.modePreview"]] as [key, label] (key)}
+                  <button
+                    class="btn btn-sm"
+                    class:stage-card__view--active={previewMode === key}
+                    type="button"
+                    aria-pressed={previewMode === key}
+                    data-testid="stage3d-mode-{key}"
+                    onclick={() => setMode(key as "live" | "preview")}
+                  >
+                    {$t(label)}
+                  </button>
+                {/each}
+              </div>
+              {#if previewing}
+                {#await import("./lighting/PreviewPanel.svelte") then { default: PreviewPanel }}
+                  <PreviewPanel
+                    initialSong={previewSong}
+                    initialTime={previewTime}
+                    onfeed={(frame) => (feed = frame)}
+                    onmoment={rememberMoment}
+                  />
+                {/await}
+              {/if}
+            {/if}
+          </div>
+        {/if}
       </div>
       {#if selectable && !onFixtureClick}
         <VenueInspector
@@ -1542,6 +1710,46 @@
       border-top: none;
       border-left: 1px solid var(--card-border);
     }
+  }
+  .stage-card__main {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+  }
+  .stage-card__views {
+    display: inline-flex;
+    gap: 4px;
+  }
+  .stage-card__view--active {
+    background: var(--accent-subtle);
+    border-color: var(--accent);
+  }
+  .stage-card__viewport--3d {
+    border-style: solid;
+  }
+  .stage-card__three {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 0 16px 16px;
+    min-width: 0;
+  }
+  .stage-card__three-stats,
+  .stage-card__three-note {
+    margin: 0;
+    font-size: 13px;
+    color: var(--nc-fg-3);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+  }
+  .stage-card__three-note {
+    display: block;
+  }
+  .stage-card__three-note a {
+    font-weight: 600;
+    color: var(--accent);
   }
   .stage-card__viewport {
     position: relative;

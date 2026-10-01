@@ -23,7 +23,6 @@
   import FitPage from "../components/lighting/FitPage.svelte";
   import MvrImportWizard from "../components/lighting/MvrImportWizard.svelte";
   import StageView from "../components/StageView.svelte";
-  import Stage3D from "./Stage3D.svelte";
 
   interface Props {
     currentHash: string;
@@ -45,7 +44,6 @@
       labelKey: "lighting.area.groups",
     },
     { key: "fit", href: "#/lighting/fit", labelKey: "lighting.area.fit" },
-    { key: "stage", href: "#/lighting/stage", labelKey: "lighting.area.stage" },
   ] as const;
 
   let route = $derived(lightingRoute(currentHash));
@@ -100,6 +98,7 @@
       selected={route.item}
       edit={route.edit}
       creating={route.creating}
+      view={route.view}
     />
     <div class="lighting__stage">
       <StageView
@@ -107,6 +106,10 @@
         fixtureTypesDir={ftDir}
         venuesDir={venueDir}
         fileVenue={route.item}
+        view={route.view}
+        previewMode={route.mode}
+        previewSong={route.song}
+        previewTime={route.time}
       />
     </div>
   {:else if route.sub === "groups"}
@@ -118,13 +121,6 @@
     />
   {:else if route.sub === "import"}
     <MvrImportWizard fixtureTypesDir={ftDir} venuesDir={venueDir} />
-  {:else if route.sub === "stage"}
-    <Stage3D
-      heading="h2"
-      venue={route.item}
-      fixtureTypesDir={ftDir}
-      venuesDir={venueDir}
-    />
   {/if}
 </div>
 

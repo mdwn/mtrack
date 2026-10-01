@@ -14,8 +14,9 @@
 
 import { test, expect, type Page } from "@playwright/test";
 
-// Stage 3D shows the venue its address names: the current venue live, any
-// other from its file — never the current one in its place.
+// Plot | 3D on the venue's stage card: the picture changes in place; the
+// venue, the selection, the inspector and the header stay. The current
+// venue is drawn live; any other from its file.
 
 let counter = 0;
 
@@ -70,6 +71,7 @@ const CLUB_SCENE = {
   },
 };
 
+/** Opens `path` with "built-in" current; "club"'s scene is CLUB_SCENE. */
 async function withCurrentVenue(page: Page, path: string) {
   const wsId = `s3dv-${test.info().parallelIndex}-${++counter}-${Date.now()}`;
   let sceneReads = 0;
@@ -78,7 +80,6 @@ async function withCurrentVenue(page: Page, path: string) {
     return r.fulfill({ json: CLUB_SCENE });
   });
   await page.goto(`/?wsId=${wsId}${path}`);
-  // The page is up once the store has the current venue.
   await page.request.post("http://127.0.0.1:3111/test/send-ws", {
     data: { ...BUILT_IN, _wsId: wsId },
   });
@@ -86,51 +87,230 @@ async function withCurrentVenue(page: Page, path: string) {
 }
 
 const viewport = (page: Page) => page.locator(".stage3d__viewport");
-const venueLabel = (page: Page) => page.getByTestId("stage3d-venue");
+const plot = (page: Page) => page.locator(".stage-card__viewport canvas");
+const plotButton = (page: Page) => page.getByTestId("stage-view-plot");
+const threeButton = (page: Page) => page.getByTestId("stage-view-3d");
 
-test("another venue's 3D, from its plot, shows that venue from its file", async ({
+async function rendered(page: Page): Promise<boolean> {
+  await expect(viewport(page)).toHaveAttribute("data-renderer", /webgl|none/, {
+    timeout: 15000,
+  });
+  return (await viewport(page).getAttribute("data-renderer")) === "webgl";
+}
+
+/** Where the 3D view draws a fixture, in page pixels. */
+async function onScreen(page: Page, name: string) {
+  await expect
+    .poll(async () => {
+      const raw = (await viewport(page).getAttribute("data-view")) ?? "{}";
+      return name in ((JSON.parse(raw).screen ?? {}) as object);
+    })
+    .toBe(true);
+  const view = JSON.parse((await viewport(page).getAttribute("data-view"))!);
+  const [fx, fy] = view.screen[name] as [number, number];
+  const box = (await viewport(page).boundingBox())!;
+  return { x: box.x + fx * box.width, y: box.y + fy * box.height };
+}
+
+test("Plot | 3D switches the picture in place, in the address", async ({
   page,
 }) => {
+  const three: string[] = [];
+  page.on("request", (r) => {
+    if (/three|scene3d|Stage3DView|PreviewPanel/.test(r.url()))
+      three.push(r.url());
+  });
   await withCurrentVenue(page, "#/lighting/venues/club");
   await expect(page.getByTestId("stage-venue-label")).toContainText(
     "Venue file: club",
   );
-  await page.getByTestId("stage-3d-link").click();
-  await expect(page).toHaveURL(/#\/lighting\/stage\/club$/);
+  await expect(plot(page)).toBeVisible();
+  await expect(plotButton(page)).toHaveAttribute("aria-pressed", "true");
+  // Nobody pressed 3D: three.js and the 3D code were never fetched.
+  await page.waitForTimeout(500);
+  expect(three).toEqual([]);
 
-  await expect(venueLabel(page)).toHaveText("Venue file: club · not live");
-  await expect(viewport(page)).toHaveAttribute("data-venue", "club");
+  await threeButton(page).click();
+  await expect(page).toHaveURL(/#\/lighting\/venues\/club\?view=3d$/);
+  await expect(threeButton(page)).toHaveAttribute("aria-pressed", "true");
+  await expect(plot(page)).toHaveCount(0);
   await expect(viewport(page)).toHaveAttribute("data-source", "file");
+  await expect(viewport(page)).toHaveAttribute("data-venue", "club");
   await expect(viewport(page)).toHaveAttribute("data-fixtures", "3");
   await expect(viewport(page)).toHaveAttribute("data-placed", "1");
-  await expect(page.getByTestId("stage3d-mode")).toHaveText("Not live");
-
-  // The unplaced fixtures are said, with the way to place them.
-  const unplaced = page.getByTestId("stage3d-unplaced");
-  await expect(unplaced).toContainText(
-    "2 fixtures have no position yet — drawn in a row in front of the stage.",
+  expect(three.length).toBeGreaterThan(0);
+  // The card stays what it was: its header, its inspector, its focus point
+  // button.
+  await expect(page.getByTestId("stage-venue-label")).toContainText(
+    "Venue file: club",
   );
-  await expect(
-    unplaced.getByRole("link", { name: "Place them on the venue's plot." }),
-  ).toHaveAttribute("href", "#/lighting/venues/club");
-
-  // Preview evaluates against the engine's venue: off, with why.
-  await expect(page.getByTestId("stage3d-mode-preview")).toBeDisabled();
+  await expect(page.locator(".inspector")).toBeVisible();
+  await expect(page.locator(".stage-card__add-focus")).toBeVisible();
+  // Not the current venue: no Preview, and the line says how to get one.
+  await expect(page.getByTestId("stage3d-mode-preview")).toHaveCount(0);
   await expect(page.getByTestId("stage3d-no-preview")).toContainText(
     "Groups page",
   );
+  // The unplaced fixtures, inside the card.
+  const unplaced = page.locator(".stage-card").getByTestId("stage3d-unplaced");
+  await expect(unplaced).toContainText(
+    "2 fixtures have no position yet — drawn in a row in front of the stage.",
+  );
   await expect(page.getByTestId("stage3d-grid")).toHaveText("Grid: 1 m");
+  await expect(page.getByTestId("stage3d-hint")).toHaveText(
+    "Drag to orbit · click a fixture to select it",
+  );
 
-  // A reload on the address stays on that venue.
+  // A reload keeps 3D.
   await page.reload();
-  await expect(venueLabel(page)).toHaveText("Venue file: club · not live");
   await expect(viewport(page)).toHaveAttribute("data-fixtures", "3");
+
+  // Plot returns, and the address loses the view.
+  await plotButton(page).click();
+  await expect(page).toHaveURL(/#\/lighting\/venues\/club$/);
+  await expect(plot(page)).toBeVisible();
+  // Back is 3D again.
+  await page.goBack();
+  await expect(page).toHaveURL(/\?view=3d$/);
+  await expect(viewport(page)).toBeVisible();
+});
+
+test("the current venue's 3D is live, with Live | Preview", async ({
+  page,
+}) => {
+  const { reads } = await withCurrentVenue(
+    page,
+    "#/lighting/venues/built-in?view=3d",
+  );
+  await expect(page.getByTestId("stage-venue-label")).toContainText(
+    "Current venue: built-in",
+  );
+  await expect(viewport(page)).toHaveAttribute("data-source", "live");
+  await expect(viewport(page)).toHaveAttribute("data-fixtures", "1");
+  await expect(page.getByTestId("stage3d-mode-live")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.getByTestId("stage3d-mode-preview")).toBeEnabled();
+  await expect(page.getByTestId("stage3d-no-preview")).toHaveCount(0);
+  await expect(page.getByTestId("stage3d-unplaced")).toHaveCount(0);
+  expect(reads()).toBe(0);
+});
+
+test("selection is shared between the plot, 3D and the inspector", async ({
+  page,
+}) => {
+  await withCurrentVenue(page, "#/lighting/venues/built-in");
+  await expect(plot(page)).toHaveAttribute("data-positions", /house-par/);
+  // Selected on the plot...
+  const at = JSON.parse((await plot(page).getAttribute("data-positions"))!)[
+    "house-par"
+  ];
+  await plot(page).click({ position: { x: at.x, y: at.y } });
+  await expect(
+    page.locator(".inspector").getByLabel("house-par", { exact: true }),
+  ).toBeChecked();
+  // ...it is marked in 3D.
+  await threeButton(page).click();
+  await expect(viewport(page)).toHaveAttribute("data-selected", "house-par");
+  if (!(await rendered(page))) return;
+
+  // A click on empty space clears it, as on the plot.
+  const box = (await viewport(page).boundingBox())!;
+  await page.mouse.click(box.x + 8, box.y + box.height / 3);
+  await expect(viewport(page)).toHaveAttribute("data-selected", "");
+  await expect(
+    page.locator(".inspector").getByLabel("house-par", { exact: true }),
+  ).not.toBeChecked();
+
+  // A click on the fixture selects it; a drag from it orbits and does not.
+  const p = await onScreen(page, "house-par");
+  await page.mouse.click(p.x, p.y);
+  await expect(viewport(page)).toHaveAttribute("data-selected", "house-par");
+  await expect(
+    page.locator(".inspector").getByLabel("house-par", { exact: true }),
+  ).toBeChecked();
+  await page.mouse.click(box.x + 8, box.y + box.height / 3);
+  await expect(viewport(page)).toHaveAttribute("data-selected", "");
+  const q = await onScreen(page, "house-par");
+  await page.mouse.move(q.x, q.y);
+  await page.mouse.down();
+  await page.mouse.move(q.x + 60, q.y + 10, { steps: 5 });
+  await page.mouse.up();
+  await expect(viewport(page)).toHaveAttribute("data-selected", "");
+
+  // Selected in 3D, it is selected on the plot too (once the orbit's
+  // damping has let the camera settle, so the fixture is where it is said).
+  await page.waitForTimeout(1500);
+  const r = await onScreen(page, "house-par");
+  await page.mouse.click(r.x, r.y);
+  await expect(viewport(page)).toHaveAttribute("data-selected", "house-par");
+  await plotButton(page).click();
+  await expect(
+    page.locator(".inspector").getByLabel("house-par", { exact: true }),
+  ).toBeChecked();
+});
+
+test("an inspector edit is redrawn in 3D without moving the camera", async ({
+  page,
+}) => {
+  // A venue only this test saves (the mock keeps saves by name).
+  const name = `rot-${test.info().parallelIndex}-${++counter}-${Date.now()}`;
+  await withCurrentVenue(page, `#/lighting/venues/${name}?view=3d`);
+  await expect(viewport(page)).toHaveAttribute("data-fixtures", "1");
+  if (!(await rendered(page))) return;
+  await expect(viewport(page)).toHaveAttribute(
+    "data-transforms",
+    /"front-left"/,
+  );
+  const before = JSON.parse(
+    (await viewport(page).getAttribute("data-transforms"))!,
+  )["front-left"];
+  expect(before.rotation).toEqual([0, 0, 0]);
+
+  // Orbit somewhere, so the camera is the user's own.
+  const box = (await viewport(page).boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 80, box.y + box.height / 2, {
+    steps: 6,
+  });
+  await page.mouse.up();
+  await page.waitForTimeout(600);
+  const camera = JSON.parse((await viewport(page).getAttribute("data-view"))!)
+    .camera as number[];
+
+  await page
+    .locator(".inspector")
+    .getByLabel("front-left", { exact: true })
+    .check();
+  await page.locator("#insp-direction").selectOption("upstage");
+  await page.locator("#insp-tilt").fill("30");
+  await page.getByRole("button", { name: "Face this way" }).click();
+
+  await expect
+    .poll(async () => {
+      const t = JSON.parse(
+        (await viewport(page).getAttribute("data-transforms"))!,
+      )["front-left"];
+      return JSON.stringify(t.rotation);
+    })
+    .not.toBe(JSON.stringify(before.rotation));
+  await page.waitForTimeout(600);
+  const after = JSON.parse((await viewport(page).getAttribute("data-view"))!)
+    .camera as number[];
+  // Damping may settle a hair; the view did not jump back to its framing.
+  after.forEach((v, i) => expect(Math.abs(v - camera[i])).toBeLessThan(0.05));
+  await expect(viewport(page)).toHaveAttribute("data-selected", "front-left");
 });
 
 test("a saved venue or fixture type re-reads the file view", async ({
   page,
 }) => {
-  const { reads } = await withCurrentVenue(page, "#/lighting/stage/club");
+  const { reads } = await withCurrentVenue(
+    page,
+    "#/lighting/venues/club?view=3d",
+  );
   await expect(viewport(page)).toHaveAttribute("data-fixtures", "3");
   const before = reads();
   await page.evaluate(async () => {
@@ -146,40 +326,24 @@ test("a saved venue or fixture type re-reads the file view", async ({
   await expect.poll(reads).toBe(before + 2);
 });
 
-test("the current venue's 3D is live, from its plot or with no venue named", async ({
+test("without WebGL the card says so, and Plot still returns", async ({
   page,
 }) => {
-  const { reads } = await withCurrentVenue(page, "#/lighting/venues/built-in");
-  await expect(page.getByTestId("stage-venue-label")).toContainText(
-    "Current venue: built-in",
-  );
-  await page.getByTestId("stage-3d-link").click();
-  await expect(page).toHaveURL(/#\/lighting\/stage\/built-in$/);
-  await expect(venueLabel(page)).toHaveText("Current venue: built-in · live");
-  await expect(viewport(page)).toHaveAttribute("data-source", "live");
-  await expect(viewport(page)).toHaveAttribute("data-fixtures", "1");
-  await expect(page.getByTestId("stage3d-unplaced")).toHaveCount(0);
-  await expect(page.getByTestId("stage3d-mode-preview")).toBeEnabled();
-
-  await page
-    .locator(".lighting__tabs")
-    .getByRole("link", { name: "3D", exact: true })
-    .click();
-  await expect(page).toHaveURL(/#\/lighting\/stage$/);
-  await expect(venueLabel(page)).toHaveText("Current venue: built-in · live");
-  expect(reads()).toBe(0);
-});
-
-test("a venue that does not exist says so, and is not the current one", async ({
-  page,
-}) => {
-  await withCurrentVenue(page, "#/lighting/stage/nowhere");
-  await expect(page.getByTestId("stage3d-missing")).toContainText(
-    'There is no venue named "nowhere".',
-  );
-  await expect(venueLabel(page)).toHaveText("Venue file: nowhere · not live");
-  await expect(viewport(page)).toHaveAttribute("data-fixtures", "0");
-  await expect(page.locator(".stage3d__subtitle")).not.toContainText(
-    "built-in",
-  );
+  await page.addInitScript(() => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    // @ts-expect-error -- narrowing the overloads is beside the point here.
+    HTMLCanvasElement.prototype.getContext = function (kind, ...rest) {
+      if (String(kind).startsWith("webgl")) return null;
+      // @ts-expect-error -- as above.
+      return original.call(this, kind, ...rest);
+    };
+  });
+  await withCurrentVenue(page, "#/lighting/venues/built-in?view=3d");
+  await expect(viewport(page)).toHaveAttribute("data-renderer", "none", {
+    timeout: 15000,
+  });
+  await expect(page.getByTestId("stage3d-nowebgl")).toContainText("WebGL");
+  await plotButton(page).click();
+  await expect(plot(page)).toBeVisible();
+  await expect(plot(page)).toHaveAttribute("data-positions", /house-par/);
 });

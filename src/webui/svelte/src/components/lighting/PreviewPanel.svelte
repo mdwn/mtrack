@@ -14,7 +14,7 @@
      * -->
 <script lang="ts">
   /**
-   * Stage 3D's Preview mode (lighting UI design, section 12.1): pick a
+   * The 3D view's Preview mode (lighting UI design, section 12.1): pick a
    * song, scrub through it, and see what its show does at that moment.
    * The show is evaluated offline; this panel hands the scene the same
    * three maps the live state message carries and never touches the
@@ -42,9 +42,17 @@
     initialTime?: number | null;
     /** Called with what the scene should draw; null when there is nothing. */
     onfeed: (frame: PreviewFrame | null) => void;
+    /** Called with each moment evaluated, so the host can keep it in the
+     *  address. */
+    onmoment?: (song: string, time: number) => void;
   }
 
-  let { initialSong = null, initialTime = null, onfeed }: Props = $props();
+  let {
+    initialSong = null,
+    initialTime = null,
+    onfeed,
+    onmoment,
+  }: Props = $props();
 
   /** How long scrubbing rests before the show is evaluated. */
   const DEBOUNCE_MS = 120;
@@ -104,6 +112,7 @@
       const result = await evaluatePreview(songName, [time]);
       if (mine !== sequence) return;
       const at = result.evaluations[0];
+      onmoment?.(songName, time);
       evaluation = at ?? null;
       untouched = result.untouched;
       error = null;
