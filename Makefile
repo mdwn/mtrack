@@ -15,7 +15,7 @@ ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -123,6 +123,13 @@ test-systemd:
 test-pi-image:
 	@test -n "$(IMAGE)" || { echo "set IMAGE=<path to .img or .img.xz>"; exit 1; }
 	$(ROOT_DIR)/tests/pi-image/test.sh "$(IMAGE)"
+
+## Boot a built Raspberry Pi image's root filesystem in a container and check
+## the player comes up. Needs an arm64 host, systemd-container and root.
+##   make test-pi-image-boot IMAGE=path/to/mtrack-x.y.z-raspberrypi-arm64.img.xz
+test-pi-image-boot:
+	@test -n "$(IMAGE)" || { echo "set IMAGE=<path to .img or .img.xz>"; exit 1; }
+	$(ROOT_DIR)/tests/pi-image/boot.sh "$(IMAGE)"
 
 ## Lint everything
 lint: lint-ui lint-rust lint-shell
