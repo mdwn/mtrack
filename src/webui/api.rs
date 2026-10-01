@@ -225,6 +225,10 @@ pub fn router() -> Router<WebUiState> {
                 .put(lighting_api::put_fixture_type)
                 .delete(lighting_api::delete_fixture_type),
         )
+        .route(
+            "/lighting/fixture-types/{name}/gdtf",
+            get(lighting_api::get_fixture_type_gdtf),
+        )
         .route("/lighting/groups", get(lighting_api::get_lighting_groups))
         .route("/lighting/mvr/export", get(mvr_api::export_mvr))
         .route("/lighting/mvr/export/summary", get(mvr_api::export_summary))
@@ -232,6 +236,10 @@ pub fn router() -> Router<WebUiState> {
         .route(
             "/lighting/venues/{name}/aim-points",
             post(mvr_api::add_aim_points),
+        )
+        .route(
+            "/lighting/venues/{name}/patch",
+            get(lighting_api::get_venue_patch),
         )
         .route(
             "/lighting/assets/{*path}",

@@ -92,8 +92,102 @@ test.describe("Fixture Types Management", () => {
   test("a referential type says where it comes from, not '0 channels'", async ({
     page,
   }) => {
-    await expect(card(page, "pixelbrick")).toContainText("GDTF archive");
     await expect(card(page, "pixelbrick")).not.toContainText("0 channels");
+  });
+
+  test("a referential card says what the fixture is, its modes and its mode in use", async ({
+    page,
+  }) => {
+    const brick = card(page, "pixelbrick");
+    await expect(brick.getByTestId("ft-card-fixture")).toHaveText(
+      "Astera LED Technology · PB15 PixelBrick",
+    );
+    await expect(brick.getByTestId("ft-card-modes")).toContainText(
+      "2 modes · wash, 13°",
+    );
+    // One pill per mode in use, most-used first.
+    await expect(brick.getByTestId("ft-card-mode")).toHaveText([
+      "8: RGBS × 2",
+      "1: RGB × 1",
+    ]);
+    // No rig in the store yet: the dashed box, not a broken image.
+    await expect(brick.getByTestId("ft-card-thumb")).toHaveCount(0);
+    await expect(brick).toContainText("no model");
+    // A native type's card is as it was.
+    await expect(card(page, "par").getByTestId("ft-card-fixture")).toHaveCount(
+      0,
+    );
+    await expect(card(page, "par")).toContainText("4 channels");
+  });
+
+  test("a referential card whose archive is unreadable falls back, and a used-by of 0 is not shown", async ({
+    page,
+  }) => {
+    const entry = (gdtf: unknown) => ({
+      fixture_type: { name: "x", channels: {} },
+      file: "x.fixture",
+      extension: "fixture",
+      referential: true,
+      rich: false,
+      gdtf,
+    });
+    await page.route("**/api/lighting/fixture-types*", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          fixture_types: {
+            lost: entry(null),
+            unused: entry({
+              fixture: "PB15 PixelBrick",
+              manufacturer: "Astera LED Technology",
+              modes: 1,
+              mode: "8: RGBS",
+              beam: null,
+              thumbnail: "abc/thumbnail.png",
+              used_by: 0,
+              in_use: [],
+            }),
+            busy: entry({
+              fixture: "PB15 PixelBrick",
+              manufacturer: "Astera LED Technology",
+              modes: 9,
+              mode: null,
+              beam: null,
+              thumbnail: null,
+              used_by: 10,
+              in_use: [
+                { mode: "a", count: 4 },
+                { mode: "b", count: 3 },
+                { mode: "c", count: 2 },
+                { mode: "d", count: 1 },
+              ],
+            }),
+          },
+          errors: [],
+        }),
+      }),
+    );
+    await page.getByRole("button", { name: "Refresh" }).first().click();
+    await expect(card(page, "lost")).toContainText("GDTF archive");
+    // At most three modes, then how many more.
+    await expect(card(page, "busy").getByTestId("ft-card-mode")).toHaveText([
+      "a × 4",
+      "b × 3",
+      "c × 2",
+    ]);
+    await expect(card(page, "busy").getByTestId("ft-card-more")).toHaveText(
+      "+1 more",
+    );
+    await expect(card(page, "unused").getByTestId("ft-card-mode")).toHaveText(
+      "8: RGBS",
+    );
+    await expect(card(page, "unused").getByTestId("ft-card-modes")).toHaveText(
+      /^1 mode\s/,
+    );
+    await expect(
+      card(page, "unused").getByTestId("ft-card-thumb"),
+    ).toHaveAttribute("src", "/api/lighting/assets/abc/thumbnail.png");
   });
 
   test("clicking fixture type opens editor form", async ({ page }) => {

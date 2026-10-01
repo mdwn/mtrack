@@ -1115,3 +1115,119 @@ than a hand-written file, for fixtures that increasingly have manufacturer GDTFs
 channel mapping, and an agent working through mtrack's MCP tools can perform it from OFL's
 JSON export. Manufacturer GDTF first, hand-written or agent-written `.fixture` second,
 mtrack never modelling fixtures itself.
+
+## 21. A fixture type is the fixture, not one of its modes (draft 1, 2026-09-30)
+
+### 21.1 The finding
+
+A referential fixture type pins an archive **and a mode** (§4.1), so what mtrack calls a
+fixture type is one DMX personality of a fixture. The Fixtures page shows it that way:
+`Astera-PixelBrick` is `pb15.gdtf` at "8: RGBS", and nothing on the page says the brick
+has other modes or what they would let a show do. To learn that, the archive has to be
+uploaded again and the import picker read.
+
+That is not how anyone thinks about a fixture, and it is not how MVR states a rig: there
+the fixture type is the `GDTFSpec` and the mode is a property of each patched fixture
+(`GDTFMode`, §6). mtrack folds the two together on import, which is why
+`name_fixture_types` has to invent names like `Name (Mode)` when one file patches a
+fixture in two modes, and why changing a rig's mode means importing a second type and
+re-pointing every venue line at it.
+
+The expectation, as stated: *a fixture type should be clear on what capabilities are
+possible for that fixture.*
+
+### 21.2 What changes
+
+**The type is the archive.** The mode on the type line becomes the type's *default*, and a
+venue fixture may choose its own:
+
+```
+# lighting/fixture_types/astera_pixelbrick.fixture — unchanged, and still valid
+fixture_type "Astera-PixelBrick"
+  from gdtf("lighting/library/pb15.gdtf", mode "8: RGBS")
+{
+}
+
+# a venue: seven bricks in the type's default mode, one in another
+fixture "Brick1" Astera-PixelBrick @ 1:1
+fixture "Brick8" Astera-PixelBrick mode "9: RGBWS" @ 1:29
+```
+
+- `mode "<name>"` on a venue fixture line, after the type. Matched as MVR modes are
+  (§6: exact, then normalized with a warning; never by footprint here, there is no
+  patched count to match against). Absent, the fixture takes the type's default.
+- The mode on the type line stays, and stays optional to *omit* only when every fixture
+  of the type names its own — a type with no default and a fixture with no mode is a
+  load error naming both.
+- A native type has no modes. `mode` on a fixture of one is a load error, not ignored.
+  mtrack does not grow multi-mode syntax for hand-written types (§19: not a
+  fixture-modelling tool).
+- The type's body — movement limits today — applies to every mode. Those are facts about
+  the fixture, which is what the body was for.
+
+Every existing `.fixture` and `.venue` means what it meant. Nothing is migrated.
+
+### 21.3 Underneath
+
+Less than it looks, because the engine already works per fixture:
+
+- **Registry.** `LightingSystem::fixture_types` is keyed by type name and holds one
+  expansion. It becomes type name → the modes in use, each expanded on demand.
+  `FixtureInfo` already carries its own channels and cells, so the effect engine, the
+  resolution layer and the DMX writer do not see the change.
+- **Cache.** `DistillCache::key` already hashes the mode with the archive, the type's name
+  and the overrides; `rig_path` already keys the rig by archive and mode. No format
+  change, no version bump. Prewarm fills the modes the venue uses, not every mode.
+- **Footprint.** The fit report reads a fixture's capabilities from its own mode instead
+  of its type's. Nothing today checks a venue for two fixtures patched over each other;
+  while the footprint was a fact of the type that was a typing mistake, and once a
+  per-fixture choice changes it, it is one click away. A patch-overlap check (load warning
+  and readiness line, naming both fixtures and the addresses) lands with slice 1.
+- **Stage 3D.** The fixture metadata already names a rig per fixture.
+
+### 21.4 Import and export
+
+- **`import-gdtf`.** Writes the same file. `--mode` (and the UI picker) chooses the
+  *default*; it stops being the only mode the type can ever be.
+- **MVR import.** One `.fixture` per embedded GDTF, not per (GDTF, mode). The default is
+  the mode most fixtures of that type use in the file; fixtures in any other mode get
+  `mode "…"` on their venue line. The `Name (Mode)` disambiguation goes; the archive-stem
+  one stays for two different archives with one fixture name. A merge (§4.2) that finds a
+  fixture's mode changed updates the line's `mode`, as it updates an address.
+- **MVR export.** `GDTFMode` is the fixture's mode. One embedded GDTF per type, as now.
+
+### 21.5 Surfaces
+
+- **Fixtures page.** A GDTF type's page is the fixture: 3D render, every mode with its
+  footprint, cells, what a show can do in it and its channel map, the default marked, and
+  which venue fixtures use which mode. The read-only half of this (render, mode list) is
+  built ahead of this section and does not depend on it.
+- **Venue inspector.** A mode select on a fixture of a GDTF type, listing the modes with
+  footprints. Choosing one whose footprint runs over a neighbour's addresses is refused
+  with the neighbour named (the slice 1 check, asked before the save).
+- **Readiness / fit.** Unchanged in shape; per-fixture as they are.
+- **MCP / CLI.** Whatever reports on a fixture type by name gains an optional mode;
+  `import-gdtf --mode` keeps its spelling and now means the default.
+
+### 21.6 Decisions (settled 2026-09-30)
+
+1. **Adopted.** The type is the fixture; the mode is the venue fixture's. The alternative —
+   leave the model alone and let the Fixtures page show the whole archive behind each pinned
+   type — answers "what can this fixture do" and nothing else: a second mode is still a
+   second type.
+2. **The type line keeps a default mode.** Requiring a mode on every venue fixture is the
+   purer model, and it would rewrite every referential `.fixture` and every venue line that
+   uses one for a rig that is nearly always in one mode.
+3. **MVR import's default is the most-used mode in the file**; fixtures in any other mode
+   carry `mode "…"` on their line. A tie goes to the mode that sorts first, so an import is
+   reproducible.
+4. **Nothing folds an older two-types-for-two-modes project.** `.fixture` and `.venue` have
+   not shipped in a release, so there is none to fold; such files keep loading as what
+   they say.
+
+### 21.7 Slices
+
+1. Grammar, parser, `Fixture` gains an optional mode; registry keyed by (type, mode);
+   load errors; fit per fixture; the patch-overlap check. No surface changes.
+2. MVR import, merge and export carry the mode per fixture.
+3. Venue inspector mode select; Fixtures page "used by" per mode; docs.

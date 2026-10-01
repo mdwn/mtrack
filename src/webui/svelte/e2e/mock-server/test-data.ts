@@ -180,6 +180,7 @@ export const STATUS = {
     midi: { status: "not_connected", name: null },
     dmx: { status: "not_connected", name: null },
     trigger: { status: "not_connected", name: null },
+    lighting_venue: { name: null, status: "none", error: null },
   },
   controllers: [
     { kind: "osc", status: "running", detail: "0.0.0.0:9000", error: null },
@@ -315,6 +316,12 @@ export const READINESS = {
     placed: 8,
     focus_points: ["center"],
   },
+  venue_error: null as null | {
+    venue: string;
+    fixture: string;
+    reason: string;
+  },
+  patch_warnings: [] as { kind: string; message: string }[],
   fixture_types: { in_use: ["par", "mover"], unresolved: [] },
   groups: [{ name: "front_wash", fixtures: 4, songs: ["Test Song Alpha"] }],
   shows: [
@@ -675,7 +682,10 @@ export const MVR_INSPECTION = {
       {
         name: "Astera PB15",
         archive: "lighting/library/Astera_PB15.gdtf",
+        // One type per GDTF (design §21): its default is the mode most of
+        // the file's fixtures use; Brick 2 names its own.
         mode: "8: RGBS",
+        modes: ["8: RGBS", "9: RGBWS"],
         existing: false,
         fixture_file: "lighting/fixture_types/astera_pb15.fixture",
       },
@@ -685,6 +695,7 @@ export const MVR_INSPECTION = {
         name: "Brick 1",
         layer: "Front",
         fixture_type: "Astera PB15",
+        mode: null,
         patch: [1, 1],
         position: [-2, 2.5, 4.2],
         rotation: null,
@@ -696,6 +707,7 @@ export const MVR_INSPECTION = {
         name: "Brick 2",
         layer: "Front",
         fixture_type: "Astera PB15",
+        mode: "9: RGBWS",
         patch: [1, 5],
         position: [2, 2.5, 4.2],
         rotation: null,

@@ -15,7 +15,8 @@
 <script lang="ts">
   /**
    * The mode picker for a GDTF import (lighting UI design, section 12.2):
-   * a filterable list of the archive's modes and, for the one selected,
+   * a filterable list of the archive's modes and, for the one selected (the
+   * type's default mode — each venue fixture may pick another, §21),
    * what a show can do in it in plain words, where the fixture sits in the
    * patch, the name and file it will be saved under, and the channel map
    * behind a disclosure.
@@ -293,6 +294,10 @@
             </ul>
           {/if}
         </details>
+
+        <p class="field-hint" data-testid="gdtf-default-hint">
+          {$t("lighting.gdtf.defaultHint")}
+        </p>
 
         <button
           class="btn btn-primary gdtf__add"

@@ -85,7 +85,8 @@ pub struct Directories {
 }
 
 impl Lighting {
-    #[cfg(test)]
+    /// A lighting configuration built in code — tests, and the web editor's
+    /// patch check, which loads a venue from its files with no engine.
     pub fn new(
         current_venue: Option<String>,
         fixtures: Option<HashMap<String, String>>,
@@ -160,8 +161,8 @@ impl Directories {
     }
 }
 
-#[cfg(test)]
 impl Directories {
+    /// Directories built in code — tests, and the web editor's patch check.
     pub fn new(fixture_types: Option<String>, venues: Option<String>) -> Self {
         Self {
             fixture_types,

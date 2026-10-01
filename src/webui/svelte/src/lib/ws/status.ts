@@ -48,14 +48,31 @@ export interface StatusData {
     midi: SubsystemStatus;
     dmx: SubsystemStatus;
     trigger: SubsystemStatus;
+    /** Whether the current venue registered. A venue fails whole when one
+     *  fixture cannot be driven (a missing type, a bad mode), and then no
+     *  fixture lights; `error` names the fixture and why. Absent from an
+     *  older server. */
+    lighting_venue?: LightingVenueStatus;
   };
   controllers: ControllerStatus[];
+}
+
+export interface LightingVenueStatus {
+  name: string | null;
+  status: "ok" | "failed" | "none";
+  error: string | null;
 }
 
 /** Worst-case across all required subsystems. */
 export type Health = "ok" | "warn" | "error" | "unknown";
 
 export const statusStore = writable<StatusData | null>(null);
+
+/** The current venue, when it did not load. */
+export const venueFailure = derived(statusStore, ($status) => {
+  const venue = $status?.hardware.lighting_venue;
+  return venue?.status === "failed" ? venue : null;
+});
 
 let pollHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -122,6 +139,9 @@ export const healthStore = derived(statusStore, ($status): Health => {
   for (const sub of [subs.audio, subs.midi, subs.dmx] as const) {
     if (sub.status === "initializing") return "warn";
   }
+  // A venue that did not load lights nothing.
+  if (subs.lighting_venue?.status === "failed") return "error";
+
   if ($status.controllers.some((c) => c.status !== "running")) return "warn";
 
   return "ok";

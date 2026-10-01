@@ -288,8 +288,27 @@ fn parse_gdtf_source(pair: Pair<Rule>) -> Result<GdtfSource, Box<dyn Error>> {
     let path = strings
         .next()
         .ok_or("gdtf reference requires an archive path")?;
-    let mode = strings.next().ok_or("gdtf reference requires a mode")?;
+    // The default mode is optional (design §21): a type without one makes
+    // each of its fixtures name a mode, which the loader checks.
+    let mode = strings.next();
+    if mode.as_deref().is_some_and(|m| m.trim().is_empty()) {
+        return Err("gdtf reference names an empty mode; name one or leave `mode` out".into());
+    }
     Ok(GdtfSource { path, mode })
+}
+
+/// A fixture line's `mode "..."`, exactly as written: a GDTF can name a
+/// mode with a trailing space, and the name must pick that mode.
+fn parse_fixture_mode(pair: Pair<Rule>) -> Result<String, Box<dyn Error>> {
+    let mode = pair
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::string)
+        .map(|p| p.as_str().trim().trim_matches('"').to_string())
+        .ok_or("`mode` needs a quoted mode name")?;
+    if mode.trim().is_empty() {
+        return Err("`mode` names an empty mode".into());
+    }
+    Ok(mode)
 }
 
 fn parse_movement_block(pair: Pair<Rule>) -> Result<MovementLimits, Box<dyn Error>> {
@@ -830,6 +849,7 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
     let mut tags: Option<Vec<String>> = None;
     let mut position = None;
     let mut rotation = None;
+    let mut mode = None;
 
     for pair in pair.into_inner() {
         match pair.as_rule() {
@@ -841,6 +861,11 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
             },
             Rule::identifier => {
                 fixture_type = pair.as_str().to_string();
+            }
+            Rule::fixture_mode => {
+                mode = Some(parse_fixture_mode(pair).map_err(|e| {
+                    format!("fixture \"{}\": {e}", name.as_deref().unwrap_or_default())
+                })?);
             }
             Rule::universe_num => {
                 universe = pair.as_str().trim().parse()?;
@@ -877,6 +902,7 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
         start_channel,
         tags.unwrap_or_default(),
     )
+    .with_mode(mode)
     .with_position(position)
     .with_rotation(rotation))
 }
@@ -1073,7 +1099,7 @@ fixture_type "TypeB" {
         let ft = result.get("Brick").unwrap();
         let source = ft.source().unwrap();
         assert_eq!(source.path, "lighting/library/pb15.gdtf");
-        assert_eq!(source.mode, "8: RGBS");
+        assert_eq!(source.mode.as_deref(), Some("8: RGBS"));
         assert_eq!(ft.movement().max_pan_speed, Some(240.0));
         assert_eq!(ft.movement().max_tilt_speed, Some(200.0));
         assert!(ft.channels().is_empty());
@@ -1264,6 +1290,109 @@ venue "Main" {
         let f = parse_fixture_definition(pair).unwrap();
         assert_eq!(f.name(), "Spot");
         assert_eq!(f.tags(), &["front", "spot"]);
+    }
+
+    // ── per-fixture modes (design §21) ───────────────────────────
+
+    fn one_fixture(line: &str) -> Fixture {
+        let venues = parse_venues(&format!("venue \"V\" {{\n  {line}\n}}\n"))
+            .unwrap_or_else(|e| panic!("{line}: {e}"));
+        venues["V"].fixtures().values().next().unwrap().clone()
+    }
+
+    #[test]
+    fn a_fixture_may_name_its_mode_after_its_type() {
+        let f = one_fixture(
+            "fixture \"Brick8\" Astera-PixelBrick mode \"9: RGBWS\" @ 1:29 tags [\"wash\"] position (1, 2, 3)",
+        );
+        assert_eq!(f.fixture_type(), "Astera-PixelBrick");
+        assert_eq!(f.mode(), Some("9: RGBWS"));
+        assert_eq!(f.start_channel(), 29);
+        assert_eq!(f.tags(), ["wash"]);
+        // Without one, the type's default.
+        let f = one_fixture("fixture \"Brick1\" Astera-PixelBrick @ 1:1");
+        assert_eq!(f.mode(), None);
+    }
+
+    #[test]
+    fn a_mode_is_kept_exactly_as_written() {
+        let f = one_fixture("fixture \"A\" T mode \"Mode 8 - Pixel RGBW \" @ 1:1");
+        assert_eq!(f.mode(), Some("Mode 8 - Pixel RGBW "));
+    }
+
+    #[test]
+    fn mode_does_not_steal_a_type_or_tag_named_like_it() {
+        // `identifier` is atomic and greedy, so a type named `mode` is a type.
+        let f = one_fixture("fixture \"A\" mode @ 1:1");
+        assert_eq!((f.fixture_type(), f.mode()), ("mode", None));
+        let f = one_fixture("fixture \"A\" mode-x @ 1:1");
+        assert_eq!((f.fixture_type(), f.mode()), ("mode-x", None));
+        let f = one_fixture("fixture \"A\" modes mode \"M\" @ 1:1");
+        assert_eq!((f.fixture_type(), f.mode()), ("modes", Some("M")));
+        let f = one_fixture("fixture \"A\" mode mode \"M\" @ 1:1 tags [\"mode\"]");
+        assert_eq!((f.fixture_type(), f.mode()), ("mode", Some("M")));
+        assert_eq!(f.tags(), ["mode"]);
+        // A quoted type, then a mode.
+        let f = one_fixture("fixture \"A\" \"Moving Head\" mode \"16 bit\" @ 2:5");
+        assert_eq!(
+            (f.fixture_type(), f.mode()),
+            ("Moving Head", Some("16 bit"))
+        );
+        let f = one_fixture("fixture \"A\" \"mode\" mode \"mode\" @ 2:5");
+        assert_eq!((f.fixture_type(), f.mode()), ("mode", Some("mode")));
+    }
+
+    #[test]
+    fn a_mode_anywhere_but_after_the_type_is_refused() {
+        for line in [
+            "fixture \"A\" T @ 1:1 mode \"M\"",
+            "fixture \"A\" mode \"M\" T @ 1:1",
+            "fixture \"A\" T mode \"M\" mode \"N\" @ 1:1",
+            "fixture \"A\" T mode M @ 1:1",
+        ] {
+            let content = format!("venue \"V\" {{\n  {line}\n}}\n");
+            assert!(parse_venues(&content).is_err(), "{line}");
+        }
+        let err = parse_venues("venue \"V\" {\n  fixture \"A\" T mode \" \" @ 1:1\n}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("fixture \"A\": `mode` names an empty mode"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_fixture_line_round_trips_its_mode() {
+        for line in [
+            "fixture \"A\" Brick mode \"9: RGBWS\" @ 1:29 tags [\"x\"] position (1, 2, 3) rotation (0, 0, 90)",
+            "fixture \"A\" \"Moving Head\" mode \"8: RGBS \" @ 1:1",
+            "fixture \"A\" mode mode \"mode\" @ 1:1",
+            "fixture \"A\" Brick @ 1:1",
+        ] {
+            let f = one_fixture(line);
+            assert_eq!(f.to_string(), line);
+            let again = one_fixture(&f.to_string());
+            assert_eq!(again.mode(), f.mode());
+            assert_eq!(again.fixture_type(), f.fixture_type());
+        }
+    }
+
+    #[test]
+    fn a_referential_type_may_omit_its_default_mode() {
+        let types = parse_fixture_types(
+            "fixture_type \"Brick\"\n  from gdtf(\"lighting/library/pb15.gdtf\")\n{\n}\n",
+        )
+        .unwrap();
+        let source = types["Brick"].source().unwrap();
+        assert_eq!(source.path, "lighting/library/pb15.gdtf");
+        assert_eq!(source.mode, None);
+        let err = parse_fixture_types(
+            "fixture_type \"Brick\"\n  from gdtf(\"x.gdtf\", mode \"\")\n{\n}\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("empty mode"), "{err}");
     }
 
     #[test]

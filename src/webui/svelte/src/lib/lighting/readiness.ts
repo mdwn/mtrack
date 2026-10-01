@@ -42,6 +42,12 @@ export interface Readiness {
     placed: number;
     focus_points: string[];
   } | null;
+  /** The current venue does not load: one fixture that cannot be driven
+   *  fails the whole venue, and then no fixture lights. */
+  venue_error: { venue: string; fixture: string; reason: string } | null;
+  /** Fixtures patched over part of each other's addresses
+   *  (`patch-overlap`) or past address 512 (`patch-overrun`). */
+  patch_warnings: { kind: string; message: string }[];
   fixture_types: {
     in_use: string[];
     unresolved: { fixture: string; type: string; reason: string }[];
@@ -77,6 +83,7 @@ export function parseReadiness(body: unknown): Readiness | null {
     return null;
   }
   const venue = objOrNull(body.venue);
+  const venueError = objOrNull(body.venue_error);
   const types = obj(body.fixture_types);
   const output = obj(body.output);
   const olad = objOrNull(output.olad);
@@ -90,6 +97,16 @@ export function parseReadiness(body: unknown): Readiness | null {
           focus_points: arr<string>(venue.focus_points),
         }
       : null,
+    venue_error: venueError
+      ? {
+          venue: str(venueError.venue),
+          fixture: str(venueError.fixture),
+          reason: str(venueError.reason),
+        }
+      : null,
+    patch_warnings: arr<Readiness["patch_warnings"][number]>(
+      body.patch_warnings,
+    ).filter(isObj),
     fixture_types: {
       in_use: arr<string>(types.in_use),
       unresolved: arr<Readiness["fixture_types"]["unresolved"][number]>(
@@ -361,6 +378,16 @@ export function evaluateReadiness(
       href: groupsHref,
       linkKey: "lighting.hub.fix.chooseVenue",
     });
+  } else if (r.venue_error) {
+    venueFindings.push({
+      severity: "blocked",
+      msg: {
+        key: "lighting.hub.finding.venueFailed",
+        params: { ...r.venue_error },
+      },
+      href: "#/lighting/venues",
+      linkKey: "lighting.hub.fix.venues",
+    });
   } else if (venue.fixtures === 0) {
     venueFindings.push({
       severity: "attention",
@@ -371,6 +398,19 @@ export function evaluateReadiness(
       href: "#/lighting/venues",
       linkKey: "lighting.hub.fix.venues",
     });
+  }
+  if (venue) {
+    for (const w of r.patch_warnings) {
+      venueFindings.push({
+        severity: "attention",
+        msg: {
+          key: "lighting.hub.finding.patch",
+          params: { detail: w.message },
+        },
+        href: "#/lighting/venues",
+        linkKey: "lighting.hub.fix.venues",
+      });
+    }
   }
   const venueCheck = finish(
     "venue",

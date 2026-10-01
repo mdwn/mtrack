@@ -231,6 +231,10 @@ pub struct SystemEvaluation {
     /// The groups each effect's cue named, by effect id. An
     /// [`EvaluatedEffect`] only carries what those groups resolved to.
     pub effect_groups: HashMap<String, Vec<String>>,
+    /// Why the current venue does not register, when it does not: the whole
+    /// venue fails on one fixture that cannot be driven, and the evaluation
+    /// then has no rig to drive — which must not read as an empty one.
+    pub venue_error: Option<String>,
 }
 
 /// Evaluates `shows` against the venue the lighting system has loaded: its
@@ -248,10 +252,24 @@ pub fn evaluate_with_system(
     times: &[Duration],
     system: Option<&parking_lot::Mutex<crate::lighting::system::LightingSystem>>,
 ) -> SystemEvaluation {
+    let mut venue_error = None;
     let (fixtures, focus_points, group_map) = match system {
         Some(system) => {
             let mut guard = system.lock();
-            let fixtures = guard.get_current_venue_fixtures().unwrap_or_default();
+            let fixtures = match guard.get_current_venue_fixtures() {
+                Ok(fixtures) => fixtures,
+                // No current venue at all is not an error here: there is
+                // simply no rig, as without a system.
+                Err(_) if guard.get_current_venue().is_none() => Vec::new(),
+                Err(e) => {
+                    let venue = guard.current_venue().unwrap_or_default().to_string();
+                    venue_error = Some(match guard.venue_problem(&venue) {
+                        Some((_, problem)) => problem,
+                        None => e.to_string(),
+                    });
+                    Vec::new()
+                }
+            };
             let focus_points: HashMap<String, [f64; 3]> = guard
                 .get_current_venue()
                 .map(|venue| {
@@ -308,6 +326,7 @@ pub fn evaluate_with_system(
         targeted,
         venue_fixtures,
         effect_groups,
+        venue_error,
     }
 }
 

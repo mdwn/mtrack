@@ -19,6 +19,8 @@
   import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "../config/Tooltip.svelte";
   import GdtfModePicker from "./GdtfModePicker.svelte";
+  import FixtureTypeDetails from "./FixtureTypeDetails.svelte";
+  import { trimNumber } from "../../lib/lighting/fixtureFacts";
   import {
     fetchFixtureTypes,
     fetchFixtureType,
@@ -28,6 +30,7 @@
     inspectGdtf,
     importGdtf,
     type FixtureTypeEntry,
+    type GdtfSummary,
     type GdtfInspection,
     type GdtfImportReport,
     type LightingFileError,
@@ -36,9 +39,11 @@
   interface Props {
     /** Fixture type directory override (a profile's `lighting.directories`). */
     dir?: string;
+    /** Venues directory override: which venue fixtures use each type. */
+    venuesDir?: string;
   }
 
-  let { dir = "" }: Props = $props();
+  let { dir = "", venuesDir = "" }: Props = $props();
   let ftDir = $derived(dir);
 
   // --- Fixture Types state ---
@@ -61,6 +66,28 @@
   let editFtDsl = $state("");
   let editFtExt = $state<"light" | "fixture">("light");
   let editFtReferential = $state(false);
+  /** A GDTF card's second line: "31 modes · wash, 13°", the beam only as
+   *  far as the archive states it. */
+  function cardModes(g: GdtfSummary): string {
+    const beam = [
+      g.beam?.type?.toLowerCase(),
+      g.beam?.angle != null
+        ? $t("lighting.ftCard.angle", {
+            values: { angle: trimNumber(g.beam.angle) },
+          })
+        : null,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    const modes = $t("lighting.gdtf.modeCount", { values: { count: g.modes } });
+    return beam ? `${modes} · ${beam}` : modes;
+  }
+
+  /** An existing GDTF type opens on the fixture, its text last. */
+  const showFtDetails = $derived(editFtReferential && !isNewFt);
+  const editingGdtf = $derived(
+    editingFt ? (fixtureTypes[editingFt]?.gdtf ?? null) : null,
+  );
   let editFtRich = $state(false);
   let ftTextLoading = $state(false);
   /** In text mode the DSL declares the name — the file is keyed on it, and
@@ -100,7 +127,10 @@ fixture_type "Name" {
     ftError = "";
     ftFileErrors = [];
     try {
-      const result = await fetchFixtureTypes(ftDir || undefined);
+      const result = await fetchFixtureTypes(
+        ftDir || undefined,
+        venuesDir || undefined,
+      );
       fixtureTypes = result.fixtureTypes;
       ftFileErrors = result.errors;
     } catch (e: any) {
@@ -113,6 +143,7 @@ fixture_type "Name" {
   $effect(() => {
     // Re-load when the directory changes
     void ftDir;
+    void venuesDir;
     loadFixtureTypes();
   });
 
@@ -375,13 +406,25 @@ fixture_type "Name" {
     <!-- Fixture Type Editor -->
     <div class="editor-form">
       <div class="editor-header">
-        <h4 class="editor-title">
-          {isNewFt
-            ? $t("lighting.newFixtureType")
-            : $t("lighting.editFixtureType", {
-                values: { name: editingFt },
-              })}
-        </h4>
+        {#if showFtDetails}
+          <!-- A fixture from an archive is titled as the fixture it is. -->
+          <div>
+            <h4 class="editor-title" data-testid="ft-title">{editingFt}</h4>
+            {#if editingGdtf}
+              <div class="item-meta" data-testid="ft-title-sub">
+                {editingGdtf.manufacturer} · {editingGdtf.fixture}
+              </div>
+            {/if}
+          </div>
+        {:else}
+          <h4 class="editor-title">
+            {isNewFt
+              ? $t("lighting.newFixtureType")
+              : $t("lighting.editFixtureType", {
+                  values: { name: editingFt },
+                })}
+          </h4>
+        {/if}
         <div class="editor-actions">
           {#if ftMsg}
             <span
@@ -397,6 +440,15 @@ fixture_type "Name" {
           </button>
         </div>
       </div>
+
+      {#if showFtDetails}
+        <!-- The fixture first, its definition last. -->
+        <FixtureTypeDetails
+          name={editingFt}
+          dir={ftDir || undefined}
+          venuesDir={venuesDir || undefined}
+        />
+      {/if}
 
       <div class="field">
         <label for="ft-name">{$t("lighting.name")}</label>
@@ -664,6 +716,7 @@ fixture_type "Name" {
           {@const ft = entry.fixture_type}
           <div
             class="item-card"
+            class:item-card--gdtf={entry.referential}
             role="button"
             tabindex="0"
             onclick={() => startEditFt(name)}
@@ -671,59 +724,110 @@ fixture_type "Name" {
               if (e.key === "Enter") startEditFt(name);
             }}
           >
-            <div class="item-card-header">
-              <span class="item-name">{name}</span>
-              <span class="ext-badge" data-testid="ft-ext"
-                >.{entry.extension}</span
-              >
-              {#if entry.extension === "light"}
-                <!-- The channel map is the default way in; this is the
-                         way out of it, and the only path from v1 to the
-                         rich form. -->
+            {#if entry.referential}
+              <!-- A fixture from an archive: its picture, or a box saying
+                   there is none yet (rigs are made when a type loads). -->
+              {#if entry.gdtf?.thumbnail}
+                <img
+                  class="card-thumb"
+                  src={`/api/lighting/assets/${entry.gdtf.thumbnail}`}
+                  alt=""
+                  data-testid="ft-card-thumb"
+                />
+              {:else}
+                <div class="card-thumb card-thumb--none" aria-hidden="true">
+                  {$t("lighting.ftCard.noModel")}
+                </div>
+              {/if}
+            {/if}
+            <div class="card-body">
+              <div class="item-card-header">
+                <span class="item-name">{name}</span>
+                <span class="ext-badge" data-testid="ft-ext"
+                  >.{entry.extension}</span
+                >
+                {#if entry.extension === "light"}
+                  <!-- The channel map is the default way in; this is the
+                           way out of it, and the only path from v1 to the
+                           rich form. -->
+                  <button
+                    class="btn btn-sm"
+                    data-testid="ft-edit-text"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      editFtAsText(name);
+                    }}>{$t("lighting.editAsText")}</button
+                  >
+                {/if}
                 <button
-                  class="btn btn-sm"
-                  data-testid="ft-edit-text"
+                  class="btn btn-danger btn-sm"
                   onclick={(e) => {
                     e.stopPropagation();
-                    editFtAsText(name);
-                  }}>{$t("lighting.editAsText")}</button
+                    removeFt(name);
+                  }}>{$t("common.delete")}</button
                 >
+              </div>
+              <div class="item-meta item-file">{entry.file}</div>
+              {#if entry.referential && entry.gdtf}
+                {@const g = entry.gdtf}
+                <div class="item-meta" data-testid="ft-card-fixture">
+                  {g.manufacturer} · {g.fixture}
+                </div>
+                <div class="item-meta card-modes" data-testid="ft-card-modes">
+                  <span>{cardModes(g)}</span>
+                  {#if g.in_use.length > 0}
+                    <!-- The modes the venues use, most-used first. -->
+                    {#each g.in_use.slice(0, 3) as use (use.mode)}
+                      <span class="mode-pill" data-testid="ft-card-mode"
+                        >{$t("lighting.ftCard.modeUsed", {
+                          values: { mode: use.mode, count: use.count },
+                        })}</span
+                      >
+                    {/each}
+                    {#if g.in_use.length > 3}
+                      <span class="item-meta" data-testid="ft-card-more"
+                        >{$t("lighting.ftCard.moreModes", {
+                          values: { count: g.in_use.length - 3 },
+                        })}</span
+                      >
+                    {/if}
+                  {:else if g.mode}
+                    <span class="mode-pill" data-testid="ft-card-mode"
+                      >{g.mode}</span
+                    >
+                  {:else}
+                    <span class="item-meta" data-testid="ft-card-mode"
+                      >{$t("lighting.ftCard.noDefault")}</span
+                    >
+                  {/if}
+                </div>
+              {:else if entry.referential}
+                <!-- The channels only exist once the lighting system
+                         expands the archive; "0 channels" would be a lie. -->
+                <div class="item-meta">
+                  {$t("lighting.fixtureTypeFromGdtf")}
+                </div>
+              {:else}
+                <div class="item-meta">
+                  {$t("lighting.channels", {
+                    values: {
+                      count: Object.keys(ft.channels).length,
+                      names: Object.entries(ft.channels)
+                        .sort(([, a], [, b]) => a - b)
+                        .map(([n]) => n)
+                        .join(", "),
+                    },
+                  })}
+                </div>
               {/if}
-              <button
-                class="btn btn-danger btn-sm"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  removeFt(name);
-                }}>{$t("common.delete")}</button
-              >
+              {#if ft.max_strobe_frequency}
+                <div class="item-meta">
+                  {$t("lighting.strobeMax", {
+                    values: { freq: ft.max_strobe_frequency },
+                  })}
+                </div>
+              {/if}
             </div>
-            <div class="item-meta item-file">{entry.file}</div>
-            {#if entry.referential}
-              <!-- The channels only exist once the lighting system
-                       expands the archive; "0 channels" would be a lie. -->
-              <div class="item-meta">
-                {$t("lighting.fixtureTypeFromGdtf")}
-              </div>
-            {:else}
-              <div class="item-meta">
-                {$t("lighting.channels", {
-                  values: {
-                    count: Object.keys(ft.channels).length,
-                    names: Object.entries(ft.channels)
-                      .sort(([, a], [, b]) => a - b)
-                      .map(([n]) => n)
-                      .join(", "),
-                  },
-                })}
-              </div>
-            {/if}
-            {#if ft.max_strobe_frequency}
-              <div class="item-meta">
-                {$t("lighting.strobeMax", {
-                  values: { freq: ft.max_strobe_frequency },
-                })}
-              </div>
-            {/if}
           </div>
         {/each}
       </div>
@@ -805,6 +909,53 @@ fixture_type "Name" {
 
   .item-card:hover {
     border-color: var(--border-focus);
+  }
+
+  /* A fixture from an archive: picture left, words right. */
+  .item-card--gdtf {
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+  }
+
+  .card-body {
+    min-width: 0;
+  }
+
+  .card-thumb {
+    width: 64px;
+    height: 64px;
+    border-radius: var(--radius);
+    background: #0b0e13;
+    object-fit: contain;
+  }
+
+  .card-thumb--none {
+    display: grid;
+    place-items: center;
+    background: var(--bg-input);
+    border: 1px dashed var(--border);
+    color: var(--text-dim);
+    font-size: 10px;
+    text-align: center;
+  }
+
+  .card-modes {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+  }
+
+  .mode-pill {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--accent-subtle);
+    color: var(--accent);
+    white-space: nowrap;
   }
 
   .item-card-header {

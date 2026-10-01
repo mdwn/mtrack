@@ -319,6 +319,7 @@ venue "house" {
             f.start_channel(),
             tags.iter().map(|t| t.to_string()).collect(),
         )
+        .with_mode(f.mode().map(str::to_string))
         .with_position(f.position())
         .with_rotation(f.rotation());
         fixtures.insert(name.to_string(), f);
@@ -428,6 +429,52 @@ venue "house" {
             "{out}"
         );
         assert!(out.starts_with("# House rig"));
+    }
+
+    #[test]
+    fn an_unrelated_edit_keeps_a_line_s_mode() {
+        let file = "venue \"house\" {\n  fixture \"A\" brick mode \"9: RGBWS\" @ 1:1  # wide\n  \
+                    fixture \"B\" brick mode \"Mover 16bit\" @ 1:20\n      tags [\"x\"]\n}\n";
+        let v = with_fixture_tags(&venue(file), "A", &["front"]);
+        let out = patch_venue(file, "house", &v).unwrap();
+        assert!(
+            out.contains(
+                "  fixture \"A\" brick mode \"9: RGBWS\" @ 1:1 tags [\"front\"]  # wide\n"
+            ),
+            "{out}"
+        );
+        // The untouched wrapped one keeps its bytes.
+        assert!(
+            out.contains("  fixture \"B\" brick mode \"Mover 16bit\" @ 1:20\n      tags [\"x\"]\n"),
+            "{out}"
+        );
+        let back = venue(&out);
+        assert_eq!(back.fixtures()["A"].mode(), Some("9: RGBWS"));
+        assert_eq!(back.fixtures()["B"].mode(), Some("Mover 16bit"));
+    }
+
+    #[test]
+    fn a_mode_change_rewrites_only_its_line() {
+        let v = venue(FILE);
+        let mut fixtures = v.fixtures().clone();
+        let a = fixtures["A"]
+            .clone()
+            .with_mode(Some("Mover 16bit".to_string()));
+        fixtures.insert("A".to_string(), a);
+        let desired = Venue::new("house".into(), fixtures)
+            .with_focus_points(v.focus_points().clone())
+            .with_source(v.source().cloned());
+        let out = patch_venue(FILE, "house", &desired).unwrap();
+        assert_eq!(
+            out,
+            FILE.replace(
+                "fixture \"A\" brick @ 1:1",
+                "fixture \"A\" brick mode \"Mover 16bit\" @ 1:1"
+            )
+        );
+        // And back to the default: the mode goes, nothing else moves.
+        let restored = patch_venue(&out, "house", &v).unwrap();
+        assert_eq!(restored, FILE);
     }
 
     #[test]

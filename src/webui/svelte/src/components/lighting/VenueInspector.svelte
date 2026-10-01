@@ -24,11 +24,23 @@
   import TagInput from "../config/TagInput.svelte";
   import Tooltip from "../config/Tooltip.svelte";
   import {
+    fetchFixtureTypeGdtf,
     fetchFixtureTypes,
     fetchVenue,
+    fetchVenuePatch,
     type FixtureTypeEntry,
+    type FixtureTypeGdtf,
     type VenueData,
+    type VenuePatch,
   } from "../../lib/api/config";
+  import {
+    collisions,
+    room,
+    stripCells,
+    stripWindow,
+    type Span,
+  } from "../../lib/lighting/patch";
+  import { isRefused } from "../../lib/lighting/modes";
   import { metadataStore, poseStore } from "../../lib/ws/stores";
   import type {
     FixtureMetadata,
@@ -323,11 +335,15 @@
     universe: number;
     start_channel: number;
     tags: string[];
+    /** The fixture's own GDTF mode as its line writes it; null is its
+     *  type's default. Changed through the mode select, which saves. */
+    mode: string | null;
   }
   let fields = $state<Fields | null>(null);
   $effect(() => {
     const name = single;
     fields = null;
+    patchMsg = null;
     const shown = plotVenue;
     if (!name || !shown) return;
     let stale = false;
@@ -341,6 +357,7 @@
           universe: f.universe,
           start_channel: f.start_channel,
           tags: [...f.tags],
+          mode: f.mode ?? null,
         };
       })
       .catch(() => {
@@ -355,6 +372,7 @@
     if (!from || !draft) return;
     const to = draft.name.trim();
     status = null;
+    patchMsg = null;
     if (!to || !draft.fixture_type.trim()) return;
     if (to !== from && to in plotFixtures) {
       status = {
@@ -363,13 +381,45 @@
       };
       return;
     }
+    // A new address is checked against the patch before it is saved, in
+    // the fixture's current mode (a new type's footprint is not known yet).
+    const own = patch?.spans.find((s) => s.fixture === from);
+    if (own && own.type === draft.fixture_type.trim()) {
+      const candidate: Span = {
+        fixture: from,
+        universe: Number(draft.universe),
+        address: Number(draft.start_channel),
+        footprint: own.footprint,
+      };
+      const hits = collisions(spans, candidate);
+      if (hits.length > 0 && candidate.footprint) {
+        patchMsg = {
+          ok: false,
+          text: get(t)("venues.inspector.addressRefused", {
+            values: {
+              name: from,
+              universe: candidate.universe,
+              from: candidate.address,
+              to: candidate.address + candidate.footprint - 1,
+              names: unique(hits.map((h) => h.fixture)).join(", "),
+              count: unique(hits.map((h) => h.fixture)).length,
+            },
+          }),
+        };
+        return;
+      }
+    }
     const ok = await persist((venue) => {
       const current = venue.fixtures[from];
       if (!current) return;
+      const type = draft.fixture_type.trim();
       const next = {
         ...current,
+        // A mode names a mode of its type's archive: a fixture moved to
+        // another type takes that type's default.
+        mode: type === current.fixture_type ? (current.mode ?? null) : null,
         name: to,
-        fixture_type: draft.fixture_type.trim(),
+        fixture_type: type,
         universe: Number(draft.universe),
         start_channel: Number(draft.start_channel),
         tags: draft.tags,
@@ -381,8 +431,150 @@
         ),
       );
     });
+    if (ok) patchTick++;
     if (ok && to !== from) onSelect([to]);
   }
+
+  // --- The mode and the patch (design §21)
+
+  const unique = (names: string[]) => [...new Set(names)];
+
+  /** A refusal from the patch check, said beside the strip. */
+  let patchMsg = $state<{ text: string; ok: boolean } | null>(null);
+  /** The strip's scroller: kept on this fixture's cells. */
+  let stripEl = $state<HTMLDivElement | undefined>(undefined);
+  $effect(() => {
+    void strip;
+    const el = stripEl;
+    const mine = el?.querySelector<HTMLElement>(
+      ".patch-cell--me, .patch-cell--clash",
+    );
+    if (el && mine)
+      el.scrollLeft = Math.max(
+        0,
+        mine.offsetLeft - el.offsetLeft - el.clientWidth / 3,
+      );
+  });
+
+  /** The venue's spans, from its files; refreshed after every save. */
+  let patch = $state<VenuePatch | null>(null);
+  let patchTick = $state(0);
+  $effect(() => {
+    void patchTick;
+    const shown = plotVenue;
+    const typesDir = fixtureTypesDir;
+    patch = null;
+    if (!shown) return;
+    let stale = false;
+    fetchVenuePatch(shown.name, shown.dir ?? undefined, typesDir || undefined)
+      .then((p) => {
+        if (!stale) patch = p;
+      })
+      .catch(() => {
+        // No strip and no check: the save path is unchanged.
+      });
+    return () => (stale = true);
+  });
+  let spans = $derived<Span[]>(patch?.spans ?? []);
+
+  /** Each GDTF type's archive, for its modes; fetched once per type. */
+  let archives = $state<Record<string, FixtureTypeGdtf | null>>({});
+  let gdtfType = $derived(
+    fields && fixtureTypes[fields.fixture_type]?.referential
+      ? fields.fixture_type
+      : null,
+  );
+  $effect(() => {
+    const type = gdtfType;
+    const typesDir = fixtureTypesDir;
+    if (!type || type in archives) return;
+    archives[type] = null;
+    fetchFixtureTypeGdtf(type, typesDir || undefined)
+      .then((answer) => (archives[type] = answer))
+      .catch(() => {
+        // No archive, no select: the fixture keeps the mode it has.
+      });
+  });
+  let archive = $derived(gdtfType ? (archives[gdtfType] ?? null) : null);
+  /** The type's default, as the archive spells it when it resolves. */
+  let defaultMode = $derived(archive?.matched_mode ?? archive?.mode ?? null);
+
+  /** The addresses a mode occupies; `""` is the type's default. */
+  function footprintOf(mode: string): number | null {
+    const name = mode || defaultMode;
+    if (!archive || !name) return null;
+    return (
+      archive.inspection.modes.find((m) => m.name === name)?.footprint ?? null
+    );
+  }
+
+  /** The fixture as the file patches it now. */
+  let ownSpan = $derived(
+    single ? (spans.find((s) => s.fixture === single) ?? null) : null,
+  );
+
+  async function chooseMode(next: string, select: HTMLSelectElement) {
+    const name = single;
+    const draft = fields;
+    if (!name || !draft) return;
+    const previous = draft.mode ?? "";
+    if (next === previous) return;
+    status = null;
+    patchMsg = null;
+    const footprint = footprintOf(next);
+    if (ownSpan && footprint) {
+      const candidate: Span = { ...ownSpan, footprint };
+      const hits = collisions(spans, candidate);
+      if (hits.length > 0) {
+        // Refused before the save: the select goes back to what is saved.
+        select.value = previous;
+        const names = unique(hits.map((h) => h.fixture));
+        const fits = room(spans, candidate);
+        patchMsg = {
+          ok: false,
+          text: get(t)(
+            fits > 0
+              ? "venues.inspector.modeRefused"
+              : "venues.inspector.modeRefusedNoRoom",
+            {
+              values: {
+                mode: next || defaultMode || "",
+                from: candidate.address,
+                to: candidate.address + footprint - 1,
+                names: names.join(", "),
+                count: names.length,
+                first: names[0],
+                room: fits,
+              },
+            },
+          ),
+        };
+        return;
+      }
+    }
+    const ok = await persist((venue) => {
+      const fixture = venue.fixtures[name];
+      if (fixture) fixture.mode = next || null;
+    });
+    if (ok) {
+      draft.mode = next || null;
+      patchTick++;
+    } else {
+      select.value = previous;
+    }
+  }
+
+  /** The strip: addresses around the fixture in its saved mode. */
+  let strip = $derived.by(() => {
+    if (!ownSpan || !ownSpan.footprint) return null;
+    const { from, to } = stripWindow(ownSpan.address, ownSpan.footprint);
+    return {
+      universe: ownSpan.universe,
+      from,
+      to,
+      cells: stripCells(spans, ownSpan, from, to),
+    };
+  });
 </script>
 
 <aside class="inspector" aria-label={$t("venues.inspector.title")}>
@@ -434,7 +626,12 @@
         {#if typeNames.length > 0}
           <select id="insp-type" class="input" bind:value={fields.fixture_type}>
             {#each typeNames as name (name)}
-              <option value={name}>{name}</option>
+              <option value={name}
+                >{fixtureTypes[name]?.referential &&
+                fixtureTypes[name]?.default_mode === null
+                  ? $t("lighting.typeNoDefault", { values: { name } })
+                  : name}</option
+              >
             {/each}
             {#if !typeNames.includes(fields.fixture_type)}
               <option value={fields.fixture_type}>{fields.fixture_type}</option>
@@ -448,6 +645,99 @@
           />
         {/if}
       </div>
+      {#if gdtfType}
+        <div class="field">
+          <label for="insp-mode">{$t("venues.inspector.mode")}</label>
+          {#if archive}
+            <select
+              id="insp-mode"
+              class="input insp-mode"
+              data-testid="insp-mode"
+              value={fields.mode ?? ""}
+              disabled={saving}
+              onchange={(e) =>
+                chooseMode(e.currentTarget.value, e.currentTarget)}
+            >
+              <option value=""
+                >{defaultMode
+                  ? $t("venues.inspector.modeDefault", {
+                      values: { mode: defaultMode },
+                    })
+                  : $t("venues.inspector.modeDefaultNone")}</option
+              >
+              {#each archive.inspection.modes as m (m.name)}
+                <option
+                  value={m.name}
+                  disabled={isRefused(m)}
+                  title={m.refused ?? undefined}
+                  >{$t("venues.inspector.modeOption", {
+                    values: { name: m.name, count: m.footprint },
+                  })}</option
+                >
+              {/each}
+              {#if fields.mode && !archive.inspection.modes.some((m) => m.name === fields?.mode)}
+                <option value={fields.mode}>{fields.mode}</option>
+              {/if}
+            </select>
+          {:else}
+            <span class="inspector__hint">{$t("common.loading")}</span>
+          {/if}
+        </div>
+      {/if}
+      {#if strip}
+        <div class="field">
+          <span class="field__label"
+            >{$t("venues.inspector.patchStrip", {
+              values: {
+                universe: strip.universe,
+                from: strip.from,
+                to: strip.to,
+              },
+            })}</span
+          >
+          <div class="patch-scroll" bind:this={stripEl}>
+            <ol class="patch-strip" data-testid="insp-patch-strip">
+              {#each strip.cells as cell (cell.address)}
+                <li
+                  class="patch-cell"
+                  class:patch-cell--me={cell.mine && !cell.clash}
+                  class:patch-cell--other={!cell.mine && cell.owners.length > 0}
+                  class:patch-cell--clash={cell.clash}
+                  data-address={cell.address}
+                  title={[
+                    ...(cell.mine && single ? [single] : []),
+                    ...cell.owners,
+                  ].join(", ") || $t("venues.inspector.patchFree")}
+                >
+                  {cell.address}
+                </li>
+              {/each}
+            </ol>
+          </div>
+          <div class="patch-legend">
+            <span><i class="patch-key patch-key--me"></i>{single}</span>
+            <span
+              ><i class="patch-key patch-key--other"></i>{$t(
+                "venues.inspector.patchOthers",
+              )}</span
+            >
+            <span
+              ><i class="patch-key patch-key--clash"></i>{$t(
+                "venues.inspector.patchOverlap",
+              )}</span
+            >
+          </div>
+        </div>
+      {/if}
+      {#if patchMsg}
+        <p
+          class="inspector__status inspector__status--error"
+          role="alert"
+          data-testid="insp-patch-msg"
+        >
+          {patchMsg.text}
+        </p>
+      {/if}
       <div class="row">
         <div class="field">
           <label for="insp-universe">{$t("lighting.universe")}</label>
@@ -860,6 +1150,76 @@
   .btn-sm {
     padding: 4px 8px;
     font-size: 12px;
+  }
+  .insp-mode {
+    font-family: var(--nc-font-mono);
+    font-size: 12px;
+  }
+  /* The patch strip scrolls inside itself, never the page. */
+  .patch-scroll {
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .patch-strip {
+    display: grid;
+    grid-template-columns: repeat(32, minmax(18px, 1fr));
+    gap: 2px;
+    min-width: 600px;
+    margin: 2px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .patch-cell {
+    height: 26px;
+    display: grid;
+    place-items: center;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text-dim);
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+  }
+  .patch-cell--other {
+    background: var(--accent-subtle);
+    border-color: transparent;
+    color: var(--accent);
+  }
+  .patch-cell--me {
+    background: var(--accent);
+    border-color: transparent;
+    color: var(--bg);
+    font-weight: 600;
+  }
+  .patch-cell--clash {
+    background: var(--red);
+    border-color: transparent;
+    color: var(--bg);
+    font-weight: 600;
+  }
+  .patch-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .patch-key {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    margin-right: 5px;
+    vertical-align: -1px;
+  }
+  .patch-key--me {
+    background: var(--accent);
+  }
+  .patch-key--other {
+    background: var(--accent-subtle);
+  }
+  .patch-key--clash {
+    background: var(--red);
   }
   @media (max-width: 600px) {
     .inspector {

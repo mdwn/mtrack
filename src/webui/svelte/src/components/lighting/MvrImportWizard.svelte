@@ -22,6 +22,8 @@
     type MvrInspection,
     type MvrKeep,
     type MvrPlan,
+    type MvrPlannedType,
+    type MvrVenueError,
     type Vec3Mm,
   } from "../../lib/api/config";
   import {
@@ -73,6 +75,8 @@
    *  type are rig facts the venue owns, so they start as the MVR's. */
   let keeping = $state<Record<string, boolean>>({});
   let report = $state<MvrImportReport | null>(null);
+  /** After the write: the current venue no longer loads, and why. */
+  let venueError = $state<MvrVenueError | null>(null);
 
   let scene = $derived(inspection?.scene ?? null);
   let suggestion = $derived(scene ? suggestOrigin(scene) : null);
@@ -208,6 +212,7 @@
         dirs,
       );
       report = result.report ?? null;
+      venueError = result.venue_error ?? null;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -222,6 +227,7 @@
     inspection = null;
     plan = null;
     report = null;
+    venueError = null;
     error = "";
     originX = originY = originZ = null;
   }
@@ -290,6 +296,26 @@
   );
   let seeded = $derived(plan?.fixtures.filter((f) => !f.todo) ?? []);
   let todos = $derived(plan?.fixtures.filter((f) => f.todo) ?? []);
+  /** Fixtures whose line names a mode: not in their type's default. */
+  let moded = $derived(plan?.fixtures.filter((f) => !f.todo && f.mode) ?? []);
+
+  /** A type's modes in words: its default (or that it has none) and the
+   *  other modes the file patches it in. */
+  function typeModes(ft: MvrPlannedType): string {
+    const parts = [
+      ft.mode
+        ? $t("lighting.mvr.review.typeDefault", { values: { mode: ft.mode } })
+        : $t("lighting.mvr.review.typeNoDefault"),
+    ];
+    const others = (ft.modes ?? []).filter((m) => m !== ft.mode);
+    if (others.length > 0)
+      parts.push(
+        $t("lighting.mvr.review.typeOtherModes", {
+          values: { modes: others.join(", ") },
+        }),
+      );
+    return parts.join("; ");
+  }
   let edited = $derived(
     plan?.fixtures.filter((f) => f.overwrites?.length) ?? [],
   );
@@ -679,7 +705,9 @@
       </h4>
       <ul class="list" data-testid="mvr-review-types-new">
         {#each newTypes as ft (ft.name)}
-          <li>{ft.name} <span class="muted">({ft.mode})</span></li>
+          <li data-testid="mvr-type-{ft.name}">
+            {ft.name} <span class="muted">({typeModes(ft)})</span>
+          </li>
         {/each}
       </ul>
       {#if existingTypes.length > 0}
@@ -690,7 +718,27 @@
         </h4>
         <ul class="list" data-testid="mvr-review-types-existing">
           {#each existingTypes as ft (ft.name)}
-            <li>{ft.name} <span class="muted">({ft.mode})</span></li>
+            <li data-testid="mvr-type-{ft.name}">
+              {ft.name} <span class="muted">({typeModes(ft)})</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
+      {#if moded.length > 0}
+        <h4 class="panel__sub">
+          {$t("lighting.mvr.review.moded", { values: { count: moded.length } })}
+        </h4>
+        <ul class="list" data-testid="mvr-review-moded">
+          {#each moded as f (f.name)}
+            <li>
+              <strong>{f.name}</strong>
+              <span class="muted"
+                >{$t("lighting.mvr.review.modedRow", {
+                  values: { type: f.fixture_type ?? "", mode: f.mode ?? "" },
+                })}</span
+              >
+            </li>
           {/each}
         </ul>
       {/if}
@@ -828,6 +876,21 @@
           {$t("lighting.mvr.working")}
         </p>
       {:else if report}
+        {#if venueError}
+          <p
+            class="banner banner--error"
+            role="alert"
+            data-testid="mvr-venue-error"
+          >
+            {$t("lighting.mvr.done.venueError", {
+              values: {
+                venue: venueError.venue,
+                fixture: venueError.fixture,
+                reason: venueError.reason,
+              },
+            })}
+          </p>
+        {/if}
         <p class="banner banner--ok" data-testid="mvr-done">
           {$t("lighting.mvr.done.title", {
             values: {
@@ -1179,6 +1242,11 @@
   }
   .banner--ok {
     border-color: var(--green);
+  }
+  .banner--error {
+    border-color: var(--red);
+    color: var(--red);
+    font-weight: 600;
   }
   .list {
     margin: 0;

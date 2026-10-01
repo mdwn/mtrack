@@ -34,6 +34,7 @@
     saveVenue,
     type FixtureTypeEntry,
     type VenueData,
+    type VenueError,
   } from "../lib/api/config";
   import type { FixturePose } from "../lib/ws/stores";
   import { deckFootprint, restAim } from "../lib/stage/aim";
@@ -169,6 +170,8 @@
 
   // --- Editing feedback
   let saveMsg = $state<{ ok: boolean; text: string } | null>(null);
+  /** The last save's report that the current venue no longer loads. */
+  let venueError = $state<VenueError | null>(null);
   let saving = $state(false);
   let renaming = $state<Record<string, string>>({});
 
@@ -912,9 +915,14 @@
             meta.dir ?? undefined,
             (file ? fileVersion : null) ?? fresh ?? undefined,
           );
+          venueError = saved.venueError;
           if (file) {
-            fileVersion = saved;
-            fileView = { name: meta.name, venue: current, version: saved };
+            fileVersion = saved.version;
+            fileView = {
+              name: meta.name,
+              venue: current,
+              version: saved.version,
+            };
           } else {
             // Optimistic: the broadcast metadata will confirm, but a client
             // the engine cannot reach (no DMX engine running) should still
@@ -942,8 +950,19 @@
           // the file as it is now.
         }
       }
-      saveMsg = { ok: true, text: get(t)("stage.saved") };
-      setTimeout(() => (saveMsg = null), 2000);
+      if (venueError) {
+        // Saved, and the venue no longer loads: said where the save was
+        // made, and left up until a save fixes it.
+        saveMsg = {
+          ok: false,
+          text: get(t)("lighting.venueError.saved", {
+            values: { ...venueError },
+          }),
+        };
+      } else {
+        saveMsg = { ok: true, text: get(t)("stage.saved") };
+        setTimeout(() => (saveMsg = null), 2000);
+      }
       return true;
     } catch (e: unknown) {
       if (e instanceof ConflictError) {

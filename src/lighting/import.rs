@@ -98,7 +98,9 @@ fn annotate(target: crate::util::WriteTarget<'_>, error: std::io::Error) -> Box<
     message.into()
 }
 
-/// The `.fixture` definition an import writes for a GDTF mode.
+/// The `.fixture` definition an import writes for a GDTF archive, with
+/// `mode` as the type's default (design §21: the type is the whole archive;
+/// a venue fixture may name any other of its modes).
 pub(crate) fn gdtf_definition(
     type_name: &str,
     library_rel: &str,

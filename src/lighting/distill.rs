@@ -719,7 +719,7 @@ mod tests {
         );
         original.set_source(GdtfSource {
             path: "library/esprite.gdtf".to_string(),
-            mode: "Mode 1".to_string(),
+            mode: Some("Mode 1".to_string()),
         });
         original.set_movement(MovementLimits {
             max_pan_speed: Some(240.0),

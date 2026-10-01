@@ -360,7 +360,10 @@ fn a_hash_inside_a_quoted_name_is_not_a_comment() {
 fn a_gdtf_mode_name_keeps_its_trailing_space() {
     let content = "fixture_type \"T\"\n  from gdtf(\"lighting/library/t.gdtf\", mode \"Mode 8 - Pixel RGBW \")\n{\n}\n";
     let types = parse_fixture_types(content).expect("parses");
-    assert_eq!(types["T"].source().unwrap().mode, "Mode 8 - Pixel RGBW ");
+    assert_eq!(
+        types["T"].source().unwrap().mode.as_deref(),
+        Some("Mode 8 - Pixel RGBW ")
+    );
 }
 
 // ── rich channel syntax (.fixture, design §15.6) ──────────────────

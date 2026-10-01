@@ -233,7 +233,9 @@ enum Commands {
     ImportGdtf {
         /// Path to the .gdtf archive to import.
         gdtf_path: String,
-        /// The DMX mode to distill. Omit to list the archive's modes.
+        /// The DMX mode to distill, which becomes the type's default (a
+        /// venue fixture may name another with `mode "..."`). Omit to list
+        /// the archive's modes.
         #[arg(short, long)]
         mode: Option<String>,
         /// Name for the fixture type (defaults to the GDTF's fixture name).

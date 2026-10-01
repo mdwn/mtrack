@@ -14,7 +14,7 @@
      * -->
 <script lang="ts">
   import { wsConnected, playbackStore } from "../lib/ws/stores";
-  import { healthStore } from "../lib/ws/status";
+  import { healthStore, venueFailure } from "../lib/ws/status";
   import { setLocked } from "../lib/api/config";
   import { showConfirm } from "../lib/dialog.svelte";
   import { themeChoice, cycleTheme } from "../lib/theme";
@@ -298,6 +298,19 @@
   </div>
 {/if}
 
+{#if $venueFailure}
+  <!-- Not dismissible: the rig is dark until the venue is fixed. -->
+  <div class="venue-banner" role="alert" data-testid="venue-failed-banner">
+    {$t("nav.venueFailed", {
+      values: {
+        venue: $venueFailure.name ?? "",
+        error: $venueFailure.error ?? "",
+      },
+    })}
+    <a href="#/lighting/venues">{$t("nav.venueFailedLink")}</a>
+  </div>
+{/if}
+
 <style>
   .topnav {
     display: flex;
@@ -564,6 +577,22 @@
     50% {
       opacity: 0.45;
     }
+  }
+
+  .venue-banner {
+    background: rgba(232, 75, 75, 0.16);
+    color: var(--nc-error);
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    border-bottom: 1px solid rgba(232, 75, 75, 0.5);
+    overflow-wrap: anywhere;
+  }
+
+  .venue-banner a {
+    color: inherit;
+    margin-left: 8px;
+    text-decoration: underline;
   }
 
   .disconnect-banner {

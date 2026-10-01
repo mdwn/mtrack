@@ -724,6 +724,12 @@ impl Player {
                     .as_ref()
                     .map(|_| "Trigger Engine".to_string()),
             ),
+            lighting_venue: super::LightingVenueStatus::from_registration(
+                hw.dmx_engine
+                    .as_ref()
+                    .and_then(|d| d.venue_registration())
+                    .as_ref(),
+            ),
         }
     }
 

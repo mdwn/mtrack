@@ -89,7 +89,7 @@
   {#if route.sub === "overview"}
     <LightingOverview profileName={running?.profileName ?? null} />
   {:else if route.sub === "fixtures"}
-    <FixtureTypesPanel dir={ftDir} />
+    <FixtureTypesPanel dir={ftDir} venuesDir={venueDir} />
   {:else if route.sub === "venues"}
     <VenuesPanel
       fixtureTypesDir={ftDir}
