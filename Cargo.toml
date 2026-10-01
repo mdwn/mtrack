@@ -160,5 +160,9 @@ path = "src/lib.rs"
 name = "mixer"
 harness = false
 
+[[bench]]
+name = "lighting"
+harness = false
+
 [package.metadata.cargo-shear]
 ignored = ["prost"]
