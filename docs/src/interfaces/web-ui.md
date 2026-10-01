@@ -40,7 +40,9 @@ subsystems, polled every 5 seconds:
 - **Green** — All required subsystems are connected.
 - **Amber** — Something is initializing, or a controller is in error.
 - **Red** — A required subsystem is not connected. Audio is always required; MIDI / DMX are
-  required when the active profile has them configured.
+  required when the active profile has them configured. The current venue not loading is red
+  too, and puts a banner on every page (see
+  [When a venue does not load](../lighting/configuration.md#when-a-venue-does-not-load)).
 - **Pulsing red** — The WebSocket connection itself is down. The lighting editor also shows a
   yellow warning banner in this state.
 
@@ -579,19 +581,24 @@ Both fixture-type file forms are listed. A `.light` type opens in the channel-ma
 **Import GDTF** uploads a `.gdtf` archive and opens a mode picker: a filterable list of the
 archive's DMX modes with their address counts and cells, and for the selected mode a panel of
 what your shows can do in it, in plain words. A refused mode is listed greyed with its reason.
-**Add fixture type** writes the referential `.fixture` (the same as `mtrack import-gdtf`; see
+The mode you choose is the type's **default**: each fixture in a venue can use another mode of the
+archive. **Add fixture type** writes the referential `.fixture` (the same as `mtrack import-gdtf`; see
 [GDTF-referential fixture types](../lighting/configuration.md#gdtf-referential-fixture-types-fixture)).
 
 A type made from a GDTF archive has a card that says what the fixture is: its picture (once the
 type has loaded and its 3D model is made), the manufacturer and fixture name, how many modes the
-archive has and its beam, and the mode in use with how many venue fixtures use the type.
+archive has and its beam, and one pill per mode the venues use with how many fixtures use it (the
+three most-used, then "+N more"), or the default mode alone when no fixture uses the type.
 Opening it shows the fixture first and its definition last: a 3D view of the fixture (drag to turn
 it; the archive's thumbnail stands in when the browser cannot draw 3D) beside what the archive
 states about it — the archive's path, its mode count, the beam, light output, power, which venues
 use it, and the manufacturer's own description. A figure the archive does not state is left out.
-Below that is every mode of the archive, with a filter and the one in use marked. Choose a mode to
-see what your shows could do in it, its channels, and which fixtures use it. The view is
-read-only: to switch modes, change the mode in the `from gdtf(...)` line and save.
+Below that is every mode of the archive, with a filter: the type's default is marked
+**default · N in use**, and any other mode a fixture uses says **N in use**. Choose a mode to see
+what your shows could do in it, its channels, and which fixtures use it. A fixture whose mode is
+not in the archive is named in red under the facts. The view is read-only: a fixture's mode is
+chosen in the venue's inspector (below), and the type's default is the mode in its
+`from gdtf(...)` line.
 
 ### Venues
 
@@ -630,7 +637,17 @@ click that does not move saves nothing.
 The inspector shows what is selected:
 
 - **One fixture** shows its own fields: name, type, universe, start channel and tags, saved by
-  **Apply**.
+  **Apply**. A fixture of a GDTF type also has a **Mode** select: *Type default (8: RGBS)* leaves
+  the line without a mode, and every other mode of the archive is listed with its footprint
+  (refused modes are shown but cannot be chosen). Choosing a mode saves it at once. Below it a
+  strip shows the fixture's universe around it, one cell per address: this fixture, the other
+  fixtures (hover a cell for who), and overlaps in red. A mode or an address that would run into
+  another fixture's addresses is refused before anything is saved, naming the fixture in the way
+  and the largest mode that fits — for example *Not saved. 13: DIM RGBAWS needs addresses 9 to
+  15, and Brick4 already uses some of them. Move Brick4 or pick a mode of 4 addresses or fewer.*
+  Fixtures patched to exactly the same addresses (ganged) are not in each other's way. The check
+  reads the venue's files, so it works with no DMX output running. A file that already has
+  overlaps still saves; the Overview lists them.
 - **Several** show the type and tags they share, and the two tools below.
 
 **Arrange** (two or more placed fixtures) writes positions. **Align on a line** puts a side
@@ -652,7 +669,9 @@ mover is the show's job. The raw rotation is always shown and editable. The plot
 fixed fixture's beam from its rotation, so an aim is checked at once.
 
 Every operation is one save of the venue file, and keeps the focus points, provenance and every
-field the operation did not change.
+field the operation did not change, a fixture's mode included. When a save leaves the current
+venue unable to load, the save still happens and the message where you saved says so, naming the
+fixture and why.
 
 ### Import an MVR
 

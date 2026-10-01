@@ -35,8 +35,10 @@
   } from "../../lib/lighting/modes";
   import {
     beamFacts,
+    modeCounts,
     outputFacts,
     powerFact,
+    unresolvedFixtures,
     venueUse,
   } from "../../lib/lighting/fixtureFacts";
   import FixtureViewer from "./FixtureViewer.svelte";
@@ -97,13 +99,20 @@
   const words = $derived(mode ? abilities(mode) : []);
   const more = $derived(mode ? extras(mode) : []);
   const missing = $derived(mode ? missingHere(mode, modes) : []);
-  const inUse = $derived(!!mode && mode.name === data?.matched_mode);
+  /** The selected mode is the type's default. */
+  const isDefault = $derived(!!mode && mode.name === data?.matched_mode);
 
   const beam = $derived(beamFacts(data?.beam ?? null));
   const output = $derived(outputFacts(data?.beam ?? null));
   const power = $derived(powerFact(data?.beam ?? null));
   // Every venue fixture of the type is in the pinned mode today.
   const uses = $derived(venueUse(data?.venues ?? []));
+  const counts = $derived(modeCounts(data?.venues ?? []));
+  const unresolved = $derived(unresolvedFixtures(data?.venues ?? []));
+  /** Who uses the selected mode. */
+  const modeUses = $derived(
+    mode ? venueUse(data?.venues ?? [], mode.name) : [],
+  );
   const longAbout = $derived((data?.about?.length ?? 0) > LONG_ABOUT);
 
   // A filter that hides the selection moves it to the first mode left.
@@ -253,10 +262,30 @@
             </dd>
           {/if}
         </dl>
-        {#if !data.matched_mode}
+        {#if data.mode === null}
+          <p class="ftd__quiet" data-testid="ft-details-no-default">
+            {$t("lighting.gdtfDetails.noDefault")}
+          </p>
+        {:else if !data.matched_mode}
           <p class="ftd__error" data-testid="ft-details-mode-unmatched">
             {$t("lighting.gdtfDetails.modeUnmatched", {
               values: { mode: data.mode },
+            })}
+          </p>
+        {/if}
+        {#if unresolved.length > 0}
+          <p class="ftd__error" data-testid="ft-details-unresolved">
+            {$t("lighting.gdtfDetails.unresolved", {
+              values: {
+                count: unresolved.length,
+                names: unresolved
+                  .map((u) =>
+                    $t("lighting.gdtfDetails.fixtureInVenue", {
+                      values: { fixture: u.fixture, venue: u.venue },
+                    }),
+                  )
+                  .join(", "),
+              },
             })}
           </p>
         {/if}
@@ -324,8 +353,20 @@
             >
               <span class="ftd__mode-name">{m.name}</span>
               {#if m.name === data.matched_mode}
+                <span
+                  class="ftd__pill ftd__pill--default"
+                  data-testid="ft-details-mode-default"
+                  >{counts.get(m.name)
+                    ? $t("lighting.gdtfDetails.defaultInUse", {
+                        values: { count: counts.get(m.name) },
+                      })
+                    : $t("lighting.gdtfDetails.default")}</span
+                >
+              {:else if counts.get(m.name)}
                 <span class="ftd__pill" data-testid="ft-details-mode-in-use"
-                  >{$t("lighting.gdtfDetails.inUse")}</span
+                  >{$t("lighting.gdtfDetails.inUseCount", {
+                    values: { count: counts.get(m.name) },
+                  })}</span
                 >
               {:else}
                 <span></span>
@@ -364,8 +405,10 @@
                 values: { count: mode.footprint },
               })}</span
             >
-            {#if inUse}
-              <span class="ftd__pill">{$t("lighting.gdtfDetails.inUse")}</span>
+            {#if isDefault}
+              <span class="ftd__pill ftd__pill--default"
+                >{$t("lighting.gdtfDetails.default")}</span
+              >
             {/if}
           </div>
 
@@ -422,8 +465,8 @@
           </div>
 
           <p class="ftd__usedby" data-testid="ft-details-used-by">
-            {#if inUse && uses.length > 0}
-              {uses
+            {#if modeUses.length > 0}
+              {modeUses
                 .map((u) =>
                   $t("lighting.gdtfDetails.usedBy", {
                     values: {
@@ -598,6 +641,10 @@
     background: var(--accent-subtle);
     color: var(--accent);
     white-space: nowrap;
+  }
+  .ftd__pill--default {
+    background: var(--yellow-dim);
+    color: var(--text);
   }
   .ftd__badge {
     font-family: var(--mono);

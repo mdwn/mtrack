@@ -116,6 +116,16 @@
     </p>
   {/if}
 
+  {#if readiness?.venue_error}
+    <!-- Above everything: a venue that does not load lights nothing. -->
+    <p class="hub__error" role="alert" data-testid="hub-venue-error">
+      {$t("lighting.hub.venueFailed", {
+        values: { ...readiness.venue_error },
+      })}
+      <a href="#/lighting/venues">{$t("lighting.hub.fix.venues")}</a>
+    </p>
+  {/if}
+
   {#if !readiness && !error}
     <p class="hub__loading" data-testid="hub-loading">
       {$t("lighting.hub.loading")}

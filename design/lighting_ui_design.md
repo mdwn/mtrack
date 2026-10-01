@@ -672,3 +672,38 @@ the preview, and importing a mode the distiller refuses.
   that card's `null` and the card falls back to "from a GDTF archive". The
   listing writes nothing: the thumbnail is quoted only when the type's rig is
   already in the store.
+- **A mode per venue fixture (venue-exchange §21).** The type's mode is its
+  default; the page marks it `default · N in use`, marks every other mode a
+  fixture uses `N in use`, and lists each mode's own users. `/gdtf` answers
+  `mode`/`matched_mode` nullable (a type with no default is drawn in its
+  first mode that distils) and `venues[].fixtures[]` as `{name, mode}`, the
+  mode each fixture is driven in, in the archive's spelling (null when it
+  names no mode of the archive — listed in red under the facts). The listing
+  adds `default_mode` per type and `gdtf.in_use` (`{mode, count}`, most-used
+  first); a card shows up to three mode pills, then "+N more", or the default
+  alone. Venue pickers mark a type with no default.
+- **The inspector chooses the mode.** A Mode select on a fixture of a GDTF
+  type ("Type default (…)" is no `mode` on the line; refused modes listed,
+  disabled) and a 32-cell patch strip around the fixture. The candidate is
+  checked in the browser against `GET /api/lighting/venues/{name}/patch` —
+  spans from the files (a `LightingSystem` loaded from the type and venue
+  directories, no venue current, no engine), the footprint `null` and left
+  out when a type or mode does not load — with `lib/lighting/patch.ts`, the
+  same rule as `lighting::patch`: an identical span is a gang, only a partial
+  intersection is refused. A refusal reverts the select and names the mode,
+  the addresses, the fixtures in the way and the largest mode that fits;
+  nothing is PUT. An address change through **Apply** is checked the same
+  way. PUT venue never refuses a venue that already overlaps.
+- **Nothing drops a mode.** `venue_from_json` reads `mode`; the venue form
+  carries it through and clears it when the fixture's type changes (a mode
+  names a mode of one archive); the plot, inspector and Fit's tagging spread
+  the file's fixtures; aim points and MVR merges patch the file. A mode is
+  `.venue` syntax. Each path has a round-trip test.
+- **A venue that does not load is loud.** Saves (PUT venue, aim points, MVR
+  import, Fit's tagging, the plot) answer `venue_error: {venue, fixture,
+  reason}` when the current venue no longer registers — from the engine after
+  its reload, or from the files for the config's current venue with no
+  engine — and the editor shows it where the save was made. `/api/status`
+  `hardware.lighting_venue` feeds a non-dismissible banner on every page and a
+  red health dot; readiness answers `venue_error` and `patch_warnings`, shown
+  first on the Overview and under the Venue check, never under each song.

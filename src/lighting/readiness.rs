@@ -79,10 +79,24 @@ pub struct VenueFacts {
     pub focus_points: Option<HashSet<String>>,
     /// Fixtures patched on a universe with no configured output.
     pub universe_warnings: Vec<Warning>,
-    /// Fixtures of the venue patched over each other's addresses (kind
-    /// `patch-overlap`), each pair once. A fixture whose type or mode did
-    /// not load has no known footprint and is not checked.
+    /// Fixtures of the venue patched over part of each other's addresses
+    /// (kind `patch-overlap`, each pair of gangs once — fixtures at an
+    /// identical span are ganged, not overlapping) and fixtures that run
+    /// past address 512 (kind `patch-overrun`). A fixture whose type or mode
+    /// did not load has no known footprint and is not checked.
     pub patch_warnings: Vec<Warning>,
+    /// Why the current venue will not register — the first fixture that
+    /// cannot be driven. The whole venue fails then (no fixture lights), so
+    /// the group counts above, read from what did resolve, are empty.
+    pub venue_error: Option<VenueError>,
+}
+
+/// A venue that does not register: the fixture that fails it and why.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct VenueError {
+    pub venue: String,
+    pub fixture: String,
+    pub reason: String,
 }
 
 impl VenueFacts {
@@ -107,7 +121,27 @@ impl VenueFacts {
         if system.get_current_venue().is_none() {
             return facts;
         }
-        let fixtures = system.get_current_venue_fixtures().unwrap_or_default();
+        // A venue that does not register lights nothing; say why rather than
+        // letting it read as an empty rig.
+        let fixtures = match system.get_current_venue_fixtures() {
+            Ok(fixtures) => fixtures,
+            Err(e) => {
+                let venue = system.current_venue().unwrap_or_default().to_string();
+                facts.venue_error = Some(match system.venue_problem(&venue) {
+                    Some((fixture, reason)) => VenueError {
+                        venue,
+                        fixture,
+                        reason,
+                    },
+                    None => VenueError {
+                        venue,
+                        fixture: String::new(),
+                        reason: e.to_string(),
+                    },
+                });
+                Vec::new()
+            }
+        };
         for name in names {
             let members = system.resolve_logical_group_graceful(name);
             facts
@@ -130,6 +164,15 @@ impl VenueFacts {
                 kind: "patch-overlap",
                 message: overlap.to_string(),
             })
+            .chain(
+                system
+                    .current_venue_overruns()
+                    .into_iter()
+                    .map(|overrun| Warning {
+                        kind: "patch-overrun",
+                        message: overrun.to_string(),
+                    }),
+            )
             .collect();
         facts
     }
@@ -267,6 +310,49 @@ mod test {
         assert!(message.contains("universe 1 at address 2"), "{message}");
         let kinds: Vec<&str> = facts.lint(&[], None).iter().map(|w| w.kind).collect();
         assert_eq!(kinds, ["patch-overlap"]);
+    }
+
+    #[test]
+    fn ganged_fixtures_are_quiet_and_an_overrun_is_a_finding() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut system = system(dir.path());
+        // Three pars ganged at 1:1: deliberate, not an overlap. D runs
+        // from 512 past the end of the universe.
+        std::fs::write(
+            dir.path().join("venues/v.light"),
+            "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"A2\" Par @ 1:1\n  \
+             fixture \"A3\" Par @ 1:1\n  fixture \"D\" Par @ 1:512\n}\n",
+        )
+        .unwrap();
+        system.reload_venues().unwrap();
+        let facts = VenueFacts::collect(&mut system, &[], Some(&[1]));
+        assert_eq!(facts.patch_warnings.len(), 1, "{:?}", facts.patch_warnings);
+        assert_eq!(facts.patch_warnings[0].kind, "patch-overrun");
+        assert!(facts.patch_warnings[0].message.contains("\"D\""));
+        assert!(facts.venue_error.is_none());
+    }
+
+    #[test]
+    fn a_venue_that_will_not_register_is_an_error_not_an_empty_rig() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut system = system(dir.path());
+        std::fs::write(
+            dir.path().join("venues/v.venue"),
+            "venue \"v\" {\n  fixture \"A\" Par @ 1:1 tags [\"wash\"]\n  \
+             fixture \"B\" Par mode \"8: RGBS\" @ 1:10\n}\n",
+        )
+        .unwrap();
+        std::fs::remove_file(dir.path().join("venues/v.light")).unwrap();
+        system.reload_venues().unwrap();
+        let facts = VenueFacts::collect(&mut system, &["washes".to_string()], Some(&[1]));
+        let error = facts.venue_error.expect("the venue does not register");
+        assert_eq!(error.venue, "v");
+        assert_eq!(error.fixture, "B");
+        assert!(
+            error.reason.contains("is not GDTF-sourced"),
+            "{}",
+            error.reason
+        );
     }
 
     #[test]

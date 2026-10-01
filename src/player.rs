@@ -274,6 +274,43 @@ pub struct HardwareStatusSnapshot {
     pub midi: SubsystemStatus,
     pub dmx: SubsystemStatus,
     pub trigger: SubsystemStatus,
+    /// Whether the current lighting venue's fixtures are registered. DMX can
+    /// be `connected` while the venue failed — then nothing lights — so it
+    /// is its own entry.
+    pub lighting_venue: LightingVenueStatus,
+}
+
+/// The current lighting venue's registration, for status surfaces.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LightingVenueStatus {
+    /// The venue; `None` when there is none.
+    pub name: Option<String>,
+    /// `ok`, `failed`, or `none` (no DMX engine, no lighting system, or no
+    /// current venue).
+    pub status: String,
+    /// Why it failed: the fixture and the reason. Present only for `failed`
+    /// (serialized as null otherwise).
+    pub error: Option<String>,
+}
+
+impl LightingVenueStatus {
+    /// The status of a registration outcome (or of none).
+    pub fn from_registration(
+        registration: Option<&crate::dmx::engine::VenueRegistration>,
+    ) -> LightingVenueStatus {
+        match registration {
+            Some(r) if r.venue.is_some() => LightingVenueStatus {
+                name: r.venue.clone(),
+                status: if r.ok { "ok" } else { "failed" }.to_string(),
+                error: if r.ok { None } else { r.error.clone() },
+            },
+            _ => LightingVenueStatus {
+                name: None,
+                status: "none".to_string(),
+                error: None,
+            },
+        }
+    }
 }
 
 /// Plays back individual wav files as multichannel audio for the configured audio interface.

@@ -152,6 +152,11 @@ fn create_engine_inner(
         );
     }
 
+    // Register the current venue now, not first at a song start, so a venue
+    // that does not load says so at boot (status, banner, log) instead of
+    // when the first song plays dark. A failure is recorded, not fatal.
+    let _ = engine.register_venue_fixtures_safe();
+
     // Start the persistent effects loop
     Engine::start_persistent_effects_loop(engine.clone());
 

@@ -87,6 +87,23 @@ pub(super) fn classify_midi_dmx_action(
 
 /// The DMX engine. This is meant to control the current state of the
 /// universe(s) that should be sent to our DMX interface(s).
+/// How the current venue's last registration went. A venue registers whole
+/// or not at all: one fixture that cannot be driven (a missing type, a bad
+/// mode, a mode on a native type, no mode where the type has no default)
+/// fails it, and then no fixture lights. Kept so the failure is visible —
+/// status, banner, readiness — not only a log line.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct VenueRegistration {
+    /// The current venue; `None` when none is selected.
+    pub venue: Option<String>,
+    /// Whether its fixtures are registered.
+    pub ok: bool,
+    /// The fixture that failed it, when one did.
+    pub fixture: Option<String>,
+    /// Why it failed.
+    pub error: Option<String>,
+}
+
 pub struct Engine {
     pub(super) dimming_speed_modifier: f64,
     pub(super) playback_delay: Duration,
@@ -96,6 +113,9 @@ pub struct Engine {
     /// the effects loop runs at 44Hz, so the drop warning fires once per
     /// universe, not once per tick.
     warned_missing_universes: Mutex<HashSet<u16>>,
+    /// The current venue's last registration outcome; `None` before the
+    /// first attempt.
+    venue_registration: Mutex<Option<VenueRegistration>>,
     pub(super) cancel_handle: CancelHandle,
     pub(super) client_handle: Option<JoinHandle<()>>,
     pub(super) join_handles: Vec<JoinHandle<()>>,
@@ -218,6 +238,7 @@ impl Engine {
             universes: universes.into_iter().collect(),
             universe_name_to_id,
             warned_missing_universes: Mutex::new(HashSet::new()),
+            venue_registration: Mutex::new(None),
             cancel_handle,
             client_handle: Some(client_handle),
             join_handles,
@@ -534,11 +555,87 @@ impl Engine {
         self.register_venue_fixtures_safe()
     }
 
-    /// Registers all fixtures from the current venue (thread-safe version)
+    /// The current venue's last registration outcome; `None` before the
+    /// first attempt or without a lighting system.
+    pub fn venue_registration(&self) -> Option<VenueRegistration> {
+        self.venue_registration.lock().clone()
+    }
+
+    /// Records a registration outcome, logging it when it changed: a failure
+    /// at `error!` (the rig is dark until it is fixed), a recovery at
+    /// `info!`. Registration runs at every song start and venue reload, so
+    /// an unchanged outcome is not logged again.
+    fn record_venue_registration(&self, outcome: VenueRegistration) {
+        let mut current = self.venue_registration.lock();
+        if current.as_ref() == Some(&outcome) {
+            return;
+        }
+        match (&outcome.venue, outcome.ok) {
+            (Some(venue), false) => error!(
+                venue = venue.as_str(),
+                fixture = outcome.fixture.as_deref().unwrap_or_default(),
+                "Venue did not load, so no fixture will light: {}",
+                outcome.error.as_deref().unwrap_or_default()
+            ),
+            (Some(venue), true) if current.as_ref().is_some_and(|c| !c.ok) => {
+                info!(
+                    venue = venue.as_str(),
+                    "Venue loaded; its fixtures are registered"
+                )
+            }
+            _ => {}
+        }
+        *current = Some(outcome);
+    }
+
+    /// Drops every registered fixture: what a restart gives for a venue that
+    /// does not register, so what runs now is what runs after a reboot.
+    fn clear_registered_fixtures(&self) {
+        let mut effect_engine = self.effect_engine.lock();
+        self.midi_dmx_store.write().retain_channels(|_, _| false);
+        effect_engine.replace_fixtures(Vec::new());
+        effect_engine.set_focus_points(HashMap::new());
+    }
+
+    /// Registers all fixtures from the current venue (thread-safe version).
+    ///
+    /// A venue that does not register — no current venue, or a fixture that
+    /// cannot be driven — clears the registered fixtures rather than keeping
+    /// an older venue's, and records why ([`Self::venue_registration`]).
     pub fn register_venue_fixtures_safe(&self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(lighting_system) = &self.lighting_system {
             let lighting_system = lighting_system.lock();
-            let fixture_infos = lighting_system.get_current_venue_fixtures()?;
+            let venue = lighting_system.current_venue().map(str::to_string);
+            let fixture_infos = match lighting_system.get_current_venue_fixtures() {
+                Ok(infos) => {
+                    self.record_venue_registration(VenueRegistration {
+                        venue,
+                        ok: true,
+                        fixture: None,
+                        error: None,
+                    });
+                    infos
+                }
+                Err(e) => {
+                    let (fixture, error) = match venue
+                        .as_deref()
+                        .and_then(|v| lighting_system.venue_problem(v))
+                    {
+                        Some((fixture, reason)) => (Some(fixture), reason),
+                        None => (None, e.to_string()),
+                    };
+                    drop(lighting_system);
+                    self.clear_registered_fixtures();
+                    self.record_venue_registration(VenueRegistration {
+                        ok: false,
+                        fixture,
+                        // No venue selected is not a failure to report.
+                        error: venue.as_ref().map(|_| error),
+                        venue,
+                    });
+                    return Err(e);
+                }
+            };
 
             // Say up front — once, at registration — which parts of the venue
             // this profile cannot drive, naming the fixtures. The per-tick
@@ -3097,6 +3194,65 @@ mod test {
                 )),
             );
             (dir, lighting)
+        }
+
+        #[test]
+        fn a_venue_that_stops_registering_clears_the_rig_and_says_so() -> Result<(), Box<dyn Error>>
+        {
+            let (dir, lighting) =
+                project_with_venue("venue \"v\" {\n  fixture \"A\" Par @ 1:1\n}\n");
+            let engine = Engine::new(
+                &create_test_config(),
+                Some(&lighting),
+                Some(dir.path()),
+                OlaClientFactory::create_mock_client(),
+            )?;
+            engine.register_venue_fixtures_safe()?;
+            let ok = engine.venue_registration().expect("recorded");
+            assert!(ok.ok);
+            assert_eq!(ok.venue.as_deref(), Some("v"));
+            assert_eq!(engine.effect_engine.lock().get_fixture_registry().len(), 1);
+
+            // A mode on a native type fails the venue: nothing stays
+            // registered — what a restart would give — and the outcome
+            // names the fixture and the reason.
+            std::fs::write(
+                dir.path().join("lighting/venues/v.venue"),
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"B\" Par mode \"x\" @ 1:5\n}\n",
+            )
+            .unwrap();
+            assert!(engine.reload_current_venue().is_err());
+            let failed = engine.venue_registration().expect("recorded");
+            assert!(!failed.ok);
+            assert_eq!(failed.venue.as_deref(), Some("v"));
+            assert_eq!(failed.fixture.as_deref(), Some("B"));
+            assert!(
+                failed
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains("is not GDTF-sourced"),
+                "{failed:?}"
+            );
+            assert!(engine
+                .effect_engine
+                .lock()
+                .get_fixture_registry()
+                .is_empty());
+            assert_eq!(engine.midi_dmx_store.read().slot_count(), 0);
+            let status = crate::player::LightingVenueStatus::from_registration(Some(&failed));
+            assert_eq!(status.status, "failed");
+
+            // Fixed: back.
+            std::fs::write(
+                dir.path().join("lighting/venues/v.venue"),
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"B\" Par @ 1:5\n}\n",
+            )
+            .unwrap();
+            engine.reload_current_venue()?;
+            assert!(engine.venue_registration().expect("recorded").ok);
+            assert_eq!(engine.effect_engine.lock().get_fixture_registry().len(), 2);
+            Ok(())
         }
 
         #[test]

@@ -100,7 +100,9 @@ impl Engine {
 
         // Register fixtures with the effects engine if lighting system is available
         if let Err(_e) = dmx_engine.register_venue_fixtures_safe() {
-            // Failed to register venue fixtures, continue without them
+            // The song plays without fixtures; the failure is recorded and
+            // logged by the registration (`venue_registration`), and shown
+            // in the status and readiness views.
         }
 
         // Setup song lighting if available - work directly with DSL shows

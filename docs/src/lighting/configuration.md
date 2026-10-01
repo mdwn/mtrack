@@ -125,13 +125,39 @@ fixture_type "PB15 PixelBrick"
 }
 ```
 
+A GDTF type is the whole fixture: every mode of its archive. The mode on the
+`from gdtf(...)` line is the type's **default**, and a venue fixture may choose
+another, directly after the type:
+
+```light
+venue "house" {
+  fixture "Brick1" "PB15 PixelBrick" @ 1:1                    # the default, 8: RGBS
+  fixture "Brick8" "PB15 PixelBrick" mode "9: RGBWS" @ 1:29   # its own mode
+}
+```
+
+A mode is matched as the archive spells it; a spelling that differs only in
+case, spaces or punctuation loads with a warning to correct it. The default
+may be left out — `from gdtf("lighting/library/pb15.gdtf")` — when every
+fixture of the type names its own mode. Two things stop a venue loading,
+each reported with the fixture, the type and the file:
+
+- a fixture with no `mode` whose type has no default;
+- a `mode` on a fixture of a hand-written (non-GDTF) type, which has no modes.
+
+A mode the archive does not have stops the venue the same way. Because a
+fixture's footprint follows its mode, the loader also warns when two fixtures
+are patched over part of each other's addresses, or a fixture runs past
+address 512. Fixtures patched to exactly the same addresses are a gang (two
+pars on one address, say) and are not warned about.
+
 The easiest way to create one is the import command, which lists an
 archive's modes, copies it into `lighting/library/`, writes the `.fixture`
 file, and verifies it loads:
 
 ```sh
 mtrack import-gdtf downloaded.gdtf                 # list the modes
-mtrack import-gdtf downloaded.gdtf --mode "8: RGBS"
+mtrack import-gdtf downloaded.gdtf --mode "8: RGBS"   # the type's default
 ```
 
 The web UI's Lighting → Fixture types page does the same with a mode picker. Choosing a mode
@@ -399,6 +425,24 @@ venue "warehouse" {
 }
 ```
 
+### When a venue does not load
+
+A venue loads whole or not at all. If one fixture cannot be driven — its type
+is missing or did not load, it names a mode its archive does not have, it
+names a mode on a hand-written type, or it names none where its type has no
+default — the whole venue fails and **no fixture lights**, rather than a rig
+with a hole in it. That is also what the next restart would give, so a venue
+edit that breaks it takes the running rig dark at once instead of at the next
+boot.
+
+It is hard to miss: the log says it once at `error` level, `GET /api/status`
+reports `hardware.lighting_venue` as `failed` with the fixture and the reason,
+the web UI shows a red banner on every page and turns the health dot red, the
+Lighting Overview puts it first, and any save that leaves the current venue
+failing (in the web UI or through MCP) says so with the reason. The rig stays
+dark until the venue file is fixed; the save that fixes it brings the
+fixtures back.
+
 ### Venue files with positions (`*.venue`)
 
 A venue can also say where its fixtures hang and name the points on stage a
@@ -421,6 +465,10 @@ venue "kellys-basement" {
   focus "center-stage" (0.0, 1.5, 1.7)
 }
 ```
+
+A fixture's own GDTF `mode "…"` is `.venue` syntax too: a web UI save that
+gives a `.light` venue's fixture a mode moves the venue to a `.venue` file,
+as a position does.
 
 Position and rotation are optional per fixture, and a venue without them
 still plays; it just cannot resolve positional effects or draw a meaningful
@@ -518,6 +566,11 @@ walks through the file, a plan where you click the front edge of the deck to set
 review of what will be written, and the import itself. See
 [Import an MVR](../interfaces/web-ui.md#import-an-mvr).
 
+The import writes one `.fixture` per GDTF in the file, however many modes the
+venue patches it in. Its default is the mode most of its fixtures use (a tie
+goes to the name that sorts first, so an import is reproducible), and every
+fixture in another mode carries `mode "…"` on its line.
+
 The seeded file is yours: tags start empty (shows target tags, not fixture
 names), the console's focus-point names are there to rename, and positions
 can be corrected by hand. It records where it came from:
@@ -544,12 +597,13 @@ everything the MVR knew about it.
 A merge does not overwrite your hand edits without saying so. Where the venue
 file differs from the new MVR **and** from what the previous MVR said (so a
 fixture the venue itself moved is not mistaken for one you moved), the report
-lists the field as an overwrite: a fixture's position, rotation, patch or
-type, or a focus point's position. Without a previous copy of the MVR to
+lists the field as an overwrite: a fixture's position, rotation, patch,
+type or mode, or a focus point's position. A changed mode is updated like an
+address; an existing type's default is left alone. Without a previous copy of the MVR to
 compare against, any difference counts, and so does any difference in a
 fixture's type. In the web UI's review step each one has a **Keep my edits**
-checkbox: position, rotation and focus points start checked, while patch and
-type start unchecked because they are rig facts the MVR owns. `mtrack
+checkbox: position, rotation and focus points start checked, while patch,
+mode and type start unchecked because they are rig facts the MVR owns. `mtrack
 import-mvr` without `--write` lists the overwrites (and writes nothing), and the
 `inspect_mvr` MCP tool reports them per fixture. Only the web UI's import request carries a
 `keep` list naming the fields to hold on to; the CLI and `import_mvr` take none, so they take

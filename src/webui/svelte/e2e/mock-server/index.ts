@@ -289,10 +289,11 @@ const FIXTURE_TYPES: Record<
       fixture: string;
       manufacturer: string;
       modes: number;
-      mode: string;
+      mode: string | null;
       beam: { type: string | null; angle: number | null } | null;
       thumbnail: string | null;
       used_by: number;
+      in_use: { mode: string; count: number }[];
     } | null;
   }
 > = {
@@ -345,6 +346,10 @@ const FIXTURE_TYPES: Record<
       beam: { type: "Wash", angle: 13 },
       thumbnail: null,
       used_by: 3,
+      in_use: [
+        { mode: "8: RGBS", count: 2 },
+        { mode: "1: RGB", count: 1 },
+      ],
     },
   },
 };
@@ -447,8 +452,14 @@ app.get("/api/lighting/fixture-types/:name/gdtf", (req, res) => {
     about:
       "Battery-powered uplight and spotlight; bricks connect into clusters.",
     venues: [
-      { name: "built-in", fixtures: ["Brick1", "Brick2"] },
-      { name: "club", fixtures: ["Solo"] },
+      {
+        name: "built-in",
+        fixtures: [
+          { name: "Brick1", mode: "8: RGBS" },
+          { name: "Brick2", mode: "8: RGBS" },
+        ],
+      },
+      { name: "club", fixtures: [{ name: "Solo", mode: "1: RGB" }] },
     ],
     inspection: GDTF_INSPECTION,
   });

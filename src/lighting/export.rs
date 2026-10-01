@@ -321,13 +321,50 @@ pub fn export_mvr_bytes(
         gdtf_of.insert(fixture.name(), (entry, mode));
     }
 
+    // Each referential fixture's mode as its archive spells it: a line may
+    // write a mode the loader matches only after normalizing, and the MVR
+    // must name the archive's own mode. A mode the archive does not have
+    // refuses the export, by fixture, before anything is written.
+    let mut parsed: HashMap<String, Option<super::gdtf::Description>> = HashMap::new();
+    for fixture in &fixtures {
+        if fixture_types[fixture.fixture_type()].source().is_none() {
+            continue;
+        }
+        let (entry, mode) = gdtf_of
+            .get_mut(fixture.name())
+            .expect("every fixture has an entry");
+        let description = parsed
+            .entry(entry.clone())
+            .or_insert_with(|| {
+                entries
+                    .get(entry.as_str())
+                    .and_then(|bytes| super::gdtf::parse_archive(bytes).ok())
+            })
+            .as_ref()
+            .ok_or_else(|| {
+                format!(
+                    "fixture \"{}\": the GDTF archive of fixture type \"{}\" does not parse",
+                    fixture.name(),
+                    fixture.fixture_type()
+                )
+            })?;
+        let matched = super::gdtf::match_mode(description, mode).map_err(|_| {
+            format!(
+                "fixture \"{}\" is in mode \"{mode}\", which the GDTF archive of fixture type \
+                 \"{}\" does not have; correct the mode before exporting",
+                fixture.name(),
+                fixture.fixture_type()
+            )
+        })?;
+        *mode = matched.name;
+    }
+
     // Which fixtures move: a mover's aim is its pan and tilt, so it links
     // to no focus point here. A referential type's channels live in its
     // archive, per mode — one archive can be a mover in one mode and not in
     // another; one that cannot be distilled counts as moving, and so goes
     // unlinked, which is what every export did before links existed.
     let mut moves_in: HashMap<(&str, &str), bool> = HashMap::new();
-    let mut parsed: HashMap<&str, Option<super::gdtf::Description>> = HashMap::new();
     let mut moving: HashSet<&str> = HashSet::new();
     for fixture in &fixtures {
         let type_name = fixture.fixture_type();
@@ -340,7 +377,7 @@ pub fn export_mvr_bytes(
                     has_pose(fixture_type.channel_defs())
                 } else {
                     parsed
-                        .entry(entry.as_str())
+                        .entry(entry.clone())
                         .or_insert_with(|| {
                             entries
                                 .get(entry)
@@ -1060,6 +1097,46 @@ mod tests {
             .to_string();
         assert!(
             err.contains("fixture \"Dim\" names mode \"8: RGBS\""),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_fixture_mode_is_exported_in_the_archive_s_spelling_or_refused() {
+        let (_dir, project) = seeded_project();
+        let venue_path = project.join("lighting/venues/kellys.venue");
+        let text = std::fs::read_to_string(&venue_path).unwrap();
+        // A drifted spelling the loader accepts with a warning.
+        let drifted = text.replace(
+            "fixture \"Brick 2\" \"Synth Brick\" @ 1:5",
+            "fixture \"Brick 2\" \"Synth Brick\" mode \"mover 16BIT\" @ 1:5",
+        );
+        assert_ne!(drifted, text);
+        std::fs::write(&venue_path, &drifted).unwrap();
+        let (bytes, _) =
+            export_mvr_bytes(&MvrExportOptions::for_venue("kellys"), &project).expect("exports");
+        let scene = mvr::parse_archive(&bytes).expect("reads back");
+        let brick2 = scene
+            .fixtures
+            .iter()
+            .find(|f| f.name == "Brick 2")
+            .expect("Brick 2");
+        assert_eq!(brick2.gdtf_mode.as_deref(), Some("Mover 16bit"));
+
+        // A mode the archive does not have: refused, by fixture.
+        std::fs::write(
+            &venue_path,
+            text.replace(
+                "fixture \"Brick 2\" \"Synth Brick\" @ 1:5",
+                "fixture \"Brick 2\" \"Synth Brick\" mode \"No Such Mode\" @ 1:5",
+            ),
+        )
+        .unwrap();
+        let err = export_mvr_bytes(&MvrExportOptions::for_venue("kellys"), &project)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("fixture \"Brick 2\" is in mode \"No Such Mode\""),
             "{err}"
         );
     }

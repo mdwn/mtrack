@@ -80,6 +80,11 @@
        *  stage view, not here, and a save must not drop them. */
       position?: Vec3 | null;
       rotation?: Vec3 | null;
+      /** The fixture's own GDTF mode, carried through like its position;
+       *  it belongs to the type it was chosen for (`modeOfType`), so a
+       *  fixture moved to another type takes that type's default. */
+      mode?: string | null;
+      modeOfType?: string;
     }[]
   >([]);
   /** Likewise carried through: the venue's focus points and MVR provenance. */
@@ -91,6 +96,10 @@
 
   // Available fixture type names for venue fixture dropdowns
   let fixtureTypeNames = $derived(Object.keys(fixtureTypes).sort());
+  /** A GDTF type with no default mode: each of its fixtures names its own
+   *  (in the stage view's inspector), or the venue does not load. */
+  const noDefaultMode = (entry: FixtureTypeEntry | undefined) =>
+    !!entry?.referential && entry.default_mode === null;
 
   async function loadFixtureTypes() {
     try {
@@ -146,6 +155,8 @@
         tags: [...f.tags],
         position: f.position ?? null,
         rotation: f.rotation ?? null,
+        mode: f.mode ?? null,
+        modeOfType: f.fixture_type,
       }));
     editVenueFocusPoints = { ...(v.focus_points ?? {}) };
     editVenueSource = v.source ?? null;
@@ -198,6 +209,7 @@
         tags: f.tags,
         position: f.position ?? null,
         rotation: f.rotation ?? null,
+        mode: f.fixture_type.trim() === f.modeOfType ? (f.mode ?? null) : null,
       }));
     const newName = editVenueName.trim();
     const oldName = editingVenue !== "__new__" ? editingVenue : null;
@@ -209,7 +221,7 @@
     venueSaving = true;
     venueMsg = "";
     try {
-      await saveVenue(
+      const saved = await saveVenue(
         newName,
         {
           fixtures,
@@ -227,8 +239,15 @@
       await loadVenues();
       selected = newName;
       editingVenue = null;
-      venueMsg = get(t)("common.saved");
-      setTimeout(() => (venueMsg = ""), 2000);
+      if (saved.venueError) {
+        // Saved, and the venue no longer loads: said here, and left up.
+        venueMsg = get(t)("lighting.venueError.saved", {
+          values: { ...saved.venueError },
+        });
+      } else {
+        venueMsg = get(t)("common.saved");
+        setTimeout(() => (venueMsg = ""), 2000);
+      }
     } catch (e: any) {
       if (e instanceof ConflictError) {
         // The file changed since the form was opened: show it as it is now
@@ -324,7 +343,13 @@
                 <select class="input" bind:value={fix.fixture_type}>
                   <option value="">{$t("lighting.selectType")}</option>
                   {#each fixtureTypeNames as ftName (ftName)}
-                    <option value={ftName}>{ftName}</option>
+                    <option value={ftName}
+                      >{noDefaultMode(fixtureTypes[ftName])
+                        ? $t("lighting.typeNoDefault", {
+                            values: { name: ftName },
+                          })
+                        : ftName}</option
+                    >
                   {/each}
                 </select>
               {:else}

@@ -21,6 +21,8 @@ import {
   outputFacts,
   powerFact,
   trimNumber,
+  modeCounts,
+  unresolvedFixtures,
   venueUse,
 } from "../../src/lib/lighting/fixtureFacts";
 
@@ -58,16 +60,36 @@ test("a fact the archive does not state is absent, never 0", () => {
   expect(powerFact(beam({ power: 12 }))).toBe("12");
 });
 
-test("a long list of users collapses to a count", () => {
-  const names = (n: number) => Array.from({ length: n }, (_, i) => `B${i}`);
-  expect(
-    venueUse([
-      { name: "a", fixtures: names(8) },
-      { name: "b", fixtures: names(9) },
-      { name: "c", fixtures: [] },
-    ]),
-  ).toEqual([
-    { venue: "a", count: 8, names: names(8) },
+test("a long list of users collapses to a count, and a mode lists its own", () => {
+  const names = (n: number, mode: string | null = "m") =>
+    Array.from({ length: n }, (_, i) => ({ name: `B${i}`, mode }));
+  const just = (n: number) => names(n).map((f) => f.name);
+  const venues = [
+    { name: "a", fixtures: names(8) },
+    { name: "b", fixtures: names(9) },
+    { name: "c", fixtures: [] },
+  ];
+  expect(venueUse(venues)).toEqual([
+    { venue: "a", count: 8, names: just(8) },
     { venue: "b", count: 9, names: null },
   ]);
+  const mixed = [
+    {
+      name: "v",
+      fixtures: [
+        { name: "X", mode: "m" },
+        { name: "Y", mode: "n" },
+        { name: "Z", mode: null },
+      ],
+    },
+  ];
+  expect(venueUse(mixed, "n")).toEqual([
+    { venue: "v", count: 1, names: ["Y"] },
+  ]);
+  expect(venueUse(mixed, "q")).toEqual([]);
+  expect([...modeCounts(mixed)]).toEqual([
+    ["m", 1],
+    ["n", 1],
+  ]);
+  expect(unresolvedFixtures(mixed)).toEqual([{ venue: "v", fixture: "Z" }]);
 });

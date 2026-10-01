@@ -1405,24 +1405,29 @@ impl McpServer {
         // The lighting system and effect engine are `parking_lot` mutexes shared
         // with the effects loop thread, and evaluation is pure CPU besides — both
         // belong off the async worker.
-        let evaluations = tokio::task::spawn_blocking(move || {
+        let evaluated = tokio::task::spawn_blocking(move || {
             crate::lighting::evaluate::evaluate_with_system(
                 shows,
                 fallback_tempo.as_ref(),
                 &times,
                 lighting_system.as_deref(),
             )
-            .evaluations
         })
         .await
         .map_err(|e| McpError::internal_error(format!("evaluation failed: {e}"), None))?;
 
-        let results: Vec<Value> = evaluations
+        let results: Vec<Value> = evaluated
+            .evaluations
             .iter()
             .map(|evaluation| evaluation_json(evaluation, include_fixtures))
             .collect();
 
-        Ok(ok_json(json!({ "evaluations": results })))
+        // A venue that does not register is said, not shown as an empty rig.
+        let mut body = json!({ "evaluations": results });
+        if let Some(error) = evaluated.venue_error {
+            body["venue_error"] = json!(error);
+        }
+        Ok(ok_json(body))
     }
 
     #[tool(description = "Analyse a light show's coverage: where the rig goes \
@@ -1747,15 +1752,30 @@ impl McpServer {
             None => return Ok(ok_json(json!({ "fixture_types": [] }))),
         };
         let guard = system.lock();
-        let types: Vec<Value> = guard
+        // Every type the system declares: a GDTF type is the whole archive,
+        // listed with its default mode (null when it has none — its
+        // fixtures each name their own, and it has no channels until one
+        // does). A native type has no modes.
+        let mut types: Vec<Value> = guard
             .fixture_types_iter()
             .map(|(name, ft)| {
                 json!({
                     "name": name,
                     "channels": ft.channels(),
+                    "gdtf": ft.source().is_some(),
+                    "default_mode": ft.source().and_then(|s| s.mode.as_deref()),
                 })
             })
+            .chain(guard.fixture_types_without_default().map(|(name, _)| {
+                json!({
+                    "name": name,
+                    "channels": {},
+                    "gdtf": true,
+                    "default_mode": null,
+                })
+            }))
             .collect();
+        types.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
         Ok(ok_json(json!({ "fixture_types": types })))
     }
 
@@ -2007,30 +2027,49 @@ impl McpServer {
             .resolve_lighting_file(LightingDirKind::Venues, &args.file)
             .await?;
         staged_write_string(&path, &args.source).await?;
-        let reloaded = self.reload_venue_if_current().await;
-        Ok(ok_json(json!({
+        let (reloaded, venue_error) = self.reload_venue_if_current().await;
+        let mut body = json!({
             "path": path.display().to_string(),
             "bytes": args.source.len(),
             "reloaded": reloaded,
-        })))
+        });
+        if let Some(error) = venue_error {
+            body["venue_error"] = error;
+        }
+        Ok(ok_json(body))
     }
 
     /// After a venue file changed: re-read the venues and re-register the
     /// current one with the running engine, pushing fresh stage metadata to
-    /// web clients. Best effort — the file is the durable truth.
-    async fn reload_venue_if_current(&self) -> bool {
-        if self.player.dmx_engine().is_none() {
-            return false;
-        }
+    /// web clients. Best effort — the file is the durable truth. The second
+    /// value says when the current venue does not register after it, so the
+    /// write can report that the rig is now dark, and why.
+    async fn reload_venue_if_current(&self) -> (bool, Option<Value>) {
+        let Some(dmx) = self.player.dmx_engine() else {
+            return (false, None);
+        };
         let player = self.player.clone();
-        match tokio::task::spawn_blocking(move || player.reload_current_venue()).await {
+        let reloaded = match tokio::task::spawn_blocking(move || player.reload_current_venue())
+            .await
+        {
             Ok(Ok(())) => true,
             Ok(Err(e)) => {
                 tracing::warn!(error = %e, "venue written, but the running engine could not reload it");
                 false
             }
             Err(_) => false,
-        }
+        };
+        let venue_error = dmx
+            .venue_registration()
+            .filter(|r| !r.ok && r.venue.is_some())
+            .map(|r| {
+                json!({
+                    "venue": r.venue,
+                    "fixture": r.fixture,
+                    "reason": r.error,
+                })
+            });
+        (reloaded, venue_error)
     }
 
     #[tool(description = "Delete a venue file (`.light` or `.venue`) from the \
@@ -2421,8 +2460,18 @@ impl McpServer {
             McpError::invalid_params(format!("patched venue is invalid: {e}"), None)
         })?;
         staged_write_string(&path, &updated).await?;
-        self.reload_venue_if_current().await;
-        Ok(patch_response(&path, &original, &updated))
+        let (_, venue_error) = self.reload_venue_if_current().await;
+        let Some(error) = venue_error else {
+            return Ok(patch_response(&path, &original, &updated));
+        };
+        // The patch landed; the current venue no longer registers.
+        Ok(ok_json(json!({
+            "path": path.display().to_string(),
+            "bytes_before": original.len(),
+            "bytes_after": updated.len(),
+            "contents": updated,
+            "venue_error": error,
+        })))
     }
 
     #[tool(description = "Patch a fixture-type `.light` file with a string \

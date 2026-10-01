@@ -49,6 +49,7 @@ async function routeImport(
     inspect?: Inspection;
     plan?: (origin: string) => object;
     report?: object;
+    venueError?: object | null;
   } = {},
 ) {
   const inspected: Request[] = [];
@@ -78,6 +79,7 @@ async function routeImport(
               distillation_warnings: {},
             },
             reloaded: false,
+            venue_error: opts.venueError ?? null,
           }
         : {
             write: false,
@@ -279,7 +281,8 @@ test.describe("MVR import wizard", () => {
           {
             name: "Robe Spot",
             archive: "lighting/library/Robe.gdtf",
-            mode: "Mode 1",
+            mode: null,
+            modes: ["Mode 1"],
             existing: true,
             fixture_file: "lighting/fixture_types/robe_spot.fixture",
           },
@@ -305,6 +308,19 @@ test.describe("MVR import wizard", () => {
     await expect(page.getByTestId("mvr-review-types-existing")).toContainText(
       "Robe Spot",
     );
+    // One type per GDTF: its default mode and the others the file uses; an
+    // existing type with no default says its fixtures name their own.
+    await expect(page.getByTestId("mvr-type-Astera PB15")).toContainText(
+      "default 8: RGBS; also 9: RGBWS",
+    );
+    await expect(page.getByTestId("mvr-type-Robe Spot")).toContainText(
+      "no default mode",
+    );
+    // A fixture not in its type's default mode is listed with its mode.
+    const moded = page.getByTestId("mvr-review-moded");
+    await expect(moded.getByRole("listitem")).toHaveCount(1);
+    await expect(moded).toContainText("Brick 2");
+    await expect(moded).toContainText("mode 9: RGBWS");
     await expect(page.getByTestId("mvr-review-todos")).toContainText("Lost");
     await expect(page.getByTestId("mvr-review-todos")).toContainText(
       "is not embedded in the MVR",
@@ -406,6 +422,81 @@ test.describe("MVR import wizard", () => {
       fixtures: { "Brick 1": ["position", "patch"] },
       focus_points: [],
     });
+  });
+
+  test("a hand-changed mode is an overwrite, starts as the MVR's, and can be kept", async ({
+    page,
+  }) => {
+    const { imports } = await routeImport(page, {
+      plan: () => ({
+        ...MVR_INSPECTION.report,
+        merge: true,
+        fixtures: MVR_INSPECTION.report.fixtures.map((f, i) =>
+          i === 1
+            ? {
+                ...f,
+                overwrites: [
+                  { field: "mode", mine: '"8: RGBS"', mvr: '"9: RGBWS"' },
+                ],
+              }
+            : f,
+        ),
+      }),
+    });
+    await page.goto("/#/lighting/import");
+    await chooseFile(page);
+    await page.getByTestId("mvr-continue").click();
+    await page.getByTestId("mvr-to-review").click();
+
+    await expect(page.getByTestId("mvr-edit-Brick 2-mode")).toContainText(
+      'mode: yours "8: RGBS", the MVR\'s "9: RGBWS"',
+    );
+    // A mode is a rig fact, like the patch: the MVR's unless kept.
+    const keep = page.getByTestId("mvr-keep-Brick 2-mode");
+    await expect(keep).not.toBeChecked();
+    await keep.check();
+    await page.getByTestId("mvr-do-import").click();
+    await expect(page.getByTestId("mvr-done")).toBeVisible();
+    expect(JSON.parse(fields(imports[1]).keep)).toEqual({
+      fixtures: { "Brick 2": ["mode"] },
+      focus_points: [],
+    });
+  });
+
+  test("a write that leaves the venue failing says so, prominently", async ({
+    page,
+  }) => {
+    await routeImport(page, {
+      venueError: {
+        venue: "Kellys",
+        fixture: "Brick 2",
+        reason: 'mode "9: RGBWZ" of fixture type "Astera PB15" did not load',
+      },
+    });
+    await page.goto("/#/lighting/import");
+    await chooseFile(page);
+    await page.getByTestId("mvr-continue").click();
+    await page.getByTestId("mvr-to-review").click();
+    await page.getByTestId("mvr-do-import").click();
+
+    const alert = page.getByTestId("mvr-venue-error");
+    await expect(alert).toHaveAttribute("role", "alert");
+    await expect(alert).toContainText(
+      'Venue "Kellys" will not load: fixture "Brick 2"',
+    );
+    await expect(alert).toContainText("no fixtures will light");
+    await expect(page.getByTestId("mvr-done")).toBeVisible();
+  });
+
+  test("a clean write shows no venue error", async ({ page }) => {
+    await routeImport(page);
+    await page.goto("/#/lighting/import");
+    await chooseFile(page);
+    await page.getByTestId("mvr-continue").click();
+    await page.getByTestId("mvr-to-review").click();
+    await page.getByTestId("mvr-do-import").click();
+    await expect(page.getByTestId("mvr-done")).toBeVisible();
+    await expect(page.getByTestId("mvr-venue-error")).toHaveCount(0);
   });
 
   test("step 4 writes, reports, and offers Fit your shows and Open in Venues", async ({

@@ -1813,16 +1813,16 @@ async fn mcp_fixture_state_matches_offline_evaluation() -> Result<(), Box<dyn Er
     wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
-    // With nothing playing there is an engine and nothing running. Venue
-    // fixtures are registered at play time, so there are none to report yet —
-    // and `dark` is null rather than true, because "no fixtures" is an absence
-    // of evidence and not a dark rig.
+    // With nothing playing there is an engine and nothing running. The
+    // venue's fixtures are registered when the engine starts (so a venue
+    // that does not load says so at boot), and with nothing driving them
+    // the rig is dark.
     let idle =
         tool_json(&call_tool(&client, &url, &session, 950, "get_fixture_state", json!({})).await);
     assert_eq!(idle["available"], true, "expected a live engine: {idle}");
-    assert!(
-        idle["dark"].is_null(),
-        "no fixtures are registered before play, so darkness is unknowable: {idle}"
+    assert_eq!(
+        idle["dark"], true,
+        "the venue is registered at boot and nothing drives it: {idle}"
     );
     assert!(
         idle["active_effects"]
@@ -3889,6 +3889,122 @@ async fn mcp_list_groups_surfaces_logical_groups() -> Result<(), Box<dyn Error>>
 // ---------------------------------------------------------------------------
 // suggest_group_tags: the same suggestion the Fit shows page offers
 // ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_lists_a_type_with_no_default_and_says_when_a_write_darkens_the_venue(
+) -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    std::fs::create_dir_all(fixture.root.join("lighting/venues"))?;
+    std::fs::create_dir_all(fixture.root.join("lighting/fixture_types"))?;
+    std::fs::create_dir_all(fixture.root.join("lighting/library"))?;
+    copy_dir_recursive(
+        Path::new("examples/lighting/fixture_types"),
+        &fixture.root.join("lighting/fixture_types"),
+    )?;
+    std::fs::write(
+        fixture.root.join("lighting/library/synth.gdtf"),
+        crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+        )]),
+    )?;
+    // A GDTF type with no default mode: each fixture names its own.
+    std::fs::write(
+        fixture.root.join("lighting/fixture_types/brick.fixture"),
+        "fixture_type \"Brick\"\n  from gdtf(\"lighting/library/synth.gdtf\")\n{\n}\n",
+    )?;
+    std::fs::write(
+        fixture.root.join("lighting/venues/main_stage.venue"),
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1\n  fixture \"B1\" Brick mode \"8: RGBS\" @ 1:20\n}\n",
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+    assert_eq!(player.hardware_status().lighting_venue.status, "ok");
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let body = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1600,
+            "list_fixture_types",
+            json!({}),
+        )
+        .await,
+    );
+    let types = body["fixture_types"].as_array().expect("types");
+    let brick = types
+        .iter()
+        .find(|t| t["name"] == "Brick")
+        .unwrap_or_else(|| panic!("a type with no default is listed: {body}"));
+    assert_eq!(brick["gdtf"], true, "{body}");
+    assert!(brick["default_mode"].is_null(), "{body}");
+    let par = types.iter().find(|t| t["name"] == "RGBW_Par").expect("par");
+    assert_eq!(par["gdtf"], false, "{body}");
+
+    // A write that leaves the current venue failing says so, with the
+    // fixture and the reason; the file is still written.
+    let body = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1601,
+            "write_venue",
+            json!({
+                "file": "main_stage.venue",
+                "source": "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1\n  fixture \"B1\" Brick @ 1:20\n}\n",
+            }),
+        )
+        .await,
+    );
+    assert_eq!(body["venue_error"]["venue"], "main_stage", "{body}");
+    assert_eq!(body["venue_error"]["fixture"], "B1", "{body}");
+    assert!(
+        body["venue_error"]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("has no default mode"),
+        "{body}"
+    );
+    let status = player.hardware_status().lighting_venue;
+    assert_eq!(status.status, "failed");
+    assert_eq!(status.name.as_deref(), Some("main_stage"));
+
+    // Patched back to a working venue: no venue_error, and the status clears.
+    let body = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1602,
+            "patch_venue",
+            json!({
+                "file": "main_stage.venue",
+                "old_string": "\"B1\" Brick @",
+                "new_string": "\"B1\" Brick mode \"8: RGBS\" @",
+            }),
+        )
+        .await,
+    );
+    assert!(body.get("venue_error").is_none(), "{body}");
+    assert_eq!(player.hardware_status().lighting_venue.status, "ok");
+
+    controller.shutdown();
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_suggest_group_tags_proposes_tags_for_an_untagged_venue() -> Result<(), Box<dyn Error>>

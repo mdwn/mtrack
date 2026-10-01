@@ -775,13 +775,31 @@ fixture_type "Name" {
                 </div>
                 <div class="item-meta card-modes" data-testid="ft-card-modes">
                   <span>{cardModes(g)}</span>
-                  <span class="mode-pill" data-testid="ft-card-mode"
-                    >{g.used_by > 0
-                      ? $t("lighting.ftCard.modeUsed", {
-                          values: { mode: g.mode, count: g.used_by },
-                        })
-                      : g.mode}</span
-                  >
+                  {#if g.in_use.length > 0}
+                    <!-- The modes the venues use, most-used first. -->
+                    {#each g.in_use.slice(0, 3) as use (use.mode)}
+                      <span class="mode-pill" data-testid="ft-card-mode"
+                        >{$t("lighting.ftCard.modeUsed", {
+                          values: { mode: use.mode, count: use.count },
+                        })}</span
+                      >
+                    {/each}
+                    {#if g.in_use.length > 3}
+                      <span class="item-meta" data-testid="ft-card-more"
+                        >{$t("lighting.ftCard.moreModes", {
+                          values: { count: g.in_use.length - 3 },
+                        })}</span
+                      >
+                    {/if}
+                  {:else if g.mode}
+                    <span class="mode-pill" data-testid="ft-card-mode"
+                      >{g.mode}</span
+                    >
+                  {:else}
+                    <span class="item-meta" data-testid="ft-card-mode"
+                      >{$t("lighting.ftCard.noDefault")}</span
+                    >
+                  {/if}
                 </div>
               {:else if entry.referential}
                 <!-- The channels only exist once the lighting system

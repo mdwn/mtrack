@@ -104,6 +104,12 @@
           names: result.created.map((c) => c.name).join(", "),
         },
       });
+      if (result.venue_error) {
+        // Saved, but the venue no longer loads: said where it happened.
+        error = $t("lighting.venueError.saved", {
+          values: { ...result.venue_error },
+        });
+      }
       onchanged?.();
       await loadSummary();
     } catch (e) {

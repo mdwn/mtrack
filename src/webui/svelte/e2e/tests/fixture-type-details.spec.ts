@@ -59,20 +59,27 @@ test.describe("Fixture type details (GDTF)", () => {
       "Battery-powered uplight",
     );
 
-    // Every mode of the archive, the pinned one marked and chosen.
+    // Every mode of the archive: the default marked with its users and
+    // chosen; another mode in use says how many use it.
     const modes = page.getByTestId("ft-details-modes");
     await expect(modes.getByRole("option")).toHaveCount(2);
-    const inUse = page.getByTestId("ft-details-mode-in-use");
-    await expect(inUse).toHaveCount(1);
-    const pinned = modes.getByRole("option").filter({ has: inUse });
+    const def = page.getByTestId("ft-details-mode-default");
+    await expect(def).toHaveCount(1);
+    await expect(def).toHaveText("default · 2 in use");
+    const pinned = modes.getByRole("option").filter({ has: def });
     await expect(pinned).toHaveAttribute("data-mode", "8: RGBS");
     await expect(pinned).toHaveAttribute("aria-selected", "true");
     await expect(
+      modes
+        .locator('[data-mode="1: RGB"]')
+        .getByTestId("ft-details-mode-in-use"),
+    ).toHaveText("1 in use");
+    await expect(
       page.getByTestId("ft-details-channels").locator("tbody tr").nth(3),
     ).toHaveText(/4\s*strobe/);
-    // The pinned mode's users; the viewer names the mode being looked at.
+    // The default's users; the viewer names the mode being looked at.
     await expect(page.getByTestId("ft-details-used-by")).toHaveText(
-      "Used by Brick1, Brick2 in built-in. Used by Solo in club.",
+      "Used by Brick1, Brick2 in built-in.",
     );
     await expect(page.getByTestId("ft-viewer-mode")).toHaveText("8: RGBS");
 
@@ -103,8 +110,9 @@ test.describe("Fixture type details (GDTF)", () => {
     await expect(channels.locator("tbody tr")).toHaveCount(3);
     await expect(channels.locator("tbody tr").nth(2)).toHaveText(/3\s*blue/);
     await expect(channels).not.toContainText("strobe");
+    // Each mode lists the fixtures in it.
     await expect(page.getByTestId("ft-details-used-by")).toHaveText(
-      "No fixture uses this mode.",
+      "Used by Solo in club.",
     );
     await expect(page.getByTestId("ft-viewer-mode")).toHaveText("1: RGB");
     // What a show can do is the picker's words: this mode has no strobe,
@@ -112,11 +120,11 @@ test.describe("Fixture type details (GDTF)", () => {
     await expect(page.getByTestId("ft-details-mode-detail")).toContainText(
       'Strobe — the mode "8: RGBS" has it',
     );
-    // The badge stays on the pinned mode, whichever is being looked at.
+    // The default pill stays on the default, whichever is being looked at.
     await expect(
       modes
         .locator('[data-mode="8: RGBS"]')
-        .getByTestId("ft-details-mode-in-use"),
+        .getByTestId("ft-details-mode-default"),
     ).toBeVisible();
 
     await modes.press("ArrowDown");
@@ -125,6 +133,52 @@ test.describe("Fixture type details (GDTF)", () => {
       "true",
     );
     await expect(channels.locator("tbody tr")).toHaveCount(4);
+  });
+
+  test("a fixture whose mode the archive lacks is named in red; a type with no default says so", async ({
+    page,
+  }) => {
+    await page.route("**/api/lighting/fixture-types/pixelbrick/gdtf*", (r) =>
+      r.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          archive: "library/pb15.gdtf",
+          mode: null,
+          matched_mode: null,
+          rig: null,
+          thumbnail: null,
+          beam: null,
+          about: null,
+          venues: [
+            {
+              name: "club",
+              fixtures: [
+                { name: "Solo", mode: "1: RGB" },
+                { name: "Odd", mode: null },
+              ],
+            },
+          ],
+          inspection: {
+            fixture: "PB15 PixelBrick",
+            manufacturer: "Astera LED Technology",
+            modes: [
+              { name: "1: RGB", channel_count: 3, footprint: 3 },
+              { name: "8: RGBS", channel_count: 4, footprint: 4 },
+            ],
+          },
+        }),
+      }),
+    );
+    await card(page, "pixelbrick").click();
+    await expect(page.getByTestId("ft-details-no-default")).toBeVisible();
+    await expect(page.getByTestId("ft-details-unresolved")).toContainText(
+      "Odd (club)",
+    );
+    await expect(page.getByTestId("ft-details-mode-default")).toHaveCount(0);
+    await expect(page.getByTestId("ft-details-mode-in-use")).toHaveText(
+      "1 in use",
+    );
   });
 
   test("the filter narrows the modes", async ({ page }) => {

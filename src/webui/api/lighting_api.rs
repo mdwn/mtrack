@@ -758,14 +758,15 @@ pub(super) fn broken_venue_response(name: &str, file: &str, why: &str) -> axum::
         .into_response()
 }
 
-/// Whether a venue uses syntax only `.venue` files carry.
+/// Whether a venue uses syntax only `.venue` files carry: provenance, focus
+/// points, a fixture's position or rotation, or its own GDTF mode (§21).
 fn needs_venue_extension(venue: &lighting::types::Venue) -> bool {
     venue.source().is_some()
         || !venue.focus_points().is_empty()
         || venue
             .fixtures()
             .values()
-            .any(|f| f.position().is_some() || f.rotation().is_some())
+            .any(|f| f.position().is_some() || f.rotation().is_some() || f.mode().is_some())
 }
 
 /// Resolves a lighting directory path relative to the project root.
@@ -909,6 +910,9 @@ pub(super) struct LightingDirQuery {
     /// The venues directory, for the fixture-type endpoints that say which
     /// venue fixtures use a type (default `lighting/venues`).
     venues_dir: Option<String>,
+    /// The fixture types directory, for the venue endpoints that need the
+    /// types (default `lighting/fixture_types`).
+    fixture_types_dir: Option<String>,
 }
 
 /// Validates that a fixture type or venue name is safe for use as a filename.
@@ -1094,6 +1098,10 @@ pub(super) async fn get_fixture_types(
                         name,
                         json!({
                             "referential": fixture_type.source().is_some(),
+                            // A GDTF type's default mode; null on a native
+                            // type and on a GDTF type with none (its
+                            // fixtures each name their own).
+                            "default_mode": fixture_type.source().and_then(|s| s.mode.clone()),
                             "rich": fixture_type.uses_rich_channels(),
                             "fixture_type": fixture_type,
                             "file": file,
@@ -1111,13 +1119,16 @@ pub(super) async fn get_fixture_types(
         let cache = lighting::distill::DistillCache::new(root.join("lighting").join(".cache"));
         let mut archives = ArchiveCache::default();
         for (name, source) in referential {
-            let used_by = usage
+            let fixtures: Vec<Option<&str>> = usage
                 .get(&name)
-                .map_or(0, |venues| venues.iter().map(|(_, f)| f.len()).sum());
+                .into_iter()
+                .flatten()
+                .flat_map(|(_, f)| f.iter().map(|(_, mode)| mode.as_deref()))
+                .collect();
             let summary = archives
                 .get(&root, &name, &source)
                 .map(|(bytes, description)| {
-                    gdtf_list_summary(&cache, bytes, description, &source, used_by)
+                    gdtf_list_summary(&cache, bytes, description, &name, &source, &fixtures)
                 });
             if let Some(entry) = all.get_mut(&name).and_then(|e| e.as_object_mut()) {
                 entry.insert("gdtf".into(), summary.unwrap_or(serde_json::Value::Null));
@@ -1252,19 +1263,26 @@ pub(super) async fn get_fixture_type_gdtf(
             Ok(description) => description,
             Err(e) => return Ok::<_, std::io::Error>(Err(e.to_string())),
         };
-        let matched_mode = lighting::gdtf::match_mode(&description, &source.mode)
-            .ok()
-            .map(|m| m.name);
+        let matched_mode = source
+            .mode
+            .as_deref()
+            .and_then(|mode| resolve_mode(&description, mode));
         let cache = lighting::distill::DistillCache::new(root.join("lighting").join(".cache"));
+        // The rig is the default mode's. A type with no default has no mode
+        // of its own to draw, so it is drawn in the first mode the archive
+        // offers that distils — the body is the same in every mode.
+        let rig_mode = drawn_mode(&description, source.mode.as_deref(), &name);
         // Only the type's name goes in the log: everything else here is the
         // archive's own text.
-        let rig = match cache.ensure_rig(&bytes, &source.mode, || Ok(&description)) {
-            Ok((rig, _warnings)) => Some(rig),
-            Err(_) => {
-                tracing::warn!(fixture_type = %name, "no rig model for the fixture type's details view");
-                None
+        let rig = rig_mode.as_deref().and_then(|mode| {
+            match cache.ensure_rig(&bytes, mode, || Ok(&description)) {
+                Ok((rig, _warnings)) => Some(rig),
+                Err(_) => {
+                    tracing::warn!(fixture_type = %name, "no rig model for the fixture type's details view");
+                    None
+                }
             }
-        };
+        });
         // The thumbnail sits beside the rig file, under the archive's hash.
         let thumbnail = rig.as_deref().and_then(|rel| {
             let model = cache.load_rig(rel).ok()?;
@@ -1282,13 +1300,26 @@ pub(super) async fn get_fixture_type_gdtf(
                 "power": b.power_consumption,
             })
         });
-        // Every fixture of this type is in the pinned mode today, so these
-        // are the pinned mode's users.
+        // Each fixture in the mode it is driven in: its own, else the type's
+        // default, spelled as the archive spells it (null when it names no
+        // mode of the archive).
         let venues: Vec<serde_json::Value> = fixtures_by_type(&venues_dir)
             .remove(&name)
             .unwrap_or_default()
             .into_iter()
-            .map(|(venue, fixtures)| json!({"name": venue, "fixtures": fixtures}))
+            .map(|(venue, fixtures)| {
+                let fixtures: Vec<serde_json::Value> = fixtures
+                    .into_iter()
+                    .map(|(fixture, mode)| {
+                        let effective = mode.as_deref().or(source.mode.as_deref());
+                        json!({
+                            "name": fixture,
+                            "mode": effective.and_then(|m| resolve_mode(&description, m)),
+                        })
+                    })
+                    .collect();
+                json!({"name": venue, "fixtures": fixtures})
+            })
             .collect();
         Ok(Ok(json!({
             "archive": source.path,
@@ -1367,9 +1398,7 @@ fn first_beam_under<'a>(
 /// extensions), by type, then venue name, then fixture in patch order. A
 /// file that does not parse, or a missing directory, contributes nothing:
 /// this answers "who uses it", not whether the venues are well.
-fn fixtures_by_type(
-    dir: &std::path::Path,
-) -> std::collections::HashMap<String, Vec<(String, Vec<String>)>> {
+fn fixtures_by_type(dir: &std::path::Path) -> FixturesByType {
     let mut venues = std::collections::BTreeMap::new();
     if dir.is_dir() {
         let _ = load_light_files_from_dir(dir, VENUE_EXTENSIONS, |content, _| {
@@ -1379,16 +1408,15 @@ fn fixtures_by_type(
             Ok(())
         });
     }
-    let mut by_type: std::collections::HashMap<String, Vec<(String, Vec<String>)>> =
-        std::collections::HashMap::new();
+    let mut by_type = FixturesByType::new();
     for (venue_name, venue) in venues {
-        let mut of_type: std::collections::BTreeMap<&str, Vec<String>> =
+        let mut of_type: std::collections::BTreeMap<&str, Vec<(String, Option<String>)>> =
             std::collections::BTreeMap::new();
         for fixture in venue.fixtures_by_patch() {
-            of_type
-                .entry(fixture.fixture_type())
-                .or_default()
-                .push(fixture.name().to_string());
+            of_type.entry(fixture.fixture_type()).or_default().push((
+                fixture.name().to_string(),
+                fixture.mode().map(str::to_string),
+            ));
         }
         for (fixture_type, fixtures) in of_type {
             by_type
@@ -1398,6 +1426,35 @@ fn fixtures_by_type(
         }
     }
     by_type
+}
+
+/// Type name → (venue name → (fixture name, the mode its line names)).
+type FixturesByType =
+    std::collections::HashMap<String, Vec<(String, Vec<(String, Option<String>)>)>>;
+
+/// A mode as the archive spells it, matched as the lighting system matches
+/// one (exact, then normalized); `None` when it names no mode of the archive.
+fn resolve_mode(description: &lighting::gdtf::Description, mode: &str) -> Option<String> {
+    lighting::gdtf::match_mode(description, mode)
+        .ok()
+        .map(|m| m.name)
+}
+
+/// The mode a type is drawn in: its default as the `.fixture` writes it
+/// (the rig path is keyed by that spelling), else the first mode of the
+/// archive that distils.
+fn drawn_mode(
+    description: &lighting::gdtf::Description,
+    default: Option<&str>,
+    type_name: &str,
+) -> Option<String> {
+    default.map(str::to_string).or_else(|| {
+        description
+            .modes
+            .iter()
+            .find(|m| lighting::gdtf::distill(description, &m.name, type_name).is_ok())
+            .map(|m| m.name.clone())
+    })
 }
 
 /// GDTF archives read and parsed once per listing, by the path a `.fixture`
@@ -1435,28 +1492,45 @@ fn gdtf_list_summary(
     cache: &lighting::distill::DistillCache,
     bytes: &[u8],
     description: &lighting::gdtf::Description,
+    type_name: &str,
     source: &lighting::types::GdtfSource,
-    used_by: usize,
+    fixtures: &[Option<&str>],
 ) -> serde_json::Value {
-    let matched = lighting::gdtf::match_mode(description, &source.mode)
-        .ok()
-        .map(|m| m.name);
+    let default = source.mode.as_deref();
+    let matched = default.and_then(|m| resolve_mode(description, m));
     let beam = pinned_beam(description, matched.as_deref())
         .map(|b| json!({"type": b.beam_type, "angle": b.beam_angle}));
-    let rel = lighting::distill::DistillCache::rig_path(bytes, &source.mode);
-    let thumbnail = cache.load_rig(&rel).ok().and_then(|rig| {
+    // The thumbnail of the rig the details view draws, if it was drawn.
+    let thumbnail = drawn_mode(description, default, type_name).and_then(|mode| {
+        let rel = lighting::distill::DistillCache::rig_path(bytes, &mode);
+        let rig = cache.load_rig(&rel).ok()?;
         let file = rig.thumbnail?;
         let (dir, _) = rel.rsplit_once('/')?;
         Some(format!("{dir}/{file}"))
     });
+    // How many venue fixtures use each mode, by the archive's spelling (a
+    // mode that resolves to none is counted as written).
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for mode in fixtures {
+        if let Some(mode) = mode.or(default) {
+            let mode = resolve_mode(description, mode).unwrap_or_else(|| mode.to_string());
+            *counts.entry(mode).or_default() += 1;
+        }
+    }
+    let mut in_use: Vec<(String, usize)> = counts.into_iter().collect();
+    in_use.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     json!({
         "fixture": description.name,
         "manufacturer": description.manufacturer,
         "modes": description.modes.len(),
-        "mode": source.mode,
+        "mode": default,
         "beam": beam,
         "thumbnail": thumbnail,
-        "used_by": used_by,
+        "used_by": fixtures.len(),
+        "in_use": in_use
+            .into_iter()
+            .map(|(mode, count)| json!({"mode": mode, "count": count}))
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -1940,6 +2014,9 @@ pub(super) async fn evaluate_lighting(
         "song": request.song,
         "evaluations": evaluations,
         "untouched": untouched,
+        // The current venue does not load: what is evaluated is an empty
+        // rig, and this says why rather than letting it look like one.
+        "venue_error": evaluated.venue_error,
     }))
     .into_response()
 }
@@ -1986,7 +2063,7 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
             fixtures.sort_by(|a, b| a.name().cmp(b.name()));
             for fixture in &fixtures {
                 used_universes.insert(fixture.universe());
-                match guard.fixture_type_problem(fixture.fixture_type()) {
+                match guard.fixture_problem(current.name(), fixture) {
                     None => {
                         in_use.insert(fixture.fixture_type().to_string());
                     }
@@ -2029,9 +2106,15 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
             let warnings: Vec<serde_json::Value> = facts
                 .lint(shows, Some(song))
                 .into_iter()
-                // Venue-level: the Output section already carries it, and
-                // repeating it under every song would say it once per song.
-                .filter(|w| w.kind != "unconfigured-universe")
+                // Venue-level: the Output and Venue sections already carry
+                // them, and repeating them under every song would say each
+                // once per song.
+                .filter(|w| {
+                    !matches!(
+                        w.kind,
+                        "unconfigured-universe" | "patch-overlap" | "patch-overrun"
+                    )
+                })
                 .map(|w| json!({"kind": w.kind, "message": w.message}))
                 .collect();
             let files: Vec<String> = song
@@ -2091,9 +2174,20 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
         _ => serde_json::Value::Null,
     };
 
+    // The venue's own findings: whether it loads at all (one fixture that
+    // cannot be driven fails the whole venue, and nothing lights), and
+    // fixtures patched over each other or past the universe's end.
+    let patch_warnings: Vec<serde_json::Value> = facts
+        .patch_warnings
+        .iter()
+        .map(|w| json!({"kind": w.kind, "message": w.message}))
+        .collect();
+
     json!({
         "dmx": dmx.is_some(),
         "venue": venue,
+        "venue_error": facts.venue_error,
+        "patch_warnings": patch_warnings,
         "fixture_types": {"in_use": in_use, "unresolved": unresolved},
         "groups": groups,
         "shows": shows,
@@ -2306,6 +2400,7 @@ pub(super) async fn put_venue(
     };
 
     let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
+    let saved_in = dir.clone();
     let venue_name = name.clone();
     let outcome = super::helpers::spawn_blocking_io("write venue", move || {
         let name = venue_name;
@@ -2393,16 +2488,68 @@ pub(super) async fn put_venue(
     let version = outcome?;
 
     let reloaded = reload_if_current_venue(&state, &name).await;
+    let venue_error = venue_error_after_save(&state, &name, &saved_in).await;
 
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(
-                json!({"status": "saved", "name": name, "reloaded": reloaded, "version": version}),
-            ),
+            Json(json!({
+                "status": "saved",
+                "name": name,
+                "reloaded": reloaded,
+                "version": version,
+                "venue_error": venue_error,
+            })),
         )
             .into_response(),
     )
+}
+
+/// After a venue save: when the saved venue is the current one and no
+/// longer loads — a fixture whose type or mode cannot be driven fails the
+/// whole venue, and then nothing lights — the fixture and why, as
+/// `{venue, fixture, reason}`; `null` otherwise. The save stands either
+/// way; this is what the editor shows beside it. Read from the running
+/// engine after its reload, or, with no engine (a laptop), from the
+/// project's files for the venue the config names as current.
+pub(super) async fn venue_error_after_save(
+    state: &WebUiState,
+    name: &str,
+    venues_dir: &std::path::Path,
+) -> serde_json::Value {
+    let player = state.player.clone();
+    let config_path = state.config_path.clone();
+    let venue = name.to_string();
+    let venues_dir = venues_dir.to_path_buf();
+    let found = tokio::task::spawn_blocking(move || {
+        if let Some(system) = player.broadcast_handles().and_then(|h| h.lighting_system) {
+            let guard = system.lock();
+            if guard.current_venue() != Some(venue.as_str()) {
+                return None;
+            }
+            return guard.venue_problem(&venue);
+        }
+        // codeql[rust/path-injection] config_path is set at startup, not user input.
+        let config = crate::config::Player::deserialize(&config_path).ok()?;
+        let lighting = config.dmx().and_then(|d| d.lighting())?;
+        if lighting.current_venue() != Some(venue.as_str()) {
+            return None;
+        }
+        let root = canonical_project_root(&project_root(&config_path).ok()?).ok()?;
+        let types = lighting
+            .directories()
+            .and_then(|d| d.fixture_types())
+            .unwrap_or(DEFAULT_FIXTURE_TYPES_DIR);
+        let system = system_from_files(&root, &root.join(types), &venues_dir).ok()?;
+        system.venue_problem(&venue)
+    })
+    .await
+    .ok()
+    .flatten();
+    match found {
+        Some((fixture, reason)) => json!({"venue": name, "fixture": fixture, "reason": reason}),
+        None => serde_json::Value::Null,
+    }
 }
 
 /// After a venue file changed on disk: if it is the venue the running engine
@@ -2628,6 +2775,116 @@ fn fixture_type_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<Stri
     Ok(dsl)
 }
 
+/// GET /api/lighting/venues/:name/patch — the addresses each fixture of a
+/// venue occupies, from the files, with no DMX engine needed (venues are
+/// authored on laptops): each fixture's span from its own mode's expansion
+/// (a native type's channels, a GDTF type's mode distilled through the
+/// cache), and the venue's overlaps and overruns as `lighting::patch`
+/// finds them. A fixture whose type or mode does not load has a `null`
+/// footprint and is left out of the checks — never guessed at. The venue
+/// inspector checks a candidate address or mode against these spans before
+/// it saves.
+pub(super) async fn get_venue_patch(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+    Query(query): Query<LightingDirQuery>,
+) -> impl IntoResponse {
+    validate_lighting_name(&name)?;
+    let venues_dir =
+        resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    let types_dir = resolve_lighting_dir(
+        &state.config_path,
+        query.fixture_types_dir.as_deref(),
+        DEFAULT_FIXTURE_TYPES_DIR,
+    )?;
+    let root = canonical_project_root(&project_root(&state.config_path)?)?;
+    let outcome = super::helpers::spawn_blocking_io("read venue patch", move || {
+        let system = system_from_files(&root, &types_dir, &venues_dir)?;
+        let Some(venue) = system
+            .venues_iter()
+            .find(|(n, _)| **n == name)
+            .map(|(_, v)| v)
+        else {
+            return Ok::<_, String>(None);
+        };
+        Ok(Some(venue_patch_json(&system, venue)))
+    })
+    .await?;
+    match outcome {
+        Some(body) => Ok((StatusCode::OK, Json(body)).into_response()),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Venue not found"})),
+        )
+            .into_response()),
+    }
+}
+
+/// A lighting system loaded from a project's type and venue files alone, as
+/// the engine would load them, with no venue made current (so the loader
+/// reports nothing on its behalf).
+fn system_from_files(
+    root: &std::path::Path,
+    types_dir: &std::path::Path,
+    venues_dir: &std::path::Path,
+) -> Result<lighting::system::LightingSystem, String> {
+    let display = |p: &std::path::Path| p.to_string_lossy().into_owned();
+    let config = crate::config::Lighting::new(
+        None,
+        None,
+        None,
+        Some(crate::config::lighting::Directories::new(
+            types_dir.is_dir().then(|| display(types_dir)),
+            venues_dir.is_dir().then(|| display(venues_dir)),
+        )),
+    );
+    let mut system = lighting::system::LightingSystem::new();
+    system.load(&config, root).map_err(|e| e.to_string())?;
+    Ok(system)
+}
+
+/// The patch answer for one venue of a loaded system.
+fn venue_patch_json(
+    system: &lighting::system::LightingSystem,
+    venue: &lighting::types::Venue,
+) -> serde_json::Value {
+    let fixtures = venue.fixtures_by_patch();
+    let spans: Vec<serde_json::Value> = fixtures
+        .iter()
+        .map(|fixture| {
+            let footprint = system
+                .resolve_fixture_type(fixture)
+                .ok()
+                .map(|t| t.footprint());
+            json!({
+                "fixture": fixture.name(),
+                "universe": fixture.universe(),
+                "address": fixture.start_channel(),
+                "footprint": footprint,
+                "type": fixture.fixture_type(),
+                "mode": fixture.mode(),
+            })
+        })
+        .collect();
+    let known = system.patch_spans(venue);
+    let overlaps: Vec<serde_json::Value> = lighting::patch::venue_overlaps(&known)
+        .into_iter()
+        .map(|o| {
+            json!({
+                "a": o.first,
+                "b": o.second,
+                "a_gang": o.first_gang,
+                "b_gang": o.second_gang,
+                "universe": o.universe,
+                "from": o.from,
+                "to": o.to,
+            })
+        })
+        .collect();
+    let overruns = lighting::patch::venue_overruns(&known);
+    json!({"spans": spans, "overlaps": overlaps, "overruns": overruns})
+}
+
 /// Converts a JSON venue definition to DSL format.
 fn venue_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<String, String> {
     venue_from_json(name, json).map(|venue| format!("{venue}\n"))
@@ -2699,7 +2956,18 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
             tags,
         )
         .with_position(optional_vec3(fix, "position")?)
-        .with_rotation(optional_vec3(fix, "rotation")?);
+        .with_rotation(optional_vec3(fix, "rotation")?)
+        // The fixture's own GDTF mode (§21); absent or null is the type's
+        // default. Dropping it here would silently re-mode the fixture.
+        .with_mode(match fix.get("mode") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(mode) => Some(
+                mode.as_str()
+                    .filter(|m| !m.trim().is_empty())
+                    .ok_or("Fixture 'mode' must be a non-empty string or null")?
+                    .to_string(),
+            ),
+        });
         if by_name.insert(fix_name.to_string(), fixture).is_some() {
             return Err(format!("Fixture '{fix_name}' listed more than once"));
         }
@@ -4984,7 +5252,10 @@ show "test" {
         .unwrap();
         std::fs::write(
             venues.join("club.venue"),
-            "venue \"club\" {\n  fixture \"Solo\" Brick @ 2:1\n}\n",
+            // One fixture in another mode, spelled loosely (the archive's
+            // own spelling comes back), and one in a mode it does not have.
+            "venue \"club\" {\n  fixture \"Solo\" Brick mode \"mover 16BIT\" @ 2:1\n  \
+             fixture \"Odd\" Brick mode \"Nope\" @ 2:40\n}\n",
         )
         .unwrap();
         std::fs::write(venues.join("broken.light"), "venue {{{").unwrap();
@@ -5009,10 +5280,17 @@ show "test" {
         assert_eq!(
             parsed["venues"],
             serde_json::json!([
-                {"name": "club", "fixtures": ["Solo"]},
-                {"name": "stage", "fixtures": ["Brick1", "Brick2"]},
+                {"name": "club", "fixtures": [
+                    {"name": "Solo", "mode": "Mover 16bit"},
+                    {"name": "Odd", "mode": null},
+                ]},
+                {"name": "stage", "fixtures": [
+                    {"name": "Brick1", "mode": "8: RGBS"},
+                    {"name": "Brick2", "mode": "8: RGBS"},
+                ]},
             ]),
-            "by venue name, fixtures in patch order, other types left out"
+            "by venue name, fixtures in patch order with the mode each is driven in, \
+             other types left out"
         );
         assert_eq!(parsed["about"], "A brick that is not real.");
         // "8: RGBS" drives the Base tree, whose first beam is the head's lens.
@@ -5077,7 +5355,16 @@ show "test" {
             brick["beam"],
             serde_json::json!({"type": "Spot", "angle": 12.0})
         );
-        assert_eq!(brick["used_by"], 3);
+        assert_eq!(brick["used_by"], 4);
+        assert_eq!(
+            brick["in_use"],
+            serde_json::json!([
+                {"mode": "8: RGBS", "count": 2},
+                {"mode": "Mover 16bit", "count": 1},
+                {"mode": "Nope", "count": 1},
+            ]),
+            "most-used first, the archive's spelling, an unknown mode as written"
+        );
         assert!(brick["thumbnail"].is_null(), "no rig in the store yet");
         assert!(
             types["Lost"]["gdtf"].is_null(),
@@ -5091,6 +5378,208 @@ show "test" {
             !_dir.path().join("lighting/.cache").exists(),
             "a listing writes nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn a_type_with_no_default_is_listed_and_drawn_in_its_first_mode() {
+        let (state, _dir) = test_state();
+        project_with_bricks(_dir.path(), "ft_nodefault", "v_nodefault");
+        std::fs::write(
+            _dir.path().join("ft_nodefault").join("bare.fixture"),
+            "fixture_type \"Bare\" from gdtf(\"library/synth.gdtf\") {\n}\n",
+        )
+        .unwrap();
+
+        let (status, parsed) = fixture_type_request(
+            state.clone(),
+            "GET",
+            "/lighting/fixture-types?dir=ft_nodefault&venues_dir=v_nodefault".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        let bare = &parsed["fixture_types"]["Bare"];
+        assert_eq!(bare["referential"], true, "{parsed}");
+        assert!(bare["default_mode"].is_null(), "{bare}");
+        assert!(bare["gdtf"]["mode"].is_null(), "{bare}");
+        assert_eq!(bare["gdtf"]["in_use"], serde_json::json!([]));
+        assert_eq!(
+            parsed["fixture_types"]["Brick"]["default_mode"], "8: RGBS",
+            "a type with a default says it"
+        );
+
+        let (status, parsed) = fixture_type_request(
+            state,
+            "GET",
+            "/lighting/fixture-types/Bare/gdtf?dir=ft_nodefault&venues_dir=v_nodefault".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert!(parsed["mode"].is_null());
+        assert!(parsed["matched_mode"].is_null());
+        assert!(
+            parsed["rig"].is_string(),
+            "drawn in the first mode: {parsed}"
+        );
+    }
+
+    /// A project whose config names `rig` as the current venue, with the
+    /// synthetic archive, a `Brick` type and a venues directory.
+    fn project_with_current_venue(project: &std::path::Path, config: &std::path::Path) {
+        project_with_bricks(project, "lighting/fixture_types", "lighting/venues");
+        std::fs::write(
+            config,
+            "songs: songs\ndmx:\n  universes:\n    - universe: 1\n      name: main\n  \
+             lighting:\n    current_venue: rig\n    directories:\n      \
+             fixture_types: lighting/fixture_types\n      venues: lighting/venues\n",
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_save_that_leaves_the_current_venue_failing_says_so_and_still_saves() {
+        let (state, _dir) = test_state();
+        project_with_current_venue(_dir.path(), &state.config_path);
+        let body = serde_json::json!({
+            "fixtures": [
+                {"name": "B1", "fixture_type": "Brick", "universe": 1, "start_channel": 1},
+                {"name": "B2", "fixture_type": "Brick", "universe": 1, "start_channel": 20,
+                 "mode": "Nope"},
+            ]
+        });
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/venues/rig")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(parsed["venue_error"]["venue"], "rig", "{parsed}");
+        assert_eq!(parsed["venue_error"]["fixture"], "B2", "{parsed}");
+        assert!(
+            parsed["venue_error"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Nope"),
+            "{parsed}"
+        );
+        assert!(_dir.path().join("lighting/venues/rig.venue").exists());
+
+        // Fixed: the error goes.
+        let body = serde_json::json!({
+            "fixtures": [
+                {"name": "B1", "fixture_type": "Brick", "universe": 1, "start_channel": 1},
+                {"name": "B2", "fixture_type": "Brick", "universe": 1, "start_channel": 20,
+                 "mode": "Mover 16bit"},
+            ]
+        });
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/venues/rig")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        assert!(parsed["venue_error"].is_null(), "{parsed}");
+    }
+
+    #[tokio::test]
+    async fn a_save_of_a_venue_that_is_not_current_reports_nothing() {
+        let (state, _dir) = test_state();
+        project_with_current_venue(_dir.path(), &state.config_path);
+        let body = serde_json::json!({
+            "fixtures": [{"name": "B1", "fixture_type": "Brick", "universe": 1,
+                          "start_channel": 1, "mode": "Nope"}]
+        });
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/venues/other")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        assert!(parsed["venue_error"].is_null(), "{parsed}");
+    }
+
+    #[tokio::test]
+    async fn the_patch_of_a_venue_comes_from_its_files_with_each_fixture_s_mode() {
+        let (state, _dir) = test_state();
+        project_with_bricks(_dir.path(), "ft_patch", "v_patch");
+        // A gang at 1:1, a partial overlap at 1:3, a fixture in a wider
+        // mode, one whose mode does not load, and one past the universe end.
+        std::fs::write(
+            _dir.path().join("v_patch").join("p.venue"),
+            "venue \"p\" {\n  fixture \"G1\" Brick @ 1:1\n  fixture \"G2\" Brick @ 1:1\n  \
+             fixture \"Part\" Brick @ 1:3\n  fixture \"Wide\" Brick mode \"Mover 16bit\" @ 1:100\n  \
+             fixture \"Odd\" Brick mode \"Nope\" @ 1:200\n  fixture \"End\" Brick @ 1:511\n}\n",
+        )
+        .unwrap();
+
+        let (status, parsed) = fixture_type_request(
+            state.clone(),
+            "GET",
+            "/lighting/venues/p/patch?dir=v_patch&fixture_types_dir=ft_patch".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        let spans = parsed["spans"].as_array().unwrap();
+        let span = |name: &str| spans.iter().find(|s| s["fixture"] == name).unwrap();
+        let rgbs = span("G1")["footprint"].as_u64().unwrap();
+        assert!(rgbs > 0, "{parsed}");
+        assert_eq!(span("G1")["type"], "Brick");
+        assert!(span("G1")["mode"].is_null());
+        assert_eq!(span("Wide")["mode"], "Mover 16bit");
+        assert_ne!(span("Wide")["footprint"], span("G1")["footprint"]);
+        assert!(
+            span("Odd")["footprint"].is_null(),
+            "never guessed: {parsed}"
+        );
+
+        // The gang is quiet; the partial overlap names the gang once.
+        let overlaps = parsed["overlaps"].as_array().unwrap();
+        assert_eq!(overlaps.len(), 1, "{parsed}");
+        assert_eq!(overlaps[0]["a_gang"], serde_json::json!(["G1", "G2"]));
+        assert_eq!(overlaps[0]["b"], "Part");
+        let overruns = parsed["overruns"].as_array().unwrap();
+        assert_eq!(overruns.len(), 1, "{parsed}");
+        assert_eq!(overruns[0]["fixture"], "End");
+
+        let (status, _) = fixture_type_request(
+            state,
+            "GET",
+            "/lighting/venues/nowhere/patch?dir=v_patch&fixture_types_dir=ft_patch".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -5411,6 +5900,191 @@ show "test" {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(!venue_path.exists());
+    }
+
+    /// Sends a venue PUT and reads the file it wrote back.
+    async fn put_venue_body(
+        state: WebUiState,
+        uri: String,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> StatusCode {
+        router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(uri)
+                    .header("content-type", content_type)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn a_json_save_of_a_new_venue_writes_each_fixture_s_mode() {
+        let (state, _dir) = test_state();
+        let rel = "v_put_mode_new";
+        let body = serde_json::json!({
+            "fixtures": [
+                {"name": "B1", "fixture_type": "Brick", "universe": 1, "start_channel": 1,
+                 "mode": "Mover 16bit"},
+                {"name": "B2", "fixture_type": "Brick", "universe": 1, "start_channel": 20,
+                 "mode": null},
+            ]
+        });
+        let status = put_venue_body(
+            state,
+            format!("/lighting/venues/Rig?dir={rel}"),
+            "application/json",
+            serde_json::to_vec(&body).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        // A mode is `.venue` syntax: the file is born a .venue.
+        let path = _dir.path().join(rel).join("rig.venue");
+        assert!(path.exists(), "a moded venue is a .venue");
+        assert!(!_dir.path().join(rel).join("rig.light").exists());
+        let venue = &lighting::parser::parse_venues(&std::fs::read_to_string(&path).unwrap())
+            .unwrap()["Rig"];
+        assert_eq!(venue.fixtures()["B1"].mode(), Some("Mover 16bit"));
+        assert_eq!(venue.fixtures()["B2"].mode(), None);
+    }
+
+    #[tokio::test]
+    async fn a_light_venue_that_gains_a_mode_moves_to_venue() {
+        let (state, _dir) = test_state();
+        let rel = "v_put_mode_ext";
+        let plain = serde_json::json!({
+            "fixtures": [{"name": "B1", "fixture_type": "Brick", "universe": 1, "start_channel": 1}]
+        });
+        let uri = format!("/lighting/venues/Rig?dir={rel}");
+        let status = put_venue_body(
+            state.clone(),
+            uri.clone(),
+            "application/json",
+            serde_json::to_vec(&plain).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(_dir.path().join(rel).join("rig.light").exists());
+
+        let moded = serde_json::json!({
+            "fixtures": [{"name": "B1", "fixture_type": "Brick", "universe": 1,
+                          "start_channel": 1, "mode": "8: RGBS"}]
+        });
+        let status = put_venue_body(
+            state,
+            uri,
+            "application/json",
+            serde_json::to_vec(&moded).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let path = _dir.path().join(rel).join("rig.venue");
+        assert!(path.exists());
+        assert!(!_dir.path().join(rel).join("rig.light").exists());
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("fixture \"B1\" Brick mode \"8: RGBS\" @ 1:1"));
+    }
+
+    #[tokio::test]
+    async fn a_json_save_of_an_existing_venue_changes_or_clears_only_the_mode_it_is_given() {
+        let (state, _dir) = test_state();
+        let rel = "v_put_mode_patch";
+        let dir = _dir.path().join(rel);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rig.venue");
+        std::fs::write(
+            &path,
+            "# mine\nvenue \"Rig\" {\n  fixture \"B1\" Brick mode \"Mover 16bit\" @ 1:1  # keep\n  \
+             fixture \"B2\" Brick @ 1:20\n}\n",
+        )
+        .unwrap();
+        // The inspector's save: B2 gains a mode, B1 keeps its own.
+        let body = serde_json::json!({
+            "fixtures": [
+                {"name": "B1", "fixture_type": "Brick", "universe": 1, "start_channel": 1,
+                 "mode": "Mover 16bit"},
+                {"name": "B2", "fixture_type": "Brick", "universe": 1, "start_channel": 20,
+                 "mode": "8: RGBS"},
+            ]
+        });
+        let status = put_venue_body(
+            state.clone(),
+            format!("/lighting/venues/Rig?dir={rel}"),
+            "application/json",
+            serde_json::to_vec(&body).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            after.contains("  fixture \"B1\" Brick mode \"Mover 16bit\" @ 1:1  # keep\n"),
+            "{after}"
+        );
+        assert!(
+            after.contains("fixture \"B2\" Brick mode \"8: RGBS\" @ 1:20"),
+            "{after}"
+        );
+
+        // Back to the type default: the line loses its mode.
+        let body = serde_json::json!({
+            "fixtures": [
+                {"name": "B1", "fixture_type": "Brick", "universe": 1, "start_channel": 1,
+                 "mode": "Mover 16bit"},
+                {"name": "B2", "fixture_type": "Brick", "universe": 1, "start_channel": 20},
+            ]
+        });
+        let status = put_venue_body(
+            state,
+            format!("/lighting/venues/Rig?dir={rel}"),
+            "application/json",
+            serde_json::to_vec(&body).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("fixture \"B2\" Brick @ 1:20"), "{after}");
+        assert!(after.contains("mode \"Mover 16bit\""), "{after}");
+    }
+
+    #[tokio::test]
+    async fn a_dsl_venue_save_keeps_its_modes() {
+        let (state, _dir) = test_state();
+        let rel = "v_put_mode_dsl";
+        let dsl = "venue \"Rig\" {\n  fixture \"B1\" Brick mode \"Mover 16bit\" @ 1:1\n}\n";
+        let status = put_venue_body(
+            state,
+            format!("/lighting/venues/Rig?dir={rel}"),
+            "text/plain",
+            dsl.as_bytes().to_vec(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let path = _dir.path().join(rel).join("rig.venue");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), dsl);
+    }
+
+    #[tokio::test]
+    async fn a_json_save_refuses_a_mode_that_is_not_a_string() {
+        let (state, _dir) = test_state();
+        let body = serde_json::json!({
+            "fixtures": [{"name": "B1", "fixture_type": "Brick", "universe": 1,
+                          "start_channel": 1, "mode": 8}]
+        });
+        let status = put_venue_body(
+            state,
+            "/lighting/venues/Rig?dir=v_put_mode_bad".to_string(),
+            "application/json",
+            serde_json::to_vec(&body).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -6050,6 +6724,63 @@ show "test" {
                 "{w}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn readiness_puts_patch_findings_on_the_venue_not_under_every_song() {
+        let rig = rig(
+            &[("par.light", TYPE_PAR)],
+            // Partly over each other: an overlap. And a gang at 1:10.
+            Some(
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1 tags [\"wash\"]\n  \
+                 fixture \"B\" Par @ 1:2\n  fixture \"G1\" Par @ 1:10\n  \
+                 fixture \"G2\" Par @ 1:10\n}\n",
+            ),
+            &[(
+                "Esaweg",
+                "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n}\n",
+            )],
+            &[1],
+        );
+        let report = readiness(rig.state.clone()).await;
+        assert!(report["venue_error"].is_null(), "{report}");
+        let patch = report["patch_warnings"].as_array().unwrap();
+        assert_eq!(patch.len(), 1, "the gang is quiet: {report}");
+        assert_eq!(patch[0]["kind"], "patch-overlap");
+        assert!(patch[0]["message"].as_str().unwrap().contains("\"A\""));
+        for show in report["shows"].as_array().unwrap() {
+            assert!(
+                show["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|w| w["kind"] != "patch-overlap"),
+                "{report}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn readiness_says_when_the_venue_will_not_load_and_which_fixture() {
+        let rig = rig(
+            &[("par.light", TYPE_PAR)],
+            // A native type has no modes: this fails the whole venue.
+            Some("venue \"v\" {\n  fixture \"A\" Par @ 1:1\n  fixture \"B\" Par mode \"x\" @ 1:5\n}\n"),
+            &[],
+            &[1],
+        );
+        let report = readiness(rig.state.clone()).await;
+        assert_eq!(report["venue_error"]["venue"], "v", "{report}");
+        assert_eq!(report["venue_error"]["fixture"], "B", "{report}");
+        assert!(
+            report["venue_error"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("not GDTF-sourced"),
+            "{report}"
+        );
+        // And the fixture is listed as unresolved, with the same reason.
+        assert_eq!(report["fixture_types"]["unresolved"][0]["fixture"], "B");
     }
 
     #[tokio::test]

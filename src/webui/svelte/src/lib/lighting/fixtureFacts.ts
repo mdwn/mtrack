@@ -66,15 +66,47 @@ export interface VenueUse {
   names: string[] | null;
 }
 
+/** The venue fixtures of a type, per venue — all of them, or only those
+ *  driven in `mode` (the archive's spelling) when it is given. */
 export function venueUse(
   venues: FixtureTypeGdtf["venues"],
+  mode?: string,
   max = 8,
 ): VenueUse[] {
   return venues
-    .filter((v) => v.fixtures.length > 0)
     .map((v) => ({
       venue: v.name,
+      fixtures: v.fixtures
+        .filter((f) => mode === undefined || f.mode === mode)
+        .map((f) => f.name),
+    }))
+    .filter((v) => v.fixtures.length > 0)
+    .map((v) => ({
+      venue: v.venue,
       count: v.fixtures.length,
       names: v.fixtures.length <= max ? v.fixtures : null,
     }));
+}
+
+/** How many venue fixtures are driven in each mode. */
+export function modeCounts(
+  venues: FixtureTypeGdtf["venues"],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const v of venues)
+    for (const f of v.fixtures)
+      if (f.mode !== null) counts.set(f.mode, (counts.get(f.mode) ?? 0) + 1);
+  return counts;
+}
+
+/** Venue fixtures whose mode names no mode of the archive: they cannot be
+ *  driven, and their venue does not load. */
+export function unresolvedFixtures(
+  venues: FixtureTypeGdtf["venues"],
+): { venue: string; fixture: string }[] {
+  return venues.flatMap((v) =>
+    v.fixtures
+      .filter((f) => f.mode === null)
+      .map((f) => ({ venue: v.name, fixture: f.name })),
+  );
 }

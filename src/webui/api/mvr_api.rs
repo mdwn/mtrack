@@ -36,8 +36,8 @@ use super::super::config_io;
 use super::super::server::WebUiState;
 use super::lighting_api::{
     content_version, if_match_version, project_root, reload_if_current_venue, resolve_lighting_dir,
-    stale_venue_response, validate_lighting_name, DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR,
-    VENUE_WRITES,
+    stale_venue_response, validate_lighting_name, venue_error_after_save,
+    DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR, VENUE_WRITES,
 };
 use crate::lighting;
 use crate::lighting::export::{MvrExportOptions, EXPORT_DIR};
@@ -249,6 +249,7 @@ pub(super) async fn import_mvr(
     };
     let options = import_options(&state, &form)?;
     let project = project_root(&state.config_path)?;
+    let venues_path = project.join(&options.venues_dir);
     if write {
         // Directories the import writes into are created, and proven to be
         // inside the project, before anything is written.
@@ -293,9 +294,15 @@ pub(super) async fn import_mvr(
         .unwrap_or_default()
         .to_string();
     let reloaded = reload_if_current_venue(&state, &venue).await;
+    let venue_error = venue_error_after_save(&state, &venue, &venues_path).await;
     Ok((
         StatusCode::OK,
-        Json(json!({"write": true, "report": outcome, "reloaded": reloaded})),
+        Json(json!({
+            "write": true,
+            "report": outcome,
+            "reloaded": reloaded,
+            "venue_error": venue_error,
+        })),
     )
         .into_response())
 }
@@ -496,6 +503,7 @@ pub(super) async fn add_aim_points(
         DEFAULT_FIXTURE_TYPES_DIR,
     )?;
     let project = project_root(&state.config_path)?;
+    let venues_path = project.join(&venues_dir);
     let venue_name = name.clone();
     let expected = if_match_version(&headers);
     let outcome = super::helpers::spawn_blocking_io("add aim points", move || {
@@ -518,6 +526,7 @@ pub(super) async fn add_aim_points(
     } else {
         reload_if_current_venue(&state, &name).await
     };
+    let venue_error = venue_error_after_save(&state, &name, &venues_path).await;
     let created: Vec<serde_json::Value> = created
         .into_iter()
         .map(|(point_name, fixture, point)| {
@@ -527,7 +536,12 @@ pub(super) async fn add_aim_points(
     Ok::<_, Response>(
         (
             StatusCode::OK,
-            Json(json!({"created": created, "reloaded": reloaded, "version": version})),
+            Json(json!({
+                "created": created,
+                "reloaded": reloaded,
+                "version": version,
+                "venue_error": venue_error,
+            })),
         )
             .into_response(),
     )
@@ -1279,6 +1293,166 @@ mod test {
                 .to_string()
         };
         assert_eq!(line(&before), line(&after));
+    }
+
+    /// The imported venue with `mode "<mode>"` written onto one fixture's
+    /// line, after its type, as a hand edit would put it.
+    fn with_line_mode(text: &str, fixture: &str, mode: &str) -> String {
+        let needle = format!("fixture \"{fixture}\" ");
+        text.lines()
+            .map(|line| match line.find(&needle) {
+                Some(at) => {
+                    let rest = &line[at + needle.len()..];
+                    let type_end = if let Some(quoted) = rest.strip_prefix('"') {
+                        quoted.find('"').map(|i| i + 2).unwrap_or(rest.len())
+                    } else {
+                        rest.find(' ').unwrap_or(rest.len())
+                    };
+                    format!(
+                        "{}{} mode \"{mode}\"{}",
+                        &line[..at + needle.len()],
+                        &rest[..type_end],
+                        &rest[type_end..]
+                    )
+                }
+                None => line.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+
+    fn line_of(text: &str, fixture: &str) -> String {
+        text.lines()
+            .find(|l| l.contains(&format!("fixture \"{fixture}\"")))
+            .unwrap_or_else(|| panic!("no line for {fixture} in {text}"))
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn aim_points_keep_a_fixture_s_mode() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        imported(&app).await;
+        // The type's own default named explicitly: still a fixed fixture
+        // (a mover's mode would take it out of the aim-point set).
+        let path = dir.path().join("lighting/venues/kellys.venue");
+        let moded = with_line_mode(
+            &std::fs::read_to_string(&path).unwrap(),
+            "Brick 1",
+            "8: RGBS",
+        );
+        std::fs::write(&path, &moded).unwrap();
+        assert!(line_of(&moded, "Brick 1").contains("mode \"8: RGBS\""));
+
+        let (status, body) = post_empty(&app, "/lighting/venues/kellys/aim-points").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("focus \"Brick 1 aim\""), "{after}");
+        assert!(
+            line_of(&after, "Brick 1").contains("mode \"8: RGBS\""),
+            "{after}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_merge_keeps_a_hand_set_mode_when_asked_and_keeps_other_modes_regardless() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        imported(&app).await;
+        let path = dir.path().join("lighting/venues/kellys.venue");
+        let text = std::fs::read_to_string(&path).unwrap();
+        // Brick 1 hand-moded; Brick 2 hand-moved (its mode is the file's).
+        let moded = with_line_mode(&text, "Brick 1", "Mover 16bit");
+        std::fs::write(&path, &moded).unwrap();
+
+        let plan = [
+            ("name", "kellys"),
+            ("origin", "0,1000,0"),
+            ("write", "false"),
+        ];
+        let mvr = synthetic_mvr(true);
+        let (status, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &plan).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let brick1 = body["plan"]["fixtures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == "Brick 1")
+            .unwrap()
+            .clone();
+        assert!(
+            brick1["overwrites"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|o| o["field"] == "mode"),
+            "{brick1}"
+        );
+
+        let fields = [
+            ("name", "kellys"),
+            ("origin", "0,1000,0"),
+            ("write", "true"),
+            ("keep", r#"{"fixtures":{"Brick 1":["mode"]}}"#),
+        ];
+        let (status, body) = post(&app, "/lighting/mvr/import", "Kellys.mvr", &mvr, &fields).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            line_of(&after, "Brick 1").contains("mode \"Mover 16bit\""),
+            "{after}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_json_venue_save_keeps_every_fixture_s_mode() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        imported(&app).await;
+        let path = dir.path().join("lighting/venues/kellys.venue");
+        let moded = with_line_mode(
+            &std::fs::read_to_string(&path).unwrap(),
+            "Brick 2",
+            "Mover 16bit",
+        );
+        std::fs::write(&path, &moded).unwrap();
+
+        // What the plan and the inspector do: read, change another fixture,
+        // PUT the whole venue back as JSON.
+        let response = get(&app, "/lighting/venues/kellys").await;
+        let got: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        let mut venue = got["venue"].clone();
+        assert_eq!(venue["fixtures"]["Brick 2"]["mode"], "Mover 16bit");
+        let fixtures: Vec<serde_json::Value> = venue["fixtures"]
+            .as_object()
+            .unwrap()
+            .values()
+            .cloned()
+            .map(|mut f| {
+                if f["name"] == "Brick 1" {
+                    f["position"] = json!([-1.0, 2.5, 4.2]);
+                }
+                f
+            })
+            .collect();
+        venue["fixtures"] = json!(fixtures);
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/venues/kellys")
+                    .header("content-type", "application/json")
+                    .body(Body::from(venue.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(line_of(&after, "Brick 2"), line_of(&moded, "Brick 2"));
+        assert!(after.contains("position (-1, 2.5, 4.2)"), "{after}");
     }
 
     #[test]

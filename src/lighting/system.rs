@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::distill::DistillCache;
 use super::gdtf;
@@ -43,13 +43,16 @@ pub struct LightingSystem {
     fixture_type_files: HashMap<String, PathBuf>,
 
     /// Expansions of the modes venue fixtures name, by (type, mode as the
-    /// fixture line writes it). Filled at load and on every venue reload,
-    /// for every loaded venue — venues can be switched — and never lazily
-    /// mid-show. A fixture that names its type's default mode uses the
-    /// default expansion in `fixture_types` instead.
+    /// fixture line writes it). Filled at load and on every venue reload
+    /// (a user's venue edit, which can arrive during playback), for every
+    /// loaded venue — venues can be switched — and never at a cue. A
+    /// fixture that names its type's default mode uses the default
+    /// expansion in `fixture_types` instead.
     mode_expansions: HashMap<(String, String), FixtureType>,
 
-    /// Why a (type, mode) a venue fixture names did not expand.
+    /// Why a (type, mode) a venue fixture names did not expand. Retried on
+    /// every expansion pass: the cause (an archive briefly unreadable, a
+    /// fixed typo in the type file) may have gone.
     mode_errors: HashMap<(String, String), String>,
 
     /// Notes on modes that matched only after normalization, by (type, mode
@@ -103,6 +106,10 @@ pub struct LightingSystem {
     /// Where the venues were loaded from, so an edited venue can be re-read
     /// without rebuilding the whole system.
     venues_source: Option<VenuesSource>,
+
+    /// The current venue's problems as last logged, so a reload (every
+    /// stage-view drag is one) logs them again only when they change.
+    logged_venue_report: Option<Vec<String>>,
 }
 
 /// The venues directory a system loaded, as configured and as resolved.
@@ -143,6 +150,7 @@ impl LightingSystem {
             scenery_sources: HashMap::new(),
             project_root: None,
             venues_source: None,
+            logged_venue_report: None,
         }
     }
 
@@ -158,8 +166,8 @@ impl LightingSystem {
     /// re-read: a venue edit does not change them, and re-expanding
     /// referential types is the expensive part of a load. A mode the edited
     /// venues name that no venue named before is expanded here — a venue
-    /// edit is a load, not a show — and the expansions already made are
-    /// kept.
+    /// edit is a user's act, never a cue, though it can come during
+    /// playback — and the expansions already made are kept.
     pub fn reload_venues(&mut self) -> Result<(), Box<dyn Error>> {
         let Some(source) = self.venues_source.clone() else {
             return Err("no venues directory was loaded".into());
@@ -266,6 +274,18 @@ impl LightingSystem {
     /// Returns an iterator over the (name, fixture type) pairs known to the system.
     pub fn fixture_types_iter(&self) -> impl Iterator<Item = (&String, &FixtureType)> {
         self.fixture_types.iter()
+    }
+
+    /// GDTF-sourced types with no default mode, as declared. They are not
+    /// in [`Self::fixture_types_iter`] — there is no default expansion to
+    /// register — but they are types: each fixture of one names its mode.
+    /// A list of the project's types must include these.
+    pub fn fixture_types_without_default(&self) -> impl Iterator<Item = (&String, &FixtureType)> {
+        self.referential.iter().filter(|(name, declared)| {
+            !self.fixture_types.contains_key(*name)
+                && !self.fixture_type_errors.contains_key(*name)
+                && declared.source().is_some_and(|s| s.mode.is_none())
+        })
     }
 
     /// Why a fixture of type `name` cannot be patched, or `None` when the type
@@ -494,8 +514,8 @@ impl LightingSystem {
 
     /// Expands a GDTF-referential fixture type through the per-project
     /// distill cache (`lighting/.cache/`, hash-keyed, rebuildable). Parsing
-    /// the archive happens only on a cold cache — at load time, never
-    /// mid-show — and the fill is logged loudly.
+    /// the archive happens only on a cold cache — at load time or on a
+    /// user's venue edit, never at a cue — and the fill is logged loudly.
     ///
     /// Expands the type's default mode; a type with no default is an error
     /// here (its fixtures name their modes, see [`Self::expand_mode`]).
@@ -648,12 +668,10 @@ impl LightingSystem {
     }
 
     /// Expands every mode a fixture of any loaded venue names (design §21),
-    /// reusing what is already expanded, and reports — loudly, by fixture,
-    /// type and file — every fixture that cannot be driven: a mode on a
-    /// native type, no mode where the type has no default, a mode that does
-    /// not match or distill. Then checks each venue for fixtures patched
-    /// over the same addresses. Runs at load and on every venue reload,
-    /// never mid-show.
+    /// reusing what is already expanded and retrying what failed, then
+    /// reports the current venue's problems (see
+    /// [`Self::report_current_venue`]). Runs at load and on every venue
+    /// reload — a user's edit, possibly during playback — never at a cue.
     fn expand_venue_modes(&mut self, base_path: &Path) {
         let mut wanted: Vec<(String, String)> = Vec::new();
         for venue in self.venues.values() {
@@ -680,7 +698,9 @@ impl LightingSystem {
         self.mode_expansions.retain(|key, _| wanted.contains(key));
         self.mode_errors.retain(|key, _| wanted.contains(key));
         for key in wanted {
-            if self.mode_expansions.contains_key(&key) || self.mode_errors.contains_key(&key) {
+            // A success is kept; a failure is tried again, since its cause
+            // may have gone (an archive that was briefly unreadable).
+            if self.mode_expansions.contains_key(&key) {
                 continue;
             }
             let (type_name, mode) = &key;
@@ -696,10 +716,14 @@ impl LightingSystem {
                     if let Some(note) = note {
                         self.mode_warnings.insert(key.clone(), note);
                     }
+                    self.mode_errors.remove(&key);
                     self.mode_expansions.insert(key, expanded);
                 }
                 Err(e) => {
-                    warn!(
+                    // Said per fixture, aggregated, for the current venue
+                    // (`report_current_venue`); other venues' failures are
+                    // there for whoever asks (`fixture_problem`, readiness).
+                    debug!(
                         fixture_type = type_name,
                         mode = mode,
                         file = %self
@@ -715,29 +739,112 @@ impl LightingSystem {
             }
         }
 
-        let mut venue_names: Vec<&String> = self.venues.keys().collect();
-        venue_names.sort();
-        for venue_name in venue_names {
-            let venue = &self.venues[venue_name];
-            for fixture in venue.fixtures_by_patch() {
-                if let Err(reason) = self.resolve_fixture_type(fixture) {
-                    warn!(
-                        venue = venue_name.as_str(),
-                        fixture = fixture.name(),
-                        fixture_type = fixture.fixture_type(),
-                        file = %self.venue_file_display(venue_name),
-                        "{reason}"
-                    );
-                }
-            }
-            for overlap in patch::venue_overlaps(&self.patch_spans(venue)) {
-                warn!(
-                    venue = venue_name.as_str(),
-                    file = %self.venue_file_display(venue_name),
-                    "{overlap}"
-                );
+        self.report_current_venue();
+    }
+
+    /// Logs the current venue's problems — fixtures that cannot be driven
+    /// (which fail the venue), patch overlaps and overruns — one aggregated
+    /// line per kind, and only when they differ from what was last logged:
+    /// a reload runs on every stage-view drag, and an unchanged problem is
+    /// not news. Other venues are not logged; their problems are a
+    /// `fixture_problem` or readiness call away.
+    fn report_current_venue(&mut self) {
+        let lines = self.current_venue_report();
+        if self.logged_venue_report.as_ref() == Some(&lines) {
+            return;
+        }
+        let venue = self.current_venue.clone().unwrap_or_default();
+        let file = self.venue_file_display(&venue);
+        for line in &lines {
+            warn!(venue = venue.as_str(), file = %file, "{line}");
+        }
+        if lines.is_empty()
+            && self
+                .logged_venue_report
+                .as_ref()
+                .is_some_and(|l| !l.is_empty())
+        {
+            info!(
+                venue = venue.as_str(),
+                "The venue's earlier problems are resolved"
+            );
+        }
+        self.logged_venue_report = Some(lines);
+    }
+
+    /// The current venue's problems as log lines, one per kind.
+    fn current_venue_report(&self) -> Vec<String> {
+        let Some(venue_name) = self.current_venue.as_deref() else {
+            return Vec::new();
+        };
+        let Some(venue) = self.venues.get(venue_name) else {
+            return Vec::new();
+        };
+        fn names(names: &[&str]) -> String {
+            const SHOWN: usize = 3;
+            let quoted: Vec<String> = names
+                .iter()
+                .take(SHOWN)
+                .map(|n| format!("\"{n}\""))
+                .collect();
+            if names.len() > SHOWN {
+                format!("{} and {} more", quoted.join(", "), names.len() - SHOWN)
+            } else {
+                quoted.join(", ")
             }
         }
+        let mut lines = Vec::new();
+        let problems = self.venue_problems(venue_name);
+        if let Some((_, first)) = problems.first() {
+            let who: Vec<&str> = problems.iter().map(|(f, _)| f.as_str()).collect();
+            lines.push(format!(
+                "{} fixture(s) cannot be driven, so the venue will not light: {}; first: {first}",
+                problems.len(),
+                names(&who)
+            ));
+        }
+        let spans = self.patch_spans(venue);
+        let overlaps = patch::venue_overlaps(&spans);
+        if let Some(first) = overlaps.first() {
+            lines.push(format!(
+                "{} patch overlap(s); first: {first}",
+                overlaps.len()
+            ));
+        }
+        let overruns = patch::venue_overruns(&spans);
+        if let Some(first) = overruns.first() {
+            let who: Vec<&str> = overruns.iter().map(|o| o.fixture.as_str()).collect();
+            lines.push(format!(
+                "{} fixture(s) run past address 512: {}; first: {first}",
+                overruns.len(),
+                names(&who)
+            ));
+        }
+        lines
+    }
+
+    /// Every fixture of `venue` that cannot be driven, in patch order, with
+    /// its [`Self::fixture_problem`] text. Empty when the venue registers
+    /// (or is not loaded).
+    pub fn venue_problems(&self, venue: &str) -> Vec<(String, String)> {
+        let Some(loaded) = self.venues.get(venue) else {
+            return Vec::new();
+        };
+        loaded
+            .fixtures_by_patch()
+            .into_iter()
+            .filter_map(|fixture| {
+                self.fixture_problem(venue, fixture)
+                    .map(|problem| (fixture.name().to_string(), problem))
+            })
+            .collect()
+    }
+
+    /// The first fixture of `venue` (in patch order) that cannot be driven
+    /// and why — what fails the venue's registration — or `None` when the
+    /// venue registers.
+    pub fn venue_problem(&self, venue: &str) -> Option<(String, String)> {
+        self.venue_problems(venue).into_iter().next()
     }
 
     /// A venue's file, for messages; empty when the venue was not read
@@ -853,10 +960,18 @@ impl LightingSystem {
             .collect()
     }
 
-    /// Fixtures of the current venue patched over each other's addresses.
+    /// Fixtures of the current venue patched over part of each other's
+    /// addresses (a gang at one identical span is not an overlap).
     pub fn current_venue_overlaps(&self) -> Vec<patch::PatchOverlap> {
         self.get_current_venue()
             .map(|venue| patch::venue_overlaps(&self.patch_spans(venue)))
+            .unwrap_or_default()
+    }
+
+    /// Fixtures of the current venue whose footprint runs past address 512.
+    pub fn current_venue_overruns(&self) -> Vec<patch::PatchOverrun> {
+        self.get_current_venue()
+            .map(|venue| patch::venue_overruns(&self.patch_spans(venue)))
             .unwrap_or_default()
     }
 
@@ -1632,6 +1747,84 @@ mod tests {
             (overlaps[0].first.as_str(), overlaps[0].second.as_str()),
             ("Spot", "Wash")
         );
+    }
+
+    #[test]
+    fn a_plain_project_has_nothing_to_report() {
+        // No modes on any line, no overlaps (two pars ganged at one address
+        // are deliberate): nothing new is logged or reported.
+        let (_dir, system) = modal_project(
+            BRICK_TYPE,
+            "venue \"house\" {\n  fixture \"Wash\" Brick @ 1:1\n  fixture \"Dim1\" Par @ 1:20\n  \
+             fixture \"Dim2\" Par @ 1:20\n}\n",
+            "house",
+        );
+        assert!(system.venue_problems("house").is_empty());
+        assert!(system.venue_problem("house").is_none());
+        assert!(system.current_venue_overlaps().is_empty());
+        assert!(system.current_venue_overruns().is_empty());
+        assert!(system.current_venue_report().is_empty());
+        assert_eq!(system.logged_venue_report, Some(Vec::new()));
+    }
+
+    #[test]
+    fn only_the_current_venue_is_reported_one_line_per_kind() {
+        let (dir, mut system) = modal_project(
+            BRICK_TYPE,
+            "venue \"house\" {\n  fixture \"A\" Par mode \"x\" @ 1:1\n  fixture \"B\" Par mode \"x\" @ 1:2\n  \
+             fixture \"C\" Par mode \"x\" @ 1:3\n  fixture \"D\" Par mode \"x\" @ 1:4\n  \
+             fixture \"Spot\" Brick mode \"Mover 16bit\" @ 1:10\n  fixture \"Wash\" Brick @ 1:14\n  \
+             fixture \"End\" Brick @ 1:511\n}\n\nvenue \"other\" {\n  fixture \"Z\" Nope @ 1:1\n}\n",
+            "house",
+        );
+        let lines = system.current_venue_report();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(
+            lines[0].starts_with("4 fixture(s) cannot be driven, so the venue will not light: \"A\", \"B\", \"C\" and 1 more; first: fixture \"A\" names mode"),
+            "{}",
+            lines[0]
+        );
+        assert!(lines[1].starts_with("1 patch overlap(s)"), "{}", lines[1]);
+        assert!(lines[2].contains("\"End\""), "{}", lines[2]);
+        assert!(!lines.iter().any(|l| l.contains("\"Z\"")), "other venue");
+        // The other venue's problem is there for whoever asks.
+        assert_eq!(system.venue_problem("other").unwrap().0, "Z");
+        assert_eq!(system.venue_problem("house").unwrap().0, "A");
+
+        // An unchanged reload does not change what was logged.
+        let logged = system.logged_venue_report.clone();
+        system.reload_venues().unwrap();
+        assert_eq!(system.logged_venue_report, logged);
+        let _ = dir;
+    }
+
+    #[test]
+    fn a_mode_that_failed_is_retried_on_the_next_reload() {
+        let (dir, mut system) = modal_project(
+            BRICK_TYPE,
+            "venue \"house\" {\n  fixture \"Wash\" Brick @ 1:1\n}\n",
+            "house",
+        );
+        // The archive goes missing just as a fixture is re-moded.
+        let archive = dir.path().join("lighting/library/synth.gdtf");
+        let bytes = std::fs::read(&archive).unwrap();
+        std::fs::remove_file(&archive).unwrap();
+        std::fs::write(
+            dir.path().join("lighting/venues/house.venue"),
+            "venue \"house\" {\n  fixture \"Wash\" Brick mode \"Mover 16bit\" @ 1:1\n}\n",
+        )
+        .unwrap();
+        system.reload_venues().unwrap();
+        assert!(system.get_current_venue_fixtures().is_err());
+        assert!(system.venue_problem("house").is_some());
+
+        // It comes back; the next reload tries again and resolves.
+        std::fs::write(&archive, bytes).unwrap();
+        system.reload_venues().unwrap();
+        let infos = system.get_current_venue_fixtures().expect("retried");
+        assert_eq!(info(&infos, "Wash").channels.get("pan"), Some(&1));
+        assert!(system.mode_errors.is_empty());
+        assert!(system.venue_problem("house").is_none());
     }
 
     #[test]

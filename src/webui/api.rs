@@ -238,6 +238,10 @@ pub fn router() -> Router<WebUiState> {
             post(mvr_api::add_aim_points),
         )
         .route(
+            "/lighting/venues/{name}/patch",
+            get(lighting_api::get_venue_patch),
+        )
+        .route(
             "/lighting/assets/{*path}",
             get(lighting_api::get_lighting_asset),
         )

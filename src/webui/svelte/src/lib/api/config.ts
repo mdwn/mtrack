@@ -352,6 +352,9 @@ export interface FixtureData {
   position?: Vec3 | null;
   /** Mounting rotation in degrees about X, Y, Z. */
   rotation?: Vec3 | null;
+  /** The fixture's own GDTF mode (`mode "…"` on its line); absent or null
+   *  is its type's default. Must survive every save untouched. */
+  mode?: string | null;
 }
 
 /** Where a venue was seeded from (an MVR import). */
@@ -377,6 +380,9 @@ export interface FixtureTypeEntry {
   file: string;
   extension: string;
   referential: boolean;
+  /** A GDTF type's default mode; null on a native type and on a GDTF type
+   *  with none, whose fixtures each name their own. */
+  default_mode?: string | null;
   rich: boolean;
   /** A referential type's archive in brief, for its card; null when the
    *  archive is missing or does not parse. Absent on a native type. */
@@ -389,8 +395,11 @@ export interface GdtfSummary {
   manufacturer: string;
   /** How many modes the archive has. */
   modes: number;
-  /** The mode the `.fixture` pins. */
-  mode: string;
+  /** The type's default mode, as the `.fixture` writes it; null when the
+   *  type has none (every fixture of it names its own). */
+  mode: string | null;
+  /** The modes venue fixtures use, most-used first. */
+  in_use: { mode: string; count: number }[];
   /** The pinned mode's first beam, as far as the archive states it. */
   beam: { type: string | null; angle: number | null } | null;
   /** In the asset store, once a rig has been made for the type. */
@@ -519,14 +528,19 @@ export interface MvrSceneView {
 export interface MvrPlannedType {
   name: string;
   archive: string;
-  mode: string;
+  /** The type's default mode, as the GDTF spells it: the mode most of the
+   *  file's fixtures use. Null for an existing type with no default, whose
+   *  fixtures all name their modes. */
+  mode: string | null;
+  /** Every mode the file patches the type's fixtures in, sorted. */
+  modes: string[];
   existing: boolean;
   fixture_file: string;
 }
 
 /** A hand-edited field a merge would overwrite with the MVR's value. */
 export interface MvrHandEdit {
-  /** "position", "rotation", "patch" or "type". */
+  /** "position", "rotation", "patch", "mode" or "type". */
   field: string;
   mine: string;
   mvr: string;
@@ -542,6 +556,9 @@ export interface MvrPlannedFixture {
   name: string;
   layer: string;
   fixture_type: string | null;
+  /** The mode the venue line names: null when the fixture is in its type's
+   *  default mode (or is a TODO). */
+  mode?: string | null;
   patch: [number, number] | null;
   position: Vec3 | null;
   rotation: Vec3 | null;
@@ -627,6 +644,14 @@ export async function inspectMvr(
   return res.json();
 }
 
+/** A venue that will not load: the fixture that fails it, and why. While it
+ *  stands, no fixture of the venue lights. */
+export interface MvrVenueError {
+  venue: string;
+  fixture: string;
+  reason: string;
+}
+
 /** The import's plan (`write` false) or its report (`write` true). */
 export async function importMvr(
   file: File,
@@ -637,6 +662,8 @@ export async function importMvr(
   plan?: MvrPlan;
   report?: MvrImportReport;
   reloaded?: boolean;
+  /** After a write: the current venue no longer loads, and why. */
+  venue_error?: MvrVenueError | null;
 }> {
   const res = await fetch("/api/lighting/mvr/import", {
     method: "POST",
@@ -757,6 +784,8 @@ export interface AimPointsResult {
   reloaded: boolean;
   /** The venue file's version after the change. */
   version?: string;
+  /** The current venue no longer loads after the change. */
+  venue_error?: VenueError | null;
 }
 
 /** Adds a focus point for each unlinked fixed fixture, where its rest beam
@@ -797,8 +826,9 @@ export async function fetchFixtureType(
 export interface FixtureTypeGdtf {
   /** The archive as the `.fixture` names it, project-relative. */
   archive: string;
-  /** The mode as the `.fixture` pins it. */
-  mode: string;
+  /** The type's default mode as the `.fixture` writes it; null when it has
+   *  none. */
+  mode: string | null;
   /** The archive mode that pin resolves to, by its own name; null when it
    *  resolves to none. */
   matched_mode: string | null;
@@ -818,8 +848,10 @@ export interface FixtureTypeGdtf {
   } | null;
   /** The archive's own description of the fixture: a stranger's text. */
   about: string | null;
-  /** The venues with fixtures of this type, each fixture in patch order. */
-  venues: { name: string; fixtures: string[] }[];
+  /** The venues with fixtures of this type, each fixture in patch order
+   *  with the mode it is driven in (its own, else the default), spelled as
+   *  the archive spells it; null when that names no mode of the archive. */
+  venues: { name: string; fixtures: { name: string; mode: string | null }[] }[];
   inspection: GdtfInspection;
 }
 
@@ -963,13 +995,14 @@ export async function saveVenue(
       tags: string[];
       position?: Vec3 | null;
       rotation?: Vec3 | null;
+      mode?: string | null;
     }[];
     focus_points?: Record<string, Vec3>;
     source?: VenueSource | null;
   },
   dir?: string,
   version?: string,
-): Promise<string | null> {
+): Promise<SavedVenue> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await put(
     `/lighting/venues/${encodeURIComponent(name)}${params}`,
@@ -978,7 +1011,76 @@ export async function saveVenue(
   );
   if (!res.ok) throw await versionedError(res, "Failed to save venue");
   const body = await res.json().catch(() => ({}));
-  return body?.version ?? null;
+  return {
+    version: body?.version ?? null,
+    venueError: body?.venue_error ?? null,
+  };
+}
+
+/** Why the current venue does not load after a save: the first fixture
+ *  that cannot be driven. A venue that does not load lights nothing. */
+export interface VenueError {
+  venue: string;
+  fixture: string;
+  reason: string;
+}
+
+/** What a venue save answers: the file's new version, and the venue's
+ *  load failure when the save left the current venue failing. */
+export interface SavedVenue {
+  version: string | null;
+  venueError: VenueError | null;
+}
+
+/** One fixture's addresses, as `GET /api/lighting/venues/{name}/patch`
+ *  reports them; `footprint` is null when its type or mode does not load. */
+export interface PatchSpan {
+  fixture: string;
+  universe: number;
+  address: number;
+  footprint: number | null;
+  type: string;
+  /** The mode the fixture line names; null is its type's default. */
+  mode: string | null;
+}
+
+export interface PatchOverlapInfo {
+  a: string;
+  b: string;
+  a_gang: string[];
+  b_gang: string[];
+  universe: number;
+  from: number;
+  to: number;
+}
+
+export interface VenuePatch {
+  spans: PatchSpan[];
+  overlaps: PatchOverlapInfo[];
+  overruns: {
+    fixture: string;
+    universe: number;
+    address: number;
+    footprint: number;
+    last: number;
+  }[];
+}
+
+/** The addresses a venue's fixtures occupy, from the files (no engine). */
+export async function fetchVenuePatch(
+  name: string,
+  dir?: string,
+  fixtureTypesDir?: string,
+): Promise<VenuePatch> {
+  const params = new URLSearchParams();
+  if (dir) params.set("dir", dir);
+  if (fixtureTypesDir) params.set("fixture_types_dir", fixtureTypesDir);
+  const query = params.toString();
+  const res = await get(
+    `/lighting/venues/${encodeURIComponent(name)}/patch${query ? `?${query}` : ""}`,
+  );
+  if (!res.ok) throw await apiError(res, "Failed to read the venue's patch");
+  return res.json();
 }
 
 export async function deleteVenue(name: string, dir?: string): Promise<void> {

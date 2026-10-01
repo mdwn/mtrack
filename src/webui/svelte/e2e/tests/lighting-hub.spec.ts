@@ -65,6 +65,46 @@ async function states(page: Page): Promise<string[]> {
 }
 
 test.describe("Lighting hub", () => {
+  test("a venue that does not load is said first, and blocks the Venue check", async ({
+    page,
+  }) => {
+    await routeReadiness(page, (r) => {
+      r.venue_error = {
+        venue: "test-venue",
+        fixture: "Brick3",
+        reason: 'mode "13: DIM" of fixture type "brick" did not load',
+      };
+    });
+    await page.goto("/#/lighting");
+    const alert = page.getByTestId("hub-venue-error");
+    await expect(alert).toBeVisible();
+    await expect(alert).toContainText(
+      'Venue "test-venue" did not load: fixture "Brick3"',
+    );
+    await expect(alert).toContainText("no fixtures will light");
+    await expect(page.getByTestId("check-venue")).toHaveAttribute(
+      "data-state",
+      "blocked",
+    );
+  });
+
+  test("patch overlaps are the venue's, listed once and not under every song", async ({
+    page,
+  }) => {
+    const message =
+      'fixtures "A" and "B" are both patched on universe 1 at addresses 2-4; each will overwrite the other';
+    await routeReadiness(page, (r) => {
+      r.patch_warnings = [{ kind: "patch-overlap", message }];
+    });
+    await page.goto("/#/lighting");
+    await expect(page.getByTestId("check-venue")).toHaveAttribute(
+      "data-state",
+      "attention",
+    );
+    await expect(page.getByText(message)).toHaveCount(1);
+    await expect(page.getByTestId("hub-venue-error")).toHaveCount(0);
+  });
+
   test("a rig where everything lines up is ready in all five checks", async ({
     page,
   }) => {

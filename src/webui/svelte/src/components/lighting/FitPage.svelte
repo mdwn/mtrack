@@ -214,7 +214,7 @@
         name: f.name ?? name,
         tags: f.tags ?? [],
       }));
-      await saveVenue(
+      const saved = await saveVenue(
         venueName,
         {
           fixtures: withTags(fixtures, names, toAdd),
@@ -224,12 +224,19 @@
         dir,
         venueVersion ?? fresh,
       );
-      tagMsg = {
-        ok: true,
-        text: $t("lighting.fit.tagged", {
-          values: { count: names.length, tags: toAdd.join(", ") },
-        }),
-      };
+      tagMsg = saved.venueError
+        ? {
+            ok: false,
+            text: $t("lighting.venueError.saved", {
+              values: { ...saved.venueError },
+            }),
+          }
+        : {
+            ok: true,
+            text: $t("lighting.fit.tagged", {
+              values: { count: names.length, tags: toAdd.join(", ") },
+            }),
+          };
       selection = [];
       picking = false;
       await refresh();
