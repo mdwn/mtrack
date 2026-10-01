@@ -35,7 +35,7 @@ use super::GdtfError;
 
 /// Bumped whenever the rig distilled from the same source can change; part
 /// of the asset cache's file name, so an upgrade regenerates every rig.
-pub const RIG_VERSION: u32 = 2;
+pub const RIG_VERSION: u32 = 3;
 
 /// The deepest chain of geometry references followed. Real fixtures nest
 /// one level (cells in a head); a reference cycle is an attack, not a rig.
@@ -104,8 +104,12 @@ pub enum RigRole {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "shape", rename_all = "snake_case")]
 pub enum RigShape {
-    /// A mesh in the asset cache, by path relative to the rig file.
-    Model { file: String },
+    /// A mesh in the asset cache, by path relative to the rig file, with
+    /// the Model's declared Length, Width, Height in meters (x, y, z). The
+    /// spec has the mesh "explicitly scaled to this dimension", per axis,
+    /// whatever size the file itself has; a size of 0 is the spec's
+    /// default, "not stated", and the mesh is drawn as it is.
+    Model { file: String, size: [f64; 3] },
     /// A GDTF primitive (`Cube`, `Cylinder`, `Sphere`, `Base`, `Yoke`,
     /// `Head`, `Pigtail`, ...) of the given size in meters (x, y, z).
     Primitive { kind: String, size: [f64; 3] },
@@ -512,6 +516,7 @@ impl RigWalk<'_> {
             if self.model_files.contains(&file.to_ascii_lowercase()) {
                 return RigShape::Model {
                     file: format!("models/{}.glb", file.to_ascii_lowercase()),
+                    size: model.size,
                 };
             }
         }
@@ -585,7 +590,9 @@ mod tests {
         assert_eq!(
             rig.nodes[1].shape,
             RigShape::Model {
-                file: "models/yoke.glb".to_string()
+                file: "models/yoke.glb".to_string(),
+                // The Model's declared size travels with the mesh.
+                size: [0.30, 0.10, 0.25]
             }
         );
         assert_eq!(

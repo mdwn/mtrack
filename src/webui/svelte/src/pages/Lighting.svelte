@@ -119,7 +119,12 @@
   {:else if route.sub === "import"}
     <MvrImportWizard fixtureTypesDir={ftDir} venuesDir={venueDir} />
   {:else if route.sub === "stage"}
-    <Stage3D heading="h2" />
+    <Stage3D
+      heading="h2"
+      venue={route.item}
+      fixtureTypesDir={ftDir}
+      venuesDir={venueDir}
+    />
   {/if}
 </div>
 

@@ -2844,6 +2844,87 @@ pub(super) async fn get_venue_patch(
     }
 }
 
+/// GET /api/lighting/venues/:name/scene — what the 3D view draws for a
+/// venue, read from the files with no engine needed: the shape of the
+/// websocket's metadata for the current venue (each fixture's type, mode,
+/// position, rotation and rig; the venue's focus points and scenery), so a
+/// venue that is not the current one can be looked at in 3D. Loading the
+/// system distils each (archive, mode) rig into the store, as the engine's
+/// load does; a fixture whose type or mode does not load has no rig and is
+/// drawn generically.
+pub(super) async fn get_venue_scene(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+    Query(query): Query<LightingDirQuery>,
+) -> impl IntoResponse {
+    validate_lighting_name(&name)?;
+    let venues_dir =
+        resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    let types_dir = resolve_lighting_dir(
+        &state.config_path,
+        query.fixture_types_dir.as_deref(),
+        DEFAULT_FIXTURE_TYPES_DIR,
+    )?;
+    let root = canonical_project_root(&project_root(&state.config_path)?)?;
+    let outcome = super::helpers::spawn_blocking_io("read venue scene", move || {
+        let system = system_from_files(&root, &types_dir, &venues_dir)?;
+        let Some(venue) = system
+            .venues_iter()
+            .find(|(n, _)| **n == name)
+            .map(|(_, v)| v)
+        else {
+            return Ok::<_, String>(None);
+        };
+        Ok(Some(venue_scene_json(&system, venue)))
+    })
+    .await?;
+    match outcome {
+        Some(body) => Ok((StatusCode::OK, Json(body)).into_response()),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Venue not found"})),
+        )
+            .into_response()),
+    }
+}
+
+/// The scene answer for one venue of a loaded system.
+fn venue_scene_json(
+    system: &lighting::system::LightingSystem,
+    venue: &lighting::types::Venue,
+) -> serde_json::Value {
+    let fixtures: serde_json::Map<String, serde_json::Value> = venue
+        .fixtures()
+        .iter()
+        .map(|(name, fixture)| {
+            let rig = system
+                .resolve_fixture_type(fixture)
+                .ok()
+                .and_then(|t| t.rig().map(str::to_string));
+            (
+                name.clone(),
+                json!({
+                    "tags": fixture.tags(),
+                    "type": fixture.fixture_type(),
+                    "mode": fixture.mode(),
+                    "position": fixture.position(),
+                    "rotation": fixture.rotation(),
+                    "rig": rig,
+                }),
+            )
+        })
+        .collect();
+    json!({
+        "fixtures": fixtures,
+        "venue": {
+            "name": venue.name(),
+            "focus_points": venue.focus_points(),
+            "scenery": system.scenery(venue.name()),
+            "scenery_error": system.scenery_error(venue.name()),
+        },
+    })
+}
+
 /// A lighting system loaded from a project's type and venue files alone, as
 /// the engine would load them, with no venue made current (so the loader
 /// reports nothing on its behalf).
@@ -5990,6 +6071,61 @@ show "test" {
             state,
             "GET",
             "/lighting/venues/nowhere/patch?dir=v_patch&fixture_types_dir=ft_patch".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_scene_of_a_venue_comes_from_its_files_with_each_fixture_s_rig() {
+        let (state, _dir) = test_state();
+        project_with_bricks(_dir.path(), "ft_scene", "v_scene");
+        std::fs::write(
+            _dir.path().join("v_scene").join("s.venue"),
+            "venue \"s\" {\n  fixture \"A\" Brick mode \"8: RGBS\" @ 1:1 position (-2, 2, 3)\n  \
+             fixture \"B\" Brick mode \"Mover 16bit\" @ 1:20\n  \
+             fixture \"Odd\" Brick mode \"Nope\" @ 1:200\n}\n",
+        )
+        .unwrap();
+
+        let (status, parsed) = fixture_type_request(
+            state.clone(),
+            "GET",
+            "/lighting/venues/s/scene?dir=v_scene&fixture_types_dir=ft_scene".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(parsed["venue"]["name"], "s");
+        assert!(parsed["venue"]["scenery"].is_null(), "{parsed}");
+        let fixtures = &parsed["fixtures"];
+        assert_eq!(fixtures.as_object().unwrap().len(), 3, "{parsed}");
+        assert_eq!(fixtures["A"]["type"], "Brick");
+        assert_eq!(fixtures["A"]["mode"], "8: RGBS");
+        assert_eq!(
+            fixtures["A"]["position"],
+            serde_json::json!([-2.0, 2.0, 3.0])
+        );
+        assert!(fixtures["B"]["position"].is_null(), "{parsed}");
+        // Each (archive, mode) has its own rig, written to the store.
+        let rig_a = fixtures["A"]["rig"].as_str().expect("a rig for A");
+        let rig_b = fixtures["B"]["rig"].as_str().expect("a rig for B");
+        assert_ne!(rig_a, rig_b);
+        assert!(_dir
+            .path()
+            .join("lighting/.cache/assets")
+            .join(rig_a)
+            .is_file());
+        // A mode that does not load is drawn generically, not dropped.
+        assert!(fixtures["Odd"]["rig"].is_null(), "{parsed}");
+
+        let (status, _) = fixture_type_request(
+            state,
+            "GET",
+            "/lighting/venues/nowhere/scene?dir=v_scene&fixture_types_dir=ft_scene".to_string(),
             "text/plain",
             Body::empty(),
         )

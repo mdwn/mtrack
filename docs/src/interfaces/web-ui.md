@@ -513,7 +513,8 @@ six pages, shown as tabs across the top. Each page has its own address, so you c
 | 3D | `#/lighting/stage` | The venue as a room |
 
 What a page has open is part of its address too: a fixture's page is `#/lighting/fixtures/<name>`,
-the venue selected for the plot is `#/lighting/venues/<name>` (`?edit` when its form is open), and
+the venue selected for the plot is `#/lighting/venues/<name>` (`?edit` when its form is open), the
+venue Stage 3D shows is `#/lighting/stage/<name>`, and
 a new form is `?new=venue`, `?new=light` or `?new=fixture`. The browser's Back, a reload and a
 shared link land where they say, and a page's tab always returns to its list.
 
@@ -816,6 +817,29 @@ suggestion is available to agents as the MCP tool `suggest_group_tags`. A link s
 
 The venue as a room; see [Stage 3D](../lighting/configuration.md#stage-3d). The old address
 `#/stage` still works and redirects here.
+
+Which venue it shows is part of the address: `#/lighting/stage/<venue>`, and the **3D** button on a
+venue's plot opens that venue. With no venue named (the tab, or the dashboard's stage card) it is the
+current venue. The header always names the venue it is showing:
+
+- **The current venue** ("Current venue: house · live") is drawn live, as the engine drives it.
+- **Any other venue** ("Venue file: club · not live") is drawn from its file: every fixture at its
+  position and rotation with its own type and mode's model, the focus points, and the MVR's scenery
+  if the venue came from one. The fixtures are lit a plain white at rest so the lenses and beam
+  directions read; there is no live colour. **Preview** is off for it, because a preview plays a show
+  on the engine's venue — make the venue current on the Groups page to preview a show on it. Saving
+  the venue or a fixture type redraws it.
+- **A venue whose fixtures have no position yet** is not empty: they are drawn in a row in front of
+  the stage, and a line above the view says how many, with a link to the venue's plot to place them.
+- A name no venue has says so, rather than showing another venue.
+
+Sizes are true: the world is in meters (the grid is 1 m, noted in the view's corner), fixtures sit at
+their venue positions, and a fixture's model is drawn at the size its GDTF declares — the GDTF
+standard has the mesh "explicitly scaled to this dimension", whatever size the mesh file has. Two
+things are drawing conventions, not measurements: a beam's **angle** is the GDTF's beam angle, but its
+**length** is capped by beam type (a spot throws up to 24 m, a wash 8 m, an LED tile or glow a short
+0.9 m haze at the lens); and the **deck** is just big enough to hold the fixtures and focus points
+(at least 8 × 6 m, with 1 m to spare, wider when the MVR's scenery is) — it is not a stored stage size.
 
 The header carries a **Live / Preview** switch, and a badge beside the title says which is
 showing. **Live** draws what the engine is sending. **Preview** draws what a song's show would

@@ -735,6 +735,43 @@ conversion unless it proves cheap.
 4. **MVR export before GDTF export**, the generated minimal GDTF serving both.
 5. **Per-cell control stays out** of P2.
 
+### 16.8 As built: any venue in 3D, and true size (2026-10-01)
+
+**Any venue.** The page's venue is part of its address, `#/lighting/stage/<venue>`; a
+venue's plot links there. No venue named, or the engine's current venue, is drawn live as
+before. Any other venue is drawn from its file through `GET
+/api/lighting/venues/<name>/scene`, which answers in the shape of the websocket's metadata
+(per fixture: type, mode, position, rotation, rig path; the venue's focus points and
+scenery path), from the files alone, as `/patch` does: loading the system expands every
+venue fixture's (archive, mode) and writes its rig to the store, so the paths it names
+exist. A fixture whose type or mode does not load has no rig and is drawn generically.
+The file view lights every fixture a neutral white at rest; Preview is off for it (it
+evaluates against the engine's venue). An unknown name is a 404 and a message, never the
+current venue.
+
+**True size.** The world is meters throughout. GDTF (DIN SPEC 15800, "Model", table 32):
+"The dimension XML attributes of model (see table 32) are always used, no matter the
+scaling and ratio of the mesh file. The mesh is explicitly scaled to this dimension", with
+"The length defines the dimension of the model on the X axis, the width on the Y axis and
+the height on the Z axis", and a default of 0. Blender DMX (`gdtf.py`, `loadModel`) does
+exactly that, per axis, for glb and 3ds alike: it joins the imported parts with their
+transforms applied, then sets scale to declared ÷ the mesh's dimensions on each axis
+(measured Z-up, after the glTF importer's turn). So the rig's `Model` shape carries the
+Model's `size` (`RIG_VERSION` 3), and the scene fits the mesh's bounding box — in its own
+frame, node transforms applied, after the Y-up→Z-up turn — to it per axis about the
+mesh's origin (`lib/stage/fit.ts`). A Model with any dimension 0 states no size and its
+mesh is drawn as the file has it (Blender DMX would flatten it; the corpus has none).
+`tests/gdtf_model_size_corpus.rs` measures every glb against its declared size: of 51
+(archive, model) pairs across 13 fixture types, 30 agree within 2%, 5 within 10%, and 16
+differ by more — all of them pixel or lens models (Astera Hyperion's pixels share one 2 m
+tube mesh, up to ×40 too long; Robe Tetra2/TetraX pixel plates ×5 too thick). Fixture
+bodies were already true; cells were not.
+
+Two things are conventions, not measurements: a beam's angle is the GDTF's, its length is
+capped by beam type (spot 24 m, wash 8 m, others 0.9 m); and the deck is an extent around
+the fixtures and focus points (at least 8 × 6 m, 1 m margin, widened by MVR scenery), not a
+stored venue size.
+
 ## 17. P3 in detail: per-cell control (draft 1, 2026-09-19)
 
 Every pixel fixture mtrack imports today is ganged: the first cell's channels are the

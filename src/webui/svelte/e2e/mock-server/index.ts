@@ -669,6 +669,37 @@ app.get("/api/lighting/venues/:name", (req, res) => {
   });
 });
 
+// What the 3D page draws for a venue that is not the current one: the
+// venue's file in the metadata's shape. No rigs here (every fixture draws
+// generically); "nowhere" is a venue the server does not have.
+app.get("/api/lighting/venues/:name/scene", (req, res) => {
+  if (req.params.name === "nowhere") {
+    res.status(404).json({ error: "Venue not found" });
+    return;
+  }
+  const body = savedVenues.get(req.params.name) ?? MOCK_VENUE;
+  const fixtures: Record<string, unknown> = {};
+  for (const f of body.fixtures) {
+    fixtures[f.name] = {
+      tags: f.tags,
+      type: f.fixture_type,
+      mode: null,
+      position: f.position ?? null,
+      rotation: f.rotation ?? null,
+      rig: null,
+    };
+  }
+  res.json({
+    fixtures,
+    venue: {
+      name: req.params.name,
+      focus_points: body.focus_points ?? {},
+      scenery: null,
+      scenery_error: null,
+    },
+  });
+});
+
 // Keyed by venue name so parallel tests, each editing its own venue, never
 // read each other's save. A single global slot made the stage-view geometry
 // tests race whenever two of them ran at once.

@@ -62,6 +62,7 @@
     type Rect,
     type StageFrame,
   } from "../lib/stage/layout";
+  import { lightingHref } from "../lib/lightingRoute";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { untrack } from "svelte";
@@ -1359,7 +1360,16 @@
             : `Error: ${$reloadStore.error}`}
         </span>
       {/if}
-      <a href="#/lighting/stage" class="btn btn-sm stage-card__3d">
+      <!-- From a venue, the 3D page shows that venue (its file when it is
+           not the current one); the dashboard's live plot opens the live
+           scene. -->
+      <a
+        href={editable && venue
+          ? lightingHref("stage", venue.name)
+          : "#/lighting/stage"}
+        class="btn btn-sm stage-card__3d"
+        data-testid="stage-3d-link"
+      >
         {$t("stage3d.open")}
       </a>
       {#if !editable}

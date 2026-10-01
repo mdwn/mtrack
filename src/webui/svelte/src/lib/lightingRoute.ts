@@ -30,7 +30,8 @@ export interface LightingRoute {
   group: string | null;
   /** The thing a page has open, from the path after the sub-page:
    *  `#/lighting/fixtures/<name>` (a fixture's page),
-   *  `#/lighting/venues/<name>` (the venue selected for the plot). */
+   *  `#/lighting/venues/<name>` (the venue selected for the plot),
+   *  `#/lighting/stage/<name>` (the venue Stage 3D shows). */
   item: string | null;
   /** `?edit` on a venue: its form is open. `?as=text` on a fixture type:
    *  its file is open as text. */
@@ -83,7 +84,7 @@ export function lightingRoute(hash: string): LightingRoute {
 
 /** The address of a page's open thing (`null` for the page itself). */
 export function lightingHref(
-  sub: "fixtures" | "venues",
+  sub: "fixtures" | "venues" | "stage",
   item: string | null = null,
   extra: Record<string, string> = {},
 ): string {

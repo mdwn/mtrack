@@ -15,6 +15,7 @@
 import { BadAnswerError, readJson } from "../lighting/answer";
 import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
 import { parseFit, type Fit } from "../lighting/fit";
+import type { FixtureMetadata, VenueMetadata } from "../ws/stores";
 import { parseReadiness, type Readiness } from "../lighting/readiness";
 import {
   get,
@@ -1149,6 +1150,34 @@ export async function fetchVenuePatch(
     `/lighting/venues/${encodeURIComponent(name)}/patch${query ? `?${query}` : ""}`,
   );
   if (!res.ok) throw await apiError(res, "Failed to read the venue's patch");
+  return res.json();
+}
+
+/** What the 3D view draws for a venue, from its files: the websocket's
+ *  metadata shape, for a venue that is not the current one. */
+export interface VenueScene {
+  fixtures: Record<string, FixtureMetadata & { mode?: string | null }>;
+  venue: Omit<VenueMetadata, "dir">;
+}
+
+/** A venue the server does not have (404), told apart from a failed read. */
+export class VenueNotFoundError extends Error {}
+
+export async function fetchVenueScene(
+  name: string,
+  dir?: string,
+  fixtureTypesDir?: string,
+): Promise<VenueScene> {
+  const params = new URLSearchParams();
+  if (dir) params.set("dir", dir);
+  if (fixtureTypesDir) params.set("fixture_types_dir", fixtureTypesDir);
+  const query = params.toString();
+  const res = await get(
+    `/lighting/venues/${encodeURIComponent(name)}/scene${query ? `?${query}` : ""}`,
+  );
+  if (res.status === 404)
+    throw new VenueNotFoundError((await apiError(res, "")).message);
+  if (!res.ok) throw await apiError(res, "Failed to read the venue's scene");
   return res.json();
 }
 

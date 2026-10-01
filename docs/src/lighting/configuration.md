@@ -671,7 +671,9 @@ which are a good way to see what an import of your own rig will look like.
 
 ## Stage 3D
 
-The dashboard's stage card has a **3D** button that opens the venue as a room: the deck with
+The dashboard's stage card has a **3D** button that opens the venue as a room (a venue's
+plot on the Venues page has one too, and it opens that venue — from its file when it is not
+the current one; see [3D](../interfaces/web-ui.md#3d)): the deck with
 the audience edge marked, every fixture at its venue position, movers turning as the show
 drives them, beams in the colour and level the fixture is showing, and focus points as
 markers. Drag to orbit, scroll to zoom, right-drag to pan; the **Front of house**, **Side**
@@ -689,7 +691,9 @@ disc, one wedge per cell, coloured from the cell's own state.
 ![Stage 3D during a show: the Basic_Festival sample venue with its glTF scenery](../images/stage-3d.png)
 
 What a fixture looks like comes from its GDTF: the archive's meshes when it ships them, or
-the GDTF's own primitives with their sizes. Pan turns the geometry the GDTF's pan channel
+the GDTF's own primitives with their sizes. A mesh is drawn at the size the GDTF's model
+declares (its Length, Width and Height), as the GDTF standard requires, whatever size the mesh
+file itself was made at. Pan turns the geometry the GDTF's pan channel
 names, tilt the one its tilt channel names, and a beam leaves each beam geometry with the
 angle the GDTF states — a 5° spot looks like a spot, a 25° wash like a wash. A fixture type
 written by hand has none of this and is drawn as a box with a 20° beam out of its rest

@@ -44,6 +44,7 @@ import {
   type RigModel,
   type SceneryModel,
 } from "./rig";
+import { fittedMesh } from "./fit";
 import type {
   CellChannels,
   FixtureChannels,
@@ -667,12 +668,12 @@ export class StageScene {
           // A clone shares the loaded geometry (owned by the cache, freed
           // with the scene); only the materials are this actor's.
           const mesh = gltf.scene.clone(true);
-          // glTF is Y-up; the rig is Z-up.
-          mesh.rotation.x = Math.PI / 2;
           mesh.traverse((o) => {
             if (o instanceof THREE.Mesh) o.material = material();
           });
-          spin.add(mesh);
+          // Turned Z-up and fitted to the Model's declared size: the
+          // world is meters, and the declared size is the fixture's.
+          spin.add(fittedMesh(mesh, node.shape.size));
           stats.meshes++;
         } else {
           spin.add(

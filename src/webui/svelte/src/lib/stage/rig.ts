@@ -51,7 +51,9 @@ export type RigRole =
   | { kind: "cell"; index: number };
 
 export type RigShape =
-  | { shape: "model"; file: string }
+  /** A mesh, with its Model's declared Length, Width, Height in meters:
+   *  the scene fits the mesh to it (`fit.ts`); 0 means not stated. */
+  | { shape: "model"; file: string; size: [number, number, number] }
   | { shape: "primitive"; kind: string; size: [number, number, number] }
   | { shape: "empty" };
 
