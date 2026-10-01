@@ -348,7 +348,7 @@ impl DistillCache {
             .nodes
             .iter()
             .filter_map(|n| match &n.shape {
-                gdtf::RigShape::Model { file } => file
+                gdtf::RigShape::Model { file, .. } => file
                     .strip_prefix("models/")
                     .and_then(|f| f.strip_suffix(".glb"))
                     .map(str::to_string),

@@ -56,7 +56,7 @@
 
     (async () => {
       try {
-        // three.js arrives with this chunk only, as on the Stage 3D page.
+        // three.js arrives with this chunk only, as on the venue card's 3D view.
         const { StageScene } = await import("../../lib/stage/scene3d");
         if (disposed || !canvasEl || !hostEl) return;
         live = new StageScene(canvasEl);

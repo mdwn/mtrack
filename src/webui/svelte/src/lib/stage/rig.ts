@@ -51,7 +51,9 @@ export type RigRole =
   | { kind: "cell"; index: number };
 
 export type RigShape =
-  | { shape: "model"; file: string }
+  /** A mesh, with its Model's declared Length, Width, Height in meters:
+   *  the scene fits the mesh to it (`fit.ts`); 0 means not stated. */
+  | { shape: "model"; file: string; size: [number, number, number] }
   | { shape: "primitive"; kind: string; size: [number, number, number] }
   | { shape: "empty" };
 
@@ -195,7 +197,7 @@ export function poseRotations(
 }
 
 /** How long a spot's beam is drawn when it points up or level, meters. The
- *  3D page says so when a beam misses the deck. */
+ *  3D view says so when a beam misses the deck. */
 export const SKY_BEAM_LENGTH = 4;
 
 /** Where a beam meets the deck (z = 0) from a point along a direction. */

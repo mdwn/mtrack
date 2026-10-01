@@ -58,13 +58,17 @@ test.describe("Stage cells (design §17.4)", () => {
     expect(errors, `page errors: ${errors.join("; ")}`).toEqual([]);
   });
 
-  test("the 3D page draws a per-cell state without erroring", async ({
+  test("the venue card's 3D draws a per-cell state without erroring", async ({
     page,
   }) => {
     const errors: string[] = [];
     page.on("pageerror", (err) => errors.push(String(err)));
 
-    await page.goto(`/?wsId=${wsId}#/lighting/stage`);
+    await page.goto(`/?wsId=${wsId}#/lighting/venues/test-venue?view=3d`);
+    await sendWsMessage(page, wsId, {
+      ...PIXEL_METADATA_STATE,
+      venue: { name: "test-venue", dir: null, focus_points: {} },
+    });
     await expect(page.locator(".stage3d__viewport")).toBeVisible();
     await expect(page.locator(".stage3d__viewport")).toHaveAttribute(
       "data-renderer",
@@ -72,11 +76,15 @@ test.describe("Stage cells (design §17.4)", () => {
       { timeout: 15000 },
     );
 
-    await sendWsMessage(page, wsId, PIXEL_METADATA_STATE);
     await sendWsMessage(page, wsId, PIXEL_STATE);
 
-    await expect(page.locator(".stage3d__subtitle")).toContainText(
-      "3 fixtures",
+    await expect(page.locator(".stage3d__viewport")).toHaveAttribute(
+      "data-source",
+      "live",
+    );
+    await expect(page.locator(".stage3d__viewport")).toHaveAttribute(
+      "data-fixtures",
+      "3",
     );
 
     expect(errors, `page errors: ${errors.join("; ")}`).toEqual([]);

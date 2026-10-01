@@ -671,12 +671,13 @@ which are a good way to see what an import of your own rig will look like.
 
 ## Stage 3D
 
-The dashboard's stage card has a **3D** button that opens the venue as a room: the deck with
+The stage card on the Venues page has a **Plot | 3D** switch that shows the venue as a room in
+place of the plot (the dashboard's stage card has a **3D** button that opens it there; see
+[Plot and 3D](../interfaces/web-ui.md#plot-and-3d)): the deck with
 the audience edge marked, every fixture at its venue position, movers turning as the show
 drives them, beams in the colour and level the fixture is showing, and focus points as
-markers. Drag to orbit, scroll to zoom, right-drag to pan; the **Front of house**, **Side**
-and **Top** buttons are camera presets, and **Labels** toggles the fixture names (off by
-default on a large rig). A fixture the player has reported nothing for is drawn dark, so an
+markers. Drag to orbit, scroll to zoom, right-drag to pan; it opens from front of house, and
+fixture names are labelled on a rig of up to 40 fixtures. A fixture the player has reported nothing for is drawn dark, so an
 idle rig before the first song looks as dark as the real one. A pixel fixture — one with
 cells — lights its lenses per cell when
 a show says `per: cell`; the stage plot on the dashboard draws such a fixture as a segmented
@@ -689,23 +690,25 @@ disc, one wedge per cell, coloured from the cell's own state.
 ![Stage 3D during a show: the Basic_Festival sample venue with its glTF scenery](../images/stage-3d.png)
 
 What a fixture looks like comes from its GDTF: the archive's meshes when it ships them, or
-the GDTF's own primitives with their sizes. Pan turns the geometry the GDTF's pan channel
+the GDTF's own primitives with their sizes. A mesh is drawn at the size the GDTF's model
+declares (its Length, Width and Height), as the GDTF standard requires, whatever size the mesh
+file itself was made at. Pan turns the geometry the GDTF's pan channel
 names, tilt the one its tilt channel names, and a beam leaves each beam geometry with the
 angle the GDTF states — a 5° spot looks like a spot, a 25° wash like a wash. A fixture type
 written by hand has none of this and is drawn as a box with a 20° beam out of its rest
 direction, the mounting frame's −Z. Fixtures the venue does not place sit on a tray in
 front of the audience edge.
 
-A **Preview** switch in the page's header replaces the live state with a song's show at a
-moment you scrub to, worked out offline (nothing is sent to the lights, and a playing song
-keeps playing); see [3D](../interfaces/web-ui.md#3d).
+On the current venue, a **Preview** switch under the picture replaces the live state with a
+song's show at a moment you scrub to, worked out offline (nothing is sent to the lights, and a
+playing song keeps playing); see [Previewing a song](../interfaces/web-ui.md#previewing-a-song).
 
 A venue seeded from an MVR also shows the MVR's scenery — decks, trusses, screens — where
 the MVR carries it as glTF (`.glb`); scenery in other formats (`.3ds` is common in console
-exports) is reported by the import and by the page, and skipped. The room is always dark,
+exports) is reported by the import and under the picture, and skipped. The room is always dark,
 whatever the UI theme, and it is a sketch, not a render: no haze model, no shadows, no
 photometrics. The models and rig data it draws live in the asset
-store (`lighting/.cache/assets/`, rebuildable) and load only on this page.
+store (`lighting/.cache/assets/`, rebuildable) and load only when 3D is shown.
 
 ## Song Lighting Definitions
 

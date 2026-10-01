@@ -245,6 +245,10 @@ pub fn router() -> Router<WebUiState> {
             get(lighting_api::get_venue_patch),
         )
         .route(
+            "/lighting/venues/{name}/scene",
+            get(lighting_api::get_venue_scene),
+        )
+        .route(
             "/lighting/assets/{*path}",
             get(lighting_api::get_lighting_asset),
         )

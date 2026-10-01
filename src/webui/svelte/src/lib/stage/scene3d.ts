@@ -44,6 +44,7 @@ import {
   type RigModel,
   type SceneryModel,
 } from "./rig";
+import { fittedMesh } from "./fit";
 import type {
   CellChannels,
   FixtureChannels,
@@ -59,6 +60,8 @@ const ASSETS = "/api/lighting/assets/";
 const BACKGROUND = 0x0b0e13;
 const BODY_COLOR = 0x9aa4b2;
 const LENS_COLOR = 0x222222;
+/** The selection's mark: the UI's cyan, bright enough for the dark room. */
+const SELECTED_COLOR = 0x5ce1f2;
 
 /**
  * How far and how brightly a beam kind is drawn. A spot throws to the deck;
@@ -118,6 +121,8 @@ interface FixtureActor {
   /** Cells reported once as having no lens in the rig. */
   unmatchedCells: Set<string>;
   label: THREE.Sprite;
+  /** The label's own size, before any selection emphasis. */
+  labelScale: THREE.Vector3;
   placed: boolean;
 }
 
@@ -274,6 +279,8 @@ export class StageScene {
   private cone = beamGeometry();
   private frame = 0;
   private generation = 0;
+  private selected = new Set<string>();
+  private selectionBoxes = new Map<string, THREE.Box3Helper>();
   private labels = true;
   private channels: Record<string, FixtureChannels> = {};
   private cells: CellChannels = {};
@@ -347,7 +354,7 @@ export class StageScene {
   /**
    * Fits the camera to the fixture bodies alone — not their beams, labels
    * or the deck — for a close-up of a single fixture (a fixture type's
-   * details view; the Stage 3D page never calls this). A stage-sized deck
+   * details view; the venue card's 3D never calls this). A stage-sized deck
    * and stage-length beams would swamp a 20 cm fixture, so the deck goes
    * and beams are cut to about the fixture's own size; the orbit may come
    * close and pass under the fixture, where a hung fixture's lens faces.
@@ -410,10 +417,13 @@ export class StageScene {
     this.cells = cells;
   }
 
-  /** Rebuilds the fixtures and focus markers from the metadata. */
+  /** Rebuilds the fixtures and focus markers from the metadata. The camera
+   *  is framed afresh only when `frame` is set (a new venue); a re-read of
+   *  the same venue leaves it where the user put it. */
   async setVenue(
     fixtures: Record<string, FixtureMetadata>,
     venue: VenueMetadata | null,
+    frame = true,
   ): Promise<void> {
     const generation = ++this.generation;
     for (const actor of this.actors.values()) this.dropActor(actor);
@@ -431,7 +441,7 @@ export class StageScene {
     for (const p of Object.values(venue?.focus_points ?? {})) points.push(p);
     this.extent = deckExtent(points);
     this.buildDeck();
-    this.setCamera("foh");
+    if (frame) this.setCamera(this.preset);
 
     for (const [name, point] of Object.entries(venue?.focus_points ?? {})) {
       const marker = new THREE.Mesh(
@@ -489,8 +499,100 @@ export class StageScene {
       }),
     );
     if (generation !== this.generation) return;
+    this.applySelection();
     this.stats = stats;
     this.onStats?.(stats);
+  }
+
+  /** Marks the selected fixtures: a cyan box around each body and its
+   *  label tinted and enlarged, legible on the dark room. */
+  setSelection(names: string[]) {
+    this.selected = new Set(names);
+    this.applySelection();
+  }
+
+  private applySelection() {
+    for (const helper of this.selectionBoxes.values()) {
+      this.scene.remove(helper);
+      helper.dispose();
+    }
+    this.selectionBoxes.clear();
+    for (const actor of this.actors.values()) {
+      const on = this.selected.has(actor.name);
+      actor.label.material.color.set(on ? SELECTED_COLOR : 0xffffff);
+      actor.label.scale.copy(actor.labelScale).multiplyScalar(on ? 1.4 : 1);
+      if (on) {
+        const helper = new THREE.Box3Helper(new THREE.Box3(), SELECTED_COLOR);
+        helper.renderOrder = 9;
+        this.scene.add(helper);
+        this.selectionBoxes.set(actor.name, helper);
+      }
+    }
+  }
+
+  /** The fixture under a point of the canvas (normalised device
+   *  coordinates), by its body or its label; null for empty space. */
+  pick(x: number, y: number): string | null {
+    const ray = new THREE.Raycaster();
+    ray.camera = this.camera;
+    ray.setFromCamera(new THREE.Vector2(x, y), this.camera);
+    for (const hit of ray.intersectObject(this.fixtures, true)) {
+      const o = hit.object;
+      if (o instanceof THREE.Mesh && o.geometry === this.cone) continue;
+      let root: THREE.Object3D | null = o;
+      while (root && root.parent !== this.fixtures) root = root.parent;
+      if (root && this.actors.has(root.name)) return root.name;
+    }
+    return null;
+  }
+
+  /** Where each fixture's body sits on the canvas, as fractions of its
+   *  width and height from the top left, and where the camera is — for
+   *  tests that click a fixture or check the view held still. */
+  viewProbe(): {
+    camera: number[];
+    screen: Record<string, [number, number]>;
+  } {
+    const round = (v: number) => Math.round(v * 1000) / 1000;
+    const screen: Record<string, [number, number]> = {};
+    const box = new THREE.Box3();
+    const at = new THREE.Vector3();
+    for (const actor of this.actors.values()) {
+      box.makeEmpty();
+      actor.root.traverse((o) => {
+        if (o instanceof THREE.Mesh && o.geometry !== this.cone)
+          box.expandByObject(o);
+      });
+      if (box.isEmpty()) continue;
+      box.getCenter(at).project(this.camera);
+      screen[actor.name] = [round((at.x + 1) / 2), round((1 - at.y) / 2)];
+    }
+    const c = this.camera.position;
+    return { camera: [c.x, c.y, c.z].map(round), screen };
+  }
+
+  /** Each fixture's placement as drawn — position in meters, rotation in
+   *  degrees — for tests and diagnostics. */
+  fixtureTransforms(): Record<
+    string,
+    { position: number[]; rotation: number[]; placed: boolean }
+  > {
+    const out: Record<
+      string,
+      { position: number[]; rotation: number[]; placed: boolean }
+    > = {};
+    const round = (v: number) => Math.round(v * 1000) / 1000;
+    for (const actor of this.actors.values()) {
+      const { position, rotation } = actor.root;
+      out[actor.name] = {
+        position: [position.x, position.y, position.z].map(round),
+        rotation: [rotation.x, rotation.y, rotation.z].map((r) =>
+          round((r * 180) / Math.PI),
+        ),
+        placed: actor.placed,
+      };
+    }
+    return out;
   }
 
   /**
@@ -667,12 +769,12 @@ export class StageScene {
           // A clone shares the loaded geometry (owned by the cache, freed
           // with the scene); only the materials are this actor's.
           const mesh = gltf.scene.clone(true);
-          // glTF is Y-up; the rig is Z-up.
-          mesh.rotation.x = Math.PI / 2;
           mesh.traverse((o) => {
             if (o instanceof THREE.Mesh) o.material = material();
           });
-          spin.add(mesh);
+          // Turned Z-up and fitted to the Model's declared size: the
+          // world is meters, and the declared size is the fixture's.
+          spin.add(fittedMesh(mesh, node.shape.size));
           stats.meshes++;
         } else {
           spin.add(
@@ -736,6 +838,7 @@ export class StageScene {
       cellBeams,
       unmatchedCells: new Set(),
       label,
+      labelScale: label.scale.clone(),
       placed: true,
     };
   }
@@ -894,6 +997,16 @@ export class StageScene {
         beam.cone.visible = actor.placed || beamLit;
       }
     }
+    for (const [name, helper] of this.selectionBoxes) {
+      const actor = this.actors.get(name);
+      if (!actor) continue;
+      helper.box.makeEmpty();
+      actor.root.traverse((o) => {
+        if (o instanceof THREE.Mesh && o.geometry !== this.cone)
+          helper.box.expandByObject(o);
+      });
+      if (!helper.box.isEmpty()) helper.box.expandByScalar(0.06);
+    }
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
     this.frame++;
@@ -908,6 +1021,7 @@ export class StageScene {
   }
 
   dispose() {
+    for (const helper of this.selectionBoxes.values()) helper.dispose();
     for (const actor of this.actors.values()) this.dropActor(actor);
     this.actors.clear();
     for (const owned of this.sceneryOwned) owned.dispose();

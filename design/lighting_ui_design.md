@@ -796,3 +796,58 @@ the preview, and importing a mode the distiller refuses.
   `hardware.lighting_venue` feeds a non-dismissible banner on every page and a
   red health dot; readiness answers `venue_error` and `patch_warnings`, shown
   first on the Overview and under the Venue check, never under each song.
+
+## 13. As built: 3D lives on the venue's stage card (2026-10-01)
+
+The separate 3D page (`#/lighting/stage`, `pages/Stage3D.svelte`) and its tab
+are gone; the Venues page's stage card is the only 3D. Users read "3D" on a
+venue's plot as "show me this venue", and being sent to another page lost the
+selection and the inspector — which is where an aim is edited and where a
+rotation needs to be seen (a tilt is invisible from above).
+
+- **Plot | 3D, in place.** A segmented switch in the card's header
+  (`role="group"`, `aria-pressed` buttons) swaps the picture; the header,
+  "+ Focus point", the selection and the inspector stay. The view is the
+  address, `#/lighting/venues/<venue>?view=3d`, composed with `?edit` and
+  `?new=` (the form opens above the card as before; the card keeps its view)
+  and kept when another venue is selected. Leaving 3D drops a preview's
+  `mode`, `song` and `t`.
+- **One scene host.** `components/stage/Stage3DView.svelte` sets up, feeds
+  and frees the scene (lazy `scene3d` import, resize, render loop, live
+  stores or a venue file from `/scene` with the change-signal re-read, the
+  unplaced-fixtures note, "Grid: 1 m", the corner hint, caveat pills, the
+  no-WebGL fallback). It fills whatever box its host gives it; the card gives
+  it the plot's box. The card imports it — and `PreviewPanel` — with dynamic
+  `import()` behind the first press of 3D, so three.js and the preview code
+  are never fetched by someone who only uses the plot.
+- **The camera is framed once per venue.** `StageScene.setVenue` takes a
+  `frame` flag; the host passes it only when the venue shown changes, so
+  inspector applies and re-reads redraw without moving the camera, and the
+  scenery is re-fetched only when its path changes.
+- **Shared selection.** The scene picks with a raycast against fixture bodies
+  and labels (beam cones excluded) on a click that moved under 4 px; a drag
+  orbits. The selected fixtures get a cyan (`#5ce1f2`) `Box3Helper` around
+  their bodies, recomputed each frame so a mover's box follows it, and their
+  labels tinted cyan and enlarged 1.4×. The card's `selection` drives both
+  the plot and the scene.
+- **Preview on the card.** For the current venue, Live | Preview sits under
+  the picture; Preview shows `PreviewPanel` (song, sectioned scrubber, at
+  this moment, untouched, Open in timeline) under it. `mode=preview` is a
+  history entry; the evaluated `song` and `t` are written with
+  `history.replaceState`, so a reload or a shared link opens at the moment
+  without a history entry per scrub. A venue that is not current gets one
+  line instead: preview needs the current venue, with the Groups link.
+- **Old addresses.** `#/stage…` and `#/lighting/stage…` are rewritten (in
+  place, no history entry) to `#/lighting/venues[/<current>]?view=3d`,
+  keeping `mode`, `song` and `t`; the current venue is named when the page
+  already knows it. The dashboard's 3D link is the current venue's
+  `?view=3d`, or the Venues page when there is none.
+- **Test hooks.** The scene's viewport carries `data-transforms` (each
+  fixture's drawn position and rotation, set after each build),
+  `data-selected`, and `data-view` (camera position and each fixture's place
+  on the canvas, sampled every 15 frames) beside the existing
+  `data-source`/`data-fed`/`data-fixtures`/`data-placed`.
+- **Dropped with the page:** the camera preset buttons and the labels toggle
+  (labels are on up to 40 fixtures), the mode badge, and the page's
+  subtitle; its stats (generic fixtures, scenery drawn and skipped) moved to
+  a line under the picture.

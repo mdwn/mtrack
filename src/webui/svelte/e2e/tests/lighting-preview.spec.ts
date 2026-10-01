@@ -15,7 +15,8 @@
 import { test, expect, type Page } from "@playwright/test";
 import { SONGS } from "../mock-server/test-data";
 
-// Stage 3D's Preview mode (lighting UI design, section 12.1). Every test
+// The venue card's 3D Preview (lighting UI design, section 12.1), on the
+// current venue at `#/lighting/venues/<venue>?view=3d&mode=preview`. Every test
 // routes its own songs and evaluations with `page.route`. The scene's test
 // hook is the viewport's `data-fed` attribute: in Preview it carries exactly
 // what the scene was handed (channels, poses, cells).
@@ -149,8 +150,17 @@ const METADATA = (capabilities: string[]) => ({
   venue: { name: "test-venue", dir: null, focus_points: {} },
 });
 
-const previewUrl = (wsId: string, query = "") =>
-  `/?wsId=${wsId}#/lighting/stage${query}`;
+/** Opens the current venue's card in 3D (with `query` appended to
+ *  `?view=3d`) and tells the page which venue is current. */
+async function openCard(
+  page: Page,
+  wsId: string,
+  query = "",
+  capabilities: string[] = ["pan_tilt", "dimmer"],
+) {
+  await page.goto(`/?wsId=${wsId}#/lighting/venues/test-venue?view=3d${query}`);
+  await sendWsMessage(page, wsId, METADATA(capabilities));
+}
 
 const fed = async (page: Page) =>
   JSON.parse(
@@ -158,22 +168,22 @@ const fed = async (page: Page) =>
       "null",
   );
 
-test.describe("Stage 3D Preview", () => {
+test.describe("3D Preview on the venue card", () => {
   let wsId: string;
 
   test.beforeEach(() => {
     wsId = `prev-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
   });
 
-  test("the header switches between Live and Preview and says which", async ({
+  test("the card switches between Live and Preview, in the address", async ({
     page,
   }) => {
     await routeSongs(page);
     const asked = await routeEvaluate(page);
-    await page.goto(previewUrl(wsId));
+    await openCard(page, wsId);
 
-    const badge = page.getByTestId("stage3d-mode");
-    await expect(badge).toHaveText("Live");
+    const live = page.getByTestId("stage3d-mode-live");
+    await expect(live).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("preview-panel")).toHaveCount(0);
     await expect(page.locator(".stage3d__viewport")).toHaveAttribute(
       "data-source",
@@ -181,7 +191,7 @@ test.describe("Stage 3D Preview", () => {
     );
 
     await page.getByRole("button", { name: "Preview" }).click();
-    await expect(badge).toHaveText("Preview");
+    await expect(page).toHaveURL(/\?view=3d&mode=preview/);
     await expect(page.getByRole("button", { name: "Preview" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -195,9 +205,13 @@ test.describe("Stage 3D Preview", () => {
     await expect.poll(() => asked.length).toBeGreaterThan(0);
     expect(asked[0]).toEqual({ song: SONG, times: [0] });
 
+    // The moment evaluated is kept in the address.
+    await expect(page).toHaveURL(/&song=Test(\+|%20)Song(\+|%20)Alpha&t=0$/);
+
     await page.getByRole("button", { name: "Live" }).click();
-    await expect(badge).toHaveText("Live");
+    await expect(live).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("preview-panel")).toHaveCount(0);
+    await expect(page).toHaveURL(/\/test-venue\?view=3d$/);
   });
 
   test("scrubbing evaluates that moment and feeds the scene", async ({
@@ -205,7 +219,7 @@ test.describe("Stage 3D Preview", () => {
   }) => {
     await routeSongs(page);
     const asked = await routeEvaluate(page, MOVING);
-    await page.goto(previewUrl(wsId, "?mode=preview"));
+    await openCard(page, wsId, "&mode=preview");
 
     const range = page.getByRole("slider", { name: "Moment in the song" });
     await expect(range).toBeVisible();
@@ -232,10 +246,29 @@ test.describe("Stage 3D Preview", () => {
     expect(asked.length - before).toBeLessThan(3);
   });
 
+  test("the previewed moment round-trips through the address", async ({
+    page,
+  }) => {
+    await routeSongs(page);
+    const asked = await routeEvaluate(page, MOVING);
+    await openCard(page, wsId, "&mode=preview&song=Test%20Song%20Alpha&t=12.5");
+    await expect(page.getByTestId("preview-clock")).toHaveText("0:12.5 / 3:00");
+    await expect.poll(() => asked.some((a) => a.times[0] === 12.5)).toBe(true);
+    await page.getByRole("slider", { name: "Moment in the song" }).fill("30");
+    await expect(page).toHaveURL(/&t=30$/);
+    await page.reload();
+    await sendWsMessage(page, wsId, METADATA(["pan_tilt", "dimmer"]));
+    await expect(page.getByTestId("preview-clock")).toHaveText("0:30.0 / 3:00");
+    await expect(page.getByTestId("stage3d-mode-preview")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
   test("the scrubber steps from the keyboard", async ({ page }) => {
     await routeSongs(page);
     const asked = await routeEvaluate(page, MOVING);
-    await page.goto(previewUrl(wsId, "?mode=preview&t=10"));
+    await openCard(page, wsId, "&mode=preview&t=10");
     const range = page.getByRole("slider", { name: "Moment in the song" });
     await expect(page.getByTestId("preview-clock")).toHaveText("0:10.0 / 3:00");
     await range.focus();
@@ -251,7 +284,7 @@ test.describe("Stage 3D Preview", () => {
   test("the song's sections are drawn as a strip", async ({ page }) => {
     await routeSongs(page);
     await routeEvaluate(page);
-    await page.goto(previewUrl(wsId, "?mode=preview"));
+    await openCard(page, wsId, "&mode=preview");
     const strip = page.getByTestId("preview-sections");
     await expect(strip.locator(".preview__section")).toHaveText([
       "verse",
@@ -268,7 +301,7 @@ test.describe("Stage 3D Preview", () => {
   }) => {
     await routeSongs(page);
     await routeEvaluate(page, MOVING);
-    await page.goto(previewUrl(wsId, "?mode=preview&t=5"));
+    await openCard(page, wsId, "&mode=preview&t=5");
     const now = page.getByTestId("preview-activity");
     // Groups in name order, each effect by kind and progress.
     await expect(now.locator("li")).toHaveCount(2);
@@ -283,7 +316,7 @@ test.describe("Stage 3D Preview", () => {
   test("an idle moment says nothing is running", async ({ page }) => {
     await routeSongs(page);
     await routeEvaluate(page);
-    await page.goto(previewUrl(wsId, "?mode=preview"));
+    await openCard(page, wsId, "&mode=preview");
     await expect(page.getByTestId("preview-idle")).toContainText(
       "No effect is running",
     );
@@ -294,7 +327,7 @@ test.describe("Stage 3D Preview", () => {
   }) => {
     await routeSongs(page);
     await routeEvaluate(page, MOVING, ["spare", "wing-left"]);
-    await page.goto(previewUrl(wsId, "?mode=preview"));
+    await openCard(page, wsId, "&mode=preview");
     await expect(page.getByTestId("preview-untouched-count")).toContainText(
       "2 fixtures no cue targets",
     );
@@ -308,7 +341,7 @@ test.describe("Stage 3D Preview", () => {
   test("a show that reaches every fixture says so", async ({ page }) => {
     await routeSongs(page);
     await routeEvaluate(page, MOVING, []);
-    await page.goto(previewUrl(wsId, "?mode=preview"));
+    await openCard(page, wsId, "&mode=preview");
     await expect(page.getByTestId("preview-untouched-count")).toContainText(
       "Every fixture",
     );
@@ -317,7 +350,7 @@ test.describe("Stage 3D Preview", () => {
   test("Open this cue in the timeline carries the time", async ({ page }) => {
     await routeSongs(page);
     await routeEvaluate(page, MOVING);
-    await page.goto(previewUrl(wsId, "?mode=preview&t=12.5"));
+    await openCard(page, wsId, "&mode=preview&t=12.5");
     const link = page.getByTestId("preview-open-timeline");
     await expect(link).toHaveAttribute(
       "href",
@@ -358,7 +391,7 @@ test.describe("Stage 3D Preview", () => {
   }) => {
     await routeSongs(page);
     await routeEvaluate(page, MOVING, [], 400);
-    await page.goto(previewUrl(wsId, "?mode=preview"));
+    await openCard(page, wsId, "&mode=preview");
     await expect(page.getByTestId("preview-error")).toContainText(
       "Failed to parse show.light: line 3",
     );
@@ -378,7 +411,7 @@ test.describe("Stage 3D Preview", () => {
         body: "{}",
       });
     });
-    await page.goto(previewUrl(wsId, "?mode=preview"));
+    await openCard(page, wsId, "&mode=preview");
     await expect(page.getByTestId("preview-error")).toContainText(
       "answer was not understood",
     );
@@ -390,7 +423,7 @@ test.describe("Stage 3D Preview", () => {
     page,
   }) => {
     await routeSongs(page, { songs: [SONGS.songs[1]], failures: [] });
-    await page.goto(previewUrl(wsId, "?mode=preview"));
+    await openCard(page, wsId, "&mode=preview");
     await expect(page.getByTestId("preview-no-songs")).toBeVisible();
   });
 
@@ -405,7 +438,7 @@ test.describe("Stage 3D Preview", () => {
       transport++;
       await route.continue();
     });
-    await page.goto(previewUrl(wsId, "?mode=preview"));
+    await openCard(page, wsId, "&mode=preview");
     await page.getByRole("slider", { name: "Moment in the song" }).fill("30");
     await expect(page.getByTestId("preview-activity")).toBeVisible();
     expect(transport).toBe(0);
@@ -417,9 +450,8 @@ test.describe("Stage 3D Preview", () => {
     }) => {
       await routeSongs(page);
       await routeEvaluate(page, MOVING);
-      await page.goto(previewUrl(wsId, "?mode=preview"));
-      await sendWsMessage(page, wsId, METADATA(["pan_tilt", "dimmer"]));
-      await expect(page.getByTestId("stage3d-mode")).toHaveText("Preview");
+      await openCard(page, wsId, "&mode=preview");
+      await expect(page.getByTestId("preview-panel")).toBeVisible();
       await expect(page.getByTestId("caveat-wheel")).toHaveCount(0);
 
       await sendWsMessage(
@@ -454,7 +486,7 @@ test.describe("Stage 3D Preview", () => {
           },
         },
       }));
-      await page.goto(previewUrl(wsId, "?mode=preview"));
+      await openCard(page, wsId, "&mode=preview");
       await expect.poll(() => asked.length).toBeGreaterThan(0);
       await expect(page.getByTestId("caveat-beam")).toHaveCount(0);
 
@@ -472,7 +504,7 @@ test.describe("Stage 3D Preview", () => {
       // beat the assertion on a fast machine.
       const quiet = `${wsId}-nostate`;
       await routeSongs(page);
-      await page.goto(previewUrl(quiet));
+      await openCard(page, quiet);
       await expect(page.getByTestId("caveat-nostate")).toBeVisible();
       await sendWsMessage(page, quiet, {
         type: "state",
@@ -487,7 +519,7 @@ test.describe("Stage 3D Preview", () => {
     test("'no state yet' is a Live caveat only", async ({ page }) => {
       await routeSongs(page);
       await routeEvaluate(page);
-      await page.goto(previewUrl(wsId, "?mode=preview"));
+      await openCard(page, wsId, "&mode=preview");
       await expect(page.getByTestId("preview-panel")).toBeVisible();
       await expect(page.getByTestId("caveat-nostate")).toHaveCount(0);
     });

@@ -48,8 +48,8 @@ you want to.
   and [Importing a venue's MVR](configuration.md#importing-a-venues-mvr).
 - **Pixel Fixtures**: Fixtures with cells can be driven per pixel with `per: cell` and
   `spread`. See [Rich channel definitions](configuration.md#rich-channel-definitions-fixture).
-- **Stage 3D**: The web UI draws the venue as a 3D room with live beams. See
-  [Stage 3D](configuration.md#stage-3d).
+- **Stage 3D**: The Venues page's stage card switches between the plot and the venue as a 3D
+  room with live beams. See [Stage 3D](configuration.md#stage-3d).
 - **Timeline Editor**: Visual DAW-style cue authoring in the web UI with integrated
   audio playback and real-time stage preview.
 - **Sequences**: Reusable cue patterns that can be referenced from multiple shows.

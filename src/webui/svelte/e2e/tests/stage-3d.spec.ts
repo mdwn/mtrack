@@ -55,19 +55,39 @@ const VENUE_METADATA = {
   },
 };
 
-test.describe("Stage 3D", () => {
+// The 3D view on the venue card (Venues page, `?view=3d`).
+test.describe("3D on the venue card", () => {
   let wsId: string;
 
   test.beforeEach(() => {
     wsId = `s3d-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
   });
 
-  test("the dashboard's stage card opens the 3D page", async ({ page }) => {
+  test("the dashboard's 3D link opens the current venue's card in 3D", async ({
+    page,
+  }) => {
     await page.goto(`/?wsId=${wsId}#/`);
     await expect(page.locator(".stage-card")).toBeVisible();
+    // No current venue yet: the link is the Venues page.
+    await expect(page.locator(".stage-card__3d")).toHaveAttribute(
+      "href",
+      "#/lighting/venues",
+    );
+    await sendWsMessage(page, wsId, VENUE_METADATA);
+    await expect(page.locator(".stage-card__3d")).toHaveAttribute(
+      "href",
+      "#/lighting/venues/test-venue?view=3d",
+    );
     await page.locator(".stage-card__3d").click();
-    await expect(page).toHaveURL(/#\/lighting\/stage$/);
-    await expect(page.locator(".stage3d .page__title")).toHaveText("Stage 3D");
+    await expect(page).toHaveURL(/#\/lighting\/venues\/test-venue\?view=3d$/);
+    await expect(page.getByTestId("stage-view-3d")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.locator(".stage3d__viewport")).toHaveAttribute(
+      "data-source",
+      "live",
+    );
   });
 
   test("the page draws the venue from rigs and reports what it drew", async ({
@@ -88,7 +108,8 @@ test.describe("Stage 3D", () => {
         console.log(`[asset ${r.status()}] ${r.url()}`);
       }
     });
-    await page.goto(`/?wsId=${wsId}#/lighting/stage`);
+    await page.goto(`/?wsId=${wsId}#/lighting/venues/test-venue?view=3d`);
+    await sendWsMessage(page, wsId, VENUE_METADATA);
     await expect(page.locator(".stage3d__viewport")).toBeVisible();
     // The renderer decides: WebGL, or the fallback message — never a blank.
     await expect(page.locator(".stage3d__viewport")).toHaveAttribute(
@@ -96,16 +117,16 @@ test.describe("Stage 3D", () => {
       /webgl|none/,
       { timeout: 15000 },
     );
-    await sendWsMessage(page, wsId, VENUE_METADATA);
 
     const renderer = await page
       .locator(".stage3d__viewport")
       .getAttribute("data-renderer");
-    await expect(page.locator(".stage3d__subtitle")).toContainText(
-      "test-venue",
+    await expect(page.getByTestId("stage-venue-label")).toContainText(
+      "Current venue: test-venue",
     );
-    await expect(page.locator(".stage3d__subtitle")).toContainText(
-      "3 fixtures",
+    await expect(page.locator(".stage3d__viewport")).toHaveAttribute(
+      "data-fixtures",
+      "3",
     );
     if (renderer === "webgl") {
       // The mover's rig was fetched from the store; the PARs draw generically.
@@ -113,14 +134,15 @@ test.describe("Stage 3D", () => {
         .poll(() => rigRequests.length, { timeout: 10000 })
         .toBeGreaterThan(0);
       expect(rigRequests[0]).toContain("test-archive/rig-test-v1.json");
-      await expect(page.locator(".stage3d__subtitle")).toContainText(
-        "2 of 3 placed",
+      await expect(page.locator(".stage3d__viewport")).toHaveAttribute(
+        "data-placed",
+        "2",
       );
-      await expect(page.locator(".stage3d__subtitle")).toContainText(
+      await expect(page.getByTestId("stage3d-stats")).toContainText(
         "2 drawn generically",
       );
       // The scenery: the deck's glb drawn, the truss's .3ds reported.
-      await expect(page.locator(".stage3d__subtitle")).toContainText(
+      await expect(page.getByTestId("stage3d-stats")).toContainText(
         "1 scenery mesh (1 not drawn: .3ds)",
         { timeout: 10000 },
       );
@@ -146,11 +168,5 @@ test.describe("Stage 3D", () => {
     } else {
       await expect(page.locator(".stage3d__fallback")).toContainText("WebGL");
     }
-
-    // Camera presets are buttons that take the active state.
-    await page.getByRole("button", { name: "Top" }).click();
-    await expect(page.getByRole("button", { name: "Top" })).toHaveClass(
-      /stage3d__preset--active/,
-    );
   });
 });
