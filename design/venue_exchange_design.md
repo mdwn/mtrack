@@ -1118,6 +1118,8 @@ mtrack never modelling fixtures itself.
 
 ## 21. A fixture type is the fixture, not one of its modes (draft 1, 2026-09-30)
 
+*Superseded in part by §22: there is no default mode, and the type line names none.*
+
 ### 21.1 The finding
 
 A referential fixture type pins an archive **and a mode** (§4.1), so what mtrack calls a
@@ -1231,3 +1233,79 @@ Less than it looks, because the engine already works per fixture:
    load errors; fit per fixture; the patch-overlap check. No surface changes.
 2. MVR import, merge and export carry the mode per fixture.
 3. Venue inspector mode select; Fixtures page "used by" per mode; docs.
+
+## 22. A GDTF in the library is a fixture; a venue fixture says its mode (decided 2026-10-01)
+
+### 22.1 The finding
+
+§21 made a fixture type the whole archive, and the surfaces did not follow. Importing a
+GDTF in the web UI still asked for a mode and a name before anything existed; the
+fixture's page showed "Saved as astera_pixelbrick.fixture" and offered the file as text;
+type pickers marked a type "(no default mode)" as though something were unfinished. To a
+user that is a second thing to make — a translation of the GDTF into mtrack's terms — when
+the GDTF already says everything. Stated as the requirement:
+
+- Import a GDTF, then go to a venue and add a fixture in **any** of its modes, having done
+  nothing else.
+- From the UI there is no distinction between the GDTF and a fixture made from it.
+- The `.fixture` file of a GDTF type is an implementation detail and is shown nowhere.
+
+### 22.2 The decision
+
+**A GDTF in the library is a fixture.** mtrack's files are the source of truth everywhere
+else — a directory with a song file is a song — and a `.gdtf` copied into
+`lighting/library/` that was not a fixture until something "imported" it would be the one
+place a file on disk needs a ceremony. So:
+
+- **The archive alone is a type.** At load, every `.gdtf` in `lighting/library/` that no
+  `.fixture` file points at is registered as a fixture type: named from the archive's own
+  fixture name (the importer's rule), with no movement limits. Nothing is written beside
+  it.
+- **Import is a copy.** Choosing an archive in the web UI, or `mtrack import-gdtf <file>`,
+  validates it and puts it in the library. No mode, no name, no second file. The same bytes
+  again change nothing; a file of the same name with other bytes is refused, since venues
+  may already depend on it.
+- **The `.fixture` file is for what a GDTF does not say**, and only then: a different name,
+  a mover's speed limits. Changing one of those on the fixture's page writes
+  the file; a fixture nobody has changed has none. It is mtrack's record — never named,
+  shown or offered as a file. An archive a record points at is the fixture the record
+  names, not a second one.
+- **Names.** Two archives that state the same fixture name, neither with a record: the one
+  whose file name sorts first keeps the name, the other is registered as `Name (stem)`, and
+  both are named in a load warning and in readiness. Renaming either from its page writes a
+  record and pins both. The import surfaces see the collision coming and say what the
+  newcomer will be called, and write a record pinning that name so a file added
+  later cannot rename it under a venue.
+- **Parsing stays at the boundary (§3).** A name is read from an archive once per content
+  hash and kept in the cache; a new or changed archive is parsed at load, loudly, never at
+  a cue. An archive that does not parse is not a fixture and is reported by file name; it
+  does not stop the rest.
+- **There is no default mode.** A venue fixture of a GDTF type always says its mode:
+  `fixture "Brick1" Astera-PixelBrick mode "8: RGBS" @ 1:1`. This replaces §21's default on
+  the type line (§21.6 decisions 2 and 3). A default was the last piece of translation — a
+  thing set on mtrack's side of the GDTF before a venue line meant anything — and it made a
+  line's meaning depend on a file elsewhere: changing it re-moded every fixture that leaned
+  on it, which needed a confirm to be safe. Now a line means what it says. `from gdtf("…")`
+  takes no mode; one that still has it is refused with a message saying where the mode goes;
+  a GDTF-type fixture with no mode is a load error that lists the archive's modes.
+- **Every mode is there in the venue.** The venue form and the inspector offer every mode
+  with nothing to set up; a new row takes the previous row's mode when it is the same type,
+  else the first mode mtrack can drive, so Add Fixture then Save is always a valid line.
+- **MVR import writes the mode on every line** and, having no default to record, no
+  `.fixture` at all — unless a name must be pinned (above).
+- **Delete removes the archive** (and the record, if there is one), unless another record
+  points at the same archive. If venues use the fixture the confirm says which and how
+  many, and that they will stop loading.
+- **CLI and MCP follow.** `import-gdtf <file>` copies into the library; `--name` writes a
+  record with it; `--mode` is gone; listing modes without importing is an explicit flag.
+
+### 22.3 Considered and not done
+
+**Always writing the record at import.** The first cut of this section kept a `.fixture`
+per archive, written at import and hidden. It changed no loader code, and it left a GDTF
+copied into the library by hand as a file that is not a fixture — against how every other
+mtrack file works. Rejected for that.
+
+**No record at all.** The name venues use and a mover's speed limits have to live
+somewhere the user can change them; a file beside the others is where mtrack keeps such
+things. It exists only when there is something in it.

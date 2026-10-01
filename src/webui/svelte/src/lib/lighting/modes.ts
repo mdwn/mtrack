@@ -13,9 +13,8 @@
 //
 
 /**
- * The GDTF mode picker's rules (lighting UI design, section 12.2): what a
- * mode lets a show do, in the words the picker shows, worked out from the
- * capability names `POST /api/lighting/gdtf/inspect` reports.
+ * What a GDTF mode lets a show do, in the words the fixture's page shows,
+ * worked out from the capability names the archive's inspection reports.
  */
 
 import type { GdtfMode } from "../api/config";
@@ -126,25 +125,6 @@ export function filterModes(modes: GdtfMode[], query: string): GdtfMode[] {
       m.name.toLowerCase().includes(q) ||
       `${m.footprint} addresses`.includes(q),
   );
-}
-
-/** The channels of a mode in address order, names only. */
-export function channelNames(mode: GdtfMode): string[] {
-  return [...(mode.channels ?? [])]
-    .sort(([a], [b]) => a - b)
-    .map(([, name]) => name);
-}
-
-/** Only the characters a fixture type's name may hold (letters, digits,
- *  space, hyphen, underscore). Applied as the name is typed. */
-export function keepNameChars(name: string): string {
-  return name.replace(/[^\p{L}\p{N} _-]/gu, "");
-}
-
-/** The type name as it is saved: allowed characters only, spaces collapsed
- *  and trimmed. Empty stays empty (the import is not offered). */
-export function safeTypeName(name: string): string {
-  return keepNameChars(name).split(/\s+/).filter(Boolean).join(" ");
 }
 
 /** The file stem the server writes a type under: lower-case ASCII letters

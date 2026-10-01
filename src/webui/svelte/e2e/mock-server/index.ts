@@ -289,7 +289,6 @@ const FIXTURE_TYPES: Record<
       fixture: string;
       manufacturer: string;
       modes: number;
-      mode: string | null;
       beam: { type: string | null; angle: number | null } | null;
       thumbnail: string | null;
       used_by: number;
@@ -337,12 +336,11 @@ const FIXTURE_TYPES: Record<
     extension: "fixture",
     referential: true,
     rich: false,
-    dsl: 'fixture_type "pixelbrick" from gdtf("library/pb15.gdtf", mode "8: RGBS") {\n}\n',
+    dsl: 'fixture_type "pixelbrick" from gdtf("library/pb15.gdtf") {\n}\n',
     gdtf: {
       fixture: "PB15 PixelBrick",
       manufacturer: "Astera LED Technology",
       modes: 2,
-      mode: "8: RGBS",
       beam: { type: "Wash", angle: 13 },
       thumbnail: null,
       used_by: 3,
@@ -378,7 +376,7 @@ app.put("/api/lighting/fixture-types/:name", (_req, res) => {
 });
 
 app.delete("/api/lighting/fixture-types/:name", (_req, res) => {
-  res.json({ status: "deleted" });
+  res.json({ status: "deleted", archive_removed: null, archive_kept: false });
 });
 
 // The PB15's modes, as the inspect endpoint and the details view answer them.
@@ -399,7 +397,6 @@ const GDTF_INSPECTION = {
         [2, "green"],
         [3, "blue"],
       ],
-      warnings: [],
     },
     {
       name: "8: RGBS",
@@ -414,14 +411,9 @@ const GDTF_INSPECTION = {
         [3, "blue"],
         [4, "strobe"],
       ],
-      warnings: ["skipped virtual channel (no DMX offset): Dimmer"],
     },
   ],
 };
-
-app.post("/api/lighting/gdtf/inspect", (_req, res) => {
-  res.json(GDTF_INSPECTION);
-});
 
 // A GDTF type's own settings, for the fixture page's form. Stateless: a save
 // answers what it did and changes nothing here, so tests never see another
@@ -433,9 +425,7 @@ app.get("/api/lighting/fixture-types/:name/settings", (req, res) => {
   }
   res.json({
     name: req.params.name,
-    default_mode: "8: RGBS",
     movement: { max_pan_speed: null, max_tilt_speed: null },
-    file: entry.file,
     version: "mock-v1",
   });
 });
@@ -444,12 +434,8 @@ app.post("/api/lighting/fixture-types/:name/settings", (req, res) => {
   const from = req.params.name;
   const body = req.body ?? {};
   const renamed = body.name && body.name !== from;
-  const defaultChanged = body.default_mode !== "8: RGBS";
   res.json({
-    write: !!body.write,
-    file: FIXTURE_TYPES[from]?.file ?? "x.fixture",
     version: body.write ? "mock-v2" : "mock-v1",
-    dsl: `fixture_type "${body.name}" from gdtf("library/pb15.gdtf", mode "${body.default_mode}") {\n}\n`,
     rename: renamed
       ? {
           from,
@@ -461,20 +447,8 @@ app.post("/api/lighting/fixture-types/:name/settings", (req, res) => {
           ],
         }
       : null,
-    default_change: defaultChanged
-      ? {
-          from: "8: RGBS",
-          to: body.default_mode,
-          footprint: 3,
-          count: 2,
-          venues: [{ venue: "built-in", fixtures: ["Brick1", "Brick2"] }],
-        }
-      : null,
-    overlaps: [],
-    overruns: [],
     venue_versions: { "built_in.venue": "v-b", "club.venue": "v-c" },
     config_references: [],
-    reloaded: false,
     venue_error: null,
   });
 });
@@ -493,8 +467,6 @@ app.get("/api/lighting/fixture-types/:name/gdtf", (req, res) => {
   }
   res.json({
     archive: "library/pb15.gdtf",
-    mode: "8: RGBS",
-    matched_mode: "8: RGBS",
     rig: "test-archive/rig-test-v1.json",
     thumbnail: null,
     beam: {
@@ -538,20 +510,18 @@ app.post("/api/lighting/evaluate", (req, res) => {
   });
 });
 
+// One-step import: no mode, no name. The mock answers as if the archive
+// became the mock's "pixelbrick", so the page it opens exists.
 app.post("/api/lighting/gdtf/import", (req, res) => {
   res.json({
-    type_name: (req.query.name as string) || "PB15 PixelBrick",
-    mode: req.query.mode,
+    type_name: (req.query.name as string) || "pixelbrick",
+    fixture: "PB15 PixelBrick",
+    manufacturer: "Astera LED Technology",
+    modes: 2,
     archive: "lighting/library/pb15.gdtf",
-    replaced_archive: false,
-    fixture_file: "lighting/fixture_types/pb15_pixelbrick.fixture",
-    channels: [
-      [1, "red"],
-      [2, "green"],
-      [3, "blue"],
-      [4, "strobe"],
-    ],
-    warnings: ["skipped virtual channel (no DMX offset): Dimmer"],
+    already_imported: false,
+    renamed_from: null,
+    refused_modes: [],
   });
 });
 

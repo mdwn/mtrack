@@ -108,65 +108,88 @@ fixture_type "MovingHead" {
 }
 ```
 
-### GDTF-referential fixture types (`*.fixture`)
+### GDTF fixture types
 
-Instead of hand-transcribing a channel map from a manual, a fixture type can
-reference a manufacturer [GDTF](https://gdtf-share.com/) file — most
-manufacturers publish them — and mtrack distills the chosen DMX mode into the
-same model a hand-written definition produces:
+Instead of hand-transcribing a channel map from a manual, use the
+manufacturer's [GDTF](https://gdtf-share.com/) file — most manufacturers
+publish them. A `.gdtf` in `lighting/library/` **is** a fixture type: nothing
+else needs writing. It is named from the fixture name inside the archive
+(characters a name cannot carry are dropped, so `PB15 <Pixel> Brick` becomes
+`PB15 Pixel Brick`), and mtrack distills whichever DMX mode a fixture uses
+into the same model a hand-written definition produces.
 
-```light
-# lighting/fixture_types/pb15_pixelbrick.fixture
-fixture_type "PB15 PixelBrick"
-  from gdtf("lighting/library/pb15.gdtf", mode "8: RGBS")
-{
-  # Optional overrides — data not in GDTF, e.g. measured movement limits:
-  # movement { max_pan_speed: 240deg/s }
-}
+The import command copies the file there and checks it has modes mtrack can
+drive:
+
+```sh
+mtrack import-gdtf downloaded.gdtf --list-modes     # the modes and footprints; writes nothing
+mtrack import-gdtf downloaded.gdtf                  # copy it into lighting/library/
+mtrack import-gdtf downloaded.gdtf --name "House Brick"   # under a name of your own
 ```
 
-A GDTF type is the whole fixture: every mode of its archive. The mode on the
-`from gdtf(...)` line is the type's **default**, and a venue fixture may choose
-another, directly after the type:
+Importing a file whose bytes are already in the library changes nothing and
+says so. A different file under a file name the library already has is
+refused — rename your copy and import it again. Copying a `.gdtf` into
+`lighting/library/` by hand is an import too.
+
+A GDTF type is the whole fixture: every mode of its archive. Each venue
+fixture of it states its own mode, directly after the type:
 
 ```light
 venue "house" {
-  fixture "Brick1" "PB15 PixelBrick" @ 1:1                    # the default, 8: RGBS
-  fixture "Brick8" "PB15 PixelBrick" mode "9: RGBWS" @ 1:29   # its own mode
+  fixture "Brick1" "PB15 PixelBrick" mode "8: RGBS" @ 1:1
+  fixture "Brick8" "PB15 PixelBrick" mode "9: RGBWS" @ 1:29
 }
 ```
 
 A mode is matched as the archive spells it; a spelling that differs only in
-case, spaces or punctuation loads with a warning to correct it. The default
-may be left out — `from gdtf("lighting/library/pb15.gdtf")` — when every
-fixture of the type names its own mode. Two things stop a venue loading,
-each reported with the fixture, the type and the file:
+case, spaces or punctuation loads with a warning to correct it. Three things
+stop a venue loading, each reported with the fixture, the type and the file:
 
-- a fixture with no `mode` whose type has no default;
+- a fixture of a GDTF type with no `mode` (the error lists the archive's
+  modes to choose from);
+- a `mode` the archive does not have;
 - a `mode` on a fixture of a hand-written (non-GDTF) type, which has no modes.
 
-A mode the archive does not have stops the venue the same way. Because a
-fixture's footprint follows its mode, the loader also warns when two fixtures
-are patched over part of each other's addresses, or a fixture runs past
-address 512. Fixtures patched to exactly the same addresses are a gang (two
-pars on one address, say) and are not warned about.
+Because a fixture's footprint follows its mode, the loader also warns when
+two fixtures are patched over part of each other's addresses, or a fixture
+runs past address 512. Fixtures patched to exactly the same addresses are a
+gang (two pars on one address, say) and are not warned about.
 
-The easiest way to create one is the import command, which lists an
-archive's modes, copies it into `lighting/library/`, writes the `.fixture`
-file, and verifies it loads:
+**The record.** What the GDTF does not say — a name other than its own, a
+mover's measured speed limits — is kept in a small `.fixture` file in the
+fixture types directory, which mtrack writes the first time you set one
+(`import-gdtf --name`, or the web UI's fixture page):
 
-```sh
-mtrack import-gdtf downloaded.gdtf                 # list the modes
-mtrack import-gdtf downloaded.gdtf --mode "8: RGBS"   # the type's default
+```light
+# lighting/fixture_types/house_brick.fixture
+fixture_type "House Brick"
+  from gdtf("lighting/library/pb15.gdtf")
+{
+  movement { max_pan_speed: 240deg/s }
+}
 ```
 
-The web UI's Lighting → Fixture types page does the same with a mode picker. Choosing a mode
-shows what your shows can do in it ("Set any colour", "Dim, through colour" when the mode has
-colour but no dimmer channel, "Strobe, 0.4 to 25 flashes a second", "Move", "Per-pixel effects,
-12 cells", or "Colour from a wheel — pick a slot with a static" when colour comes only from a
-wheel), what the mode lacks and which other mode has it, the addresses it occupies, and the
-name and file the type will be saved under. The channel map and the distiller's warnings sit
-behind a disclosure.
+A record names its archive and nothing else from it: no mode, no channels.
+An archive with a record is that one fixture type, under the record's name.
+A record may point at an archive anywhere inside the project, not only the
+library. Older records that named a mode on the `from gdtf(...)` line no
+longer load; the error says to remove the mode there and put `mode "…"` on
+each venue fixture that uses the type.
+
+**Two archives with one fixture name.** When two library files carry the
+same fixture name, the file whose name sorts first keeps it and the other
+becomes `Name (file stem)`; the load warns and readiness lists it, so you
+can rename either. An archive whose name a record or a hand-written type
+already has takes `Name (file stem)` the same way. When the import itself
+brings the second one, it writes a record pinning the newcomer's name, so
+adding a file later never renames a fixture your venues already use. A
+library file that is not a readable GDTF is reported by file name in the
+fixture types list, readiness and the log, and stops nothing else.
+
+The web UI's Lighting → Fixture types page imports a file in one step.
+Deleting a GDTF fixture there removes its record and, when no other record
+uses it, its archive.
 
 Notes:
 
@@ -175,10 +198,12 @@ Notes:
   be gitignored. Beside them, `lighting/.cache/assets/` holds what the 3D
   stage view draws: the archive's meshes and thumbnail, and a rig model per
   mode (the fixture's yoke, head, beams and pixel cells with their
-  transforms), written the first time the type expands.
-- A referential fixture's channels come from the GDTF; the `.fixture` body
-  carries only overrides. Anything the distiller can't represent (wheels,
-  pixel/matrix modes) is skipped or refused with a clear message.
+  transforms), written the first time a mode expands. `lighting/.cache/`
+  also keeps an index of the library's fixture names, so a load does not
+  open every archive.
+- A GDTF fixture's channels come from the GDTF; a record carries only
+  overrides. Anything the distiller can't represent (wheels, pixel/matrix
+  modes) is skipped or refused with a clear message.
 - `.fixture` and `.light` fixture files load side by side; nothing renames
   or migrates.
 - How colour reaches a fixture depends on how it mixes. RGB(W) fixtures take
@@ -285,10 +310,10 @@ The rich form is the v2 DSL and lives in `.fixture` files only; a `.light` fixtu
 keeps the v1 grammar, the loader skips, loudly, a `.light` file that uses it, and the web
 UI refuses to save it into one. Both forms stay valid forever. The web UI lists both kinds
 of file: a v1 `.light` type opens in the channel-map form, while a `.fixture` type — rich
-or referential — opens as the text of its file, since neither form fits a channel map. A
+or a GDTF record — opens as the text of its file, since neither form fits a channel map. A
 new type is created as either, and **Edit as text** on a `.light` type opens its file and
 offers to save it back as a `.fixture` — the path from v1 to the rich form. In text mode
-the type's name is the one the definition declares, and the archive a referential type
+the type's name is the one the definition declares, and the archive a record
 points at must exist inside the project, or the save is refused where the text can still
 be fixed.
 
@@ -429,8 +454,8 @@ venue "warehouse" {
 
 A venue loads whole or not at all. If one fixture cannot be driven — its type
 is missing or did not load, it names a mode its archive does not have, it
-names a mode on a hand-written type, or it names none where its type has no
-default — the whole venue fails and **no fixture lights**, rather than a rig
+names a mode on a hand-written type, or it is of a GDTF type and names no
+mode — the whole venue fails and **no fixture lights**, rather than a rig
 with a hole in it. That is also what the next restart would give, so a venue
 edit that breaks it takes the running rig dark at once instead of at the next
 boot.
@@ -548,8 +573,8 @@ behaves like its GDTF would.
 
 Venues and pre-viz tools exchange rigs as [MVR](https://gdtf.eu/mvr/) files:
 a patch list with the referenced GDTF archives embedded. `mtrack import-mvr`
-seeds a `.venue` from one, importing every embedded GDTF as a referential
-`.fixture` on the way:
+seeds a `.venue` from one, copying every embedded GDTF into the library on
+the way (each is a fixture type, as above):
 
 ```sh
 mtrack import-mvr kellys.mvr                          # report only, nothing written
@@ -566,10 +591,11 @@ walks through the file, a plan where you click the front edge of the deck to set
 review of what will be written, and the import itself. See
 [Import an MVR](../interfaces/web-ui.md#import-an-mvr).
 
-The import writes one `.fixture` per GDTF in the file, however many modes the
-venue patches it in. Its default is the mode most of its fixtures use (a tie
-goes to the name that sorts first, so an import is reproducible), and every
-fixture in another mode carries `mode "…"` on its line.
+Each GDTF in the file is one fixture type, however many modes the venue
+patches it in, and every seeded fixture line carries its own `mode "…"`. An
+archive whose bytes are already in the library is used as it is, under the
+name it already has. No record is written unless a name collision needs one
+pinned (see above).
 
 The seeded file is yours: tags start empty (shows target tags, not fixture
 names), the console's focus-point names are there to rename, and positions
@@ -578,7 +604,7 @@ can be corrected by hand. It records where it came from:
 ```light
 venue "kellys" {
   imported from mvr("lighting/library/kellys.mvr") origin (0, -3.5, 0)
-  fixture "Spot 1" "Robe Esprite" @ 1:1 position (-2, 3.5, 4.2) rotation (0, 0, 180)  # layer "Front Truss"
+  fixture "Spot 1" "Robe Esprite" mode "Mode 1" @ 1:1 position (-2, 3.5, 4.2) rotation (0, 0, 180)  # layer "Front Truss"
   focus "FocusPoint 1" (0, 2.8, 1.4)
 }
 ```
@@ -599,7 +625,7 @@ file differs from the new MVR **and** from what the previous MVR said (so a
 fixture the venue itself moved is not mistaken for one you moved), the report
 lists the field as an overwrite: a fixture's position, rotation, patch,
 type or mode, or a focus point's position. A changed mode is updated like an
-address; an existing type's default is left alone. Without a previous copy of the MVR to
+address. Without a previous copy of the MVR to
 compare against, any difference counts, and so does any difference in a
 fixture's type. In the web UI's review step each one has a **Keep my edits**
 checkbox: position, rotation and focus points start checked, while patch,
@@ -639,7 +665,7 @@ The same flow is available over MCP as `inspect_mvr`, `import_mvr` and `export_m
 multi-section fixtures import with their identical sections ganged to one color (the report
 says so); a fixture with sections that differ keeps its master `dimmer` and `strobe` and its
 first section's other channels as its own, and the rest under section-suffixed names (see the
-notes under [GDTF-referential fixture types](#gdtf-referential-fixture-types-fixture)). gdtf.eu
+notes under [GDTF fixture types](#gdtf-fixture-types)). gdtf.eu
 publishes sample MVR files from several consoles,
 which are a good way to see what an import of your own rig will look like.
 

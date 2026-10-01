@@ -754,6 +754,29 @@ the preview, and importing a mode the distiller refuses.
   else +1), which removes the earlier deviation. Partial overlaps between
   rows (identical spans gang, as in `patch.ts`) and spans past 512 are marked
   and asked about once on Save ("Save anyway?"), never blocked or renumbered.
+- **A GDTF is the fixture (venue-exchange §22).** The mode picker is gone:
+  **Import GDTF** posts the file with no mode and no name, and the fixture's
+  page opens with what was imported ("Imported X (maker) — N modes", or
+  already imported, or the name it was given). A `.gdtf` copied into
+  `lighting/library/` is listed the same way. Nothing on the Fixtures page
+  shows mtrack's record for a GDTF fixture: no extension badge or file line on
+  its card, no file disclosure or text editor on its page, no "definition".
+  The settings form keeps Name and Movement limits. There is no default mode
+  anywhere: every venue line of a GDTF fixture names its mode. The venue form
+  and inspector offer every mode, never a "Type default"; a new row takes the
+  previous row's mode when it is the same fixture, else the first drivable
+  one (filled in once the GDTF's modes arrive), a type change picks the new
+  fixture's first drivable mode, and a line read without a mode is a blocking
+  "Choose a mode for this fixture." Deleting a GDTF fixture names the venues
+  that use it (they stop loading) and removes its GDTF unless another fixture
+  uses it. "Define a fixture by hand" is the hand-written path, unchanged.
+- **What is open is the address.** The fixture page, the selected venue and
+  an open form were component state, so the section's own tab, Back and a
+  reload did nothing or lost the place. `lightingRoute` now carries the item
+  (`#/lighting/fixtures/<name>`, `#/lighting/venues/<name>`) and `?edit`,
+  `?as=text`, `?new=…`; the panels follow the address and every action
+  navigates. The fixture panel applies an address once (waiting for its list
+  for a name), so its own reloads never reopen what the user left.
 - **Journeys against the real binary.** `e2e/journeys/` (`make test-journeys`,
   CI job "Lighting journeys (real server)") starts one `mtrack` per test on a
   throwaway project — no hardware, the DMX engine on the null client — and

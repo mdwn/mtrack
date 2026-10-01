@@ -33,6 +33,7 @@ export type RowProblem =
   | "noName"
   | "duplicateName"
   | "noType"
+  | "noMode"
   | "badUniverse"
   | "badAddress";
 
@@ -41,13 +42,18 @@ export interface Row {
   fixture_type: string;
   universe: number;
   start_channel: number;
+  mode?: string | null;
 }
 
 const positiveInteger = (v: unknown) =>
   typeof v === "number" && Number.isInteger(v) && v >= 1;
 
-/** Each row's problems, by index; a row with none is absent. */
-export function rowProblems(rows: Row[]): Map<number, RowProblem[]> {
+/** Each row's problems, by index; a row with none is absent. A fixture from
+ *  a GDTF (`fromGdtf`) must name its mode. */
+export function rowProblems(
+  rows: Row[],
+  fromGdtf: (type: string) => boolean = () => false,
+): Map<number, RowProblem[]> {
   const counts = new Map<string, number>();
   for (const row of rows) {
     const name = row.name.trim();
@@ -60,6 +66,8 @@ export function rowProblems(rows: Row[]): Map<number, RowProblem[]> {
     if (!name) problems.push("noName");
     else if ((counts.get(name) ?? 0) > 1) problems.push("duplicateName");
     if (!row.fixture_type.trim()) problems.push("noType");
+    else if (fromGdtf(row.fixture_type.trim()) && !row.mode)
+      problems.push("noMode");
     if (!positiveInteger(row.universe)) problems.push("badUniverse");
     if (!positiveInteger(row.start_channel)) problems.push("badAddress");
     if (problems.length > 0) out.set(i, problems);

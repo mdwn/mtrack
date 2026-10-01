@@ -131,7 +131,7 @@ export interface Project {
   url: string;
   /** A project file's text, by path relative to the project. */
   read(rel: string): string;
-  write(rel: string, text: string): void;
+  write(rel: string, text: string | Buffer): void;
   exists(rel: string): boolean;
   /** Stops the server and starts it again on the same project and port:
    *  a cold boot, which is when a file changed by hand is read. */
@@ -241,7 +241,10 @@ export async function startProject(
     dir,
     url,
     read: (rel) => fs.readFileSync(path.join(dir, rel), "utf8"),
-    write: (rel, text) => fs.writeFileSync(path.join(dir, rel), text),
+    write: (rel, text) => {
+      fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), text);
+    },
     exists: (rel) => fs.existsSync(path.join(dir, rel)),
     restart: async () => {
       await halt();

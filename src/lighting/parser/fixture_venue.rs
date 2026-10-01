@@ -279,8 +279,6 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
 }
 
 fn parse_gdtf_source(pair: Pair<Rule>) -> Result<GdtfSource, Box<dyn Error>> {
-    // Exactly as written, inner whitespace included: a GDTF mode can be
-    // named with a trailing space, and the name must pin that mode.
     let mut strings = pair
         .into_inner()
         .filter(|p| p.as_rule() == Rule::string)
@@ -288,13 +286,16 @@ fn parse_gdtf_source(pair: Pair<Rule>) -> Result<GdtfSource, Box<dyn Error>> {
     let path = strings
         .next()
         .ok_or("gdtf reference requires an archive path")?;
-    // The default mode is optional (design §21): a type without one makes
-    // each of its fixtures name a mode, which the loader checks.
-    let mode = strings.next();
-    if mode.as_deref().is_some_and(|m| m.trim().is_empty()) {
-        return Err("gdtf reference names an empty mode; name one or leave `mode` out".into());
+    // A fixture type is the whole archive (design §22): the mode is each
+    // venue fixture's to state, never the type's.
+    if let Some(mode) = strings.next() {
+        return Err(format!(
+            "a fixture type no longer names a mode — remove `, mode \"{mode}\"` here and put \
+             `mode \"{mode}\"` on each venue fixture that uses it"
+        )
+        .into());
     }
-    Ok(GdtfSource { path, mode })
+    Ok(GdtfSource { path })
 }
 
 /// A fixture line's `mode "..."`, exactly as written: a GDTF can name a
@@ -1091,7 +1092,7 @@ fixture_type "TypeB" {
     #[test]
     fn referential_fixture_type_parses_with_movement() {
         let content = r#"fixture_type "Brick"
-  from gdtf("lighting/library/pb15.gdtf", mode "8: RGBS")
+  from gdtf("lighting/library/pb15.gdtf")
 {
   movement { max_pan_speed: 240.0deg/s max_tilt_speed: 200deg/s }
 }"#;
@@ -1099,7 +1100,6 @@ fixture_type "TypeB" {
         let ft = result.get("Brick").unwrap();
         let source = ft.source().unwrap();
         assert_eq!(source.path, "lighting/library/pb15.gdtf");
-        assert_eq!(source.mode.as_deref(), Some("8: RGBS"));
         assert_eq!(ft.movement().max_pan_speed, Some(240.0));
         assert_eq!(ft.movement().max_tilt_speed, Some(200.0));
         assert!(ft.channels().is_empty());
@@ -1108,7 +1108,7 @@ fixture_type "TypeB" {
     #[test]
     fn referential_with_channel_map_is_rejected() {
         let content = r#"fixture_type "Brick"
-  from gdtf("x.gdtf", mode "M")
+  from gdtf("x.gdtf")
 {
   channel_map: { "red": 1 }
 }"#;
@@ -1121,7 +1121,7 @@ fixture_type "TypeB" {
         // Silently dropping these was worse than refusing: the file looked
         // configured while the override never applied.
         let content = r#"fixture_type "Brick"
-  from gdtf("x.gdtf", mode "M")
+  from gdtf("x.gdtf")
 {
   max_strobe_frequency: 999.0
 }"#;
@@ -1309,7 +1309,8 @@ venue "Main" {
         assert_eq!(f.mode(), Some("9: RGBWS"));
         assert_eq!(f.start_channel(), 29);
         assert_eq!(f.tags(), ["wash"]);
-        // Without one, the type's default.
+        // Without one, the parser takes the line as written; the loader is
+        // where a GDTF fixture with no mode is refused.
         let f = one_fixture("fixture \"Brick1\" Astera-PixelBrick @ 1:1");
         assert_eq!(f.mode(), None);
     }
@@ -1379,20 +1380,29 @@ venue "Main" {
     }
 
     #[test]
-    fn a_referential_type_may_omit_its_default_mode() {
+    fn a_fixture_type_names_no_mode_and_the_old_form_says_what_to_do() {
         let types = parse_fixture_types(
             "fixture_type \"Brick\"\n  from gdtf(\"lighting/library/pb15.gdtf\")\n{\n}\n",
         )
         .unwrap();
-        let source = types["Brick"].source().unwrap();
-        assert_eq!(source.path, "lighting/library/pb15.gdtf");
-        assert_eq!(source.mode, None);
+        assert_eq!(
+            types["Brick"].source().unwrap().path,
+            "lighting/library/pb15.gdtf"
+        );
         let err = parse_fixture_types(
-            "fixture_type \"Brick\"\n  from gdtf(\"x.gdtf\", mode \"\")\n{\n}\n",
+            "fixture_type \"Brick\"\n  from gdtf(\"x.gdtf\", mode \"8: RGBS\")\n{\n}\n",
         )
         .unwrap_err()
         .to_string();
-        assert!(err.contains("empty mode"), "{err}");
+        assert!(
+            err.contains("a fixture type no longer names a mode"),
+            "{err}"
+        );
+        assert!(err.contains("remove `, mode \"8: RGBS\"`"), "{err}");
+        assert!(
+            err.contains("put `mode \"8: RGBS\"` on each venue fixture"),
+            "{err}"
+        );
     }
 
     #[test]

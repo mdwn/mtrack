@@ -67,7 +67,9 @@ test.describe("Fixture types", () => {
   }) => {
     const writes = await catchWrites(page, /\/api\/lighting\/fixture-types\//);
     await page.goto("/#/lighting/fixtures");
-    await page.getByRole("button", { name: "New Fixture Type" }).click();
+    await page
+      .getByRole("button", { name: "Define a fixture by hand" })
+      .click();
     await page.getByRole("button", { name: ".light (channel map)" }).click();
     const save = page
       .locator(".editor-form")
@@ -92,7 +94,9 @@ test.describe("Fixture types", () => {
   }) => {
     const writes = await catchWrites(page, /\/api\/lighting\/fixture-types\//);
     await page.goto("/#/lighting/fixtures");
-    await page.getByRole("button", { name: "New Fixture Type" }).click();
+    await page
+      .getByRole("button", { name: "Define a fixture by hand" })
+      .click();
     await page.getByTestId("new-ft-fixture").click();
     const text = await page.getByTestId("ft-dsl").inputValue();
     await page
@@ -106,7 +110,7 @@ test.describe("Fixture types", () => {
     expect(writes[0].postData()).toBe(text);
   });
 
-  test("a GDTF import with the picker's defaults sends its first mode and suggested name", async ({
+  test("a GDTF import is one step: the file alone, no mode, no name", async ({
     page,
   }) => {
     const imports: Request[] = [];
@@ -120,17 +124,11 @@ test.describe("Fixture types", () => {
       mimeType: "application/octet-stream",
       buffer: Buffer.from("not read by the mock"),
     });
-    await expect(page.getByTestId("gdtf-mode-picker")).toBeVisible();
-    const name = await page.getByTestId("gdtf-type-name").inputValue();
-    const chosen = await page
-      .locator('[role="option"][aria-selected="true"]')
-      .getAttribute("data-mode");
-    await page.getByTestId("gdtf-import-confirm").click();
     await expect(page.getByTestId("gdtf-report")).toBeVisible();
     expect(imports).toHaveLength(1);
     const params = new URL(imports[0].url()).searchParams;
-    expect(params.get("mode")).toBe(chosen);
-    expect(params.get("name")).toBe(name);
+    expect(params.get("mode")).toBeNull();
+    expect(params.get("name")).toBeNull();
     expect(imports[0].postData()).toContain('filename="pb15.gdtf"');
   });
 });

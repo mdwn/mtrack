@@ -55,8 +55,13 @@
     if (page === "playlists" && parts[1]) return `playlists/${parts[1]}`;
     if (page === "config" && parts[1]) return `config/${parts[1]}`;
     // Each Lighting sub-page is its own scope, so moving between them with
-    // unsaved Groups edits asks first; a `?profile=` change does not.
-    if (page === "lighting") return `lighting/${lightingRoute(hash).sub}`;
+    // unsaved Groups edits asks first; a `?profile=` change does not. What a
+    // page has open (a fixture, a venue's form, a new one) is part of the
+    // scope too: leaving it with unsaved edits asks.
+    if (page === "lighting") {
+      const r = lightingRoute(hash);
+      return `lighting/${r.sub}/${r.item ?? ""}/${r.edit}/${r.as ?? ""}/${r.creating ?? ""}`;
+    }
     return page;
   }
 

@@ -14,10 +14,11 @@
 
 import { test, expect, type Page, type Request } from "@playwright/test";
 
-// The fixture page's settings form (lighting UI design §12.4): name, default
-// mode and movement limits, saved through a plan the user confirms, with the
-// file behind a disclosure. The mock's settings routes are stateless; tests
-// that need another answer route their own with `page.route`.
+// The fixture page's settings form (lighting UI design §12.4): name and
+// movement limits, saved through a plan the user confirms. A fixture from a
+// GDTF has no default mode and no file to show. The mock's settings routes
+// are stateless; tests that need another answer route their own with
+// `page.route`.
 
 function card(page: Page, name: string) {
   return page.locator(".item-card").filter({
@@ -49,125 +50,27 @@ test.describe("Fixture settings", () => {
     await expect(page.getByTestId("import-gdtf")).toBeVisible();
   });
 
-  test("the form shows the fixture's settings and the file is tucked away", async ({
+  test("the form shows the fixture's settings, and nothing of a file or a default", async ({
     page,
   }) => {
     await card(page, "pixelbrick").click();
     const settings = page.getByTestId("ft-settings");
     await expect(settings).toContainText("Your settings for this fixture");
     await expect(page.getByTestId("ft-set-name")).toHaveValue("pixelbrick");
-    await expect(page.getByTestId("ft-set-default")).toHaveValue("8: RGBS");
     // No mode pans or tilts: nothing to limit.
     await expect(page.getByTestId("ft-set-not-moving")).toBeVisible();
     await expect(page.getByTestId("ft-set-pan")).toHaveCount(0);
-    // The file, behind a closed disclosure; the page never says "definition".
-    const file = page.getByTestId("ft-file");
-    await expect(file.locator("summary")).toHaveText(
-      "Saved as pixelbrick.fixture · show the file",
-    );
-    await expect(file).not.toHaveAttribute("open", "");
-    await expect(page.locator(".editor-form")).not.toContainText(/definition/i);
-    await expect(page.getByTestId("ft-set-save")).toBeDisabled();
-  });
-
-  test("make-default from the list, then the save asks about the fixtures it changes", async ({
-    page,
-  }) => {
-    const posts = settingsPosts(page);
-    await card(page, "pixelbrick").click();
-    const modes = page.getByTestId("ft-details-modes");
-    await modes.locator('[data-mode="1: RGB"]').click();
-    await page.getByTestId("ft-make-default").click();
-    await expect(page.getByTestId("ft-set-default")).toHaveValue("1: RGB");
-    // The default's own detail offers no button.
+    // A fixture's mode is each venue fixture's choice: no default here.
+    await expect(page.getByTestId("ft-set-default")).toHaveCount(0);
     await expect(page.getByTestId("ft-make-default")).toHaveCount(0);
-
-    // Cancelled: planned, never written.
-    await page.getByTestId("ft-set-save").click();
-    await expect(confirmDialog(page)).toContainText(
-      "2 fixtures in built-in use the default and will change to 1: RGB.",
-    );
-    await confirmDialog(page).getByRole("button", { name: "Cancel" }).click();
-    await expect(page.getByTestId("ft-set-msg")).toHaveText("Not saved.");
-    expect(posts.map((p) => p.write)).toEqual([false]);
-
-    // Confirmed: written with the plan's venue versions and the file's.
-    await page.getByTestId("ft-set-save").click();
-    await confirmDialog(page).getByRole("button", { name: "Save" }).click();
-    await expect.poll(() => posts.length).toBe(3);
-    const write = posts[2];
-    expect(write.write).toBe(true);
-    expect(write.body.default_mode).toBe("1: RGB");
-    expect(write.body.venue_versions).toEqual({
-      "built_in.venue": "v-b",
-      "club.venue": "v-c",
-    });
-    expect(write.req.headers()["if-match"]).toBe("mock-v1");
-    await expect(page.getByTestId("ft-set-msg")).toContainText("Saved");
-  });
-
-  test("a new default that would overlap is a warning that needs a confirm", async ({
-    page,
-  }) => {
-    const posts = settingsPosts(page);
-    await page.route(
-      "**/api/lighting/fixture-types/pixelbrick/settings*",
-      (r) => {
-        if (r.request().method() !== "POST") return r.fallback();
-        return r.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            write: r.request().postDataJSON().write,
-            file: "pixelbrick.fixture",
-            version: "mock-v1",
-            dsl: "",
-            rename: null,
-            default_change: {
-              from: "8: RGBS",
-              to: "1: RGB",
-              footprint: 7,
-              count: 1,
-              venues: [{ venue: "built-in", fixtures: ["Brick1"] }],
-            },
-            overlaps: [
-              {
-                venue: "built-in",
-                a: "Brick1",
-                b: "Brick2",
-                a_gang: ["Brick1"],
-                b_gang: ["Brick2"],
-                universe: 1,
-                from: 5,
-                to: 7,
-                message:
-                  'fixtures "Brick1" and "Brick2" are both patched on universe 1 at addresses 5-7; each will overwrite the other',
-              },
-            ],
-            overruns: [],
-            venue_versions: {},
-            config_references: [],
-            reloaded: false,
-            venue_error: null,
-          }),
-        });
-      },
-    );
-    await card(page, "pixelbrick").click();
-    await page.getByTestId("ft-set-default").selectOption("1: RGB");
-    await page.getByTestId("ft-set-save").click();
-    const dialog = confirmDialog(page);
-    await expect(dialog).toContainText(
-      "1 fixture in built-in uses the default and will change to 1: RGB.",
-    );
-    await expect(dialog).toContainText(
-      'Warning — built-in: fixtures "Brick1" and "Brick2"',
-    );
-    await expect(dialog.getByRole("button", { name: "Save" })).toHaveClass(
-      /btn-danger/,
-    );
-    await dialog.getByRole("button", { name: "Cancel" }).click();
-    expect(posts.every((p) => !p.write)).toBe(true);
+    // mtrack's record is never shown as a file.
+    await expect(page.getByTestId("ft-file")).toHaveCount(0);
+    await expect(page.getByTestId("ft-dsl")).toHaveCount(0);
+    const text = await page.locator(".editor-form").innerText();
+    expect(text).not.toContain(".fixture");
+    expect(text).not.toMatch(/definition/i);
+    expect(text).not.toMatch(/default mode/i);
+    await expect(page.getByTestId("ft-set-save")).toBeDisabled();
   });
 
   test("a rename says which venue lines it rewrites", async ({ page }) => {
@@ -177,6 +80,14 @@ test.describe("Fixture settings", () => {
     await page.route(/\/api\/lighting\/fixture-types\/PB15/, (r) =>
       r.continue({ url: r.request().url().replace("PB15", "pixelbrick") }),
     );
+    // The list, re-read after the save, knows it by its new name too (the
+    // page's address follows the rename).
+    await page.route(/\/api\/lighting\/fixture-types(\?.*)?$/, async (r) => {
+      const res = await r.fetch();
+      const body = await res.json();
+      body.fixture_types.PB15 = body.fixture_types.pixelbrick;
+      await r.fulfill({ response: res, json: body });
+    });
     await card(page, "pixelbrick").click();
     await page.getByTestId("ft-set-name").fill("PB15");
     await page.getByTestId("ft-set-save").click();
@@ -190,47 +101,7 @@ test.describe("Fixture settings", () => {
       "Renamed in 3 venue lines: built-in (2), club (1).",
     );
     await expect(page.getByTestId("ft-title")).toHaveText("PB15");
-  });
-
-  test("the file behind the disclosure still edits and saves, and locks the form while it does", async ({
-    page,
-  }) => {
-    await card(page, "pixelbrick").click();
-    await page.getByTestId("ft-file").locator("summary").click();
-    const dsl = page.getByTestId("ft-dsl");
-    await expect(dsl).toHaveValue(/from gdtf\(/);
-    await expect(page.getByTestId("ft-file-save")).toBeDisabled();
-    await dsl.fill(
-      'fixture_type "pixelbrick" from gdtf("library/pb15.gdtf", mode "1: RGB") {\n}\n',
-    );
-    // Only one of the two may have unsaved changes.
-    await expect(page.getByTestId("ft-settings-locked")).toBeVisible();
-    await expect(page.getByTestId("ft-set-name")).toBeDisabled();
-
-    const put = page.waitForRequest(
-      (r) =>
-        r.method() === "PUT" &&
-        /\/api\/lighting\/fixture-types\/pixelbrick/.test(r.url()),
-    );
-    await page.getByTestId("ft-file-save").click();
-    const request = await put;
-    expect(request.postData()).toContain('mode "1: RGB"');
-    // Still on the page, reloaded.
-    await expect(page.getByTestId("ft-settings")).toBeVisible();
-    await expect(page.getByTestId("ft-set-name")).toBeEnabled();
-  });
-
-  test("editing the form makes the file read-only until it is saved or discarded", async ({
-    page,
-  }) => {
-    await card(page, "pixelbrick").click();
-    await page.getByTestId("ft-set-name").fill("Other");
-    await page.getByTestId("ft-file").locator("summary").click();
-    await expect(page.getByTestId("ft-file-locked")).toBeVisible();
-    await expect(page.getByTestId("ft-dsl")).toHaveAttribute("readonly", "");
-    await page.getByTestId("ft-set-discard").click();
-    await expect(page.getByTestId("ft-set-name")).toHaveValue("pixelbrick");
-    await expect(page.getByTestId("ft-dsl")).not.toHaveAttribute("readonly");
+    await expect(page).toHaveURL(/#\/lighting\/fixtures\/PB15$/);
   });
 
   test("a fixture that pans or tilts shows its movement limits", async ({
@@ -246,9 +117,7 @@ test.describe("Fixture settings", () => {
               contentType: "application/json",
               body: JSON.stringify({
                 name: "pixelbrick",
-                default_mode: "8: RGBS",
                 movement: { max_pan_speed: 240, max_tilt_speed: null },
-                file: "pixelbrick.fixture",
                 version: "mock-v1",
               }),
             })
@@ -260,8 +129,6 @@ test.describe("Fixture settings", () => {
         contentType: "application/json",
         body: JSON.stringify({
           archive: "library/mover.gdtf",
-          mode: "8: RGBS",
-          matched_mode: "8: RGBS",
           rig: null,
           thumbnail: null,
           beam: null,
@@ -293,9 +160,11 @@ test.describe("Fixture settings", () => {
     await page.getByTestId("ft-set-tilt").fill("180");
     await page.getByTestId("ft-set-save").click();
     await expect.poll(() => posts.filter((p) => p.write).length).toBe(1);
-    expect(posts.find((p) => p.write)!.body.movement).toEqual({
+    const write = posts.find((p) => p.write)!.body;
+    expect(write.movement).toEqual({
       max_pan_speed: 240,
       max_tilt_speed: 180,
     });
+    expect(write).not.toHaveProperty("default_mode");
   });
 });

@@ -33,13 +33,12 @@ pub mod gdtf;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::import::fixture_filename_stem;
-use super::parser::{parse_fixture_types, parse_venues};
 use super::types::{ChannelDef, Fixture, FixtureType, Vec3, Venue};
 
 /// How an export is run.
@@ -205,7 +204,7 @@ pub fn export_mvr_bytes(
             }
         )
     })?;
-    let fixture_types = load_fixture_types(&project.join(&options.fixture_types_dir))?;
+    let fixture_types = load_fixture_types(project, &project.join(&options.fixture_types_dir))?;
 
     let mut warnings = Vec::new();
     let mut fixtures: Vec<&Fixture> = venue.fixtures().values().collect();
@@ -228,7 +227,7 @@ pub fn export_mvr_bytes(
     let mut taken: BTreeSet<String> = BTreeSet::new();
     let mut entry_of_source: HashMap<String, String> = HashMap::new();
     // One entry per type (the type is the whole archive, design §21); the
-    // mode is each fixture's own — its line's, or its type's default.
+    // mode is each fixture's own, from its venue line.
     let mut entry_of_type: HashMap<&str, String> = HashMap::new();
     let mut gdtf_of: HashMap<&str, (String, String)> = HashMap::new();
     let mut embedded = Vec::new();
@@ -237,20 +236,23 @@ pub fn export_mvr_bytes(
         let type_name = fixture.fixture_type();
         let fixture_type = fixture_types.get(type_name).ok_or_else(|| {
             format!(
-                "fixture \"{}\" uses fixture type \"{type_name}\", which {} does not define",
+                "fixture \"{}\" uses fixture type \"{type_name}\", which neither {} nor {} \
+                 defines",
                 fixture.name(),
-                options.fixture_types_dir
+                options.fixture_types_dir,
+                crate::lighting::library::LIBRARY_DIR
             )
         })?;
         let mode = match (fixture_type.source(), fixture.mode()) {
             (Some(_), Some(mode)) => mode.to_string(),
-            (Some(source), None) => source.mode.clone().ok_or_else(|| {
-                format!(
-                    "fixture \"{}\" names no mode, and fixture type \"{type_name}\" has no \
-                     default mode; add `mode \"...\"` to the fixture line",
+            (Some(_), None) => {
+                return Err(format!(
+                    "fixture \"{}\" of \"{type_name}\" names no mode; every fixture of a \
+                     GDTF fixture states its mode — add `mode \"...\"` to its venue line",
                     fixture.name()
                 )
-            })?,
+                .into())
+            }
             (None, Some(mode)) => {
                 return Err(format!(
                     "fixture \"{}\" names mode \"{mode}\", but fixture type \"{type_name}\" is \
@@ -491,49 +493,38 @@ fn place(
     name
 }
 
-/// Every venue in a directory (`.venue` and `.light` files alike).
+/// Every venue in a directory and its subdirectories (`.venue` and `.light`
+/// files alike), read as the lighting system reads them. An export is
+/// strict: a file that does not parse, or a name two files declare, stops
+/// it rather than export a rig with something quietly missing.
 fn load_venues(dir: &Path) -> Result<HashMap<String, Venue>, Box<dyn Error>> {
-    let mut venues = HashMap::new();
-    for path in lighting_files(dir, &["venue", "light"])? {
-        let content = std::fs::read_to_string(&path)?;
-        match parse_venues(&content) {
-            Ok(parsed) => venues.extend(parsed),
-            Err(e) => {
-                return Err(format!("{}: {e}", path.display()).into());
-            }
-        }
+    let read = super::project_files::venues(dir);
+    if let Some(problem) = read.problems.first() {
+        return Err(format!("{}: {}", problem.file.display(), problem.error).into());
     }
-    Ok(venues)
+    Ok(read.items.into_iter().map(|d| (d.name, d.item)).collect())
 }
 
-/// Every fixture type in a directory (`.fixture` and `.light` files alike).
-fn load_fixture_types(dir: &Path) -> Result<HashMap<String, FixtureType>, Box<dyn Error>> {
-    let mut types = HashMap::new();
-    for path in lighting_files(dir, &["fixture", "light"])? {
-        let content = std::fs::read_to_string(&path)?;
-        match parse_fixture_types(&content) {
-            Ok(parsed) => types.extend(parsed),
-            Err(e) => {
-                return Err(format!("{}: {e}", path.display()).into());
-            }
-        }
+/// Every fixture type of the project, read as the lighting system reads
+/// them: the type files in a directory and its subdirectories (`.fixture`
+/// and `.light` alike) and the library's unrecorded GDTFs. Strict, as
+/// [`load_venues`] is.
+fn load_fixture_types(
+    project: &Path,
+    dir: &Path,
+) -> Result<HashMap<String, FixtureType>, Box<dyn Error>> {
+    let read = super::project_files::fixture_types(project, Some(dir));
+    if let Some(problem) = read.files.problems.first() {
+        return Err(format!("{}: {}", problem.file.display(), problem.error).into());
     }
-    Ok(types)
-}
-
-fn lighting_files(dir: &Path, extensions: &[&str]) -> Result<Vec<PathBuf>, Box<dyn Error>> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("cannot read directory {}: {e}", dir.display()))?;
-    let mut files: Vec<PathBuf> = entries
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| {
-            path.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| extensions.contains(&e))
-        })
+    let mut types: HashMap<String, FixtureType> = read
+        .library
+        .types
+        .iter()
+        .map(|t| (t.name.clone(), super::library::declared(t)))
         .collect();
-    files.sort();
-    Ok(files)
+    types.extend(read.files.items.into_iter().map(|d| (d.name, d.item)));
+    Ok(types)
 }
 
 // --- Scene rendering -------------------------------------------------------
@@ -886,6 +877,8 @@ mod tests {
     use super::*;
     use crate::lighting::import::{import_mvr_bytes, inspect_mvr_bytes, MvrImportOptions};
     use crate::lighting::mvr;
+    use crate::lighting::parser::parse_venues;
+    use std::path::PathBuf;
 
     /// The scene the tests seed from: two bricks and a mover of the
     /// synthetic GDTF, a focus point, one layer.
@@ -1030,7 +1023,7 @@ mod tests {
         let venue_path = project.join("lighting/venues/kellys.venue");
         let text = std::fs::read_to_string(&venue_path).unwrap();
         let moded = text.replace(
-            "fixture \"Brick 2\" \"Synth Brick\" @ 1:5",
+            "fixture \"Brick 2\" \"Synth Brick\" mode \"8: RGBS\" @ 1:5",
             "fixture \"Brick 2\" \"Synth Brick\" mode \"Mover 16bit\" @ 1:5",
         );
         assert_ne!(moded, text);
@@ -1061,25 +1054,23 @@ mod tests {
             fresh.path(),
         )
         .unwrap();
-        // Two of three now use the mover mode, so it is the new default.
+        // One archive, one fixture type; each line carries its own mode.
         assert_eq!(report.plan.fixture_types.len(), 1);
-        assert_eq!(
-            report.plan.fixture_types[0].mode.as_deref(),
-            Some("Mover 16bit")
-        );
+        assert_eq!(report.plan.fixture_types[0].fixture_file, None);
         let venue = &parse_venues(
             &std::fs::read_to_string(fresh.path().join("lighting/venues/round.venue")).unwrap(),
         )
         .unwrap()["round"];
         assert_eq!(venue.fixtures()["Brick 1"].mode(), Some("8: RGBS"));
-        assert_eq!(venue.fixtures()["Brick 2"].mode(), None);
-        assert_eq!(venue.fixtures()["Mover 1"].mode(), None);
+        assert_eq!(venue.fixtures()["Brick 2"].mode(), Some("Mover 16bit"));
+        assert_eq!(venue.fixtures()["Mover 1"].mode(), Some("Mover 16bit"));
     }
 
     #[test]
     fn a_mode_the_type_cannot_have_refuses_the_export() {
         let (_dir, project) = seeded_project();
         let types = project.join("lighting/fixture_types");
+        std::fs::create_dir_all(&types).unwrap();
         std::fs::write(
             types.join("par.fixture"),
             "fixture_type \"Par\" {\n  channel \"dimmer\" @ 1\n}\n",
@@ -1108,7 +1099,7 @@ mod tests {
         let text = std::fs::read_to_string(&venue_path).unwrap();
         // A drifted spelling the loader accepts with a warning.
         let drifted = text.replace(
-            "fixture \"Brick 2\" \"Synth Brick\" @ 1:5",
+            "fixture \"Brick 2\" \"Synth Brick\" mode \"8: RGBS\" @ 1:5",
             "fixture \"Brick 2\" \"Synth Brick\" mode \"mover 16BIT\" @ 1:5",
         );
         assert_ne!(drifted, text);
@@ -1127,7 +1118,7 @@ mod tests {
         std::fs::write(
             &venue_path,
             text.replace(
-                "fixture \"Brick 2\" \"Synth Brick\" @ 1:5",
+                "fixture \"Brick 2\" \"Synth Brick\" mode \"8: RGBS\" @ 1:5",
                 "fixture \"Brick 2\" \"Synth Brick\" mode \"No Such Mode\" @ 1:5",
             ),
         )
@@ -1287,7 +1278,9 @@ mod tests {
             plan.fixtures
         );
         let left = plan.fixtures.iter().find(|f| f.name == "Left").unwrap();
-        assert_eq!(left.fixture_type.as_deref(), Some("Par"));
+        // The generated archive is a GDTF fixture of its own; the native
+        // "Par" keeps its name, so the newcomer is pinned with its stem.
+        assert_eq!(left.fixture_type.as_deref(), Some("Par (mtrackPar)"));
         assert_eq!(left.patch, Some((1, 1)));
         let p = left.position.unwrap();
         assert!(
@@ -1307,11 +1300,28 @@ mod tests {
             "{err}"
         );
 
+        // A recorded type whose archive is gone cannot be embedded.
+        let types = project.join("lighting/fixture_types");
+        std::fs::create_dir_all(&types).unwrap();
+        std::fs::write(
+            types.join("synth_brick.fixture"),
+            "fixture_type \"Synth Brick\"\n  from gdtf(\"lighting/library/Astera_PB15.gdtf\")\n{\n}\n",
+        )
+        .unwrap();
         std::fs::remove_file(project.join("lighting/library/Astera_PB15.gdtf")).unwrap();
         let err = export_mvr(&MvrExportOptions::for_venue("kellys"), &project)
             .unwrap_err()
             .to_string();
         assert!(err.contains("cannot be read"), "{err}");
+        // With no record, the archive was the type: it is gone with it.
+        std::fs::remove_file(types.join("synth_brick.fixture")).unwrap();
+        let err = export_mvr(&MvrExportOptions::for_venue("kellys"), &project)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("which neither lighting/fixture_types nor lighting/library defines"),
+            "{err}"
+        );
         assert!(!project.join("lighting/export").exists());
     }
 
@@ -1384,16 +1394,17 @@ mod tests {
                 .as_bytes(),
         )]);
         std::fs::write(other_dir.join("Astera_PB15.gdtf"), &other).unwrap();
+        std::fs::create_dir_all(project.join("lighting/fixture_types")).unwrap();
         std::fs::write(
             project.join("lighting/fixture_types/other_brick.fixture"),
-            "fixture_type \"Other Brick\"\n  from gdtf(\"lighting/library/other/Astera_PB15.gdtf\", mode \"8: RGBS\")\n{\n}\n",
+            "fixture_type \"Other Brick\"\n  from gdtf(\"lighting/library/other/Astera_PB15.gdtf\")\n{\n}\n",
         )
         .unwrap();
         let venue_file = project.join("lighting/venues/kellys.venue");
         let mut venue = std::fs::read_to_string(&venue_file).unwrap();
         venue = venue.replace(
             "\n}",
-            "\n  fixture \"Other 1\" \"Other Brick\" @ 3:1 position (0, 1, 2) rotation (0, 0, 0)\n}",
+            "\n  fixture \"Other 1\" \"Other Brick\" mode \"8: RGBS\" @ 3:1 position (0, 1, 2) rotation (0, 0, 0)\n}",
         );
         std::fs::write(&venue_file, venue).unwrap();
 

@@ -381,11 +381,8 @@ export interface FixtureTypeEntry {
   file: string;
   extension: string;
   referential: boolean;
-  /** A GDTF type's default mode; null on a native type and on a GDTF type
-   *  with none, whose fixtures each name their own. */
-  default_mode?: string | null;
-  /** The addresses a fixture of the type occupies (a GDTF type's in its
-   *  default mode); null when not known. */
+  /** The addresses a fixture of a hand-written type occupies; null for a
+   *  fixture from a GDTF, whose footprint is its mode's. */
   footprint?: number | null;
   rich: boolean;
   /** A referential type's archive in brief, for its card; null when the
@@ -399,9 +396,6 @@ export interface GdtfSummary {
   manufacturer: string;
   /** How many modes the archive has. */
   modes: number;
-  /** The type's default mode, as the `.fixture` writes it; null when the
-   *  type has none (every fixture of it names its own). */
-  mode: string | null;
   /** The modes venue fixtures use, most-used first. */
   in_use: { mode: string; count: number }[];
   /** The pinned mode's first beam, as far as the archive states it. */
@@ -438,10 +432,9 @@ export async function fetchFixtureTypes(
   };
 }
 
-/** One DMX mode of a GDTF archive, as the inspect endpoint describes it. */
+/** One DMX mode of a GDTF archive, as its fixture page describes it. */
 export interface GdtfMode {
   name: string;
-  channel_count: number;
   /** DMX addresses the mode occupies. */
   footprint: number;
   /** What a show can do in the mode, named as the fit endpoint names
@@ -454,48 +447,38 @@ export interface GdtfMode {
   strobe_range?: { min_hz: number | null; max_hz: number };
   /** The channel map: [address offset, name], as the type would have it. */
   channels?: [number, string][];
-  /** What the distiller skipped or guessed. */
-  warnings?: string[];
   /** Why the mode cannot be imported; present only when it cannot. */
   refused?: string;
 }
 
 export interface GdtfInspection {
-  fixture: string;
-  manufacturer: string;
-  /** The archive's fixture name as a safe type name. */
-  suggested_name?: string;
-  /** Where an import writes the `.fixture` file. */
-  fixture_types_dir?: string;
   modes: GdtfMode[];
 }
 
+/** What importing a GDTF did, in the user's terms: the fixture it is now
+ *  known as, what the archive says it is, and how many modes it has. */
 export interface GdtfImportReport {
   type_name: string;
-  mode: string;
+  fixture: string;
+  manufacturer: string;
+  /** How many modes the archive has; every one is usable in a venue. */
+  modes: number;
   archive: string;
-  replaced_archive: boolean;
-  fixture_file: string;
-  channels: [number, string][];
-  warnings: string[];
+  /** The same archive was already imported: nothing changed. */
+  already_imported: boolean;
+  /** The name it would have had, when another fixture already had it. */
+  renamed_from: string | null;
+  /** Modes mtrack cannot drive, and why. */
+  refused_modes: { mode: string; reason: string }[];
 }
 
-/** Parses an uploaded GDTF archive and returns its modes. Writes nothing. */
-export async function inspectGdtf(file: File): Promise<GdtfInspection> {
-  const res = await uploadFiles("/lighting/gdtf/inspect", [file]);
-  if (!res.ok) throw await apiError(res, "Failed to inspect GDTF");
-  return res.json();
-}
-
-/** Imports one mode of a GDTF archive: the archive lands in
- * lighting/library/, a referential .fixture definition is written, and the
- * expansion cache is warmed. Returns the import report. */
+/** Imports a GDTF in one step: the fixture is usable in a venue in any of
+ *  its modes at once. A `mode` makes one the default; none is the norm. */
 export async function importGdtf(
   file: File,
-  mode: string,
   name?: string,
 ): Promise<GdtfImportReport> {
-  const params = new URLSearchParams({ mode });
+  const params = new URLSearchParams();
   if (name) params.set("name", name);
   const res = await uploadFiles(`/lighting/gdtf/import?${params}`, [file]);
   if (!res.ok) throw await apiError(res, "Failed to import GDTF");
@@ -533,14 +516,9 @@ export interface MvrSceneView {
 export interface MvrPlannedType {
   name: string;
   archive: string;
-  /** The type's default mode, as the GDTF spells it: the mode most of the
-   *  file's fixtures use. Null for an existing type with no default, whose
-   *  fixtures all name their modes. */
-  mode: string | null;
   /** Every mode the file patches the type's fixtures in, sorted. */
   modes: string[];
   existing: boolean;
-  fixture_file: string;
 }
 
 /** A hand-edited field a merge would overwrite with the MVR's value. */
@@ -561,8 +539,7 @@ export interface MvrPlannedFixture {
   name: string;
   layer: string;
   fixture_type: string | null;
-  /** The mode the venue line names: null when the fixture is in its type's
-   *  default mode (or is a TODO). */
+  /** The mode the venue line names (null for a TODO). */
   mode?: string | null;
   patch: [number, number] | null;
   position: Vec3 | null;
@@ -835,14 +812,8 @@ export async function fetchFixtureType(
 /** What a referential fixture type's GDTF archive holds, for the type's
  *  details view. Paths are in the asset store (`/api/lighting/assets/`). */
 export interface FixtureTypeGdtf {
-  /** The archive as the `.fixture` names it, project-relative. */
+  /** The fixture's GDTF, project-relative. */
   archive: string;
-  /** The type's default mode as the `.fixture` writes it; null when it has
-   *  none. */
-  mode: string | null;
-  /** The archive mode that pin resolves to, by its own name; null when it
-   *  resolves to none. */
-  matched_mode: string | null;
   /** The rig model for the 3D view; null when none could be made. */
   rig: string | null;
   thumbnail: string | null;
@@ -885,25 +856,19 @@ export interface MovementLimits {
   max_tilt_speed: number | null;
 }
 
-/** What a GDTF type's file holds that is the user's: the fixture page's
+/** What is the user's about a fixture from a GDTF: the fixture page's
  *  settings form. */
 export interface FixtureSettingsData {
   name: string;
-  default_mode: string | null;
   movement: MovementLimits;
-  /** The file they are saved in. */
-  file: string;
-  /** The file's version, sent back as `If-Match`. */
+  /** The settings' version, sent back as `If-Match` (also when mtrack has
+   *  no record of them yet). */
   version: string;
 }
 
 /** What a settings save does (or, planned, would do). */
 export interface FixtureSettingsResult {
-  write: boolean;
-  file: string;
   version: string;
-  /** The file's text after the save. */
-  dsl: string;
   /** A rename: every venue line that names the type, by venue. */
   rename: {
     from: string;
@@ -911,34 +876,11 @@ export interface FixtureSettingsResult {
     lines: number;
     venues: { venue: string; file: string; lines: number }[];
   } | null;
-  /** A new default: the venue fixtures that take it (they name no mode). */
-  default_change: {
-    from: string | null;
-    to: string | null;
-    /** The new default's addresses; null when unknown or none. */
-    footprint: number | null;
-    count: number;
-    venues: { venue: string; fixtures: string[] }[];
-  } | null;
-  /** Overlaps the new default would cause, not there before. */
-  overlaps: {
-    venue: string;
-    a: string;
-    b: string;
-    a_gang: string[];
-    b_gang: string[];
-    universe: number;
-    from: number;
-    to: number;
-    message: string;
-  }[];
-  overruns: { venue: string; fixture: string; message: string }[];
   /** The venue files read, by name, with their versions. */
   venue_versions: Record<string, string>;
   /** Inline fixtures in the player config that name the type (a rename
    *  leaves them for the user to change). */
   config_references: string[];
-  reloaded: boolean;
   venue_error: VenueError | null;
 }
 
@@ -962,7 +904,6 @@ export async function postFixtureSettings(
   name: string,
   body: {
     name: string;
-    default_mode: string | null;
     movement: MovementLimits;
     write: boolean;
     venue_versions?: Record<string, string>;
@@ -1022,16 +963,23 @@ export async function saveFixtureTypeText(
   fixtureTypesChanged();
 }
 
+/** Deletes a fixture type. For a fixture from a GDTF, its archive goes too
+ *  unless another fixture uses it. */
 export async function deleteFixtureType(
   name: string,
   dir?: string,
-): Promise<void> {
+): Promise<{ archiveRemoved: string | null; archiveKept: boolean }> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await del(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
   );
   if (!res.ok) throw await apiError(res, "Failed to delete fixture type");
   fixtureTypesChanged();
+  const body = await res.json().catch(() => ({}));
+  return {
+    archiveRemoved: body?.archive_removed ?? null,
+    archiveKept: body?.archive_kept === true,
+  };
 }
 
 /// Group names a cue can target, with the fixtures each currently resolves to.
