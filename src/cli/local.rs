@@ -664,11 +664,25 @@ pub fn import_mvr(
         );
         println!("  fixture types:");
         for ft in &plan.fixture_types {
+            let default = match &ft.mode {
+                Some(mode) => format!("default mode \"{mode}\""),
+                None => "no default mode".to_string(),
+            };
+            let others: Vec<String> = ft
+                .modes
+                .iter()
+                .filter(|m| Some(*m) != ft.mode.as_ref())
+                .map(|m| format!("\"{m}\""))
+                .collect();
+            let others = if others.is_empty() {
+                String::new()
+            } else {
+                format!(" (also {})", others.join(", "))
+            };
             println!(
-                "    {:40} {} mode \"{}\"{}",
+                "    {:40} {} {default}{others}{}",
                 format!("\"{}\"", ft.name),
                 ft.archive,
-                ft.mode,
                 if ft.existing { " (existing)" } else { "" }
             );
         }
@@ -688,9 +702,14 @@ pub fn import_mvr(
                     format!("\"{}\"", fixture.name)
                 ),
                 None => println!(
-                    "    {:29} @ {patch:8} {position} {}{}",
+                    "    {:29} @ {patch:8} {position} {}{}{}",
                     format!("\"{}\"", fixture.name),
                     fixture.fixture_type.as_deref().unwrap_or_default(),
+                    fixture
+                        .mode
+                        .as_deref()
+                        .map(|m| format!(" mode \"{m}\""))
+                        .unwrap_or_default(),
                     fixture
                         .change
                         .as_deref()

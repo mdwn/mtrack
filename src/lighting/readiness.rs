@@ -79,6 +79,10 @@ pub struct VenueFacts {
     pub focus_points: Option<HashSet<String>>,
     /// Fixtures patched on a universe with no configured output.
     pub universe_warnings: Vec<Warning>,
+    /// Fixtures of the venue patched over each other's addresses (kind
+    /// `patch-overlap`), each pair once. A fixture whose type or mode did
+    /// not load has no known footprint and is not checked.
+    pub patch_warnings: Vec<Warning>,
 }
 
 impl VenueFacts {
@@ -119,6 +123,14 @@ impl VenueFacts {
         if let Some(configured) = configured_universes {
             facts.universe_warnings = universe_coverage(&fixtures, configured);
         }
+        facts.patch_warnings = system
+            .current_venue_overlaps()
+            .into_iter()
+            .map(|overlap| Warning {
+                kind: "patch-overlap",
+                message: overlap.to_string(),
+            })
+            .collect();
         facts
     }
 
@@ -157,11 +169,12 @@ impl VenueFacts {
         }
     }
 
-    /// Runs every lint check over `shows`, plus the venue-level universe
-    /// coverage findings.
+    /// Runs every lint check over `shows`, plus the venue-level findings:
+    /// universe coverage and patch overlaps.
     pub fn lint(&self, shows: &[LightShow], song: Option<&Song>) -> Vec<Warning> {
         let mut warnings = lint_shows(shows, &self.context(song));
         warnings.extend(self.universe_warnings.iter().cloned());
+        warnings.extend(self.patch_warnings.iter().cloned());
         warnings
     }
 }
@@ -229,6 +242,31 @@ mod test {
         let mut system = system(dir.path());
         let facts = VenueFacts::collect(&mut system, &[], None);
         assert!(facts.universe_warnings.is_empty());
+    }
+
+    #[test]
+    fn fixtures_patched_over_each_other_are_a_finding() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut system = system(dir.path());
+        let facts = VenueFacts::collect(&mut system, &[], Some(&[1, 4]));
+        assert!(facts.patch_warnings.is_empty(), "A and B do not overlap");
+
+        // C starts on A's second address.
+        std::fs::write(
+            dir.path().join("venues/v.light"),
+            "venue \"v\" {\n  fixture \"A\" Par @ 1:1 tags [\"wash\"]\n  fixture \"B\" Par @ 4:1\n  \
+             fixture \"C\" Par @ 1:2\n}\n",
+        )
+        .unwrap();
+        system.reload_venues().unwrap();
+        let facts = VenueFacts::collect(&mut system, &[], Some(&[1, 4]));
+        assert_eq!(facts.patch_warnings.len(), 1, "{:?}", facts.patch_warnings);
+        assert_eq!(facts.patch_warnings[0].kind, "patch-overlap");
+        let message = &facts.patch_warnings[0].message;
+        assert!(message.contains("\"A\" and \"C\""), "{message}");
+        assert!(message.contains("universe 1 at address 2"), "{message}");
+        let kinds: Vec<&str> = facts.lint(&[], None).iter().map(|w| w.kind).collect();
+        assert_eq!(kinds, ["patch-overlap"]);
     }
 
     #[test]

@@ -107,13 +107,20 @@ impl ChannelDef {
     }
 }
 
-/// A reference to the GDTF archive and mode a fixture type is distilled from.
+/// A reference to the GDTF archive a fixture type is distilled from.
+///
+/// The type is the whole archive, not one of its modes (venue-exchange
+/// design §21): a venue fixture may name its own mode, and the mode here is
+/// only the type's default — the one a fixture line without `mode` takes.
+/// It is optional; a type without one makes every fixture of it say which.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GdtfSource {
     /// Path to the GDTF archive, relative to the config directory.
     pub path: String,
-    /// The DMX mode name within the archive.
-    pub mode: String,
+    /// The default DMX mode name within the archive, when the type has one.
+    /// An expansion (what the distill cache stores) always records here the
+    /// mode it was distilled from.
+    pub mode: Option<String>,
 }
 
 /// Movement limits — not part of GDTF; measured or configured per fixture.
@@ -445,11 +452,19 @@ impl FixtureType {
         self.aim = aim;
     }
 
-    /// The DMX footprint: the highest byte offset any channel occupies.
+    /// The DMX footprint: the highest byte offset any channel occupies —
+    /// fine bytes, mirrors and every cell's channels included. A patch
+    /// that starts at address `a` uses `a ..= a + footprint - 1`.
     pub fn footprint(&self) -> u16 {
+        let cells = self
+            .cells
+            .iter()
+            .flat_map(|c| c.channels.values())
+            .flat_map(|d| d.all_offsets());
         self.channel_defs
             .values()
             .flat_map(|d| d.all_offsets())
+            .chain(cells)
             .max()
             .unwrap_or(0)
     }
@@ -689,6 +704,13 @@ pub struct Fixture {
     /// How it is mounted: degrees about the stage X, Y and Z axes, applied
     /// in that order. Meaningless without a position.
     rotation: Option<Vec3>,
+
+    /// The GDTF mode this fixture is patched in, when the line names one
+    /// (venue-exchange design §21); absent means its type's default.
+    /// Serialized only when present, so a venue that names no modes reads
+    /// exactly as it always did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
 }
 
 /// A stage-space triple: meters, right-handed Z-up, origin downstage-center
@@ -712,7 +734,21 @@ impl Fixture {
             tags,
             position: None,
             rotation: None,
+            mode: None,
         }
+    }
+
+    /// Patches the fixture in a named mode of its type (`None` takes the
+    /// type's default).
+    pub fn with_mode(mut self, mode: Option<String>) -> Fixture {
+        self.mode = mode;
+        self
+    }
+
+    /// The mode the fixture line names, if any; `None` means its type's
+    /// default.
+    pub fn mode(&self) -> Option<&str> {
+        self.mode.as_deref()
     }
 
     /// Places the fixture.
@@ -885,12 +921,16 @@ impl fmt::Display for Fixture {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "fixture \"{}\" {} @ {}:{}",
+            "fixture \"{}\" {}",
             self.name,
-            fmt_type_reference(&self.fixture_type),
-            self.universe,
-            self.start_channel
+            fmt_type_reference(&self.fixture_type)
         )?;
+        // Directly after the type, before the patch: the mode is part of
+        // what the fixture *is*, the way the type is.
+        if let Some(mode) = &self.mode {
+            write!(f, " mode \"{mode}\"")?;
+        }
+        write!(f, " @ {}:{}", self.universe, self.start_channel)?;
         if !self.tags.is_empty() {
             let tags: Vec<String> = self.tags.iter().map(|t| format!("\"{t}\"")).collect();
             write!(f, " tags [{}]", tags.join(", "))?;
@@ -1077,6 +1117,52 @@ mod tests {
     }
 
     #[test]
+    fn fixture_type_footprint_includes_every_cell() {
+        // The highest byte is the last cell's fine byte, which only the
+        // cells (and the ganged mirrors) know about.
+        let cell = |name: &str, offset: u16| Cell {
+            name: name.to_string(),
+            channels: HashMap::from([(
+                "red".to_string(),
+                ChannelDef {
+                    fine: Some(offset + 1),
+                    ..ChannelDef::at(offset)
+                },
+            )]),
+            offset: [0.0; 3],
+        };
+        let cells = vec![cell("1", 2), cell("2", 4)];
+        let mut defs = ganged_from_cells(&cells).unwrap();
+        defs.insert("dimmer".to_string(), ChannelDef::at(1));
+        let mut ft = FixtureType::from_channel_defs("Bar".to_string(), defs);
+        ft.set_cells(cells.clone());
+        assert_eq!(ft.footprint(), 5);
+        // Cells alone, with nothing ganged, still count.
+        let mut bare = FixtureType::from_channel_defs("Bare".to_string(), HashMap::new());
+        bare.set_cells(cells);
+        assert_eq!(bare.footprint(), 5);
+        assert_eq!(
+            FixtureType::from_channel_defs("Empty".to_string(), HashMap::new()).footprint(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_fixture_line_names_its_mode_after_its_type() {
+        let f = Fixture::new("Brick8".into(), "Astera-PixelBrick".into(), 1, 29, vec![])
+            .with_mode(Some("9: RGBWS".into()));
+        assert_eq!(f.mode(), Some("9: RGBWS"));
+        assert_eq!(
+            f.to_string(),
+            "fixture \"Brick8\" Astera-PixelBrick mode \"9: RGBWS\" @ 1:29"
+        );
+        // Serialized only when present: a venue without modes reads as before.
+        let plain = Fixture::new("A".into(), "Par".into(), 1, 1, vec![]);
+        assert!(serde_json::to_value(&plain).unwrap().get("mode").is_none());
+        assert_eq!(serde_json::to_value(&f).unwrap()["mode"], "9: RGBWS");
+    }
+
+    #[test]
     // The v1 form is what a plain type renders as, byte for byte: the
     // rich form (fine, range, functions) exists since P1c-3 but only a
     // type that needs it uses it.
@@ -1112,7 +1198,7 @@ mod tests {
         let mut ft = FixtureType::new("Par".to_string(), channels);
         ft.set_source(GdtfSource {
             path: "library/par.gdtf".to_string(),
-            mode: "Mode 1".to_string(),
+            mode: Some("Mode 1".to_string()),
         });
         let json = serde_json::to_value(&ft).unwrap();
         let keys: Vec<&str> = json

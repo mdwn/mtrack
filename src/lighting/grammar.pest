@@ -239,9 +239,11 @@ fixture_type = { "fixture_type" ~ fixture_type_name ~ gdtf_source? ~ "{" ~ fixtu
 
 fixture_type_name = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
-// Referential fixture types pin the GDTF archive + mode they are distilled
-// from; the file body carries only human additions (movement limits).
-gdtf_source = { "from" ~ "gdtf" ~ "(" ~ string ~ "," ~ "mode" ~ string ~ ")" }
+// Referential fixture types name the GDTF archive they are distilled from;
+// the file body carries only human additions (movement limits), which apply
+// to every mode. The type is the whole archive: the mode here is only its
+// default, the one a venue fixture without `mode` takes, and may be omitted.
+gdtf_source = { "from" ~ "gdtf" ~ "(" ~ string ~ ("," ~ "mode" ~ string)? ~ ")" }
 
 fixture_type_content = {
     (channels | channel_map | channel_def | cell_def | movement_block | max_strobe_frequency | min_strobe_frequency | strobe_dmx_offset | special_cases)*
@@ -342,7 +344,14 @@ focus_point = { "focus" ~ string ~ vec3 }
 // name is not a bare word — `fixture_type "Moving Head"` — has no other way to
 // be referenced. It used to work only because a non-atomic `identifier`
 // silently swallowed the space.
-fixture = { "fixture" ~ string ~ (string | identifier) ~ "@" ~ universe_num ~ ":" ~ address_num ~ (tags | position | rotation)* }
+//
+// `mode` picks one of a GDTF-sourced type's modes for this fixture; without
+// it the fixture takes the type's default. It follows the type because the
+// type is matched first: `identifier` is atomic and greedy, so a type named
+// `mode` or `mode-x` is still a type, and `mode` is a keyword only after it.
+fixture = { "fixture" ~ string ~ (string | identifier) ~ fixture_mode? ~ "@" ~ universe_num ~ ":" ~ address_num ~ (tags | position | rotation)* }
+
+fixture_mode = { "mode" ~ string }
 
 // Stage coordinates: meters, right-handed Z-up, origin downstage-center on
 // the deck, +x stage-left, +y upstage, +z up. Rotation is degrees about the

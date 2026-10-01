@@ -227,14 +227,14 @@ pub fn export_mvr_bytes(
     let mut entries: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut taken: BTreeSet<String> = BTreeSet::new();
     let mut entry_of_source: HashMap<String, String> = HashMap::new();
+    // One entry per type (the type is the whole archive, design §21); the
+    // mode is each fixture's own — its line's, or its type's default.
+    let mut entry_of_type: HashMap<&str, String> = HashMap::new();
     let mut gdtf_of: HashMap<&str, (String, String)> = HashMap::new();
     let mut embedded = Vec::new();
     let mut generated = BTreeMap::new();
     for fixture in &fixtures {
         let type_name = fixture.fixture_type();
-        if gdtf_of.contains_key(type_name) {
-            continue;
-        }
         let fixture_type = fixture_types.get(type_name).ok_or_else(|| {
             format!(
                 "fixture \"{}\" uses fixture type \"{type_name}\", which {} does not define",
@@ -242,7 +242,30 @@ pub fn export_mvr_bytes(
                 options.fixture_types_dir
             )
         })?;
-        let (entry, mode) = match fixture_type.source() {
+        let mode = match (fixture_type.source(), fixture.mode()) {
+            (Some(_), Some(mode)) => mode.to_string(),
+            (Some(source), None) => source.mode.clone().ok_or_else(|| {
+                format!(
+                    "fixture \"{}\" names no mode, and fixture type \"{type_name}\" has no \
+                     default mode; add `mode \"...\"` to the fixture line",
+                    fixture.name()
+                )
+            })?,
+            (None, Some(mode)) => {
+                return Err(format!(
+                    "fixture \"{}\" names mode \"{mode}\", but fixture type \"{type_name}\" is \
+                     not GDTF-sourced and has no modes; remove the mode",
+                    fixture.name()
+                )
+                .into())
+            }
+            (None, None) => gdtf::MODE_NAME.to_string(),
+        };
+        if let Some(entry) = entry_of_type.get(type_name) {
+            gdtf_of.insert(fixture.name(), (entry.clone(), mode));
+            continue;
+        }
+        let entry = match fixture_type.source() {
             Some(source) => {
                 let source_key = format!("archive:{}", source.path);
                 let entry = match entry_of_source.get(&source_key) {
@@ -273,7 +296,7 @@ pub fn export_mvr_bytes(
                         entry
                     }
                 };
-                (entry, source.mode.clone())
+                entry
             }
             None => {
                 let source_key = format!("native:{type_name}");
@@ -291,32 +314,53 @@ pub fn export_mvr_bytes(
                         entry
                     }
                 };
-                (entry, gdtf::MODE_NAME.to_string())
+                entry
             }
         };
-        gdtf_of.insert(type_name, (entry, mode));
+        entry_of_type.insert(type_name, entry.clone());
+        gdtf_of.insert(fixture.name(), (entry, mode));
     }
 
-    // Which types move: a mover's aim is its pan and tilt, so it links to
-    // no focus point here. A referential type's channels live in its
-    // archive; one that cannot be distilled counts as moving, and so goes
+    // Which fixtures move: a mover's aim is its pan and tilt, so it links
+    // to no focus point here. A referential type's channels live in its
+    // archive, per mode — one archive can be a mover in one mode and not in
+    // another; one that cannot be distilled counts as moving, and so goes
     // unlinked, which is what every export did before links existed.
-    let moving: HashSet<&str> = gdtf_of
-        .iter()
-        .filter(|(type_name, (entry, mode))| {
-            let fixture_type = &fixture_types[**type_name];
-            if fixture_type.source().is_none() {
-                return has_pose(fixture_type.channel_defs());
+    let mut moves_in: HashMap<(&str, &str), bool> = HashMap::new();
+    let mut parsed: HashMap<&str, Option<super::gdtf::Description>> = HashMap::new();
+    let mut moving: HashSet<&str> = HashSet::new();
+    for fixture in &fixtures {
+        let type_name = fixture.fixture_type();
+        let (entry, mode) = &gdtf_of[fixture.name()];
+        let fixture_type = &fixture_types[type_name];
+        let moves = match moves_in.get(&(type_name, mode.as_str())) {
+            Some(moves) => *moves,
+            None => {
+                let moves = if fixture_type.source().is_none() {
+                    has_pose(fixture_type.channel_defs())
+                } else {
+                    parsed
+                        .entry(entry.as_str())
+                        .or_insert_with(|| {
+                            entries
+                                .get(entry)
+                                .and_then(|bytes| super::gdtf::parse_archive(bytes).ok())
+                        })
+                        .as_ref()
+                        .and_then(|description| {
+                            super::gdtf::distill(description, mode, type_name).ok()
+                        })
+                        .map(|distilled| has_pose(distilled.fixture_type.channel_defs()))
+                        .unwrap_or(true)
+                };
+                moves_in.insert((type_name, mode.as_str()), moves);
+                moves
             }
-            entries
-                .get(entry)
-                .and_then(|bytes| super::gdtf::parse_archive(bytes).ok())
-                .and_then(|description| super::gdtf::distill(&description, mode, type_name).ok())
-                .map(|distilled| has_pose(distilled.fixture_type.channel_defs()))
-                .unwrap_or(true)
-        })
-        .map(|(type_name, _)| *type_name)
-        .collect();
+        };
+        if moves {
+            moving.insert(fixture.name());
+        }
+    }
 
     let origin_mm = venue
         .source()
@@ -337,7 +381,7 @@ pub fn export_mvr_bytes(
 
     let fixed_fixtures: Vec<FixedFixture> = fixtures
         .iter()
-        .filter(|f| f.position().is_some() && !moving.contains(f.fixture_type()))
+        .filter(|f| f.position().is_some() && !moving.contains(f.name()))
         .map(|f| FixedFixture {
             name: f.name().to_string(),
             focus: aimed_at(f, venue).map(str::to_string),
@@ -465,7 +509,9 @@ fn lighting_files(dir: &Path, extensions: &[&str]) -> Result<Vec<PathBuf>, Box<d
 fn render_scene(
     venue: &Venue,
     fixtures: &[&Fixture],
+    // Fixture name → (GDTF entry, the fixture's own mode).
     gdtf_of: &HashMap<&str, (String, String)>,
+    // The fixtures that move, by name.
     moving: &HashSet<&str>,
     origin_mm: &Vec3,
     layers_from_tags: bool,
@@ -481,7 +527,7 @@ fn render_scene(
 
     let ids = fixture_ids(fixtures);
     for (index, fixture) in fixtures.iter().enumerate() {
-        let (entry, mode) = &gdtf_of[fixture.fixture_type()];
+        let (entry, mode) = &gdtf_of[fixture.name()];
         let layer = if layers_from_tags {
             fixture
                 .tags()
@@ -509,7 +555,7 @@ fn render_scene(
             escape(entry),
             escape(mode)
         ));
-        if !moving.contains(fixture.fixture_type()) {
+        if !moving.contains(fixture.name()) {
             if let Some(focus) = aimed_at(fixture, venue) {
                 xml.push_str(&format!(
                     "            <Focus>{}</Focus>\n",
@@ -879,6 +925,12 @@ mod tests {
         assert_eq!(brick.fixture_id.as_deref(), Some("1"));
         assert_eq!(brick.gdtf_mode.as_deref(), Some("8: RGBS"));
         assert_eq!(brick.addresses, vec![(1, 1)]);
+        // One type for the archive, each fixture in its own mode: the
+        // mover's line names its mode, and the export says it per fixture.
+        assert_eq!(before.fixture_types.len(), 1, "{:?}", before.fixture_types);
+        let mover = scene.fixtures.iter().find(|f| f.name == "Mover 1").unwrap();
+        assert_eq!(mover.gdtf_mode.as_deref(), Some("Mover 16bit"));
+        assert_eq!(mover.gdtf_spec.as_deref(), Some("Astera_PB15.gdtf"));
         // The origin was restored: the MVR millimeters come back as they went in.
         let o = brick.matrix.unwrap().o;
         assert!(
@@ -911,6 +963,7 @@ mod tests {
         for (a, b) in after.fixtures.iter().zip(&before.fixtures) {
             assert_eq!(a.name, b.name);
             assert_eq!(a.fixture_type, b.fixture_type);
+            assert_eq!(a.mode, b.mode, "{}", a.name);
             assert_eq!(a.patch, b.patch);
             assert_eq!(a.position.is_some(), b.position.is_some());
             if let (Some(p), Some(q)) = (a.position, b.position) {
@@ -927,6 +980,88 @@ mod tests {
             .focus_points
             .iter()
             .all(|f| f.change.as_deref().is_none_or(|c| c == "unchanged")));
+        let mover = after.fixtures.iter().find(|f| f.name == "Mover 1").unwrap();
+        assert_eq!(mover.mode.as_deref(), Some("Mover 16bit"));
+    }
+
+    #[test]
+    fn a_fixture_mode_is_exported_and_survives_a_full_round_trip() {
+        // Hand-moded: Brick 2 goes to the mover mode in the venue file. The
+        // export carries it, and importing the export into a fresh project
+        // writes it back on the same fixture.
+        let (_dir, project) = seeded_project();
+        let venue_path = project.join("lighting/venues/kellys.venue");
+        let text = std::fs::read_to_string(&venue_path).unwrap();
+        let moded = text.replace(
+            "fixture \"Brick 2\" \"Synth Brick\" @ 1:5",
+            "fixture \"Brick 2\" \"Synth Brick\" mode \"Mover 16bit\" @ 1:5",
+        );
+        assert_ne!(moded, text);
+        std::fs::write(&venue_path, moded).unwrap();
+
+        let (bytes, _) =
+            export_mvr_bytes(&MvrExportOptions::for_venue("kellys"), &project).unwrap();
+        let scene = mvr::parse_archive(&bytes).unwrap();
+        let mode_of = |name: &str| {
+            scene
+                .fixtures
+                .iter()
+                .find(|f| f.name == name)
+                .and_then(|f| f.gdtf_mode.clone())
+        };
+        assert_eq!(mode_of("Brick 1").as_deref(), Some("8: RGBS"));
+        assert_eq!(mode_of("Brick 2").as_deref(), Some("Mover 16bit"));
+        assert_eq!(mode_of("Mover 1").as_deref(), Some("Mover 16bit"));
+
+        let fresh = tempfile::tempdir().unwrap();
+        let report = import_mvr_bytes(
+            &bytes,
+            "round.mvr",
+            &MvrImportOptions {
+                name: Some("round".to_string()),
+                ..MvrImportOptions::default()
+            },
+            fresh.path(),
+        )
+        .unwrap();
+        // Two of three now use the mover mode, so it is the new default.
+        assert_eq!(report.plan.fixture_types.len(), 1);
+        assert_eq!(
+            report.plan.fixture_types[0].mode.as_deref(),
+            Some("Mover 16bit")
+        );
+        let venue = &parse_venues(
+            &std::fs::read_to_string(fresh.path().join("lighting/venues/round.venue")).unwrap(),
+        )
+        .unwrap()["round"];
+        assert_eq!(venue.fixtures()["Brick 1"].mode(), Some("8: RGBS"));
+        assert_eq!(venue.fixtures()["Brick 2"].mode(), None);
+        assert_eq!(venue.fixtures()["Mover 1"].mode(), None);
+    }
+
+    #[test]
+    fn a_mode_the_type_cannot_have_refuses_the_export() {
+        let (_dir, project) = seeded_project();
+        let types = project.join("lighting/fixture_types");
+        std::fs::write(
+            types.join("par.fixture"),
+            "fixture_type \"Par\" {\n  channel \"dimmer\" @ 1\n}\n",
+        )
+        .unwrap();
+        let venue_path = project.join("lighting/venues/kellys.venue");
+        let text = std::fs::read_to_string(&venue_path).unwrap();
+        std::fs::write(
+            &venue_path,
+            text.replace("}\n", "  fixture \"Dim\" Par mode \"8: RGBS\" @ 3:1\n}\n"),
+        )
+        .unwrap();
+        let err = export_mvr_bytes(&MvrExportOptions::for_venue("kellys"), &project)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("fixture \"Dim\" names mode \"8: RGBS\""),
+            "{err}"
+        );
     }
 
     #[test]
