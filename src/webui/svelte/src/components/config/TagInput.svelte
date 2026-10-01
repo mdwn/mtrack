@@ -13,6 +13,8 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
+
   interface Props {
     tags: string[];
     onchange: (tags: string[]) => void;
@@ -24,11 +26,20 @@
   let inputValue = $state("");
   let inputEl: HTMLInputElement | undefined = $state();
 
+  /** Set when what was typed has no character a tag may hold: it stays in
+   *  the box, marked, rather than vanishing. */
+  let invalid = $state(false);
+
   function addTag(raw: string) {
     const tag = raw
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9_-]/g, "");
+    if (!tag && raw.trim()) {
+      invalid = true;
+      return;
+    }
+    invalid = false;
     if (!tag || tags.includes(tag)) {
       inputValue = "";
       return;
@@ -102,13 +113,27 @@
     type="text"
     bind:value={inputValue}
     {placeholder}
+    aria-invalid={invalid}
+    title={invalid ? $t("lighting.tagInvalid") : undefined}
+    oninput={() => (invalid = false)}
     onkeydown={handleKeydown}
     onblur={handleBlur}
     onpaste={handlePaste}
   />
 </div>
+{#if invalid}
+  <span class="tag-invalid" data-testid="tag-invalid"
+    >{$t("lighting.tagInvalid")}</span
+  >
+{/if}
 
 <style>
+  .tag-invalid {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--red);
+  }
   .tag-input-wrap {
     display: flex;
     flex-wrap: wrap;

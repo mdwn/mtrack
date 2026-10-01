@@ -15,6 +15,7 @@
 pub(crate) mod browse;
 pub(crate) mod config_api;
 pub(crate) mod devices;
+pub(crate) mod fixture_settings;
 pub(crate) mod helpers;
 pub(crate) mod lighting_api;
 pub(crate) mod mvr_api;
@@ -228,6 +229,10 @@ pub fn router() -> Router<WebUiState> {
         .route(
             "/lighting/fixture-types/{name}/gdtf",
             get(lighting_api::get_fixture_type_gdtf),
+        )
+        .route(
+            "/lighting/fixture-types/{name}/settings",
+            get(fixture_settings::get_settings).post(fixture_settings::post_settings),
         )
         .route("/lighting/groups", get(lighting_api::get_lighting_groups))
         .route("/lighting/mvr/export", get(mvr_api::export_mvr))

@@ -20,9 +20,17 @@
   let inputEl: HTMLInputElement | undefined = $state();
   let previousFocus: Element | null = null;
 
+  /** A prompt with nothing typed cannot be confirmed: every caller treats
+   *  an empty answer as a cancel, so a Confirm that closed the dialog and
+   *  did nothing would discard the click without a word. */
+  let blank = $derived(
+    dialogState.mode === "prompt" && inputValue.trim() === "",
+  );
+
   function confirm() {
+    if (blank) return;
     if (dialogState.mode === "prompt") {
-      dialogState.resolve?.(inputValue);
+      dialogState.resolve?.(inputValue.trim());
     } else if (dialogState.mode === "alert") {
       dialogState.resolve?.(null);
     } else {
@@ -120,6 +128,7 @@
             ? 'btn-danger'
             : 'btn-primary'}"
           onclick={confirm}
+          disabled={blank}
         >
           {confirmLabel}
         </button>

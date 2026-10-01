@@ -22,6 +22,10 @@
   import FixtureTypeDetails from "./FixtureTypeDetails.svelte";
   import { trimNumber } from "../../lib/lighting/fixtureFacts";
   import {
+    channelProblems,
+    type ChannelProblem,
+  } from "../../lib/lighting/venueRows";
+  import {
     fetchFixtureTypes,
     fetchFixtureType,
     saveFixtureType,
@@ -85,6 +89,42 @@
 
   /** An existing GDTF type opens on the fixture, its text last. */
   const showFtDetails = $derived(editFtReferential && !isNewFt);
+  /** The file's text as last read, so its edits can be told apart. */
+  let ftDslSaved = $state("");
+  /** A GDTF type's page has two ways to change its file: the settings form
+   *  and the file's text. Only one may have unsaved changes at a time —
+   *  each locks the other — and a save of either reloads both. */
+  let ftTextDirty = $derived(showFtDetails && editFtDsl !== ftDslSaved);
+  let ftFormDirty = $state(false);
+  /** The settings form's last word, kept across a rename's reload. */
+  let ftNotice = $state<{ ok: boolean; text: string } | null>(null);
+  /** Bumped after a save, so the page re-reads the archive's answer. */
+  let ftDetailsTick = $state(0);
+
+  /** After the settings form saved: the type may have a new name, and its
+   *  file new text. */
+  async function onSettingsSaved(
+    name: string,
+    notice: { ok: boolean; text: string },
+  ) {
+    ftNotice = notice;
+    editingFt = name;
+    editFtName = name;
+    ftFormDirty = false;
+    await loadFixtureTypes();
+    await openFtAsText(name);
+    ftDetailsTick++;
+  }
+
+  /** Saves the file's text from the GDTF type's page and stays on it. */
+  async function saveFtFile() {
+    const name = editFtDslName;
+    if (await saveFtText(true)) {
+      editFtName = name;
+      await openFtAsText(name);
+      ftDetailsTick++;
+    }
+  }
   const editingGdtf = $derived(
     editingFt ? (fixtureTypes[editingFt]?.gdtf ?? null) : null,
   );
@@ -151,6 +191,7 @@ fixture_type "Name" {
 
   async function startEditFt(name: string) {
     const entry = fixtureTypes[name];
+    ftNotice = null;
     editingFt = name;
     editFtName = name;
     isNewFt = false;
@@ -187,6 +228,7 @@ fixture_type "Name" {
     try {
       const full = await fetchFixtureType(name, ftDir || undefined);
       editFtDsl = full.dsl;
+      ftDslSaved = full.dsl;
     } catch (e: any) {
       ftMsg = e.message;
     } finally {
@@ -280,6 +322,7 @@ fixture_type "Name" {
   }
 
   function cancelEditFt() {
+    ftNotice = null;
     editingFt = null;
     newFtChoice = false;
   }
@@ -291,6 +334,14 @@ fixture_type "Name" {
         : 1;
     editFtChannels = [...editFtChannels, { name: "", offset: nextOffset }];
   }
+
+  /** Set by a refused save: the channel rows are then checked as edited. */
+  let checkChannels = $state(false);
+  let channelIssues = $derived(
+    checkChannels
+      ? channelProblems(editFtChannels)
+      : new Map<number, ChannelProblem[]>(),
+  );
 
   function removeFtChannel(i: number) {
     editFtChannels = editFtChannels.filter((_, idx) => idx !== i);
@@ -305,9 +356,27 @@ fixture_type "Name" {
       ftMsg = get(t)("lighting.nameRequired");
       return;
     }
+    // Every channel row is saved or the save is refused: a blank name, a
+    // name another row has, or an address below 1 is marked, never dropped
+    // or merged into its namesake.
+    const found = channelProblems(editFtChannels);
+    if (found.size > 0) {
+      checkChannels = true;
+      ftMsg = get(t)("lighting.channelRowsNeedAttention", {
+        values: { count: found.size },
+      });
+      const first = Math.min(...found.keys());
+      queueMicrotask(() =>
+        document
+          .querySelector<HTMLElement>(
+            `[data-channel-row="${first}"] [aria-invalid="true"]`,
+          )
+          ?.focus(),
+      );
+      return;
+    }
     const channels: Record<string, number> = {};
     for (const ch of editFtChannels) {
-      if (!ch.name.trim()) continue;
       channels[ch.name.trim()] = ch.offset;
     }
     if (Object.keys(channels).length === 0) {
@@ -350,14 +419,16 @@ fixture_type "Name" {
     }
   }
 
-  async function saveFtText() {
+  /** Saves the file's text; `stay` keeps the type open afterwards (the GDTF
+   *  page's file disclosure). Whether it saved. */
+  async function saveFtText(stay = false): Promise<boolean> {
     // The text is the file, so the name it declares is the name to save
     // under: a URL naming anything else would write a file the panel could
     // never reach again, and the server refuses that outright.
     const newName = editFtDslName;
     if (!newName) {
       ftMsg = get(t)("lighting.fixtureTypeNoName");
-      return;
+      return false;
     }
     const oldName = editingFt !== "__new__" ? editingFt : null;
     const isRename = oldName && oldName !== newName;
@@ -374,11 +445,13 @@ fixture_type "Name" {
         await deleteFixtureType(oldName, ftDir || undefined);
       }
       await loadFixtureTypes();
-      editingFt = null;
+      editingFt = stay ? newName : null;
       ftMsg = get(t)("common.saved");
       setTimeout(() => (ftMsg = ""), 2000);
+      return true;
     } catch (e: any) {
       ftMsg = e.message;
+      return false;
     } finally {
       ftSaving = false;
     }
@@ -433,170 +506,248 @@ fixture_type "Name" {
             >
           {/if}
           <button class="btn" onclick={cancelEditFt}
-            >{$t("common.cancel")}</button
+            >{showFtDetails ? $t("common.back") : $t("common.cancel")}</button
           >
-          <button class="btn btn-primary" onclick={saveFt} disabled={ftSaving}>
-            {ftSaving ? $t("common.saving") : $t("common.save")}
-          </button>
+          {#if !showFtDetails}
+            <!-- A GDTF type's page saves its settings and its file each
+                 with their own button. -->
+            <button
+              class="btn btn-primary"
+              onclick={saveFt}
+              disabled={ftSaving}
+            >
+              {ftSaving ? $t("common.saving") : $t("common.save")}
+            </button>
+          {/if}
         </div>
       </div>
 
       {#if showFtDetails}
-        <!-- The fixture first, its definition last. -->
+        <!-- The fixture first, the user's settings for it, and the file
+             they are saved in behind a disclosure. -->
         <FixtureTypeDetails
           name={editingFt}
           dir={ftDir || undefined}
           venuesDir={venuesDir || undefined}
-        />
+          fileDirty={ftTextDirty}
+          onformdirty={(dirty) => (ftFormDirty = dirty)}
+          onsaved={onSettingsSaved}
+          notice={ftNotice}
+          refresh={ftDetailsTick}
+        >
+          {#snippet file()}
+            <div class="field" data-testid="ft-text-editor">
+              <p class="field-hint" data-testid="ft-referential-note">
+                {$t("lighting.fixtureTypeReferential")}
+              </p>
+              {#if ftTextLoading}
+                <p class="status-text">{$t("common.loading")}</p>
+              {:else}
+                <textarea
+                  class="raw-textarea"
+                  data-testid="ft-dsl"
+                  bind:value={editFtDsl}
+                  readonly={ftFormDirty}
+                  spellcheck="false"
+                ></textarea>
+              {/if}
+              <div class="editor-actions">
+                <button
+                  class="btn btn-primary btn-sm"
+                  type="button"
+                  data-testid="ft-file-save"
+                  disabled={!ftTextDirty || ftSaving}
+                  onclick={saveFtFile}
+                  >{ftSaving
+                    ? $t("common.saving")
+                    : $t("lighting.settings.saveFile")}</button
+                >
+                {#if ftTextDirty}
+                  <button
+                    class="btn btn-sm"
+                    type="button"
+                    onclick={() => (editFtDsl = ftDslSaved)}
+                    >{$t("common.discard")}</button
+                  >
+                {/if}
+              </div>
+            </div>
+          {/snippet}
+        </FixtureTypeDetails>
       {/if}
 
-      <div class="field">
-        <label for="ft-name">{$t("lighting.name")}</label>
-        {#if ftMode === "text"}
-          <!-- The file is keyed on the name the DSL declares, so the
+      {#if !showFtDetails}
+        <div class="field">
+          <label for="ft-name">{$t("lighting.name")}</label>
+          {#if ftMode === "text"}
+            <!-- The file is keyed on the name the DSL declares, so the
                    field reads it out instead of competing with it. -->
-          <input
-            id="ft-name"
-            class="input"
-            data-testid="ft-name-derived"
-            value={editFtDslName}
-            readonly
-          />
-          <span class="field-hint">{$t("lighting.fixtureTypeNameFromDsl")}</span
-          >
-        {:else}
-          <input
-            id="ft-name"
-            class="input"
-            bind:value={editFtName}
-            placeholder="e.g. RGBW_Par"
-          />
-        {/if}
-      </div>
-
-      {#if ftMode === "text"}
-        <div class="field" data-testid="ft-text-editor">
-          <span class="field-label"
-            >{$t("lighting.fixtureTypeTextMode", {
-              values: { ext: editFtExt },
-            })}</span
-          >
-          {#if editFtReferential}
-            <p class="field-hint" data-testid="ft-referential-note">
-              {$t("lighting.fixtureTypeReferential")}
-            </p>
+            <input
+              id="ft-name"
+              class="input"
+              data-testid="ft-name-derived"
+              value={editFtDslName}
+              readonly
+            />
+            <span class="field-hint"
+              >{$t("lighting.fixtureTypeNameFromDsl")}</span
+            >
           {:else}
-            <p class="field-hint">{$t("lighting.fixtureTypeTextHint")}</p>
+            <input
+              id="ft-name"
+              class="input"
+              bind:value={editFtName}
+              placeholder="e.g. RGBW_Par"
+            />
           {/if}
-          {#if ftExtChoosable}
-            <!-- The one way out of v1: a plain type may be saved back as
+        </div>
+
+        {#if ftMode === "text"}
+          <div class="field" data-testid="ft-text-editor">
+            <span class="field-label"
+              >{$t("lighting.fixtureTypeTextMode", {
+                values: { ext: editFtExt },
+              })}</span
+            >
+            {#if editFtReferential}
+              <p class="field-hint" data-testid="ft-referential-note">
+                {$t("lighting.fixtureTypeReferential")}
+              </p>
+            {:else}
+              <p class="field-hint">{$t("lighting.fixtureTypeTextHint")}</p>
+            {/if}
+            {#if ftExtChoosable}
+              <!-- The one way out of v1: a plain type may be saved back as
                      a `.light` or converted to a `.fixture`. A rich or
                      referential type has no choice — v2 syntax in a `.light`
                      file is skipped by the loader. -->
-            <label class="ext-choice">
-              {$t("lighting.fixtureTypeSaveAs")}
-              <select
-                class="input"
-                data-testid="ft-ext-select"
-                bind:value={editFtExt}
-              >
-                <option value="light">.light</option>
-                <option value="fixture">.fixture</option>
-              </select>
-            </label>
-          {/if}
-          {#if ftTextLoading}
-            <p class="status-text">{$t("common.loading")}</p>
-          {:else}
-            <textarea
-              class="raw-textarea"
-              data-testid="ft-dsl"
-              bind:value={editFtDsl}
-              spellcheck="false"
-            ></textarea>
-          {/if}
-        </div>
-      {:else}
-        <div class="subsection">
-          <div class="subsection-header">
-            <span class="field-label"
-              >{$t("lighting.channelMap")}<Tooltip
-                text={$t("tooltips.lighting.channelMap")}
-              /></span
-            >
-            <button class="btn btn-sm" onclick={addFtChannel}
-              >{$t("lighting.addChannel")}</button
-            >
+              <label class="ext-choice">
+                {$t("lighting.fixtureTypeSaveAs")}
+                <select
+                  class="input"
+                  data-testid="ft-ext-select"
+                  bind:value={editFtExt}
+                >
+                  <option value="light">.light</option>
+                  <option value="fixture">.fixture</option>
+                </select>
+              </label>
+            {/if}
+            {#if ftTextLoading}
+              <p class="status-text">{$t("common.loading")}</p>
+            {:else}
+              <textarea
+                class="raw-textarea"
+                data-testid="ft-dsl"
+                bind:value={editFtDsl}
+                spellcheck="false"
+              ></textarea>
+            {/if}
           </div>
-          {#each editFtChannels as ch, i (i)}
-            <div class="channel-row">
-              <input
-                class="input channel-name"
-                placeholder={$t("lighting.channelName")}
-                bind:value={ch.name}
-              />
-              <input
-                class="input channel-offset"
-                type="number"
-                min="1"
-                placeholder={$t("lighting.offset")}
-                bind:value={ch.offset}
-              />
-              <button
-                class="btn btn-danger btn-sm"
-                onclick={() => removeFtChannel(i)}>X</button
+        {:else}
+          <div class="subsection">
+            <div class="subsection-header">
+              <span class="field-label"
+                >{$t("lighting.channelMap")}<Tooltip
+                  text={$t("tooltips.lighting.channelMap")}
+                /></span
+              >
+              <button class="btn btn-sm" onclick={addFtChannel}
+                >{$t("lighting.addChannel")}</button
               >
             </div>
-          {/each}
-        </div>
+            {#each editFtChannels as ch, i (i)}
+              {@const issues = channelIssues.get(i) ?? []}
+              <div
+                class="channel-row"
+                data-channel-row={i}
+                data-testid="ft-channel-row"
+              >
+                <input
+                  class="input channel-name"
+                  placeholder={$t("lighting.channelName")}
+                  aria-label={$t("lighting.channelName")}
+                  aria-invalid={issues.includes("noName") ||
+                    issues.includes("duplicateName")}
+                  aria-describedby={issues.length > 0
+                    ? `ft-channel-error-${i}`
+                    : undefined}
+                  bind:value={ch.name}
+                />
+                <input
+                  class="input channel-offset"
+                  type="number"
+                  min="1"
+                  placeholder={$t("lighting.offset")}
+                  aria-label={$t("lighting.offset")}
+                  aria-invalid={issues.includes("badOffset")}
+                  bind:value={ch.offset}
+                />
+                <button
+                  class="btn btn-danger btn-sm"
+                  onclick={() => removeFtChannel(i)}>X</button
+                >
+              </div>
+              {#if issues.length > 0}
+                <p
+                  class="row-error"
+                  id={`ft-channel-error-${i}`}
+                  data-testid="ft-channel-error"
+                >
+                  {issues.map((p) => $t(`lighting.channelRow.${p}`)).join(" ")}
+                </p>
+              {/if}
+            {/each}
+          </div>
 
-        <div class="field-row-3">
-          <div class="field">
-            <label for="ft-max-strobe"
-              >{$t("lighting.maxStrobeFreq")}<Tooltip
-                text={$t("tooltips.lighting.maxStrobeFreq")}
-              /></label
-            >
-            <input
-              id="ft-max-strobe"
-              class="input"
-              type="number"
-              step="0.1"
-              placeholder="e.g. 25.0"
-              bind:value={editFtMaxStrobe}
-            />
+          <div class="field-row-3">
+            <div class="field">
+              <label for="ft-max-strobe"
+                >{$t("lighting.maxStrobeFreq")}<Tooltip
+                  text={$t("tooltips.lighting.maxStrobeFreq")}
+                /></label
+              >
+              <input
+                id="ft-max-strobe"
+                class="input"
+                type="number"
+                step="0.1"
+                placeholder="e.g. 25.0"
+                bind:value={editFtMaxStrobe}
+              />
+            </div>
+            <div class="field">
+              <label for="ft-min-strobe"
+                >{$t("lighting.minStrobeFreq")}<Tooltip
+                  text={$t("tooltips.lighting.minStrobeFreq")}
+                /></label
+              >
+              <input
+                id="ft-min-strobe"
+                class="input"
+                type="number"
+                step="0.1"
+                placeholder="e.g. 0.4"
+                bind:value={editFtMinStrobe}
+              />
+            </div>
+            <div class="field">
+              <label for="ft-strobe-offset"
+                >{$t("lighting.strobeDmxOffset")}<Tooltip
+                  text={$t("tooltips.lighting.strobeDmxOffset")}
+                /></label
+              >
+              <input
+                id="ft-strobe-offset"
+                class="input"
+                type="number"
+                min="0"
+                placeholder="e.g. 7"
+                bind:value={editFtStrobeDmxOffset}
+              />
+            </div>
           </div>
-          <div class="field">
-            <label for="ft-min-strobe"
-              >{$t("lighting.minStrobeFreq")}<Tooltip
-                text={$t("tooltips.lighting.minStrobeFreq")}
-              /></label
-            >
-            <input
-              id="ft-min-strobe"
-              class="input"
-              type="number"
-              step="0.1"
-              placeholder="e.g. 0.4"
-              bind:value={editFtMinStrobe}
-            />
-          </div>
-          <div class="field">
-            <label for="ft-strobe-offset"
-              >{$t("lighting.strobeDmxOffset")}<Tooltip
-                text={$t("tooltips.lighting.strobeDmxOffset")}
-              /></label
-            >
-            <input
-              id="ft-strobe-offset"
-              class="input"
-              type="number"
-              min="0"
-              placeholder="e.g. 7"
-              bind:value={editFtStrobeDmxOffset}
-            />
-          </div>
-        </div>
+        {/if}
       {/if}
     </div>
   {:else}
@@ -1055,6 +1206,16 @@ fixture_type "Name" {
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  .row-error {
+    margin: 0;
+    font-size: 12px;
+    color: var(--red);
+  }
+
+  .channel-row :global([aria-invalid="true"]) {
+    border-color: var(--red);
   }
 
   .channel-row {

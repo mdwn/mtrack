@@ -41,6 +41,17 @@ jobs:
       run: make build-ui
     - name: Build mtrack
       run: cargo build --all-targets --all-features
+    # The Lighting journeys run this binary in their own job. A debug build
+    # serves the web UI from src/webui/svelte/dist on disk, so that job builds
+    # the UI itself and needs only the binary; stripped, it is ~20MB to hand
+    # over instead of ~100MB.
+    - name: Hand the binary to the Lighting journeys
+      run: strip -o mtrack-journeys target/debug/mtrack
+    - uses: actions/upload-artifact@v7
+      with:
+        name: mtrack-debug-binary
+        path: mtrack-journeys
+        retention-days: 1
     - name: Check if Cargo.lock is up to date
       run: |
         if git diff --exit-code Cargo.lock; then
@@ -225,6 +236,48 @@ jobs:
       with:
         name: playwright-report
         path: src/webui/svelte/playwright-report/
+        retention-days: 14
+
+  # The Lighting area against the real binary: each test starts its own mtrack
+  # on a throwaway project (no hardware; the DMX engine on the null client)
+  # and checks what persisted on disk and through the API. Uses the build
+  # job's binary rather than building a second one.
+  lighting-journeys:
+    name: Lighting journeys (real server)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-node@v7
+      with:
+        node-version: '22'
+    - uses: actions/cache@v6
+      with:
+        path: src/webui/svelte/node_modules
+        key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: node-modules-${{ runner.os }}-
+    - name: Install, generate and build the UI
+      run: make build-ui
+    - uses: actions/download-artifact@v8
+      with:
+        name: mtrack-debug-binary
+    - name: Install the binary's runtime libraries
+      run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+    - name: Make the binary runnable
+      run: chmod +x mtrack-journeys
+    - name: Install Playwright browsers
+      run: cd src/webui/svelte && npx playwright install --with-deps chromium
+    - name: Run the Lighting journeys
+      env:
+        MTRACK_BIN: ${{ github.workspace }}/mtrack-journeys
+      run: cd src/webui/svelte && npm run test:journeys
+    - uses: actions/upload-artifact@v7
+      if: ${{ !cancelled() }}
+      with:
+        name: lighting-journeys-report
+        path: |
+          src/webui/svelte/playwright-report/
+          src/webui/svelte/test-results/
         retention-days: 14
 
   # Make sure all code has an appropriate license header.

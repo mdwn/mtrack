@@ -507,7 +507,10 @@ fn declared_fixture_types(path: &std::path::Path) -> Vec<String> {
 /// "Astera-PixelBrick", and a file written by hand is called whatever its
 /// author liked. A stem file that does not declare the name is still the
 /// answer when no file does, so the caller can say what is wrong with it.
-fn existing_fixture_type_file(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+pub(super) fn existing_fixture_type_file(
+    dir: &std::path::Path,
+    name: &str,
+) -> Option<std::path::PathBuf> {
     let stem = sanitize_filename(name);
     let stem_files: Vec<std::path::PathBuf> = ["fixture", "light"]
         .iter()
@@ -543,7 +546,7 @@ fn existing_fixture_type_file(dir: &std::path::Path, name: &str) -> Option<std::
 /// fixture types that file declares, off the async runtime. Saving or
 /// deleting one type rewrites or removes its whole file, so a caller that
 /// cannot carry the others must refuse.
-async fn locate_fixture_type_file(
+pub(super) async fn locate_fixture_type_file(
     dir: &std::path::Path,
     name: &str,
 ) -> Result<Option<(std::path::PathBuf, Vec<String>)>, axum::response::Response> {
@@ -587,7 +590,7 @@ fn shared_fixture_type_file_response(
 
 /// Venue files: `.venue` (positions, focus points, MVR provenance) and the
 /// v1 `.light`, loaded as peers.
-const VENUE_EXTENSIONS: &[&str] = &["light", "venue"];
+pub(super) const VENUE_EXTENSIONS: &[&str] = &["light", "venue"];
 
 /// The file a venue of this name lives in, if one exists: `.venue` first,
 /// then `.light`.
@@ -813,7 +816,7 @@ fn validate_referential_archives(
 
 /// The project root, canonicalized, for [`resolve_referential_archive`].
 #[allow(clippy::result_large_err)]
-fn canonical_project_root(
+pub(super) fn canonical_project_root(
     root: &std::path::Path,
 ) -> Result<std::path::PathBuf, axum::response::Response> {
     root.canonicalize().map_err(|_| {
@@ -1102,6 +1105,14 @@ pub(super) async fn get_fixture_types(
                             // type and on a GDTF type with none (its
                             // fixtures each name their own).
                             "default_mode": fixture_type.source().and_then(|s| s.mode.clone()),
+                            // The addresses a fixture of the type occupies
+                            // (a GDTF type's, in its default mode, is filled
+                            // in below); the venue editor continues the
+                            // patch with it.
+                            "footprint": fixture_type
+                                .source()
+                                .is_none()
+                                .then(|| fixture_type.footprint()),
                             "rich": fixture_type.uses_rich_channels(),
                             "fixture_type": fixture_type,
                             "file": file,
@@ -1125,13 +1136,21 @@ pub(super) async fn get_fixture_types(
                 .flatten()
                 .flat_map(|(_, f)| f.iter().map(|(_, mode)| mode.as_deref()))
                 .collect();
-            let summary = archives
-                .get(&root, &name, &source)
-                .map(|(bytes, description)| {
-                    gdtf_list_summary(&cache, bytes, description, &name, &source, &fixtures)
-                });
+            let parsed = archives.get(&root, &name, &source);
+            let summary = parsed.map(|(bytes, description)| {
+                gdtf_list_summary(&cache, bytes, description, &name, &source, &fixtures)
+            });
+            // The default mode's footprint, as the engine distils it; null
+            // with no default or when it does not distil.
+            let footprint = parsed.and_then(|(_, description)| {
+                let mode = source.mode.as_deref()?;
+                lighting::gdtf::distill(description, mode, &name)
+                    .ok()
+                    .map(|d| d.fixture_type.footprint())
+            });
             if let Some(entry) = all.get_mut(&name).and_then(|e| e.as_object_mut()) {
                 entry.insert("gdtf".into(), summary.unwrap_or(serde_json::Value::Null));
+                entry.insert("footprint".into(), json!(footprint));
             }
         }
         Ok::<_, String>((all, errors))
@@ -2823,7 +2842,7 @@ pub(super) async fn get_venue_patch(
 /// A lighting system loaded from a project's type and venue files alone, as
 /// the engine would load them, with no venue made current (so the loader
 /// reports nothing on its behalf).
-fn system_from_files(
+pub(super) fn system_from_files(
     root: &std::path::Path,
     types_dir: &std::path::Path,
     venues_dir: &std::path::Path,
@@ -2938,6 +2957,22 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
             .get("start_channel")
             .and_then(|v| v.as_u64())
             .ok_or("Fixture missing 'start_channel'")?;
+        // A row the editor could not name is refused, not saved as a fixture
+        // nobody can address (or dropped without a word).
+        if fix_name.trim().is_empty() {
+            return Err("A fixture has no name".to_string());
+        }
+        if fix_type.trim().is_empty() {
+            return Err(format!("Fixture '{fix_name}' has no fixture type"));
+        }
+        if universe == 0 {
+            return Err(format!("Fixture '{fix_name}': universe must be 1 or more"));
+        }
+        if start_channel == 0 {
+            return Err(format!(
+                "Fixture '{fix_name}': start channel must be 1 or more"
+            ));
+        }
         let tags: Vec<String> = fix
             .get("tags")
             .and_then(|v| v.as_array())
@@ -5356,6 +5391,15 @@ show "test" {
             serde_json::json!({"type": "Spot", "angle": 12.0})
         );
         assert_eq!(brick["used_by"], 4);
+        assert!(
+            types["Brick"]["footprint"].as_u64().unwrap() > 0,
+            "the default mode's footprint: {parsed}"
+        );
+        assert!(types["Lost"]["footprint"].is_null(), "unknown is null");
+        assert!(
+            types["Par"]["footprint"].as_u64().unwrap() > 0,
+            "a native type's own footprint: {parsed}"
+        );
         assert_eq!(
             brick["in_use"],
             serde_json::json!([
@@ -6145,6 +6189,79 @@ show "test" {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A JSON venue save that `venue_from_json` must refuse, and the error.
+    async fn refused_venue_save(fixtures: serde_json::Value, rel: &str) -> String {
+        let (state, _dir) = test_state();
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/venues/Rig?dir={rel}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({ "fixtures": fixtures })).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!_dir.path().join(rel).exists(), "nothing is written");
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        body["error"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn a_venue_save_with_two_fixtures_of_one_name_is_refused_by_name() {
+        let error = refused_venue_save(
+            serde_json::json!([
+                {"name": "Spot", "fixture_type": "Par", "universe": 1, "start_channel": 1},
+                {"name": "Spot", "fixture_type": "Par", "universe": 1, "start_channel": 5},
+            ]),
+            "v_dup_names",
+        )
+        .await;
+        assert!(error.contains("'Spot'"), "{error}");
+        assert!(error.contains("more than once"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_venue_save_with_a_nameless_or_typeless_fixture_is_refused() {
+        let error = refused_venue_save(
+            serde_json::json!([
+                {"name": "  ", "fixture_type": "Par", "universe": 1, "start_channel": 1},
+            ]),
+            "v_no_name",
+        )
+        .await;
+        assert!(error.contains("no name"), "{error}");
+        let error = refused_venue_save(
+            serde_json::json!([
+                {"name": "Spot", "fixture_type": "", "universe": 1, "start_channel": 1},
+            ]),
+            "v_no_type",
+        )
+        .await;
+        assert!(error.contains("no fixture type"), "{error}");
+        let error = refused_venue_save(
+            serde_json::json!([
+                {"name": "Spot", "fixture_type": "Par", "universe": 0, "start_channel": 1},
+            ]),
+            "v_zero_universe",
+        )
+        .await;
+        assert!(error.contains("universe"), "{error}");
+        let error = refused_venue_save(
+            serde_json::json!([
+                {"name": "Spot", "fixture_type": "Par", "universe": 1, "start_channel": 0},
+            ]),
+            "v_zero_channel",
+        )
+        .await;
+        assert!(error.contains("start channel"), "{error}");
     }
 
     #[tokio::test]

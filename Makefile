@@ -15,7 +15,7 @@ ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-systemd deb test-deb test-pi-image lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -65,6 +65,13 @@ test: test-ui
 ## Run Playwright UI tests (mock server)
 test-ui:
 	cd $(SVELTE_DIR) && npx playwright test --project=mock
+
+## Run the Lighting-area journeys against the real binary: builds the UI and
+## a debug mtrack (which serves the UI from dist/ on disk), then starts one
+## mtrack per test on a throwaway project. MTRACK_BIN overrides the binary.
+test-journeys: build-ui
+	cargo build --bin mtrack --manifest-path $(ROOT_DIR)/Cargo.toml
+	cd $(SVELTE_DIR) && npx playwright test --config=playwright.journeys.config.ts
 
 ## Build the Debian package (expects a binary at target/release/mtrack)
 deb:

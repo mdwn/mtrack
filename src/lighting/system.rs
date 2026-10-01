@@ -107,6 +107,10 @@ pub struct LightingSystem {
     /// without rebuilding the whole system.
     venues_source: Option<VenuesSource>,
 
+    /// Where the fixture types were loaded from, so an edit to a type (its
+    /// name, its default mode) can be re-read the same way.
+    fixture_types_path: Option<PathBuf>,
+
     /// The current venue's problems as last logged, so a reload (every
     /// stage-view drag is one) logs them again only when they change.
     logged_venue_report: Option<Vec<String>>,
@@ -150,6 +154,7 @@ impl LightingSystem {
             scenery_sources: HashMap::new(),
             project_root: None,
             venues_source: None,
+            fixture_types_path: None,
             logged_venue_report: None,
         }
     }
@@ -182,6 +187,32 @@ impl LightingSystem {
             self.refresh_scenery(&root);
         }
         Ok(())
+    }
+
+    /// Re-reads the fixture types and then the venues from the directories
+    /// the system was loaded from: an edit to a type's settings (its name,
+    /// default mode or movement limits — and a rename rewrites the venue
+    /// lines that use it) reaches the running engine without a hardware
+    /// reload. A user's act, never a cue: expansions come through the
+    /// distill cache, and the modes venues name are expanded afresh.
+    pub fn reload_fixture_types(&mut self) -> Result<(), Box<dyn Error>> {
+        let (Some(path), Some(root)) = (self.fixture_types_path.clone(), self.project_root.clone())
+        else {
+            return Err("no fixture types directory was loaded".into());
+        };
+        let mut fresh = LightingSystem::new();
+        fresh.load_fixture_types_directory(&path, &root)?;
+        self.fixture_types = fresh.fixture_types;
+        self.referential = fresh.referential;
+        self.fixture_type_files = fresh.fixture_type_files;
+        self.fixture_type_errors = fresh.fixture_type_errors;
+        self.fixture_type_file_errors = fresh.fixture_type_file_errors;
+        self.mode_warnings = fresh.mode_warnings;
+        // A type's default or name may have changed: no expansion of the
+        // old one stands.
+        self.mode_expansions.clear();
+        self.mode_errors.clear();
+        self.reload_venues()
     }
 
     /// The store-relative path of a venue's scenery file, when the venue
@@ -341,6 +372,7 @@ impl LightingSystem {
             if let Some(fixture_types_dir) = dirs.fixture_types() {
                 let path = base_path.join(fixture_types_dir);
                 self.load_fixture_types_directory(&path, base_path)?;
+                self.fixture_types_path = Some(path);
             }
 
             if let Some(venues_dir) = dirs.venues() {
@@ -1715,6 +1747,35 @@ mod tests {
         .unwrap();
         system.reload_venues().unwrap();
         assert!(system.mode_expansions.is_empty());
+    }
+
+    #[test]
+    fn a_type_edit_reaches_the_system_through_a_types_reload() {
+        let (dir, mut system) = modal_project(
+            BRICK_TYPE,
+            "venue \"house\" {\n  fixture \"Wash\" Brick @ 1:1\n}\n",
+            "house",
+        );
+        // Renamed, re-defaulted, and the venue line follows: what the
+        // fixture page's settings save writes.
+        std::fs::write(
+            dir.path().join("lighting/fixture_types/types.fixture"),
+            BRICK_TYPE
+                .replace("\"Brick\"", "\"Pixel\"")
+                .replace("mode \"8: RGBS\"", "mode \"Mover 16bit\""),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("lighting/venues/house.venue"),
+            "venue \"house\" {\n  fixture \"Wash\" Pixel @ 1:1\n}\n",
+        )
+        .unwrap();
+        system.reload_fixture_types().unwrap();
+        assert!(system.fixture_type_problem("Brick").is_some());
+        let infos = system
+            .get_current_venue_fixtures()
+            .expect("the renamed type loads");
+        assert_eq!(info(&infos, "Wash").channels.get("pan"), Some(&1));
     }
 
     #[test]

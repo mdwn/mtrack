@@ -596,15 +596,47 @@ use it, and the manufacturer's own description. A figure the archive does not st
 Below that is every mode of the archive, with a filter: the type's default is marked
 **default · N in use**, and any other mode a fixture uses says **N in use**. Choose a mode to see
 what your shows could do in it, its channels, and which fixtures use it. A fixture whose mode is
-not in the archive is named in red under the facts. The view is read-only: a fixture's mode is
-chosen in the venue's inspector (below), and the type's default is the mode in its
-`from gdtf(...)` line.
+not in the archive is named in red under the facts. A fixture's mode is chosen in the venue's
+inspector (below).
+
+Below the modes, **Your settings for this fixture** holds the three things in the type's file that
+are yours: its **name** in venues and shows, its **default mode** (the select lists every mode of
+the archive; a mode's detail also has **Make this the default mode**), and, for a fixture that can
+pan or tilt in any mode, its **movement limits** (max pan and tilt speed, in degrees per second;
+blank is no limit). **Save settings** first says what the save will do and asks before writing
+when it matters:
+
+- A new default changes every venue fixture that takes the default, so it says how many, in which
+  venues ("8 fixtures in built-in use the default and will change to 9: RGBWS"), and checks their
+  new footprint: fixtures it would newly run over are named as a warning.
+- A rename rewrites every venue line that names the type, in every venue file, keeping comments
+  and layout, and says how many lines in which venues. If any venue file cannot be rewritten (it
+  does not parse, or it changed meanwhile), nothing is written and the message names the file.
+  Inline fixtures in the player config that name the type are listed for you to change by hand.
+
+The type's file is patched in place: its comments, the archive path as written and anything else in
+it stay. The file itself is behind **Saved as … · show the file**, editable as text with its own
+**Save the file**. Only one of the two may have unsaved changes at a time: while your settings have
+unsaved changes the file is read-only, and while the file has unsaved edits the settings are
+locked. Saving either reloads both. Hand-written types keep the channel-map form or text editor.
 
 ### Venues
 
 Lists the venues and edits their fixtures: name, type, universe, start channel and tags. Saving
 a venue keeps everything the form does not show — fixture positions and rotations, focus points,
 and where an MVR import came from.
+
+**Add Fixture** continues the patch from the last row: the new fixture is named `Fixture N` (the
+first number not taken), takes the last row's type and universe, and starts straight after it
+(its address plus its type's footprint, so a 3-channel fixture at 1 is followed at 4). A fixture
+that would run past address 512 starts the next universe at 1. Changing an earlier row never
+renumbers the rows after it. Nothing you added is dropped on save: a row with no name, no type,
+a name another row has, or a universe or address below 1 stops the save, is outlined with what
+to fix, and gets the focus. The fixture type editor treats channel rows the same way, a tag with
+no allowed character stays in its box marked, and a group, inline fixture or focus point rename
+that is refused (empty, or a name already taken) says so instead of quietly reverting. When the
+current venue did not load, the plot on this page shows its file instead of an empty stage, so
+the fixture at fault can be selected and fixed in the inspector.
 
 Click a venue in the list to select it; **Edit** opens its fixture form. The plot below shows
 the selected venue. When it is the current venue (marked *current*, or when none is selected),

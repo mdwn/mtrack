@@ -273,10 +273,12 @@ test.describe("Fixture Types Management", () => {
     // v2 syntax in a `.light` file is skipped by the loader, so there is no
     // choice to offer.
     await card(page, "pixelbrick").click();
+    // A GDTF type's file sits behind its page's disclosure.
+    await page.getByTestId("ft-file").locator("summary").click();
     await expect(page.getByTestId("ft-dsl")).toBeVisible();
     await expect(page.getByTestId("ft-ext-select")).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Cancel" }).click();
+    await page.getByRole("button", { name: "Back" }).click();
     await card(page, "mover").click();
     await expect(page.getByTestId("ft-dsl")).toBeVisible();
     await expect(page.getByTestId("ft-ext-select")).toHaveCount(0);

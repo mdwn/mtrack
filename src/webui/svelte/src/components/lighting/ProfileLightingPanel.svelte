@@ -110,9 +110,43 @@
     onchange();
   }
 
-  function renameInlineFixture(oldName: string, newName: string) {
-    if (!newName || newName === oldName) return;
-    if (lighting.fixtures[newName]) return;
+  /** Why the last rename was refused, by the field it was typed in. */
+  let renameError = $state<Record<string, string>>({});
+
+  /** A refused rename puts the old name back in the field and says why,
+   *  instead of leaving the typed name showing over data that kept the
+   *  old one. */
+  function refuseRename(
+    key: string,
+    field: HTMLInputElement,
+    oldName: string,
+    newName: string,
+  ): boolean {
+    if (newName === oldName) return true;
+    if (!newName) {
+      field.value = oldName;
+      renameError[key] = $t("lighting.renameRefused.empty", {
+        values: { name: oldName },
+      });
+      return true;
+    }
+    return false;
+  }
+
+  function renameInlineFixture(
+    oldName: string,
+    newName: string,
+    field: HTMLInputElement,
+  ) {
+    delete renameError[`fixture:${oldName}`];
+    if (refuseRename(`fixture:${oldName}`, field, oldName, newName)) return;
+    if (lighting.fixtures[newName]) {
+      field.value = oldName;
+      renameError[`fixture:${oldName}`] = $t("lighting.renameRefused.taken", {
+        values: { name: newName },
+      });
+      return;
+    }
     const value = lighting.fixtures[oldName];
     delete lighting.fixtures[oldName];
     lighting.fixtures[newName] = value;
@@ -153,9 +187,20 @@
     onchange();
   }
 
-  function renameGroup(oldName: string, newName: string) {
-    if (!newName || newName === oldName) return;
-    if (lighting.groups[newName]) return;
+  function renameGroup(
+    oldName: string,
+    newName: string,
+    field: HTMLInputElement,
+  ) {
+    delete renameError[`group:${oldName}`];
+    if (refuseRename(`group:${oldName}`, field, oldName, newName)) return;
+    if (lighting.groups[newName]) {
+      field.value = oldName;
+      renameError[`group:${oldName}`] = $t("lighting.renameRefused.taken", {
+        values: { name: newName },
+      });
+      return;
+    }
     const group = lighting.groups[oldName];
     delete lighting.groups[oldName];
     group.name = newName;
@@ -340,10 +385,12 @@
             class="input fixture-name"
             value={name}
             placeholder="Name"
+            aria-invalid={!!renameError[`fixture:${name}`]}
             onchange={(e) =>
               renameInlineFixture(
                 name,
                 (e.target as HTMLInputElement).value.trim(),
+                e.target as HTMLInputElement,
               )}
           />
           <input
@@ -361,6 +408,11 @@
             onclick={() => removeInlineFixture(name)}>X</button
           >
         </div>
+        {#if renameError[`fixture:${name}`]}
+          <p class="rename-error" data-testid="rename-error">
+            {renameError[`fixture:${name}`]}
+          </p>
+        {/if}
       {/each}
     </div>
 
@@ -423,12 +475,19 @@
                   id={`group-name-${name}`}
                   class="input"
                   value={name}
+                  aria-invalid={!!renameError[`group:${name}`]}
                   onchange={(e) =>
                     renameGroup(
                       name,
                       (e.target as HTMLInputElement).value.trim(),
+                      e.target as HTMLInputElement,
                     )}
                 />
+                {#if renameError[`group:${name}`]}
+                  <p class="rename-error" data-testid="rename-error">
+                    {renameError[`group:${name}`]}
+                  </p>
+                {/if}
               </div>
 
               <div class="constraints-section">
@@ -526,6 +585,11 @@
 </div>
 
 <style>
+  .rename-error {
+    margin: 2px 0 0;
+    font-size: 12px;
+    color: var(--red);
+  }
   .sub-panel {
     display: flex;
     flex-direction: column;

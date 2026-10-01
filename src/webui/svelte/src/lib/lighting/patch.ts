@@ -143,3 +143,26 @@ export function stripCells(
   }
   return cells;
 }
+
+/** Where the editor puts a fixture added after `previous` (the last row,
+ *  not the highest address): the same universe, straight after it — its
+ *  address plus its footprint, or plus one when that is not known. A
+ *  fixture that would run past 512 starts the next universe. The first
+ *  fixture of a venue goes at 1:1. */
+export function nextPatch(
+  previous: {
+    universe: number;
+    address: number;
+    footprint: number | null;
+  } | null,
+  footprint: number | null,
+): { universe: number; address: number } {
+  if (!previous) return { universe: 1, address: 1 };
+  const step =
+    previous.footprint && previous.footprint > 0 ? previous.footprint : 1;
+  const own = footprint && footprint > 0 ? footprint : 1;
+  const address = previous.address + step;
+  if (address + own - 1 > 512)
+    return { universe: previous.universe + 1, address: 1 };
+  return { universe: previous.universe, address };
+}

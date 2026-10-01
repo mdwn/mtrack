@@ -18,9 +18,11 @@
    * the fixture in 3D beside the facts the archive states, then every mode
    * of the archive with the one the `.fixture` pins marked as in use.
    * Choosing another mode shows what a show could do in it, in the mode
-   * picker's words, its channels, and which venue fixtures use it.
-   * Read-only — the mode is changed in the definition.
+   * picker's words, its channels, and which venue fixtures use it. Below
+   * them, the user's own settings for the fixture (`FixtureSettingsForm`)
+   * and, behind a disclosure, the file they are saved in.
    */
+  import type { Snippet } from "svelte";
   import { t } from "svelte-i18n";
   import {
     fetchFixtureTypeGdtf,
@@ -42,14 +44,40 @@
     venueUse,
   } from "../../lib/lighting/fixtureFacts";
   import FixtureViewer from "./FixtureViewer.svelte";
+  import FixtureSettingsForm from "./FixtureSettingsForm.svelte";
 
   interface Props {
     name: string;
     dir?: string;
     venuesDir?: string;
+    /** The file's text has unsaved edits (the settings form waits). */
+    fileDirty?: boolean;
+    onformdirty?: (dirty: boolean) => void;
+    /** After the settings are saved, with the type's (new) name. */
+    onsaved?: (name: string, notice: { ok: boolean; text: string }) => void;
+    /** The last settings save's message, kept across a rename's reload. */
+    notice?: { ok: boolean; text: string } | null;
+    /** The file's own editor, shown behind the settings' disclosure. */
+    file?: Snippet;
+    /** Bumped after a save: the archive's answer is fetched again (the
+     *  default's pill, who uses which mode) without blanking the page. */
+    refresh?: number;
   }
 
-  let { name, dir, venuesDir }: Props = $props();
+  let {
+    name,
+    dir,
+    venuesDir,
+    fileDirty = false,
+    onformdirty,
+    onsaved,
+    notice = null,
+    file,
+    refresh = 0,
+  }: Props = $props();
+
+  /** The default mode as the settings form is editing it. */
+  let formDefault = $state<string | null>(null);
 
   /** Past this many characters the archive's description is clamped. */
   const LONG_ABOUT = 240;
@@ -64,18 +92,27 @@
   // Each name (or directory) is its own fetch; a late answer for an earlier
   // one is dropped.
   let request = 0;
+  let shown = "";
   $effect(() => {
+    void refresh;
     const ask = ++request;
-    data = null;
+    // A refresh of the type on screen keeps it up while it is re-read.
+    const key = `${name}\u0000${dir ?? ""}`;
+    const fresh = key !== shown;
+    if (fresh) {
+      data = null;
+      loading = true;
+    }
+    shown = key;
     error = null;
-    loading = true;
     fetchFixtureTypeGdtf(name, dir, venuesDir)
       .then((answer) => {
         if (ask !== request) return;
         data = answer;
+        const offered = answer.inspection.modes.filter((m) => !isRefused(m));
+        if (!fresh && offered.some((m) => m.name === selected)) return;
         filter = "";
         aboutOpen = false;
-        const offered = answer.inspection.modes.filter((m) => !isRefused(m));
         selected =
           offered.find((m) => m.name === answer.matched_mode)?.name ??
           offered[0]?.name ??
@@ -179,6 +216,8 @@
     <p class="ftd__error" data-testid="ft-details-error">
       {$t("lighting.gdtfDetails.error", { values: { error } })}
     </p>
+    <!-- The archive cannot be read, but its file can still be edited. -->
+    {#if file}{@render file()}{/if}
   {:else if data}
     <div class="ftd__top">
       {#key data}
@@ -485,9 +524,30 @@
             {/if}
           </p>
         {/if}
+        {#if mode && mode.name !== formDefault && !fileDirty}
+          <button
+            class="btn btn-sm ftd__make-default"
+            type="button"
+            data-testid="ft-make-default"
+            onclick={() => (formDefault = mode?.name ?? formDefault)}
+            >{$t("lighting.settings.makeDefault")}</button
+          >
+        {/if}
         <p class="field-hint">{$t("lighting.gdtfDetails.readOnly")}</p>
       </div>
     </div>
+    <FixtureSettingsForm
+      {name}
+      {dir}
+      {venuesDir}
+      modes={data.inspection.modes}
+      bind:defaultMode={formDefault}
+      {fileDirty}
+      {onformdirty}
+      {onsaved}
+      {notice}
+      {file}
+    />
   {/if}
 </section>
 
@@ -645,6 +705,13 @@
   .ftd__pill--default {
     background: var(--yellow-dim);
     color: var(--text);
+  }
+  .ftd__make-default {
+    align-self: flex-start;
+  }
+  .btn-sm {
+    padding: 4px 8px;
+    font-size: 12px;
   }
   .ftd__badge {
     font-family: var(--mono);

@@ -21,6 +21,12 @@
   import TagInput from "../config/TagInput.svelte";
   import MvrExportDialog from "./MvrExportDialog.svelte";
   import { venueStore } from "../../lib/ws/stores";
+  import { nextPatch } from "../../lib/lighting/patch";
+  import {
+    nextFixtureName,
+    rowProblems,
+    type RowProblem,
+  } from "../../lib/lighting/venueRows";
   import {
     ConflictError,
     fetchFixtureTypes,
@@ -137,8 +143,14 @@
 
   // --- Venue editing ---
 
-  function startEditVenue(name: string) {
+  /** Opens the editor on the venue as its file is now. The list may be
+   *  older than the file: the plot and inspector on this same page save
+   *  the venue too, and an editor opened on the list's copy would carry a
+   *  stale version and be refused with "changed elsewhere". */
+  async function startEditVenue(name: string) {
+    await loadVenues();
     const v = venues[name];
+    if (!v) return;
     selected = name;
     editVersion = venueVersions[name];
     editingVenue = name;
@@ -161,9 +173,11 @@
     editVenueFocusPoints = { ...(v.focus_points ?? {}) };
     editVenueSource = v.source ?? null;
     isNewVenue = false;
+    checkRows = false;
   }
 
   function startNewVenue() {
+    checkRows = false;
     editingVenue = "__new__";
     editVenueName = "";
     editVenueFixtures = [];
@@ -177,17 +191,52 @@
     editingVenue = null;
   }
 
+  /** The addresses a fixture of `type` occupies, in its type's default
+   *  mode (a row's own mode is not known here without its archive); null
+   *  when the listing does not know. */
+  function footprintOf(type: string): number | null {
+    return fixtureTypes[type]?.footprint ?? null;
+  }
+
+  /** A new row continues the patch from the last row: its type, its
+   *  universe, and the address after it. It gets the first unused
+   *  `Fixture N`, so adding and saving just works. */
   function addVenueFixture() {
+    const last = editVenueFixtures[editVenueFixtures.length - 1];
+    const type = last?.fixture_type || fixtureTypeNames[0] || "";
+    const at = nextPatch(
+      last
+        ? {
+            universe: Number(last.universe),
+            address: Number(last.start_channel),
+            footprint: footprintOf(last.fixture_type),
+          }
+        : null,
+      footprintOf(type),
+    );
     editVenueFixtures = [
       ...editVenueFixtures,
       {
-        name: "",
-        fixture_type: fixtureTypeNames[0] ?? "",
-        universe: 1,
-        start_channel: 1,
+        name: nextFixtureName(editVenueFixtures.map((f) => f.name)),
+        fixture_type: type,
+        universe: at.universe,
+        start_channel: at.address,
         tags: [],
       },
     ];
+  }
+
+  /** Set by a refused save: from then on the rows are checked as they are
+   *  edited, so a fixed row clears its message. */
+  let checkRows = $state(false);
+  let problems = $derived(
+    checkRows
+      ? rowProblems(editVenueFixtures)
+      : new Map<number, RowProblem[]>(),
+  );
+
+  function rowMessage(list: RowProblem[]): string {
+    return list.map((p) => get(t)(`lighting.venueRow.${p}`)).join(" ");
   }
 
   function removeVenueFixture(i: number) {
@@ -199,18 +248,34 @@
       venueMsg = get(t)("lighting.nameRequired");
       return;
     }
-    const fixtures = editVenueFixtures
-      .filter((f) => f.name.trim() && f.fixture_type.trim())
-      .map((f) => ({
-        name: f.name.trim(),
-        fixture_type: f.fixture_type.trim(),
-        universe: f.universe,
-        start_channel: f.start_channel,
-        tags: f.tags,
-        position: f.position ?? null,
-        rotation: f.rotation ?? null,
-        mode: f.fixture_type.trim() === f.modeOfType ? (f.mode ?? null) : null,
-      }));
+    // Every row is saved or the save is refused: a row that cannot be
+    // saved is marked, never left out.
+    const found = rowProblems(editVenueFixtures);
+    if (found.size > 0) {
+      checkRows = true;
+      venueMsg = get(t)("lighting.venueRowsNeedAttention", {
+        values: { count: found.size },
+      });
+      const first = Math.min(...found.keys());
+      queueMicrotask(() =>
+        document
+          .querySelector<HTMLElement>(
+            `[data-venue-row="${first}"] [aria-invalid="true"]`,
+          )
+          ?.focus(),
+      );
+      return;
+    }
+    const fixtures = editVenueFixtures.map((f) => ({
+      name: f.name.trim(),
+      fixture_type: f.fixture_type.trim(),
+      universe: f.universe,
+      start_channel: f.start_channel,
+      tags: f.tags,
+      position: f.position ?? null,
+      rotation: f.rotation ?? null,
+      mode: f.fixture_type.trim() === f.modeOfType ? (f.mode ?? null) : null,
+    }));
     const newName = editVenueName.trim();
     const oldName = editingVenue !== "__new__" ? editingVenue : null;
     const isRename = oldName && oldName !== newName;
@@ -254,7 +319,8 @@
         // and leave the change to be made again.
         const name = editingVenue;
         await loadVenues();
-        if (name && name !== "__new__" && name in venues) startEditVenue(name);
+        if (name && name !== "__new__" && name in venues)
+          await startEditVenue(name);
         venueMsg = get(t)("lighting.venueChangedElsewhere");
       } else {
         venueMsg = e.message;
@@ -332,15 +398,32 @@
         </div>
 
         {#each editVenueFixtures as fix, i (i)}
-          <div class="venue-fixture-card">
+          {@const rowIssues = problems.get(i) ?? []}
+          {@const bad = (p: RowProblem) => rowIssues.includes(p)}
+          <div
+            class="venue-fixture-card"
+            class:venue-fixture-card--invalid={rowIssues.length > 0}
+            data-venue-row={i}
+            data-testid="venue-fixture-row"
+          >
             <div class="venue-fixture-row">
               <input
                 class="input"
                 placeholder={$t("lighting.fixtureName")}
+                aria-label={$t("lighting.fixtureName")}
+                aria-invalid={bad("noName") || bad("duplicateName")}
+                aria-describedby={rowIssues.length > 0
+                  ? `venue-row-error-${i}`
+                  : undefined}
                 bind:value={fix.name}
               />
               {#if fixtureTypeNames.length > 0}
-                <select class="input" bind:value={fix.fixture_type}>
+                <select
+                  class="input"
+                  aria-label={$t("lighting.fixtureType")}
+                  aria-invalid={bad("noType")}
+                  bind:value={fix.fixture_type}
+                >
                   <option value="">{$t("lighting.selectType")}</option>
                   {#each fixtureTypeNames as ftName (ftName)}
                     <option value={ftName}
@@ -356,6 +439,8 @@
                 <input
                   class="input"
                   placeholder={$t("lighting.fixtureType")}
+                  aria-label={$t("lighting.fixtureType")}
+                  aria-invalid={bad("noType")}
                   bind:value={fix.fixture_type}
                 />
               {/if}
@@ -374,6 +459,7 @@
                   class="input"
                   type="number"
                   min="1"
+                  aria-invalid={bad("badUniverse")}
                   bind:value={fix.universe}
                 />
               </div>
@@ -386,6 +472,7 @@
                   class="input"
                   type="number"
                   min="1"
+                  aria-invalid={bad("badAddress")}
                   bind:value={fix.start_channel}
                 />
               </div>
@@ -402,6 +489,15 @@
                 />
               </div>
             </div>
+            {#if rowIssues.length > 0}
+              <p
+                class="row-error"
+                id={`venue-row-error-${i}`}
+                data-testid="venue-row-error"
+              >
+                {rowMessage(rowIssues)}
+              </p>
+            {/if}
           </div>
         {/each}
       </div>
@@ -479,7 +575,7 @@
                   data-testid="venue-edit-{name}"
                   onclick={(e) => {
                     e.stopPropagation();
-                    startEditVenue(name);
+                    void startEditVenue(name);
                   }}>{$t("lighting.venueEdit")}</button
                 >
                 <button
@@ -666,6 +762,20 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .venue-fixture-card--invalid {
+    border-color: var(--red);
+  }
+
+  .venue-fixture-card :global([aria-invalid="true"]) {
+    border-color: var(--red);
+  }
+
+  .row-error {
+    margin: 0;
+    font-size: 12px;
+    color: var(--red);
   }
 
   .venue-fixture-row {
