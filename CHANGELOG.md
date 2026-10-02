@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   venue, groups, shows, output — each ready, needing attention, blocked, or unknown, and a list of
   everything that needs attention with a link to where it is fixed. **Fixture types** and
   **Venues** edit the project's files; **Groups** edits a hardware profile's groups and current
-  venue, for the profile the player is running or one you pick; **3D** is Stage 3D. Config keeps the
-  DMX hardware and shows a summary with a link, so nothing has two editors.
+  venue, for the profile the player is running or one you pick. Config keeps the DMX hardware and
+  shows a summary with a link, so nothing has two editors.
 
   **Fit shows** makes an imported venue work with the shows you have. It lists every group the
   shows use and how many fixtures each finds, suggests which fixtures to tag and why ("the 11 MAC
@@ -38,10 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Stage 3D gains a **Preview**: pick a song, scrub its timeline, and see the show at that moment
   evaluated offline — nothing goes to the lights — with the effects active then, the fixtures the
-  show never touches, and the caveats that apply (colour-wheel fixtures shown white, beams that
-  miss the deck drawn a fixed length). Adding a fixture type from GDTF now says what each mode lets
-  shows do ("Set any colour", "Strobe, 0.4 to 25 flashes a second", "Dim, through colour; mode 11
-  adds a real dimmer"), which modes add what this one lacks, and how many addresses to reserve.
+  show never touches, and a note when colour-wheel fixtures are shown white. Adding a fixture type
+  from GDTF now says what each mode lets shows do ("Set any colour", "Strobe, 0.4 to 25 flashes a
+  second", "Dim, through colour; mode 11 adds a real dimmer"), which modes add what this one lacks,
+  and how many addresses to reserve.
 
   Every web edit of a venue patches the file instead of rewriting it, so comments and an import's
   `# TODO` lines survive; two browser tabs editing the same venue or profile no longer overwrite
@@ -200,10 +200,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gains `capability-gap` (a cue none of the group's fixtures has the channels for) and
   `unconfigured-universe` (venue fixtures the active profile has no output for).
 
-- **Stage 3D (#443, #444, #446, #450, #468)**: Lighting's **3D** page (also the dashboard stage
-  card's **3D** button) opens the venue as a room: the deck with the audience edge, focus-point
-  markers, an orbit camera with Front
-  of house, Side and Top presets, a Labels toggle (off by default above 40 fixtures) and unplaced
+- **Stage 3D (#443, #444, #446, #450, #468, #491, #495, #496)**: the stage card on Lighting's
+  **Venues** page, and the one on the dashboard, has a **Plot | 3D** switch that shows the venue as
+  a room in place of the plot: the deck with the audience edge, focus-point markers, an orbit
+  camera that opens from front of house, fixture names on a rig of up to 40 fixtures, and unplaced
   fixtures on a tray downstage. Fixtures are drawn from their GDTF — the archive's meshes when it
   ships them, its primitives with their sizes otherwise, a generic box with a 20° beam for a
   hand-written type — and pan and tilt turn the nodes the GDTF names. Beams are translucent cones
@@ -212,12 +212,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing for is dark, so an idle rig looks as dark as the real one. A pixel fixture lights each
   lens in its cell's colour.
 
+  The beams light the deck as well: each puts its whole cone on the floor, soft at the edge and
+  weaker with distance, so a fixture standing on the floor and aimed up at the band still colours
+  the floor in front of it. A venue fixture can state its own `beam_angle` (**Beam angle** in the
+  Venues inspector) for a unit whose diffuser or filter makes it wider than its type says; it
+  changes the drawing only, never the DMX.
+
   A venue seeded from an MVR shows its scenery too: trusses, supports, screens, projectors and
   scene objects, where the MVR carries them as glTF; other formats (`.3ds` is common in console
   exports) are reported and skipped. Models and rig data live in a rebuildable asset store under
   `lighting/.cache/assets/`, served with an extension allowlist, size caps and containment to the
-  asset root, and three.js loads only with this page. It is a sketch, not a render: no haze, no
-  shadows, no photometrics.
+  asset root, and three.js loads the first time 3D is pressed. It is a sketch, not a render: no
+  haze, no shadows, no photometrics.
 
 - **OSC pause and structured timeline feedback (#432)**: `/mtrack/pause` records the current
   elapsed position and stops playback, and the next Play resumes from it; Stop clears the preserved
