@@ -672,7 +672,7 @@ which are a good way to see what an import of your own rig will look like.
 ## Stage 3D
 
 The stage card on the Venues page has a **Plot | 3D** switch that shows the venue as a room in
-place of the plot (the dashboard's stage card has a **3D** button that opens it there; see
+place of the plot (the dashboard's stage card has the same switch, live only; see
 [Plot and 3D](../interfaces/web-ui.md#plot-and-3d)): the deck with
 the audience edge marked, every fixture at its venue position, movers turning as the show
 drives them, beams in the colour and level the fixture is showing, and focus points as

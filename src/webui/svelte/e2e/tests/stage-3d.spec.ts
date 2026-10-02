@@ -63,23 +63,14 @@ test.describe("3D on the venue card", () => {
     wsId = `s3d-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
   });
 
-  test("the dashboard's 3D link opens the current venue's card in 3D", async ({
-    page,
-  }) => {
+  test("the dashboard's card switches to 3D in place", async ({ page }) => {
     await page.goto(`/?wsId=${wsId}#/`);
     await expect(page.locator(".stage-card")).toBeVisible();
-    // No current venue yet: the link is the Venues page.
-    await expect(page.locator(".stage-card__3d")).toHaveAttribute(
-      "href",
-      "#/lighting/venues",
-    );
+    // No current venue yet: nothing to show in 3D.
+    await expect(page.getByTestId("stage-view-3d")).toHaveCount(0);
     await sendWsMessage(page, wsId, VENUE_METADATA);
-    await expect(page.locator(".stage-card__3d")).toHaveAttribute(
-      "href",
-      "#/lighting/venues/test-venue?view=3d",
-    );
-    await page.locator(".stage-card__3d").click();
-    await expect(page).toHaveURL(/#\/lighting\/venues\/test-venue\?view=3d$/);
+    await page.getByTestId("stage-view-3d").click();
+    await expect(page).toHaveURL(/#\/$/);
     await expect(page.getByTestId("stage-view-3d")).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -88,6 +79,14 @@ test.describe("3D on the venue card", () => {
       "data-source",
       "live",
     );
+    // A live view: no show preview, and nothing to select.
+    await expect(page.getByTestId("stage3d-mode-preview")).toHaveCount(0);
+    await expect(page.getByTestId("stage3d-hint")).toHaveText("Drag to orbit");
+
+    await page.getByTestId("stage-view-plot").click();
+    await expect(page).toHaveURL(/#\/$/);
+    await expect(page.locator(".stage3d__viewport")).toHaveCount(0);
+    await expect(page.locator(".stage-card canvas")).toBeVisible();
   });
 
   test("the page draws the venue from rigs and reports what it drew", async ({

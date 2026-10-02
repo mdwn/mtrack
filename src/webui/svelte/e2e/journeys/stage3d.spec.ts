@@ -145,16 +145,13 @@ test.describe("3D on the venue card", () => {
     await expect(page.getByTestId("preview-panel")).toBeVisible();
   });
 
-  test("the dashboard's 3D link and an old 3D address land on the card", async ({
+  test("the dashboard's 3D stays on the dashboard; an old 3D address lands on the card", async ({
     page,
   }) => {
     await page.goto("/#/");
-    await expect(page.locator(".stage-card__3d")).toHaveAttribute(
-      "href",
-      "#/lighting/venues/house?view=3d",
-    );
-    await page.locator(".stage-card__3d").click();
+    await page.getByTestId("stage-view-3d").click();
     await expect(viewport(page)).toHaveAttribute("data-source", "live");
+    await expect(page).toHaveURL(/#\/$/);
 
     await page.goto("/#/lighting/stage?mode=preview&t=4");
     await expect(page).toHaveURL(
