@@ -124,3 +124,84 @@ test("a test nobody keeps alive goes dark by itself", async ({ project }) => {
     .poll(() => testOutput(project), { timeout: EXPIRY_MS + 3000 })
     .toBeNull();
 });
+
+test.describe("a venue fixture under test", () => {
+  test.use({
+    files: {
+      "lighting/fixture_types/par.light":
+        'fixture_type "Par" {\n  channels: 3\n  channel_map: { "red": 1, "green": 2, "blue": 3 }\n}\n',
+      "lighting/venues/house.light":
+        'venue "house" {\n  fixture "Front" Par @ 1:1\n  fixture "Back" Par @ 1:10\n}\n',
+    },
+  });
+
+  interface StateMsg {
+    type: string;
+    fixtures: Record<string, Record<string, number>>;
+    under_test?: string[];
+  }
+
+  test("the state stream shows the test's bytes on it, and the show again after Stop", async ({
+    project,
+  }) => {
+    const states: StateMsg[] = [];
+    const ws = new WebSocket(`${project.url.replace(/^http/, "ws")}/ws`);
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(String(e.data)) as StateMsg;
+      if (msg.type === "state") states.push(msg);
+    };
+    await new Promise((resolve, reject) => {
+      ws.onopen = resolve;
+      ws.onerror = reject;
+    });
+    const latest = () => states.at(-1);
+
+    try {
+      const post = async (color: string) => {
+        const res = await fetch(`${project.url}/api/lighting/fixture-test`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            fixture_type: "Par",
+            mode: null,
+            universe: 1,
+            address: 1,
+            controls: { color, dimmer: 1 },
+          }),
+        });
+        expect(res.status).toBe(200);
+        return (await res.json()) as {
+          warnings: { kind: string; fixtures?: string[] }[];
+        };
+      };
+      const body = await post("#ff0000");
+      // The test says it overrides the venue's fixture there.
+      expect(
+        body.warnings.find((w) => w.kind === "venue_overlap")?.fixtures,
+      ).toEqual(["Front"]);
+
+      await expect.poll(() => latest()?.under_test).toEqual(["Front"]);
+      expect(latest()!.fixtures.Front).toMatchObject({
+        red: 255,
+        green: 0,
+        blue: 0,
+      });
+      // Back, outside the span, is the show's (dark: nothing is playing).
+      expect(latest()!.fixtures.Back?.red ?? 0).toBe(0);
+
+      // A new colour follows.
+      await post("#00ff00");
+      await expect.poll(() => latest()?.fixtures.Front?.green).toBe(255);
+
+      // Stop: back to the show's values, nothing marked.
+      await fetch(`${project.url}/api/lighting/fixture-test`, {
+        method: "DELETE",
+      });
+      await expect.poll(() => latest()?.under_test).toEqual([]);
+      expect(latest()!.fixtures.Front?.green ?? 0).toBe(0);
+      expect(latest()!.fixtures.Front?.red ?? 0).toBe(0);
+    } finally {
+      ws.close();
+    }
+  });
+});

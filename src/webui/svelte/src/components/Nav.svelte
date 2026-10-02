@@ -16,12 +16,11 @@
   import { wsConnected, playbackStore } from "../lib/ws/stores";
   import {
     healthStore,
-    statusStore,
     testOutput,
     uiUpdated,
     venueFailure,
   } from "../lib/ws/status";
-  import { releaseTest } from "../lib/lighting/fixtureTest";
+  import TestOutputLine from "./lighting/TestOutputLine.svelte";
   import { setLocked } from "../lib/api/config";
   import { showConfirm } from "../lib/dialog.svelte";
   import { themeChoice, cycleTheme } from "../lib/theme";
@@ -56,16 +55,6 @@
     } finally {
       toggling = false;
     }
-  }
-
-  /** Stops a fixture test from any page; a page that is sending hears
-   *  the event and stops its heartbeat. */
-  async function stopTest() {
-    window.dispatchEvent(new Event("mtrack:fixture-test-stop"));
-    await releaseTest();
-    statusStore.update((s) =>
-      s ? { ...s, hardware: { ...s.hardware, test_output: null } } : s,
-    );
   }
 
   const links = [
@@ -331,26 +320,7 @@
 {#if $testOutput}
   <!-- A test is lighting a fixture: say so on every page, with a way out. -->
   <div class="test-banner" role="status" data-testid="test-output-banner">
-    <span
-      >{$t("nav.testOutput", {
-        values: {
-          universe: $testOutput.universe,
-          from: $testOutput.address,
-          to: $testOutput.address + Math.max(1, $testOutput.footprint) - 1,
-          fixture: $testOutput.fixture_type,
-        },
-      })}</span
-    >
-    <a
-      href={`#/lighting/fixtures/${encodeURIComponent($testOutput.fixture_type)}`}
-      >{$t("nav.testOutputOpen")}</a
-    >
-    <button
-      class="btn btn-sm"
-      type="button"
-      data-testid="test-output-stop"
-      onclick={stopTest}>{$t("nav.testOutputStop")}</button
-    >
+    <TestOutputLine />
   </div>
 {/if}
 
@@ -671,11 +641,6 @@
     font-weight: 600;
     border-bottom: 1px solid var(--accent);
     overflow-wrap: anywhere;
-  }
-
-  .test-banner a {
-    color: var(--accent);
-    text-decoration: underline;
   }
 
   .venue-banner a {

@@ -34,8 +34,8 @@ pub use fixture::{
 };
 pub use instance::EffectInstance;
 pub use physical::{
-    degree_span, fanout, resolve_degrees, resolve_normalized, resolve_physical, Intent,
-    PhysicalParameter, PhysicalState, Resolved,
+    degree_span, degrees_from_bytes, fanout, resolve_degrees, resolve_normalized, resolve_physical,
+    Intent, PhysicalParameter, PhysicalState, Resolved,
 };
 pub(crate) use pointing::mat_vec;
 pub use pointing::{

@@ -930,6 +930,12 @@ Lighting area was invisible to the engine.
   `/api/status` carries `hardware.test_output`. Warnings: `venue_overlap` (named, from the
   engine's current venue's patch spans), `past_universe_end`, `olad_unreachable`,
   `universe_unpatched` (readiness's olad probe), `unsupported_control`.
+- **The stage views draw the override.** The engine shares the test's bytes with the state
+  sampler (`state::TestOverlay`, `Engine::test_overlay()`); `state::engine_snapshot` lays them
+  over each venue fixture they cover (channels, fine bytes, mirrors, cells; a covered pan or
+  tilt is decoded back to degrees by `degrees_from_bytes` and moves the pose) and names those
+  fixtures in `StateSnapshot::under_test`, the `state` message's `under_test`. The plot badges
+  them, 3D tints their label, the stage card shows the live line.
 - **Page.** Send is off until turned on and then sends full white; the page heartbeats every
   2 s, rate-limits slider sends to ~20/s through one queue (so a release always lands after the
   send before it), releases before moving to another mode/universe/address and on leaving.

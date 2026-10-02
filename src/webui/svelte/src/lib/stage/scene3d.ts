@@ -71,6 +71,8 @@ const BODY_COLOR = 0x9aa4b2;
 const LENS_COLOR = 0x222222;
 /** The selection's mark: the UI's cyan, bright enough for the dark room. */
 const SELECTED_COLOR = 0x5ce1f2;
+/** A fixture a fixture test is driving: its label in amber. */
+const UNDER_TEST_COLOR = 0xffb020;
 
 /**
  * How far and how brightly a beam kind is drawn. A spot throws to the deck;
@@ -292,6 +294,7 @@ export class StageScene {
   private frame = 0;
   private generation = 0;
   private selected = new Set<string>();
+  private underTest = new Set<string>();
   private selectionBoxes = new Map<string, THREE.Box3Helper>();
   private labels = true;
   private channels: Record<string, FixtureChannels> = {};
@@ -361,7 +364,8 @@ export class StageScene {
   /** Shows or hides the fixture name labels (focus points keep theirs). */
   setLabels(show: boolean) {
     this.labels = show;
-    for (const actor of this.actors.values()) actor.label.visible = show;
+    for (const actor of this.actors.values())
+      actor.label.visible = show || this.underTest.has(actor.name);
   }
 
   setCamera(preset: CameraPreset) {
@@ -545,6 +549,14 @@ export class StageScene {
     this.applySelection();
   }
 
+  /** Marks the fixtures a fixture test is driving: the label tinted (and
+   *  shown, even on a rig too big for labels), so the room says why a
+   *  light is doing what the show is not. Selection's tint wins. */
+  setUnderTest(names: string[]) {
+    this.underTest = new Set(names);
+    this.applySelection();
+  }
+
   private applySelection() {
     for (const helper of this.selectionBoxes.values()) {
       this.scene.remove(helper);
@@ -553,7 +565,11 @@ export class StageScene {
     this.selectionBoxes.clear();
     for (const actor of this.actors.values()) {
       const on = this.selected.has(actor.name);
-      actor.label.material.color.set(on ? SELECTED_COLOR : 0xffffff);
+      const tested = this.underTest.has(actor.name);
+      actor.label.material.color.set(
+        on ? SELECTED_COLOR : tested ? UNDER_TEST_COLOR : 0xffffff,
+      );
+      actor.label.visible = this.labels || tested;
       actor.label.scale.copy(actor.labelScale).multiplyScalar(on ? 1.4 : 1);
       if (on) {
         const helper = new THREE.Box3Helper(new THREE.Box3(), SELECTED_COLOR);

@@ -150,6 +150,8 @@ pub struct Engine {
     pub(super) update_subphase: Arc<AtomicU64>,
     /// A fixture test's output, when one is running (see `test_output`).
     test_output: Mutex<Option<test_output::ActiveTest>>,
+    /// The running test's bytes, for the state sampler to draw.
+    test_overlay: crate::state::TestOverlayHandle,
     /// How long a test holds after its last update.
     test_expiry: Duration,
 }
@@ -267,6 +269,7 @@ impl Engine {
             effects_loop_phase: Arc::new(AtomicU64::new(0)),
             update_subphase,
             test_output: Mutex::new(None),
+            test_overlay: Default::default(),
             test_expiry: test_output::expiry_from_env(),
         })
     }

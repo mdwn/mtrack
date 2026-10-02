@@ -647,7 +647,12 @@ to that universe — the show, MIDI-DMX — and says so in the panel and in a ba
 alive; if nothing does (the tab closed, the laptop slept), it lets go by itself within about five
 seconds and the lights go back to whatever the show is doing. Changing the mode, universe or
 address, or leaving the page, lets go of the old addresses first. A fixture of the current venue
-on those addresses is named: the test overrides it while it runs.
+on those addresses is named: the test overrides it while it runs. The stage views show it doing so: the
+plot and the 3D view (on the dashboard and on the Venues page) draw each venue fixture whose
+addresses the test covers with the test's values — its colour and, for a mover whose pan or tilt
+is covered, where it points — rather than the show's. The plot marks it with a **TEST** badge,
+3D tints its label amber, and the Venues page's stage card carries the same "Test output is live"
+line as the banner, with **Stop**. Once the test lets go, they show the show again.
 
 **Nothing happened?** While live, the panel lists the likely causes, the ones mtrack can check
 first: olad (the program that sends DMX out of the computer) not answering; the universe having no

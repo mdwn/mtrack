@@ -118,6 +118,7 @@
   "stage.placed": "{placed} of {total} placed",
   "stage.focusPoints": "Focus points",
   "stage.addFocus": "+ Focus point",
+  "stage.underTestBadge": "TEST",
   "stage.editInVenues": "Edit",
   "stage.currentVenueLive": "Current venue: {name} · live",
   "stage.noCurrentVenue": "No venue is current. Choose one on the Groups page and the live stage plot appears here, or select a venue above to work on its file.",

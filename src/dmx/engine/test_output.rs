@@ -95,6 +95,10 @@ impl Engine {
             || active.as_ref().map(|a| a.output.universe) != Some(output.universe)
         {
             universe.set_test_override(Some(&output.channels));
+            *self.test_overlay.write() = Some(crate::state::TestOverlay {
+                universe: output.universe,
+                channels: output.channels.clone(),
+            });
         }
         *active = Some(ActiveTest {
             output,
@@ -108,6 +112,7 @@ impl Engine {
         let Some(active) = self.test_output.lock().take() else {
             return false;
         };
+        *self.test_overlay.write() = None;
         if let Some(universe) = self.universes.get(&active.output.universe) {
             universe.set_test_override(None);
         }
@@ -117,6 +122,12 @@ impl Engine {
             "Fixture test output released"
         );
         true
+    }
+
+    /// The running test's bytes, shared with the state sampler so the
+    /// stage views draw what leaves for olad.
+    pub fn test_overlay(&self) -> crate::state::TestOverlayHandle {
+        self.test_overlay.clone()
     }
 
     /// The running test, if any.
@@ -264,9 +275,28 @@ mod tests {
             (1, 1, 3)
         );
         assert!(status.expires_in_secs > 4.0);
+        // The stage views draw the same bytes, over the show's state.
+        let overlay = engine.test_overlay().read().clone().expect("drawn");
+        assert_eq!(overlay.channels, green_test().channels);
+        let drawn = crate::state::engine_snapshot(
+            &engine.effect_engine.lock(),
+            Some(&overlay),
+            &Default::default(),
+        );
+        assert_eq!(drawn.under_test, vec!["par"]);
+        let par = drawn.fixtures.iter().find(|f| f.name == "par").unwrap();
+        assert_eq!(
+            (
+                par.channels["red"],
+                par.channels["green"],
+                par.channels["blue"]
+            ),
+            (0, 255, 0)
+        );
 
         assert!(engine.release_test_output());
         frame_becomes(&sent, &[255, 0, 0])?;
+        assert!(engine.test_overlay().read().is_none(), "nothing left drawn");
         assert!(engine.test_output_status().is_none());
         assert!(!engine.release_test_output(), "nothing left to release");
         engine.cancel_handle.cancel();
@@ -284,6 +314,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(90));
         engine.expire_test_output();
         assert!(engine.test_output_status().is_none());
+        assert!(engine.test_overlay().read().is_none());
         frame_becomes(&sent, &[255, 0, 0])?;
         engine.cancel_handle.cancel();
         Ok(())
