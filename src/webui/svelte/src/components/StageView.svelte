@@ -62,7 +62,7 @@
     type Rect,
     type StageFrame,
   } from "../lib/stage/layout";
-  import { venue3dHref, withParams } from "../lib/lightingRoute";
+  import { withParams } from "../lib/lightingRoute";
   // Types only: the 3D view and the preview panel load the first time 3D
   // is pressed, and three.js with them.
   import type { Stage3DInfo } from "./stage/Stage3DView.svelte";
@@ -98,7 +98,8 @@
     /** The venues directory override, for reading and saving `fileVenue`. */
     venuesDir?: string;
     /** `?view=3d` (the Venues page only): the card shows the venue in 3D
-     *  in place of the plot; the inspector and the header stay. */
+     *  in place of the plot; the inspector and the header stay. A card
+     *  that is not editable (the dashboard) keeps its view to itself. */
     view?: "plot" | "3d";
     /** `?mode=preview&song=&t=`: the 3D view previews a song's show at a
      *  moment (the current venue only). */
@@ -123,9 +124,16 @@
     previewTime = null,
   }: Props = $props();
 
-  // --- Plot | 3D. The view is the address, so Back, a reload and a shared
-  // link keep it; leaving 3D drops a preview's moment with it.
+  // --- Plot | 3D. On the editing card the view is the address, so Back, a
+  // reload and a shared link keep it; leaving 3D drops a preview's moment
+  // with it. A live card (the dashboard) switches where it is: its page
+  // has no address for the view, and pressing 3D must not leave the page.
+  let localView = $state<"plot" | "3d">("plot");
   function setView(next: "plot" | "3d") {
+    if (!editable) {
+      localView = next;
+      return;
+    }
     window.location.hash = withParams(
       window.location.hash,
       next === "3d"
@@ -155,6 +163,10 @@
   }
   /** What the 3D view is showing (its stats line reads it). */
   let info3d = $state<Stage3DInfo | undefined>();
+  let hasStats3d = $derived(
+    !!info3d &&
+      (!!info3d.stats?.generic || !!info3d.scenery || !!info3d.sceneryError),
+  );
   /** The previewed moment; null until the first evaluation. */
   let feed = $state<PreviewFrame | null>(null);
   const EMPTY_FRAME: PreviewFrame = { fixtures: {}, poses: {}, cells: {} };
@@ -362,8 +374,12 @@
         : null
       : $venueStore,
   );
-  let is3d = $derived(editable && view === "3d" && !!shownVenue);
-  let previewing = $derived(is3d && !viewingFile && previewMode === "preview");
+  /** A plot for choosing fixtures (Fit shows) stays a plot. */
+  let canView3d = $derived(!!shownVenue && (editable || !onFixtureClick));
+  let is3d = $derived(canView3d && (editable ? view : localView) === "3d");
+  let previewing = $derived(
+    is3d && editable && !viewingFile && previewMode === "preview",
+  );
   let shownPoses = $derived<Record<string, FixturePose>>(
     viewingFile ? filePoses : $poseStore,
   );
@@ -1438,7 +1454,7 @@
             : `Error: ${$reloadStore.error}`}
         </span>
       {/if}
-      {#if editable && venue}
+      {#if canView3d}
         <div
           class="stage-card__views"
           role="group"
@@ -1461,18 +1477,6 @@
             onclick={() => setView("3d")}>{$t("stage.view3d")}</button
           >
         </div>
-      {:else if !editable}
-        <!-- The dashboard's live plot opens the current venue in 3D on
-             the Venues page. -->
-        <a
-          href={$venueStore
-            ? venue3dHref($venueStore.name)
-            : "#/lighting/venues"}
-          class="btn btn-sm stage-card__3d"
-          data-testid="stage-3d-link"
-        >
-          {$t("stage3d.open")}
-        </a>
       {/if}
       {#if !editable}
         <a href="#/lighting/venues" class="btn btn-sm stage-card__edit">
@@ -1523,8 +1527,8 @@
                 {venuesDir}
                 previewFrame={previewing ? (feed ?? EMPTY_FRAME) : null}
                 {selection}
-                onSelect={(names) => (selection = names)}
-                hint={$t("stage.hint3d")}
+                onSelect={editable ? (names) => (selection = names) : undefined}
+                hint={$t(editable ? "stage.hint3d" : "stage.hint3dLive")}
                 oninfo={(i) => (info3d = i)}
               />
             {/await}
@@ -1552,9 +1556,9 @@
             ></canvas>
           {/if}
         </div>
-        {#if is3d}
+        {#if is3d && (editable || hasStats3d)}
           <div class="stage-card__three" data-testid="stage-3d-under">
-            {#if info3d && (info3d.stats?.generic || info3d.scenery || info3d.sceneryError)}
+            {#if info3d && hasStats3d}
               <p class="stage-card__three-stats" data-testid="stage3d-stats">
                 {#if info3d.stats && info3d.stats.generic > 0}
                   <span
@@ -1593,7 +1597,9 @@
                 {$t("stage3d.noPreviewFile")}
                 <a href="#/lighting/groups">{$t("stage3d.makeCurrent")}</a>
               </p>
-            {:else}
+            {:else if editable}
+              <!-- Previewing a show keeps its moment in the address, so it
+                   is the Venues page's; a live card is live only. -->
               <div
                 class="stage-card__views"
                 role="group"

@@ -128,22 +128,6 @@ export function withParams(
   return out ? `${path}?${out}` : path;
 }
 
-/** The venue card's 3D view of a venue (the current one when `venue` is
- *  null), optionally previewing a song at a moment. */
-export function venue3dHref(
-  venue: string | null,
-  preview: { song: string; time?: number } | null = null,
-): string {
-  const extra: Record<string, string> = { view: "3d" };
-  if (preview) {
-    extra.mode = "preview";
-    extra.song = preview.song;
-    if (preview.time !== undefined)
-      extra.t = String(Math.round(preview.time * 1000) / 1000);
-  }
-  return lightingHref("venues", venue, extra);
-}
-
 /** Stage 3D no longer has a page of its own: an old address for it
  *  (`#/stage…`, `#/lighting/stage…`) lands on the Venues page in 3D, on
  *  the current venue when one is known, keeping a preview's song and time.

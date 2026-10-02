@@ -105,8 +105,10 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   fixtures and editing focus points happens on the Lighting area's
   [Venues](#venues) page, and the card's **Edit** button goes there. Without positions the view is
   the older layout organized by tags (left, right, front, back), and dragging only rearranges the
-  picture in this browser's localStorage. The stage card's **3D** button opens the current venue
-  in 3D on the [Venues](#plot-and-3d) page (or the Venues page itself when no venue is current).
+  picture in this browser's localStorage. With a current venue the card has a **Plot | 3D**
+  switch: **3D** shows the venue as a room, live, in place of the plot, without leaving the
+  dashboard (see [Plot and 3D](#plot-and-3d)). The dashboard does not remember the switch; a
+  reload shows the plot.
 - **Active effects** — Lists currently running lighting effects by name.
 - **Log panel** — Streaming application logs with level filter pills
   (TRACE/DEBUG/INFO/WARN/ERROR), defaulting to INFO+. ERROR rows get a pink-tinted
@@ -728,6 +730,9 @@ The switch is part of the address (`?view=3d`), so Back, a reload and a shared l
 selecting another venue in the list keeps the card in 3D. three.js and the 3D code load the first
 time 3D is pressed, not before. Drag to orbit, scroll to zoom, right-drag to pan; moving fixtures
 by dragging stays a plot action.
+
+The dashboard's stage card has the same switch for the current venue. There it is a live view
+only: nothing to select, no show preview, and the switch is not part of the address.
 
 The selection is the plot's: click a fixture in 3D to select it (shift-click adds or removes one,
 a click on empty space clears; a drag orbits and selects nothing), and the inspector shows it. A
