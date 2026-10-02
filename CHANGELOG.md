@@ -200,7 +200,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gains `capability-gap` (a cue none of the group's fixtures has the channels for) and
   `unconfigured-universe` (venue fixtures the active profile has no output for).
 
-- **Stage 3D (#443, #444, #446, #450, #468, #491, #495, #496)**: the stage card on Lighting's
+- **Stage 3D (#443, #444, #446, #450, #468, #491, #495, #496, #497)**: the stage card on Lighting's
   **Venues** page, and the one on the dashboard, has a **Plot | 3D** switch that shows the venue as
   a room in place of the plot: the deck with the audience edge, focus-point markers, an orbit
   camera that opens from front of house, fixture names on a rig of up to 40 fixtures, and unplaced
@@ -216,7 +216,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   weaker with distance, so a fixture standing on the floor and aimed up at the band still colours
   the floor in front of it. A venue fixture can state its own `beam_angle` (**Beam angle** in the
   Venues inspector) for a unit whose diffuser or filter makes it wider than its type says; it
-  changes the drawing only, never the DMX.
+  changes the drawing only, never the DMX. A **maximize** button on the card, on the dashboard and
+  on Venues, fills the browser window with it — plot or 3D, with the inspector on Venues — until
+  it is pressed again or Escape; a playback bar stands in for the transport it covers.
 
   A venue seeded from an MVR shows its scenery too: trusses, supports, screens, projectors and
   scene objects, where the MVR carries them as glTF; other formats (`.3ds` is common in console

@@ -108,7 +108,9 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   picture in this browser's localStorage. With a current venue the card has a **Plot | 3D**
   switch: **3D** shows the venue as a room, live, in place of the plot, without leaving the
   dashboard (see [Plot and 3D](#plot-and-3d)). The dashboard does not remember the switch; a
-  reload shows the plot.
+  reload shows the plot. The **maximize** button beside it fills the browser window with the
+  card, under the navigation, until you press it again or press Escape; a playback bar along the
+  bottom stands in for the transport the card covers.
 - **Active effects** — Lists currently running lighting effects by name.
 - **Log panel** — Streaming application logs with level filter pills
   (TRACE/DEBUG/INFO/WARN/ERROR), defaulting to INFO+. ERROR rows get a pink-tinted
@@ -739,6 +741,13 @@ The switch is part of the address (`?view=3d`), so Back, a reload and a shared l
 selecting another venue in the list keeps the card in 3D. three.js and the 3D code load the first
 time 3D is pressed, not before. Drag to orbit, scroll to zoom, right-drag to pan; moving fixtures
 by dragging stays a plot action.
+
+The card's **maximize** button, beside the switch, fills the browser window with the whole card
+under the navigation — the picture, the inspector and the focus points — for a bigger plot to
+place fixtures on or a bigger room to watch. Press it again, or Escape, to put the card back
+(Escape clears a selection first). Plot or 3D, the selection and the 3D camera stay as they were;
+a reload shows the page as laid out. A playback bar shows along the bottom while a card is
+maximized.
 
 The dashboard's stage card has the same switch for the current venue. There it is a live view
 only: nothing to select, no show preview, and the switch is not part of the address.

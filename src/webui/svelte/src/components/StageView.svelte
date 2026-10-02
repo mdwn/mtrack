@@ -1220,10 +1220,52 @@
 
   /** Escape clears the selection wherever focus is. */
   function onWindowKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape" && selectable && selection.length > 0) {
+    if (e.key !== "Escape") return;
+    if (selectable && selection.length > 0) {
       selection = [];
+      return;
     }
+    // Escape leaves a maximized card, unless it belongs to something else:
+    // a field being typed in, or a dialog over the page.
+    const typing = (e.target as HTMLElement | null)?.closest?.(
+      "input, textarea, select",
+    );
+    if (maximized && !typing && !document.querySelector(".dialog-overlay"))
+      maximized = false;
   }
+
+  // --- Maximize: the card fills the window under the navigation until it
+  // is pressed again (or Escape), like a video's theater mode. It is the
+  // same card in the same place in the page, so the view, the camera and
+  // the selection are what they were. Not kept: a reload is the page as
+  // laid out.
+  let maximized = $state(false);
+  /** A plot for choosing fixtures (Fit shows) stays in its column, and a
+   *  card with nothing to show has nothing to enlarge. */
+  let canMaximize = $derived(editable ? !!venue : !onFixtureClick);
+  /** Where the navigation ends, pixels: the maximized card starts there. */
+  let navBottom = $state(0);
+  $effect(() => {
+    if (!canMaximize) maximized = false;
+  });
+  $effect(() => {
+    if (!maximized) return;
+    const nav = document.querySelector(".topnav");
+    const place = () => (navBottom = nav?.getBoundingClientRect().bottom ?? 0);
+    place();
+    window.addEventListener("resize", place);
+    // The page behind does not scroll, and the playback bar shows (the
+    // card covers the dashboard's transport).
+    const root = document.documentElement;
+    const overflow = root.style.overflow;
+    root.style.overflow = "hidden";
+    document.body.classList.add("stage-maximized");
+    return () => {
+      window.removeEventListener("resize", place);
+      root.style.overflow = overflow;
+      document.body.classList.remove("stage-maximized");
+    };
+  });
 
   /** Publishes the fixtures' pixel positions on the canvas when it is used
    *  for choosing or selecting, so a test can click a fixture without re-deriving the
@@ -1403,7 +1445,12 @@
 
 <svelte:window onkeydown={onWindowKeydown} />
 
-<section class="card stage-card" class:stage-card--geometry={geometryMode}>
+<section
+  class="card stage-card"
+  class:stage-card--geometry={geometryMode}
+  class:stage-card--max={maximized}
+  style:--stage-max-top={maximized ? `${navBottom}px` : undefined}
+>
   <header class="stage-card__head">
     <div>
       <div class="overline">{$t("stage.title")}</div>
@@ -1479,6 +1526,49 @@
             onclick={() => setView("3d")}>{$t("stage.view3d")}</button
           >
         </div>
+      {/if}
+      {#if canMaximize}
+        <button
+          class="btn btn-sm stage-card__max"
+          type="button"
+          aria-pressed={maximized}
+          aria-label={$t(maximized ? "stage.restore" : "stage.maximize")}
+          title={$t(maximized ? "stage.restore" : "stage.maximize")}
+          data-testid="stage-maximize"
+          onclick={() => (maximized = !maximized)}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            {#if maximized}
+              <polyline points="4 14 10 14 10 20" /><polyline
+                points="20 10 14 10 14 4"
+              /><line x1="14" y1="10" x2="21" y2="3" /><line
+                x1="3"
+                y1="21"
+                x2="10"
+                y2="14"
+              />
+            {:else}
+              <polyline points="15 3 21 3 21 9" /><polyline
+                points="9 21 3 21 3 15"
+              /><line x1="21" y1="3" x2="14" y2="10" /><line
+                x1="3"
+                y1="21"
+                x2="10"
+                y2="14"
+              />
+            {/if}
+          </svg>
+        </button>
       {/if}
       {#if !editable}
         <a href="#/lighting/venues" class="btn btn-sm stage-card__edit">
@@ -1804,6 +1894,44 @@
   .stage-card--geometry .stage-card__viewport {
     height: 45vh;
     max-height: 560px;
+  }
+  /* Maximized: the card over the page, from the navigation down. The
+     playback bar floats over its foot, so the foot is left clear. */
+  .stage-card--max {
+    position: fixed;
+    top: var(--stage-max-top, 56px);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 50;
+    margin: 0;
+    min-height: 0;
+    border-radius: 0;
+    overflow-y: auto;
+    padding-bottom: 88px;
+  }
+  .stage-card--max .stage-card__viewport,
+  .stage-card--max.stage-card--geometry .stage-card__viewport {
+    max-width: none;
+    height: auto;
+    max-height: none;
+  }
+  .stage-card__max {
+    display: inline-flex;
+    align-items: center;
+  }
+  @media (min-width: 1000px) {
+    /* Beside the inspector the picture takes the height there is, and the
+       inspector scrolls in its own column. */
+    .stage-card--max .stage-card__work--inspect {
+      flex: 1;
+      min-height: 0;
+      grid-template-rows: minmax(0, 1fr);
+      align-items: stretch;
+    }
+    .stage-card--max .stage-card__work--inspect :global(.inspector) {
+      overflow-y: auto;
+    }
   }
   .stage-card__no-venue {
     margin: 16px 20px;

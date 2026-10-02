@@ -108,6 +108,8 @@
   "stage.viewLabel": "Stage view",
   "stage.viewPlot": "Plot",
   "stage.view3d": "3D",
+  "stage.maximize": "Maximize",
+  "stage.restore": "Restore",
   "stage.hint3d": "Drag to orbit · click a fixture to select it",
   "stage.hint3dLive": "Drag to orbit",
   "stage.reloaded": "Reloaded",
