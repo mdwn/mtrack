@@ -444,11 +444,10 @@ pub(super) async fn validate_lighting(
 // Fixture Type & Venue CRUD endpoints
 // ---------------------------------------------------------------------------
 
-/// Default directory for fixture type definitions, relative to project root.
-pub(super) const DEFAULT_FIXTURE_TYPES_DIR: &str = "lighting/fixture_types";
-
-/// Default directory for venue definitions, relative to project root.
-pub(super) const DEFAULT_VENUES_DIR: &str = "lighting/venues";
+/// The project's default lighting directories, the engine's own
+/// (`config::lighting`): a request's `?dir=` is the running profile's
+/// configured directory, and without one the engine reads these.
+pub(super) use crate::config::lighting::{DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR};
 
 /// Fixture type files: `.fixture` (rich channels, GDTF records) and the v1
 /// `.light`, loaded as peers — the same pair the lighting system reads.
@@ -723,10 +722,7 @@ pub(super) fn resolve_lighting_dir(
 
     let root = VerifiedRoot::new(&project_root(config_path)?).map_err(|e| e.into_response())?;
 
-    let relative = match override_dir {
-        Some(d) if !d.is_empty() => d,
-        _ => default,
-    };
+    let relative = crate::config::lighting::resolve_dir(override_dir, default);
 
     SafePath::validate_relative(relative, &root).map_err(|e| e.into_response())
 }
@@ -1663,7 +1659,8 @@ pub(super) async fn put_fixture_type(
                 Json(json!({"error": format!(
                     "fixture type \"{}\" uses rich channel syntax (fine, range, functions), which \
                      belongs in a .fixture file; this editor writes .light files — save it as \
-                     lighting/fixture_types/{}.fixture by hand or through `mtrack import-gdtf`",
+                     {}.fixture in the fixture types directory by hand, or through \
+                     `mtrack import-gdtf`",
                     rich.name(),
                     stem
                 )})),
@@ -2627,10 +2624,7 @@ pub(super) async fn venue_error_after_save(
             return None;
         }
         let root = canonical_project_root(&project_root(&config_path).ok()?).ok()?;
-        let types = lighting
-            .directories()
-            .and_then(|d| d.fixture_types())
-            .unwrap_or(DEFAULT_FIXTURE_TYPES_DIR);
+        let types = lighting.fixture_types_dir();
         let system = system_from_files(&root, &root.join(types), &venues_dir).ok()?;
         system.venue_problem(&venue)
     })
@@ -6076,6 +6070,106 @@ show "test" {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// The engine and the web layer find a project's lighting files in the
+    /// same directories for every shape of config. The web UI sends a
+    /// profile's configured directory as `?dir=` and nothing otherwise; the
+    /// engine resolves through `config::lighting`. A first-run project (no
+    /// `directories`) used to have the UI save where the engine never read.
+    #[tokio::test]
+    async fn the_engine_and_the_web_layer_resolve_the_same_directories() {
+        use crate::config::lighting::{Directories, Lighting};
+        /// `None`: no lighting section; `Some(None)`: no `directories`;
+        /// else (fixture types, venues) as configured.
+        type Section = Option<Option<(Option<&'static str>, Option<&'static str>)>>;
+        let cases: [(&str, Section); 5] = [
+            ("no lighting section", None),
+            ("no directories", Some(None)),
+            ("types set", Some(Some((Some("my/types"), None)))),
+            ("venues set", Some(Some((None, Some("my/venues"))))),
+            ("both set", Some(Some((Some("t2"), Some("v2"))))),
+        ];
+        for (case, lighting) in cases {
+            let (state, dir) = test_state();
+            let root = dir.path();
+            let section = lighting.map(|dirs| {
+                Lighting::new(
+                    Some("v".to_string()),
+                    None,
+                    None,
+                    dirs.map(|(t, v)| {
+                        Directories::new(t.map(str::to_string), v.map(str::to_string))
+                    }),
+                )
+            });
+            // Where the shared resolution says the files are.
+            let types = crate::config::lighting::fixture_types_dir(section.as_ref());
+            let venues = crate::config::lighting::venues_dir(section.as_ref());
+            std::fs::create_dir_all(root.join(types)).unwrap();
+            std::fs::create_dir_all(root.join(venues)).unwrap();
+            std::fs::write(
+                root.join(types).join("par.light"),
+                sample_fixture_type_dsl("Par"),
+            )
+            .unwrap();
+            std::fs::write(
+                root.join(venues).join("v.light"),
+                "venue \"v\" {\n  fixture \"A\" Par @ 1:1\n}\n",
+            )
+            .unwrap();
+
+            // The engine (a profile with a lighting section) loads them.
+            if let Some(config) = &section {
+                let mut system = lighting::system::LightingSystem::new();
+                system.load(config, root).unwrap();
+                assert_eq!(
+                    system.get_current_venue_fixtures().map(|f| f.len()).ok(),
+                    Some(1),
+                    "{case}: the engine finds the venue and its type"
+                );
+            }
+
+            // The web layer, given what the UI sends for this profile.
+            let configured = section.as_ref().and_then(|l| l.directories());
+            let mut query = Vec::new();
+            if let Some(v) = configured.and_then(|d| d.venues()) {
+                query.push(format!("dir={v}"));
+            }
+            if let Some(t) = configured.and_then(|d| d.fixture_types()) {
+                query.push(format!("fixture_types_dir={t}"));
+            }
+            let (status, parsed) = fixture_type_request(
+                state.clone(),
+                "GET",
+                format!("/lighting/venues/v/patch?{}", query.join("&")),
+                "text/plain",
+                Body::empty(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{case}: {parsed}");
+            assert!(
+                parsed["spans"][0]["footprint"].as_u64().is_some(),
+                "{case}: the web layer finds the venue and its type: {parsed}"
+            );
+            let types_query = configured
+                .and_then(|d| d.fixture_types())
+                .map(|t| format!("?dir={t}"))
+                .unwrap_or_default();
+            let (status, parsed) = fixture_type_request(
+                state,
+                "GET",
+                format!("/lighting/fixture-types{types_query}"),
+                "text/plain",
+                Body::empty(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{case}: {parsed}");
+            assert!(
+                parsed.to_string().contains("\"Par\""),
+                "{case}: the web layer lists the type: {parsed}"
+            );
+        }
     }
 
     #[tokio::test]

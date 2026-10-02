@@ -66,8 +66,8 @@ impl MvrExportOptions {
         MvrExportOptions {
             venue: venue.to_string(),
             output: None,
-            fixture_types_dir: "lighting/fixture_types".to_string(),
-            venues_dir: "lighting/venues".to_string(),
+            fixture_types_dir: crate::config::lighting::DEFAULT_FIXTURE_TYPES_DIR.to_string(),
+            venues_dir: crate::config::lighting::DEFAULT_VENUES_DIR.to_string(),
             layers_from_tags: false,
         }
     }

@@ -122,8 +122,8 @@ impl Default for MvrImportOptions {
             name: None,
             origin_mm: None,
             keep: MvrKeep::default(),
-            fixture_types_dir: "lighting/fixture_types".to_string(),
-            venues_dir: "lighting/venues".to_string(),
+            fixture_types_dir: crate::config::lighting::DEFAULT_FIXTURE_TYPES_DIR.to_string(),
+            venues_dir: crate::config::lighting::DEFAULT_VENUES_DIR.to_string(),
         }
     }
 }

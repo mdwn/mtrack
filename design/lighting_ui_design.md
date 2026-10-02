@@ -851,3 +851,50 @@ rotation needs to be seen (a tilt is invisible from above).
   (labels are on up to 40 fixtures), the mode badge, and the page's
   subtitle; its stats (generic fixtures, scenery drawn and skipped) moved to
   a line under the picture.
+
+## 14. As built: one answer to "where are the lighting files" (2026-10-02)
+
+Found on a freshly imaged Raspberry Pi: a profile with
+`dmx.lighting.current_venue: rig` and no `lighting.directories` reported
+`Venue 'rig' not found`, though `lighting/venues/rig.light` was there. The
+engine (`LightingSystem::load`) read fixture types and venues only from
+directories a profile named; the web API and UI treated `directories` as an
+override of defaults and saved to `lighting/fixture_types` and
+`lighting/venues` when none was named. Everything a new install made in the
+Lighting area was invisible to the engine.
+
+- **One definition.** `config::lighting` holds `DEFAULT_FIXTURE_TYPES_DIR`,
+  `DEFAULT_VENUES_DIR` and `resolve_dir` (configured when set and non-empty,
+  else the default), with `Lighting::fixture_types_dir()` / `venues_dir()`
+  and free `fixture_types_dir(Option<&Lighting>)` / `venues_dir(..)` for a
+  config with no lighting section. Each directory resolves on its own.
+- **Who uses it.** The engine's load (and so `reload_venues`,
+  `reload_fixture_types` and the hardware reload, which reuse the paths the
+  load resolved); the web API's `resolve_lighting_dir` (its `?dir=` is the
+  running profile's configured directory, as the UI sends it, and its old
+  constants are now a re-export) and its no-engine `venue_error` fallback;
+  MCP's file tools, `import_gdtf`, `import_mvr`, `inspect_mvr` and
+  `export_mvr` (which had hard-coded the defaults, ignoring a profile's
+  directories, or refused outright without a `directories:` block); the CLI
+  import/export flags' defaults; `MvrImportOptions::default()` and
+  `MvrExportOptions::for_venue`; `mtrack migrate` (which now writes the
+  migrated venue into the resolved venues directory instead of always
+  `lighting/venues`, and no longer adds a `directories.venues` setting). The
+  Svelte side already sent only a configured directory and fell back to the
+  server's defaults; the mock server agrees.
+- **Missing directories.** A default that is not there is empty, silently,
+  as a configured one that is not there always was (it still becomes the
+  system's venues directory, and the current venue is the one not found).
+- **`lighting/library`** was already read from the project root whatever the
+  config said; with the types directory now always known, its "already
+  recorded" check always has the type files to compare against.
+- **The journeys masked it.** The harness's config named both directories.
+  It now also offers `FIRST_RUN_CONFIG` (DMX on the null client, no lighting
+  section) and makes no lighting directories for it;
+  `e2e/journeys/first-run.spec.ts` imports a GDTF, makes a venue, makes it
+  current on the Groups page and checks the engine drives it, before and
+  after a restart. It fails on the old loader with `lighting_venue: failed`.
+- **Agreement test.** `the_engine_and_the_web_layer_resolve_the_same_directories`
+  runs over no lighting section, no directories, each one set, and both:
+  files placed where `config::lighting` says are loaded by the engine and
+  found by the web API given what the UI sends.

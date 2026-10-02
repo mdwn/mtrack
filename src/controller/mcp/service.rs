@@ -1867,14 +1867,10 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve_in_project(&args.path)?;
         let project = crate::util::project_dir_of(self.config_store()?.path());
+        let (types_dir, _) = self.project_lighting_dirs().await?;
         let report = tokio::task::spawn_blocking(move || {
-            crate::lighting::import::import_gdtf(
-                &path,
-                args.name.as_deref(),
-                &project,
-                "lighting/fixture_types",
-            )
-            .map_err(|e| e.to_string())
+            crate::lighting::import::import_gdtf(&path, args.name.as_deref(), &project, &types_dir)
+                .map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| McpError::internal_error(format!("import task failed: {e}"), None))?
@@ -1884,12 +1880,30 @@ impl McpServer {
         })?))
     }
 
-    fn mvr_options(&self, args: &ImportMvrArgs) -> crate::lighting::import::MvrImportOptions {
-        crate::lighting::import::MvrImportOptions {
+    async fn mvr_options(
+        &self,
+        args: &ImportMvrArgs,
+    ) -> Result<crate::lighting::import::MvrImportOptions, McpError> {
+        let (fixture_types_dir, venues_dir) = self.project_lighting_dirs().await?;
+        Ok(crate::lighting::import::MvrImportOptions {
             name: args.name.clone(),
             origin_mm: args.origin_mm,
+            fixture_types_dir,
+            venues_dir,
             ..crate::lighting::import::MvrImportOptions::default()
-        }
+        })
+    }
+
+    /// The project's fixture types and venues directories, relative to the
+    /// project, as the engine reads them: the active profile's configured
+    /// ones, else the defaults.
+    async fn project_lighting_dirs(&self) -> Result<(String, String), McpError> {
+        let cfg = self.config_store()?.read_config().await;
+        let lighting = cfg.lighting_from_profiles();
+        Ok((
+            crate::config::lighting::fixture_types_dir(lighting).to_string(),
+            crate::config::lighting::venues_dir(lighting).to_string(),
+        ))
     }
 
     #[tool(description = "Resolve an MVR venue archive against the project and \
@@ -1905,7 +1919,7 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve_in_project(&args.path)?;
         let project = crate::util::project_dir_of(self.config_store()?.path());
-        let options = self.mvr_options(&args);
+        let options = self.mvr_options(&args).await?;
         let plan = tokio::task::spawn_blocking(move || {
             crate::lighting::import::inspect_mvr(&path, &options, &project)
                 .map_err(|e| e.to_string())
@@ -1934,7 +1948,7 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve_in_project(&args.path)?;
         let project = crate::util::project_dir_of(self.config_store()?.path());
-        let options = self.mvr_options(&args);
+        let options = self.mvr_options(&args).await?;
         let report = tokio::task::spawn_blocking(move || {
             crate::lighting::import::import_mvr(&path, &options, &project)
                 .map_err(|e| e.to_string())
@@ -1959,9 +1973,12 @@ impl McpServer {
         Parameters(args): Parameters<ExportMvrArgs>,
     ) -> Result<CallToolResult, McpError> {
         let project = crate::util::project_dir_of(self.config_store()?.path());
+        let (fixture_types_dir, venues_dir) = self.project_lighting_dirs().await?;
         let options = crate::lighting::export::MvrExportOptions {
             output: args.output.clone(),
             layers_from_tags: args.layers_from_tags.unwrap_or(false),
+            fixture_types_dir,
+            venues_dir,
             ..crate::lighting::export::MvrExportOptions::for_venue(&args.venue)
         };
         let report = tokio::task::spawn_blocking(move || {
@@ -3467,8 +3484,9 @@ impl McpServer {
         crate::webui::safe_path::VerifiedRoot::new(created.as_path()).map_err(safepath_err)
     }
 
-    /// Resolves the configured lighting subdirectory (venues or fixture types)
-    /// to an absolute path. The directory is created if it doesn't yet exist
+    /// Resolves the project's lighting subdirectory (venues or fixture types:
+    /// the profile's configured one, else the default the engine reads) to
+    /// an absolute path. The directory is created if it doesn't yet exist
     /// *and* lies inside the project directory, so write tools work against
     /// fresh configs without making directories wherever a config points.
     pub(crate) async fn resolve_lighting_dir(
@@ -3478,28 +3496,11 @@ impl McpServer {
         let store = self.config_store()?;
         let config_path = store.path().to_path_buf();
         let cfg = store.read_config().await;
-        let lighting = cfg.lighting_from_profiles().ok_or_else(|| {
-            McpError::invalid_params("no lighting configuration in the active profile", None)
-        })?;
-        let dirs = lighting.directories().ok_or_else(|| {
-            McpError::invalid_params(
-                "no lighting `directories:` configured (expected `fixture_types`/`venues`)",
-                None,
-            )
-        })?;
+        let lighting = cfg.lighting_from_profiles();
         let rel = match kind {
-            LightingDirKind::Venues => dirs.venues(),
-            LightingDirKind::FixtureTypes => dirs.fixture_types(),
-        }
-        .ok_or_else(|| {
-            McpError::invalid_params(
-                format!(
-                    "no `{}` directory configured under `lighting.directories`",
-                    kind.field_name()
-                ),
-                None,
-            )
-        })?;
+            LightingDirKind::Venues => crate::config::lighting::venues_dir(lighting),
+            LightingDirKind::FixtureTypes => crate::config::lighting::fixture_types_dir(lighting),
+        };
         let rel_path = std::path::PathBuf::from(rel);
         let dir = if rel_path.is_absolute() {
             rel_path

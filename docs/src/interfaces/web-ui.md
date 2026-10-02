@@ -520,8 +520,10 @@ shared link land where they say, and a page's tab always returns to its list.
 Two kinds of state live here, and they are stored differently.
 
 **Project files** — fixture types and venues — are the same whichever hardware profile is
-running. Fixture Types and Venues edit them directly. The directories they are read from come
-from the running profile's lighting settings, or the defaults if it sets none.
+running. Fixture Types and Venues edit them directly, in `lighting/fixture_types/` and
+`lighting/venues/` unless the running profile's lighting settings move them (`directories`).
+The engine reads the same places, so a new project needs no directories setting: what you make
+here is what the show uses ([Where the lighting files live](../lighting/configuration.md#where-the-lighting-files-live)).
 
 **Profile settings** — logical groups and the current venue — belong to one hardware profile,
 because the rig at home and the rig on tour select different venues. The Groups page edits them
