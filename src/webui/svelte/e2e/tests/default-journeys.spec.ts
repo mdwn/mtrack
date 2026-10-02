@@ -146,6 +146,7 @@ function richVenue(name: string) {
         tags: ["front", "wash"],
         position: [-2, 3.5, 4.2],
         rotation: [0, 0, 180],
+        beam_angle: 60,
         mode: "Mover 16bit",
       },
       Par: {
@@ -156,6 +157,7 @@ function richVenue(name: string) {
         tags: [],
         position: null,
         rotation: null,
+        beam_angle: null,
       },
     },
     focus_points: { drummer: [0, 2.8, 1.4] },
