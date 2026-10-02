@@ -129,11 +129,14 @@
     const newH = canvasEl.clientHeight;
     // Setting a canvas's size blanks it, even to the size it already has;
     // only resize the bitmap when it has to be, and draw on it at once.
-    const resized =
-      canvasEl.width !== newW * dpr || canvasEl.height !== newH * dpr;
+    // The bitmap's size is a whole number of pixels (the canvas truncates
+    // what it is given), so compare against what it will hold.
+    const bitmapW = Math.floor(newW * dpr);
+    const bitmapH = Math.floor(newH * dpr);
+    const resized = canvasEl.width !== bitmapW || canvasEl.height !== bitmapH;
     if (resized) {
-      canvasEl.width = newW * dpr;
-      canvasEl.height = newH * dpr;
+      canvasEl.width = bitmapW;
+      canvasEl.height = bitmapH;
     }
     const c = canvasEl.getContext("2d");
     if (c) {
