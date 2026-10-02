@@ -904,6 +904,9 @@ pub fn build_metadata_json(
                     "type": fi.fixture_type,
                     "position": fi.position,
                     "rotation": fi.rotation,
+                    // Degrees the venue says this unit really throws, or
+                    // null for its type's own; a drawing hint only.
+                    "beam_angle": fi.beam_angle,
                     // The rig model's path under /api/lighting/assets/,
                     // when the type has one; the 3D view draws a generic
                     // body without.
@@ -1871,13 +1874,15 @@ metronome: {}
     #[test]
     fn build_metadata_json_carries_stage_geometry() {
         let fixture_dsl = "fixture_type \"T\" {\n  channels: 3\n  channel_map: {\"red\": 1, \"green\": 2, \"blue\": 3}\n}\n";
-        let venue_dsl = "venue \"v\" {\n  fixture \"A\" T @ 1:1 tags [\"front\"] position (-2, 3.5, 4.2) rotation (0, 0, 180)\n  fixture \"B\" T @ 1:5\n  focus \"drummer\" (0, 2.8, 1.4)\n}\n";
+        let venue_dsl = "venue \"v\" {\n  fixture \"A\" T @ 1:1 tags [\"front\"] position (-2, 3.5, 4.2) rotation (0, 0, 180) beam_angle 60\n  fixture \"B\" T @ 1:5\n  focus \"drummer\" (0, 2.8, 1.4)\n}\n";
         let (system, _dir) = create_test_lighting_system(fixture_dsl, venue_dsl, "v");
         let json = build_metadata_json(Some(&Arc::new(parking_lot::Mutex::new(system))));
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["fixtures"]["A"]["position"], json!([-2.0, 3.5, 4.2]));
         assert_eq!(value["fixtures"]["A"]["rotation"], json!([0.0, 0.0, 180.0]));
         assert!(value["fixtures"]["B"]["position"].is_null());
+        assert_eq!(value["fixtures"]["A"]["beam_angle"], json!(60.0));
+        assert!(value["fixtures"]["B"]["beam_angle"].is_null());
         assert!(
             value["fixtures"]["A"]["rig"].is_null(),
             "a native type has no rig"

@@ -45,6 +45,16 @@ import {
   type SceneryModel,
 } from "./rig";
 import { fittedMesh } from "./fit";
+import {
+  beamSpread,
+  DECK_FRAGMENT,
+  DECK_VERTEX,
+  LIGHT_FLOATS,
+  MAX_CONE_DEG,
+  MAX_DECK_LIGHTS,
+  packDeckLights,
+  type DeckLight,
+} from "./decklight";
 import type {
   CellChannels,
   FixtureChannels,
@@ -101,7 +111,10 @@ interface BeamActor {
   cone: THREE.Mesh;
   material: THREE.MeshBasicMaterial;
   style: BeamStyle;
+  /** The beam and field angles drawn, degrees: the rig's, or the venue
+   *  fixture's own beam angle. */
   angle: number;
+  field: number;
 }
 
 interface FixtureActor {
@@ -294,6 +307,28 @@ export class StageScene {
   private focusOwned: { dispose(): void }[] = [];
   private color = new THREE.Color();
   private dim = new THREE.Color(0x223);
+  /** The lit beams, packed for the deck's shader (see decklight.ts). */
+  private deckLights = new Float32Array(MAX_DECK_LIGHTS * LIGHT_FLOATS);
+  private deckTexture = new THREE.DataTexture(
+    this.deckLights,
+    LIGHT_FLOATS / 4,
+    MAX_DECK_LIGHTS,
+    THREE.RGBAFormat,
+    THREE.FloatType,
+  );
+  /** The light the beams put on the deck, added over its own colour. */
+  private deckLight = new THREE.ShaderMaterial({
+    uniforms: {
+      uLights: { value: this.deckTexture },
+      uCount: { value: 0 },
+    },
+    vertexShader: DECK_VERTEX,
+    fragmentShader: DECK_FRAGMENT,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite: false,
+  });
+  private deckOwned: { dispose(): void }[] = [];
   private stats: SceneStats = {
     fixtures: 0,
     placed: 0,
@@ -475,7 +510,13 @@ export class StageScene {
         const rigDir = meta.rig
           ? meta.rig.slice(0, meta.rig.lastIndexOf("/") + 1)
           : "";
-        const actor = await this.buildActor(name, model, rigDir, stats);
+        const actor = await this.buildActor(
+          name,
+          model,
+          rigDir,
+          stats,
+          meta.beam_angle,
+        );
         if (generation !== this.generation) {
           // Built for a venue that is gone: free it rather than keep it.
           this.dropActor(actor);
@@ -700,6 +741,7 @@ export class StageScene {
     rig: RigModel,
     rigDir: string,
     stats: SceneStats,
+    beamAngle?: number | null,
   ): Promise<FixtureActor> {
     const root = new THREE.Group();
     root.name = name;
@@ -802,12 +844,14 @@ export class StageScene {
         cone.renderOrder = 5;
         spins[b.node].add(cone);
         owned.push(material);
+        const spread = beamSpread(b, beamAngle);
         const actor: BeamActor = {
           node: spins[b.node],
           cone,
           material,
           style: beamStyle(b.kind),
-          angle: b.angle_deg,
+          angle: spread.beamDeg,
+          field: spread.fieldDeg,
         };
         const cell = cellOf[b.node];
         if (cell !== null) {
@@ -866,16 +910,26 @@ export class StageScene {
 
   private buildDeck() {
     this.deck.clear();
+    for (const owned of this.deckOwned) owned.dispose();
     const [minX, maxX, minY, maxY] = this.extent;
     const width = maxX - minX;
     const depth = maxY - minY;
     const midY = (minY + maxY) / 2;
-    const deck = new THREE.Mesh(
-      new THREE.PlaneGeometry(width, depth),
-      new THREE.MeshStandardMaterial({ color: 0x1a2029, roughness: 1 }),
-    );
+    const plane = new THREE.PlaneGeometry(width, depth);
+    const surface = new THREE.MeshStandardMaterial({
+      color: 0x1a2029,
+      roughness: 1,
+    });
+    this.deckOwned = [plane, surface];
+    const deck = new THREE.Mesh(plane, surface);
     deck.position.set(0, midY, -0.005);
     this.deck.add(deck);
+    // The beams' light, drawn over the deck on the same plane (the same
+    // geometry at the same place has the same depth, so it never fights).
+    const lit = new THREE.Mesh(plane, this.deckLight);
+    lit.position.copy(deck.position);
+    lit.renderOrder = 1;
+    this.deck.add(lit);
     const grid = new THREE.GridHelper(
       Math.max(width, depth),
       Math.max(width, depth),
@@ -905,6 +959,7 @@ export class StageScene {
     const direction = new THREE.Vector3();
     const rotation = new THREE.Quaternion();
     const { color, dim } = this;
+    const lights: DeckLight[] = [];
     for (const actor of this.actors.values()) {
       const pose = this.poses[actor.name];
       const { panZ, tiltX } = poseRotations(
@@ -965,7 +1020,9 @@ export class StageScene {
           ).length,
           this.beamCap ?? Infinity,
         );
-        const radius = length * Math.tan((beam.angle * Math.PI) / 360);
+        const radius =
+          length *
+          Math.tan((Math.min(beam.angle, MAX_CONE_DEG) * Math.PI) / 360);
         beam.cone.scale.set(radius, radius, length);
         // This beam's own cell, when a per-cell effect drives it.
         let beamLook_ = look;
@@ -995,8 +1052,24 @@ export class StageScene {
           ? (beam.style.floor + beam.style.gain * beamLook_.intensity) * share
           : 0.03 * share;
         beam.cone.visible = actor.placed || beamLit;
+        // A fixture waiting in the tray is not on the stage to light it.
+        if (beamLit && actor.placed && this.deck.visible) {
+          lights.push({
+            origin: [origin.x, origin.y, origin.z],
+            aim: [direction.x, direction.y, direction.z],
+            beamDeg: beam.angle,
+            fieldDeg: beam.field,
+            rgb: beamLook_.rgb,
+            share: 1 / actor.beams.length,
+          });
+        }
       }
     }
+    this.deckLight.uniforms.uCount.value = packDeckLights(
+      lights,
+      this.deckLights,
+    );
+    this.deckTexture.needsUpdate = true;
     for (const [name, helper] of this.selectionBoxes) {
       const actor = this.actors.get(name);
       if (!actor) continue;
@@ -1016,6 +1089,11 @@ export class StageScene {
     return this.frame;
   }
 
+  /** How many beams lit the deck in the last frame. */
+  get deckLightCount(): number {
+    return this.deckLight.uniforms.uCount.value as number;
+  }
+
   get lastStats(): SceneStats {
     return this.stats;
   }
@@ -1027,6 +1105,9 @@ export class StageScene {
     for (const owned of this.sceneryOwned) owned.dispose();
     for (const owned of this.focusOwned) owned.dispose();
     for (const geometry of this.primitives.values()) geometry.dispose();
+    for (const owned of this.deckOwned) owned.dispose();
+    this.deckLight.dispose();
+    this.deckTexture.dispose();
     this.cache.dispose();
     this.controls.dispose();
     this.renderer.dispose();

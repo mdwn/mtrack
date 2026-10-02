@@ -151,6 +151,8 @@
   interface Change {
     position?: Vec3;
     rotation?: Vec3;
+    /** A number sets the override; null removes it. */
+    beam_angle?: number | null;
   }
 
   /** The plan draws a fixed fixture's beam from the pose the engine pushes;
@@ -195,6 +197,8 @@
           fixture.rotation = change.rotation;
           rotated.push(name);
         }
+        if (change.beam_angle !== undefined)
+          fixture.beam_angle = change.beam_angle;
       }
     });
     if (ok) {
@@ -327,6 +331,40 @@
   function setRotation(rotation: Vec3) {
     void apply(() => ({
       changes: Object.fromEntries(picked.map((n) => [n, { rotation }])),
+    }));
+  }
+
+  // --- Beam angle: the venue's override of the type's angle
+
+  /** The beam angles of the selection (null is none), or undefined where
+   *  they differ. */
+  let sharedBeam = $derived.by(() => {
+    const angles = picked.map((n) => plotFixtures[n]?.beam_angle ?? null);
+    if (angles.length === 0) return undefined;
+    return angles.every((a) => a === angles[0]) ? angles[0] : undefined;
+  });
+  /** The text being typed; it follows the selection until edited. */
+  let beamDraft = $derived(sharedBeam == null ? "" : String(sharedBeam));
+  /** Typed in since the selection or the file last changed, so a mixed
+   *  selection can be cleared by emptying the field. */
+  let beamEdited = $state(false);
+  $effect(() => {
+    void picked;
+    void sharedBeam;
+    beamEdited = false;
+  });
+  /** Empty removes the override; otherwise 0 < angle <= 180. */
+  let beamValue = $derived.by<number | null | undefined>(() => {
+    if (beamDraft.trim() === "") return null;
+    const v = Number(beamDraft);
+    return Number.isFinite(v) && v > 0 && v <= 180 ? v : undefined;
+  });
+
+  function setBeamAngle() {
+    const beam_angle = beamValue;
+    if (beam_angle === undefined) return;
+    void apply(() => ({
+      changes: Object.fromEntries(picked.map((n) => [n, { beam_angle }])),
     }));
   }
 
@@ -1045,6 +1083,49 @@
           onclick={() => setRotation(rotationDraft as Vec3)}
         >
           {$t("venues.inspector.setRotation")}
+        </button>
+      </fieldset>
+
+      <fieldset class="inspector__group">
+        <legend>{$t("venues.inspector.beamAngle")}</legend>
+        <div class="field">
+          <label for="insp-beam-angle"
+            >{$t("venues.inspector.beamAngleLabel")}</label
+          >
+          <input
+            id="insp-beam-angle"
+            class="input"
+            type="number"
+            step="any"
+            data-testid="inspector-beam-angle"
+            aria-invalid={beamValue === undefined}
+            placeholder={sharedBeam === undefined
+              ? $t("venues.inspector.mixed")
+              : ""}
+            value={beamDraft}
+            oninput={(e) => {
+              beamDraft = e.currentTarget.value;
+              beamEdited = true;
+            }}
+          />
+        </div>
+        <p class="inspector__hint">{$t("venues.inspector.beamAngleHint")}</p>
+        {#if beamValue === undefined}
+          <p
+            class="inspector__status inspector__status--error"
+            role="alert"
+            data-testid="inspector-beam-angle-error"
+          >
+            {$t("venues.inspector.beamAngleRange")}
+          </p>
+        {/if}
+        <button
+          class="btn btn-sm"
+          type="button"
+          disabled={saving || !beamEdited || beamValue === undefined}
+          onclick={setBeamAngle}
+        >
+          {$t("venues.inspector.setBeamAngle")}
         </button>
       </fieldset>
     </section>

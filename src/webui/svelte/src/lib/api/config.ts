@@ -354,6 +354,10 @@ export interface FixtureData {
   position?: Vec3 | null;
   /** Mounting rotation in degrees about X, Y, Z. */
   rotation?: Vec3 | null;
+  /** Beam angle in degrees when a diffuser or filter makes the fixture wider
+   *  than its type says; absent or null is the type's own. Drawing only, and
+   *  must survive every save untouched. */
+  beam_angle?: number | null;
   /** The fixture's own GDTF mode (`mode "…"` on its line); absent or null
    *  is its type's default. Must survive every save untouched. */
   mode?: string | null;
@@ -1064,6 +1068,7 @@ export async function saveVenue(
       tags: string[];
       position?: Vec3 | null;
       rotation?: Vec3 | null;
+      beam_angle?: number | null;
       mode?: string | null;
     }[];
     focus_points?: Record<string, Vec3>;

@@ -1348,3 +1348,60 @@ mtrack file works. Rejected for that.
 **No record at all.** The name venues use and a mover's speed limits have to live
 somewhere the user can change them; a file beside the others is where mtrack keeps such
 things. It exists only when there is something in it.
+
+## 23. A fixture's own beam angle, and light on the deck (as built 2026-10-02)
+
+### 23.1 The finding
+
+PixelBricks on the floor, aimed up at the band, with a diffuser fitted. On the real stage
+the floor in front of them takes their colour; in 3D each was a 13° cone into the air and
+the deck stayed dark, with a caveat saying their beams "miss the deck". Two things were
+wrong. The GDTF describes the bare lens, and nothing said a unit had a diffuser on it. And
+the scene asked where a beam's *centre* lands, when a wide beam from floor height puts its
+whole lower half on the floor without its centre ever meeting it.
+
+### 23.2 `beam_angle` on the venue fixture
+
+    fixture "Brick1" Astera-PixelBrick mode "9: RGBWS" @ 1:29 position (1, 0.5, 0.1) rotation (120, 0, 0) beam_angle 60
+
+Degrees, greater than 0 and at most 180; absent is the type's own angle. It is on the venue
+fixture, not the fixture type, because a diffuser is fitted to a unit: the same type can be
+in a rig with and without one. It is a drawing hint and nothing else — the engine carries
+it to the web UI (metadata, the venue's JSON, `/scene`) and reads it nowhere. Like position
+and rotation it makes the venue a `.venue` file. MVR has no place for it: export does not
+write it, and a re-import keeps it on every fixture that survives, without listing it among
+the hand edits to choose (it cannot conflict with the file). The inspector on the Venues
+page edits it.
+
+The field angle follows: the type's own field-to-beam proportion when its GDTF states both
+(trusted up to 2), else 1.6, capped at a half-space. A cone in the air is drawn no wider
+than 120°.
+
+### 23.3 Light on the deck
+
+The cones stay: they are the beam in the air (haze), and they are how a mover's aim reads.
+The deck gains what the same beams do to it (`lib/stage/decklight.ts`). At each point of
+the deck, for each lit beam: full inside the beam angle, fading to nothing at the field
+angle; outside that a 2% spill (lens scatter, the housing's glow), the same for any beam;
+times the cosine of incidence, over distance squared (no nearer than 0.3 m). It is one
+shader on the deck's plane summing up to 64 beams from a float texture (the strongest are
+kept past that), added over the deck's colour — real lighting for the one surface that
+matters, with no per-light cost anywhere else. The formula is also plain TypeScript, tested
+as numbers.
+
+Brightness is relative, not photometric. Every fixture is taken to put out the same light,
+so the same fixture through a wider beam is thinner and a narrow beam is brighter (beams
+under 8° count as 8°); a fixture's lenses share its light. GDTF's `LuminousFlux` is not
+used: too many files leave it at the default. The sum is compressed on its brightest
+channel (level ÷ (level + 0.3)), as an eye adapts, so a strong light saturates without
+changing hue. The unit is a 25° fixture straight down from 4 m.
+
+### 23.4 Not done
+
+- **Bounce.** Light coming back off the band, the backline and a backdrop is not modelled.
+  The spill term tints the whole deck faintly, which reads a little like it and is not it.
+- **Scenery, truss and the band are not lit**, and nothing casts a shadow. Real spot lights
+  would do both and cost per light per pixel on every surface; shadows a render pass each.
+- **The "beams miss the deck" caveat is gone.** A beam aimed up is usually on purpose, and
+  with the deck lit by the cone rather than the centre ray, "misses" no longer describes
+  anything.

@@ -517,6 +517,22 @@ Position and rotation are optional per fixture, and a venue without them
 still plays; it just cannot resolve positional effects or draw a meaningful
 stage plot.
 
+A fixture line may also state `beam_angle`, the beam angle in degrees that unit
+really has on stage, for when a diffuser or filter fitted to it makes it wider
+than its fixture type says:
+
+```light
+  fixture "Brick1" Astera-PixelBrick mode "9: RGBWS" @ 1:29 tags ["wash"] position (1, 0.5, 0.1) rotation (120, 0, 0) beam_angle 60
+```
+
+It is a plain number, greater than 0 and at most 180, and it follows `tags`,
+`position` and `rotation` in any order. Without it the fixture is drawn with its
+type's own angle. It only changes how the fixture is drawn in the web UI's 3D
+view; it never changes the DMX, a show, a group or where a fixture points. An
+MVR export does not carry it, because MVR has no place for it, and a
+re-import keeps the value on every fixture that survives it, without asking you
+to choose to keep it. Like a position, it makes a venue a `.venue` file.
+
 #### Mounting and pose convention
 
 `rotation` is the mounting exactly as [GDTF](https://gdtf.eu/) and MVR model it, which is

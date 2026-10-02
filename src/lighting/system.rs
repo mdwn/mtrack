@@ -1145,6 +1145,7 @@ impl LightingSystem {
             fixture_info.strobe_dmx_offset = fixture_type.strobe_dmx_offset();
             fixture_info.position = fixture.position();
             fixture_info.rotation = fixture.rotation();
+            fixture_info.beam_angle = fixture.beam_angle();
             fixture_info.channel_defs = fixture_type.channel_defs().clone();
             fixture_info.movement = *fixture_type.movement();
             fixture_info.rig = fixture_type.rig().map(str::to_string);

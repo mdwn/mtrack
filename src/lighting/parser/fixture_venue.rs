@@ -851,6 +851,7 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
     let mut position = None;
     let mut rotation = None;
     let mut mode = None;
+    let mut beam_angle: Option<f64> = None;
 
     for pair in pair.into_inner() {
         match pair.as_rule() {
@@ -892,6 +893,26 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
                 }
                 rotation = Some(parse_vec3(single_vec3(pair)?)?);
             }
+            Rule::beam_angle => {
+                if beam_angle.is_some() {
+                    return Err(duplicate_attribute(name.as_deref(), "beam_angle"));
+                }
+                let text = pair
+                    .into_inner()
+                    .next()
+                    .map(|p| p.as_str().trim().to_string())
+                    .unwrap_or_default();
+                let degrees: f64 = text.parse()?;
+                if !degrees.is_finite() || degrees <= 0.0 || degrees > 180.0 {
+                    return Err(format!(
+                        "fixture \"{}\": beam_angle {text} is not allowed; it is degrees, \
+                         greater than 0 and at most 180",
+                        name.as_deref().unwrap_or_default()
+                    )
+                    .into());
+                }
+                beam_angle = Some(degrees);
+            }
             _ => {}
         }
     }
@@ -905,7 +926,8 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
     )
     .with_mode(mode)
     .with_position(position)
-    .with_rotation(rotation))
+    .with_rotation(rotation)
+    .with_beam_angle(beam_angle))
 }
 
 fn duplicate_attribute(fixture: Option<&str>, attribute: &str) -> Box<dyn Error> {

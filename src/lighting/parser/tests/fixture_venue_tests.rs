@@ -276,11 +276,48 @@ fn fixture_attributes_may_come_in_any_order_but_only_once() {
     assert_eq!(venue.fixtures()["A"].position(), Some([1.0, 2.0, 3.0]));
     assert_eq!(venue.fixtures()["A"].tags(), ["x"]);
 
-    for attribute in ["tags [\"x\"]", "position (1, 2, 3)", "rotation (0, 0, 1)"] {
+    for attribute in [
+        "tags [\"x\"]",
+        "position (1, 2, 3)",
+        "rotation (0, 0, 1)",
+        "beam_angle 60",
+    ] {
         let twice =
             format!("venue \"v\" {{\n  fixture \"A\" T @ 1:1 {attribute} {attribute}\n}}\n");
         let err = parse_venues(&twice).expect_err("a duplicate attribute is refused");
         assert!(err.to_string().contains("more than once"), "{err}");
+    }
+}
+
+#[test]
+fn a_fixture_may_state_its_beam_angle() {
+    let text = "venue \"v\" {\n  fixture \"A\" T @ 1:1 beam_angle 60 tags [\"x\"]\n  \
+                fixture \"B\" T @ 1:5 rotation (1, 2, 3) beam_angle 22.5\n  \
+                fixture \"C\" T @ 1:9\n}\n";
+    let venue = &parse_venues(text).expect("parses")["v"];
+    assert_eq!(venue.fixtures()["A"].beam_angle(), Some(60.0));
+    assert_eq!(venue.fixtures()["A"].tags(), ["x"]);
+    assert_eq!(venue.fixtures()["B"].beam_angle(), Some(22.5));
+    assert_eq!(venue.fixtures()["C"].beam_angle(), None);
+    assert!(venue
+        .to_string()
+        .contains("rotation (1, 2, 3) beam_angle 22.5"));
+    assert!(venue.to_string().contains("tags [\"x\"] beam_angle 60\n"));
+
+    let edge = "venue \"v\" {\n  fixture \"A\" T @ 1:1 beam_angle 180\n}\n";
+    assert_eq!(
+        parse_venues(edge).expect("180 is allowed")["v"].fixtures()["A"].beam_angle(),
+        Some(180.0)
+    );
+}
+
+#[test]
+fn a_beam_angle_outside_zero_to_180_is_refused() {
+    for bad in ["0", "0.0", "-5", "180.5", "361", "99999999999"] {
+        let text = format!("venue \"v\" {{\n  fixture \"A\" T @ 1:1 beam_angle {bad}\n}}\n");
+        let err = parse_venues(&text).expect_err("out of range").to_string();
+        assert!(err.contains("fixture \"A\""), "{err}");
+        assert!(err.contains("greater than 0 and at most 180"), "{err}");
     }
 }
 

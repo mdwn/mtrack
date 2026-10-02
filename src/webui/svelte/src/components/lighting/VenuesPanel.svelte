@@ -130,6 +130,7 @@
        *  stage view, not here, and a save must not drop them. */
       position?: Vec3 | null;
       rotation?: Vec3 | null;
+      beam_angle?: number | null;
       /** The fixture's own GDTF mode; it belongs to the type it was chosen
        *  for (`modeOfType`), so a fixture moved to another type takes that
        *  type's first drivable mode. */
@@ -215,6 +216,7 @@
         tags: [...f.tags],
         position: f.position ?? null,
         rotation: f.rotation ?? null,
+        beam_angle: f.beam_angle ?? null,
         mode: f.mode ?? null,
         modeOfType: f.fixture_type,
       }));
@@ -501,6 +503,7 @@
       tags: f.tags,
       position: f.position ?? null,
       rotation: f.rotation ?? null,
+      beam_angle: f.beam_angle ?? null,
       mode: f.fixture_type.trim() === f.modeOfType ? (f.mode ?? null) : null,
     }));
     const newName = editVenueName.trim();

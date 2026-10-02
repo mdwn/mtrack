@@ -717,6 +717,13 @@ facing downstage** and **Standing on the deck** write the two mountings the
 mover is the show's job. The raw rotation is always shown and editable. The plot draws each
 fixed fixture's beam from its rotation, so an aim is checked at once.
 
+**Beam angle** (one or more fixtures, movers and fixed alike) is the angle in degrees the 3D view
+draws the fixture's beam at. Set it when a diffuser or filter makes a unit wider than its fixture
+type says; it only changes the drawing and never reaches the lights. Several fixtures with
+different angles show as mixed. Clearing the field and pressing **Set beam angle** removes the
+override, and the fixture goes back to its type's angle. The angle must be more than 0 and at
+most 180.
+
 Every operation is one save of the venue file, and keeps the focus points, provenance and every
 field the operation did not change, a fixture's mode included. When a save leaves the current
 venue unable to load, the save still happens and the message where you saved says so, naming the
@@ -758,7 +765,8 @@ tipped up 30° looks the same from above as one hung straight down.
 Sizes are true: the world is in meters (the grid is 1 m, noted in the picture's corner), fixtures
 sit at their venue positions, and a fixture's model is drawn at the size its GDTF declares — the
 GDTF standard has the mesh "explicitly scaled to this dimension", whatever size the mesh file has.
-Two things are drawing conventions, not measurements: a beam's **angle** is the GDTF's beam angle,
+Two things are drawing conventions, not measurements: a beam's **angle** is the GDTF's beam angle
+(or the fixture's own beam angle, when the venue sets one),
 but its **length** is capped by beam type (a spot throws up to 24 m, a wash 8 m, an LED tile or
 glow a short 0.9 m haze at the lens); and the **deck** is just big enough to hold the fixtures and
 focus points (at least 8 × 6 m, with 1 m to spare, wider when the MVR's scenery is) — it is not a
@@ -778,8 +786,7 @@ Beneath the scrubber, **At this moment** says in words what each group is doing 
 cue targets and names them when expanded, and **Open this cue in the timeline** opens the
 song's lighting editor with its cursor at the scrubbed time (`#/songs/<name>/lighting?t=<seconds>`).
 Small notes over the picture appear only when they apply: fixtures whose colour comes from a
-wheel are drawn white, beams that miss the deck are drawn at a fixed length, and in Live,
-that nothing has been received from the engine yet. The moment is kept in the address —
+wheel are drawn white and, in Live, that nothing has been received from the engine yet. The moment is kept in the address —
 `#/lighting/venues/<venue>?view=3d&mode=preview&song=<name>&t=<seconds>` — so a reload or a
 shared link opens at it.
 

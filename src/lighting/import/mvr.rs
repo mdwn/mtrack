@@ -208,6 +208,11 @@ pub struct PlannedFixture {
     pub position: Option<Vec3>,
     /// Mounting rotation, degrees.
     pub rotation: Option<Vec3>,
+    /// The beam angle the venue states, in degrees. The MVR has no place for
+    /// it, so it is never the import's to set: a first import leaves it
+    /// `None` and a merge carries the venue's own value over, always.
+    #[serde(skip)]
+    beam_angle: Option<f64>,
     /// Tags — empty on a fresh seed, the venue's own on a merge.
     pub tags: Vec<String>,
     /// Why this fixture could not be resolved, when it could not.
@@ -748,6 +753,7 @@ fn plan(
             patch,
             position,
             rotation,
+            beam_angle: None,
             tags: Vec::new(),
             todo,
             change: None,
@@ -876,6 +882,7 @@ fn plan(
                     let prior = prior.as_ref().and_then(|p| p.get(&planned.name));
                     let modes = compare_modes(theirs, planned, prior, &embedded);
                     planned.tags = theirs.tags().to_vec();
+                    planned.beam_angle = theirs.beam_angle();
                     planned.change = Some(describe_change(theirs, planned, modes.as_ref()));
                     let edits = hand_edits(theirs, planned, prior, modes.as_ref());
                     for edit in edits {
@@ -1445,7 +1452,8 @@ fn desired_venue(plan: &MvrPlan, kept: &[Fixture], kept_focus: &BTreeMap<String,
                 )
                 .with_mode(planned.mode.clone())
                 .with_position(planned.position)
-                .with_rotation(planned.rotation),
+                .with_rotation(planned.rotation)
+                .with_beam_angle(planned.beam_angle),
             );
         }
     }
@@ -1556,7 +1564,8 @@ fn render_venue(
                 )
                 .with_mode(planned.mode.clone())
                 .with_position(planned.position)
-                .with_rotation(planned.rotation);
+                .with_rotation(planned.rotation)
+                .with_beam_angle(planned.beam_angle);
                 format!("  {fixture}{layer}\n")
             }
             _ => format!("{}\n", todo_line(planned)),
@@ -2263,6 +2272,32 @@ mod tests {
         );
         assert_eq!(venue.fixtures()["Brick 2"].start_channel(), 5);
         assert_eq!(venue.focus_points()["Drummer"], [0.0, 9.8, 1.4]);
+    }
+
+    #[test]
+    fn a_reimport_keeps_a_fixtures_beam_angle_without_being_asked() {
+        let dir = project();
+        let path = seeded_and_hand_edited(dir.path());
+        // The MVR has no beam angle, so a first import left none.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("beam_angle"), "{text}");
+        std::fs::write(&path, text.replace("@ 1:105", "@ 1:105 beam_angle 60")).unwrap();
+
+        let plan =
+            inspect_mvr_bytes(&unchanged_mvr(), "kellys.mvr", &options(), dir.path()).unwrap();
+        for f in &plan.fixtures {
+            assert!(
+                f.overwrites.iter().all(|e| e.field != "beam_angle"),
+                "beam_angle is never a hand edit to choose: {f:?}"
+            );
+        }
+        // Not kept by name, and Brick 2's patch is overwritten: the angle stays.
+        import_mvr_bytes(&unchanged_mvr(), "kellys.mvr", &options(), dir.path()).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let venue = &parse_venues(&text).unwrap()["kellys"];
+        assert_eq!(venue.fixtures()["Brick 2"].start_channel(), 5);
+        assert_eq!(venue.fixtures()["Brick 2"].beam_angle(), Some(60.0));
+        assert_eq!(venue.fixtures()["Brick 1"].beam_angle(), None);
     }
 
     #[test]

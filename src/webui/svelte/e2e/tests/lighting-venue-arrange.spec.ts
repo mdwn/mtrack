@@ -28,6 +28,7 @@ interface FixtureBody {
   tags: string[];
   position: Vec3 | null;
   rotation: Vec3 | null;
+  beam_angle?: number | null;
 }
 interface VenueBody {
   fixtures: FixtureBody[];
@@ -179,6 +180,7 @@ async function open(page: Page, venue: VenueBody = houseVenue()) {
             : ["color"],
           position: f.position,
           rotation: f.rotation,
+          beam_angle: f.beam_angle ?? null,
         },
       ]),
     ),
@@ -691,6 +693,112 @@ test.describe("Venues: aim", () => {
     await expect.poll(() => puts.length).toBe(2);
     expect(saved(puts[1], "Brick1").rotation).toEqual([100, 0, 10]);
     expect(saved(puts[1], "Brick3").rotation).toEqual([100, 0, 10]);
+  });
+});
+
+test.describe("Venues: beam angle", () => {
+  const withBeam = () => {
+    const venue = houseVenue();
+    saved(venue, "Brick1").beam_angle = 45;
+    saved(venue, "Brick2").beam_angle = 45;
+    return venue;
+  };
+  const field = (page: Page) => page.getByTestId("inspector-beam-angle");
+  const setButton = (page: Page) =>
+    inspector(page).getByRole("button", { name: "Set beam angle" });
+
+  test("setting it saves that fixture alone", async ({ page }) => {
+    const { puts } = await open(page);
+    await selectByList(page, ["Brick3"]);
+    await expect(field(page)).toHaveValue("");
+    await field(page).fill("60.5");
+    await setButton(page).click();
+    await expect.poll(() => puts.length).toBe(1);
+    expect(saved(puts[0], "Brick3").beam_angle).toBe(60.5);
+    for (const f of puts[0].fixtures) {
+      if (f.name !== "Brick3") expect(f.beam_angle ?? null).toBeNull();
+    }
+    // The rest of the fixture is as it was.
+    expect(saved(puts[0], "Brick3").rotation).toEqual([110, 0, 0]);
+    expect(saved(puts[0], "Brick3").position).toEqual([-3.69, 0.01, 0]);
+  });
+
+  test("a mover takes one too", async ({ page }) => {
+    const { puts } = await open(page, houseVenue([MOVER]));
+    await selectByList(page, ["Mover1"]);
+    await field(page).fill("30");
+    await setButton(page).click();
+    await expect.poll(() => puts.length).toBe(1);
+    expect(saved(puts[0], "Mover1").beam_angle).toBe(30);
+  });
+
+  test("clearing it removes the override", async ({ page }) => {
+    const { puts } = await open(page, withBeam());
+    await selectByList(page, ["Brick1"]);
+    await expect(field(page)).toHaveValue("45");
+    await field(page).fill("");
+    await setButton(page).click();
+    await expect.poll(() => puts.length).toBe(1);
+    expect(typeof saved(puts[0], "Brick1").beam_angle).not.toBe("number");
+    // The other fixture with one keeps it.
+    expect(saved(puts[0], "Brick2").beam_angle).toBe(45);
+  });
+
+  test("a mixed selection shows mixed, and setting writes to all", async ({
+    page,
+  }) => {
+    const venue = withBeam();
+    saved(venue, "Brick2").beam_angle = 90;
+    const { puts } = await open(page, venue);
+    await selectByList(page, ["Brick1", "Brick2"]);
+    await expect(field(page)).toHaveValue("");
+    await expect(field(page)).toHaveAttribute("placeholder", "mixed");
+    await expect(setButton(page)).toBeDisabled();
+    await field(page).fill("70");
+    await setButton(page).click();
+    await expect.poll(() => puts.length).toBe(1);
+    expect(saved(puts[0], "Brick1").beam_angle).toBe(70);
+    expect(saved(puts[0], "Brick2").beam_angle).toBe(70);
+  });
+
+  test("values out of range are refused and nothing is saved", async ({
+    page,
+  }) => {
+    const { puts } = await open(page);
+    await selectByList(page, ["Brick3"]);
+    for (const bad of ["0", "-5", "181", "1e9"]) {
+      await field(page).fill(bad);
+      await expect(
+        page.getByTestId("inspector-beam-angle-error"),
+      ).toBeVisible();
+      await expect(setButton(page)).toBeDisabled();
+    }
+    await field(page).fill("180");
+    await expect(page.getByTestId("inspector-beam-angle-error")).toHaveCount(0);
+    await expect(setButton(page)).toBeEnabled();
+    expect(puts).toHaveLength(0);
+  });
+
+  test("arrange and aim keep a fixture's beam angle", async ({ page }) => {
+    const { puts } = await open(page, withBeam());
+    await selectByList(page, ["Brick1", "Brick2"]);
+    await inspector(page)
+      .getByRole("button", { name: "Mirror across centre" })
+      .click();
+    await expect.poll(() => puts.length).toBe(1);
+    await inspector(page)
+      .getByRole("button", { name: "Align on a line" })
+      .click();
+    await expect.poll(() => puts.length).toBe(2);
+    await inspector(page)
+      .getByRole("button", { name: "Face this way" })
+      .click();
+    await expect.poll(() => puts.length).toBe(3);
+    for (const body of puts) {
+      expect(saved(body, "Brick1").beam_angle).toBe(45);
+      expect(saved(body, "Brick2").beam_angle).toBe(45);
+      expect(saved(body, "Brick3").beam_angle ?? null).toBeNull();
+    }
   });
 });
 
