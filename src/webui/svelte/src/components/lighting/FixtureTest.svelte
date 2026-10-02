@@ -888,7 +888,7 @@
     max-width: 120px;
   }
   .ftest__warn {
-    color: var(--nc-warning, #b7791f);
+    color: var(--nc-amber-fg, #8a5f0e);
   }
   .ftest__send {
     display: flex;
@@ -967,7 +967,7 @@
   }
   .ftest__note {
     margin: 0 0 6px;
-    color: var(--nc-warning, #b7791f);
+    color: var(--nc-amber-fg, #8a5f0e);
   }
   .ftest__help-title {
     margin: 8px 0 4px;
