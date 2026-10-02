@@ -1383,10 +1383,13 @@ The cones stay: they are the beam in the air (haze), and they are how a mover's 
 The deck gains what the same beams do to it (`lib/stage/decklight.ts`). At each point of
 the deck, for each lit beam: full inside the beam angle, fading to nothing at the field
 angle; outside that a 2% spill (lens scatter, the housing's glow), the same for any beam;
-times the cosine of incidence, over distance squared (no nearer than 0.3 m). It is one
-shader on the deck's plane summing up to 64 beams from a float texture (the strongest are
-kept past that), added over the deck's colour — real lighting for the one surface that
-matters, with no per-light cost anywhere else. The formula is also plain TypeScript, tested
+times the cosine of incidence, over distance squared (no nearer than 0.3 m). It is
+part of the deck's own material — three's standard one, with a sum over up to 64 beams from
+a float texture (the strongest are kept past that) added to its shader as the surface's
+glow — real lighting for the one surface that matters, with no per-light cost anywhere
+else. (As first built it was a second, additive surface on the deck's plane. Two surfaces
+on one plane do not agree about which is in front from one camera position to the next, so
+the light broke into stripes whenever the camera moved; one surface cannot.) The formula is also plain TypeScript, tested
 as numbers.
 
 Brightness is relative, not photometric. Every fixture is taken to put out the same light,
