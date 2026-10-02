@@ -204,6 +204,7 @@ async function waitUp(url: string, child: ChildProcess, log: string[]) {
 export async function startProject(
   files: Record<string, string | Buffer> = {},
   config: string = CONFIG,
+  env: Record<string, string> = {},
 ): Promise<{ project: Project; stop: () => Promise<void> }> {
   if (!fs.existsSync(BINARY))
     throw new Error(
@@ -230,7 +231,12 @@ export async function startProject(
       BINARY,
       ["start", dir, "--web-port", String(port), "--web-address", "127.0.0.1"],
       {
-        env: { ...process.env, MTRACK_HOSTNAME: "journey", RUST_LOG: "warn" },
+        env: {
+          ...process.env,
+          MTRACK_HOSTNAME: "journey",
+          RUST_LOG: "warn",
+          ...env,
+        },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -286,12 +292,15 @@ export const test = base.extend<{
   files: Record<string, string | Buffer>;
   /** The project's `mtrack.yaml`: `CONFIG` unless a test says otherwise. */
   config: string;
+  /** Extra environment for the server (e.g. a short fixture-test expiry). */
+  env: Record<string, string>;
   project: Project;
 }>({
   files: [{}, { option: true }],
   config: [CONFIG, { option: true }],
-  project: async ({ files, config }, use) => {
-    const { project, stop } = await startProject(files, config);
+  env: [{}, { option: true }],
+  project: async ({ files, config, env }, use) => {
+    const { project, stop } = await startProject(files, config, env);
     await use(project);
     await stop();
   },

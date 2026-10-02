@@ -31,9 +31,21 @@
     /** The mode being looked at, named in the corner. The model drawn is
      *  the type's own (its pinned mode's rig) whichever it is. */
     modeLabel?: string;
+    /** What a fixture test is sending (the live channel values, 0–255, and
+     *  the pose in degrees), drawn instead of the resting full white. */
+    live?: {
+      channels: Record<string, number>;
+      pose: { pan: number; tilt: number } | null;
+    } | null;
   }
 
-  let { typeName, rig, thumbnail, modeLabel = "" }: Props = $props();
+  let {
+    typeName,
+    rig,
+    thumbnail,
+    modeLabel = "",
+    live = null,
+  }: Props = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let hostEl: HTMLDivElement | undefined = $state();
@@ -108,11 +120,35 @@
       )
       .then(() => {
         if (scene !== live) return;
-        live.setChannels({
-          [name]: { red: 255, green: 255, blue: 255, dimmer: 255 },
-        });
         framed = live.frameFixtures();
       });
+  });
+
+  // Full white at rest; what a test sends while one is live.
+  $effect(() => {
+    const live_ = scene;
+    if (!live_ || !framed) return;
+    const name = typeName;
+    live_.setChannels({
+      [name]: live?.channels ?? {
+        red: 255,
+        green: 255,
+        blue: 255,
+        dimmer: 255,
+      },
+    });
+    live_.setPoses(
+      live?.pose
+        ? {
+            [name]: {
+              pan: live.pose.pan,
+              tilt: live.pose.tilt,
+              aim: [0, 0, -1],
+              floor: null,
+            },
+          }
+        : {},
+    );
   });
 </script>
 

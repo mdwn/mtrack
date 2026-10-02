@@ -620,6 +620,47 @@ Deleting a fixture from a GDTF removes its GDTF too, unless another fixture uses
 If a venue uses it, the confirmation says how many fixtures in which venues, and that those venues
 will stop loading.
 
+#### Testing a fixture
+
+**Test this fixture**, on every fixture's page (from a GDTF or written by hand), answers "does this
+light respond when mtrack sends to it?" — and, when it does not, says why. Choose the **mode** the
+fixture is set to (a GDTF fixture's first mode mtrack can drive is chosen for you; a fixture written
+by hand has no modes), the **universe** its cable is on (one of the running profile's DMX
+universes; one with no output patched in olad says so) and its **DMX address**; the panel shows the
+addresses it will use ("Uses addresses 1–4"). Nothing is sent until you turn **Send to lights** on,
+and then a working fixture lights up full white at once (colour white, brightness full, strobe off;
+a moving head stays at its centre pose). Then, in order: quick swatches (red, green, blue, white,
+off) and **Blackout**; sliders for brightness, strobe in flashes a second, extra colour channels
+(white, amber, …) and pan and tilt in degrees; and, under **Every channel**, a 0–255 slider per
+channel. A raw channel you move is marked **manual** and stays where you put it until you reset
+it. A control the chosen mode has no channel for is shown as "not in this mode", so switching
+between, say, RGB and RGBS shows what the strobe channel adds.
+
+The values go through the same code a show's effects do — a fixture without a dimmer channel
+scales its colour by the brightness, a strobe rate lands in the fixture's strobe range, pan and
+tilt in degrees become the coarse and fine bytes of its range — so what the panel sends is what a
+show would send. The fixture's 3D view mirrors it.
+
+**What "live" means.** While Send is on, mtrack lays these channels over everything else it sends
+to that universe — the show, MIDI-DMX — and says so in the panel and in a banner on every page
+("Test output is live on universe 1, addresses 1–4", with **Stop**). The page keeps the test
+alive; if nothing does (the tab closed, the laptop slept), it lets go by itself within about five
+seconds and the lights go back to whatever the show is doing. Changing the mode, universe or
+address, or leaving the page, lets go of the old addresses first. A fixture of the current venue
+on those addresses is named: the test overrides it while it runs.
+
+**Nothing happened?** While live, the panel lists the likely causes, the ones mtrack can check
+first: olad (the program that sends DMX out of the computer) not answering; the universe having no
+output patched in olad, with a link to olad's own page; then questions for the fixture itself — is
+its DMX address set to the address you chose, is it set to this mode (named, with its channel
+count), is the cable in and the line terminated. One line says exactly what mtrack is sending
+("mtrack is sending 255, 255, 255, 0 to universe 1, addresses 1–4"), so "mtrack is not sending"
+can be told from "the light is not listening".
+
+**When it is unavailable.** Testing needs the running profile to have DMX output with at least one
+universe (the panel links to where that is set), the player to be unlocked (it offers to unlock),
+and no song playing. Starting a song or locking the player stops a running test.
+
 **Define a fixture by hand** is for a fixture with no GDTF: it opens the channel-map form (a
 `.light` file) or the text of a `.fixture` file, which are your own definitions; see
 [the configuration reference](../lighting/configuration.md).

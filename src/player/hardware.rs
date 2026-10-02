@@ -730,6 +730,7 @@ impl Player {
                     .and_then(|d| d.venue_registration())
                     .as_ref(),
             ),
+            test_output: hw.dmx_engine.as_ref().and_then(|d| d.test_output_status()),
         }
     }
 

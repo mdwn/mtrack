@@ -15,7 +15,7 @@
 use ola::DmxBuffer;
 use parking_lot::RwLock;
 use spin_sleep;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -32,6 +32,10 @@ const UNIVERSE_SIZE: usize = 512;
 
 /// The target number of updates per second.
 pub(crate) const TARGET_HZ: f64 = 44.0;
+
+/// A fixture test's channels as a universe holds them: 0-based index and
+/// value, or none.
+type TestChannels = Option<Vec<(usize, u8)>>;
 
 /// A DMX universe.
 pub(crate) struct Universe {
@@ -54,6 +58,13 @@ pub(crate) struct Universe {
     /// Last values written by effect commands. Used to skip redundant writes
     /// so the Universe thread doesn't re-send unchanged buffers to OLA.
     last_effect_values: RwLock<Vec<u8>>,
+    /// A fixture test's channels (0-based index, value), laid over the frame
+    /// last, as it goes out: it wins over effects and MIDI-DMX while set,
+    /// and the moment it is cleared the frame underneath goes out again.
+    test_override: Arc<RwLock<TestChannels>>,
+    /// Bumped on every override change, so the thread sends even when the
+    /// show underneath did not move.
+    test_generation: Arc<AtomicU64>,
 }
 
 impl Universe {
@@ -73,7 +84,23 @@ impl Universe {
             cancel_handle,
             ola_sender,
             last_effect_values: RwLock::new(vec![0; UNIVERSE_SIZE]),
+            test_override: Arc::new(RwLock::new(None)),
+            test_generation: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Lays a fixture test's channels (1-based DMX channel, value) over this
+    /// universe's output, or clears it (`None`). Channels outside 1..=512
+    /// are dropped.
+    pub fn set_test_override(&self, channels: Option<&[(u16, u8)]>) {
+        *self.test_override.write() = channels.map(|channels| {
+            channels
+                .iter()
+                .filter(|(channel, _)| (1..=UNIVERSE_SIZE as u16).contains(channel))
+                .map(|(channel, value)| (usize::from(channel - 1), *value))
+                .collect()
+        });
+        self.test_generation.fetch_add(1, Ordering::SeqCst);
     }
 
     #[cfg(test)]
@@ -170,23 +197,38 @@ impl Universe {
         let cancel_handle = self.cancel_handle.clone();
         let universe = u32::from(self.config.universe());
         let ola_sender = self.ola_sender.clone();
+        let test_override = self.test_override.clone();
+        let test_generation = self.test_generation.clone();
 
         thread::spawn(move || {
             let mut last_time = Instant::now();
             let tick_duration = Duration::from_secs(1).div_f64(TARGET_HZ);
 
             let mut buffer = DmxBuffer::new();
+            // `buffer` is always the show's own frame (every channel); an
+            // override is laid on a copy, so clearing it sends the show's
+            // values again with nothing to restore.
+            let mut sent_generation = 0;
 
             loop {
                 if cancel_handle.is_cancelled() {
                     return;
                 }
 
-                if Universe::approach_target(&rates, &current, &target, &max_channels, &mut buffer)
-                {
+                let changed = Universe::approach_target(
+                    &rates,
+                    &current,
+                    &target,
+                    &max_channels,
+                    &mut buffer,
+                );
+                let generation = test_generation.load(Ordering::SeqCst);
+                if changed || generation != sent_generation {
+                    sent_generation = generation;
+                    let frame = Universe::compose(&buffer, test_override.read().as_deref());
                     if let Err(e) = ola_sender.send(DmxMessage {
                         universe,
-                        buffer: buffer.clone(),
+                        buffer: frame,
                     }) {
                         error!(
                             err = e.to_string(),
@@ -199,6 +241,16 @@ impl Universe {
                 spin_sleep::sleep(last_time - Instant::now());
             }
         })
+    }
+
+    /// The frame that goes out: the show's, with a fixture test's channels
+    /// laid over it when one is set.
+    fn compose(show: &DmxBuffer, test: Option<&[(usize, u8)]>) -> DmxBuffer {
+        let mut frame = show.clone();
+        for &(i, value) in test.unwrap_or_default() {
+            frame.set_channel(i, value);
+        }
+        frame
     }
 
     /// Takes the given inputs and approaches the current expected DMX values.
@@ -294,6 +346,42 @@ mod test {
             .join()
             .map_err(|_| "Error waiting for join".to_string())?;
 
+        Ok(())
+    }
+
+    #[test]
+    fn a_test_override_wins_over_the_show_and_releases_back_to_it() -> Result<(), Box<dyn Error>> {
+        let (universe, receiver) = new_universe();
+        let handle = universe.start_thread();
+        // The show: channel 1 at 50, channel 3 at 7.
+        universe.update_effect_commands(vec![(1, 50), (3, 7)]);
+        let next = |want: &dyn Fn(&[u8]) -> bool| -> Result<Vec<u8>, Box<dyn Error>> {
+            loop {
+                let message = receiver.recv_timeout(Duration::from_secs(2))?;
+                let frame = message.buffer.as_slice()[0..4].to_vec();
+                if want(&frame) {
+                    return Ok(frame);
+                }
+            }
+        };
+        assert_eq!(next(&|f| f[0] == 50)?, vec![50, 0, 7, 0]);
+
+        // A test on channels 1-2 (and one past the universe, dropped).
+        universe.set_test_override(Some(&[(1, 255), (2, 128), (600, 1)]));
+        assert_eq!(next(&|f| f[0] == 255)?, vec![255, 128, 7, 0]);
+
+        // The show moves underneath; the test still wins where it is.
+        universe.update_effect_commands(vec![(1, 60), (3, 9)]);
+        assert_eq!(next(&|f| f[2] == 9)?, vec![255, 128, 9, 0]);
+
+        // Released: the show's own values go out at once.
+        universe.set_test_override(None);
+        assert_eq!(next(&|f| f[0] == 60)?, vec![60, 0, 9, 0]);
+
+        universe.cancel_handle.cancel();
+        handle
+            .join()
+            .map_err(|_| "Error waiting for join".to_string())?;
         Ok(())
     }
 

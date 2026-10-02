@@ -293,6 +293,11 @@ mtrack checks this for you: at startup and on every config reload it asks olad's
 for any that has no output port patched. The check runs off the output path and never delays or
 blocks DMX; if olad's web server is unreachable, it is skipped silently.
 
+To check a single light end to end — address, mode, cable — use **Test this fixture** on the
+fixture's page in the web UI ([Testing a fixture](../interfaces/web-ui.md#testing-a-fixture)): it
+sends to the fixture through the running engine and lists the olad checks above first when nothing
+lights.
+
 ### Rich channel definitions (`*.fixture`)
 
 When a fixture has no GDTF — the manual is all you have — a `.fixture` file can describe
