@@ -366,4 +366,9 @@
       display: flex;
     }
   }
+  /* A maximized stage card covers the dashboard's transport: the bar
+     stands in for it at any width. */
+  :global(body.stage-maximized) .miniplayer {
+    display: flex;
+  }
 </style>
