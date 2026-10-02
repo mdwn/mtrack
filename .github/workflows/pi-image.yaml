@@ -9,8 +9,18 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to build an image for (e.g. v0.16.0)'
-        required: true
+        description: 'Release tag to build an image for (e.g. v0.16.0). Leave empty with from_source.'
+        required: false
+        type: string
+      from_source:
+        description: 'Build the package from ref instead of taking a release''s: an image to test, attached to this run, never published'
+        required: false
+        default: false
+        type: boolean
+      ref:
+        description: 'With from_source: the branch, tag or commit to build (default: main)'
+        required: false
+        default: 'main'
         type: string
       pi_gen_ref:
         description: 'pi-gen ref to build with (must be an arm64 branch)'
@@ -28,6 +38,7 @@ on:
     paths:
       - 'packaging/**'
       - 'src/cli.rs'
+      - 'tests/pi-image/**'
       - '.github/workflows/pi-image.yaml'
 
 permissions:
@@ -47,12 +58,32 @@ jobs:
       # by branch. The arm64 branch is the same tree with ARCH=arm64 and the
       # same trixie default.
       PI_GEN_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.pi_gen_ref || 'arm64' }}
-      IS_PR: ${{ github.event_name == 'pull_request' }}
+      # A source build makes an image to test: a pull request's, or a manual
+      # run asked for one of some ref (a release candidate has no release to
+      # draw a package from). It is attached to the run and never published.
+      SOURCE_BUILD: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.from_source) }}
     steps:
+      - name: Check what was asked for
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          if [ "${SOURCE_BUILD}" = "true" ] && [ -n "${RELEASE_TAG}" ]; then
+            echo "from_source builds an image of a ref; a release tag names a" >&2
+            echo "published package. Give one or the other." >&2
+            exit 1
+          fi
+          if [ "${SOURCE_BUILD}" != "true" ] && [ -z "${RELEASE_TAG}" ]; then
+            echo "Give a release tag, or set from_source to build an image of a ref." >&2
+            exit 1
+          fi
+
       - name: Checkout mtrack
         uses: actions/checkout@v7
         with:
           path: mtrack
+          # A manual source build checks out the ref it was asked for; every
+          # other run takes the event's own commit.
+          ref: ${{ (github.event_name == 'workflow_dispatch' && inputs.from_source) && inputs.ref || '' }}
 
       - name: Free up disk space
         # A Lite build plus its per-stage rootfs copies needs more room than a
@@ -73,14 +104,14 @@ jobs:
       # an image that gets published must carry the binary the release
       # published, not one built here.
 
-      - name: Install build dependencies (pull requests only)
-        if: github.event_name == 'pull_request'
+      - name: Install build dependencies (source builds only)
+        if: env.SOURCE_BUILD == 'true'
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev
 
-      - name: Install protoc (pull requests only)
+      - name: Install protoc (source builds only)
         # Deliberately not apt's protobuf-compiler, exactly as in publish.yaml:
         # ubuntu-22.04 ships protoc 3.12, which refuses the proto3 optional
         # fields our protos use ("--experimental_allow_proto3_optional was not
@@ -88,33 +119,33 @@ jobs:
         # it broke this job's first run too. The runner is 22.04 on purpose --
         # it matches the glibc floor the released binaries are built against --
         # so protoc has to come from somewhere newer than its archive.
-        if: github.event_name == 'pull_request'
+        if: env.SOURCE_BUILD == 'true'
         run: ./mtrack/scripts/install-protoc.sh
 
       - uses: dtolnay/rust-toolchain@stable
-        if: github.event_name == 'pull_request'
+        if: env.SOURCE_BUILD == 'true'
       - uses: Swatinem/rust-cache@v2
-        if: github.event_name == 'pull_request'
+        if: env.SOURCE_BUILD == 'true'
         with:
           workspaces: mtrack
           shared-key: "pi-image"
       - uses: actions/setup-node@v7
-        if: github.event_name == 'pull_request'
+        if: env.SOURCE_BUILD == 'true'
         with:
           node-version: '22'
       - name: Cache node modules
-        if: github.event_name == 'pull_request'
+        if: env.SOURCE_BUILD == 'true'
         uses: actions/cache@v6
         with:
           path: mtrack/src/webui/svelte/node_modules
           key: node-modules-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mtrack/**/package-lock.json') }}
           restore-keys: node-modules-${{ runner.os }}-${{ runner.arch }}-
       - uses: taiki-e/install-action@v2
-        if: github.event_name == 'pull_request'
+        if: env.SOURCE_BUILD == 'true'
         with:
           tool: cargo-deb
       - name: Package it
-        if: github.event_name == 'pull_request'
+        if: env.SOURCE_BUILD == 'true'
         run: |
           set -euo pipefail
           cd mtrack
@@ -138,7 +169,7 @@ jobs:
           df -h /
 
       - name: Fetch the released package
-        if: github.event_name != 'pull_request'
+        if: env.SOURCE_BUILD != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -158,7 +189,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "package provenance: ${DEB_PROVENANCE:-unset}"
-          if [ "${IS_PR}" != "true" ] && [ "${DEB_PROVENANCE}" != "from-release" ]; then
+          if [ "${SOURCE_BUILD}" != "true" ] && [ "${DEB_PROVENANCE}" != "from-release" ]; then
             echo "This run publishes to a release but the package was not taken" >&2
             echo "from one (provenance: ${DEB_PROVENANCE:-unset})." >&2
             exit 1
@@ -207,8 +238,10 @@ jobs:
         id: artifact
         run: |
           set -euo pipefail
-          if [ "${IS_PR}" = "true" ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
             VERSION="pr${{ github.event.pull_request.number }}"
+          elif [ "${SOURCE_BUILD}" = "true" ]; then
+            VERSION="src-$(git -C mtrack rev-parse --short HEAD)"
           else
             VERSION="${RELEASE_TAG#v}"
           fi
@@ -234,8 +267,25 @@ jobs:
         # about booting; that still needs a Pi.
         run: ./mtrack/tests/pi-image/test.sh "${{ steps.artifact.outputs.image }}"
 
-      - name: Upload the image for inspection (pull requests)
-        if: github.event_name == 'pull_request'
+      - name: Boot the image
+        # The inspection reads what the stage left behind; this starts it. The
+        # image's root filesystem boots under its own systemd in a container,
+        # natively on this runner, and the check asks whether the player came
+        # up inside its sandbox and stayed up, whether the web UI answers and
+        # can save, and whether olad's SysV script became a running unit. It
+        # works on a copy, so the image uploaded below is the one that was
+        # built. The kernel, the firmware and first-boot customisation are
+        # still only proven by a card in a Pi.
+        run: |
+          set -euo pipefail
+          # pi-gen's per-stage root filesystems are no further use, and the
+          # working copy of the image wants a few gigabytes.
+          sudo rm -rf pi-gen/work
+          sudo apt-get install -y systemd-container
+          ./mtrack/tests/pi-image/boot.sh "${{ steps.artifact.outputs.image }}"
+
+      - name: Attach the image to the run (source builds)
+        if: env.SOURCE_BUILD == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: raspberrypi-image
@@ -245,7 +295,7 @@ jobs:
           retention-days: 7
 
       - name: Upload to the release
-        if: github.event_name != 'pull_request'
+        if: env.SOURCE_BUILD != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

@@ -91,6 +91,8 @@ test.describe("Venues Management", () => {
   test("Add Fixture adds a fixture row", async ({ page }) => {
     await page.locator('[data-testid^="venue-edit-"]').first().click();
     await expect(page.locator(".editor-form")).toBeVisible();
+    // Count the rows once they are there, not while the form is still filling.
+    await expect(page.locator(".venue-fixture-card").first()).toBeVisible();
     const initialCount = await page.locator(".venue-fixture-card").count();
     await page.getByRole("button", { name: "Add Fixture" }).click();
     await expect(page.locator(".venue-fixture-card")).toHaveCount(

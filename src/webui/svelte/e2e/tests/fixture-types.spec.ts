@@ -343,6 +343,9 @@ test.describe("Fixture Types Management", () => {
 
   test("Add Channel adds a new channel row", async ({ page }) => {
     await card(page, "par").click();
+    // The form opens when the address changes, a moment after the click: an
+    // immediate count can read zero rows and then find them all plus one.
+    await expect(page.locator(".channel-row").first()).toBeVisible();
     const initialCount = await page.locator(".channel-row").count();
     await page.getByRole("button", { name: "Add Channel" }).click();
     await expect(page.locator(".channel-row")).toHaveCount(initialCount + 1);
@@ -350,6 +353,9 @@ test.describe("Fixture Types Management", () => {
 
   test("removing a channel row decreases count", async ({ page }) => {
     await card(page, "par").click();
+    // The form opens when the address changes, a moment after the click: an
+    // immediate count can read zero rows and then find them all plus one.
+    await expect(page.locator(".channel-row").first()).toBeVisible();
     const initialCount = await page.locator(".channel-row").count();
     // Click the first X button in a channel row.
     await page.locator(".channel-row").first().locator(".btn-danger").click();
