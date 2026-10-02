@@ -42,6 +42,16 @@ password, so the settings you enter there — username, password, wifi and its
 country, ssh keys — are what make the Pi reachable. Skip it and the first boot
 wants a keyboard and a monitor to run the setup wizard.
 
+`mtrack.local` is found by multicast, which reaches the devices on the same
+network segment as the Pi and no further: a Pi on wifi is found by other wifi
+devices, and by wired ones only if your router passes multicast between the
+two. If the name does not resolve, the Pi's IP address always works. A
+hostname set in Imager replaces `mtrack` in that name.
+
+DMX goes through `olad`, which starts with no universe patched to an output:
+open `http://<the Pi>:9090` and patch your DMX interface to the universe your
+profile names, or frames go nowhere.
+
 Your songs live in `/var/lib/mtrack` on the card. To keep them on a USB drive
 instead, edit `/etc/default/mtrack` and regenerate the unit; that file explains
 how inline.

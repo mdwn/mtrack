@@ -48,11 +48,29 @@ dmx:
           - AnyOf: ["wash", "moving_head", "spot", "strobe", "beam"]
           - MinCount: 1
 
-    # Directory configuration for DSL files (auto-discovered)
+    # Where fixture types and venues are read from. Optional: these are
+    # the defaults, so a new project needs no `directories` at all.
     directories:
       fixture_types: "lighting/fixture_types"
       venues: "lighting/venues"
 ```
+
+### Where the lighting files live
+
+A project's fixture types are read from `lighting/fixture_types/` and its venues from
+`lighting/venues/` (both relative to the directory holding `mtrack.yaml`), and every GDTF in
+`lighting/library/` is a fixture type too. These are the defaults: a new project needs no
+`directories` setting, and the web UI's Lighting area saves to the same places. `directories`
+moves them — `fixture_types`, `venues`, or both; one you do not name stays at its default. A
+default directory that does not exist is simply empty. The engine, the web UI, MCP and the
+`import-gdtf`, `import-mvr` and `export-mvr` commands all read and write the same directories.
+
+**Upgrading:** earlier versions read venues and fixture types only from directories a profile
+named, though the web UI already saved to the defaults when none was named — so on a new
+install a venue made in the Lighting area was "not found" by the engine until `directories` was
+added by hand. Now the defaults are always read. A project that names its directories behaves
+exactly as before. A project that names none and keeps unrelated files in `lighting/venues/` or
+`lighting/fixture_types/` will now have them loaded.
 
 ## Fixture Type Definitions (`lighting/fixture_types/`)
 

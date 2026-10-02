@@ -316,21 +316,19 @@ fn migrate_fixtures(
     // Check raw config for inline fixtures (they live in dmx.lighting.fixtures).
     // Check profiles first (modern config), then fall back to the raw top-level
     // dmx field (legacy config before normalize moves it into profiles).
-    let fixtures = if let Some(lighting) = raw.lighting_from_profiles() {
-        lighting.inline_fixtures_raw().cloned()
-    } else {
-        raw.dmx_raw()
-            .and_then(|d| d.lighting())
-            .and_then(|l| l.inline_fixtures_raw())
-            .cloned()
-    };
+    let lighting = raw
+        .lighting_from_profiles()
+        .or_else(|| raw.dmx_raw().and_then(|d| d.lighting()));
+    let fixtures = lighting.and_then(|l| l.inline_fixtures_raw()).cloned();
 
     let fixtures = match fixtures {
         Some(f) if !f.is_empty() => f,
         _ => return,
     };
 
-    let venues_dir = config_dir.join("lighting").join("venues");
+    // The venues directory the engine reads: the configured one, else the
+    // default — no setting is needed for the default.
+    let venues_dir = config_dir.join(config::lighting::venues_dir(lighting));
     let venue_path = venues_dir.join("inline_migrated.light");
 
     plan.dirs_to_create.push(venues_dir);
@@ -356,21 +354,13 @@ fn migrate_fixtures(
     );
     plan.files_to_write.push((venue_path, venue_content));
 
-    plan.add_action(
-        "Lighting",
-        "Set directories.venues: lighting/venues".to_string(),
-    );
     plan.add_action("Lighting", "Clear inline fixtures".to_string());
 
-    // Mutate the player config to set venues dir and clear fixtures.
-    // We need to modify the lighting config on profiles (after normalize).
+    // Clear the fixtures on the profiles (after normalize).
     if let Some(profiles) = player.profiles_mut() {
         for profile in profiles.iter_mut() {
             if let Some(dmx) = profile.dmx_mut() {
                 if let Some(lighting) = dmx.lighting_mut() {
-                    if lighting.directories().and_then(|d| d.venues()).is_none() {
-                        lighting.set_venues_dir("lighting/venues".to_string());
-                    }
                     lighting.clear_inline_fixtures();
                 }
             }
@@ -378,9 +368,6 @@ fn migrate_fixtures(
     }
     // Also clear on the raw dmx field (which will be serialized if profiles haven't been set up).
     if let Some(lighting) = player.lighting_mut() {
-        if lighting.directories().and_then(|d| d.venues()).is_none() {
-            lighting.set_venues_dir("lighting/venues".to_string());
-        }
         lighting.clear_inline_fixtures();
     }
 }
@@ -814,7 +801,8 @@ dmx:
 
     #[test]
     fn test_migrate_fixtures_existing_venues_dir_preserved() {
-        // If lighting config already has a venues directory set, don't overwrite it.
+        // A lighting config that names its venues directory keeps it, and
+        // the migrated venue goes there, where the engine will read it.
         let (dir, _config_path) = setup_migration(
             r#"
 songs: songs
@@ -838,11 +826,11 @@ profiles:
 
         migrate(dir.path().to_str().unwrap(), true).unwrap();
 
-        // Venue file should still be written to the default location.
         assert!(dir
             .path()
-            .join("lighting/venues/inline_migrated.light")
+            .join("custom/venues/inline_migrated.light")
             .exists());
+        assert!(!dir.path().join("lighting/venues").exists());
 
         // The profile file should preserve the existing custom venues dir
         // (profiles are extracted to files, so the venues dir is in the profile).

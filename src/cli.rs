@@ -246,7 +246,7 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         project: String,
         /// Fixture types directory, relative to the project.
-        #[arg(long, default_value = "lighting/fixture_types")]
+        #[arg(long, default_value = crate::config::lighting::DEFAULT_FIXTURE_TYPES_DIR)]
         fixture_types_dir: String,
     },
     /// Imports an MVR venue file: reports what the import would do, or
@@ -272,10 +272,10 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         project: String,
         /// Fixture types directory, relative to the project.
-        #[arg(long, default_value = "lighting/fixture_types")]
+        #[arg(long, default_value = crate::config::lighting::DEFAULT_FIXTURE_TYPES_DIR)]
         fixture_types_dir: String,
         /// Venues directory, relative to the project.
-        #[arg(long, default_value = "lighting/venues")]
+        #[arg(long, default_value = crate::config::lighting::DEFAULT_VENUES_DIR)]
         venues_dir: String,
     },
     /// Exports a venue as an .mvr archive: the patch with positions,
@@ -295,10 +295,10 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         project: String,
         /// Fixture types directory, relative to the project.
-        #[arg(long, default_value = "lighting/fixture_types")]
+        #[arg(long, default_value = crate::config::lighting::DEFAULT_FIXTURE_TYPES_DIR)]
         fixture_types_dir: String,
         /// Venues directory, relative to the project.
-        #[arg(long, default_value = "lighting/venues")]
+        #[arg(long, default_value = crate::config::lighting::DEFAULT_VENUES_DIR)]
         venues_dir: String,
     },
     /// Verifies the syntax of a light show file.

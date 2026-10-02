@@ -120,10 +120,11 @@ pub struct LightingSystem {
     type_modes: HashMap<String, Vec<String>>,
 }
 
-/// The venues directory a system loaded, as configured and as resolved.
+/// The venues directory a system loaded, as the config names it (or the
+/// default) and as resolved.
 #[derive(Clone, Debug)]
 struct VenuesSource {
-    /// The configured directory, relative to the project.
+    /// The directory, relative to the project: configured, or the default.
     configured: String,
     /// The resolved directory.
     path: PathBuf,
@@ -174,8 +175,8 @@ impl LightingSystem {
         }
     }
 
-    /// The configured venues directory, relative to the project, when the
-    /// system loaded one.
+    /// The venues directory, relative to the project (configured, or the
+    /// default), once the system has loaded.
     pub fn venues_dir(&self) -> Option<&str> {
         self.venues_source.as_ref().map(|s| s.configured.as_str())
     }
@@ -382,23 +383,23 @@ impl LightingSystem {
         self.inline_fixtures = config.fixtures().clone();
         self.logical_groups = config.groups().clone();
 
-        // Load directories if configured
-        if let Some(dirs) = config.directories() {
-            if let Some(fixture_types_dir) = dirs.fixture_types() {
-                let path = base_path.join(fixture_types_dir);
-                self.load_fixture_types_directory(&path)?;
-                self.fixture_types_path = Some(path);
-            }
+        // The project's fixture types and venues, from the configured
+        // directories or the defaults (`config::lighting`), each on its own:
+        // the web UI saves to the same places, so what a user makes there
+        // is what loads. A directory that is not there (any project without
+        // lighting) is simply empty.
+        let fixture_types_dir = config.fixture_types_dir();
+        let path = base_path.join(fixture_types_dir);
+        self.load_fixture_types_directory(&path)?;
+        self.fixture_types_path = Some(path);
 
-            if let Some(venues_dir) = dirs.venues() {
-                let path = base_path.join(venues_dir);
-                self.load_venues_directory(&path)?;
-                self.venues_source = Some(VenuesSource {
-                    configured: venues_dir.to_string(),
-                    path,
-                });
-            }
-        }
+        let venues_dir = config.venues_dir();
+        let path = base_path.join(venues_dir);
+        self.load_venues_directory(&path)?;
+        self.venues_source = Some(VenuesSource {
+            configured: venues_dir.to_string(),
+            path,
+        });
 
         // Every GDTF in the library no type file points at is a fixture too
         // (design §22.2).
@@ -1273,6 +1274,7 @@ impl LightingSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::lighting::Directories;
     use std::collections::HashMap;
 
     #[test]
@@ -1687,6 +1689,132 @@ mod tests {
         );
         assert!(system.current_venue_report().is_empty());
         assert!(system.library_findings().is_empty());
+    }
+
+    /// A first-run project: the Lighting area's files in the default
+    /// directories, and a config naming a current venue but no directories.
+    fn first_run_project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path();
+        for sub in [
+            "lighting/library",
+            "lighting/fixture_types",
+            "lighting/venues",
+        ] {
+            std::fs::create_dir_all(base.join(sub)).expect("mkdir");
+        }
+        std::fs::write(
+            base.join("lighting/library/synth.gdtf"),
+            crate::lighting::gdtf::build_zip(&[(
+                "description.xml",
+                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+            )]),
+        )
+        .expect("write gdtf");
+        std::fs::write(
+            base.join("lighting/fixture_types/par.light"),
+            "fixture_type \"Par\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n",
+        )
+        .expect("write");
+        std::fs::write(
+            base.join("lighting/venues/rig.light"),
+            "venue \"rig\" {\n  fixture \"Dim\" Par @ 1:1\n  \
+             fixture \"Brick\" \"Synth Brick\" mode \"8: RGBS\" @ 1:10\n}\n",
+        )
+        .expect("write");
+        dir
+    }
+
+    fn load_with(base: &Path, directories: Option<Directories>) -> LightingSystem {
+        let config = Lighting::new(Some("rig".to_string()), None, None, directories);
+        let mut system = LightingSystem::new();
+        system.load(&config, base).expect("loads");
+        system
+    }
+
+    #[test]
+    fn a_config_without_directories_loads_the_default_ones() {
+        // The hardware repro: `current_venue: rig`, no `directories`, and the
+        // files where the web UI writes them. It used to be "Venue 'rig' not
+        // found".
+        let dir = first_run_project();
+        let system = load_with(dir.path(), None);
+        let infos = system
+            .get_current_venue_fixtures()
+            .expect("the venue registers");
+        assert_eq!(infos.len(), 2);
+        assert_eq!(info(&infos, "Dim").channels.get("dimmer"), Some(&1));
+        // The GDTF from the library, in the mode its line names.
+        assert_eq!(info(&infos, "Brick").channels.get("red"), Some(&1));
+        assert_eq!(system.venues_dir(), Some("lighting/venues"));
+        assert!(system.current_venue_report().is_empty());
+    }
+
+    #[test]
+    fn naming_one_directory_leaves_the_other_at_its_default() {
+        let dir = first_run_project();
+        let base = dir.path();
+        std::fs::create_dir_all(base.join("stages")).unwrap();
+        std::fs::rename(
+            base.join("lighting/venues/rig.light"),
+            base.join("stages/rig.light"),
+        )
+        .unwrap();
+        let system = load_with(
+            base,
+            Some(Directories::new(None, Some("stages".to_string()))),
+        );
+        // Par comes from the default fixture types directory.
+        assert_eq!(system.get_current_venue_fixtures().unwrap().len(), 2);
+        assert_eq!(system.venues_dir(), Some("stages"));
+    }
+
+    #[test]
+    fn a_missing_default_directory_is_silently_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = Lighting::new(None, None, None, None);
+        let mut system = LightingSystem::new();
+        system
+            .load(&config, dir.path())
+            .expect("a project without lighting loads");
+        assert_eq!(system.venues_iter().count(), 0);
+        assert_eq!(system.fixture_types_iter().count(), 0);
+        assert!(system.fixture_type_file_errors.is_empty());
+        assert!(system.library_findings().is_empty());
+    }
+
+    #[test]
+    fn a_missing_configured_directory_reports_as_before() {
+        // Before defaults, a configured directory that was not there loaded
+        // as empty, kept as the venues directory, and the current venue was
+        // the one not found: still so.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let system = load_with(
+            dir.path(),
+            Some(Directories::new(
+                Some("nowhere/types".to_string()),
+                Some("nowhere/venues".to_string()),
+            )),
+        );
+        assert_eq!(system.venues_iter().count(), 0);
+        assert_eq!(system.venues_dir(), Some("nowhere/venues"));
+        let err = system.get_current_venue_fixtures().unwrap_err();
+        assert!(err.to_string().contains("Venue 'rig' not found"), "{err}");
+    }
+
+    #[test]
+    fn reloads_read_the_default_directories_too() {
+        let dir = first_run_project();
+        let mut system = load_with(dir.path(), None);
+        std::fs::write(
+            dir.path().join("lighting/venues/rig.light"),
+            "venue \"rig\" {\n  fixture \"Dim\" Par @ 1:1\n}\n",
+        )
+        .unwrap();
+        system.reload_venues().expect("reloads venues");
+        assert_eq!(system.get_current_venue_fixtures().unwrap().len(), 1);
+        system.reload_fixture_types().expect("reloads types");
+        assert_eq!(system.get_current_venue_fixtures().unwrap().len(), 1);
     }
 
     #[test]

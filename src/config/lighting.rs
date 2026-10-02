@@ -58,6 +58,32 @@ impl LogicalGroup {
     }
 }
 
+/// Where a project's fixture types live, relative to the project, when the
+/// config does not say: `lighting.directories.fixture_types` moves it.
+pub const DEFAULT_FIXTURE_TYPES_DIR: &str = "lighting/fixture_types";
+
+/// Where a project's venues live, relative to the project, when the config
+/// does not say: `lighting.directories.venues` moves it.
+pub const DEFAULT_VENUES_DIR: &str = "lighting/venues";
+
+/// A directory as configured, or its default: the one resolution the
+/// engine, the web API, MCP and the CLI share. An empty value is unset.
+pub fn resolve_dir<'a>(configured: Option<&'a str>, default: &'a str) -> &'a str {
+    configured.filter(|d| !d.is_empty()).unwrap_or(default)
+}
+
+/// The project's fixture types directory for a profile's lighting section,
+/// or the default when it has none.
+pub fn fixture_types_dir(lighting: Option<&Lighting>) -> &str {
+    lighting.map_or(DEFAULT_FIXTURE_TYPES_DIR, Lighting::fixture_types_dir)
+}
+
+/// The project's venues directory for a profile's lighting section, or the
+/// default when it has none.
+pub fn venues_dir(lighting: Option<&Lighting>) -> &str {
+    lighting.map_or(DEFAULT_VENUES_DIR, Lighting::venues_dir)
+}
+
 /// A YAML representation of the lighting configuration.
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Lighting {
@@ -70,7 +96,9 @@ pub struct Lighting {
     /// Logical group definitions with role-based constraints.
     groups: Option<HashMap<String, LogicalGroup>>,
 
-    /// Directory paths for loading fixture types and venues.
+    /// Where fixture types and venues are read from, when not the defaults
+    /// ([`DEFAULT_FIXTURE_TYPES_DIR`], [`DEFAULT_VENUES_DIR`]). Each is
+    /// independent: naming one leaves the other at its default.
     directories: Option<Directories>,
 }
 
@@ -120,9 +148,29 @@ impl Lighting {
         self.groups.as_ref().unwrap_or(&EMPTY)
     }
 
-    /// Gets the directories configuration.
+    /// Gets the directories configuration as written (an override of the
+    /// defaults). Code that reads or writes the project's files asks
+    /// [`Self::fixture_types_dir`] and [`Self::venues_dir`] instead.
     pub fn directories(&self) -> Option<&Directories> {
         self.directories.as_ref()
+    }
+
+    /// The fixture types directory, relative to the project: the
+    /// configured one, else [`DEFAULT_FIXTURE_TYPES_DIR`].
+    pub fn fixture_types_dir(&self) -> &str {
+        resolve_dir(
+            self.directories.as_ref().and_then(|d| d.fixture_types()),
+            DEFAULT_FIXTURE_TYPES_DIR,
+        )
+    }
+
+    /// The venues directory, relative to the project: the configured one,
+    /// else [`DEFAULT_VENUES_DIR`].
+    pub fn venues_dir(&self) -> &str {
+        resolve_dir(
+            self.directories.as_ref().and_then(|d| d.venues()),
+            DEFAULT_VENUES_DIR,
+        )
     }
 
     /// Returns the raw inline fixtures map (without cloning).
@@ -133,19 +181,6 @@ impl Lighting {
     /// Clears inline fixtures.
     pub fn clear_inline_fixtures(&mut self) {
         self.fixtures = None;
-    }
-
-    /// Sets the venues directory, creating the directories struct if needed.
-    pub fn set_venues_dir(&mut self, dir: String) {
-        match &mut self.directories {
-            Some(dirs) => dirs.venues = Some(dir),
-            None => {
-                self.directories = Some(Directories {
-                    fixture_types: None,
-                    venues: Some(dir),
-                })
-            }
-        }
     }
 }
 
@@ -223,6 +258,40 @@ mod tests {
         let front = g.get("front").unwrap();
         assert_eq!(front.name(), "front");
         assert_eq!(front.constraints().len(), 1);
+    }
+
+    #[test]
+    fn directories_resolve_per_directory_to_the_defaults() {
+        let dirs = |ft: Option<&str>, v: Option<&str>| {
+            Some(Directories::new(
+                ft.map(str::to_string),
+                v.map(str::to_string),
+            ))
+        };
+        for (directories, types, venues) in [
+            (None, DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR),
+            (
+                dirs(None, None),
+                DEFAULT_FIXTURE_TYPES_DIR,
+                DEFAULT_VENUES_DIR,
+            ),
+            (dirs(Some("t"), None), "t", DEFAULT_VENUES_DIR),
+            (dirs(None, Some("v")), DEFAULT_FIXTURE_TYPES_DIR, "v"),
+            (dirs(Some("t"), Some("v")), "t", "v"),
+            (
+                dirs(Some(""), Some("")),
+                DEFAULT_FIXTURE_TYPES_DIR,
+                DEFAULT_VENUES_DIR,
+            ),
+        ] {
+            let l = Lighting::new(None, None, None, directories);
+            assert_eq!(l.fixture_types_dir(), types);
+            assert_eq!(l.venues_dir(), venues);
+            assert_eq!(fixture_types_dir(Some(&l)), types);
+            assert_eq!(venues_dir(Some(&l)), venues);
+        }
+        assert_eq!(fixture_types_dir(None), DEFAULT_FIXTURE_TYPES_DIR);
+        assert_eq!(venues_dir(None), DEFAULT_VENUES_DIR);
     }
 
     #[test]

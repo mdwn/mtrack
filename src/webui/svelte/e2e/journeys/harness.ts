@@ -140,7 +140,12 @@ export interface Project {
 
 // No hardware: the DMX engine runs on the null client (no olad), which is
 // what keeps the lighting system, its banner and its reloads real.
-const CONFIG = `songs: songs
+//
+// This config names the lighting directories. That is why the journeys never
+// saw a first-run project's venue go unloaded when the engine read only the
+// directories a profile named: use `FIRST_RUN_CONFIG` for a config as a new
+// install has it.
+export const CONFIG = `songs: songs
 dmx:
   null_client: true
   universes:
@@ -151,6 +156,17 @@ dmx:
     directories:
       fixture_types: lighting/fixture_types
       venues: lighting/venues
+`;
+
+/** A new install's config: DMX output and nothing about lighting — no
+ *  current venue, no directories. Its lighting lives where the web UI puts
+ *  it by default. */
+export const FIRST_RUN_CONFIG = `songs: songs
+dmx:
+  null_client: true
+  universes:
+    - universe: 1
+      name: main
 `;
 
 async function freePort(): Promise<number> {
@@ -183,18 +199,24 @@ async function waitUp(url: string, child: ChildProcess, log: string[]) {
 }
 
 /** Starts a fresh project. `files` are written into it first (paths
- *  relative to the project). */
+ *  relative to the project). With `FIRST_RUN_CONFIG` as `config`, nothing
+ *  but `songs/` is made: a new project has no lighting directories yet. */
 export async function startProject(
   files: Record<string, string | Buffer> = {},
+  config: string = CONFIG,
 ): Promise<{ project: Project; stop: () => Promise<void> }> {
   if (!fs.existsSync(BINARY))
     throw new Error(
       `no mtrack binary at ${BINARY}: build one (make test-journeys does)`,
     );
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mtrack-journey-"));
-  for (const sub of ["songs", "lighting/fixture_types", "lighting/venues"])
+  const subs =
+    config === CONFIG
+      ? ["songs", "lighting/fixture_types", "lighting/venues"]
+      : ["songs"];
+  for (const sub of subs)
     fs.mkdirSync(path.join(dir, sub), { recursive: true });
-  fs.writeFileSync(path.join(dir, "mtrack.yaml"), CONFIG);
+  fs.writeFileSync(path.join(dir, "mtrack.yaml"), config);
   for (const [rel, body] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
     fs.writeFileSync(path.join(dir, rel), body);
@@ -262,11 +284,14 @@ export async function startProject(
 /** A test with its own project and server; the page's base URL is it. */
 export const test = base.extend<{
   files: Record<string, string | Buffer>;
+  /** The project's `mtrack.yaml`: `CONFIG` unless a test says otherwise. */
+  config: string;
   project: Project;
 }>({
   files: [{}, { option: true }],
-  project: async ({ files }, use) => {
-    const { project, stop } = await startProject(files);
+  config: [CONFIG, { option: true }],
+  project: async ({ files, config }, use) => {
+    const { project, stop } = await startProject(files, config);
     await use(project);
     await stop();
   },
