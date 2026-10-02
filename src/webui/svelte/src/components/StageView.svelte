@@ -451,8 +451,16 @@
     const dpr = window.devicePixelRatio || 1;
     const newW = canvasEl.clientWidth;
     const newH = canvasEl.clientHeight;
-    canvasEl.width = newW * dpr;
-    canvasEl.height = newH * dpr;
+    // Setting a canvas's size blanks it, even to the size it already has,
+    // and the next animation frame is the first thing to paint on it
+    // again. So the bitmap is only resized when it has to be, and then
+    // drawn on at once, so no frame shows an empty stage.
+    const resized =
+      canvasEl.width !== newW * dpr || canvasEl.height !== newH * dpr;
+    if (resized) {
+      canvasEl.width = newW * dpr;
+      canvasEl.height = newH * dpr;
+    }
     const c = canvasEl.getContext("2d");
     if (c) {
       c.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -472,6 +480,7 @@
 
     computeLayout(shownFixtures, shownVenue);
     publishLayout();
+    if (resized) redraw();
   }
 
   function drawPlotChrome(
@@ -788,8 +797,13 @@
     }
   }
 
+  /** Draws the plot as it is now: live channel values, or none for a file. */
+  function redraw() {
+    draw(viewingFile ? {} : get(fixtureStore));
+  }
+
   function animLoop() {
-    draw(viewingFile ? {} : $fixtureStore);
+    redraw();
     animFrame = requestAnimationFrame(animLoop);
   }
 
@@ -1334,12 +1348,19 @@
     }
   }
 
-  // Lifecycle
+  // Lifecycle: the draw loop starts when the canvas appears and stops when
+  // it goes. Nothing else restarts it. The first draw happens inside this
+  // effect, and it reads the live state, the selection and the venue; read
+  // untracked, so a change to any of them does not tear the loop down and
+  // set the canvas up again (which blanked the stage for a frame on every
+  // state message).
   $effect(() => {
     let observer: ResizeObserver | undefined;
     if (canvasEl) {
-      resizeCanvas();
-      animLoop();
+      untrack(() => {
+        resizeCanvas();
+        animLoop();
+      });
       window.addEventListener("resize", resizeCanvas);
       // The plot also changes size when the inspector opens beside it.
       observer = new ResizeObserver(() => resizeCanvas());

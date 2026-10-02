@@ -397,6 +397,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exists, and wherever the build stamp does not match the sources it prints a warning above and
   below the report: the run vetted the player, not its web UI.
 
+- **The stage plot no longer flashes on every state message**: the dashboard's stage plot and the
+  timeline's preview set their canvas up inside the same effect that drew the first frame, and that
+  first draw read the live fixture state, the selection and the venue. Every state message from the
+  player (five a second while lights are driven) re-ran the effect, which sized the canvas again,
+  and sizing a canvas blanks it until the next animation frame. So the whole venue went empty for a
+  frame each time anything changed. The first draw is now untracked, so only the canvas appearing
+  or going starts and stops the loop; the canvas is only resized when its size has changed, and is
+  drawn on at once when it is, so a resize never shows an empty stage either.
+
 ## [0.16.0] - 2026-08-19
 
 ### Added

@@ -14,6 +14,8 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
+  import { untrack } from "svelte";
+  import { get } from "svelte/store";
   import {
     metadataStore,
     fixtureStore,
@@ -125,8 +127,14 @@
     const dpr = window.devicePixelRatio || 1;
     const newW = canvasEl.clientWidth;
     const newH = canvasEl.clientHeight;
-    canvasEl.width = newW * dpr;
-    canvasEl.height = newH * dpr;
+    // Setting a canvas's size blanks it, even to the size it already has;
+    // only resize the bitmap when it has to be, and draw on it at once.
+    const resized =
+      canvasEl.width !== newW * dpr || canvasEl.height !== newH * dpr;
+    if (resized) {
+      canvasEl.width = newW * dpr;
+      canvasEl.height = newH * dpr;
+    }
     const c = canvasEl.getContext("2d");
     if (c) {
       c.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -144,7 +152,8 @@
     prevW = newW;
     prevH = newH;
 
-    computeLayout($metadataStore, $venueStore);
+    computeLayout(get(metadataStore), get(venueStore));
+    if (resized) draw(get(fixtureStore));
   }
 
   function draw(fixtureStates: Record<string, FixtureChannels>) {
@@ -289,7 +298,7 @@
   }
 
   function animLoop() {
-    draw($fixtureStore);
+    draw(get(fixtureStore));
     animFrame = requestAnimationFrame(animLoop);
   }
 
@@ -380,10 +389,15 @@
     dragFixture = null;
   }
 
+  // The draw loop starts when the canvas appears and stops when it goes;
+  // the first draw reads the live state untracked, so a state message does
+  // not restart the loop (and blank the canvas) each time one arrives.
   $effect(() => {
     if (canvasEl) {
-      resizeCanvas();
-      animLoop();
+      untrack(() => {
+        resizeCanvas();
+        animLoop();
+      });
       window.addEventListener("resize", resizeCanvas);
     }
     return () => {
