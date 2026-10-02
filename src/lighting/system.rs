@@ -145,6 +145,55 @@ fn not_a_file(dir: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Why [`LightingSystem::type_in_mode`] has no type to drive.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeInModeError {
+    /// No fixture type of that name.
+    Unknown(String),
+    /// The mode is missing, not wanted, or does not distil.
+    Mode(String),
+}
+
+impl std::fmt::Display for TypeInModeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeInModeError::Unknown(name) => write!(f, "no fixture type named \"{name}\""),
+            TypeInModeError::Mode(why) => f.write_str(why),
+        }
+    }
+}
+
+/// The effects engine's view of one fixture of `fixture_type` (a native
+/// type, or a GDTF type's expansion in a mode) patched at `universe` /
+/// `address`: its channels, their definitions (fine bytes, ranges,
+/// functions), strobe range, movement limits, rig and cells. A venue
+/// fixture is registered through this, and so is the fixture test's
+/// temporary one, so the two resolve values to DMX alike.
+pub fn fixture_info_for(
+    name: &str,
+    universe: u16,
+    address: u16,
+    type_name: &str,
+    fixture_type: &FixtureType,
+) -> crate::lighting::effects::FixtureInfo {
+    let mut fixture_info = crate::lighting::effects::FixtureInfo::new(
+        name.to_string(),
+        universe,
+        address,
+        type_name.to_string(),
+        fixture_type.channels().clone(),
+        fixture_type.max_strobe_frequency(),
+    );
+    fixture_info.min_strobe_frequency = fixture_type.min_strobe_frequency();
+    fixture_info.strobe_dmx_offset = fixture_type.strobe_dmx_offset();
+    fixture_info.channel_defs = fixture_type.channel_defs().clone();
+    fixture_info.movement = *fixture_type.movement();
+    fixture_info.rig = fixture_type.rig().map(str::to_string);
+    fixture_info.aim = fixture_type.aim();
+    fixture_info.cells = fixture_type.cells().to_vec();
+    fixture_info
+}
+
 impl LightingSystem {
     /// Creates a new lighting system.
     pub fn new() -> LightingSystem {
@@ -1114,6 +1163,54 @@ impl LightingSystem {
         }
     }
 
+    /// A fixture type as the fixture test drives it: a native type's own
+    /// channels, or a GDTF type's expansion in `mode` (already expanded for
+    /// a venue, else expanded now through the distill cache). A GDTF type
+    /// needs a mode and a native type takes none.
+    pub fn type_in_mode(
+        &self,
+        type_name: &str,
+        mode: Option<&str>,
+        base_path: &Path,
+    ) -> Result<FixtureType, TypeInModeError> {
+        match (self.referential.get(type_name), mode) {
+            (Some(_), None) => Err(TypeInModeError::Mode(format!(
+                "\"{type_name}\" is a GDTF fixture: choose one of its modes"
+            ))),
+            (Some(declared), Some(mode)) => {
+                let key = (type_name.to_string(), mode.to_string());
+                if let Some(expanded) = self.mode_expansions.get(&key) {
+                    return Ok(expanded.clone());
+                }
+                Self::expand_mode(type_name, declared, mode, base_path)
+                    .map(|(expanded, _)| expanded)
+                    .map_err(|e| {
+                        TypeInModeError::Mode(format!(
+                            "mode \"{mode}\" of \"{type_name}\" cannot be driven: {e}"
+                        ))
+                    })
+            }
+            (None, Some(_)) if self.fixture_types.contains_key(type_name) => {
+                Err(TypeInModeError::Mode(format!(
+                    "\"{type_name}\" is written by hand and has no modes"
+                )))
+            }
+            (None, _) => self
+                .fixture_types
+                .get(type_name)
+                .cloned()
+                .ok_or_else(|| TypeInModeError::Unknown(type_name.to_string())),
+        }
+    }
+
+    /// The GDTF types' archives, project-relative, by type name.
+    pub fn gdtf_archive(&self, type_name: &str) -> Option<&str> {
+        self.referential
+            .get(type_name)
+            .and_then(|t| t.source())
+            .map(|s| s.path.as_str())
+    }
+
     /// Gets all fixtures from the current venue for effects engine registration
     pub fn get_current_venue_fixtures(
         &self,
@@ -1133,24 +1230,16 @@ impl LightingSystem {
             // a hole in it and no error to say so.
             let fixture_type = self.resolve_fixture_type(fixture)?;
 
-            let mut fixture_info = crate::lighting::effects::FixtureInfo::new(
-                name.clone(),
+            let mut fixture_info = fixture_info_for(
+                name,
                 fixture.universe(),
                 fixture.start_channel(),
-                fixture.fixture_type().to_string(),
-                fixture_type.channels().clone(),
-                fixture_type.max_strobe_frequency(),
+                fixture.fixture_type(),
+                fixture_type,
             );
-            fixture_info.min_strobe_frequency = fixture_type.min_strobe_frequency();
-            fixture_info.strobe_dmx_offset = fixture_type.strobe_dmx_offset();
             fixture_info.position = fixture.position();
             fixture_info.rotation = fixture.rotation();
             fixture_info.beam_angle = fixture.beam_angle();
-            fixture_info.channel_defs = fixture_type.channel_defs().clone();
-            fixture_info.movement = *fixture_type.movement();
-            fixture_info.rig = fixture_type.rig().map(str::to_string);
-            fixture_info.aim = fixture_type.aim();
-            fixture_info.cells = fixture_type.cells().to_vec();
 
             fixture_infos.push(fixture_info);
         }

@@ -57,6 +57,145 @@ pub struct StateSnapshot {
     pub fixtures: Vec<FixtureSnapshot>,
     pub active_effects: Vec<String>,
     pub poses: Vec<PoseSnapshot>,
+    /// Venue fixtures a fixture test's output covers (some or all of
+    /// their channels), sorted: their `fixtures`, `cells` and `poses`
+    /// show the test's bytes, which are what leaves for olad.
+    pub under_test: Vec<String>,
+}
+
+/// A fixture test's output as the stage views see it: the bytes the
+/// universe's output thread lays over the show's frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TestOverlay {
+    pub universe: u16,
+    /// 1-based DMX channel and value.
+    pub channels: Vec<(u16, u8)>,
+}
+
+/// The overlay in force, shared by the DMX engine (which sets it) and the
+/// state sampler (which draws it).
+pub type TestOverlayHandle = Arc<parking_lot::RwLock<Option<TestOverlay>>>;
+
+/// Lays a fixture test's bytes over the snapshots of the venue fixtures
+/// they cover, so the plot and the 3D view show what leaves for olad, not
+/// only what the show computed: each covered channel (and fine byte,
+/// mirror, cell channel) takes the test's byte, and a covered pan or tilt
+/// moves the fixture's pose, decoded through its own channel definitions.
+/// A fixture none of whose channels is covered is untouched. Answers the
+/// fixtures it touched, sorted.
+pub(crate) fn apply_test_overlay(
+    fixtures: &mut Vec<FixtureSnapshot>,
+    poses: &mut HashMap<String, crate::lighting::effects::Pose>,
+    overlay: &TestOverlay,
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+) -> Vec<String> {
+    use crate::lighting::effects::{degrees_from_bytes, PhysicalParameter, Pose};
+    let bytes: HashMap<u16, u8> = overlay.channels.iter().copied().collect();
+    let mut touched = Vec::new();
+    for (name, info) in registry {
+        if info.parent.is_some() || info.universe != overlay.universe {
+            continue;
+        }
+        let at = |offset: u16| -> Option<u8> {
+            let absolute = u32::from(info.address) + u32::from(offset);
+            let absolute = u16::try_from(absolute.checked_sub(1)?).ok()?;
+            bytes.get(&absolute).copied()
+        };
+        let mut covered: Vec<(String, u8)> = Vec::new();
+        for (channel, def) in &info.channel_defs {
+            let fine_name = format!("{channel}_fine");
+            if let Some(b) = at(def.offset) {
+                covered.push((channel.clone(), b));
+            }
+            if let Some(b) = def.fine.and_then(at) {
+                covered.push((fine_name.clone(), b));
+            }
+            for (i, (coarse, fine)) in def.mirrors.iter().enumerate() {
+                let n = i + 2;
+                if let Some(b) = at(*coarse) {
+                    covered.push((format!("{channel}#{n}"), b));
+                }
+                if let Some(b) = fine.and_then(at) {
+                    covered.push((format!("{fine_name}#{n}"), b));
+                }
+            }
+        }
+        let mut cell_bytes: Vec<(String, String, u8)> = Vec::new();
+        for cell in &info.cells {
+            for (channel, def) in &cell.channels {
+                if let Some(b) = at(def.offset) {
+                    cell_bytes.push((cell.name.clone(), channel.clone(), b));
+                }
+            }
+        }
+        if covered.is_empty() && cell_bytes.is_empty() {
+            continue;
+        }
+        let snapshot = match fixtures.iter().position(|f| &f.name == name) {
+            Some(i) => &mut fixtures[i],
+            None => {
+                let at = fixtures.partition_point(|f| f.name.as_str() < name.as_str());
+                fixtures.insert(
+                    at,
+                    FixtureSnapshot {
+                        name: name.clone(),
+                        channels: HashMap::new(),
+                        cells: Default::default(),
+                    },
+                );
+                &mut fixtures[at]
+            }
+        };
+        if !cell_bytes.is_empty() {
+            // Every cell is drawn on its own while any is under test, each
+            // starting from what it shows now.
+            for cell in &info.cells {
+                if !snapshot.cells.contains_key(&cell.name) {
+                    let values = cell
+                        .channels
+                        .keys()
+                        .filter_map(|c| snapshot.channels.get(c).map(|v| (c.clone(), *v)))
+                        .collect();
+                    snapshot.cells.insert(cell.name.clone(), values);
+                }
+            }
+            for (cell, channel, b) in cell_bytes {
+                if let Some(values) = snapshot.cells.get_mut(&cell) {
+                    values.insert(channel, b);
+                }
+            }
+        }
+        for (channel, b) in covered {
+            snapshot.channels.insert(channel, b);
+        }
+
+        // A covered pan or tilt turns the head.
+        let mut pose = poses.get(name).copied().unwrap_or(Pose {
+            pan: 0.0,
+            tilt: 0.0,
+        });
+        let mut moved = false;
+        for parameter in [PhysicalParameter::Pan, PhysicalParameter::Tilt] {
+            let Some(def) = info.channel_defs.get(parameter.channel()) else {
+                continue;
+            };
+            let Some(coarse) = at(def.offset) else {
+                continue;
+            };
+            let degrees = degrees_from_bytes(def, parameter, coarse, def.fine.and_then(at));
+            match parameter {
+                PhysicalParameter::Pan => pose.pan = degrees,
+                PhysicalParameter::Tilt => pose.tilt = degrees,
+            }
+            moved = true;
+        }
+        if moved {
+            poses.insert(name.clone(), pose);
+        }
+        touched.push(name.clone());
+    }
+    touched.sort();
+    touched
 }
 
 /// The farthest a beam footprint is drawn from its fixture, meters: a
@@ -130,10 +269,11 @@ pub fn start_sampler(
 /// The sampler stops when the token is cancelled (e.g. on hardware reload).
 pub fn start_sampler_cancellable(
     effect_engine: Arc<Mutex<EffectEngine>>,
+    overlay: Option<TestOverlayHandle>,
     tx: Arc<watch::Sender<Arc<StateSnapshot>>>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> JoinHandle<()> {
-    tokio::spawn(sampler_loop_cancellable(effect_engine, tx, cancel))
+    tokio::spawn(sampler_loop_cancellable(effect_engine, overlay, tx, cancel))
 }
 
 /// Builds the dimmer map by querying the fixture registry on the blocking
@@ -157,32 +297,50 @@ async fn init_dimmer_map(effect_engine: &Arc<Mutex<EffectEngine>>) -> HashMap<St
 /// thread pool) and returns a snapshot, or `None` if the blocking task panicked.
 async fn sample_tick(
     effect_engine: &Arc<Mutex<EffectEngine>>,
+    overlay: Option<&TestOverlayHandle>,
     has_dimmer_map: &HashMap<String, bool>,
 ) -> Option<Arc<StateSnapshot>> {
     let engine_ref = effect_engine.clone();
     let has_dimmer_map = has_dimmer_map.clone();
-    let (fixtures, mut active_effects, poses) = tokio::task::spawn_blocking(move || {
+    let overlay = overlay.and_then(|o| o.read().clone());
+    let snapshot = tokio::task::spawn_blocking(move || {
         let engine = engine_ref.lock();
-        // A cell's sub-fixture is part of its fixture, not a fixture of
-        // its own to the stream (design §17.4): its state folds into the
-        // fixture's `cells`.
-        let registry = engine.get_fixture_registry();
-        let fixtures =
-            fixture_snapshots_with_cells(&engine.get_fixture_states(), &has_dimmer_map, registry);
-        let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
-        let poses = compute_pose_snapshots(engine.poses(), registry);
-        (fixtures, effects, poses)
+        engine_snapshot(&engine, overlay.as_ref(), &has_dimmer_map)
     })
     .await
     .ok()?;
+    Some(Arc::new(snapshot))
+}
 
+/// The state snapshot of an effect engine, with a fixture test's bytes
+/// laid over the fixtures they cover.
+pub(crate) fn engine_snapshot(
+    engine: &EffectEngine,
+    overlay: Option<&TestOverlay>,
+    has_dimmer_map: &HashMap<String, bool>,
+) -> StateSnapshot {
+    // A cell's sub-fixture is part of its fixture, not a fixture of
+    // its own to the stream (design §17.4): its state folds into the
+    // fixture's `cells`.
+    let registry = engine.get_fixture_registry();
+    let mut fixtures =
+        fixture_snapshots_with_cells(&engine.get_fixture_states(), has_dimmer_map, registry);
+    let mut active_effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
     active_effects.sort();
-
-    Some(Arc::new(StateSnapshot {
+    let (poses, under_test) = match overlay {
+        None => (compute_pose_snapshots(engine.poses(), registry), Vec::new()),
+        Some(overlay) => {
+            let mut poses = engine.poses().clone();
+            let under_test = apply_test_overlay(&mut fixtures, &mut poses, overlay, registry);
+            (compute_pose_snapshots(&poses, registry), under_test)
+        }
+    };
+    StateSnapshot {
         fixtures,
         active_effects,
         poses,
-    }))
+        under_test,
+    }
 }
 
 #[cfg(test)]
@@ -198,7 +356,7 @@ async fn sampler_loop(
     loop {
         interval.tick().await;
 
-        if let Some(snapshot) = sample_tick(&effect_engine, &has_dimmer_map).await {
+        if let Some(snapshot) = sample_tick(&effect_engine, None, &has_dimmer_map).await {
             // An idle rig must not wake subscribers twenty times a second:
             // a snapshot equal to the last one is not a change. The first
             // one always goes out, so a subscriber waiting on the sampler
@@ -219,6 +377,7 @@ async fn sampler_loop(
 /// Cancellable variant of `sampler_loop`. Stops when the token is cancelled.
 async fn sampler_loop_cancellable(
     effect_engine: Arc<Mutex<EffectEngine>>,
+    overlay: Option<TestOverlayHandle>,
     tx: Arc<watch::Sender<Arc<StateSnapshot>>>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
@@ -233,7 +392,8 @@ async fn sampler_loop_cancellable(
             _ = interval.tick() => {}
         }
 
-        if let Some(snapshot) = sample_tick(&effect_engine, &has_dimmer_map).await {
+        if let Some(snapshot) = sample_tick(&effect_engine, overlay.as_ref(), &has_dimmer_map).await
+        {
             // An idle rig must not wake subscribers twenty times a second:
             // a snapshot equal to the last one is not a change. The first
             // one always goes out, so a subscriber waiting on the sampler
@@ -651,10 +811,169 @@ mod tests {
             }],
             active_effects: vec!["effect1".to_string()],
             poses: Vec::new(),
+            under_test: Vec::new(),
         };
         let cloned = snapshot.clone();
         assert_eq!(cloned.fixtures.len(), 1);
         assert_eq!(cloned.active_effects.len(), 1);
+    }
+
+    /// A rig on universe 1: "front" (dimmer, red, green, blue at 11-14),
+    /// "side" (the same at 13-16), "far" at 100, "other" at 11 of
+    /// universe 2, and "mover" at 30 with a 16-bit pan over -270..270
+    /// (30, 31) and an 8-bit tilt (32). The show holds front and side blue.
+    fn overlay_rig() -> EffectEngine {
+        use crate::lighting::effects::{EffectInstance, EffectType};
+        use crate::lighting::types::{PhysicalRange, PhysicalUnit};
+        let par = |name: &str, universe: u16, address: u16| {
+            FixtureInfo::new(
+                name.to_string(),
+                universe,
+                address,
+                "Par".to_string(),
+                [("dimmer", 1), ("red", 2), ("green", 3), ("blue", 4)]
+                    .into_iter()
+                    .map(|(n, o)| (n.to_string(), o))
+                    .collect(),
+                None,
+            )
+        };
+        let mut engine = EffectEngine::new();
+        engine.register_fixture(par("front", 1, 11));
+        engine.register_fixture(par("side", 1, 13));
+        engine.register_fixture(par("far", 1, 100));
+        engine.register_fixture(par("other", 2, 11));
+        let mut mover = FixtureInfo::new(
+            "mover".to_string(),
+            1,
+            30,
+            "Mover".to_string(),
+            [("pan", 1), ("tilt", 3)]
+                .into_iter()
+                .map(|(n, o)| (n.to_string(), o))
+                .collect(),
+            None,
+        );
+        mover.channel_defs.insert(
+            "pan".to_string(),
+            ChannelDef {
+                fine: Some(2),
+                range: Some(PhysicalRange {
+                    from: -270.0,
+                    to: 270.0,
+                    unit: PhysicalUnit::Degrees,
+                }),
+                ..ChannelDef::at(1)
+            },
+        );
+        mover.position = Some([0.0, 0.0, 5.0]);
+        engine.register_fixture(mover);
+        engine
+            .start_effect(EffectInstance::new(
+                "blue".into(),
+                EffectType::Static {
+                    parameters: [("blue".to_string(), 1.0), ("dimmer".to_string(), 1.0)]
+                        .into_iter()
+                        .collect(),
+                    duration: std::time::Duration::from_secs(60),
+                },
+                vec!["front".into(), "side".into(), "far".into()],
+                None,
+                None,
+                None,
+            ))
+            .unwrap();
+        engine
+            .update(std::time::Duration::from_millis(23), None)
+            .unwrap();
+        engine
+    }
+
+    fn dimmers() -> HashMap<String, bool> {
+        ["front", "side", "far", "other"]
+            .into_iter()
+            .map(|n| (n.to_string(), true))
+            .collect()
+    }
+
+    fn rgb(snapshot: &StateSnapshot, name: &str) -> [u8; 4] {
+        let f = snapshot
+            .fixtures
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name} has no snapshot"));
+        ["dimmer", "red", "green", "blue"].map(|c| f.channels.get(c).copied().unwrap_or(0))
+    }
+
+    #[test]
+    fn a_fixture_test_shows_on_the_venue_fixtures_it_covers() {
+        let engine = overlay_rig();
+        let show = engine_snapshot(&engine, None, &dimmers());
+        assert_eq!(rgb(&show, "front"), [255, 0, 0, 255]);
+        assert!(show.under_test.is_empty());
+
+        // The test: red, full, at 11-14.
+        let overlay = TestOverlay {
+            universe: 1,
+            channels: vec![(11, 255), (12, 255), (13, 0), (14, 0)],
+        };
+        let tested = engine_snapshot(&engine, Some(&overlay), &dimmers());
+        // Fully covered.
+        assert_eq!(rgb(&tested, "front"), [255, 255, 0, 0]);
+        // Partly covered (13, 14 are its dimmer and red): only those.
+        assert_eq!(rgb(&tested, "side"), [0, 0, 0, 255]);
+        assert_eq!(tested.under_test, vec!["front", "side"]);
+        // Outside the span, or on another universe: untouched.
+        assert_eq!(rgb(&tested, "far"), rgb(&show, "far"));
+        assert!(tested.fixtures.iter().all(|f| f.name != "other"));
+
+        // Released: the show again, nothing marked.
+        assert_eq!(engine_snapshot(&engine, None, &dimmers()), show);
+    }
+
+    #[test]
+    fn a_covered_pan_turns_the_head() {
+        let engine = overlay_rig();
+        let rest = engine_snapshot(&engine, None, &dimmers());
+        let rest_pose = rest.poses.iter().find(|p| p.name == "mover").unwrap();
+        assert_eq!(rest_pose.pan, 0.0);
+
+        // 45° on a 16-bit -270..270 pan, through the engine's own bytes.
+        let def = &engine.get_fixture_registry()["mover"].channel_defs["pan"];
+        let bytes = crate::lighting::effects::resolve_degrees(
+            def,
+            crate::lighting::effects::PhysicalParameter::Pan,
+            45.0,
+        )
+        .bytes;
+        let overlay = TestOverlay {
+            universe: 1,
+            channels: bytes.iter().map(|(o, b)| (29 + o, *b)).collect(),
+        };
+        let tested = engine_snapshot(&engine, Some(&overlay), &dimmers());
+        let pose = tested.poses.iter().find(|p| p.name == "mover").unwrap();
+        assert!((pose.pan - 45.0).abs() < 0.01, "{}", pose.pan);
+        assert_eq!(pose.tilt, 0.0, "tilt is not covered");
+
+        // With the tilt byte too (8-bit, the fallback travel), the beam
+        // leaves straight down.
+        let tilt = crate::lighting::effects::resolve_degrees(
+            &engine.get_fixture_registry()["mover"].channel_defs["tilt"],
+            crate::lighting::effects::PhysicalParameter::Tilt,
+            30.0,
+        )
+        .bytes[0]
+            .1;
+        let mut both = overlay.clone();
+        both.channels.push((32, tilt));
+        let tilted = engine_snapshot(&engine, Some(&both), &dimmers());
+        let pose = tilted.poses.iter().find(|p| p.name == "mover").unwrap();
+        assert!((pose.tilt - 30.0).abs() < 1.1, "{}", pose.tilt);
+        assert_ne!(pose.aim, rest_pose.aim);
+        assert_eq!(tested.under_test, vec!["mover"]);
+        let mover = tested.fixtures.iter().find(|f| f.name == "mover").unwrap();
+        assert_eq!(mover.channels["pan"], bytes[0].1);
+        assert_eq!(mover.channels["pan_fine"], bytes[1].1);
     }
 
     #[tokio::test]

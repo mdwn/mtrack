@@ -25,6 +25,7 @@
     reloadStore,
     venueStore,
     poseStore,
+    underTestStore,
   } from "../lib/ws/stores";
   import type {
     FixtureChannels,
@@ -42,7 +43,8 @@
     type VenueError,
   } from "../lib/api/config";
   import type { FixturePose } from "../lib/ws/stores";
-  import { venueFailure } from "../lib/ws/status";
+  import { testOutput, venueFailure } from "../lib/ws/status";
+  import TestOutputLine from "./lighting/TestOutputLine.svelte";
   import { deckFootprint, restAim } from "../lib/stage/aim";
   import VenueInspector from "./lighting/VenueInspector.svelte";
   import { nudge } from "../lib/stage/arrange";
@@ -258,6 +260,8 @@
     !!shownFile &&
       (shownFile !== $venueStore?.name || shownFile === failedLive),
   );
+  /** Live fixtures a fixture test is driving; a file view has none. */
+  let underTest = $derived(viewingFile ? [] : $underTestStore);
   let fileView = $state<{
     name: string;
     venue: VenueData;
@@ -584,6 +588,8 @@
     const focusFill = isDark ? "#d9a441" : "#b8801f";
     const ringMember = isDark ? "#5aa9ff" : "#1c65c4";
     const ringSelected = isDark ? "#f0c040" : "#a86400";
+    const testMark = isDark ? "#ffb020" : "#b06a00";
+    const tested = new Set(viewingFile ? [] : get(underTestStore));
 
     // Stage outline
     const inset = frame ? GEO_INSET : PADDING - 20;
@@ -756,6 +762,26 @@
       ctx.font = "11px monospace";
       ctx.textAlign = "center";
       ctx.fillText(name, pos.x, pos.y + radius + 14);
+
+      // A fixture test drives it: an amber ring and a "test" badge, so
+      // the plot says why it shows what the show does not.
+      if (tested.has(name)) {
+        ctx.strokeStyle = testMark;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([3, 2]);
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, radius + 6, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        const badge = get(t)("stage.underTestBadge");
+        ctx.font = "bold 9px sans-serif";
+        const bw = ctx.measureText(badge).width + 8;
+        const by = pos.y - radius - 20;
+        ctx.fillStyle = testMark;
+        ctx.fillRect(pos.x - bw / 2, by, bw, 12);
+        ctx.fillStyle = "#1a1200";
+        ctx.fillText(badge, pos.x, by + 9);
+      }
     }
 
     // Beams: where each placed fixture points, in the color it is
@@ -1587,6 +1613,11 @@
       {/if}
     </div>
   </header>
+  {#if $testOutput && !viewingFile}
+    <p class="stage-card__test" role="status" data-testid="stage-test-output">
+      <TestOutputLine stopTestId="stage-test-output-stop" />
+    </p>
+  {/if}
   {#if viewingFile && venue}
     <p class="stage-card__no-venue" data-testid="stage-file-hint">
       {$t("stage.venueFileHint")}
@@ -1645,6 +1676,7 @@
               ontouchstart={onTouchStart}
               ontouchmove={onTouchMove}
               ontouchend={onTouchEnd}
+              data-under-test={underTest.join(",")}
             ></canvas>
           {/if}
         </div>
@@ -1937,6 +1969,18 @@
     margin: 16px 20px;
     color: var(--nc-fg-3);
     font-size: 14px;
+  }
+  .stage-card__test {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    margin: 0 20px 8px;
+    padding: 6px 10px;
+    border-left: 3px solid var(--nc-amber-fg);
+    font-size: 13px;
+    font-weight: 600;
+    overflow-wrap: anywhere;
   }
   .stage-card__no-venue--error {
     color: var(--text-danger);

@@ -898,3 +898,52 @@ Lighting area was invisible to the engine.
   runs over no lighting section, no directories, each one set, and both:
   files placed where `config::lighting` says are loaded by the engine and
   found by the web API given what the UI sends.
+
+## 15. As built: testing a fixture from its page (2026-10-02)
+
+"Does this light respond when mtrack sends to it?" — answered on the fixture's page
+(`FixtureTest.svelte`, GDTF and hand-written types), with the causes when it does not.
+
+- **Where the override sits.** In the universe's output thread
+  (`dmx::universe::Universe::compose`): every universe's frame — effects, MIDI-DMX, dimming —
+  is composed into one buffer that the thread sends to olad, and the test's channels are laid
+  over a copy of it as it goes out. That is the single point every universe's output passes,
+  it wins over everything while set, and since the show's own buffer is never touched, clearing
+  it sends the show's values again with nothing to restore. A change bumps a generation counter
+  so the frame goes out even when the show did not move.
+- **Lifetime.** `Engine::set_test_output` carries the test 5 s forward
+  (`MTRACK_TEST_OUTPUT_EXPIRY_MS` shortens it, for tests); the 44 Hz effects loop releases it
+  once that passes. `Engine::play` releases it (a song owns the lights) and `Player::set_locked`
+  releases it on lock. A universe the profile lacks is refused.
+- **Same resolution as shows.** `lighting::fixture_test` builds the fixture with
+  `system::fixture_info_for` (now shared with `get_current_venue_fixtures`), starts on a
+  one-fixture `EffectEngine` the effects a show would — a `Static` look (colour, dimmer, extra
+  colour levels), a `Strobe` at the rate, a `Move` to angles with movement limits cleared so it
+  snaps — and takes one frame. So `FixtureProfile` folds a dimmer into colour on dimmer-less
+  fixtures, `apply_strobe` places Hz in the strobe function's range, `resolve_physical` /
+  `resolve_degrees` give pan and tilt their coarse and fine bytes, CMY gets the complement. Raw
+  per-offset values override single bytes after. A GDTF mode no venue uses is expanded through
+  the distill cache (`LightingSystem::type_in_mode`).
+- **API.** `GET /api/lighting/fixture-test/options?fixture_type=`, `POST` and `DELETE
+  /api/lighting/fixture-test` — not `/api/lighting/test`, which `/api/lighting/{name}` (show
+  files) would have shadowed for a show named "test". DELETE stays open while locked.
+  `/api/status` carries `hardware.test_output`. Warnings: `venue_overlap` (named, from the
+  engine's current venue's patch spans), `past_universe_end`, `olad_unreachable`,
+  `universe_unpatched` (readiness's olad probe), `unsupported_control`.
+- **The stage views draw the override.** The engine shares the test's bytes with the state
+  sampler (`state::TestOverlay`, `Engine::test_overlay()`); `state::engine_snapshot` lays them
+  over each venue fixture they cover (channels, fine bytes, mirrors, cells; a covered pan or
+  tilt is decoded back to degrees by `degrees_from_bytes` and moves the pose) and names those
+  fixtures in `StateSnapshot::under_test`, the `state` message's `under_test`. The plot badges
+  them, 3D tints their label, the stage card shows the live line.
+- **Page.** Send is off until turned on and then sends full white; the page heartbeats every
+  2 s, rate-limits slider sends to ~20/s through one queue (so a release always lands after the
+  send before it), releases before moving to another mode/universe/address and on leaving.
+  A banner under the nav shows a live test on every page. The fixture's 3D view mirrors the
+  frame. The "Nothing happened?" list puts olad first, then the unit's own address, mode and
+  cable, beside the exact values being sent.
+- **Next steps not taken:** a **Test** button on a venue fixture in the inspector (its type,
+  mode, universe and address are already known); per-cell testing of pixel fixtures (cells are
+  ganged here, as a show without `per: cell` gangs them); reading the composed frame back
+  (the null client discards it — a `GET` of the override's last frame, or a recording client,
+  would let a journey assert on the bytes that left).

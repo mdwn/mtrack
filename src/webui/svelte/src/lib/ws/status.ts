@@ -56,8 +56,20 @@ export interface StatusData {
      *  fixture lights; `error` names the fixture and why. Absent from an
      *  older server. */
     lighting_venue?: LightingVenueStatus;
+    /** A fixture test sending to the lights from a fixture's page; null
+     *  (or absent from an older server) when none is. */
+    test_output?: TestOutputStatus | null;
   };
   controllers: ControllerStatus[];
+}
+
+export interface TestOutputStatus {
+  universe: number;
+  address: number;
+  footprint: number;
+  fixture_type: string;
+  mode: string | null;
+  expires_in_secs: number;
 }
 
 export interface LightingVenueStatus {
@@ -91,6 +103,12 @@ export const venueFailure = derived(statusStore, ($status) => {
   const venue = $status?.hardware.lighting_venue;
   return venue?.status === "failed" ? venue : null;
 });
+
+/** The fixture test that is sending to the lights, when one is. */
+export const testOutput = derived(
+  statusStore,
+  ($status) => $status?.hardware.test_output ?? null,
+);
 
 let pollHandle: ReturnType<typeof setInterval> | null = null;
 

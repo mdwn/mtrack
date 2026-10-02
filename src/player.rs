@@ -278,6 +278,9 @@ pub struct HardwareStatusSnapshot {
     /// be `connected` while the venue failed — then nothing lights — so it
     /// is its own entry.
     pub lighting_venue: LightingVenueStatus,
+    /// A fixture test's output, while one is live: which universe and
+    /// addresses it holds, and for how much longer without an update.
+    pub test_output: Option<crate::dmx::engine::TestOutputStatus>,
 }
 
 /// The current lighting venue's registration, for status surfaces.
@@ -965,6 +968,12 @@ impl Player {
     /// but playback controls continue to work.
     pub fn set_locked(&self, locked: bool) {
         self.locked.store(locked, Ordering::Relaxed);
+        // A fixture test is an edit-time tool: locking for the show ends it.
+        if locked {
+            if let Some(engine) = self.dmx_engine() {
+                engine.release_test_output();
+            }
+        }
     }
 
     /// Returns the effect engine, if a DMX engine is configured.

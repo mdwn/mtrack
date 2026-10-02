@@ -267,6 +267,7 @@ impl Player {
                 let effect_engine = dmx_engine.effect_engine();
                 crate::state::start_sampler_cancellable(
                     effect_engine,
+                    Some(dmx_engine.test_overlay()),
                     state_tx.clone(),
                     cancel.clone(),
                 );
@@ -730,6 +731,7 @@ impl Player {
                     .and_then(|d| d.venue_registration())
                     .as_ref(),
             ),
+            test_output: hw.dmx_engine.as_ref().and_then(|d| d.test_output_status()),
         }
     }
 
