@@ -117,6 +117,9 @@ export interface FixtureMetadata {
   position?: Vec3 | null;
   /** Mounting rotation in degrees about X, Y, Z, when the venue states it. */
   rotation?: Vec3 | null;
+  /** The venue's own beam angle in degrees, when a diffuser or filter makes
+   *  the fixture wider than its type says; drawing only. */
+  beam_angle?: number | null;
   /**
    * The fixture type's rig model, as a path under /api/lighting/assets/,
    * when the type was distilled from a GDTF; the 3D view draws a generic

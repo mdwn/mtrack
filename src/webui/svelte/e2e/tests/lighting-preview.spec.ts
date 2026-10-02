@@ -472,9 +472,7 @@ test.describe("3D Preview on the venue card", () => {
       await expect(page.getByTestId("caveat-wheel")).toHaveCount(0);
     });
 
-    test("beams that miss the deck are named with the length they are drawn", async ({
-      page,
-    }) => {
+    test("a beam that misses the deck is not flagged", async ({ page }) => {
       await routeSongs(page);
       const asked = await routeEvaluate(page, (time) => ({
         poses: {
@@ -490,10 +488,11 @@ test.describe("3D Preview on the venue card", () => {
       await expect.poll(() => asked.length).toBeGreaterThan(0);
       await expect(page.getByTestId("caveat-beam")).toHaveCount(0);
 
+      // Past 10 s the beam points up, off the deck: deliberate, so no pill.
+      const before = asked.length;
       await page.getByRole("slider", { name: "Moment in the song" }).fill("20");
-      await expect(page.getByTestId("caveat-beam")).toHaveText(
-        "1 beam misses the deck — drawn 4 m long",
-      );
+      await expect.poll(() => asked.length).toBeGreaterThan(before);
+      await expect(page.getByTestId("caveat-beam")).toHaveCount(0);
     });
 
     test("'no state yet' appears in Live until the engine reports", async ({

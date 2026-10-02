@@ -131,6 +131,37 @@ test.describe("3D on the venue card", () => {
     after.forEach((v, i) => expect(Math.abs(v - before[i])).toBeLessThan(0.05));
   });
 
+  test("a beam angle set in the inspector is in the venue's file and comes back", async ({
+    page,
+    project,
+  }) => {
+    const file = () =>
+      project.read(
+        project.exists("lighting/venues/house.venue")
+          ? "lighting/venues/house.venue"
+          : "lighting/venues/house.light",
+      );
+    const field = page.getByTestId("inspector-beam-angle");
+    const set = page.getByRole("button", { name: "Set beam angle" });
+    await page.goto("/#/lighting/venues/house?view=3d");
+    await expect(viewport(page)).toHaveAttribute("data-fixtures", "1");
+    await page.locator(".inspector").getByLabel("P", { exact: true }).check();
+    await expect(field).toHaveValue("");
+    await field.fill("60");
+    await set.click();
+    await expect.poll(file).toMatch(/fixture "P"[^\n]*beam_angle 60\b/);
+    // The engine reloaded the venue and says so to a fresh page: the live
+    // metadata carries the angle the 3D view draws with.
+    await page.reload();
+    await page.locator(".inspector").getByLabel("P", { exact: true }).check();
+    await expect(field).toHaveValue("60");
+
+    await field.fill("");
+    await set.click();
+    await expect.poll(file).not.toContain("beam_angle");
+    await expect(file()).toMatch(/fixture "P"[^\n]*position \(0, 2, 3\)/);
+  });
+
   test("the current venue's 3D is live, with Live | Preview", async ({
     page,
   }) => {

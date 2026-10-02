@@ -706,6 +706,13 @@ pub struct Fixture {
     /// did.
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
+
+    /// The beam angle this unit actually has on stage, in degrees, greater
+    /// than 0 and at most 180: a diffuser or filter fitted to it makes it
+    /// wider than its type says. A drawing hint for the web UI's 3D view;
+    /// nothing in the engine reads it. `None` means the type's own angle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    beam_angle: Option<f64>,
 }
 
 /// A stage-space triple: meters, right-handed Z-up, origin downstage-center
@@ -730,6 +737,7 @@ impl Fixture {
             position: None,
             rotation: None,
             mode: None,
+            beam_angle: None,
         }
     }
 
@@ -756,6 +764,18 @@ impl Fixture {
     pub fn with_rotation(mut self, rotation: Option<Vec3>) -> Fixture {
         self.rotation = rotation;
         self
+    }
+
+    /// States the beam angle the unit really has, in degrees.
+    pub fn with_beam_angle(mut self, beam_angle: Option<f64>) -> Fixture {
+        self.beam_angle = beam_angle;
+        self
+    }
+
+    /// Gets the beam angle the venue states, if any; `None` means the
+    /// fixture type's own.
+    pub fn beam_angle(&self) -> Option<f64> {
+        self.beam_angle
     }
 
     /// Gets the position, if the venue places this fixture.
@@ -935,6 +955,10 @@ impl fmt::Display for Fixture {
         }
         if let Some(rotation) = &self.rotation {
             write!(f, " rotation {}", fmt_vec3(rotation))?;
+        }
+        // Plain `Display`: whole numbers without a `.0`, never an exponent.
+        if let Some(beam_angle) = self.beam_angle {
+            write!(f, " beam_angle {beam_angle}")?;
         }
         Ok(())
     }

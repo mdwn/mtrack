@@ -351,7 +351,7 @@ focus_point = { "focus" ~ string ~ vec3 }
 // with one is an error too — the loader says which). It follows the type because the
 // type is matched first: `identifier` is atomic and greedy, so a type named
 // `mode` or `mode-x` is still a type, and `mode` is a keyword only after it.
-fixture = { "fixture" ~ string ~ (string | identifier) ~ fixture_mode? ~ "@" ~ universe_num ~ ":" ~ address_num ~ (tags | position | rotation)* }
+fixture = { "fixture" ~ string ~ (string | identifier) ~ fixture_mode? ~ "@" ~ universe_num ~ ":" ~ address_num ~ (tags | position | rotation | beam_angle)* }
 
 fixture_mode = { "mode" ~ string }
 
@@ -360,6 +360,11 @@ fixture_mode = { "mode" ~ string }
 // stage X, Y and Z axes, applied in that order.
 position = { "position" ~ vec3 }
 rotation = { "rotation" ~ vec3 }
+
+// The beam angle this unit really has on stage, in degrees (a diffuser or
+// filter makes it wider than its type says). A drawing hint for the web UI's
+// 3D view only; the parser enforces the range.
+beam_angle = { "beam_angle" ~ signed_number }
 
 vec3 = { "(" ~ signed_number ~ "," ~ signed_number ~ "," ~ signed_number ~ ")" }
 

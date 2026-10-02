@@ -491,6 +491,10 @@ pub struct FixtureInfo {
     pub position: Option<[f64; 3]>,
     /// Mounting rotation in degrees about X, Y, Z, when the venue states it.
     pub rotation: Option<[f64; 3]>,
+    /// The beam angle the venue states for this unit, in degrees, when its
+    /// own differs from the type's. A drawing hint for the 3D view; nothing
+    /// in the engine reads it.
+    pub beam_angle: Option<f64>,
     /// The structured channel definitions — fine bytes, physical ranges,
     /// function tables — that physical values resolve through. Mirrors
     /// `channels` for a fixture type that declares nothing more.
@@ -542,6 +546,7 @@ impl FixtureInfo {
             strobe_dmx_offset: None,
             position: None,
             rotation: None,
+            beam_angle: None,
             channel_defs,
             movement: crate::lighting::types::MovementLimits::default(),
             rig: None,

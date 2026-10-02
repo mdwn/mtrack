@@ -259,6 +259,10 @@ Tags are the whole vocabulary a venue offers. Anything a show wants to address
 — `front`, `left`, an odd/even split — is a tag on the fixtures, selected by a
 logical group in the config.
 
+A `.venue` fixture line may also carry `position (x, y, z)`, `rotation (x, y, z)`
+and `beam_angle <degrees>` (greater than 0, at most 180; a drawing hint for the
+web UI's 3D view that never changes the DMX), in any order after the tags.
+
 ## Authoring tips
 
 1. **Always validate before writing.** Call `validate_lighting` with your draft.

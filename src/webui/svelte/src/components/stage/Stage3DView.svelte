@@ -72,11 +72,9 @@
   } from "../../lib/lighting/changes";
   import { lightingHref } from "../../lib/lightingRoute";
   import {
-    missingBeamCount,
     wheelFixtureCount,
     type PreviewFrame,
   } from "../../lib/lighting/preview";
-  import { SKY_BEAM_LENGTH } from "../../lib/stage/rig";
   import type { StageScene } from "../../lib/stage/scene3d";
 
   interface Props {
@@ -204,7 +202,6 @@
         : { fixtures: $fixtureStore, poses: $poseStore, cells: $cellStore },
   );
   const wheels = $derived(wheelFixtureCount(shownMeta));
-  const misses = $derived(missingBeamCount(shown.poses));
   const noState = $derived(
     !fromFile &&
       !previewing &&
@@ -220,6 +217,8 @@
   let scenery = $state<Stage3DInfo["scenery"]>(null);
   /** Frames drawn, sampled every few frames — proof the scene is live. */
   let frames = $state(0);
+  /** Beams lighting the deck in the last sampled frame (`data-deck-lights`). */
+  let deckLights = $state(0);
   /** Each fixture's placement as drawn, for tests (`data-transforms`). */
   let transforms = $state("{}");
   /** The camera and each fixture's place on the canvas (`data-view`). */
@@ -272,6 +271,7 @@
           live.render();
           if (live.framesRendered % 15 === 0) {
             frames = live.framesRendered;
+            deckLights = live.deckLightCount;
             probe = JSON.stringify(live.viewProbe());
           }
           raf = requestAnimationFrame(loop);
@@ -357,6 +357,7 @@
   bind:this={hostEl}
   data-renderer={renderer}
   data-frames={frames}
+  data-deck-lights={deckLights}
   data-source={fromFile ? "file" : previewing ? "preview" : "live"}
   data-venue={shownName ?? ""}
   data-fixtures={fixtureCount}
@@ -372,7 +373,7 @@
     onpointerdown={onPointerDown}
     onpointerup={onPointerUp}
   ></canvas>
-  {#if wheels > 0 || misses > 0 || noState || (unplaced > 0 && shownName)}
+  {#if wheels > 0 || noState || (unplaced > 0 && shownName)}
     <ul class="stage3d__caveats" data-testid="stage3d-caveats">
       {#if unplaced > 0 && shownName}
         <li
@@ -388,13 +389,6 @@
       {#if wheels > 0}
         <li class="stage3d__pill" data-testid="caveat-wheel">
           {$t("stage3d.caveatWheel", { values: { count: wheels } })}
-        </li>
-      {/if}
-      {#if misses > 0}
-        <li class="stage3d__pill" data-testid="caveat-beam">
-          {$t("stage3d.caveatBeam", {
-            values: { count: misses, length: SKY_BEAM_LENGTH },
-          })}
         </li>
       {/if}
       {#if noState}

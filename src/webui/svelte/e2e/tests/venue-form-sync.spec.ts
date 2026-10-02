@@ -26,6 +26,7 @@ interface Fixture {
   tags: string[];
   position?: [number, number, number] | null;
   rotation?: [number, number, number] | null;
+  beam_angle?: number | null;
   mode?: string | null;
 }
 
@@ -238,6 +239,25 @@ test.describe("A mode per fixture in the venue form", () => {
     await card(page, "mix").locator('[data-testid^="venue-edit-"]').click();
     await expect(mode(1)).toHaveValue("9: RGBWS");
     await expect(mode(0)).toHaveValue("8: RGBS");
+  });
+
+  test("a save keeps a fixture's beam angle, which the form does not show", async ({
+    page,
+  }) => {
+    const { puts } = await serve(page, {
+      wide: [
+        { ...placed("A", 1), beam_angle: 55 },
+        { ...placed("B", 4), beam_angle: null },
+      ],
+    });
+    await card(page, "wide").locator('[data-testid^="venue-edit-"]').click();
+    await rows(page).nth(0).locator("#fix-channel-0").fill("10");
+    await save(page);
+    await expect.poll(() => puts.length).toBe(1);
+    const byName = Object.fromEntries(puts[0].fixtures.map((f) => [f.name, f]));
+    expect(byName.A.start_channel).toBe(10);
+    expect(byName.A.beam_angle).toBe(55);
+    expect(byName.B.beam_angle ?? null).toBeNull();
   });
 
   test("a row read without its mode is marked and blocks the save", async ({

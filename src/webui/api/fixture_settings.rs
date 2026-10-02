@@ -216,6 +216,7 @@ fn retyped(venue: &Venue, from: &str, to: &str) -> (Venue, usize) {
                 .with_mode(f.mode().map(str::to_string))
                 .with_position(f.position())
                 .with_rotation(f.rotation())
+                .with_beam_angle(f.beam_angle())
             } else {
                 f.clone()
             };

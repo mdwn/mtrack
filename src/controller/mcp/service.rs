@@ -2056,7 +2056,8 @@ impl McpServer {
 
     #[tool(
         description = "Validate and write a venue file (`.light`, or `.venue` \
-        for one using positions, focus points or MVR provenance) into the \
+        for one using positions, rotations, a `beam_angle`, focus points or MVR \
+        provenance) into the \
         configured venues directory. The DSL is parsed with the in-tree venue \
         parser; on failure the file is not written."
     )]

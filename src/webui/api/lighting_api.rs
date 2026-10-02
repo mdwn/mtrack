@@ -698,14 +698,17 @@ pub(super) fn broken_venue_response(name: &str, file: &str, why: &str) -> axum::
 }
 
 /// Whether a venue uses syntax only `.venue` files carry: provenance, focus
-/// points, a fixture's position or rotation, or its own GDTF mode (§21).
+/// points, a fixture's position, rotation or beam angle, or its own GDTF mode
+/// (§21).
 fn needs_venue_extension(venue: &lighting::types::Venue) -> bool {
     venue.source().is_some()
         || !venue.focus_points().is_empty()
-        || venue
-            .fixtures()
-            .values()
-            .any(|f| f.position().is_some() || f.rotation().is_some() || f.mode().is_some())
+        || venue.fixtures().values().any(|f| {
+            f.position().is_some()
+                || f.rotation().is_some()
+                || f.mode().is_some()
+                || f.beam_angle().is_some()
+        })
 }
 
 /// Resolves a lighting directory path relative to the project root.
@@ -2903,6 +2906,7 @@ fn venue_scene_json(
                     "mode": fixture.mode(),
                     "position": fixture.position(),
                     "rotation": fixture.rotation(),
+                    "beam_angle": fixture.beam_angle(),
                     "rig": rig,
                 }),
             )
@@ -3072,6 +3076,22 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
         )
         .with_position(optional_vec3(fix, "position")?)
         .with_rotation(optional_vec3(fix, "rotation")?)
+        // What the unit really throws, in degrees (a drawing hint); absent or
+        // null is the type's own. Dropping it here would silently lose it.
+        .with_beam_angle(match fix.get("beam_angle") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_f64()
+                    .filter(|v| *v > 0.0 && *v <= 180.0)
+                    .ok_or_else(|| {
+                        format!(
+                            "Fixture '{fix_name}': 'beam_angle' must be a number of degrees, \
+                             greater than 0 and at most 180, or null"
+                        )
+                    })?,
+            ),
+        })
         // The fixture's own GDTF mode (§21); absent or null is the type's
         // default. Dropping it here would silently re-mode the fixture.
         .with_mode(match fix.get("mode") {
@@ -3976,6 +3996,62 @@ show "test" {
         // Verify the DSL actually parses.
         let venues = lighting::parser::parse_venues(&dsl).unwrap();
         assert!(venues.contains_key("TestVenue"));
+    }
+
+    #[test]
+    fn venue_json_to_dsl_carries_beam_angle() {
+        let venue = |beam: serde_json::Value| {
+            let mut fixture = serde_json::json!({
+                "name": "Brick1", "fixture_type": "Brick", "universe": 1, "start_channel": 1,
+                "rotation": [60, 0, 0],
+            });
+            if !beam.is_null() {
+                fixture["beam_angle"] = beam;
+            }
+            serde_json::json!({"fixtures": [fixture]})
+        };
+        let dsl = venue_json_to_dsl("V", &venue(serde_json::json!(60))).unwrap();
+        assert!(
+            dsl.contains("rotation (60, 0, 0) beam_angle 60\n"),
+            "after rotation, no trailing .0: {dsl}"
+        );
+        let dsl = venue_json_to_dsl("V", &venue(serde_json::json!(22.5))).unwrap();
+        assert!(dsl.contains("beam_angle 22.5"), "{dsl}");
+
+        for absent in [serde_json::Value::Null, serde_json::json!(null)] {
+            let dsl = venue_json_to_dsl("V", &venue(absent)).unwrap();
+            assert!(!dsl.contains("beam_angle"), "{dsl}");
+        }
+        let mut explicit_null = venue(serde_json::json!(60));
+        explicit_null["fixtures"][0]["beam_angle"] = serde_json::Value::Null;
+        assert!(!venue_json_to_dsl("V", &explicit_null)
+            .unwrap()
+            .contains("beam_angle"));
+
+        for bad in [
+            serde_json::json!("wide"),
+            serde_json::json!(0),
+            serde_json::json!(-3),
+            serde_json::json!(181),
+            serde_json::json!(true),
+        ] {
+            let err = venue_json_to_dsl("V", &venue(bad.clone())).unwrap_err();
+            assert!(
+                err.contains("'beam_angle'") && err.contains("Brick1"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_venue_with_a_beam_angle_needs_the_venue_extension() {
+        let venue = lighting::parser::parse_venues(
+            "venue \"v\" {\n  fixture \"A\" T @ 1:1 beam_angle 60\n}\n",
+        )
+        .unwrap()
+        .remove("v")
+        .unwrap();
+        assert!(needs_venue_extension(&venue));
     }
 
     #[test]
@@ -6178,7 +6254,7 @@ show "test" {
         project_with_bricks(_dir.path(), "ft_scene", "v_scene");
         std::fs::write(
             _dir.path().join("v_scene").join("s.venue"),
-            "venue \"s\" {\n  fixture \"A\" Brick mode \"8: RGBS\" @ 1:1 position (-2, 2, 3)\n  \
+            "venue \"s\" {\n  fixture \"A\" Brick mode \"8: RGBS\" @ 1:1 position (-2, 2, 3) beam_angle 45\n  \
              fixture \"B\" Brick mode \"Mover 16bit\" @ 1:20\n  \
              fixture \"Odd\" Brick mode \"Nope\" @ 1:200\n}\n",
         )
@@ -6204,6 +6280,8 @@ show "test" {
             serde_json::json!([-2.0, 2.0, 3.0])
         );
         assert!(fixtures["B"]["position"].is_null(), "{parsed}");
+        assert_eq!(fixtures["A"]["beam_angle"], 45.0);
+        assert!(fixtures["B"]["beam_angle"].is_null(), "{parsed}");
         // Each (archive, mode) has its own rig, written to the store.
         let rig_a = fixtures["A"]["rig"].as_str().expect("a rig for A");
         let rig_b = fixtures["B"]["rig"].as_str().expect("a rig for B");

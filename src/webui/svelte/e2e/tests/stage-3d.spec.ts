@@ -86,7 +86,53 @@ test.describe("3D on the venue card", () => {
     await page.getByTestId("stage-view-plot").click();
     await expect(page).toHaveURL(/#\/$/);
     await expect(page.locator(".stage3d__viewport")).toHaveCount(0);
-    await expect(page.locator(".stage-card canvas")).toBeVisible();
+    await expect(page.locator(".stage-card__viewport > canvas")).toBeVisible();
+  });
+
+  test("lit, placed fixtures light the deck, whichever way they point", async ({
+    page,
+  }) => {
+    await page.goto(`/?wsId=${wsId}#/lighting/venues/test-venue?view=3d`);
+    // A PAR hung pointing down, one on the floor aimed up at the band with
+    // a diffuser's beam angle, and one waiting in the tray.
+    await sendWsMessage(page, wsId, {
+      type: "metadata",
+      fixtures: {
+        top: { tags: [], type: "par", position: [0, 3, 4], rig: null },
+        floor: {
+          tags: [],
+          type: "par",
+          position: [0, 0.5, 0.1],
+          rotation: [120, 0, 0],
+          rig: null,
+          beam_angle: 90,
+        },
+        spare: { tags: [], type: "par", position: null, rig: null },
+      },
+      venue: { name: "test-venue", dir: null, focus_points: {} },
+    });
+    const viewport = page.locator(".stage3d__viewport");
+    await expect(viewport).toHaveAttribute("data-renderer", /webgl|none/, {
+      timeout: 15000,
+    });
+    test.skip(
+      (await viewport.getAttribute("data-renderer")) !== "webgl",
+      "no WebGL in this browser",
+    );
+    // Nothing reported yet: every fixture is dark, and so is the deck.
+    await expect(viewport).toHaveAttribute("data-deck-lights", "0");
+    const on = { red: 255, green: 0, blue: 160, dimmer: 255, strobe: 0 };
+    await sendWsMessage(page, wsId, {
+      type: "state",
+      fixtures: { top: on, floor: on, spare: on },
+    });
+    // The two on the stage; not the one in the tray.
+    await expect(viewport).toHaveAttribute("data-deck-lights", "2");
+    await sendWsMessage(page, wsId, {
+      type: "state",
+      fixtures: { top: on, floor: { ...on, dimmer: 0 }, spare: on },
+    });
+    await expect(viewport).toHaveAttribute("data-deck-lights", "1");
   });
 
   test("the page draws the venue from rigs and reports what it drew", async ({

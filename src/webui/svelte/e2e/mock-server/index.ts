@@ -631,6 +631,7 @@ type VenueFixture = {
   tags: string[];
   position?: [number, number, number] | null;
   rotation?: [number, number, number] | null;
+  beam_angle?: number | null;
 };
 type VenueBody = {
   fixtures: VenueFixture[];
@@ -686,6 +687,7 @@ app.get("/api/lighting/venues/:name/scene", (req, res) => {
       mode: null,
       position: f.position ?? null,
       rotation: f.rotation ?? null,
+      beam_angle: f.beam_angle ?? null,
       rig: null,
     };
   }

@@ -205,12 +205,6 @@ export function wheelFixtureCount(
   }).length;
 }
 
-/** How many beams do not land on the deck (pointing up, level, or beyond
- *  the throw): the scene draws those at a fixed length. */
-export function missingBeamCount(poses: Record<string, FixturePose>): number {
-  return Object.values(poses).filter((p) => p.floor == null).length;
-}
-
 /** The song's lighting editor at a time, in seconds. */
 export function timelineLink(song: string, seconds: number): string {
   return `#/songs/${encodeURIComponent(song)}/lighting?t=${

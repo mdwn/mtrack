@@ -339,6 +339,7 @@
           type: f.fixture_type,
           position: f.position ?? null,
           rotation: f.rotation ?? null,
+          beam_angle: f.beam_angle ?? null,
           capabilities: isMoverType(f.fixture_type) ? ["pan_tilt"] : [],
         } satisfies FixtureMetadata,
       ]),
@@ -1047,6 +1048,7 @@
                   ...fixtures[name],
                   position: f.position ?? null,
                   rotation: f.rotation ?? null,
+                  beam_angle: f.beam_angle ?? null,
                 };
               }
             }

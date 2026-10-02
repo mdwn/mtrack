@@ -321,7 +321,8 @@ venue "house" {
         )
         .with_mode(f.mode().map(str::to_string))
         .with_position(f.position())
-        .with_rotation(f.rotation());
+        .with_rotation(f.rotation())
+        .with_beam_angle(f.beam_angle());
         fixtures.insert(name.to_string(), f);
         Venue::new(v.name().to_string(), fixtures)
             .with_focus_points(v.focus_points().clone())
@@ -451,6 +452,43 @@ venue "house" {
         let back = venue(&out);
         assert_eq!(back.fixtures()["A"].mode(), Some("9: RGBWS"));
         assert_eq!(back.fixtures()["B"].mode(), Some("Mover 16bit"));
+    }
+
+    #[test]
+    fn a_beam_angle_round_trips_and_a_change_rewrites_its_line() {
+        let file = "venue \"house\" {\n  # note\n  fixture \"A\" brick @ 1:1 beam_angle 60 \
+                    position (1, 2, 3)  # wide\n  fixture \"B\" brick @ 1:5  # plain\n}\n";
+        let v = venue(file);
+        assert_eq!(v.fixtures()["A"].beam_angle(), Some(60.0));
+        // Unchanged, whatever the attribute order: the bytes stay.
+        assert_eq!(patch_venue(file, "house", &v).unwrap(), file);
+
+        let change = |name: &str, angle: Option<f64>| {
+            let mut fixtures = v.fixtures().clone();
+            let f = fixtures[name].clone().with_beam_angle(angle);
+            fixtures.insert(name.to_string(), f);
+            Venue::new("house".into(), fixtures)
+        };
+        let out = patch_venue(file, "house", &change("A", Some(22.5))).unwrap();
+        assert_eq!(
+            out,
+            file.replace(
+                "  fixture \"A\" brick @ 1:1 beam_angle 60 position (1, 2, 3)  # wide",
+                "  fixture \"A\" brick @ 1:1 position (1, 2, 3) beam_angle 22.5  # wide"
+            )
+        );
+        let out = patch_venue(file, "house", &change("B", Some(90.0))).unwrap();
+        assert!(
+            out.contains("  fixture \"B\" brick @ 1:5 beam_angle 90  # plain\n"),
+            "{out}"
+        );
+        assert!(out.contains("  # note\n"), "{out}");
+        // Cleared: the attribute goes, the comment stays.
+        let out = patch_venue(file, "house", &change("A", None)).unwrap();
+        assert!(
+            out.contains("  fixture \"A\" brick @ 1:1 position (1, 2, 3)  # wide\n"),
+            "{out}"
+        );
     }
 
     #[test]

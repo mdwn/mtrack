@@ -87,7 +87,8 @@ async function withCurrentVenue(page: Page, path: string) {
 }
 
 const viewport = (page: Page) => page.locator(".stage3d__viewport");
-const plot = (page: Page) => page.locator(".stage-card__viewport canvas");
+// The plot's own canvas: the 3D view's is one level further down.
+const plot = (page: Page) => page.locator(".stage-card__viewport > canvas");
 const plotButton = (page: Page) => page.getByTestId("stage-view-plot");
 const threeButton = (page: Page) => page.getByTestId("stage-view-3d");
 
