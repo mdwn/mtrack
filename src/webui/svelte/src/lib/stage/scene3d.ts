@@ -47,8 +47,7 @@ import {
 import { fittedMesh } from "./fit";
 import {
   beamSpread,
-  DECK_FRAGMENT,
-  DECK_VERTEX,
+  DECK_SHADER,
   LIGHT_FLOATS,
   MAX_CONE_DEG,
   MAX_DECK_LIGHTS,
@@ -316,18 +315,12 @@ export class StageScene {
     THREE.RGBAFormat,
     THREE.FloatType,
   );
-  /** The light the beams put on the deck, added over its own colour. */
-  private deckLight = new THREE.ShaderMaterial({
-    uniforms: {
-      uLights: { value: this.deckTexture },
-      uCount: { value: 0 },
-    },
-    vertexShader: DECK_VERTEX,
-    fragmentShader: DECK_FRAGMENT,
-    blending: THREE.AdditiveBlending,
-    transparent: true,
-    depthWrite: false,
-  });
+  private deckUniforms = {
+    uLights: { value: this.deckTexture },
+    uCount: { value: 0 },
+  };
+  /** The deck's surface, which carries the light the beams put on it. */
+  private deckSurface = this.deckMaterial();
   private deckOwned: { dispose(): void }[] = [];
   private stats: SceneStats = {
     fixtures: 0,
@@ -908,6 +901,31 @@ export class StageScene {
     return geometry;
   }
 
+  /** The deck's material: three's standard one, with the beams' light
+   *  (decklight.ts) added to its own shader. */
+  private deckMaterial(): THREE.MeshStandardMaterial {
+    const material = new THREE.MeshStandardMaterial({
+      color: 0x1a2029,
+      roughness: 1,
+    });
+    const after = (source: string, chunk: string, added: string) =>
+      source.replace(`#include <${chunk}>`, `#include <${chunk}>\n${added}`);
+    material.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, this.deckUniforms);
+      shader.vertexShader = after(
+        after(shader.vertexShader, "common", DECK_SHADER.vertexPars),
+        "begin_vertex",
+        DECK_SHADER.vertex,
+      );
+      shader.fragmentShader = after(
+        after(shader.fragmentShader, "common", DECK_SHADER.fragmentPars),
+        "emissivemap_fragment",
+        DECK_SHADER.fragment,
+      );
+    };
+    return material;
+  }
+
   private buildDeck() {
     this.deck.clear();
     for (const owned of this.deckOwned) owned.dispose();
@@ -916,20 +934,10 @@ export class StageScene {
     const depth = maxY - minY;
     const midY = (minY + maxY) / 2;
     const plane = new THREE.PlaneGeometry(width, depth);
-    const surface = new THREE.MeshStandardMaterial({
-      color: 0x1a2029,
-      roughness: 1,
-    });
-    this.deckOwned = [plane, surface];
-    const deck = new THREE.Mesh(plane, surface);
+    this.deckOwned = [plane];
+    const deck = new THREE.Mesh(plane, this.deckSurface);
     deck.position.set(0, midY, -0.005);
     this.deck.add(deck);
-    // The beams' light, drawn over the deck on the same plane (the same
-    // geometry at the same place has the same depth, so it never fights).
-    const lit = new THREE.Mesh(plane, this.deckLight);
-    lit.position.copy(deck.position);
-    lit.renderOrder = 1;
-    this.deck.add(lit);
     const grid = new THREE.GridHelper(
       Math.max(width, depth),
       Math.max(width, depth),
@@ -1065,10 +1073,7 @@ export class StageScene {
         }
       }
     }
-    this.deckLight.uniforms.uCount.value = packDeckLights(
-      lights,
-      this.deckLights,
-    );
+    this.deckUniforms.uCount.value = packDeckLights(lights, this.deckLights);
     this.deckTexture.needsUpdate = true;
     for (const [name, helper] of this.selectionBoxes) {
       const actor = this.actors.get(name);
@@ -1091,7 +1096,7 @@ export class StageScene {
 
   /** How many beams lit the deck in the last frame. */
   get deckLightCount(): number {
-    return this.deckLight.uniforms.uCount.value as number;
+    return this.deckUniforms.uCount.value;
   }
 
   get lastStats(): SceneStats {
@@ -1106,7 +1111,7 @@ export class StageScene {
     for (const owned of this.focusOwned) owned.dispose();
     for (const geometry of this.primitives.values()) geometry.dispose();
     for (const owned of this.deckOwned) owned.dispose();
-    this.deckLight.dispose();
+    this.deckSurface.dispose();
     this.deckTexture.dispose();
     this.cache.dispose();
     this.controls.dispose();

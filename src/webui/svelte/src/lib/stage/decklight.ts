@@ -27,8 +27,8 @@
  * Brightness is relative, not photometric: every fixture is taken to put
  * out the same light, so a narrow beam is brighter than a wide one, and
  * the result is compressed the way an eye adapts. The formula is written
- * twice, here ({@link deckLight}) and in {@link DECK_FRAGMENT} for the
- * GPU, from the same constants.
+ * twice, here ({@link deckLight}) and in {@link DECK_SHADER} for the GPU,
+ * from the same constants.
  */
 
 type Vec3 = [number, number, number];
@@ -201,29 +201,36 @@ export function packDeckLights(
   return kept.length;
 }
 
-export const DECK_VERTEX = /* glsl */ `
-varying vec3 vWorld;
-void main() {
-  vec4 world = modelMatrix * vec4(position, 1.0);
-  vWorld = world.xyz;
-  gl_Position = projectionMatrix * viewMatrix * world;
-}
-`;
-
-/** {@link deckLight} and {@link deckColor}, summed over the packed lights. */
-export const DECK_FRAGMENT = /* glsl */ `
+/**
+ * The shader, as additions to the deck's own material (three's standard
+ * one), not a second surface over it: two surfaces on one plane disagree
+ * about which is in front from one camera position to the next, and the
+ * light flickers whenever the camera moves.
+ */
+export const DECK_SHADER = {
+  /** After `#include <common>` in the vertex shader. */
+  vertexPars: /* glsl */ `
+varying vec3 vDeckWorld;
+`,
+  /** After `#include <begin_vertex>`. */
+  vertex: /* glsl */ `
+vDeckWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+`,
+  /** After `#include <common>` in the fragment shader: {@link deckLight}
+   *  and {@link deckColor}, summed over the packed lights. */
+  fragmentPars: /* glsl */ `
 precision highp sampler2D;
 uniform sampler2D uLights;
 uniform int uCount;
-varying vec3 vWorld;
-void main() {
+varying vec3 vDeckWorld;
+vec3 deckLight() {
   vec3 sum = vec3(0.0);
   for (int i = 0; i < ${MAX_DECK_LIGHTS}; i++) {
     if (i >= uCount) break;
     vec4 origin = texelFetch(uLights, ivec2(0, i), 0);
     vec4 aim = texelFetch(uLights, ivec2(1, i), 0);
     vec4 color = texelFetch(uLights, ivec2(2, i), 0);
-    vec3 v = vec3(vWorld.xy, 0.0) - origin.xyz;
+    vec3 v = vec3(vDeckWorld.xy, 0.0) - origin.xyz;
     float len = max(length(v), 1e-6);
     vec3 dir = v / len;
     float cosA = dot(dir, aim.xyz);
@@ -234,8 +241,12 @@ void main() {
       / max(len * len, ${(NEAR * NEAR).toFixed(4)});
   }
   float peak = max(sum.r, max(sum.g, sum.b));
-  gl_FragColor = vec4(
-    sum * (${GAIN.toFixed(4)} / (peak + ${HALF_LEVEL.toFixed(4)})), 1.0);
-  #include <colorspace_fragment>
+  return sum * (${GAIN.toFixed(4)} / (peak + ${HALF_LEVEL.toFixed(4)}));
 }
-`;
+`,
+  /** After `#include <emissivemap_fragment>`: the light is the deck's own
+   *  glow, added to what the room's lights make of it. */
+  fragment: /* glsl */ `
+totalEmissiveRadiance += deckLight();
+`,
+};
