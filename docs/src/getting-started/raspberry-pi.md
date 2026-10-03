@@ -6,7 +6,9 @@ image: Raspberry Pi OS Lite with mtrack installed and running on boot, reachable
 
 ## What you need
 
-- A Raspberry Pi 3 or newer, or a Pi Zero 2 W (the image is 64-bit), with its power supply.
+- A **Raspberry Pi 4 or 5** with its power supply. Those are the boards mtrack is run and
+  tested on. The image is 64-bit Raspberry Pi OS, so it boots on any 64-bit Pi, but a Pi 3 or
+  Zero 2 W has not been measured with real shows and nothing here promises it keeps up.
 - A microSD card, 8 GB or larger, and a way to write it from your computer.
 - A network the Pi and your computer share: wifi, or an Ethernet cable to the same router.
 - A USB audio interface. For lights, a USB DMX interface that `olad` supports.

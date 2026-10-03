@@ -39,8 +39,9 @@ reachable without a keyboard and a monitor.
 
 [Raspberry Pi Image](raspberry-pi.md) walks through the flash, the first boot,
 finding the Pi on the network, loading songs by upload, patching `olad`, and
-updating. The image is 64-bit, so it needs a Pi 3 or newer; on anything older,
-or on 32-bit Raspberry Pi OS, install from source with cargo.
+updating. mtrack is run and tested on the Pi 4 and Pi 5. The image is 64-bit, so
+it boots on any 64-bit Pi, but older boards have not been measured with real
+shows; on 32-bit Raspberry Pi OS, install from source with cargo.
 
 ## Debian, Ubuntu and Raspberry Pi OS packages
 
