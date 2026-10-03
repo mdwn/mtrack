@@ -5,6 +5,7 @@
 # Getting Started
 
 - [Installation](getting-started/installation.md)
+- [Raspberry Pi Image](getting-started/raspberry-pi.md)
 - [Quick Start](getting-started/quick-start.md)
 - [Discovering Devices](getting-started/devices.md)
 - [Hardware Configuration](getting-started/hardware-config.md)
