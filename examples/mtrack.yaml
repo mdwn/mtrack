@@ -2,8 +2,10 @@
 # If the path is not absolute, it will be relative to the location of this file.
 songs: songs
 
-# The path to the playlist file.
-playlist: playlist.yaml
+# The directory of playlist files, relative to this file. Each `<name>.yaml` in it is a
+# playlist named after the file; `active_playlist` picks the one selected at startup.
+playlists_dir: playlists/
+active_playlist: playlist
 
 # --- Hardware Profiles ---
 #
