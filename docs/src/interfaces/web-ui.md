@@ -53,6 +53,20 @@ A 2px pink fill at the bottom edge of the top nav reflects elapsed/total playbac
 while a song is playing, so you can tell where you are in the song without leaving the page
 you're working on.
 
+## Banners under the navigation
+
+A few states that matter on every page show as a full-width line under the top nav until they
+end:
+
+- **The current venue did not load** (red): no fixture will light until the venue file is fixed.
+  It names the venue and the reason, with a link to it (see
+  [When a venue does not load](../lighting/configuration.md#when-a-venue-does-not-load)).
+- **Test output is live** — a fixture test is sending to the lights, with the universe and
+  addresses, a link to the fixture's page and **Stop** (see [Testing a fixture](#testing-a-fixture)).
+- **mtrack was updated** — the server now runs a newer web UI than this tab loaded, after an
+  upgrade or restart. **Reload** loads it; the tab never reloads by itself, since you may be in
+  the middle of an edit.
+
 ## Unsaved-Changes Guard
 
 When you have unsaved edits in the Songs detail, Config, Playlists, or Lighting editors, the
@@ -505,20 +519,24 @@ the dashboard's playlist dropdown.
 ## Lighting
 
 The **Lighting** item in the top navigation holds everything about lights, in one place. It has
-six pages, shown as tabs across the top. Each page has its own address, so you can bookmark it:
+five pages, shown as tabs across the top, and an import wizard that belongs to Venues. Each has
+its own address, so you can bookmark it. New to it? [First Light](../lighting/first-light.md)
+goes from a GDTF to a show through these pages.
 
 | Page | Address | What it holds |
 |---|---|---|
 | Overview | `#/lighting` | The readiness checks: will your show reach the lights? |
-| Fixture Types | `#/lighting/fixtures` | The kinds of fixture in your rig |
+| Fixture types | `#/lighting/fixtures` | The kinds of fixture in your rig: GDTFs and hand-written types |
 | Venues | `#/lighting/venues` | Where fixtures sit, and the stage plot |
 | Groups | `#/lighting/groups` | Logical groups and the current venue, for one hardware profile |
 | Fit shows | `#/lighting/fit` | Fit your shows to the venue and the rig: tags, focus points, outputs |
+| Import an MVR | `#/lighting/import` | The MVR import wizard (from Venues) |
 
 What a page has open is part of its address too: a fixture's page is `#/lighting/fixtures/<name>`,
 the venue selected for the stage card is `#/lighting/venues/<name>` (`?edit` when its form is open,
 `?view=3d` when the card shows 3D, with `&mode=preview&song=<name>&t=<seconds>` for a previewed
-moment), and a new form is `?new=venue`, `?new=light` or `?new=fixture`. The browser's Back, a reload and a
+moment), and a new form is `?new=venue`, `?new=light` or `?new=fixture`. Groups takes
+`?profile=<name>` and Fit shows `?group=<name>`. The browser's Back, a reload and a
 shared link land where they say, and a page's tab always returns to its list.
 
 Two kinds of state live here, and they are stored differently.
@@ -585,7 +603,7 @@ The page checks again when the venue or the configuration reloads, so after you 
 the check turns ready without a refresh. A profile with no DMX output shows only the Output check
 as blocked, with a link to enable it.
 
-### Fixture Types
+### Fixture types
 
 A fixture you have a GDTF for needs nothing from you but the GDTF. **Import GDTF** takes a `.gdtf`
 and that is all: the fixture is listed at once, its page opens, and every one of its modes is
@@ -622,8 +640,8 @@ own table of steps when it has one ("as the GDTF declares (12 steps)"), else lin
 its two ends. **Period** is for a unit whose firmware is linear in the flash length, as the Astera
 PixelBrick's is: set it there, or a 10 Hz strobe flashes about once every one and a half seconds.
 **Linear in Hz** ignores a table. If a 2 Hz strobe does not flash twice a second when you test the
-fixture, try another curve. See [Strobe curve](../lighting/configuration.md#strobe-curve-
-strobe_curve).
+fixture, try another curve. See
+[Strobe curve](../lighting/configuration.md#strobe-curve-strobe_curve).
 
 Deleting a fixture from a GDTF removes its GDTF too, unless another fixture uses the same file.
 If a venue uses it, the confirmation says how many fixtures in which venues, and that those venues
@@ -687,7 +705,7 @@ and where an MVR import came from.
 
 A fixture from a GDTF has a **Mode** select on its row listing every mode with its footprint
 (modes mtrack cannot drive are shown but cannot be chosen), so one venue can mix, say, RGBS and
-RGBWS bricks; nothing needs setting up on the Fixtures page first. A new row takes the previous
+RGBWS bricks; nothing needs setting up on the Fixture types page first. A new row takes the previous
 row's mode when it is the same fixture, otherwise the first mode mtrack can drive, so **Add
 Fixture** then **Save** always writes a line with its mode. Changing a row's fixture picks that
 fixture's first drivable mode. A line read from a file without a mode is marked **Choose a mode for
@@ -917,6 +935,12 @@ Directories, the current venue, inline fixtures and logical groups with their co
 the profile at the top. **Save** writes that profile; leaving the page with unsaved edits asks
 first.
 
+The **current venue** is the one the engine lights; shows play on it, and the live stage views
+draw it. Choosing another one here is how you move the rig from one place to another. Inline
+fixtures are kept in the profile but the engine does not patch them; put fixtures in a venue
+(`mtrack migrate --apply` moves inline ones into one, see the
+[command-line reference](../reference/cli.md#mtrack-migrate)).
+
 ### Fit shows
 
 An imported venue arrives with no tags, so every group a show uses finds no fixtures; a console's
@@ -959,7 +983,6 @@ The config editor provides a profile-based hardware configuration UI with tabs f
 - **Audio** — Device selection, sample rate, format, buffer size, track mappings
 - **MIDI** — Device selection, beat clock, MIDI-to-DMX passthrough mappings with Note Mapper
   and CC Mapper transformer editors
-- **DMX** — OLA host/port, universe mappings
 - **Lighting** — The DMX hardware: OLA host and port, universe mappings. Below it, a summary of
   the profile's current venue and group count, with an **Edit in Lighting** link. Fixture types,
   venues and groups are edited in the [Lighting](#lighting) area

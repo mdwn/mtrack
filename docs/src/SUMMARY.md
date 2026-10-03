@@ -31,6 +31,7 @@
 # Lighting
 
 - [Overview](lighting/overview.md)
+- [First Light: From a GDTF to a Show](lighting/first-light.md)
 - [Configuration](lighting/configuration.md)
 - [Effects Reference](lighting/effects.md)
 - [Cueing Features](lighting/cueing.md)
@@ -47,5 +48,6 @@
 
 # Reference
 
+- [Command-Line Reference](reference/cli.md)
 - [MIDI Events](reference/midi-events.md)
 - [Known Limitations](reference/known-limitations.md)

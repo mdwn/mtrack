@@ -57,6 +57,10 @@ Rapidly flashes fixtures on and off at a specified frequency.
 - `frequency`: Flashes per second (Hz), or tempo-aware (e.g., `8`, `1beat`, `0.5measures`)
 - `duration`: **Required.** Duration of the strobe effect (e.g., `3s`, `4measures`)
 
+A fixture with a strobe channel is sent the rate on it, through the fixture's
+[strobe curve](configuration.md#strobe-curve-strobe_curve); a fixture without one is flashed by
+mtrack itself, switching its output on and off.
+
 **Example:**
 ```light
 @00:15.000

@@ -67,7 +67,14 @@ About 60 tools are available. They fall into a few groups:
   list the lighting cues and active effects, and fetch a DSL reference primer. Manufacturer and
   venue files import through `list_gdtf_modes` / `import_gdtf` and `inspect_mvr` / `import_mvr`
   (and go back out through `export_mvr`),
-  so an agent can fetch a GDTF or a venue's MVR, read its modes or pick the origin, and wire it in. Deleting a song's lighting file also removes its `lighting:` entry, so the song is never
+  so an agent can fetch a GDTF or a venue's MVR, read its modes or pick the origin, and wire it in.
+  `import_gdtf` takes the archive's path and an optional `name`, and nothing about modes: a GDTF
+  in the library is a fixture type with all of its modes, and every venue fixture line of it
+  names one (`mode "…"`), which `list_gdtf_modes` lists with footprints. `list_fixture_types`
+  lists hand-written types with their channels and GDTF fixtures with their archive and modes,
+  each with its `strobe_curve` (null when automatic) and the `strobe_curve_in_use`. A GDTF
+  fixture's own settings (its record) are written with the fixture-type tools as a `.fixture`
+  file. Deleting a song's lighting file also removes its `lighting:` entry, so the song is never
   left with a dangling reference.
   `validate_lighting` returns each show's resolved cue timeline alongside the parse result, so
   "the cues land where I meant" can be checked without loading the show into the player, plus
