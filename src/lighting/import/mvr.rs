@@ -1721,7 +1721,6 @@ mod tests {
         let config = crate::config::lighting::Lighting::new(
             Some("kellys".to_string()),
             None,
-            None,
             Some(crate::config::lighting::Directories::new(
                 Some("lighting/fixture_types".to_string()),
                 Some("lighting/venues".to_string()),
@@ -2405,7 +2404,6 @@ mod tests {
         // Through the real loader, each fixture gets its own mode's channels.
         let config = crate::config::lighting::Lighting::new(
             Some("kellys".to_string()),
-            None,
             None,
             Some(crate::config::lighting::Directories::new(
                 Some("lighting/fixture_types".to_string()),

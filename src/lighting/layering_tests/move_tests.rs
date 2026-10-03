@@ -397,7 +397,6 @@ fn the_same_move_aims_correctly_in_two_venues() {
         let config = Lighting::new(
             Some(venue_name.to_string()),
             None,
-            None,
             Some(Directories::new(
                 Some("fixture_types".to_string()),
                 Some("venues".to_string()),

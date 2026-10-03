@@ -42,6 +42,8 @@ struct MigrationPlan {
     files_to_copy: Vec<(PathBuf, PathBuf)>,
     dirs_to_create: Vec<PathBuf>,
     files_to_delete: Vec<PathBuf>,
+    /// (file, backup) pairs copied before anything is written.
+    files_to_backup: Vec<(PathBuf, PathBuf)>,
     config_yaml: Option<String>,
     config_path: PathBuf,
     backup_path: PathBuf,
@@ -56,6 +58,7 @@ impl MigrationPlan {
             files_to_copy: Vec::new(),
             dirs_to_create: Vec::new(),
             files_to_delete: Vec::new(),
+            files_to_backup: Vec::new(),
             config_yaml: None,
             config_path,
             backup_path,
@@ -103,6 +106,11 @@ impl MigrationPlan {
             std::fs::create_dir_all(dir)?;
         }
 
+        // Back up files about to be rewritten.
+        for (src, dst) in &self.files_to_backup {
+            std::fs::copy(src, dst)?;
+        }
+
         // Write files.
         for (path, content) in &self.files_to_write {
             std::fs::write(path, content)?;
@@ -141,14 +149,15 @@ pub fn migrate(path: &str, apply: bool) -> Result<(), Box<dyn Error>> {
     let raw_player = config::Player::deserialize_raw(&config_path)?;
 
     // Now deserialize with normalize to get the canonical form.
-    let mut player = config::Player::deserialize(&config_path)?;
+    // The load refuses retired fields; this one tolerates the one it moves.
+    let mut player = config::Player::deserialize_for_migration(&config_path)?;
 
     let mut plan = MigrationPlan::new(config_path.clone());
 
     // Step C runs before A so fixture mutations are applied to profiles before
     // they are serialized and cleared by the profiles migration step.
     // Step C: Inline fixtures → venue file
-    migrate_fixtures(&raw_player, &mut player, &config_dir, &mut plan);
+    migrate_fixtures(&raw_player, &config_path, &config_dir, &mut plan);
 
     // Step A: Profiles → profiles_dir
     migrate_profiles(&raw_player, &mut player, &config_dir, &mut plan);
@@ -306,40 +315,86 @@ fn migrate_playlist(
     Ok(())
 }
 
-/// Step C: Migrate inline fixtures to a venue file.
+/// Step C: Move the retired inline fixtures (`dmx.lighting.fixtures`) into a
+/// venue file, `inline_migrated.light`. They are read from every place a
+/// profile can carry them — the top-level `dmx`, each inline profile, and
+/// each file in `profiles_dir` — since the loader now refuses the field
+/// wherever it is. The field is never written back, so rewriting
+/// `mtrack.yaml` drops it; a profile file that had it is rewritten too.
 fn migrate_fixtures(
     raw: &config::Player,
-    player: &mut config::Player,
+    config_path: &Path,
     config_dir: &Path,
     plan: &mut MigrationPlan,
 ) {
-    // Check raw config for inline fixtures (they live in dmx.lighting.fixtures).
-    // Check profiles first (modern config), then fall back to the raw top-level
-    // dmx field (legacy config before normalize moves it into profiles).
-    let lighting = raw
-        .lighting_from_profiles()
-        .or_else(|| raw.dmx_raw().and_then(|d| d.lighting()));
-    let fixtures = lighting.and_then(|l| l.inline_fixtures_raw()).cloned();
-
-    let fixtures = match fixtures {
-        Some(f) if !f.is_empty() => f,
-        _ => return,
+    let mut fixtures: std::collections::BTreeMap<String, String> = Default::default();
+    let mut venues_dir: Option<String> = None;
+    let mut take = |lighting: &config::Lighting| {
+        if let Some(found) = lighting.retired_inline_fixtures() {
+            fixtures.extend(found.iter().map(|(k, v)| (k.clone(), v.clone())));
+            venues_dir.get_or_insert_with(|| lighting.venues_dir().to_string());
+            true
+        } else {
+            false
+        }
     };
+    if let Some(lighting) = raw.dmx_raw().and_then(|d| d.lighting()) {
+        take(lighting);
+    }
+    for profile in raw.inline_profiles().unwrap_or_default() {
+        if let Some(lighting) = profile.dmx().and_then(|d| d.lighting()) {
+            take(lighting);
+        }
+    }
+    // Profile files: each one that carries the field is rewritten without it.
+    if let Some(dir) = raw.profiles_dir_resolved(config_path) {
+        for path in config::list_profile_files(&dir).unwrap_or_default() {
+            let Ok(profile) = ::config::Config::builder()
+                .add_source(::config::File::from(path.as_path()))
+                .build()
+                .and_then(|c| c.try_deserialize::<config::Profile>())
+            else {
+                continue;
+            };
+            let Some(lighting) = profile.dmx().and_then(|d| d.lighting()) else {
+                continue;
+            };
+            if !take(lighting) {
+                continue;
+            }
+            match crate::util::to_yaml_string(&profile) {
+                Ok(yaml) => {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    plan.add_action(
+                        "Lighting",
+                        format!("Rewrite profile {name} without its inline fixtures"),
+                    );
+                    plan.files_to_backup
+                        .push((path.clone(), path.with_extension("yaml.bak")));
+                    plan.files_to_write.push((path, yaml));
+                }
+                Err(e) => eprintln!("Warning: failed to serialize {}: {e}", path.display()),
+            }
+        }
+    }
+
+    if fixtures.is_empty() {
+        return;
+    }
 
     // The venues directory the engine reads: the configured one, else the
     // default — no setting is needed for the default.
-    let venues_dir = config_dir.join(config::lighting::venues_dir(lighting));
+    let venues_dir = config_dir
+        .join(venues_dir.unwrap_or_else(|| config::lighting::DEFAULT_VENUES_DIR.to_string()));
     let venue_path = venues_dir.join("inline_migrated.light");
-
     plan.dirs_to_create.push(venues_dir);
 
-    // Generate venue DSL.
-    let mut lines = vec![format!("venue \"inline_migrated\" {{")];
-    let mut sorted_fixtures: Vec<_> = fixtures.iter().collect();
-    sorted_fixtures.sort_by_key(|(name, _)| name.as_str());
-
-    for (name, type_spec) in &sorted_fixtures {
-        // type_spec is expected to be "Type @ universe:channel"
+    // Generate venue DSL; each value is "Type @ universe:channel".
+    let mut lines = vec!["venue \"inline_migrated\" {".to_string()];
+    for (name, type_spec) in &fixtures {
         lines.push(format!("  fixture \"{}\" {}", name, type_spec));
     }
     lines.push("}".to_string());
@@ -353,23 +408,10 @@ fn migrate_fixtures(
         ),
     );
     plan.files_to_write.push((venue_path, venue_content));
-
-    plan.add_action("Lighting", "Clear inline fixtures".to_string());
-
-    // Clear the fixtures on the profiles (after normalize).
-    if let Some(profiles) = player.profiles_mut() {
-        for profile in profiles.iter_mut() {
-            if let Some(dmx) = profile.dmx_mut() {
-                if let Some(lighting) = dmx.lighting_mut() {
-                    lighting.clear_inline_fixtures();
-                }
-            }
-        }
-    }
-    // Also clear on the raw dmx field (which will be serialized if profiles haven't been set up).
-    if let Some(lighting) = player.lighting_mut() {
-        lighting.clear_inline_fixtures();
-    }
+    plan.add_action(
+        "Lighting",
+        "Clear inline fixtures (dmx.lighting.fixtures is retired)".to_string(),
+    );
 }
 
 /// Step D: Clear legacy top-level fields (they've already been normalized into profiles).
@@ -1442,11 +1484,20 @@ profiles:
 
         migrate(dir.path().to_str().unwrap(), true).unwrap();
 
-        // Venue file created.
-        assert!(dir
-            .path()
-            .join("lighting/venues/inline_migrated.light")
-            .exists());
+        // Venue file created, with every profile's fixtures.
+        let venue =
+            std::fs::read_to_string(dir.path().join("lighting/venues/inline_migrated.light"))
+                .unwrap();
+        assert!(
+            venue.contains("fixture \"par1\" GenericPar @ 1:1"),
+            "{venue}"
+        );
+        assert!(
+            venue.contains("fixture \"mover1\" MovingHead @ 2:1"),
+            "{venue}"
+        );
+        // And the result loads: nothing retired is left behind.
+        crate::config::Player::deserialize(&dir.path().join("mtrack.yaml")).unwrap();
 
         // Both profile files should have fixtures cleared.
         let pi_a = std::fs::read_to_string(dir.path().join("profiles/pi-a.yaml")).unwrap();
@@ -1460,6 +1511,38 @@ profiles:
             !pi_b.contains("MovingHead"),
             "fixtures should be cleared from pi-b profile"
         );
+    }
+
+    #[test]
+    fn test_migrate_moves_inline_fixtures_out_of_profile_files() {
+        // A profile file in profiles_dir that the loader now refuses: migrate
+        // still reads it, moves its fixtures into a venue and rewrites it.
+        let (dir, config_path) = setup_migration(
+            "songs: songs\nprofiles_dir: profiles/\n",
+            &[(
+                "profiles/pi-a.yaml",
+                "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n\
+                 dmx:\n  universes:\n    - universe: 1\n      name: main\n  lighting:\n    \
+                 current_venue: house\n    fixtures:\n      emergency_light: \"Emergency @ 1:500\"\n",
+            )],
+        );
+        assert!(crate::config::Player::deserialize(&config_path).is_err());
+
+        migrate(dir.path().to_str().unwrap(), true).unwrap();
+
+        let venue =
+            std::fs::read_to_string(dir.path().join("lighting/venues/inline_migrated.light"))
+                .unwrap();
+        assert!(
+            venue.contains("fixture \"emergency_light\" Emergency @ 1:500"),
+            "{venue}"
+        );
+        let profile = std::fs::read_to_string(dir.path().join("profiles/pi-a.yaml")).unwrap();
+        assert!(!profile.contains("emergency_light"), "{profile}");
+        assert!(profile.contains("current_venue: house"), "{profile}");
+        assert!(dir.path().join("profiles/pi-a.yaml.bak").exists());
+        // It loads now.
+        crate::config::Player::deserialize(&config_path).unwrap();
     }
 
     #[test]

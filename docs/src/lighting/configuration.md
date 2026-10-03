@@ -17,11 +17,6 @@ dmx:
     # Current venue selection - determines which physical fixtures to use
     current_venue: "main_stage"
 
-    # Simple inline fixture definitions (for basic cases)
-    # These can be used instead of or alongside venue definitions
-    fixtures:
-      emergency_light: "Emergency @ 1:500"
-
     # Logical groups with role-based constraints
     groups:
       # Front wash lights - requires wash + front tags, needs 4-8 fixtures
@@ -71,6 +66,10 @@ install a venue made in the Lighting area was "not found" by the engine until `d
 added by hand. Now the defaults are always read. A project that names its directories behaves
 exactly as before. A project that names none and keeps unrelated files in `lighting/venues/` or
 `lighting/fixture_types/` will now have them loaded.
+
+**Upgrading:** inline fixtures (`fixtures:` under `lighting`, `"Type @ universe:address"` per
+name) are retired: they never lit, and a config that still has them does not load. `mtrack
+migrate --apply` moves them into a venue file, `lighting/venues/inline_migrated.light`.
 
 ## Fixture Type Definitions (`lighting/fixture_types/`)
 

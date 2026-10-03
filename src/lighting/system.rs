@@ -74,9 +74,6 @@ pub struct LightingSystem {
     /// Current venue.
     current_venue: Option<String>,
 
-    /// Inline fixtures.
-    inline_fixtures: HashMap<String, String>,
-
     /// Logical groups with role-based constraints.
     logical_groups: HashMap<String, LogicalGroup>,
 
@@ -210,7 +207,6 @@ impl LightingSystem {
             fixture_type_file_errors: Vec::new(),
             venues: HashMap::new(),
             current_venue: None,
-            inline_fixtures: HashMap::new(),
             logical_groups: HashMap::new(),
             group_cache: HashMap::new(),
             scenery: HashMap::new(),
@@ -429,8 +425,7 @@ impl LightingSystem {
             self.current_venue = Some(venue.to_string());
         }
 
-        // Load inline fixtures and groups
-        self.inline_fixtures = config.fixtures().clone();
+        // Load groups
         self.logical_groups = config.groups().clone();
 
         // The project's fixture types and venues, from the configured
@@ -1636,7 +1631,6 @@ mod tests {
         let config = Lighting::new(
             Some(current.to_string()),
             None,
-            None,
             Some(crate::config::lighting::Directories::new(
                 Some("lighting/fixture_types".to_string()),
                 Some("lighting/venues".to_string()),
@@ -1820,7 +1814,7 @@ mod tests {
     }
 
     fn load_with(base: &Path, directories: Option<Directories>) -> LightingSystem {
-        let config = Lighting::new(Some("rig".to_string()), None, None, directories);
+        let config = Lighting::new(Some("rig".to_string()), None, directories);
         let mut system = LightingSystem::new();
         system.load(&config, base).expect("loads");
         system
@@ -1866,7 +1860,7 @@ mod tests {
     #[test]
     fn a_missing_default_directory_is_silently_empty() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let config = Lighting::new(None, None, None, None);
+        let config = Lighting::new(None, None, None);
         let mut system = LightingSystem::new();
         system
             .load(&config, dir.path())
@@ -3054,7 +3048,6 @@ mod tests {
 
         let config = Lighting::new(
             Some("kellys".to_string()),
-            None,
             None,
             Some(crate::config::lighting::Directories::new(
                 Some("lighting/fixture_types".to_string()),

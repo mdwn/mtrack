@@ -295,7 +295,6 @@ fn project() -> Project {
         .collect();
     let config = Lighting::new(
         Some("golden".to_string()),
-        None,
         Some(groups),
         Some(Directories::new(
             Some("fixture_types".to_string()),
@@ -594,7 +593,6 @@ fn frames_for(fixture_type: &str, show: &str, at: &[Duration]) -> Vec<[u8; 513]>
     .collect();
     let config = Lighting::new(
         Some("room".to_string()),
-        None,
         Some(groups),
         Some(Directories::new(
             Some("fixture_types".to_string()),

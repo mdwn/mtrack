@@ -198,7 +198,6 @@ struct Plan {
     rewrites: Vec<VenueRewrite>,
     /// Every venue file read, by file name, with its version.
     venue_versions: BTreeMap<String, String>,
-    config_references: Vec<String>,
     /// The record is new: written for the first time by this save.
     new_record: bool,
     /// Records pinning the current names of the library fixtures that share
@@ -271,7 +270,6 @@ fn plan(
     root: &FsPath,
     types_dir: &FsPath,
     venues_dir: &FsPath,
-    config_path: &FsPath,
     name: &str,
     request: &SettingsRequest,
     expected_type_version: Option<&str>,
@@ -441,23 +439,6 @@ fn plan(
         }
     }
 
-    // Inline fixtures in the player config name their type by string too;
-    // the config is the user's to edit, so they are reported, not rewritten.
-    let mut config_references = Vec::new();
-    if renaming {
-        if let Ok(config) = crate::config::Player::deserialize(config_path) {
-            if let Some(lighting) = config.dmx().and_then(|d| d.lighting()) {
-                for (fixture, spec) in lighting.fixtures() {
-                    let type_name = spec.split('@').next().unwrap_or_default().trim();
-                    if type_name.trim_matches('"') == name {
-                        config_references.push(fixture.clone());
-                    }
-                }
-            }
-        }
-        config_references.sort();
-    }
-
     Ok(Plan {
         type_path,
         type_file,
@@ -465,7 +446,6 @@ fn plan(
         patched,
         rewrites,
         venue_versions,
-        config_references,
         new_record,
         pins,
         unchanged,
@@ -541,7 +521,7 @@ fn current_venue_name(state: &WebUiState) -> Option<String> {
 /// changed is a 409. A save holds the venue write lock, writes the venue
 /// files then the record, and reloads the running engine's types and venues
 /// once. The answer says what changed (or would): `{version, rename,
-/// venue_versions, config_references, venue_error}`.
+/// venue_versions, venue_error}`.
 pub(super) async fn post_settings(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -562,7 +542,6 @@ pub(super) async fn post_settings(
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let expected = if_match_version(&headers);
-    let config_path = state.config_path.clone();
     let write = request.write;
     let (vdir, current) = (venues_dir.clone(), name.clone());
     let outcome = super::helpers::spawn_blocking_io("save fixture settings", move || {
@@ -573,7 +552,6 @@ pub(super) async fn post_settings(
             &root,
             &types_dir,
             &vdir,
-            &config_path,
             &current,
             &request,
             expected.as_deref(),
@@ -652,7 +630,6 @@ pub(super) async fn post_settings(
             "version": version,
             "rename": rename,
             "venue_versions": venue_versions,
-            "config_references": plan.config_references,
             "venue_error": venue_error,
         }))
         .into_response(),

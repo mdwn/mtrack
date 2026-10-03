@@ -128,6 +128,10 @@ impl Dmx {
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
 
+        if let Some(retired) = self.lighting.as_ref().and_then(|l| l.retired_field_error()) {
+            errors.push(retired.to_string());
+        }
+
         if let Some(modifier) = self.dim_speed_modifier {
             if modifier <= 0.0 {
                 errors.push("dmx dim_speed_modifier must be greater than 0".to_string());
@@ -281,7 +285,7 @@ mod tests {
 
     #[test]
     fn lighting_some() {
-        let lighting = Lighting::new(Some("venue1".to_string()), None, None, None);
+        let lighting = Lighting::new(Some("venue1".to_string()), None, None);
         let dmx = Dmx::new(None, None, None, vec![], Some(lighting));
         assert!(dmx.lighting().is_some());
         assert_eq!(dmx.lighting().unwrap().current_venue(), Some("venue1"));

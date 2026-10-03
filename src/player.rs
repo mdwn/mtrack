@@ -1404,7 +1404,7 @@ mod test {
             ),
         );
         let lighting_config =
-            config::Lighting::new(Some("test_venue".to_string()), None, Some(groups), None);
+            config::Lighting::new(Some("test_venue".to_string()), Some(groups), None);
 
         // Create DMX config with lighting
         let dmx_config = config::Dmx::new(
@@ -1726,7 +1726,7 @@ mod test {
             ),
         );
         let lighting_config =
-            config::Lighting::new(Some("test_venue".to_string()), None, Some(groups), None);
+            config::Lighting::new(Some("test_venue".to_string()), Some(groups), None);
 
         // Create DMX config with lighting
         let dmx_config = config::Dmx::new(

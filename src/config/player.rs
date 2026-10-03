@@ -249,6 +249,27 @@ impl Player {
         Ok(player)
     }
 
+    /// [`Self::deserialize`] for `mtrack migrate`: the same load, but a
+    /// retired field it exists to move (inline fixtures) is not an error.
+    pub fn deserialize_for_migration(path: &Path) -> Result<Player, ConfigError> {
+        let mut player = Config::builder()
+            .add_source(File::from(path))
+            .build()?
+            .try_deserialize::<Player>()?;
+        player.load_profiles_dir(path)?;
+        player.normalize();
+        if let Err(errors) = player.validate() {
+            let rest: Vec<String> = errors
+                .into_iter()
+                .filter(|e| !e.ends_with(super::lighting::RETIRED_INLINE_FIXTURES))
+                .collect();
+            if !rest.is_empty() {
+                return Err(ConfigError::Validation(rest.join("; ")));
+            }
+        }
+        Ok(player)
+    }
+
     /// Deserializes a YAML string directly into a player configuration struct.
     /// Does not load profiles_dir (no filesystem context). Runs normalize().
     pub fn deserialize_from_str(yaml: &str) -> Result<Player, ConfigError> {
@@ -1391,6 +1412,66 @@ profiles:
 
     fn write_profile(dir: &Path, filename: &str, yaml: &str) {
         std::fs::write(dir.join(filename), yaml).unwrap();
+    }
+
+    /// The retired inline fixture map, refused by name wherever a profile
+    /// carries it, with the way out.
+    #[test]
+    fn inline_fixtures_are_refused_with_the_migrate_hint() {
+        let refused = |config: &str, setup: &dyn Fn(&Path)| {
+            let dir = tempfile::tempdir().unwrap();
+            let config_path = dir.path().join("mtrack.yaml");
+            std::fs::write(&config_path, config).unwrap();
+            setup(dir.path());
+            match Player::deserialize(&config_path) {
+                Ok(_) => panic!("a config with inline fixtures loaded"),
+                Err(e) => e.to_string(),
+            }
+        };
+        let lighting =
+            "    dmx:\n      universes:\n        - universe: 1\n          name: main\n      \
+                        lighting:\n        fixtures:\n          par1: \"Par @ 1:1\"\n";
+        // An inline profile.
+        let err = refused(
+            &format!("songs: songs\nprofiles:\n  - hostname: pi\n{lighting}"),
+            &|_| {},
+        );
+        assert!(
+            err.contains(super::super::lighting::RETIRED_INLINE_FIXTURES),
+            "{err}"
+        );
+        // A profile file.
+        let err = refused("songs: songs\nprofiles_dir: profiles/\n", &|dir| {
+            std::fs::create_dir(dir.join("profiles")).unwrap();
+            let profile = format!("hostname: pi\n{}", lighting.replace("\n    ", "\n"))
+                .replace("    dmx:", "dmx:");
+            write_profile(&dir.join("profiles"), "pi.yaml", &profile);
+        });
+        assert!(
+            err.contains("dmx.lighting.fixtures is no longer supported"),
+            "{err}"
+        );
+        assert!(err.contains("mtrack migrate --apply"), "{err}");
+        // The legacy top-level dmx section.
+        let err = refused(
+            "songs: songs\ndmx:\n  universes:\n    - universe: 1\n      name: main\n  \
+             lighting:\n    fixtures:\n      par1: \"Par @ 1:1\"\n",
+            &|_| {},
+        );
+        assert!(
+            err.contains("dmx.lighting.fixtures is no longer supported"),
+            "{err}"
+        );
+        // An empty map is nothing to refuse.
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(
+            &config_path,
+            "songs: songs\ndmx:\n  universes:\n    - universe: 1\n      name: main\n  \
+             lighting:\n    fixtures: {}\n",
+        )
+        .unwrap();
+        assert!(Player::deserialize(&config_path).is_ok());
     }
 
     #[test]

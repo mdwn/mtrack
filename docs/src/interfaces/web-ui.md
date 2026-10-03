@@ -612,9 +612,8 @@ and, for a fixture that can pan or tilt in any mode, its **movement limits** (ma
 speed, in degrees per second; blank is no limit). A rename rewrites every venue line that names the
 fixture, in every venue file, keeping comments and layout, and **Save settings** says first how
 many lines in which venues. If any venue file cannot be rewritten (it does not parse, or it changed
-meanwhile), nothing is written and the message names the file. Inline fixtures in the player
-config that name it are listed for you to change by hand. A fixture's mode is not a setting of the
-fixture: each fixture in a venue names its own.
+meanwhile), nothing is written and the message names the file. A fixture's mode is not a setting
+of the fixture: each fixture in a venue names its own.
 
 For a fixture whose GDTF gives its strobe a rate in hertz, the settings also hold its **Strobe
 curve**: how a strobe rate becomes a DMX value. Left on **Automatic**, it follows the GDTF — its
@@ -707,7 +706,7 @@ that would run past address 512 starts the next universe at 1. Changing an earli
 renumbers the rows after it. Nothing you added is dropped on save: a row with no name, no type,
 a name another row has, or a universe or address below 1 stops the save, is outlined with what
 to fix, and gets the focus. The fixture type editor treats channel rows the same way, a tag with
-no allowed character stays in its box marked, and a group, inline fixture or focus point rename
+no allowed character stays in its box marked, and a group or focus point rename
 that is refused (empty, or a name already taken) says so instead of quietly reverting. When the
 current venue did not load, the plot on this page shows its file instead of an empty stage, so
 the fixture at fault can be selected and fixed in the inspector.
@@ -913,7 +912,7 @@ ticked.
 
 ### Groups
 
-Directories, the current venue, inline fixtures and logical groups with their constraints. Pick
+Directories, the current venue and logical groups with their constraints. Pick
 the profile at the top. **Save** writes that profile; leaving the page with unsaved edits asks
 first.
 

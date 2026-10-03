@@ -61,10 +61,7 @@ pub fn validate_groups(
     let groups = collect_groups(shows);
 
     let invalid_groups = if let Some(lighting_config) = config {
-        let valid_groups = lighting_config.groups();
-        let valid_fixtures = lighting_config.fixtures();
-        let mut all_valid_names: HashSet<String> = valid_groups.keys().cloned().collect();
-        all_valid_names.extend(valid_fixtures.keys().cloned());
+        let all_valid_names: HashSet<String> = lighting_config.groups().keys().cloned().collect();
 
         groups
             .iter()
@@ -166,15 +163,8 @@ show "Test Show 2" {
             ),
         );
 
-        let mut fixtures = HashMap::new();
-        fixtures.insert(
-            "emergency_light".to_string(),
-            "Emergency @ 1:500".to_string(),
-        );
-
         Lighting::new(
             Some("main_stage".to_string()),
-            Some(fixtures),
             Some(groups),
             None, // Don't need directories for validation tests
         )
@@ -263,7 +253,9 @@ show "Test Show 2" {
     }
 
     #[test]
-    fn test_validate_groups_with_fixtures() {
+    fn test_validate_groups_names_only_groups() {
+        // A show targets logical groups; a name that is not one (once an
+        // inline fixture's, a retired form) is not valid.
         let content = r#"show "Fixture Show" {
     @00:00.000
     emergency_light: static color: "red", duration: 5s
@@ -272,10 +264,9 @@ show "Test Show 2" {
         let config = create_test_config();
         let result = validate_groups(&shows, Some(&config));
 
-        // emergency_light is defined as a fixture in config, so it should be valid
         assert_eq!(result.groups.len(), 1);
-        assert_eq!(result.invalid_groups.len(), 0);
-        assert!(result.is_valid());
+        assert_eq!(result.invalid_groups, vec!["emergency_light".to_string()]);
+        assert!(!result.is_valid());
     }
 
     #[test]
@@ -407,7 +398,7 @@ show "Show 2" {
             ),
         );
 
-        let config = Lighting::new(None, None, Some(groups), None);
+        let config = Lighting::new(None, Some(groups), None);
 
         let result = validate_groups(&shows, Some(&config));
 

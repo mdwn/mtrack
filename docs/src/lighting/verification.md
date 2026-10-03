@@ -7,7 +7,7 @@ $ mtrack verify-light-show path/to/show.light
 ```
 
 This will check the syntax of the light show file and report any errors. You can also validate
-the show against your mtrack configuration to ensure all referenced groups and fixtures exist:
+the show against your mtrack configuration to ensure all referenced groups exist:
 
 ```
 $ mtrack verify-light-show path/to/show.light --config /path/to/mtrack.yaml
@@ -15,8 +15,8 @@ $ mtrack verify-light-show path/to/show.light --config /path/to/mtrack.yaml
 
 This will verify that:
 - The light show syntax is valid
-- All referenced fixture groups exist in your configuration
-- All referenced fixtures exist in your configuration
+- All referenced fixture groups exist in your configuration (a show targets logical groups, not
+  fixtures by name)
 
 `verify-light-show` checks `.light` shows only. Fixture types and venues (`.light`, `.fixture`
 and `.venue`) are parsed when the player loads them, and `mtrack import-gdtf` and

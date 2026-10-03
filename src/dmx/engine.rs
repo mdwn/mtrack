@@ -1038,11 +1038,6 @@ mod test {
         let lighting_config = config::Lighting::new(
             Some("test_venue".to_string()),
             Some({
-                let mut fixtures = std::collections::HashMap::new();
-                fixtures.insert("Wash1".to_string(), "RGBW_Par @ 1:1".to_string());
-                fixtures
-            }),
-            Some({
                 let mut groups = std::collections::HashMap::new();
                 let front_wash_group = crate::config::lighting::LogicalGroup::new(
                     "front_wash".to_string(),
@@ -1060,10 +1055,6 @@ mod test {
         // Test that the lighting config can be created and accessed
         assert!(lighting_config.current_venue().is_some());
         assert_eq!(lighting_config.current_venue().unwrap(), "test_venue");
-
-        // fixtures() returns HashMap directly, not Option<HashMap>
-        assert_eq!(lighting_config.fixtures().len(), 1);
-        assert!(lighting_config.fixtures().contains_key("Wash1"));
 
         // groups() returns HashMap directly, not Option<HashMap>
         assert_eq!(lighting_config.groups().len(), 1);
@@ -1305,7 +1296,6 @@ mod test {
         let config = create_test_config();
         let lighting_config = Some(crate::config::Lighting::new(
             Some("Test Venue".to_string()),
-            None,
             None,
             None,
         ));
@@ -3187,7 +3177,7 @@ mod test {
         #[test]
         fn register_with_lighting_system_but_no_venue() -> Result<(), Box<dyn Error>> {
             // Lighting config without a venue — loading will fail gracefully
-            let lighting_config = crate::config::Lighting::new(None, None, None, None);
+            let lighting_config = crate::config::Lighting::new(None, None, None);
             let config = create_test_config();
             let ola_client = OlaClientFactory::create_mock_client();
             let engine = Engine::new(&config, Some(&lighting_config), None, ola_client)?;
@@ -3220,7 +3210,6 @@ mod test {
             std::fs::write(venues.join("v.venue"), venue_dsl).unwrap();
             let lighting = crate::config::Lighting::new(
                 Some("v".to_string()),
-                None,
                 None,
                 Some(crate::config::lighting::Directories::new(
                     Some("lighting/fixture_types".to_string()),
@@ -3465,7 +3454,6 @@ mod test {
             // Create engine with a lighting system (no venue, but system exists)
             let lighting_config = crate::config::Lighting::new(
                 None, // no venue
-                None, // no fixtures
                 None, // no groups
                 None,
             );
@@ -4139,7 +4127,7 @@ mod test {
         #[test]
         fn engine_with_lighting_system() -> Result<(), Box<dyn Error>> {
             // Create engine with both lighting_config AND base_path to initialize lighting_system
-            let lighting_config = crate::config::Lighting::new(None, None, None, None);
+            let lighting_config = crate::config::Lighting::new(None, None, None);
             let config = create_test_config();
             let ola_client = OlaClientFactory::create_mock_client();
             let tmp_dir = tempfile::tempdir()?;
@@ -4161,7 +4149,7 @@ mod test {
 
         #[test]
         fn resolve_effect_groups_with_lighting_system() -> Result<(), Box<dyn Error>> {
-            let lighting_config = crate::config::Lighting::new(None, None, None, None);
+            let lighting_config = crate::config::Lighting::new(None, None, None);
             let config = create_test_config();
             let ola_client = OlaClientFactory::create_mock_client();
             let tmp_dir = tempfile::tempdir()?;
@@ -4202,7 +4190,7 @@ mod test {
                 Some(file_path.to_string_lossy().into_owned()),
                 None,
             );
-            let lighting_config = crate::config::Lighting::new(None, None, None, Some(dirs));
+            let lighting_config = crate::config::Lighting::new(None, None, Some(dirs));
             let config = create_test_config();
             let ola_client = OlaClientFactory::create_mock_client();
             let engine = Engine::new(
@@ -4253,12 +4241,8 @@ mod test {
                 Some("fixture_types".to_string()),
                 Some("venues".to_string()),
             );
-            let lighting_config = crate::config::Lighting::new(
-                Some("test_venue".to_string()),
-                None,
-                None,
-                Some(dirs),
-            );
+            let lighting_config =
+                crate::config::Lighting::new(Some("test_venue".to_string()), None, Some(dirs));
             let config = config::Dmx::new(
                 None,
                 None,
@@ -4300,15 +4284,13 @@ mod test {
         #[test]
         fn validate_song_lighting_with_lighting_config() -> Result<(), Box<dyn Error>> {
             // Engine with lighting_config set (for validation path).
-            // Define "front_wash" as a fixture so validation passes.
+            // Define "front_wash" as a group so validation passes.
             let lighting_config = crate::config::Lighting::new(
                 None,
-                Some({
-                    let mut fixtures = std::collections::HashMap::new();
-                    fixtures.insert("front_wash".to_string(), "Generic_Dimmer @ 1:1".to_string());
-                    fixtures
-                }),
-                None,
+                Some(std::collections::HashMap::from([(
+                    "front_wash".to_string(),
+                    crate::config::lighting::LogicalGroup::new("front_wash".to_string(), vec![]),
+                )])),
                 None,
             );
             let config = create_test_config();
@@ -4359,12 +4341,10 @@ mod test {
             // Engine with lighting_config that defines "front_wash" but not "unknown"
             let lighting_config = crate::config::Lighting::new(
                 None,
-                Some({
-                    let mut fixtures = std::collections::HashMap::new();
-                    fixtures.insert("front_wash".to_string(), "Generic_Dimmer @ 1:1".to_string());
-                    fixtures
-                }),
-                None,
+                Some(std::collections::HashMap::from([(
+                    "front_wash".to_string(),
+                    crate::config::lighting::LogicalGroup::new("front_wash".to_string(), vec![]),
+                )])),
                 None,
             );
             let config = create_test_config();
@@ -4759,12 +4739,10 @@ mod test {
             // Create engine with lighting system to exercise validation path in play()
             let lighting_config = crate::config::Lighting::new(
                 None,
-                Some({
-                    let mut fixtures = std::collections::HashMap::new();
-                    fixtures.insert("front_wash".to_string(), "Generic_Dimmer @ 1:1".to_string());
-                    fixtures
-                }),
-                None,
+                Some(std::collections::HashMap::from([(
+                    "front_wash".to_string(),
+                    crate::config::lighting::LogicalGroup::new("front_wash".to_string(), vec![]),
+                )])),
                 None,
             );
             let config = config::Dmx::new(

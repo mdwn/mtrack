@@ -393,39 +393,36 @@ pub fn verify_light_show(show_path: &str, config_path: Option<&str>) -> Result<(
     }
 
     // Get lighting config if provided
-    let (lighting_config, valid_groups_count, valid_fixtures_count) = if let Some(config_path) =
-        config_path
-    {
+    let (lighting_config, valid_groups_count) = if let Some(config_path) = config_path {
         let config_file = Path::new(config_path);
         if !config_file.exists() {
             eprintln!("⚠️  Warning: Config file not found: {}", config_path);
-            (None, 0, 0)
+            (None, 0)
         } else {
             match config::Player::deserialize(config_file) {
                 Ok(player_config) => {
                     if let Some(dmx) = player_config.dmx() {
                         if let Some(lighting) = dmx.lighting() {
                             let groups_count = lighting.groups().len();
-                            let fixtures_count = lighting.fixtures().len();
                             // Clone the lighting config to own it
-                            (Some(lighting.clone()), groups_count, fixtures_count)
+                            (Some(lighting.clone()), groups_count)
                         } else {
                             eprintln!("⚠️  Warning: No lighting configuration found in DMX config");
-                            (None, 0, 0)
+                            (None, 0)
                         }
                     } else {
                         eprintln!("⚠️  Warning: No DMX configuration found in config file");
-                        (None, 0, 0)
+                        (None, 0)
                     }
                 }
                 Err(e) => {
                     eprintln!("⚠️  Warning: Failed to parse config file: {}", e);
-                    (None, 0, 0)
+                    (None, 0)
                 }
             }
         }
     } else {
-        (None, 0, 0)
+        (None, 0)
     };
 
     // Use validation module to check groups
@@ -455,10 +452,10 @@ pub fn verify_light_show(show_path: &str, config_path: Option<&str>) -> Result<(
             )
             .into());
         } else {
-            println!("\n✅ All groups/fixtures are valid in config");
+            println!("\n✅ All groups are valid in config");
             println!(
-                "   Validated against {} group(s) and {} fixture(s) in config",
-                valid_groups_count, valid_fixtures_count
+                "   Validated against {} group(s) in config",
+                valid_groups_count
             );
         }
     }
