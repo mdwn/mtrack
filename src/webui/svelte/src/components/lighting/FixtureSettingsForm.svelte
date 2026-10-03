@@ -153,13 +153,6 @@
         }),
       );
     }
-    if (plan.config_references.length > 0) {
-      lines.push(
-        tr("lighting.settings.confirmConfig", {
-          values: { names: plan.config_references.join(", ") },
-        }),
-      );
-    }
     return lines.length > 0 ? lines.join("\n\n") : null;
   }
 

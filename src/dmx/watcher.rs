@@ -446,12 +446,10 @@ mod test {
         // Lighting config with "front_wash" defined so validation passes
         let lighting_config = crate::config::Lighting::new(
             None,
-            Some({
-                let mut fixtures = std::collections::HashMap::new();
-                fixtures.insert("front_wash".to_string(), "Generic_Dimmer @ 1:1".to_string());
-                fixtures
-            }),
-            None,
+            Some(std::collections::HashMap::from([(
+                "front_wash".to_string(),
+                crate::config::lighting::LogicalGroup::new("front_wash".to_string(), vec![]),
+            )])),
             None,
         );
 
@@ -487,12 +485,10 @@ mod test {
         // Lighting config WITHOUT "unknown_fixture" — validation will fail
         let lighting_config = crate::config::Lighting::new(
             None,
-            Some({
-                let mut fixtures = std::collections::HashMap::new();
-                fixtures.insert("front_wash".to_string(), "Generic_Dimmer @ 1:1".to_string());
-                fixtures
-            }),
-            None,
+            Some(std::collections::HashMap::from([(
+                "front_wash".to_string(),
+                crate::config::lighting::LogicalGroup::new("front_wash".to_string(), vec![]),
+            )])),
             None,
         );
 
@@ -527,7 +523,7 @@ mod test {
 
         let mut ls = LightingSystem::new();
         let _ = ls.load(
-            &crate::config::Lighting::new(None, None, None, None),
+            &crate::config::Lighting::new(None, None, None),
             tmp_dir.path(),
         );
         let lighting_system = Arc::new(Mutex::new(ls));

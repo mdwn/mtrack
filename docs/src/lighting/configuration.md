@@ -77,6 +77,10 @@ added by hand. Now the defaults are always read. A project that names its direct
 exactly as before. A project that names none and keeps unrelated files in `lighting/venues/` or
 `lighting/fixture_types/` will now have them loaded.
 
+**Upgrading:** inline fixtures (`fixtures:` under `lighting`, `"Type @ universe:address"` per
+name) are retired: they never lit, and a config that still has them does not load. `mtrack
+migrate --apply` moves them into a venue file, `lighting/venues/inline_migrated.light`.
+
 ## Fixture Type Definitions (`lighting/fixture_types/`)
 
 ```light

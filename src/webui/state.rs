@@ -1741,7 +1741,6 @@ metronome: {}
         let config = Lighting::new(
             Some(venue_name.to_string()),
             None,
-            None,
             Some(Directories::new(
                 Some("fixture_types".to_string()),
                 Some("venues".to_string()),
@@ -1775,7 +1774,6 @@ metronome: {}
 
         let config = Lighting::new(
             Some(venue_name.to_string()),
-            None,
             None,
             Some(Directories::new(
                 Some("fixture_types".to_string()),

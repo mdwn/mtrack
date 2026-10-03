@@ -361,7 +361,7 @@ test.describe("The Venues plan", () => {
 });
 
 test.describe("Groups", () => {
-  test("Add a group, an inline fixture and a constraint with their defaults: all are written", async ({
+  test("Add a group and a constraint with their defaults: both are written", async ({
     page,
   }) => {
     const yaml = `songs: songs
@@ -389,9 +389,10 @@ profiles:
       page
         .locator(".subsection")
         .filter({ has: page.locator(".subsection-title", { hasText: title }) });
-    await section("Inline Fixtures")
-      .getByRole("button", { name: "Add" })
-      .click();
+    // Fixtures are patched in venue files: the profile has no inline ones.
+    await expect(section("Logical Groups")).toHaveCount(1);
+    await expect(section("Inline Fixtures")).toHaveCount(0);
+    await expect(page.getByText(/inline fixture/i)).toHaveCount(0);
     await section("Logical Groups")
       .getByRole("button", { name: "Add" })
       .first()
@@ -411,7 +412,7 @@ profiles:
       name: "new_group",
       constraints: [{ AllOf: [] }],
     });
-    expect(lighting.fixtures).toEqual({ new_fixture: "FixtureType @ 1:1" });
+    expect(lighting.fixtures).toBeUndefined();
   });
 });
 

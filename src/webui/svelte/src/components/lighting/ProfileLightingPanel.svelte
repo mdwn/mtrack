@@ -85,31 +85,6 @@
     onchange();
   }
 
-  let inlineFixtureEntries = $derived(
-    lighting.fixtures
-      ? (Object.entries(lighting.fixtures) as [string, string][])
-      : [],
-  );
-
-  function addInlineFixture() {
-    if (!lighting.fixtures) lighting.fixtures = {};
-    let name = "new_fixture";
-    let i = 1;
-    while (lighting.fixtures[name]) {
-      name = `new_fixture_${i++}`;
-    }
-    lighting.fixtures[name] = "FixtureType @ 1:1";
-    onchange();
-  }
-
-  function removeInlineFixture(name: string) {
-    delete lighting.fixtures[name];
-    if (Object.keys(lighting.fixtures).length === 0) {
-      delete lighting.fixtures;
-    }
-    onchange();
-  }
-
   /** Why the last rename was refused, by the field it was typed in. */
   let renameError = $state<Record<string, string>>({});
 
@@ -131,31 +106,6 @@
       return true;
     }
     return false;
-  }
-
-  function renameInlineFixture(
-    oldName: string,
-    newName: string,
-    field: HTMLInputElement,
-  ) {
-    delete renameError[`fixture:${oldName}`];
-    if (refuseRename(`fixture:${oldName}`, field, oldName, newName)) return;
-    if (lighting.fixtures[newName]) {
-      field.value = oldName;
-      renameError[`fixture:${oldName}`] = $t("lighting.renameRefused.taken", {
-        values: { name: newName },
-      });
-      return;
-    }
-    const value = lighting.fixtures[oldName];
-    delete lighting.fixtures[oldName];
-    lighting.fixtures[newName] = value;
-    onchange();
-  }
-
-  function setInlineFixtureValue(name: string, value: string) {
-    lighting.fixtures[name] = value;
-    onchange();
   }
 
   // --- Logical Groups ---
@@ -362,58 +312,6 @@
         />
       {/if}
       <span class="field-hint">{$t("lighting.venueHintField")}</span>
-    </div>
-
-    <!-- Inline Fixtures -->
-    <div class="subsection">
-      <div class="subsection-header">
-        <h4 class="subsection-title">
-          {$t("lighting.inlineFixtures")}<Tooltip
-            text={$t("tooltips.lighting.inlineFixtures")}
-          />
-        </h4>
-        <button class="btn btn-sm" onclick={addInlineFixture}
-          >{$t("common.add")}</button
-        >
-      </div>
-      <span class="field-hint">
-        {$t("lighting.inlineFixturesHint")}
-      </span>
-      {#each inlineFixtureEntries as [name, value] (name)}
-        <div class="fixture-row">
-          <input
-            class="input fixture-name"
-            value={name}
-            placeholder="Name"
-            aria-invalid={!!renameError[`fixture:${name}`]}
-            onchange={(e) =>
-              renameInlineFixture(
-                name,
-                (e.target as HTMLInputElement).value.trim(),
-                e.target as HTMLInputElement,
-              )}
-          />
-          <input
-            class="input fixture-value"
-            {value}
-            placeholder="FixtureType @ 1:1"
-            onchange={(e) =>
-              setInlineFixtureValue(
-                name,
-                (e.target as HTMLInputElement).value.trim(),
-              )}
-          />
-          <button
-            class="btn btn-danger btn-sm"
-            onclick={() => removeInlineFixture(name)}>X</button
-          >
-        </div>
-        {#if renameError[`fixture:${name}`]}
-          <p class="rename-error" data-testid="rename-error">
-            {renameError[`fixture:${name}`]}
-          </p>
-        {/if}
-      {/each}
     </div>
 
     <!-- Logical Groups -->
@@ -649,20 +547,6 @@
     align-items: center;
   }
 
-  .fixture-row {
-    display: flex;
-    gap: 8px;
-  }
-
-  .fixture-name {
-    width: 160px;
-    flex-shrink: 0;
-  }
-
-  .fixture-value {
-    flex: 1;
-  }
-
   .group-card {
     background: var(--bg);
     border: 1px solid var(--border);
@@ -757,9 +641,6 @@
       flex-wrap: wrap;
     }
     .constraint-type {
-      width: 100%;
-    }
-    .fixture-name {
       width: 100%;
     }
   }

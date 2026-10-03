@@ -2935,7 +2935,6 @@ pub(super) fn system_from_files(
     let config = crate::config::Lighting::new(
         None,
         None,
-        None,
         Some(crate::config::lighting::Directories::new(
             types_dir.is_dir().then(|| display(types_dir)),
             venues_dir.is_dir().then(|| display(venues_dir)),
@@ -5682,7 +5681,6 @@ show "test" {
                 &crate::config::Lighting::new(
                     None,
                     None,
-                    None,
                     Some(crate::config::lighting::Directories::new(
                         Some("ft_agree".into()),
                         Some("v_agree".into()),
@@ -6172,7 +6170,6 @@ show "test" {
             let section = lighting.map(|dirs| {
                 Lighting::new(
                     Some("v".to_string()),
-                    None,
                     None,
                     dirs.map(|(t, v)| {
                         Directories::new(t.map(str::to_string), v.map(str::to_string))

@@ -85,7 +85,8 @@ mtrack migrate --apply      # do it, keeping mtrack.yaml.bak
 Moves an old single-file `mtrack.yaml` onto the current layout: inline hardware profiles into
 a profiles directory, the legacy playlist into a playlists directory, and legacy top-level
 hardware settings out of the file once they live in profiles. For lighting, it
-moves inline fixtures (a `fixtures:` map under `lighting`, which the engine does not patch) into
+moves retired inline fixtures (a `fixtures:` map under `lighting`, which a config may no longer
+carry) into
 a venue, `lighting/venues/inline_migrated.light`, and clears them from the config. Make that
 venue current, or copy its lines into yours, for the fixtures to light. It does not touch fixture
 types, GDTFs or venues that already exist.

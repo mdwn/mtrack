@@ -84,14 +84,23 @@ pub fn venues_dir(lighting: Option<&Lighting>) -> &str {
     lighting.map_or(DEFAULT_VENUES_DIR, Lighting::venues_dir)
 }
 
+/// What the loader says about a profile that still patches fixtures inline
+/// (`dmx.lighting.fixtures`, retired): they never lit, and venue files are
+/// the one way to patch a fixture.
+pub const RETIRED_INLINE_FIXTURES: &str = "dmx.lighting.fixtures is no longer supported: fixtures \
+     are patched in venue files — run `mtrack migrate --apply` to move these into one";
+
 /// A YAML representation of the lighting configuration.
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Lighting {
     /// The current venue selection.
     current_venue: Option<String>,
 
-    /// Simple fixture definitions (inline).
-    fixtures: Option<HashMap<String, String>>,
+    /// The retired inline fixture map (`fixtures:`), read only so the
+    /// loader can refuse it by name and `mtrack migrate` can move it into a
+    /// venue file. Never written back.
+    #[serde(rename = "fixtures", default, skip_serializing)]
+    retired_fixtures: Option<HashMap<String, String>>,
 
     /// Logical group definitions with role-based constraints.
     groups: Option<HashMap<String, LogicalGroup>>,
@@ -117,13 +126,12 @@ impl Lighting {
     /// patch check, which loads a venue from its files with no engine.
     pub fn new(
         current_venue: Option<String>,
-        fixtures: Option<HashMap<String, String>>,
         groups: Option<HashMap<String, LogicalGroup>>,
         directories: Option<Directories>,
     ) -> Lighting {
         Lighting {
             current_venue,
-            fixtures,
+            retired_fixtures: None,
             groups,
             directories,
         }
@@ -132,13 +140,6 @@ impl Lighting {
     /// Gets the current venue.
     pub fn current_venue(&self) -> Option<&str> {
         self.current_venue.as_deref()
-    }
-
-    /// Gets the fixtures.
-    pub fn fixtures(&self) -> &HashMap<String, String> {
-        static EMPTY: std::sync::LazyLock<HashMap<String, String>> =
-            std::sync::LazyLock::new(HashMap::new);
-        self.fixtures.as_ref().unwrap_or(&EMPTY)
     }
 
     /// Gets the logical groups.
@@ -173,14 +174,16 @@ impl Lighting {
         )
     }
 
-    /// Returns the raw inline fixtures map (without cloning).
-    pub fn inline_fixtures_raw(&self) -> Option<&HashMap<String, String>> {
-        self.fixtures.as_ref()
+    /// The retired inline fixture map, when the file still has one: what
+    /// `mtrack migrate` moves into a venue file. Nothing else reads it.
+    pub fn retired_inline_fixtures(&self) -> Option<&HashMap<String, String>> {
+        self.retired_fixtures.as_ref().filter(|f| !f.is_empty())
     }
 
-    /// Clears inline fixtures.
-    pub fn clear_inline_fixtures(&mut self) {
-        self.fixtures = None;
+    /// The refusal for this section, when it still patches fixtures inline.
+    pub fn retired_field_error(&self) -> Option<&'static str> {
+        self.retired_inline_fixtures()
+            .map(|_| RETIRED_INLINE_FIXTURES)
     }
 }
 
@@ -212,36 +215,26 @@ mod tests {
 
     #[test]
     fn lighting_current_venue_some() {
-        let l = Lighting::new(Some("club".to_string()), None, None, None);
+        let l = Lighting::new(Some("club".to_string()), None, None);
         assert_eq!(l.current_venue(), Some("club"));
     }
 
     #[test]
     fn lighting_current_venue_none() {
-        let l = Lighting::new(None, None, None, None);
+        let l = Lighting::new(None, None, None);
         assert_eq!(l.current_venue(), None);
     }
 
     #[test]
-    fn fixtures_default_empty() {
-        let l = Lighting::new(None, None, None, None);
-        assert!(l.fixtures().is_empty());
-    }
-
-    #[test]
-    fn fixtures_populated() {
-        let mut fixtures = HashMap::new();
-        fixtures.insert("par1".to_string(), "generic_par".to_string());
-        fixtures.insert("mover1".to_string(), "moving_head".to_string());
-        let l = Lighting::new(None, Some(fixtures), None, None);
-        let f = l.fixtures();
-        assert_eq!(f.len(), 2);
-        assert_eq!(f.get("par1").unwrap(), "generic_par");
+    fn a_section_built_in_code_has_no_retired_fixtures() {
+        let l = Lighting::new(None, None, None);
+        assert!(l.retired_inline_fixtures().is_none());
+        assert!(l.retired_field_error().is_none());
     }
 
     #[test]
     fn groups_default_empty() {
-        let l = Lighting::new(None, None, None, None);
+        let l = Lighting::new(None, None, None);
         assert!(l.groups().is_empty());
     }
 
@@ -252,7 +245,7 @@ mod tests {
             "front".to_string(),
             LogicalGroup::new("front".to_string(), vec![GroupConstraint::MinCount(2)]),
         );
-        let l = Lighting::new(None, None, Some(groups), None);
+        let l = Lighting::new(None, Some(groups), None);
         let g = l.groups();
         assert_eq!(g.len(), 1);
         let front = g.get("front").unwrap();
@@ -284,7 +277,7 @@ mod tests {
                 DEFAULT_VENUES_DIR,
             ),
         ] {
-            let l = Lighting::new(None, None, None, directories);
+            let l = Lighting::new(None, None, directories);
             assert_eq!(l.fixture_types_dir(), types);
             assert_eq!(l.venues_dir(), venues);
             assert_eq!(fixture_types_dir(Some(&l)), types);
@@ -296,14 +289,14 @@ mod tests {
 
     #[test]
     fn directories_none() {
-        let l = Lighting::new(None, None, None, None);
+        let l = Lighting::new(None, None, None);
         assert!(l.directories().is_none());
     }
 
     #[test]
     fn directories_some() {
         let dirs = Directories::new(Some("/fixtures".to_string()), Some("/venues".to_string()));
-        let l = Lighting::new(None, None, None, Some(dirs));
+        let l = Lighting::new(None, None, Some(dirs));
         let d = l.directories().unwrap();
         assert_eq!(d.fixture_types(), Some("/fixtures"));
         assert_eq!(d.venues(), Some("/venues"));
@@ -363,7 +356,15 @@ mod tests {
             .try_deserialize()
             .unwrap();
         assert_eq!(lighting.current_venue(), Some("main_stage"));
-        assert_eq!(lighting.fixtures().len(), 2);
+        // Read, so the loader can refuse it by name; never written back.
+        assert_eq!(lighting.retired_inline_fixtures().map(|f| f.len()), Some(2));
+        assert_eq!(
+            lighting.retired_field_error(),
+            Some(RETIRED_INLINE_FIXTURES)
+        );
+        let written = crate::util::to_yaml_string(&lighting).unwrap();
+        assert!(!written.contains("fixtures:"), "{written}");
+        assert!(!written.contains("par1"), "{written}");
         let dirs = lighting.directories().unwrap();
         assert_eq!(dirs.fixture_types(), Some("/path/to/fixtures"));
         assert_eq!(dirs.venues(), Some("/path/to/venues"));
@@ -379,7 +380,7 @@ mod tests {
             .try_deserialize()
             .unwrap();
         assert_eq!(lighting.current_venue(), None);
-        assert!(lighting.fixtures().is_empty());
+        assert!(lighting.retired_field_error().is_none());
         assert!(lighting.groups().is_empty());
         assert!(lighting.directories().is_none());
     }

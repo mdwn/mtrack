@@ -451,7 +451,6 @@ app.post("/api/lighting/fixture-types/:name/settings", (req, res) => {
         }
       : null,
     venue_versions: { "built_in.venue": "v-b", "club.venue": "v-c" },
-    config_references: [],
     venue_error: null,
   });
 });

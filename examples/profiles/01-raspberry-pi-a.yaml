@@ -32,10 +32,6 @@ dmx:
     # Current venue selection - determines which physical fixtures to use
     current_venue: "main_stage"
 
-    # Simple inline fixture definitions (for basic cases)
-    fixtures:
-      emergency_light: "Emergency @ 1:500"
-
     # Logical groups with role-based constraints
     groups:
       front_wash:

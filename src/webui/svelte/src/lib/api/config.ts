@@ -894,9 +894,6 @@ export interface FixtureSettingsResult {
   } | null;
   /** The venue files read, by name, with their versions. */
   venue_versions: Record<string, string>;
-  /** Inline fixtures in the player config that name the type (a rename
-   *  leaves them for the user to change). */
-  config_references: string[];
   venue_error: VenueError | null;
 }
 
