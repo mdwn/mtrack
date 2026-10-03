@@ -1,6 +1,6 @@
-# Known Limitations
+# Tested hardware and limitations
 
-This has been tested with:
+mtrack has been tested with the following hardware:
 
 ## Audio cards
 - MOTU UltraLite-mk5
@@ -15,9 +15,9 @@ This has been tested with:
 
 ## DMX
 
-DMX is expected to be well supported through OLA, but the devices that have been explicitly tested:
+DMX output goes through OLA, so any interface olad drives should work; the devices that have been explicitly tested:
 
-- Entec DMX USB Pro
+- Enttec DMX USB Pro
 - RatPac Satellite (Art-Net and sACN)
 - Cinelex Skycast A (sACN)
 
@@ -41,7 +41,7 @@ messages. Accurate tempo requires elevated thread priority:
 The thread priority can be tuned with `MTRACK_THREAD_PRIORITY` (0–99, default 70)
 or disabled entirely with `MTRACK_DISABLE_RT_AUDIO=1`.
 
-## Web UI File Management
+## Web UI file management
 
 The web UI's song management, file upload, lighting editor, and playlist editor features
 require all project files to reside under a single project root directory (the directory
@@ -50,8 +50,3 @@ play back correctly but cannot be edited, uploaded to, or managed through the we
 
 mtrack must have write access to the project root directory for management features to work.
 On read-only filesystems, playback and monitoring work but editing is disabled.
-
-## General disclaimer
-
-This is my first Rust project, so this is likely cringey, horrible non-idiomatic Rust. Feel free to
-submit PRs to make this better.

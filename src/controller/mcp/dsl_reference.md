@@ -17,7 +17,7 @@ show "Optional Name" {
 
     @00:05.000
     movers, beams: cycle color: "red", color: "green", color: "blue", \
-        duration: 8s, direction: forward, dimmer: 50%
+        duration: 8s, direction: forward
 }
 ```
 

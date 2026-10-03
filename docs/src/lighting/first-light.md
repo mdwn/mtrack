@@ -55,7 +55,7 @@ a mover, pan and tilt.
 If nothing happens, the panel lists what to check, in order: whether olad is answering, whether
 the universe has an output patched, then the unit's own address, mode and cable. It also shows
 exactly what mtrack is sending, so "mtrack is not sending" can be told from "the light is not
-listening". See [Testing a fixture](../interfaces/web-ui.md#testing-a-fixture).
+listening". See [Testing a fixture](web-ui.md#testing-a-fixture).
 
 ![Test this fixture, live: mode 8: RGBS at address 5, Send to lights on, the red swatch chosen,
 the line saying mtrack is sending 255, 0, 0, 0, and the "Nothing happened?"
@@ -91,7 +91,7 @@ open to show its constraints](../images/lighting-groups.png)
 
 The **Overview** tab now answers "will your show reach the lights?": the fixture type, venue
 and output checks should read **Ready**, and anything that is not says what to fix and links
-there ([Overview](../interfaces/web-ui.md#overview-will-your-show-reach-the-lights)).
+there ([Overview](web-ui.md#overview-will-your-show-reach-the-lights)).
 
 ![The Overview: five numbered checks, then what needs attention — an overlap in the patch, a
 group that finds no fixtures, and a universe olad has no port patched to](../images/lighting-overview.png)
@@ -137,9 +137,9 @@ GDTF does not say: its name in your venues, a mover's speed limits, or its strob
 ## Where next
 
 - A rig in a console or pre-viz tool comes in whole as an MVR: [Import an
-  MVR](../interfaces/web-ui.md#import-an-mvr), then [Fit shows](../interfaces/web-ui.md#fit-shows)
+  MVR](web-ui.md#import-an-mvr), then [Fit shows](web-ui.md#fit-shows)
   to tag it for your groups.
 - Place fixtures on the stage plot, aim them and see the rig in 3D:
-  [Venues](../interfaces/web-ui.md#venues) and [Plot and 3D](../interfaces/web-ui.md#plot-and-3d).
+  [Venues](web-ui.md#venues) and [Plot and 3D](web-ui.md#plot-and-3d).
 - A fixture with no GDTF is written by hand: [Fixture Type
   Definitions](configuration.md#fixture-type-definitions-lightingfixture_types).

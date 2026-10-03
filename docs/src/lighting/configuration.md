@@ -12,11 +12,22 @@ show.
 
 ## Main Configuration (`mtrack.yaml`)
 
-```yaml
-dmx:
-  # ... existing DMX configuration ...
+The lighting configuration lives in the hardware profile's `dmx` section, beside the universes
+the machine drives. A profile is a file in `profiles_dir` (or an entry under `profiles:` in
+`mtrack.yaml`); see [Hardware Profiles](../configuration/hardware-profiles.md). The
+`current_venue` and `groups` are per profile, so one song repository can carry a venue per
+machine. The web UI's **Lighting → Groups** page edits exactly this block.
 
-  # New lighting system configuration
+```yaml
+# profiles/01-house.yaml
+kind: hardware_profile
+hostname: house-pi
+
+dmx:
+  universes:
+    - universe: 1
+      name: light-show
+
   lighting:
     # Current venue selection - determines which physical fixtures to use
     current_venue: "main_stage"
@@ -54,11 +65,35 @@ dmx:
       venues: "lighting/venues"
 ```
 
-Fixtures belong in a venue. The config still accepts an inline `fixtures:` map
-(`emergency_light: "Emergency @ 1:500"`) under `lighting`, but the engine does not patch those
-fixtures, so nothing in them lights; `mtrack migrate --apply` moves them into a venue file,
-`lighting/venues/inline_migrated.light`, which you can then make current or copy from (see the
-[command-line reference](../reference/cli.md#mtrack-migrate)).
+A group's `name` is required, and shows target the map key (`front_wash:`), so give both the
+same name. The constraint types are listed in the [overview](overview.md#constraint-types).
+
+Fixtures are patched in venue files, never in the configuration. A profile that still carries
+an inline `fixtures:` map under `lighting` (`emergency_light: "Emergency @ 1:500"`) is refused
+at load with `dmx.lighting.fixtures is no longer supported: fixtures are patched in venue files
+— run `mtrack migrate --apply` to move these into one`. That command writes them to
+`lighting/venues/inline_migrated.light` and removes the map; make that venue current or copy
+its lines into your own (see the [command-line reference](../reference/cli.md#mtrack-migrate)).
+
+### The universe must exist in olad
+
+olad drops streamed frames for a universe that has no port patched to it, silently: `ola_uni_info`
+listing nothing means mtrack's frames are going nowhere, however healthy the connection looks.
+Patch your output port to each universe the profile drives (`ola_patch -d <device> -p <port> -u
+1`, or the olad web UI) before expecting light.
+
+mtrack checks this for you: at startup and on every config reload it asks olad's web server
+(port 9090 by default, `dmx.ola_http_port`) about each universe under `dmx.universes`, and warns
+for any that has no output port patched. The check runs off the output path and never delays or
+blocks DMX; if olad's web server is unreachable, it is skipped silently.
+
+To check a single light end to end — address, mode, cable — use **Test this fixture** on the
+fixture's page in the web UI ([Testing a fixture](web-ui.md#testing-a-fixture)): it
+sends to the fixture through the running engine and lists the olad checks above first when nothing
+lights.
+
+![Test this fixture, live, with the line saying what mtrack is sending and the checks to make
+when nothing lights](../images/lighting-fixture-test.png)
 
 ### Where the lighting files live
 
@@ -69,37 +104,41 @@ A project's fixture types are read from `lighting/fixture_types/` and its venues
 moves them — `fixture_types`, `venues`, or both; one you do not name stays at its default. A
 default directory that does not exist is simply empty. The engine, the web UI, MCP and the
 `import-gdtf`, `import-mvr` and `export-mvr` commands all read and write the same directories.
-
-**Upgrading:** earlier versions read venues and fixture types only from directories a profile
-named, though the web UI already saved to the defaults when none was named — so on a new
-install a venue made in the Lighting area was "not found" by the engine until `directories` was
-added by hand. Now the defaults are always read. A project that names its directories behaves
-exactly as before. A project that names none and keeps unrelated files in `lighting/venues/` or
-`lighting/fixture_types/` will now have them loaded.
-
-**Upgrading:** inline fixtures (`fixtures:` under `lighting`, `"Type @ universe:address"` per
-name) are retired: they never lit, and a config that still has them does not load. `mtrack
-migrate --apply` moves them into a venue file, `lighting/venues/inline_migrated.light`.
+Every file in those directories is loaded, so keep unrelated files out of them.
 
 ## Fixture Type Definitions (`lighting/fixture_types/`)
+
+A fixture type says which channels a fixture has. It is one of three things: a manufacturer's
+GDTF archive ([GDTF fixture types](#gdtf-fixture-types), the preferred source), a
+**channel-map type** written by hand in a `.light` file, or a **rich type** written by hand in a
+`.fixture` file ([Rich channel definitions](#rich-channel-definitions-fixture)). Channel-map
+types look like this:
 
 ```light
 # RGBW Par Can fixture type definition
 fixture_type "RGBW_Par" {
-  channels: 4
   channel_map: {
     "dimmer": 1,
     "red": 2,
     "green": 3,
     "blue": 4
   }
-  special_cases: ["RGB", "Dimmer"]
+}
+
+# A plain strobe: one strobe channel at 0.4-25 Hz, variable from DMX 7 up
+fixture_type "Strobe" {
+  channel_map: {
+    "strobe": 1,
+    "dimmer": 2
+  }
+  max_strobe_frequency: 25.0
+  min_strobe_frequency: 0.4
+  strobe_dmx_offset: 7
 }
 
 # RGB + Strobe fixture written by hand (the Astera PixelBrick's 4-channel RGBS
 # mode); with the manufacturer's GDTF, import that instead (below)
 fixture_type "Astera-PixelBrick" {
-  channels: 4
   channel_map: {
     "red": 1,
     "green": 2,
@@ -113,7 +152,6 @@ fixture_type "Astera-PixelBrick" {
 
 # Moving Head fixture type definition
 fixture_type "MovingHead" {
-  channels: 16
   channel_map: {
     "dimmer": 1,
     "pan": 2,
@@ -132,7 +170,6 @@ fixture_type "MovingHead" {
     "strobe": 15,
     "control": 16
   }
-  special_cases: ["MovingHead", "Spot", "Dimmer", "Strobe"]
 }
 ```
 
@@ -140,12 +177,12 @@ fixture_type "MovingHead" {
 
 | Statement | Where | What it says |
 |---|---|---|
-| `channels: N`, `channel_map: { "red": 1, … }` | `.light` (v1) types | The channels, by name and 1-based offset |
-| `max_strobe_frequency`, `min_strobe_frequency`, `strobe_dmx_offset` | `.light` (v1) types | The strobe range ([below](#strobe-curve-strobe_curve)) |
-| `channel "…" @ N …`, `cell "…" { … }` | `.fixture` types | Channels in full, and pixel cells ([Rich channel definitions](#rich-channel-definitions-fixture)) |
+| `channel_map: { "red": 1, … }` | channel-map (`.light`) types | The channels, by name and 1-based offset |
+| `max_strobe_frequency`, `min_strobe_frequency`, `strobe_dmx_offset` | channel-map (`.light`) types | The strobe range ([below](#strobe-curve-strobe_curve)) |
+| `channel "…" @ N …`, `cell "…" { … }` | rich (`.fixture`) types | Channels in full, and pixel cells ([Rich channel definitions](#rich-channel-definitions-fixture)) |
 | `movement { max_pan_speed: …deg/s max_tilt_speed: …deg/s }` | any type, and a GDTF fixture's record | How fast a mover may be driven |
 | `strobe_curve: period \| linear \| declared` | any type, and a GDTF fixture's record | How a strobe rate becomes DMX ([Strobe curve](#strobe-curve-strobe_curve)) |
-| `special_cases: […]` | `.light` (v1) types | Accepted for old files; ignored |
+| `channels: N`, `special_cases: […]` | channel-map (`.light`) types | Accepted and ignored: the map decides the channels. The web UI writes `channels:` as the map's count when it saves a type. |
 
 A fixture type has no `mode`: a hand-written type has one set of channels, and a GDTF fixture
 has all of its archive's modes, one of which each venue fixture names.
@@ -218,9 +255,9 @@ fixture_type "House Brick"
 A record names its archive and nothing else from it: no mode, no channels.
 An archive with a record is that one fixture type, under the record's name.
 A record may point at an archive anywhere inside the project, not only the
-library. Older records that named a mode on the `from gdtf(...)` line no
-longer load; the error says to remove the mode there and put `mode "…"` on
-each venue fixture that uses the type.
+library. A record that names a mode on its `from gdtf(...)` line is refused;
+the error says to remove the mode there and put `mode "…"` on each venue
+fixture that uses the type.
 
 **Two archives with one fixture name.** When two library files carry the
 same fixture name, the file whose name sorts first keeps it and the other
@@ -250,8 +287,7 @@ Notes:
   overrides. Anything mtrack cannot drive in a mode (wheels, some pixel/matrix
   modes) is skipped or refused with a clear message, and the fixture page
   lists such a mode greyed with the reason.
-- `.fixture` and `.light` fixture files load side by side; nothing renames
-  or migrates.
+- `.fixture` and `.light` fixture files load side by side.
 - How colour reaches a fixture depends on how it mixes. RGB(W) fixtures take
   a show's colours directly. A mover with CMY flags — `cyan`, `magenta` and
   `yellow`, which is how GDTF's `ColorSub_C/M/Y` import — takes the same
@@ -335,7 +371,7 @@ rate, test it at 2 Hz (it should flash twice a second) and try the other curves.
 to run on a period curve needs it said: the **Astera PixelBrick** is period-linear — at 10 Hz it
 must get 248, where its GDTF's linear declaration gives 104 — so set **Strobe curve** to
 *Period* on its fixture page (under **Your settings for this fixture**; see
-[Fixture types](../interfaces/web-ui.md#fixture-types)), which writes it into the record:
+[Fixture types](web-ui.md#fixture-types)), which writes it into the record:
 
 ```light
 fixture_type "PB15 PixelBrick"
@@ -348,26 +384,6 @@ fixture_type "PB15 PixelBrick"
 In a hand-written `.light` or `.fixture` type, the same statement goes in the body
 (`strobe_curve: linear`). It changes nothing about which channels the fixture has, and it is
 not written into a GDTF or MVR that mtrack exports.
-
-#### The universe must exist in olad
-
-olad drops streamed frames for a universe that has no port patched to it, silently: `ola_uni_info`
-listing nothing means mtrack's frames are going nowhere, however healthy the connection looks.
-Patch your output port to each universe the profile drives (`ola_patch -d <device> -p <port> -u
-1`, or the olad web UI) before expecting light.
-
-mtrack checks this for you: at startup and on every config reload it asks olad's web server
-(port 9090 by default, `dmx.ola_http_port`) about each universe under `dmx.universes`, and warns
-for any that has no output port patched. The check runs off the output path and never delays or
-blocks DMX; if olad's web server is unreachable, it is skipped silently.
-
-To check a single light end to end — address, mode, cable — use **Test this fixture** on the
-fixture's page in the web UI ([Testing a fixture](../interfaces/web-ui.md#testing-a-fixture)): it
-sends to the fixture through the running engine and lists the olad checks above first when nothing
-lights.
-
-![Test this fixture, live, with the line saying what mtrack is sending and the checks to make
-when nothing lights](../images/lighting-fixture-test.png)
 
 ### Rich channel definitions (`*.fixture`)
 
@@ -397,19 +413,19 @@ One `channel` line per channel: the name, `@` the 1-based offset, then optionall
 with the fine byte's offset, `range` with the physical span the whole channel covers, and a
 block of `function` lines each naming a DMX sub-range and, where it maps to something
 physical, that span. Units are part of the value: `deg` for angles, `hz` for strobe rates.
-The v1 strobe fields are not needed — the strobe function carries the same facts — and a
-type uses either `channel` lines or a `channel_map`, not both.
+A rich type uses `channel` lines only: a `channel_map`, or the channel-map form's strobe
+fields (`max_strobe_frequency`, `min_strobe_frequency`, `strobe_dmx_offset`), in the same
+type is a parse error — the strobe function on the channel carries the same facts.
 
-The rich form is the v2 DSL and lives in `.fixture` files only; a `.light` fixture file
-keeps the v1 grammar, the loader skips, loudly, a `.light` file that uses it, and the web
-UI refuses to save it into one. Both forms stay valid forever. The web UI lists both kinds
-of file: a v1 `.light` type opens in the channel-map form, while a `.fixture` type — rich
-or a GDTF record — opens as the text of its file, since neither form fits a channel map. A
-new type is created as either, and **Edit as text** on a `.light` type opens its file and
-offers to save it back as a `.fixture` — the path from v1 to the rich form. In text mode
-the type's name is the one the definition declares, and the archive a record
-points at must exist inside the project, or the save is refused where the text can still
-be fixed.
+The rich form lives in `.fixture` files only. A `.light` file that uses `channel` lines is
+refused by the loader with "rich channel syntax belongs in a .fixture file", and the web UI
+refuses to save it into one. The web UI lists both kinds of file: a channel-map `.light` type
+opens in the channel-map form, while a `.fixture` type — rich or a GDTF record — opens as the
+text of its file, since neither fits a channel map. A new type is created as either, and
+**Edit as text** on a `.light` type opens its file and offers to save it back as a `.fixture`
+— the path from the channel-map form to the rich one. In text mode the type's name is the one
+the definition declares, and the archive a record points at must exist inside the project, or
+the save is refused where the text can still be fixed.
 
 **Cells:** a pixel fixture — an LED batten with several individually-colored
 segments, a pixel mover's ring — can describe each segment as a `cell`
@@ -581,7 +597,7 @@ fixtures back.
 
 A venue can also say where its fixtures hang and name the points on stage a
 show may aim at. Files using this syntax take the `.venue` extension and load
-beside `.light` venues as peers; nothing renames or migrates.
+beside `.light` venues as peers.
 
 ```light
 # lighting/venues/kellys_basement.venue
@@ -669,7 +685,7 @@ venue "house" {
 }
 ```
 
-The web UI's [Venues page](../interfaces/web-ui.md#venues) does this for you: select fixtures on
+The web UI's [Venues page](web-ui.md#venues) does this for you: select fixtures on
 the plot and **Aim** writes the rotation, either facing a direction with a tilt up from the
 floor (`(90 + tilt, 0, bearing)`, where bearing −90 faces +x, 0 faces +y, 90 faces −x and 180
 faces −y) or at a focus point using the formulas above. Its **Arrange** tools align, space and
@@ -714,7 +730,7 @@ corrected by re-running the import with a better one.
 The web UI does the same in a browser: **Import an MVR** on the Lighting area's Venues page
 walks through the file, a plan where you click the front edge of the deck to set the origin, a
 review of what will be written, and the import itself. See
-[Import an MVR](../interfaces/web-ui.md#import-an-mvr).
+[Import an MVR](web-ui.md#import-an-mvr).
 
 Each GDTF in the file is one fixture type, however many modes the venue
 patches it in, and every seeded fixture line carries its own `mode "…"`. An
@@ -761,7 +777,7 @@ import-mvr` without `--write` lists the overwrites (and writes nothing), and the
 the MVR's values everywhere.
 
 An imported venue carries no tags, so the next step is the web UI's
-[Fit shows](../interfaces/web-ui.md#fit-shows) page: it suggests which fixtures should carry
+[Fit shows](web-ui.md#fit-shows) page: it suggests which fixtures should carry
 the tags your groups need, places the focus points your shows aim at, and adds the missing
 universe outputs to your profile.
 
@@ -784,7 +800,7 @@ round-trips: importing the export merges it with nothing changed.
 The web UI's **Export an MVR** dialog on the Venues page downloads the archive to the browser
 instead (a copy under `lighting/export/` only if you ask), shows how many fixed fixtures are
 linked, and can add a focus point `<fixture> aim` for each unlinked one where its beam meets the
-deck. See [Export an MVR](../interfaces/web-ui.md#export-an-mvr).
+deck. See [Export an MVR](web-ui.md#export-an-mvr).
 
 The same flow is available over MCP as `inspect_mvr`, `import_mvr` and `export_mvr`. Pixel bars and
 multi-section fixtures import with their identical sections ganged to one color (the report
@@ -798,7 +814,7 @@ which are a good way to see what an import of your own rig will look like.
 
 The stage card on the Venues page has a **Plot | 3D** switch that shows the venue as a room in
 place of the plot (the dashboard's stage card has the same switch, live only; see
-[Plot and 3D](../interfaces/web-ui.md#plot-and-3d)): the deck with
+[Plot and 3D](web-ui.md#plot-and-3d)): the deck with
 the audience edge marked, every fixture at its venue position, movers turning as the show
 drives them, beams in the colour and level the fixture is showing, and focus points as
 markers. Drag to orbit, scroll to zoom, right-drag to pan; it opens from front of house, and
@@ -830,7 +846,7 @@ front of the audience edge.
 
 On the current venue, a **Preview** switch under the picture replaces the live state with a
 song's show at a moment you scrub to, worked out offline (nothing is sent to the lights, and a
-playing song keeps playing); see [Previewing a song](../interfaces/web-ui.md#previewing-a-song).
+playing song keeps playing); see [Previewing a song](web-ui.md#previewing-a-song).
 
 A venue seeded from an MVR also shows the MVR's scenery — decks, trusses, screens — where
 the MVR carries it as glTF (`.glb`); scenery in other formats (`.3ds` is common in console
@@ -852,24 +868,59 @@ lighting:
   - file: "lighting/outro.light"      # Multiple shows can be referenced
 tracks:
   - name: "backing-track"
-    file: "backing-track.wav"  # Can be WAV, MP3, FLAC, OGG, AAC, ALAC, etc.
+    file: "backing-track.wav"
 ```
 
-The `.light` files use the DSL format and can reference logical groups defined in your `mtrack.yaml`:
+The `.light` files use the DSL format and reference the logical groups defined in the profile:
 
 ```light
 show "Main Show" {
-    # Front wash on - uses logical group from mtrack.yaml
+    # Front wash on - uses a logical group from the profile
     @00:05.000
     front_wash: static color: "red", dimmer: 80%, duration: 10s
 
-    # Movers join with color cycle - uses logical group
+    # Movers join with a color cycle over a static bed that sets their level
     @00:10.000
-    movers: cycle color: "red", color: "blue", color: "green", speed: 2.0, dimmer: 100%, duration: 8s
+    movers: static dimmer: 100%, duration: 8s
+    movers: cycle color: "red", color: "blue", color: "green", speed: 2.0, duration: 8s, layer: midground
 }
 ```
 
-> **Note:** All effects require an explicit `duration` parameter. Effects without a duration
-> will be rejected by the parser. See the [Effects Reference](effects.md) for details.
+> **Note:** Every effect runs for a finite time. An effect with neither `duration` nor
+> `hold_time` is rejected by the parser, except `dimmer`, whose `duration` defaults to 1 s;
+> a `move` needs `duration` itself, since `hold_time` cannot stand in for travel time. See the
+> [Effects Reference](effects.md).
 
-See the [Light Show Verification](verification.md) section for information on validating your `.light` files.
+See [Light Show Verification](verification.md) for checking a `.light` file.
+
+## Lint warnings
+
+Syntax is only the first check. A show can be legal DSL and still do nothing on the rig, so
+the lint reads it against the current venue and the song, and reports each finding under a
+code. Two places run it: the Lighting **Overview** in the web UI, which lists every song's
+findings ([Lighting in the web UI](web-ui.md)), and the `validate_lighting`
+[MCP](../interfaces/mcp.md) tool. (The song editor's **Validate** button and `mtrack
+verify-light-show` check syntax, and the latter with `--config` the group names, but not these.)
+
+| Code | What it means |
+|---|---|
+| `unused-parameter` | A parameter the effect does not read (`dimmer` on a `cycle`, a misspelling), accepted and dropped |
+| `empty-group` | A group that resolves to no fixtures in the current venue, so its cues do nothing |
+| `capability-gap` | An effect needs a channel (color, strobe, pan/tilt) that none of the group's fixtures has |
+| `unconfigured-universe` | A venue fixture on a universe with no output under `dmx.universes` in the active profile |
+| `unbound-focus-point` | A `move` aims at a focus point the current venue does not define |
+| `move-without-positions` | A `move` at a focus point on movers the venue has not placed; they snap to pan 0 / tilt 0 |
+| `move-imprecise` | Movers whose fixture type has no pan/tilt range, so degrees resolve over an assumed travel |
+| `per-cell-no-effect` | `per: cell` on an effect that gives every target the same value, or on a `move` |
+| `cells-absent` | `per: cell` on a group none of whose fixtures has cells in this venue |
+| `spread-unused` | `spread` on an effect other than `rainbow` or `cycle` |
+| `replace-overlap` | Two `replace` effects on one group and layer at the same time; the later one wins |
+| `past-end-of-song` | An effect that runs past the end of the song and is cut short |
+| `cue-past-end` | A measure-based cue that resolves to a bar past the song's last bar |
+| `tempo-grid-mismatch` | A `tempo {}` block whose bars drift from where the click track puts them |
+
+Beyond the lint, the Lighting area's **Overview** page reports whether the rig is ready at all
+(fixture types that load, a current venue that loads, universes patched in olad, groups that
+resolve), **Fit shows** suggests which fixtures should carry the tags your shows' groups need,
+and over MCP `analyze_show` and `diff_shows` describe and compare shows. Those are described in
+[Lighting in the web UI](web-ui.md) and [MCP](../interfaces/mcp.md).

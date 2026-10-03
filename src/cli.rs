@@ -202,7 +202,8 @@ enum Commands {
         /// The host and port of the gRPC server.
         #[arg(short = 'H', long)]
         host_port: Option<String>,
-        /// The name of the playlist to switch to. Currently only supports "all_songs" and "playlist."
+        /// The name of the playlist to switch to: "all_songs" or any playlist loaded from
+        /// `playlists_dir`. Refused while a song is playing.
         playlist_name: String,
     },
     /// Gets the current status of the player from the gRPC server.
@@ -348,7 +349,7 @@ enum Commands {
         /// Only check specific categories (e.g., "track-mappings"). Runs all checks if omitted.
         #[arg(long)]
         check: Option<Vec<String>>,
-        /// Hostname to verify against. When audio_profiles are used, this filters which profiles
+        /// Hostname to verify against. When profiles are used, this filters which profiles
         /// to check. If omitted, all profiles are verified.
         #[arg(long)]
         hostname: Option<String>,

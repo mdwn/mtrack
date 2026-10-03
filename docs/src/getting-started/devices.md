@@ -1,13 +1,14 @@
 # Discovering Devices
 
-The **Hardware Profiles** page in the web UI provides drop-downs that populate with the
-audio and MIDI devices available on the current host. This is the easiest way to discover
-what hardware mtrack can see.
+Before you write a [hardware profile](hardware-config.md), find the names mtrack uses for your
+audio and MIDI devices.
 
-The **Status** page shows the devices that are currently configured and connected in the
-active profile.
+In the web UI, the **Audio** and **MIDI** tabs of a profile on the **Config** page have a
+device field that lists the devices available on the current host. This is the easiest way to
+discover what hardware mtrack can see. The **Status** page shows the devices that are
+currently configured and connected in the active profile.
 
-You can also use the CLI commands below.
+You can also use the CLI commands below, which work without the web UI.
 
 ## CLI Commands
 

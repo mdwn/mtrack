@@ -32,76 +32,117 @@ data representing the color that you want. DMX data is arranged into universes, 
 
 ## Configuring mtrack for MIDI DMX Playback
 
-In order to use MIDI-based light shows, you'll need to set up OLA on your playback device and map your DMX devices into DMX universes. I recommend
-following [this tutorial](https://www.openlighting.org/ola/getting-started/). mtrack assumes that OLA is running on the same device.
+MIDI-based light shows need olad running on the playback machine with your DMX interface
+patched to a universe; the [OLA getting started guide](https://www.openlighting.org/ola/getting-started/)
+covers that, and [The universe must exist in olad](../lighting/configuration.md#the-universe-must-exist-in-olad)
+the one step most often missed. mtrack talks to olad on the same machine (port 9010 by
+default, `dmx.ola_port`).
 
-mtrack can be configured to stream DMX data to OLA universes. This can be done through the mtrack configuration file when using `mtrack start`
-or through the command line when using `mtrack play` using the `--dmx-dimming-speed-modifier` argument and the `dmx-universe-config` arguments.
-The `dmx-universe-config` argument format is:
+The universes mtrack streams to are declared in the hardware profile's `dmx` section, each
+with a name a song refers to. `dim_speed_modifier` scales the dimming engine below (default
+`1.0`):
 
+```yaml
+dmx:
+  dim_speed_modifier: 0.25
+  universes:
+    - universe: 1
+      name: light-show
 ```
-universe=1,name=light-show;universe=2,name=another-light-show
+
+A song then lists its MIDI light shows under `light_shows:`. Each names the universe to play
+on, the MIDI file to read as DMX (relative to the song directory), and optionally which of the
+file's MIDI channels (1–16) carry lighting data; with `midi_channels` omitted, every channel
+does. This is `examples/songs/another-cool-song/song.yaml`, whose one MIDI file carries both
+the song's MIDI playback and, on channel 15, its lighting:
+
+```yaml
+kind: song
+name: Another cool song
+
+midi_playback:
+  file: song.mid
+  exclude_midi_channels:
+  - 15
+
+light_shows:
+- universe_name: light-show
+  dmx_file: song.mid
+  midi_channels:
+  - 15
+
+tracks:
+- name: click
+  file: click.wav
 ```
 
-MIDI-based light shows are defined in `Song` files and consist of an array of "universe names" and MIDI files. These universe names correlate to the
-names used in the mtrack configuration. For instance, a song with a light show with a universe name of `light-show` will play on the mtrack
-universe with the equivalent name.
-
-Additionally, songs can be defined to only recognize specific MIDI channels from the given MIDI file as lighting data. For instance, if you
-have a single MIDI file that contains all of your automation, you can restrict light shows to only recognize events from channel 15.
-
-Examples for these configuration options are in the song definition example and mtrack player examples above.
+A light show whose `universe_name` matches no universe in the active profile is not sent
+anywhere.
 
 ### Live MIDI to DMX mapping
 
-mtrack is also capable of mapping live MIDI events into the DMX engine. This allows for live control of lighting using a
-MIDI controller. Additionally, transformations can be applied to the incoming MIDI events that allow for singular MIDI messages
-to be transformed into multiple MIDI messages and then fed into the DMX engine, allowing for the control multiple lights. Right now,
-the transformers supported are:
+mtrack can also feed live MIDI events into the DMX engine, so a MIDI controller drives lights
+in real time. The mapping is in the profile's `midi` section: a MIDI channel (1–16) to listen
+on and the universe to drive, with optional transformers that turn one incoming message into
+several:
 
-- Note Mapper: This maps one note on a MIDI Channel to multiple notes, all with the same velocity. Works for both note_on and note_off events.
-- Control Change Mapper: This maps one control change event on a MIDI Channel to multiple control change events, all with the same value.
+```yaml
+midi:
+  device: "My MIDI Interface"
+  midi_to_dmx:
+    - midi_channel: 15
+      universe: light-show
+      transformers:
+        - type: note_mapper
+          input_note: 60
+          convert_to_notes: [60, 61, 62]
+        - type: control_change_mapper
+          input_controller: 1
+          convert_to_controllers: [1, 2, 3]
+```
 
-Right now collision behavior is undefined. The intention is to provide some sort of composable mechanism here, so it's very possible that
-this interface will change in the future.
+- `note_mapper`: maps one note to several, all with the incoming velocity, for both note on and
+  note off.
+- `control_change_mapper`: maps one control change to several, all with the incoming value.
+
+Collision behaviour between transformers is undefined.
 
 ## MIDI format
 
 The MIDI engine was heavily inspired by the [DecaBox MIDI to DMX converter](https://response-box.com/gear/product/decabox-protocol-converter-basic-firmware/), with the MIDI to DMX conversion mechanism being described
 [here](http://67.205.146.177/books/decabox-midi-to-dmx-converter).
 
-Note here that MIDI is an older protocol and doesn't have the same resolution that DMX does. As a result, we have
-to do some munging here in order to make this work. Some other notes:
-
-- `u7` is an unsigned 7 bit integer, which ranges from 0-127.
-- mtrack only supports 127 DMX channels per universe at present.
-
-MIDI data is converted into DMX data as follows:
+MIDI values are 7-bit (`u7`, 0–127) where DMX values are 8-bit (0–255), so the conversion
+doubles values and shifts channel numbers by one:
 
 | MIDI Event | Outputs | Description |
 |------------|---------|-------------|
-| key on/off | key (`u7`), velocity(`u7`) | The value of _key_ is interpreted as the DMX channel, and _velocity_ is doubled and assigned to the channel |
-| program change | program (`u7`) | The dimming speed. 0 means instantaneous, any other number is multiplied by the dimming speed modifier and used as a duration. |
-| continuous controller | controller (`u7`), value (`u7`) | Similar to key on/off, the value of the _controller_ is interpreted as the DMX channel, and _value_ is doubled and assigned to the channel. Ignores dimming. |
+| note on/off | key (`u7`), velocity (`u7`) | DMX channel = key + 1 (keys 0–127 address DMX channels 1–128); value = velocity × 2 (0–254). Subject to dimming. |
+| program change | program (`u7`) | Sets the dimming speed: program × `dim_speed_modifier` seconds. 0 means instantaneous. |
+| control change | controller (`u7`), value (`u7`) | DMX channel = controller + 1; value = value × 2. Ignores dimming. |
+
+Because a key or controller number is 7-bit, the MIDI path reaches DMX channels 1–128 of a
+universe; a fixture patched above 128 cannot be driven this way (the DSL system has no such
+limit). A doubled velocity tops out at 254, not 255.
 
 The general idea here is to create a MIDI file that generally describes the way you want your lights to display. Much like regular MIDI
 automation, you can program some pretty dynamic lights this way.
 
 ## Dimming engine
 
-The dimming engine built into mtrack is controlled by program change (PC) commands. The value of the PC command will be multiplied by
-the dimming speed modifier and will produce a duration. Subsequent key on/off commands will gradually progress to their new value
-over this duration. For example, a dimming speed modifier of `0.25` and a PC command with a `1` will produce a dimming duration of `0.25`.
-New key on/off events will take `0.25` seconds to reach the new value. PC0 will ensure color changes are instantaneous.
+The dimming engine is controlled by program change (PC) commands. The value of the PC command is multiplied by
+`dim_speed_modifier` to produce a duration, and subsequent note on/off commands move their channel to its new value
+over that duration. For example, a `dim_speed_modifier` of `0.25` and a PC command of `1` produce a dimming duration of `0.25`:
+new note events take 0.25 seconds to reach their value. PC 0 makes changes instantaneous.
 
-Dimming of channels is independent of one another. Imagine a lifecycle that looks like this, assuming a dimming speed modifier of 1:
+Each channel dims on its own. Take this sequence, with `dim_speed_modifier: 1.0`:
 
 ```
-PC5 --> key_on(0, 127) --> PC10 --> key_on(1, 127)
+PC5 --> note_on(key 0, velocity 127) --> PC10 --> note_on(key 1, velocity 127)
 ```
 
-A PC command instructs the dimmer to dim over 5 seconds. The first `key_on` event will gradually progress channel from 0 to 127 over 5 seconds.
-After this, another PC command instructs the dimmer to dim over 10 seconds. The second `key_on` event will gradually progress channel 1 from 0
-to 127 over 10 seconds. This will not affect channel 0, which will still only take 5 seconds.
+The first PC sets a 5-second dim. The first note (key 0) drives DMX channel 1 from 0 to 254 over 5 seconds.
+The second PC sets a 10-second dim, and the second note (key 1) drives DMX channel 2 from 0 to 254 over 10 seconds.
+Channel 1 is unaffected and still completes in 5 seconds.
 
-Continuous controller (CC) messages will ignore dimming.
+Control change (CC) messages ignore dimming.

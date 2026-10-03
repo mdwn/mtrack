@@ -6,10 +6,9 @@ Audio triggers use the same sample engine as MIDI triggers, so all sample featur
 
 ## Configuration
 
-Trigger configuration can be placed at the top level (legacy) or inside a hardware profile. Each input requires a `kind` field: `audio` or `midi`. The `device` field is only required when audio inputs are present.
+Trigger configuration lives in the `trigger` block of a hardware profile. Each input requires a `kind` field: `audio` or `midi`. The `device` field is only required when audio inputs are present.
 
 ```yaml
-# Inside a hardware profile (recommended):
 profiles:
   - hostname: drum-pi
     audio:
@@ -47,7 +46,7 @@ profiles:
           action: release
           release_group: "cymbal"
           threshold: 0.05
-        # MIDI trigger input (alternative to top-level sample_triggers)
+        # MIDI trigger input
         - kind: midi
           event:
             type: note_on
@@ -56,44 +55,37 @@ profiles:
           sample: kick
 ```
 
-Or as a top-level field (legacy, normalized into a profile at startup):
-
-```yaml
-trigger:
-  device: "UltraLite-mk5"
-  sample_rate: 44100
-  inputs:
-    - kind: audio
-      channel: 1
-      sample: "kick"
-      threshold: 0.1
-      retrigger_time_ms: 30
-      scan_time_ms: 5
-      gain: 1.0
-      velocity_curve: linear
-      release_group: "kick"
-```
-
 MIDI-only trigger configs don't need a device:
 
 ```yaml
-trigger:
-  inputs:
-    - kind: midi
-      event:
-        type: note_on
-        channel: 10
-        key: 60
-      sample: kick
-    - kind: midi
-      event:
-        type: note_on
-        channel: 10
-        key: 62
-      sample: snare
+profiles:
+  - hostname: my-host
+    audio:
+      device: "UltraLite-mk5"
+      track_mappings:
+        kick: [3, 4]
+    trigger:
+      inputs:
+        - kind: midi
+          event:
+            type: note_on
+            channel: 10
+            key: 60
+          sample: kick
+        - kind: midi
+          event:
+            type: note_on
+            channel: 10
+            key: 62
+          sample: snare
 ```
 
-> **Note:** Top-level `sample_triggers` are still supported for backwards compatibility. At startup they are automatically converted to `kind: midi` inputs in the trigger config. When using profiles, top-level `sample_triggers` are ignored with a warning.
+> **Legacy spellings.** A top-level `trigger:` block in `mtrack.yaml`, and a top-level
+> `sample_triggers:` list (`- trigger: <MIDI event>` / `sample: <name>`), belong to the
+> [legacy layout](player-config.md#legacy-layout): without `profiles`, they are loaded into the
+> single generated profile, each `sample_triggers` entry as a `kind: midi` input; when
+> `profiles` is present, both are ignored with a warning. Per-song `sample_triggers` in
+> `song.yaml` are not legacy; see [Samples](samples.md#per-song-sample-overrides).
 
 ## Stream Configuration
 
@@ -166,10 +158,24 @@ Trigger inputs can specify a `release_group` to enable voice management across i
 
 ## Latency
 
-Total trigger-to-sound latency is approximately:
-- Scan window: ~5ms (default `scan_time_ms`)
-- Sample engine scheduling delay: ~buffer_size/sample_rate (~5.8ms at 256/44100)
-- **Total: ~11ms**, well under the 20ms threshold for acceptable drum trigger response.
+Trigger-to-sound latency is the sum of three parts, all set by the profile:
+
+```
+latency ≈ scan_time_ms + output buffer_size / sample_rate + device buffering
+```
+
+- **Scan window** (`scan_time_ms`, default 5 ms, audio inputs only): the detector waits this
+  long after the threshold crossing to find the peak before it fires. MIDI inputs skip this.
+- **Scheduling delay**: the sample engine schedules every voice one output `buffer_size`
+  ahead of the mixer's current position so it is never late for the next callback — one
+  buffer of the profile's `audio` device: ~5.8 ms at 256 samples / 44.1 kHz, ~23 ms at the
+  default 1024.
+- **Device buffering**: the audio input delivers samples a buffer at a time (the trigger's
+  `buffer_size`) and the output plays a buffer behind the mixer, so each end adds up to one
+  buffer period on top.
+
+With the defaults and 256-sample buffers at 44.1 kHz, scan plus scheduling comes to ~11 ms;
+lowering the output `buffer_size` is the main lever, and `scan_time_ms` the second.
 
 ## Calibration
 

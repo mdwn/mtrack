@@ -61,7 +61,7 @@ so everything you set up in the browser is on the card. To keep it on a USB
 drive instead, edit `/etc/default/mtrack` and regenerate the unit; that file
 explains how inline.
 
-With the Pi up, [Quick Start](quick-start.md) takes it from the web UI, and
+With the Pi up, [Quick Start](quick-start.md) takes it from there in the web UI, and
 [First Light](../lighting/first-light.md) from a fixture's GDTF to a lit show.
 
 The image is 64-bit, so it needs a Pi 3 or newer. On anything older, or on
@@ -128,8 +128,7 @@ Then:
 $ cargo install mtrack --locked
 ```
 
-If you want to use `mtrack` on startup, I recommend copying it to
-`/usr/local/bin`:
+To run `mtrack` on startup, copy it to `/usr/local/bin`:
 
 ```
 $ sudo cp ~/.cargo/bin/mtrack /usr/local/bin/mtrack

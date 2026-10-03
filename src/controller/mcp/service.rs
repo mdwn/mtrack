@@ -2771,8 +2771,8 @@ async fn remove_lighting_file(path: &std::path::Path) -> Result<(), McpError> {
 /// spans beneath it, and where the block ends.
 ///
 /// YAML lets a sequence sit at the key's own indentation or deeper, and an
-/// entry may run over several lines — the shipped songs write `- name: "..."`
-/// with `file:` underneath. Both callers need the same understanding of that
+/// entry may run over several lines — hand-written songs often write
+/// `- name: "..."` with `file:` underneath. Both callers need the same understanding of that
 /// shape, so they share this rather than each scanning lines their own way.
 struct LightingBlock {
     key_index: usize,
@@ -3960,10 +3960,10 @@ mod unregister_lighting_tests {
     }
 
     #[test]
-    fn handles_the_multi_line_quoted_form_the_shipped_songs_use() {
-        // examples/songs/dsl-light-show-song/song.yaml writes entries as
-        // `- name: "..."` with `file:` on the next line, quoted and indented
-        // two spaces. Matching only the `-` line misses the path entirely.
+    fn handles_the_multi_line_quoted_form_hand_written_songs_use() {
+        // Hand-written songs commonly write entries as `- name: "..."` with
+        // `file:` on the next line, quoted and indented two spaces (`name` is
+        // ignored by the loader). Matching only the `-` line misses the path.
         let block = [
             "lighting:",
             "  - name: \"Main Show\"",

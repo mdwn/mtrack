@@ -29,8 +29,12 @@ player state without requiring any external clients:
 Enable the TUI with the `--tui` flag:
 
 ```
-$ mtrack start /path/to/player.yaml --tui
+$ mtrack start /path/to/project --tui
+$ mtrack start /path/to/mtrack.yaml --tui
 ```
+
+The path is a project directory (mtrack looks for `mtrack.yaml` inside it) or the config file
+itself, and defaults to the current directory.
 
 Without `--tui`, `mtrack` runs in headless mode with log output to stderr. The TUI runs
 alongside all configured controllers (gRPC, OSC, MIDI) and the web UI, so you can use
