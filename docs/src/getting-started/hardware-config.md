@@ -20,7 +20,9 @@ Click a profile to open its settings. Configuration is organized into tabs:
   delay. The device list is populated from connected hardware.
 - **MIDI** — Select your MIDI device, configure playback delay, beat clock output, and
   MIDI-to-DMX passthrough mappings with transformer editors.
-- **Lighting** — Configure DMX universes and map them to OLA universe numbers.
+- **Lighting** — Configure DMX universes and map them to OLA universe numbers. Fixtures,
+  venues and groups are set up in the [Lighting area](../interfaces/web-ui.md#lighting); see
+  [First Light](../lighting/first-light.md).
 - **Triggers** — Set up audio and MIDI-triggered sample playback.
 - **Controllers** — Configure gRPC, OSC, and MIDI control interfaces. MIDI controllers support
   full event mapping plus optional Morningstar preset naming and section loop control events.

@@ -360,5 +360,7 @@ on other mounts, the web UI can only manage files that are within the project ro
 For best results:
 - Keep your `songs` path relative (e.g. `songs: .` or `songs: songs`)
 - Store playlists in a `playlists/` subdirectory within the project root
-- Store lighting files alongside song files in the song directories
+- Store light shows alongside song files in the song directories, and fixtures and venues
+  under `lighting/` (see
+  [Where the lighting files live](../lighting/configuration.md#where-the-lighting-files-live))
 - Ensure mtrack has **write access** to the project root and its contents

@@ -6,6 +6,10 @@ The lighting system uses a three-layer architecture:
 2. **Venue Layer**: Tag physical fixtures with capabilities in DSL files
 3. **Song Layer**: Reference `.light` DSL files in song YAML files, which use logical groups
 
+This page is the reference for the files behind each layer. Everything on it can also be done
+in the web UI's Lighting area; [First light](first-light.md) walks through it from a GDTF to a
+show.
+
 ## Main Configuration (`mtrack.yaml`)
 
 ```yaml
@@ -50,6 +54,12 @@ dmx:
       venues: "lighting/venues"
 ```
 
+Fixtures belong in a venue. The config still accepts an inline `fixtures:` map
+(`emergency_light: "Emergency @ 1:500"`) under `lighting`, but the engine does not patch those
+fixtures, so nothing in them lights; `mtrack migrate --apply` moves them into a venue file,
+`lighting/venues/inline_migrated.light`, which you can then make current or copy from (see the
+[command-line reference](../reference/cli.md#mtrack-migrate)).
+
 ### Where the lighting files live
 
 A project's fixture types are read from `lighting/fixture_types/` and its venues from
@@ -86,7 +96,8 @@ fixture_type "RGBW_Par" {
   special_cases: ["RGB", "Dimmer"]
 }
 
-# RGB + Strobe fixture (e.g. Astera PixelBrick in 4-channel RGBS mode)
+# RGB + Strobe fixture written by hand (the Astera PixelBrick's 4-channel RGBS
+# mode); with the manufacturer's GDTF, import that instead (below)
 fixture_type "Astera-PixelBrick" {
   channels: 4
   channel_map: {
@@ -125,6 +136,20 @@ fixture_type "MovingHead" {
 }
 ```
 
+**What a fixture type's body may hold:**
+
+| Statement | Where | What it says |
+|---|---|---|
+| `channels: N`, `channel_map: { "red": 1, … }` | `.light` (v1) types | The channels, by name and 1-based offset |
+| `max_strobe_frequency`, `min_strobe_frequency`, `strobe_dmx_offset` | `.light` (v1) types | The strobe range ([below](#strobe-curve-strobe_curve)) |
+| `channel "…" @ N …`, `cell "…" { … }` | `.fixture` types | Channels in full, and pixel cells ([Rich channel definitions](#rich-channel-definitions-fixture)) |
+| `movement { max_pan_speed: …deg/s max_tilt_speed: …deg/s }` | any type, and a GDTF fixture's record | How fast a mover may be driven |
+| `strobe_curve: period \| linear \| declared` | any type, and a GDTF fixture's record | How a strobe rate becomes DMX ([Strobe curve](#strobe-curve-strobe_curve)) |
+| `special_cases: […]` | `.light` (v1) types | Accepted for old files; ignored |
+
+A fixture type has no `mode`: a hand-written type has one set of channels, and a GDTF fixture
+has all of its archive's modes, one of which each venue fixture names.
+
 ### GDTF fixture types
 
 Instead of hand-transcribing a channel map from a manual, use the
@@ -132,8 +157,10 @@ manufacturer's [GDTF](https://gdtf-share.com/) file — most manufacturers
 publish them. A `.gdtf` in `lighting/library/` **is** a fixture type: nothing
 else needs writing. It is named from the fixture name inside the archive
 (characters a name cannot carry are dropped, so `PB15 <Pixel> Brick` becomes
-`PB15 Pixel Brick`), and mtrack distills whichever DMX mode a fixture uses
-into the same model a hand-written definition produces.
+`PB15 Pixel Brick`). Whichever DMX mode a venue fixture uses, mtrack reads that
+mode's channels from the archive into the same model a hand-written type
+produces, so a show drives both alike. There is no translation step: you never
+write or see a channel map for a GDTF fixture.
 
 The import command copies the file there and checks it has modes mtrack can
 drive:
@@ -220,8 +247,9 @@ Notes:
   also keeps an index of the library's fixture names, so a load does not
   open every archive.
 - A GDTF fixture's channels come from the GDTF; a record carries only
-  overrides. Anything the distiller can't represent (wheels, pixel/matrix
-  modes) is skipped or refused with a clear message.
+  overrides. Anything mtrack cannot drive in a mode (wheels, some pixel/matrix
+  modes) is skipped or refused with a clear message, and the fixture page
+  lists such a mode greyed with the reason.
 - `.fixture` and `.light` fixture files load side by side; nothing renames
   or migrates.
 - How colour reaches a fixture depends on how it mixes. RGB(W) fixtures take
@@ -251,7 +279,7 @@ Notes:
 
   The import report lists every suffixed name.
 - When a GDTF's identical sections (a pixel bar's segments, a batten's
-  cells) gang to one channel, the distiller also records them as cells —
+  cells) gang to one channel, mtrack also records them as cells —
   their own channels and a transform-derived offset — the same shape a
   hand-written `.fixture` cell block (below) produces. Any sections of one
   fixture that carry exactly the same attributes are treated as cells of one
@@ -262,8 +290,8 @@ Notes:
 - On a hardened deployment (`mtrack systemd` with `ProtectSystem=strict`),
   `lighting/.cache/` must be writable — pass your project directory (or at
   least the cache path) to `mtrack systemd` so it lands in
-  `ReadWritePaths=`. Referential fixtures cannot expand on a fully
-  read-only filesystem, since the cache is rebuilt rather than committed.
+  `ReadWritePaths=`. GDTF fixtures cannot load on a fully read-only
+  filesystem, since the cache is rebuilt rather than committed.
 
 **Strobe frequency range:**
 
@@ -306,10 +334,11 @@ manufacturer did not measure the curve, only stated the range; if a fixture stro
 rate, test it at 2 Hz (it should flash twice a second) and try the other curves. A fixture known
 to run on a period curve needs it said: the **Astera PixelBrick** is period-linear — at 10 Hz it
 must get 248, where its GDTF's linear declaration gives 104 — so set **Strobe curve** to
-*Period* on its fixture page, which writes it into the record:
+*Period* on its fixture page (under **Your settings for this fixture**; see
+[Fixture types](../interfaces/web-ui.md#fixture-types)), which writes it into the record:
 
 ```light
-fixture_type "Astera-PixelBrick"
+fixture_type "PB15 PixelBrick"
   from gdtf("lighting/library/pb15.gdtf")
 {
   strobe_curve: period
@@ -336,6 +365,9 @@ To check a single light end to end — address, mode, cable — use **Test this 
 fixture's page in the web UI ([Testing a fixture](../interfaces/web-ui.md#testing-a-fixture)): it
 sends to the fixture through the running engine and lists the olad checks above first when nothing
 lights.
+
+![Test this fixture, live, with the line saying what mtrack is sending and the checks to make
+when nothing lights](../images/lighting-fixture-test.png)
 
 ### Rich channel definitions (`*.fixture`)
 
@@ -495,6 +527,21 @@ venue "small_club" {
 }
 ```
 
+**A fixture line**, in full:
+
+```text
+fixture "<name>" <type> [mode "<mode>"] @ <universe>:<address> [tags [...]] [position (x, y, z)] [rotation (x, y, z)] [beam_angle <degrees>]
+```
+
+- `<type>` is a fixture type's name, quoted when it has spaces (`"PB15 PixelBrick"`).
+- `mode` is required for a fixture of a GDTF type and refused for a hand-written one; see
+  [GDTF fixture types](#gdtf-fixture-types).
+- `@ <universe>:<address>` is the fixture's first DMX address; the mode (or the hand-written
+  type) decides how many follow.
+- `tags`, `position`, `rotation` and `beam_angle` may come in any order. Tags are what shows
+  reach the fixture by; the other three are described under
+  [Venue files with positions](#venue-files-with-positions-venue).
+
 **Multiple universes:**
 
 Fixtures may be patched on any universe (`@ universe:address`), and a single
@@ -553,9 +600,9 @@ venue "kellys-basement" {
 }
 ```
 
-A fixture's own GDTF `mode "…"` is `.venue` syntax too: a web UI save that
-gives a `.light` venue's fixture a mode moves the venue to a `.venue` file,
-as a position does.
+A venue fixture's `mode "…"` is read in either kind of venue file, but the
+web UI saves a venue whose fixtures name a mode as a `.venue` file (moving a
+`.light` venue there on the first such save), as it does for a position.
 
 Position and rotation are optional per fixture, and a venue without them
 still plays; it just cannot resolve positional effects or draw a meaningful
@@ -566,7 +613,7 @@ really has on stage, for when a diffuser or filter fitted to it makes it wider
 than its fixture type says:
 
 ```light
-  fixture "Brick1" Astera-PixelBrick mode "9: RGBWS" @ 1:29 tags ["wash"] position (1, 0.5, 0.1) rotation (120, 0, 0) beam_angle 60
+  fixture "Brick1" "PB15 PixelBrick" mode "9: RGBWS" @ 1:29 tags ["wash"] position (1, 0.5, 0.1) rotation (120, 0, 0) beam_angle 60
 ```
 
 It is a plain number, greater than 0 and at most 180, and it follows `tags`,
@@ -617,7 +664,7 @@ head height mid-stage, `(0.7, 1.9, 1.5)`: `d = (0.237, 0.778, 0.583)`, so `a = 1
 
 ```light
 venue "house" {
-  fixture "Brick4" Astera-PixelBrick @ 1:13 position (0.09, -0.1, 0) rotation (125.7, 0, -17)
+  fixture "Brick4" "PB15 PixelBrick" mode "8: RGBS" @ 1:13 position (0.09, -0.1, 0) rotation (125.7, 0, -17)
   focus "center" (0.7, 1.9, 1.5)
 }
 ```
@@ -758,14 +805,18 @@ markers. Drag to orbit, scroll to zoom, right-drag to pan; it opens from front o
 fixture names are labelled on a rig of up to 40 fixtures. A fixture the player has reported nothing for is drawn dark, so an
 idle rig before the first song looks as dark as the real one. A pixel fixture — one with
 cells — lights its lenses per cell when
-a show says `per: cell`; the stage plot on the dashboard draws such a fixture as a segmented
-disc, one wedge per cell, coloured from the cell's own state.
+a show says `per: cell`; the stage plot draws such a fixture as a bar of segments when its
+cells lie along a line (a disc of wedges when they do not), each coloured from the cell's own
+state.
 
-![A per-cell rainbow on the stage plot: each Spiider a disc of wedges](../images/stage-plot-cells.png)
+![A per-cell rainbow on the stage plot: four pixel bars, each a bar of six coloured
+segments](../images/stage-plot-cells.png)
 
-![The same rainbow in Stage 3D, each lens and beam its own colour](../images/stage-3d-cells.png)
+![The same rainbow in 3D: each bar's six lenses and beams in their own colours, lighting the
+deck](../images/stage-3d-cells.png)
 
-![Stage 3D during a show: the Basic_Festival sample venue with its glTF scenery](../images/stage-3d.png)
+![The Venues page's stage card in 3D: the current venue's bricks and pars at their positions,
+their beams in the colours the show gives them](../images/stage-3d.png)
 
 What a fixture looks like comes from its GDTF: the archive's meshes when it ships them, or
 the GDTF's own primitives with their sizes. A mesh is drawn at the size the GDTF's model

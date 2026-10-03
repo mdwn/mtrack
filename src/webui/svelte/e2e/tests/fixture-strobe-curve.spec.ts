@@ -67,7 +67,7 @@ test("an endpoints-only strobe: automatic is linear in Hz, period can be set and
   await expect(select(page)).toHaveValue("");
   expect(await options(page)).toEqual([
     "Automatic: as the GDTF declares (linear in Hz)",
-    "Period (by flash length, as the Astera PixelBrick runs)",
+    "Period (by flash length)",
     "Linear in Hz",
   ]);
   await expect(page.getByTestId("ft-set-strobe-hint")).toContainText(
@@ -89,7 +89,7 @@ test("a declared table is offered with its steps", async ({ page }) => {
   await expect(select(page)).toHaveValue("linear");
   expect(await options(page)).toEqual([
     "Automatic: as the GDTF declares (12 steps)",
-    "Period (by flash length, as the Astera PixelBrick runs)",
+    "Period (by flash length)",
     "Linear in Hz",
     "As the GDTF declares (12 steps)",
   ]);

@@ -50,11 +50,19 @@ hostname set in Imager replaces `mtrack` in that name.
 
 DMX goes through `olad`, which starts with no universe patched to an output:
 open `http://<the Pi>:9090` and patch your DMX interface to the universe your
-profile names, or frames go nowhere.
+profile names, or frames go nowhere (mtrack warns when a universe it drives has
+no port patched; see
+[The universe must exist in olad](../lighting/configuration.md#the-universe-must-exist-in-olad)).
 
-Your songs live in `/var/lib/mtrack` on the card. To keep them on a USB drive
-instead, edit `/etc/default/mtrack` and regenerate the unit; that file explains
-how inline.
+`/var/lib/mtrack` on the card is the project directory: `mtrack.yaml`, your
+songs, and the `lighting/` directory that holds imported GDTFs
+(`lighting/library/`), venues and fixture type records. The web UI writes there,
+so everything you set up in the browser is on the card. To keep it on a USB
+drive instead, edit `/etc/default/mtrack` and regenerate the unit; that file
+explains how inline.
+
+With the Pi up, [Quick Start](quick-start.md) takes it from the web UI, and
+[First Light](../lighting/first-light.md) from a fixture's GDTF to a lit show.
 
 The image is 64-bit, so it needs a Pi 3 or newer. On anything older, or on
 32-bit Raspberry Pi OS, install from source with cargo.

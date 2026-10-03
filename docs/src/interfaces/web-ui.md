@@ -53,6 +53,28 @@ A 2px pink fill at the bottom edge of the top nav reflects elapsed/total playbac
 while a song is playing, so you can tell where you are in the song without leaving the page
 you're working on.
 
+## Banners under the navigation
+
+A few states that matter on every page show as a full-width line under the top nav until they
+end:
+
+- **The current venue did not load** (red): no fixture will light until the venue file is fixed.
+  It names the venue and the reason, with a link to it (see
+  [When a venue does not load](../lighting/configuration.md#when-a-venue-does-not-load)).
+- **Test output is live** — a fixture test is sending to the lights, with the universe and
+  addresses, a link to the fixture's page and **Stop** (see [Testing a fixture](#testing-a-fixture)).
+- **mtrack was updated** — the server now runs a newer web UI than this tab loaded, after an
+  upgrade or restart. **Reload** loads it; the tab never reloads by itself, since you may be in
+  the middle of an edit.
+
+![The red banner when the current venue did not load, naming the fixture and the reason, with a
+link to the venue](../images/banner-venue-failed.png)
+
+![The banner while a fixture test is live: universe, addresses and fixture, with Open and
+Stop](../images/banner-test-output.png)
+
+![The notice that mtrack was updated, with Reload](../images/banner-ui-updated.png)
+
 ## Unsaved-Changes Guard
 
 When you have unsaved edits in the Songs detail, Config, Playlists, or Lighting editors, the
@@ -505,20 +527,24 @@ the dashboard's playlist dropdown.
 ## Lighting
 
 The **Lighting** item in the top navigation holds everything about lights, in one place. It has
-six pages, shown as tabs across the top. Each page has its own address, so you can bookmark it:
+five pages, shown as tabs across the top, and an import wizard that belongs to Venues. Each has
+its own address, so you can bookmark it. New to it? [First Light](../lighting/first-light.md)
+goes from a GDTF to a show through these pages.
 
 | Page | Address | What it holds |
 |---|---|---|
 | Overview | `#/lighting` | The readiness checks: will your show reach the lights? |
-| Fixture Types | `#/lighting/fixtures` | The kinds of fixture in your rig |
+| Fixture types | `#/lighting/fixtures` | The kinds of fixture in your rig: GDTFs and hand-written types |
 | Venues | `#/lighting/venues` | Where fixtures sit, and the stage plot |
 | Groups | `#/lighting/groups` | Logical groups and the current venue, for one hardware profile |
 | Fit shows | `#/lighting/fit` | Fit your shows to the venue and the rig: tags, focus points, outputs |
+| Import an MVR | `#/lighting/import` | The MVR import wizard (from Venues) |
 
 What a page has open is part of its address too: a fixture's page is `#/lighting/fixtures/<name>`,
 the venue selected for the stage card is `#/lighting/venues/<name>` (`?edit` when its form is open,
 `?view=3d` when the card shows 3D, with `&mode=preview&song=<name>&t=<seconds>` for a previewed
-moment), and a new form is `?new=venue`, `?new=light` or `?new=fixture`. The browser's Back, a reload and a
+moment), and a new form is `?new=venue`, `?new=light` or `?new=fixture`. Groups takes
+`?profile=<name>` and Fit shows `?group=<name>`. The browser's Back, a reload and a
 shared link land where they say, and a page's tab always returns to its list.
 
 Two kinds of state live here, and they are stored differently.
@@ -554,6 +580,10 @@ The Overview answers one question, and says what to fix when the answer is no. I
 checks, numbered in the order a show needs them, then a **Needs attention** list, then the live
 stage. Every check is something mtrack already works out; the Overview gathers them in one place.
 
+![The Overview: Fixture types and Shows ready, Venue and Groups needing attention, Output blocked;
+below, the overlap, the group that finds no fixtures and the unpatched universe, each with a link
+to fix it](../images/lighting-overview.png)
+
 | Check | Ready when |
 |---|---|
 | 1. Fixture types | Every fixture in the current venue has a type that loaded. A type made from a GDTF file counts only if the file could be read. |
@@ -585,7 +615,7 @@ The page checks again when the venue or the configuration reloads, so after you 
 the check turns ready without a refresh. A profile with no DMX output shows only the Output check
 as blocked, with a link to enable it.
 
-### Fixture Types
+### Fixture types
 
 A fixture you have a GDTF for needs nothing from you but the GDTF. **Import GDTF** takes a `.gdtf`
 and that is all: the fixture is listed at once, its page opens, and every one of its modes is
@@ -595,6 +625,9 @@ says so. If another fixture already has its name, it is named after its file as 
 ("PB15 PixelBrick (pb15)") and the result says so. A different GDTF with the same file name as
 one already imported is refused, because other fixtures may use the one that is there. Copying a
 `.gdtf` into `lighting/library/` by hand does exactly the same as importing it.
+
+![The Fixture types list: a GDTF fixture's card with its model, maker, mode count and the modes
+in use, and two hand-written types with their files and channels](../images/lighting-fixture-types.png)
 
 A fixture from a GDTF has a card that says what it is: its picture (once a 3D model has been made
 for it), the manufacturer and fixture name, how many modes it has and its beam, and one pill per
@@ -606,6 +639,10 @@ not state is left out. Below that is every mode, with a filter; a mode a fixture
 **N in use**. Choose a mode to see what your shows could do in it, its channels, and which fixtures
 use it. A mode mtrack cannot drive is listed greyed with the reason. A venue fixture whose mode is
 not in the GDTF is named in red under the facts.
+
+![A GDTF fixture's page: the 3D model, the facts, the mode list with 8: RGBS selected and its
+channels, the collapsed Test this fixture panel, and Your settings for this fixture with the
+strobe curve](../images/lighting-fixture-page.png)
 
 **Your settings for this fixture** holds what is yours about it: its **name** in venues and shows,
 and, for a fixture that can pan or tilt in any mode, its **movement limits** (max pan and tilt
@@ -621,8 +658,8 @@ own table of steps when it has one ("as the GDTF declares (12 steps)"), else lin
 its two ends. **Period** is for a unit whose firmware is linear in the flash length, as the Astera
 PixelBrick's is: set it there, or a 10 Hz strobe flashes about once every one and a half seconds.
 **Linear in Hz** ignores a table. If a 2 Hz strobe does not flash twice a second when you test the
-fixture, try another curve. See [Strobe curve](../lighting/configuration.md#strobe-curve-
-strobe_curve).
+fixture, try another curve. See
+[Strobe curve](../lighting/configuration.md#strobe-curve-strobe_curve).
 
 Deleting a fixture from a GDTF removes its GDTF too, unless another fixture uses the same file.
 If a venue uses it, the confirmation says how many fixtures in which venues, and that those venues
@@ -644,6 +681,10 @@ channel. A raw channel you move is marked **manual** and stays where you put it 
 it. A control the chosen mode has no channel for is shown as "not in this mode", so switching
 between, say, RGB and RGBS shows what the strobe channel adds.
 
+![Test this fixture, live: mode, universe and address, Send to lights on with the live line and
+Stop, the red swatch chosen, the sliders, and the "mtrack is sending" line over the "Nothing
+happened?" checks](../images/lighting-fixture-test.png)
+
 The values go through the same code a show's effects do — a fixture without a dimmer channel
 scales its colour by the brightness, a strobe rate lands in the fixture's strobe range, pan and
 tilt in degrees become the coarse and fine bytes of its range — so what the panel sends is what a
@@ -661,6 +702,9 @@ addresses the test covers with the test's values — its colour and, for a mover
 is covered, where it points — rather than the show's. The plot marks it with a **TEST** badge,
 3D tints its label amber, and the Venues page's stage card carries the same "Test output is live"
 line as the banner, with **Stop**. Once the test lets go, they show the show again.
+
+![The Venues page's stage card while Brick 2 is under test: the "Test output is live" line with
+Open and Stop, and Brick 2 drawn red with a TEST badge and a dashed ring](../images/lighting-under-test.png)
 
 **Nothing happened?** While live, the panel lists the likely causes, the ones mtrack can check
 first: olad (the program that sends DMX out of the computer) not answering; the universe having no
@@ -686,7 +730,7 @@ and where an MVR import came from.
 
 A fixture from a GDTF has a **Mode** select on its row listing every mode with its footprint
 (modes mtrack cannot drive are shown but cannot be chosen), so one venue can mix, say, RGBS and
-RGBWS bricks; nothing needs setting up on the Fixtures page first. A new row takes the previous
+RGBWS bricks; nothing needs setting up on the Fixture types page first. A new row takes the previous
 row's mode when it is the same fixture, otherwise the first mode mtrack can drive, so **Add
 Fixture** then **Save** always writes a line with its mode. Changing a row's fixture picks that
 fixture's first drivable mode. A line read from a file without a mode is marked **Choose a mode for
@@ -698,6 +742,10 @@ not stop you typing, and Save asks "Save anyway?" naming them, so a hand-made ve
 stays editable. Nothing is ever renumbered for you. A save shows at once everywhere on the page:
 the venue's card, the plot (its fixtures and count) and the inspector read the saved file, and
 the next edit starts from it.
+
+![The venue form: two PixelBricks in 8: RGBS and 13: DIM RGBAWS, each with its Mode select and
+the addresses it uses, and a hand-written par; the second brick and the par are marked where they
+run into each other](../images/lighting-venue-editor.png)
 
 **Add Fixture** continues the patch from the last row: the new fixture is named `Fixture N` (the
 first number not taken), takes the last row's type and universe, and starts straight after it
@@ -755,6 +803,9 @@ The inspector shows what is selected:
   overlaps still saves; the Overview lists them.
 - **Several** show the type and tags they share, and the two tools below.
 
+![The live stage plot with Brick 5 selected: the inspector's fixture list, its name, type and
+Mode select, and the patch strip with its addresses and an overlap in red](../images/lighting-venue-plot.png)
+
 **Arrange** (two or more placed fixtures) writes positions. **Align on a line** puts a side
 column at its mean x, or a row at its mean y, whichever way the selection spreads more.
 **Space evenly** keeps the two extreme fixtures and spreads the rest evenly between them along
@@ -802,6 +853,10 @@ place fixtures on or a bigger room to watch. Press it again, or Escape, to put t
 (Escape clears a selection first). Plot or 3D, the selection and the 3D camera stay as they were;
 a reload shows the page as laid out. A playback bar shows along the bottom while a card is
 maximized.
+
+![The stage card in 3D: the current venue as a room, the pars' beams lighting the deck, the
+bricks' beams in their colours, with Live | Preview under the picture and the inspector
+beside it](../images/stage-3d.png)
 
 The dashboard's stage card has the same switch for the current venue. There it is a live view
 only: nothing to select, no show preview, and the switch is not part of the address.
@@ -892,6 +947,10 @@ nothing is written until the last step.
    seeded venue is untagged, and **Open in Venues**. Importing does not make the venue current;
    pick it on the Groups page.
 
+![The MVR import wizard at Review: a first import seeding a venue, the fixture type to import and
+the mode of each fixture, a fixture that becomes a TODO line, and a scenery
+warning](../images/lighting-mvr-review.png)
+
 ### Export an MVR
 
 **Export an MVR** on a venue's card opens a dialog. It takes the file name (default
@@ -916,12 +975,25 @@ Directories, the current venue and logical groups with their constraints. Pick
 the profile at the top. **Save** writes that profile; leaving the page with unsaved edits asks
 first.
 
+![The Groups page: the running profile, the directories, the current venue and the logical groups,
+one open with its constraints](../images/lighting-groups.png)
+
+The **current venue** is the one the engine lights; shows play on it, and the live stage views
+draw it. Choosing another one here is how you move the rig from one place to another. Inline
+fixtures are kept in the profile but the engine does not patch them; put fixtures in a venue
+(`mtrack migrate --apply` moves inline ones into one, see the
+[command-line reference](../reference/cli.md#mtrack-migrate)).
+
 ### Fit shows
 
 An imported venue arrives with no tags, so every group a show uses finds no fixtures; a console's
 focus points carry the console's names; and its universes have no output on this profile. The
 Overview says so, and its findings for groups, unbound focus points and outputs link here. Fit
 shows fixes them in one place, in three columns (stacked on a phone):
+
+![Fit shows with the movers group selected: the groups your shows use, the plan with the three
+suggested fixtures ringed, and the suggestion with Apply, a focus point to place and the
+output fixes](../images/lighting-fit.png)
 
 - **Groups your shows use** lists every group any song's shows target, with the tags its
   constraints need, how many fixtures it finds in the current venue and which songs use it.
@@ -958,7 +1030,6 @@ The config editor provides a profile-based hardware configuration UI with tabs f
 - **Audio** — Device selection, sample rate, format, buffer size, track mappings
 - **MIDI** — Device selection, beat clock, MIDI-to-DMX passthrough mappings with Note Mapper
   and CC Mapper transformer editors
-- **DMX** — OLA host/port, universe mappings
 - **Lighting** — The DMX hardware: OLA host and port, universe mappings. Below it, a summary of
   the profile's current venue and group count, with an **Edit in Lighting** link. Fixture types,
   venues and groups are edited in the [Lighting](#lighting) area
