@@ -19,6 +19,7 @@
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "../config/Tooltip.svelte";
+  import FixtureTest from "./FixtureTest.svelte";
   import FixtureTypeDetails from "./FixtureTypeDetails.svelte";
   import { trimNumber } from "../../lib/lighting/fixtureFacts";
   import { lightingHref } from "../../lib/lightingRoute";
@@ -832,6 +833,17 @@ fixture_type "Name" {
           </div>
         {/if}
       {/if}
+      {#if !showFtDetails && !isNewFt && editingFt}
+        <!-- A saved hand-written type can be tried on a light as it is on
+             disk (a GDTF type has its own test on its details page). -->
+        <div class="ft-test">
+          <FixtureTest
+            fixtureType={editingFt}
+            dir={ftDir || undefined}
+            {venuesDir}
+          />
+        </div>
+      {/if}
     </div>
   {:else}
     <!-- Fixture Type List -->
@@ -1038,6 +1050,9 @@ fixture_type "Name" {
 </div>
 
 <style>
+  .ft-test {
+    margin-top: 16px;
+  }
   .sub-panel {
     display: flex;
     flex-direction: column;

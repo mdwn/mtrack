@@ -53,6 +53,7 @@
     fixtureStore,
     metadataStore,
     poseStore,
+    underTestStore,
     venueStore,
   } from "../../lib/ws/stores";
   import type {
@@ -326,6 +327,11 @@
   $effect(() => {
     scene?.setSelection(selection);
   });
+  /** Live only: a file or a previewed moment is not what is on the wire. */
+  const underTest = $derived(fromFile || previewing ? [] : $underTestStore);
+  $effect(() => {
+    scene?.setUnderTest(underTest);
+  });
 
   // A click selects; a drag orbits. Told apart by how far the pointer went.
   let down: { x: number; y: number } | null = null;
@@ -363,6 +369,7 @@
   data-fixtures={fixtureCount}
   data-placed={fixtureCount - unplaced}
   data-selected={selection.join(",")}
+  data-under-test={underTest.join(",")}
   data-transforms={transforms}
   data-view={probe}
   data-fed={previewing ? JSON.stringify(shown) : undefined}

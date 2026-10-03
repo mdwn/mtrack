@@ -42,7 +42,10 @@ use super::universe::Universe;
 
 mod midi_playback;
 mod playback;
+mod test_output;
 mod timeline;
+
+pub use test_output::{TestOutput, TestOutputStatus, EXPIRY_ENV, TEST_OUTPUT_EXPIRY};
 
 /// The result of classifying a MIDI message for DMX purposes.
 #[derive(Debug, PartialEq)]
@@ -145,6 +148,12 @@ pub struct Engine {
     pub(super) effects_loop_heartbeat: Arc<AtomicU64>,
     pub(super) effects_loop_phase: Arc<AtomicU64>,
     pub(super) update_subphase: Arc<AtomicU64>,
+    /// A fixture test's output, when one is running (see `test_output`).
+    test_output: Mutex<Option<test_output::ActiveTest>>,
+    /// The running test's bytes, for the state sampler to draw.
+    test_overlay: crate::state::TestOverlayHandle,
+    /// How long a test holds after its last update.
+    test_expiry: Duration,
 }
 
 /// A MIDI DMX light show being played back from the effects loop.
@@ -259,6 +268,9 @@ impl Engine {
             effects_loop_heartbeat: Arc::new(AtomicU64::new(0)),
             effects_loop_phase: Arc::new(AtomicU64::new(0)),
             update_subphase,
+            test_output: Mutex::new(None),
+            test_overlay: Default::default(),
+            test_expiry: test_output::expiry_from_env(),
         })
     }
 
@@ -387,6 +399,9 @@ impl Engine {
                 }
             }
         }
+
+        // A fixture test nobody kept alive goes dark.
+        self.expire_test_output();
 
         self.effects_loop_phase.store(0, Ordering::Relaxed);
     }
@@ -542,6 +557,14 @@ impl Engine {
         let mut universes: Vec<u16> = self.universes.keys().copied().collect();
         universes.sort_unstable();
         universes
+    }
+
+    /// The configured universes' names, by universe.
+    pub fn universe_names(&self) -> std::collections::BTreeMap<u16, String> {
+        self.universe_name_to_id
+            .iter()
+            .map(|(name, id)| (*id, name.clone()))
+            .collect()
     }
 
     /// Re-reads the venues from disk and re-registers the current venue's

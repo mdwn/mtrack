@@ -16,6 +16,7 @@ pub(crate) mod browse;
 pub(crate) mod config_api;
 pub(crate) mod devices;
 pub(crate) mod fixture_settings;
+pub(crate) mod fixture_test;
 pub(crate) mod helpers;
 pub(crate) mod lighting_api;
 pub(crate) mod mvr_api;
@@ -51,6 +52,8 @@ const LOCKED_ALLOWLIST: &[(&str, &str)] = &[
     ("POST", "/controllers/restart"),
     ("POST", "/lighting/evaluate"),
     ("POST", "/lighting/mvr/inspect"),
+    // Releasing a fixture test only ever makes the lights go back to the show.
+    ("DELETE", "/lighting/fixture-test"),
 ];
 
 /// True when a request may proceed while the player is locked.
@@ -233,6 +236,14 @@ pub fn router() -> Router<WebUiState> {
             get(fixture_settings::get_settings).post(fixture_settings::post_settings),
         )
         .route("/lighting/groups", get(lighting_api::get_lighting_groups))
+        .route(
+            "/lighting/fixture-test",
+            post(fixture_test::post_test).delete(fixture_test::delete_test),
+        )
+        .route(
+            "/lighting/fixture-test/options",
+            get(fixture_test::get_options),
+        )
         .route("/lighting/mvr/export", get(mvr_api::export_mvr))
         .route("/lighting/mvr/export/summary", get(mvr_api::export_summary))
         .route("/lighting/mvr/export/keep", post(mvr_api::keep_export))

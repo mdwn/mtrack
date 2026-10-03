@@ -209,6 +209,27 @@ pub fn resolve_degrees(def: &ChannelDef, parameter: PhysicalParameter, degrees: 
     }
 }
 
+/// The inverse of [`resolve_degrees`]: the degrees a channel's coarse
+/// (and fine, when it has one) byte stand for, through the same
+/// [`degree_span`]. A byte outside the span's DMX sub-range reads as its
+/// nearer end. For drawing what is on the wire (a fixture test's bytes).
+pub fn degrees_from_bytes(
+    def: &ChannelDef,
+    parameter: PhysicalParameter,
+    coarse: u8,
+    fine: Option<u8>,
+) -> f64 {
+    let (from, to, dmx_lo, dmx_hi) = degree_span(def, parameter);
+    let value16 = f64::from(u16::from_be_bytes([coarse, fine.unwrap_or(0)]));
+    let lo16 = f64::from(dmx_lo) * 257.0;
+    let hi16 = f64::from(dmx_hi) * 257.0;
+    if (hi16 - lo16).abs() < f64::EPSILON {
+        return from;
+    }
+    let fraction = ((value16 - lo16) / (hi16 - lo16)).clamp(0.0, 1.0);
+    from + fraction * (to - from)
+}
+
 /// Resolves a fixture's physical intents against its channel definitions:
 /// `(channel name, resolved)` for each parameter both sides know about.
 pub fn resolve_physical(
@@ -236,6 +257,27 @@ pub fn resolve_physical(
 mod tests {
     use super::*;
     use crate::lighting::types::{ChannelFunction, PhysicalRange};
+
+    #[test]
+    fn bytes_read_back_as_the_degrees_they_were_resolved_from() {
+        let mut def = def16(1, 2);
+        def.range = Some(PhysicalRange {
+            from: -270.0,
+            to: 270.0,
+            unit: crate::lighting::types::PhysicalUnit::Degrees,
+        });
+        for degrees in [-270.0, -90.0, 0.0, 45.0, 269.0] {
+            let bytes = resolve_degrees(&def, PhysicalParameter::Pan, degrees).bytes;
+            let back =
+                degrees_from_bytes(&def, PhysicalParameter::Pan, bytes[0].1, Some(bytes[1].1));
+            assert!((back - degrees).abs() < 0.01, "{degrees} -> {back}");
+        }
+        // 8-bit: within a byte's step.
+        let coarse = ChannelDef::at(1);
+        let byte = resolve_degrees(&coarse, PhysicalParameter::Tilt, 30.0).bytes[0].1;
+        let back = degrees_from_bytes(&coarse, PhysicalParameter::Tilt, byte, None);
+        assert!((back - 30.0).abs() < 270.0 / 255.0, "{back}");
+    }
 
     fn def16(offset: u16, fine: u16) -> ChannelDef {
         ChannelDef {

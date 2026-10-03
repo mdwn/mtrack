@@ -14,7 +14,13 @@
      * -->
 <script lang="ts">
   import { wsConnected, playbackStore } from "../lib/ws/stores";
-  import { healthStore, uiUpdated, venueFailure } from "../lib/ws/status";
+  import {
+    healthStore,
+    testOutput,
+    uiUpdated,
+    venueFailure,
+  } from "../lib/ws/status";
+  import TestOutputLine from "./lighting/TestOutputLine.svelte";
   import { setLocked } from "../lib/api/config";
   import { showConfirm } from "../lib/dialog.svelte";
   import { themeChoice, cycleTheme } from "../lib/theme";
@@ -308,6 +314,13 @@
       data-testid="ui-updated-reload"
       onclick={() => location.reload()}>{$t("nav.uiUpdatedReload")}</button
     >
+  </div>
+{/if}
+
+{#if $testOutput}
+  <!-- A test is lighting a fixture: say so on every page, with a way out. -->
+  <div class="test-banner" role="status" data-testid="test-output-banner">
+    <TestOutputLine />
   </div>
 {/if}
 
@@ -613,6 +626,20 @@
     font-size: 13px;
     font-weight: 600;
     border-bottom: 1px solid rgba(232, 75, 75, 0.5);
+    overflow-wrap: anywhere;
+  }
+
+  .test-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    background: var(--accent-subtle, rgba(56, 189, 248, 0.15));
+    color: var(--nc-fg-1, inherit);
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--accent);
     overflow-wrap: anywhere;
   }
 

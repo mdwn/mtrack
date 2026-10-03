@@ -496,6 +496,104 @@ app.get("/api/lighting/fixture-types/:name/gdtf", (req, res) => {
   });
 });
 
+// Testing a fixture from its page. Stateless: the options are derived from
+// the type (the PB15's two modes, or a hand-written type's channels), a send
+// answers the frame the controls would give, and a release is accepted.
+// Tests that check what was sent route their own with `page.route`.
+function testModeFor(
+  name: string | null,
+  channels: Record<string, number>,
+  strobe: { min_hz: number; max_hz: number } | null,
+) {
+  const has = (c: string) => c in channels;
+  const color = has("red") && has("green") && has("blue");
+  return {
+    name,
+    drivable: true,
+    error: null,
+    footprint: Math.max(0, ...Object.values(channels)),
+    controls: {
+      color,
+      dimmer: has("dimmer") ? "channel" : color ? "folded" : null,
+      strobe: has("strobe") ? (strobe ?? { min_hz: 0, max_hz: 20 }) : null,
+      pan: has("pan") ? { min: -270, max: 270 } : null,
+      tilt: has("tilt") ? { min: -135, max: 135 } : null,
+      levels: ["white", "amber", "uv"].filter(has),
+    },
+    channels: Object.entries(channels)
+      .map(([n, offset]) => ({ offset, name: n }))
+      .sort((a, b) => a.offset - b.offset),
+  };
+}
+
+app.get("/api/lighting/fixture-test/options", (req, res) => {
+  const name = String(req.query.fixture_type ?? "");
+  const entry = FIXTURE_TYPES[name];
+  if (!entry) return res.status(404).json({ error: "Fixture type not found" });
+  const modes = entry.referential
+    ? GDTF_INSPECTION.modes.map((m) =>
+        testModeFor(
+          m.name,
+          Object.fromEntries(m.channels.map(([o, n]) => [n, o])),
+          (m as { strobe_range?: { min_hz: number; max_hz: number } })
+            .strobe_range ?? null,
+        ),
+      )
+    : [testModeFor(null, entry.fixture_type.channels, null)];
+  res.json({
+    fixture_type: name,
+    gdtf: entry.referential,
+    modes,
+    default_mode: entry.referential ? "8: RGBS" : null,
+    universes: [{ universe: 1, name: "main", patched: true }],
+    olad: { reachable: true, port: 9090 },
+    available: true,
+    unavailable: null,
+    unavailable_message: null,
+  });
+});
+
+app.post("/api/lighting/fixture-test", (req, res) => {
+  const body = req.body ?? {};
+  const address = Number(body.address ?? 1);
+  const hex = String(body.controls?.color ?? "#000000");
+  const rgb = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) || 0);
+  const frame = ["red", "green", "blue", "strobe"].map((name, i) => {
+    const offset = i + 1;
+    const raw = body.raw?.[String(offset)];
+    const value =
+      raw !== undefined
+        ? raw
+        : i < 3
+          ? rgb[i]
+          : body.controls?.strobe
+            ? 128
+            : 0;
+    return {
+      offset,
+      address: address + i,
+      name,
+      value,
+      raw: raw !== undefined,
+    };
+  });
+  res.json({
+    active: true,
+    universe: body.universe ?? 1,
+    address,
+    footprint: 4,
+    fixture_type: body.fixture_type,
+    mode: body.mode ?? null,
+    expires_in_secs: 5,
+    frame,
+    warnings: [],
+  });
+});
+
+app.delete("/api/lighting/fixture-test", (_req, res) => {
+  res.json({ active: false });
+});
+
 // The 3D view's Preview: an idle show. Tests that need a moment routed with
 // `page.route`.
 app.post("/api/lighting/evaluate", (req, res) => {

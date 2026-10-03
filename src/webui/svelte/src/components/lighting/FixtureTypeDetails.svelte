@@ -43,6 +43,7 @@
   } from "../../lib/lighting/fixtureFacts";
   import FixtureViewer from "./FixtureViewer.svelte";
   import FixtureSettingsForm from "./FixtureSettingsForm.svelte";
+  import FixtureTest from "./FixtureTest.svelte";
 
   interface Props {
     name: string;
@@ -191,6 +192,12 @@
   const optionId = (modeName: string) =>
     `ft-details-mode-${modes.findIndex((m) => m.name === modeName)}`;
 
+  /** What a fixture test is sending, mirrored in the 3D view. */
+  let testing = $state<{
+    channels: Record<string, number>;
+    pose: { pan: number; tilt: number } | null;
+  } | null>(null);
+
   const nameOf = (what: string) => $t(`lighting.gdtf.missing.${what}`);
 </script>
 
@@ -214,6 +221,7 @@
             rig={data.rig}
             thumbnail={data.thumbnail}
             modeLabel={mode?.name ?? ""}
+            live={testing}
           />
         </div>
       {/key}
@@ -488,6 +496,12 @@
         <p class="field-hint">{$t("lighting.gdtfDetails.readOnly")}</p>
       </div>
     </div>
+    <FixtureTest
+      fixtureType={name}
+      {dir}
+      {venuesDir}
+      onframe={(f) => (testing = f)}
+    />
     <FixtureSettingsForm
       {name}
       {dir}

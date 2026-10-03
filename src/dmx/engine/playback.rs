@@ -68,6 +68,8 @@ impl Engine {
             section_loop_break,
             ..
         } = loop_control;
+        // A song owns the lights: a fixture test stops when one starts.
+        dmx_engine.release_test_output();
         let span = span!(Level::INFO, "play song (dmx)");
         let _enter = span.enter();
 

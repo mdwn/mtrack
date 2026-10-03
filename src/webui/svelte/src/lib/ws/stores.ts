@@ -218,6 +218,11 @@ export interface FixturePose {
 }
 
 export const poseStore = writable<Record<string, FixturePose>>({});
+/**
+ * Venue fixtures a fixture test's output covers: their channels, cells and
+ * poses in the stores above are the test's bytes, what leaves for olad.
+ */
+export const underTestStore = writable<string[]>([]);
 export const metadataStore = writable<Record<string, FixtureMetadata>>({});
 export const venueStore = writable<VenueMetadata | null>(null);
 
@@ -272,7 +277,10 @@ on("state", (msg) => {
     active_effects: string[];
     poses?: Record<string, FixturePose>;
     cells?: CellChannels;
+    under_test?: string[];
   };
+  // Before the channels: a plot redraws on them and reads this.
+  underTestStore.set(m.under_test ?? []);
   fixtureStore.set(m.fixtures ?? {});
   effectsStore.set(m.active_effects ?? []);
   poseStore.set(m.poses ?? {});
