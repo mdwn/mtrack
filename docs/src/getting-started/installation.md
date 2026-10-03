@@ -30,42 +30,17 @@ $ cargo binstall mtrack
 
 For a Raspberry Pi, the least work is a pre-built image: Raspberry Pi OS Lite
 with mtrack installed, running on boot, and reachable at
-`http://mtrack.local:8080`. It also carries `avahi` for that name to resolve and
-`olad` for DMX output.
-
+`http://mtrack.local:8080`, with `avahi` for that name and `olad` for DMX.
 Download `mtrack-<version>-raspberrypi-arm64.img.xz` from the
 [latest release](https://github.com/mdwn/mtrack/releases/latest) and flash it
-with [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
+with Raspberry Pi Imager, filling in Imager's customisation dialog: the image
+ships no default username or password, so that dialog is what makes the Pi
+reachable without a keyboard and a monitor.
 
-**Use Imager's customisation dialog.** The image ships no default username or
-password, so the settings you enter there — username, password, wifi and its
-country, ssh keys — are what make the Pi reachable. Skip it and the first boot
-wants a keyboard and a monitor to run the setup wizard.
-
-`mtrack.local` is found by multicast, which reaches the devices on the same
-network segment as the Pi and no further: a Pi on wifi is found by other wifi
-devices, and by wired ones only if your router passes multicast between the
-two. If the name does not resolve, the Pi's IP address always works. A
-hostname set in Imager replaces `mtrack` in that name.
-
-DMX goes through `olad`, which starts with no universe patched to an output:
-open `http://<the Pi>:9090` and patch your DMX interface to the universe your
-profile names, or frames go nowhere (mtrack warns when a universe it drives has
-no port patched; see
-[The universe must exist in olad](../lighting/configuration.md#the-universe-must-exist-in-olad)).
-
-`/var/lib/mtrack` on the card is the project directory: `mtrack.yaml`, your
-songs, and the `lighting/` directory that holds imported GDTFs
-(`lighting/library/`), venues and fixture type records. The web UI writes there,
-so everything you set up in the browser is on the card. To keep it on a USB
-drive instead, edit `/etc/default/mtrack` and regenerate the unit; that file
-explains how inline.
-
-With the Pi up, [Quick Start](quick-start.md) takes it from there in the web UI, and
-[First Light](../lighting/first-light.md) from a fixture's GDTF to a lit show.
-
-The image is 64-bit, so it needs a Pi 3 or newer. On anything older, or on
-32-bit Raspberry Pi OS, install from source with cargo.
+[Raspberry Pi Image](raspberry-pi.md) walks through the flash, the first boot,
+finding the Pi on the network, loading songs by upload, patching `olad`, and
+updating. The image is 64-bit, so it needs a Pi 3 or newer; on anything older,
+or on 32-bit Raspberry Pi OS, install from source with cargo.
 
 ## Debian, Ubuntu and Raspberry Pi OS packages
 

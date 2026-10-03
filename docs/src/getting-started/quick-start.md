@@ -22,7 +22,7 @@ under it.
 > is read-only, playback works but editing features are disabled.
 
 On the Raspberry Pi image, mtrack is already running and its project directory is
-`/var/lib/mtrack`.
+`/var/lib/mtrack`; see [Raspberry Pi Image](raspberry-pi.md) for the card and the first boot.
 
 ## 2. Open the web UI
 
@@ -61,6 +61,10 @@ mtrack does not touch any hardware until a profile describes it.
    want, for example `click.wav` (mono) and `backing.wav` (stereo).
 2. Open **Songs** and click **Import from Filesystem**.
 3. Navigate to the folder and click **Use This Directory**, then **Create Song**.
+
+If the files are on another computer (mtrack on a Raspberry Pi, say), click **New Song**
+instead, upload the files on the song's **Tracks** tab and add a track per part there; see
+[Raspberry Pi Image](raspberry-pi.md#3-set-up-the-player).
 
 mtrack names each track after its file, and splits a stereo file into `backing-l` and
 `backing-r`. See [Importing Songs](importing-songs.md) for the details, including the special
