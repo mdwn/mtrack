@@ -4,6 +4,12 @@ hostname: drum-pi
 audio:
   device: "UltraLite-mk5"
   track_mappings:
+    click: [1]
+    cue: [2]
+    backing-track-l: [3]
+    backing-track-r: [4]
+    keys: [5, 6]
+    # Sample outputs: the triggered drum samples go to the same pair as the backing track.
     kick: [3, 4]
     cymbal: [3, 4]
 trigger:

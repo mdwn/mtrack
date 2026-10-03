@@ -6,6 +6,9 @@ lighting:
   - file: "lighting/main_show.light"
   - file: "lighting/outro.light"
 tracks:
-  - name: "Main Track"
-    file: "song.mp3"  # MP3 format example - can use WAV, FLAC, MP3, OGG, AAC/M4A or AIFF.
+  - name: backing-track-l
+    file: song.mp3  # MP3 format example - can use WAV, FLAC, MP3, OGG, AAC/M4A or AIFF.
     file_channel: 1
+  - name: backing-track-r
+    file: song.mp3
+    file_channel: 2
