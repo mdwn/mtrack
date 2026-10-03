@@ -29,6 +29,13 @@ the whole import: the file is copied into `lighting/library/`, the fixture is li
 name inside the file, and its page opens. The page shows the fixture in 3D and every one of its
 DMX modes, each with its channels and what a show can do in it.
 
+![The Fixture types page: a GDTF fixture's card with its model, maker, mode count and the modes
+in use, beside two hand-written types](../images/lighting-fixture-types.png)
+
+![A GDTF fixture's page: the 3D model, the facts from the GDTF, the mode list with 8: RGBS
+selected and its four channels, and the fixture's settings with the strobe
+curve](../images/lighting-fixture-page.png)
+
 From the command line, `mtrack import-gdtf <file>` does the same, and
 `mtrack import-gdtf <file> --list-modes` lists the modes without importing anything.
 
@@ -50,6 +57,10 @@ the universe has an output patched, then the unit's own address, mode and cable.
 exactly what mtrack is sending, so "mtrack is not sending" can be told from "the light is not
 listening". See [Testing a fixture](../interfaces/web-ui.md#testing-a-fixture).
 
+![Test this fixture, live: mode 8: RGBS at address 5, Send to lights on, the red swatch chosen,
+the line saying mtrack is sending 255, 0, 0, 0, and the "Nothing happened?"
+checks](../images/lighting-fixture-test.png)
+
 Turn **Send to lights** off when you are done, or just leave the page: the test lets go by
 itself.
 
@@ -65,6 +76,9 @@ reach fixtures by tags, never by name. Save.
 **Add Fixture** again continues the patch: the next row starts straight after the last one's
 addresses. A row that would run into another's addresses is marked before you save.
 
+![The venue editor: three fixtures, two PixelBricks in different modes with the addresses each
+uses, and a warning where the second runs into the third](../images/lighting-venue-editor.png)
+
 ## 6. Make the venue current and give the show a group
 
 On **Lighting → Groups**, choose the profile this machine runs (it is chosen for you when the
@@ -72,9 +86,15 @@ profile's hostname matches). Set **Current Venue** to your venue: the current ve
 the engine lights. Then add a logical group, say `front_wash`, with an **AllOf** constraint on
 the tag you gave the fixture. Save.
 
+![The Groups page: the running profile, its current venue "house", and the logical groups, one
+open to show its constraints](../images/lighting-groups.png)
+
 The **Overview** tab now answers "will your show reach the lights?": the fixture type, venue
 and output checks should read **Ready**, and anything that is not says what to fix and links
 there ([Overview](../interfaces/web-ui.md#overview-will-your-show-reach-the-lights)).
+
+![The Overview: five numbered checks, then what needs attention — an overlap in the patch, a
+group that finds no fixtures, and a universe olad has no port patched to](../images/lighting-overview.png)
 
 ## 7. Write a show
 

@@ -330,7 +330,8 @@ manufacturer did not measure the curve, only stated the range; if a fixture stro
 rate, test it at 2 Hz (it should flash twice a second) and try the other curves. A fixture known
 to run on a period curve needs it said: the **Astera PixelBrick** is period-linear — at 10 Hz it
 must get 248, where its GDTF's linear declaration gives 104 — so set **Strobe curve** to
-*Period* on its fixture page, which writes it into the record:
+*Period* on its fixture page (under **Your settings for this fixture**; see
+[Fixture types](../interfaces/web-ui.md#fixture-types)), which writes it into the record:
 
 ```light
 fixture_type "PB15 PixelBrick"
@@ -360,6 +361,9 @@ To check a single light end to end — address, mode, cable — use **Test this 
 fixture's page in the web UI ([Testing a fixture](../interfaces/web-ui.md#testing-a-fixture)): it
 sends to the fixture through the running engine and lists the olad checks above first when nothing
 lights.
+
+![Test this fixture, live, with the line saying what mtrack is sending and the checks to make
+when nothing lights](../images/lighting-fixture-test.png)
 
 ### Rich channel definitions (`*.fixture`)
 
@@ -797,14 +801,18 @@ markers. Drag to orbit, scroll to zoom, right-drag to pan; it opens from front o
 fixture names are labelled on a rig of up to 40 fixtures. A fixture the player has reported nothing for is drawn dark, so an
 idle rig before the first song looks as dark as the real one. A pixel fixture — one with
 cells — lights its lenses per cell when
-a show says `per: cell`; the stage plot on the dashboard draws such a fixture as a segmented
-disc, one wedge per cell, coloured from the cell's own state.
+a show says `per: cell`; the stage plot draws such a fixture as a bar of segments when its
+cells lie along a line (a disc of wedges when they do not), each coloured from the cell's own
+state.
 
-![A per-cell rainbow on the stage plot: each Spiider a disc of wedges](../images/stage-plot-cells.png)
+![A per-cell rainbow on the stage plot: four pixel bars, each a bar of six coloured
+segments](../images/stage-plot-cells.png)
 
-![The same rainbow in Stage 3D, each lens and beam its own colour](../images/stage-3d-cells.png)
+![The same rainbow in 3D: each bar's six lenses and beams in their own colours, lighting the
+deck](../images/stage-3d-cells.png)
 
-![Stage 3D during a show: the Basic_Festival sample venue with its glTF scenery](../images/stage-3d.png)
+![The Venues page's stage card in 3D: the current venue's bricks and pars at their positions,
+their beams in the colours the show gives them](../images/stage-3d.png)
 
 What a fixture looks like comes from its GDTF: the archive's meshes when it ships them, or
 the GDTF's own primitives with their sizes. A mesh is drawn at the size the GDTF's model
