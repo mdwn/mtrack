@@ -863,9 +863,20 @@ export interface MovementLimits {
 
 /** What is the user's about a fixture from a GDTF: the fixture page's
  *  settings form. */
+/** How a strobe rate maps onto the strobe channel (see the configuration
+ *  reference): linear in the flash period, linear in hertz, or the GDTF's
+ *  own step table. */
+export type StrobeCurve = "period" | "linear" | "declared";
+
 export interface FixtureSettingsData {
   name: string;
   movement: MovementLimits;
+  /** The curve the record states; null is automatic. */
+  strobe_curve: StrobeCurve | null;
+  /** The GDTF's strobe function: null when no mode has a strobe rate in
+   *  hertz (the curve means nothing then), else the size of its own table
+   *  (0: endpoints only) and the curve used when none is stated. */
+  strobe: { steps: number; automatic: StrobeCurve } | null;
   /** The settings' version, sent back as `If-Match` (also when mtrack has
    *  no record of them yet). */
   version: string;

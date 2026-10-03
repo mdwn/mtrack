@@ -17,7 +17,7 @@ use std::error::Error;
 
 use super::super::types::{
     ganged_from_cells, Cell, ChannelDef, ChannelFunction, Fixture, FixtureType, FixtureTypeV1,
-    GdtfSource, MovementLimits, PhysicalRange, PhysicalUnit, Vec3, Venue, VenueSource,
+    GdtfSource, MovementLimits, PhysicalRange, PhysicalUnit, StrobeCurve, Vec3, Venue, VenueSource,
 };
 use super::error::get_error_context;
 use super::grammar::{LightingParser, Rule};
@@ -110,6 +110,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
     let mut strobe_dmx_offset = None;
     let mut source = None;
     let mut movement = MovementLimits::default();
+    let mut strobe_curve: Option<StrobeCurve> = None;
     let mut rich_defs: HashMap<String, ChannelDef> = HashMap::new();
     let mut cells: Vec<Cell> = Vec::new();
 
@@ -128,6 +129,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
                     &mut rich_defs,
                     &mut cells,
                     &mut movement,
+                    &mut strobe_curve,
                     &mut special_cases,
                     &mut max_strobe_frequency,
                     &mut min_strobe_frequency,
@@ -230,6 +232,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
         }
         let mut fixture_type = FixtureType::from_channel_defs(name, rich_defs);
         fixture_type.set_movement(movement);
+        fixture_type.set_strobe_curve(strobe_curve);
         fixture_type.set_cells(cells);
         return Ok(fixture_type);
     }
@@ -275,6 +278,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
         fixture_type.set_source(source);
     }
     fixture_type.set_movement(movement);
+    fixture_type.set_strobe_curve(strobe_curve);
     Ok(fixture_type)
 }
 
@@ -480,6 +484,7 @@ fn parse_channel_def(pair: Pair<Rule>) -> Result<(String, ChannelDef), Box<dyn E
 
 fn parse_function_def(pair: Pair<Rule>) -> Result<ChannelFunction, Box<dyn Error>> {
     let mut function = ChannelFunction {
+        steps: Vec::new(),
         name: String::new(),
         dmx_from: 0,
         dmx_to: 0,
@@ -550,6 +555,7 @@ fn parse_fixture_content(
     rich_defs: &mut HashMap<String, ChannelDef>,
     cells: &mut Vec<Cell>,
     movement: &mut MovementLimits,
+    strobe_curve: &mut Option<StrobeCurve>,
     special_cases: &mut Vec<String>,
     max_strobe_frequency: &mut Option<f64>,
     min_strobe_frequency: &mut Option<f64>,
@@ -590,6 +596,21 @@ fn parse_fixture_content(
             }
             Rule::movement_block => {
                 *movement = parse_movement_block(content_pair)?;
+            }
+            Rule::strobe_curve => {
+                if strobe_curve.is_some() {
+                    return Err("strobe_curve is declared more than once".into());
+                }
+                let value = content_pair
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::strobe_curve_value)
+                    .map(|p| p.as_str().trim().to_string())
+                    .unwrap_or_default();
+                *strobe_curve = Some(match value.as_str() {
+                    "linear" => StrobeCurve::Linear,
+                    "declared" => StrobeCurve::Declared,
+                    _ => StrobeCurve::Period,
+                });
             }
             Rule::max_strobe_frequency => {
                 for inner in content_pair.into_inner() {

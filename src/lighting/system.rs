@@ -188,6 +188,7 @@ pub fn fixture_info_for(
     fixture_info.strobe_dmx_offset = fixture_type.strobe_dmx_offset();
     fixture_info.channel_defs = fixture_type.channel_defs().clone();
     fixture_info.movement = *fixture_type.movement();
+    fixture_info.strobe_curve = fixture_type.effective_strobe_curve();
     fixture_info.rig = fixture_type.rig().map(str::to_string);
     fixture_info.aim = fixture_type.aim();
     fixture_info.cells = fixture_type.cells().to_vec();
@@ -670,6 +671,9 @@ impl LightingSystem {
             expanded.set_movement(*fixture_type.movement());
             Ok(expanded)
         })?;
+        // The strobe curve changes no channel, so it is not part of the
+        // expansion (or its cache key): it rides on the record's type.
+        expanded.set_strobe_curve(fixture_type.strobe_curve());
         // The rig (design §16.2) is the 3D view's, not the show's: a rig
         // that cannot be written is logged, and the type loads without one.
         match cache.ensure_rig(&bytes, mode, describe) {

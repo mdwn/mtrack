@@ -14,7 +14,8 @@
 
 //! A GDTF fixture's record, patched in place (venue-exchange design §22,
 //! lighting UI design §12.4): the two things in it that are the user's —
-//! the type's name and its movement limits — are changed where they are
+//! the type's name, its movement limits and its strobe curve — are changed
+//! where they are
 //! written, and nothing else moves. The leading
 //! comments, the archive path as written, other types in the file and any
 //! body the settings do not own survive byte for byte. The result is parsed
@@ -25,7 +26,7 @@ use pest::Parser;
 
 use super::parser::grammar::{LightingParser, Rule};
 use super::parser::parse_fixture_types;
-use super::types::MovementLimits;
+use super::types::{MovementLimits, StrobeCurve};
 
 /// What the fixture page's settings form owns in a type's file.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,6 +35,8 @@ pub struct FixtureSettings {
     pub name: String,
     /// Movement limits; both `None` removes the block.
     pub movement: MovementLimits,
+    /// The strobe curve; `None` (automatic) removes the statement.
+    pub strobe_curve: Option<StrobeCurve>,
 }
 
 /// Patches the declaration of `current` in `content` to `settings`.
@@ -101,12 +104,58 @@ pub fn patch_fixture_type(
         format!("\"{}\"", settings.name),
     ));
 
-    // Movement limits: the block replaced, removed (with its line, when it
-    // had the line to itself) or added on a line of its own before the
-    // closing brace.
-    let block = body.and_then(|b| b.into_inner().find(|p| p.as_rule() == Rule::movement_block));
-    let wanted = movement_text(&settings.movement);
-    match (block, wanted) {
+    // Movement limits and the strobe curve: each statement replaced,
+    // removed (with its line, when it had the line to itself) or added on a
+    // line of its own before the closing brace.
+    let find = |rule: Rule| {
+        body.clone()
+            .and_then(|b| b.into_inner().find(|p| p.as_rule() == rule))
+    };
+    let curve = settings
+        .strobe_curve
+        .map(|c| format!("strobe_curve: {}", c.keyword()));
+    for (statement, wanted) in [
+        (
+            find(Rule::movement_block),
+            movement_text(&settings.movement),
+        ),
+        (find(Rule::strobe_curve), curve),
+    ] {
+        statement_edit(content, span.end(), statement, wanted, &mut edits)?;
+    }
+
+    edits.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut out = content.to_string();
+    for (start, end, text) in edits {
+        out.replace_range(start..end, &text);
+    }
+
+    // Read it back: the patch must load as what was asked for.
+    let types =
+        parse_fixture_types(&out).map_err(|e| format!("the patched file does not parse: {e}"))?;
+    let patched = types
+        .get(&settings.name)
+        .ok_or("the patched file lost the declaration")?;
+    let ok = patched.source().is_some()
+        && *patched.movement() == settings.movement
+        && patched.strobe_curve() == settings.strobe_curve;
+    if !ok {
+        return Err("the patched file does not read back as the settings".to_string());
+    }
+    Ok(out)
+}
+
+/// The edit that makes one body statement `wanted`: replaced, removed
+/// (with its line, when it had the line to itself) or added on a line of
+/// its own before the declaration's closing brace (`end` is just past it).
+fn statement_edit(
+    content: &str,
+    end_of_declaration: usize,
+    statement: Option<pest::iterators::Pair<'_, Rule>>,
+    wanted: Option<String>,
+    edits: &mut Vec<(usize, usize, String)>,
+) -> Result<(), String> {
+    match (statement, wanted) {
         (Some(block), Some(text)) => {
             edits.push((block.as_span().start(), block.as_span().end(), text));
         }
@@ -125,7 +174,7 @@ pub fn patch_fixture_type(
             }
         }
         (None, Some(text)) => {
-            let brace = span.end() - 1;
+            let brace = end_of_declaration - 1;
             if content.as_bytes().get(brace) != Some(&b'}') {
                 return Err("cannot find the end of the declaration".to_string());
             }
@@ -138,24 +187,7 @@ pub fn patch_fixture_type(
         }
         (None, None) => {}
     }
-
-    edits.sort_by(|a, b| b.0.cmp(&a.0));
-    let mut out = content.to_string();
-    for (start, end, text) in edits {
-        out.replace_range(start..end, &text);
-    }
-
-    // Read it back: the patch must load as what was asked for.
-    let types =
-        parse_fixture_types(&out).map_err(|e| format!("the patched file does not parse: {e}"))?;
-    let patched = types
-        .get(&settings.name)
-        .ok_or("the patched file lost the declaration")?;
-    let ok = patched.source().is_some() && *patched.movement() == settings.movement;
-    if !ok {
-        return Err("the patched file does not read back as the settings".to_string());
-    }
-    Ok(out)
+    Ok(())
 }
 
 /// The settings a file holds for a type: what the form starts from.
@@ -166,6 +198,7 @@ pub fn current_settings(content: &str, name: &str) -> Option<FixtureSettings> {
     Some(FixtureSettings {
         name: name.to_string(),
         movement: *fixture_type.movement(),
+        strobe_curve: fixture_type.strobe_curve(),
     })
 }
 
@@ -209,7 +242,78 @@ mod tests {
                 max_pan_speed: pan,
                 max_tilt_speed: tilt,
             },
+            strobe_curve: None,
         }
+    }
+
+    fn curve(curve: Option<StrobeCurve>) -> FixtureSettings {
+        FixtureSettings {
+            strobe_curve: curve,
+            ..settings("Astera-PixelBrick", None, None)
+        }
+    }
+
+    #[test]
+    fn the_strobe_curve_is_added_changed_and_removed_keeping_comments() {
+        let added =
+            patch_fixture_type(FILE, "Astera-PixelBrick", &curve(Some(StrobeCurve::Linear)))
+                .unwrap();
+        assert!(
+            added.ends_with(
+                "  # measured on the rig
+  special_cases: [\"Wash\"]
+  strobe_curve: linear
+}
+"
+            ),
+            "{added}"
+        );
+        assert_eq!(
+            current_settings(&added, "Astera-PixelBrick")
+                .unwrap()
+                .strobe_curve,
+            Some(StrobeCurve::Linear)
+        );
+        // Beside movement limits, each on its own line; changing one leaves
+        // the other.
+        let both = patch_fixture_type(
+            &added,
+            "Astera-PixelBrick",
+            &FixtureSettings {
+                strobe_curve: Some(StrobeCurve::Linear),
+                ..settings("Astera-PixelBrick", Some(240.0), None)
+            },
+        )
+        .unwrap();
+        assert!(both.contains("  strobe_curve: linear\n"), "{both}");
+        assert!(
+            both.contains("  movement { max_pan_speed: 240deg/s }\n"),
+            "{both}"
+        );
+        // A comment on the statement's line stays, and so does the line.
+        let commented = both.replace(
+            "strobe_curve: linear",
+            "strobe_curve: linear # measured 2026-10",
+        );
+        let removed = patch_fixture_type(
+            &commented,
+            "Astera-PixelBrick",
+            &settings("Astera-PixelBrick", Some(240.0), None),
+        )
+        .unwrap();
+        assert!(!removed.contains("strobe_curve"), "{removed}");
+        assert!(removed.contains("  # measured 2026-10\n"), "{removed}");
+        // Changed in place.
+        let changed = patch_fixture_type(
+            &added,
+            "Astera-PixelBrick",
+            &curve(Some(StrobeCurve::Declared)),
+        )
+        .unwrap();
+        assert_eq!(changed, added.replace("linear", "declared"));
+        // Automatic: the statement goes.
+        let back = patch_fixture_type(&added, "Astera-PixelBrick", &curve(None)).unwrap();
+        assert_eq!(back, FILE);
     }
 
     #[test]

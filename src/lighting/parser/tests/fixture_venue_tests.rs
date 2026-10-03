@@ -660,3 +660,48 @@ fn a_hash_in_a_channel_name_is_refused_in_both_forms() {
     let err = rich.err().map(|e| e.to_string()).unwrap_or_default();
     assert!(err.contains("reserved"), "{err}");
 }
+
+#[test]
+fn the_strobe_curve_round_trips_in_both_forms() {
+    use crate::lighting::types::StrobeCurve;
+    // v1 `.light` form.
+    let v1 = "fixture_type \"Par\" {\n  channels: 2\n  channel_map: {\n    \"red\": 1,\n    \
+              \"strobe\": 2\n  }\n  max_strobe_frequency: 25\n  min_strobe_frequency: 0.4\n  \
+              strobe_dmx_offset: 7\n  strobe_curve: linear\n}";
+    let types = crate::lighting::parser::parse_fixture_types(v1).unwrap();
+    let par = &types["Par"];
+    assert_eq!(par.strobe_curve(), Some(StrobeCurve::Linear));
+    assert_eq!(par.to_string(), v1);
+    // Rich `.fixture` form.
+    let rich = "fixture_type \"Spot\" {\n  channel \"strobe\" @ 1 {\n    \
+                function \"strobe\" 7..255 0.4hz..25hz\n  }\n  channel \"pan\" @ 2 fine 3\n  \
+                strobe_curve: linear\n}";
+    let types = crate::lighting::parser::parse_fixture_types(rich).unwrap();
+    assert_eq!(types["Spot"].strobe_curve(), Some(StrobeCurve::Linear));
+    assert_eq!(types["Spot"].to_string(), rich);
+    // A GDTF type's record.
+    let record = "fixture_type \"Brick\" from gdtf(\"a.gdtf\") {\n  strobe_curve: declared\n}\n";
+    let types = crate::lighting::parser::parse_fixture_types(record).unwrap();
+    assert_eq!(types["Brick"].strobe_curve(), Some(StrobeCurve::Declared));
+    // Once only.
+    let twice = "fixture_type \"P\" {\n  channels: 1\n  channel_map: { \"strobe\": 1 }\n  \
+                 strobe_curve: linear\n  strobe_curve: period\n}\n";
+    let err = crate::lighting::parser::parse_fixture_types(twice).unwrap_err();
+    assert!(err.to_string().contains("more than once"), "{err}");
+    // Neither curve nor anything else: not a curve.
+    let bad = "fixture_type \"P\" {\n  channels: 1\n  channel_map: { \"strobe\": 1 }\n  \
+               strobe_curve: log\n}\n";
+    assert!(crate::lighting::parser::parse_fixture_types(bad).is_err());
+}
+
+#[test]
+fn a_v1_type_without_the_statement_is_period_and_serialises_unchanged() {
+    use crate::lighting::types::StrobeCurve;
+    let v1 = "fixture_type \"Par\" {\n  channels: 2\n  channel_map: {\n    \"red\": 1,\n    \
+              \"strobe\": 2\n  }\n  max_strobe_frequency: 25\n  min_strobe_frequency: 0.4\n  \
+              strobe_dmx_offset: 7\n}";
+    let types = crate::lighting::parser::parse_fixture_types(v1).unwrap();
+    assert_eq!(types["Par"].strobe_curve(), None);
+    assert_eq!(types["Par"].effective_strobe_curve(), StrobeCurve::Period);
+    assert_eq!(types["Par"].to_string(), v1);
+}

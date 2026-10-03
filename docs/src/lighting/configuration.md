@@ -175,7 +175,8 @@ runs past address 512. Fixtures patched to exactly the same addresses are a
 gang (two pars on one address, say) and are not warned about.
 
 **The record.** What the GDTF does not say — a name other than its own, a
-mover's measured speed limits — is kept in a small `.fixture` file in the
+mover's measured speed limits, a strobe curve its unit does not follow
+([Strobe curve](#strobe-curve-strobe_curve)) — is kept in a small `.fixture` file in the
 fixture types directory, which mtrack writes the first time you set one
 (`import-gdtf --name`, or the web UI's fixture page):
 
@@ -267,10 +268,8 @@ Notes:
 
 **Strobe frequency range:**
 
-Fixtures with a dedicated strobe channel can specify their supported frequency range and DMX
-offset. This is important because many LED fixtures map the DMX strobe channel linearly to
-*period* (1/frequency) rather than frequency, so a simple linear frequency-to-DMX mapping
-produces incorrect results. `mtrack` uses period-linear interpolation to match this behavior.
+A hand-written type with a dedicated strobe channel states its frequency range and where the
+variable strobe starts:
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -278,8 +277,49 @@ produces incorrect results. `mtrack` uses period-linear interpolation to match t
 | `min_strobe_frequency` | 0.0 | Minimum strobe frequency in Hz |
 | `strobe_dmx_offset` | 0 | First DMX value where variable strobe begins (values below this are typically "off" or reserved) |
 
-For example, the Astera PixelBrick's strobe channel uses DMX values 7–255 for 0.4–25 Hz. At
-10 Hz, `mtrack` sends DMX 248 (period-linear), not 103 (frequency-linear).
+A rich `.fixture` type and a GDTF say the same with the strobe channel's `strobe` function
+(`function "strobe" 7..255 0.4hz..25hz`).
+
+#### Strobe curve (`strobe_curve`)
+
+The range says which rates a fixture can strobe at; the **strobe curve** says how a rate in
+between becomes a DMX value. Fixtures differ, and the file cannot always be trusted to say, so
+it is a setting of the fixture type:
+
+| `strobe_curve` | A rate becomes… | 10 Hz on 0.4–25 Hz over DMX 7–255 |
+|---|---|---|
+| `period` | linear in the flash *period* (1/Hz) across the range | 248 |
+| `linear` | linear in Hz across the range | 104 |
+| `declared` | what the GDTF's strobe function declares: its own table of steps (ChannelSets), linear inside each; linear in Hz when it has only its two endpoints | 104 here (two endpoints) |
+
+`declared` reads a table the way GDTF writes it: each step runs from its `DMXFrom` to the next
+step's `DMXFrom − 1` over its `PhysicalFrom`..`PhysicalTo` (a step with no `PhysicalTo` holds
+its `PhysicalFrom`). A rate is sent in the first step, in DMX order, whose range holds it; a
+rate in a gap between steps, or past either end, goes to the nearest end of a step. Robe's
+files, for example, give their strobe a 10–12 step table that is far from linear.
+
+**The default** follows the GDTF spec: a fixture from a GDTF is `declared` unless its record
+says otherwise. A hand-written type declares no curve and stays `period`, as mtrack always
+drove them.
+
+**Choosing.** Most fixtures should be left alone. Two endpoints in a GDTF usually mean the
+manufacturer did not measure the curve, only stated the range; if a fixture strobes at the wrong
+rate, test it at 2 Hz (it should flash twice a second) and try the other curves. A fixture known
+to run on a period curve needs it said: the **Astera PixelBrick** is period-linear — at 10 Hz it
+must get 248, where its GDTF's linear declaration gives 104 — so set **Strobe curve** to
+*Period* on its fixture page, which writes it into the record:
+
+```light
+fixture_type "Astera-PixelBrick"
+  from gdtf("lighting/library/pb15.gdtf")
+{
+  strobe_curve: period
+}
+```
+
+In a hand-written `.light` or `.fixture` type, the same statement goes in the body
+(`strobe_curve: linear`). It changes nothing about which channels the fixture has, and it is
+not written into a GDTF or MVR that mtrack exports.
 
 #### The universe must exist in olad
 

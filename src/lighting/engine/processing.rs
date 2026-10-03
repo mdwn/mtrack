@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use super::super::effects::*;
 use super::super::tempo::TempoMap;
+use super::super::types::{strobe_function, FunctionStep, PhysicalUnit, StrobeCurve};
 
 /// Build fixture states by applying a callback to each target fixture's profile.
 ///
@@ -408,6 +409,37 @@ fn build_spread_states(
     fixture_states
 }
 
+/// The DMX value a function's step table gives `hz`: the first step in
+/// DMX order whose physical range contains it, interpolated inside the
+/// step; else the nearest end of any step (so a rate past the table lands
+/// on its end). `steps` is non-empty.
+pub(crate) fn declared_dmx(steps: &[FunctionStep], hz: f64) -> f64 {
+    let at = |step: &FunctionStep, hz: f64| -> f64 {
+        let (dmx_from, dmx_to) = (f64::from(step.dmx_from), f64::from(step.dmx_to));
+        if (step.to - step.from).abs() < f64::EPSILON {
+            return dmx_from;
+        }
+        let fraction = ((hz - step.from) / (step.to - step.from)).clamp(0.0, 1.0);
+        dmx_from + fraction * (dmx_to - dmx_from)
+    };
+    if let Some(step) = steps
+        .iter()
+        .find(|s| s.from.min(s.to) <= hz && hz <= s.from.max(s.to))
+    {
+        return at(step, hz);
+    }
+    let mut best: Option<(f64, f64)> = None;
+    for step in steps {
+        for end in [step.from, step.to] {
+            let distance = (hz - end).abs();
+            if best.is_none_or(|(d, _)| distance < d) {
+                best = Some((distance, at(step, end)));
+            }
+        }
+    }
+    best.map_or(0.0, |(_, dmx)| dmx)
+}
+
 /// Apply a strobe effect and return fixture states
 fn apply_strobe(
     fixture_registry: &HashMap<String, FixtureInfo>,
@@ -444,7 +476,48 @@ fn apply_strobe(
                     let min_freq = fixture.min_strobe_frequency.unwrap_or(0.0);
                     let dmx_offset = fixture.strobe_dmx_offset.unwrap_or(0);
                     let min_normalized = dmx_offset as f64 / 255.0;
-                    let normalized = if max_freq > 0.0 && min_freq > 0.0 && dmx_offset > 0 {
+                    let linear = matches!(
+                        fixture.strobe_curve,
+                        StrobeCurve::Linear | StrobeCurve::Declared
+                    );
+                    // Linear and declared follow the strobe function itself
+                    // when there is one: its own table (declared), else one
+                    // step from its endpoints — in its direction, over its
+                    // DMX range.
+                    let function = linear
+                        .then(|| strobe_function(&fixture.channel_defs))
+                        .flatten();
+                    let endpoints = function.and_then(|f| {
+                        let hz = f.physical.filter(|p| p.unit == PhysicalUnit::Hertz)?;
+                        Some(FunctionStep {
+                            dmx_from: f.dmx_from,
+                            dmx_to: f.dmx_to,
+                            from: hz.from,
+                            to: hz.to,
+                        })
+                    });
+                    let table = match function {
+                        Some(f)
+                            if fixture.strobe_curve == StrobeCurve::Declared
+                                && !f.steps.is_empty() =>
+                        {
+                            Some(f.steps.as_slice())
+                        }
+                        _ => endpoints.as_ref().map(std::slice::from_ref),
+                    };
+                    let normalized = if let Some(steps) = table {
+                        // The step the rate falls in, linear inside it; the
+                        // centre of the byte, so the cast to DMX lands on it.
+                        let dmx = declared_dmx(steps, frequency).round();
+                        ((dmx + 0.5) / 255.0).clamp(0.0, 1.0)
+                    } else if linear && max_freq > min_freq {
+                        // Linear in hertz across the function's DMX range,
+                        // as a GDTF declares it:
+                        // DMX = start + (hz − min)/(max − min) × (255 − start).
+                        let fraction = (frequency.clamp(min_freq, max_freq) - min_freq)
+                            / (max_freq - min_freq);
+                        (min_normalized + fraction * (1.0 - min_normalized)).clamp(0.0, 1.0)
+                    } else if max_freq > 0.0 && min_freq > 0.0 && dmx_offset > 0 {
                         // Interpolate in period-space: many fixtures map DMX linearly
                         // to strobe period (1/freq), not frequency directly.
                         let max_period = 1.0 / min_freq;

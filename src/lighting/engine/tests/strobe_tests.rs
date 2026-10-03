@@ -824,3 +824,232 @@ fn test_pixelbrick_orange_static_with_strobe_dmx_values() {
         strobe_val.1
     );
 }
+
+/// The strobe byte a PixelBrick-shaped fixture (0.4–25 Hz over DMX 7..255)
+/// gets at `hz` under `curve`; 0 Hz is off.
+fn pixelbrick_strobe_byte(curve: crate::lighting::types::StrobeCurve, hz: f64) -> u8 {
+    let mut engine = EffectEngine::new();
+    let mut fixture = create_pixelbrick_fixture("Brick", 1, 1);
+    fixture.strobe_curve = curve;
+    engine.register_fixture(fixture);
+    engine
+        .start_effect(EffectInstance::new(
+            "s".to_string(),
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(hz),
+                duration: Duration::from_secs(5),
+            },
+            vec!["Brick".to_string()],
+            None,
+            None,
+            None,
+        ))
+        .unwrap();
+    let commands = engine.update(Duration::from_millis(16), None).unwrap();
+    commands
+        .iter()
+        .find(|cmd| cmd.channel == 4)
+        .map(|cmd| cmd.value)
+        .unwrap_or(0)
+}
+
+#[test]
+fn the_strobe_curve_maps_a_rate_through_period_or_hertz() {
+    use crate::lighting::types::StrobeCurve::{Linear, Period};
+    // 10 Hz: period space (measured on the unit) vs hertz (the GDTF's word).
+    assert_eq!(pixelbrick_strobe_byte(Period, 10.0), 248);
+    let linear = pixelbrick_strobe_byte(Linear, 10.0);
+    // 7 + (10 − 0.4)/(25 − 0.4) × 248 = 103.8
+    assert!((103..=104).contains(&linear), "{linear}");
+    // The ends and off are the same under both.
+    for curve in [Period, Linear] {
+        assert_eq!(pixelbrick_strobe_byte(curve, 0.4), 7, "{curve:?}");
+        assert_eq!(pixelbrick_strobe_byte(curve, 25.0), 255, "{curve:?}");
+        assert_eq!(pixelbrick_strobe_byte(curve, 0.0), 0, "{curve:?}");
+        // Out of range clamps to the ends.
+        assert_eq!(pixelbrick_strobe_byte(curve, 0.1), 7, "{curve:?}");
+        assert_eq!(pixelbrick_strobe_byte(curve, 40.0), 255, "{curve:?}");
+    }
+}
+
+#[test]
+fn a_fixture_without_a_strobe_channel_ignores_the_curve() {
+    use crate::lighting::types::StrobeCurve::{Linear, Period};
+    let frame = |curve| {
+        let mut engine = EffectEngine::new();
+        let mut fixture = create_test_fixture("rgb", 1, 1);
+        fixture.strobe_curve = curve;
+        engine.register_fixture(fixture);
+        engine
+            .start_effect(EffectInstance::new(
+                "s".to_string(),
+                EffectType::Strobe {
+                    frequency: TempoAwareFrequency::Fixed(10.0),
+                    duration: Duration::from_secs(5),
+                },
+                vec!["rgb".to_string()],
+                None,
+                None,
+                None,
+            ))
+            .unwrap();
+        let mut commands: Vec<(u16, u8)> = engine
+            .update(Duration::from_millis(16), None)
+            .unwrap()
+            .iter()
+            .map(|c| (c.channel, c.value))
+            .collect();
+        commands.sort();
+        commands
+    };
+    assert_eq!(frame(Period), frame(Linear));
+}
+
+/// A fixture of the "8: RGBS" mode of `description`, as the venue loader
+/// registers it: the strobe curve the type states, or the automatic one.
+fn gdtf_fixture(
+    description: &str,
+    curve: Option<crate::lighting::types::StrobeCurve>,
+) -> FixtureInfo {
+    let description = crate::lighting::gdtf::parse_description(description).unwrap();
+    let mut fixture_type = crate::lighting::gdtf::distill(&description, "8: RGBS", "Brick")
+        .unwrap()
+        .fixture_type;
+    // A GDTF fixture, as the loader sets it.
+    fixture_type.set_source(crate::lighting::types::GdtfSource {
+        path: "lighting/library/brick.gdtf".to_string(),
+    });
+    fixture_type.set_strobe_curve(curve);
+    let mut info = FixtureInfo::new(
+        "Brick".to_string(),
+        1,
+        1,
+        "Brick".to_string(),
+        fixture_type.channels().clone(),
+        fixture_type.max_strobe_frequency(),
+    );
+    info.min_strobe_frequency = fixture_type.min_strobe_frequency();
+    info.strobe_dmx_offset = fixture_type.strobe_dmx_offset();
+    info.channel_defs = fixture_type.channel_defs().clone();
+    info.strobe_curve = fixture_type.effective_strobe_curve();
+    info
+}
+
+/// The strobe byte `fixture` gets at `hz`.
+fn strobe_byte(fixture: FixtureInfo, hz: f64) -> u8 {
+    let channel = fixture.channels["strobe"];
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(fixture);
+    engine
+        .start_effect(EffectInstance::new(
+            "s".to_string(),
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(hz),
+                duration: Duration::from_secs(5),
+            },
+            vec!["Brick".to_string()],
+            None,
+            None,
+            None,
+        ))
+        .unwrap();
+    let commands = engine.update(Duration::from_millis(16), None).unwrap();
+    commands
+        .iter()
+        .find(|cmd| cmd.channel == channel)
+        .map(|cmd| cmd.value)
+        .unwrap_or(0)
+}
+
+#[test]
+fn a_declared_table_is_followed_step_by_step() {
+    use crate::lighting::types::StrobeCurve;
+    let robe = crate::lighting::gdtf::robe_strobe_description();
+    let fixture = gdtf_fixture(&robe, None);
+    // Twelve steps, and the automatic curve follows them.
+    let steps = &crate::lighting::types::strobe_function(&fixture.channel_defs)
+        .unwrap()
+        .steps;
+    assert_eq!(steps.len(), 12);
+    assert_eq!(fixture.strobe_curve, StrobeCurve::Declared);
+
+    let ten = strobe_byte(fixture.clone(), 10.0);
+    assert!((89..=91).contains(&ten), "10 Hz -> {ten}");
+    let half = strobe_byte(fixture.clone(), 0.5);
+    assert!((71..=74).contains(&half), "0.5 Hz -> {half}");
+    // Past either end: the table's ends.
+    assert_eq!(strobe_byte(fixture.clone(), 0.1), 64);
+    assert_eq!(strobe_byte(fixture.clone(), 40.0), 95);
+    assert_eq!(strobe_byte(fixture, 0.0), 0, "off");
+
+    // An explicit period on the tabled fixture is honoured: not the table.
+    let period = gdtf_fixture(&robe, Some(StrobeCurve::Period));
+    assert_eq!(period.strobe_curve, StrobeCurve::Period);
+    assert_ne!(strobe_byte(period, 10.0), ten);
+}
+
+#[test]
+fn an_endpoints_only_archive_is_linear_by_default_and_period_when_set() {
+    use crate::lighting::types::StrobeCurve;
+    let synthetic = crate::lighting::gdtf::SYNTHETIC_DESCRIPTION;
+    // The spec's rule: declared, which with only endpoints is linear in Hz.
+    let automatic = gdtf_fixture(synthetic, None);
+    assert_eq!(automatic.strobe_curve, StrobeCurve::Declared);
+    let linear = strobe_byte(automatic, 10.0);
+    assert!((103..=104).contains(&linear), "{linear}");
+    // Set to period (as the PixelBrick's record is): the measured curve.
+    assert_eq!(
+        strobe_byte(gdtf_fixture(synthetic, Some(StrobeCurve::Period)), 10.0),
+        248
+    );
+    for hz in [0.4, 2.0, 10.0, 25.0] {
+        assert_eq!(
+            strobe_byte(gdtf_fixture(synthetic, Some(StrobeCurve::Declared)), hz),
+            strobe_byte(gdtf_fixture(synthetic, Some(StrobeCurve::Linear)), hz),
+            "{hz} Hz"
+        );
+    }
+}
+
+#[test]
+fn declared_steps_pick_the_first_containing_step_else_the_nearest_end() {
+    use crate::lighting::types::FunctionStep;
+    let step = |dmx_from, dmx_to, from, to| FunctionStep {
+        dmx_from,
+        dmx_to,
+        from,
+        to,
+    };
+    // A descending "pulse close" bottom, overlapping the next step.
+    let steps = [
+        step(10, 19, 5.0, 1.0),
+        step(20, 29, 2.0, 10.0),
+        step(30, 30, 12.0, 12.0),
+    ];
+    let dmx = |hz| crate::lighting::engine::processing::declared_dmx(&steps, hz);
+    assert_eq!(dmx(5.0), 10.0);
+    assert_eq!(dmx(3.0), 14.5, "first step in DMX order wins an overlap");
+    assert_eq!(dmx(6.0), 20.0 + 4.0 / 8.0 * 9.0);
+    assert_eq!(dmx(11.0), 29.0, "a gap: the nearest end (10 Hz)");
+    assert_eq!(dmx(12.0), 30.0, "a held step");
+    assert_eq!(dmx(50.0), 30.0);
+    assert_eq!(dmx(0.2), 19.0, "below: the 1 Hz end, at DMX 19");
+}
+
+#[test]
+fn a_descending_function_is_followed_in_its_direction() {
+    use crate::lighting::types::StrobeCurve;
+    // Fast at the bottom, slow at the top (as Martin's and Roxx's files say).
+    let descending = crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.replace(
+        r#"Attribute="Shutter1Strobe" DMXFrom="7/1" PhysicalFrom="0.4" PhysicalTo="25""#,
+        r#"Attribute="Shutter1Strobe" DMXFrom="7/1" PhysicalFrom="25" PhysicalTo="0.4""#,
+    );
+    assert_ne!(descending, crate::lighting::gdtf::SYNTHETIC_DESCRIPTION);
+    let fixture = gdtf_fixture(&descending, None);
+    assert_eq!(fixture.strobe_curve, StrobeCurve::Declared);
+    assert_eq!(strobe_byte(fixture.clone(), 25.0), 7);
+    assert_eq!(strobe_byte(fixture.clone(), 0.4), 255);
+    let ten = strobe_byte(fixture, 10.0);
+    // 7 + (10 − 25)/(0.4 − 25) × 248 = 158.2
+    assert_eq!(ten, 158);
+}

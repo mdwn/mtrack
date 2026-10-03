@@ -1740,7 +1740,12 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "List the fixture types known to the lighting engine.")]
+    #[tool(
+        description = "List the fixture types known to the lighting engine. Each says \
+        its strobe_curve (period, linear or declared; null when automatic) and the curve in \
+        use: a GDTF fixture follows its file (declared) unless its record says otherwise, a \
+        hand-written type uses period."
+    )]
     async fn list_fixture_types(&self) -> Result<CallToolResult, McpError> {
         let dmx = match self.player.dmx_engine() {
             Some(d) => d,
@@ -1753,7 +1758,8 @@ impl McpServer {
         // A native type has its own channels. A GDTF type is the whole
         // archive: its channels are a mode's, and each venue fixture states
         // its mode — so it is listed with the archive and its modes.
-        let (natives, gdtf): (Vec<Value>, Vec<(String, String)>) = {
+        type GdtfEntry = (String, String, Option<crate::lighting::types::StrobeCurve>);
+        let (natives, gdtf): (Vec<Value>, Vec<GdtfEntry>) = {
             let guard = system.lock();
             (
                 guard
@@ -1763,12 +1769,17 @@ impl McpServer {
                             "name": name,
                             "channels": ft.channels(),
                             "gdtf": false,
+                            "strobe_curve": ft.strobe_curve(),
+                            "strobe_curve_in_use": ft.effective_strobe_curve(),
                         })
                     })
                     .collect(),
                 guard
                     .gdtf_types_iter()
-                    .filter_map(|(name, ft)| ft.source().map(|s| (name.clone(), s.path.clone())))
+                    .filter_map(|(name, ft)| {
+                        ft.source()
+                            .map(|s| (name.clone(), s.path.clone(), ft.strobe_curve()))
+                    })
                     .collect(),
             )
         };
@@ -1778,7 +1789,7 @@ impl McpServer {
             .ok();
         let gdtf = tokio::task::spawn_blocking(move || {
             gdtf.into_iter()
-                .map(|(name, archive)| {
+                .map(|(name, archive, curve)| {
                     let modes: Vec<String> = project
                         .as_ref()
                         .and_then(|project| std::fs::read(project.join(&archive)).ok())
@@ -1790,6 +1801,9 @@ impl McpServer {
                         "gdtf": true,
                         "archive": archive,
                         "modes": modes,
+                        "strobe_curve": curve,
+                        "strobe_curve_in_use": curve
+                            .unwrap_or(crate::lighting::types::StrobeCurve::automatic(true)),
                     })
                 })
                 .collect::<Vec<Value>>()

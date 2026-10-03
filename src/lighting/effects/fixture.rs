@@ -501,6 +501,9 @@ pub struct FixtureInfo {
     pub channel_defs: HashMap<String, crate::lighting::types::ChannelDef>,
     /// Movement limits, when the fixture type declares them.
     pub movement: crate::lighting::types::MovementLimits,
+    /// How a strobe rate maps onto the strobe channel's DMX range, resolved
+    /// (the type's stated curve, or the automatic one).
+    pub strobe_curve: crate::lighting::types::StrobeCurve,
     /// The fixture type's rig model in the asset store, when it has one.
     pub rig: Option<String>,
     /// How the rig's joints sit in the mounting frame (design §18.6);
@@ -549,6 +552,7 @@ impl FixtureInfo {
             beam_angle: None,
             channel_defs,
             movement: crate::lighting::types::MovementLimits::default(),
+            strobe_curve: crate::lighting::types::StrobeCurve::default(),
             rig: None,
             aim: None,
             cells: Vec::new(),

@@ -14,9 +14,10 @@
      * -->
 <script lang="ts">
   /**
-   * "Your settings for this fixture" (lighting UI design §12.4): the three
+   * "Your settings for this fixture" (lighting UI design §12.4): the
    * things about a fixture from a GDTF that are the user's — the name
-   * venues and shows call it by, and its movement limits — as a form. (Its
+   * venues and shows call it by, its movement limits and its strobe
+   * curve — as a form. (Its
    * mode is each venue fixture's own choice.) A save is planned first: a
    * rename says which venue lines it rewrites, and the user confirms before
    * anything is written. mtrack keeps these in a record of its own; the user never sees
@@ -33,6 +34,7 @@
     type FixtureSettingsData,
     type FixtureSettingsResult,
     type GdtfMode,
+    type StrobeCurve,
   } from "../../lib/api/config";
 
   interface Props {
@@ -56,6 +58,8 @@
   /** Bound to number inputs: a number, or null/undefined when empty. */
   let pan = $state<number | null | undefined>(null);
   let tilt = $state<number | null | undefined>(null);
+  /** The stated strobe curve; "" is automatic. */
+  let curve = $state<"" | StrobeCurve>("");
   let saving = $state(false);
   let message = $state<{ ok: boolean; text: string } | null>(null);
 
@@ -67,6 +71,7 @@
     typeName = from.name;
     pan = from.movement.max_pan_speed;
     tilt = from.movement.max_tilt_speed;
+    curve = from.strobe_curve ?? "";
   }
 
   let ask = 0;
@@ -104,7 +109,8 @@
     !!saved &&
       (typeName.trim() !== saved.name ||
         asNumber(pan) !== saved.movement.max_pan_speed ||
-        asNumber(tilt) !== saved.movement.max_tilt_speed),
+        asNumber(tilt) !== saved.movement.max_tilt_speed ||
+        (curve || null) !== saved.strobe_curve),
   );
 
   let speedsValid = $derived(
@@ -120,6 +126,9 @@
       movement: canMove
         ? { max_pan_speed: asNumber(pan), max_tilt_speed: asNumber(tilt) }
         : (saved?.movement ?? { max_pan_speed: null, max_tilt_speed: null }),
+      strobe_curve: saved?.strobe
+        ? curve || null
+        : (saved?.strobe_curve ?? null),
       write,
       ...(versions ? { venue_versions: versions } : {}),
     };
@@ -224,6 +233,7 @@
         ...saved,
         name: next,
         movement: sent.movement,
+        strobe_curve: sent.strobe_curve,
         version: done.version,
       };
       onsaved?.(next, message);
@@ -306,6 +316,45 @@
           </div>
         {/if}
       </div>
+      {#if saved.strobe}
+        {@const steps = saved.strobe.steps}
+        <div class="settings__field">
+          <label for="ft-set-strobe"
+            >{$t("lighting.settings.strobeCurve")}</label
+          >
+          <select
+            id="ft-set-strobe"
+            class="input"
+            bind:value={curve}
+            disabled={locked}
+            data-testid="ft-set-strobe"
+          >
+            <option value=""
+              >{steps > 0
+                ? $t("lighting.settings.strobeAutoTable", {
+                    values: { steps },
+                  })
+                : $t("lighting.settings.strobeAutoLinear")}</option
+            >
+            <option value="period"
+              >{$t("lighting.settings.strobePeriod")}</option
+            >
+            <option value="linear"
+              >{$t("lighting.settings.strobeLinear")}</option
+            >
+            {#if steps > 0}
+              <option value="declared"
+                >{$t("lighting.settings.strobeDeclared", {
+                  values: { steps },
+                })}</option
+              >
+            {/if}
+          </select>
+          <span class="field-hint" data-testid="ft-set-strobe-hint"
+            >{$t("lighting.settings.strobeHint")}</span
+          >
+        </div>
+      {/if}
     </div>
     <div class="settings__actions">
       <button

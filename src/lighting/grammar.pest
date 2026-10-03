@@ -247,7 +247,7 @@ fixture_type_name = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 gdtf_source = { "from" ~ "gdtf" ~ "(" ~ string ~ ("," ~ "mode" ~ string)? ~ ")" }
 
 fixture_type_content = {
-    (channels | channel_map | channel_def | cell_def | movement_block | max_strobe_frequency | min_strobe_frequency | strobe_dmx_offset | special_cases)*
+    (channels | channel_map | channel_def | cell_def | movement_block | strobe_curve | max_strobe_frequency | min_strobe_frequency | strobe_dmx_offset | special_cases)*
 }
 
 // A cell of a pixel fixture (design §17.2): its channels, and where it
@@ -303,6 +303,14 @@ speed_value = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ "deg/s" }
 channels = { "channels" ~ ":" ~ number_value }
 
 max_strobe_frequency = { "max_strobe_frequency" ~ ":" ~ number_value }
+
+// How a strobe rate maps onto the strobe function's DMX range: linear in
+// the flash period, linear in hertz between the endpoints, or the GDTF's
+// own step table. Absent is automatic (the table when it has one, else
+// period). A setting of the unit, so a GDTF type's record may carry it.
+strobe_curve = { "strobe_curve" ~ ":" ~ strobe_curve_value }
+
+strobe_curve_value = { "period" | "linear" | "declared" }
 
 min_strobe_frequency = { "min_strobe_frequency" ~ ":" ~ number_value }
 
