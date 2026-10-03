@@ -38,27 +38,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Stage 3D gains a **Preview**: pick a song, scrub its timeline, and see the show at that moment
   evaluated offline — nothing goes to the lights — with the effects active then, the fixtures the
-  show never touches, and a note when colour-wheel fixtures are shown white. Adding a fixture type
-  from GDTF now says what each mode lets shows do ("Set any colour", "Strobe, 0.4 to 25 flashes a
-  second", "Dim, through colour; mode 11 adds a real dimmer"), which modes add what this one lacks,
-  and how many addresses to reserve.
+  show never touches, and a note when colour-wheel fixtures are shown white. What is open on the
+  Fixture types and Venues pages is part of the address (`#/lighting/fixtures/<name>`,
+  `#/lighting/venues/<name>?edit`), so a link, Back and a reload land where you were.
 
   Every web edit of a venue patches the file instead of rewriting it, so comments and an import's
   `# TODO` lines survive; two browser tabs editing the same venue or profile no longer overwrite
   each other; and a locked player refuses every write while still answering Preview.
 
-- **Fixture types from GDTF (#422, #423, #425, #426, #441, #448, #462, #467, #470, #474)**: a
-  fixture type can be built from a manufacturer's GDTF archive instead of a hand-written channel
-  map. A type references one with `from gdtf("lighting/library/x.gdtf", mode "8: RGBS")` in a
-  `.fixture` file, carrying only overrides in its body; a referential type that declares its own
-  `channel_map` is a parse error, since its channels come from the archive.
+- **Fixture types from GDTF (#422, #423, #425, #426, #441, #448, #462, #467, #470, #474, #488,
+  #489, #490, #500)**: a manufacturer's GDTF archive is a fixture type. Every `.gdtf` in
+  `lighting/library/` is one, named from the archive, with all of its modes; a venue fixture says
+  which mode it runs in, `fixture "Brick1" Astera-PixelBrick mode "8: RGBS" @ 1:1`, and one with
+  no mode is a load error that lists the archive's modes. Import from wherever you work —
+  `mtrack import-gdtf <file>` (`--list-modes` reads without importing), `import_gdtf` over MCP,
+  or an upload on the web UI's Fixture types page — validates the archive and copies it into the
+  library, and writes nothing else. A `.gdtf` copied there by hand is a fixture like any other
+  file. A mode's listed footprint counts every copy of a repeated section, so it is the one to
+  patch by: the Astera PB15's four-pixel effect mode lists 21.
 
-  Import from wherever you work. `mtrack import-gdtf <file>` lists an archive's modes and `--mode`
-  imports one; `list_gdtf_modes` and `import_gdtf` do the same over MCP; and the web UI's
-  Fixture types page takes an upload, offers a mode picker, and reports the files written, the
-  resolved channels and every distillation warning. All three go through one importer, and nothing
-  is written until the chosen mode distills. A mode's listed footprint counts every copy of a
-  repeated section, so it is the one to patch by: the Astera PB15's four-pixel effect mode lists 21.
+  What you change about a fixture is kept apart from what its file says. A different name, a
+  mover's movement limits or a strobe curve, set on the fixture's page, write a `.fixture` record
+  whose body is `from gdtf("lighting/library/x.gdtf")` and the overrides; a fixture nobody changed
+  has none, and the record is never shown or edited as a file. A referential type that declares
+  its own `channel_map` is a parse error, since its channels come from the archive. Renaming a
+  type rewrites every venue line that uses it and reports the count per venue; if any venue file
+  cannot be patched, nothing is written.
+
+  A GDTF fixture's page shows the archive: a 3D view from its rig, beam, output, power and
+  description, every mode with what a show can do in it ("Set any colour", "Strobe, 0.4 to 25
+  flashes a second") and its channels, and which venue fixtures run in each. **Test this fixture**
+  on the same page asks whether the light works at all through mtrack before any show is written:
+  pick a mode, a universe from the active profile and a start address, switch **Send to lights**
+  on, and a healthy fixture goes to full white; then swatches, brightness, strobe in Hz, pan and
+  tilt in degrees, and every raw channel behind a disclosure, with a line saying exactly what is
+  being sent to which addresses. It drives the fixture through the effect engine a show would use,
+  laid over the frame as it leaves for olad so the show's buffer is never touched; it is refused
+  while locked or playing, released when either happens, expires five seconds after the last
+  update, and a banner on every page says while it is live. **Nothing happened?** lists what mtrack
+  can check first — olad unreachable, no output patched to the universe — then what to check on
+  the unit.
+
+  A strobe rate in Hz becomes a DMX value on the curve the fixture's file declares: its step
+  table where it has one (Robe's files carry ten to twelve steps), linear in Hz where it has only
+  endpoints. A fixture that runs on flash period instead — the Astera PixelBrick, measured on the
+  unit — says so with `strobe_curve: period` in its record; a hand-written type keeps `period`.
+  The fixture page shows the curve in effect and the declared table, and suggests checking with a
+  2 Hz strobe.
 
   Real fixtures are more than a channel list, and the import follows what their files say. Sections
   that repeat exactly — a pixel bar's cells, a batten's segments — are ganged: the fixture shows one
@@ -93,13 +119,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP fixture-type tools refuse it in a `.light` file and say where it belongs. `#` is reserved in
   channel names. A `cheap_mover.fixture` example shows the syntax.
 
-  The web UI's fixture-type panel covers both extensions: cards carry an extension badge and file
-  name, a referential type is labelled rather than shown as "0 channels", and a `.fixture`, rich or
-  referential type opens as a text editor. A `.light` card has "Edit as text" and a save-as choice,
-  which is the path from `.light` to `.fixture`; new types choose `.light` (form) or `.fixture`
-  (text, prefilled template). Saving one extension retires a stale twin of the other, so a name
-  never resolves to two files, a save must declare the type the URL names, and a name declared in
-  two files is reported rather than last-wins.
+  The web UI's fixture-type panel covers both hand-written extensions: cards carry an extension
+  badge and file name, and a rich `.fixture` type opens as a text editor. A `.light` card has
+  "Edit as text" and a save-as choice, which is the path from `.light` to `.fixture`; new types
+  choose `.light` (form) or `.fixture` (text, prefilled template). Saving one extension retires a
+  stale twin of the other, so a name never resolves to two files, a save must declare the type the
+  URL names, and a name declared in two files is reported rather than last-wins. A GDTF fixture
+  has no file to edit here; what it shows is the archive.
+
+- **A venue that does not load is obvious, and a patch that overlaps is reported (#488, #489)**:
+  a venue still registers whole or not at all, and now the player says so. `/api/status` carries
+  `hardware.lighting_venue`, the navigation shows a standing banner, readiness and Fit shows name
+  the fixture and the reason instead of an empty rig, and a save that leaves the current venue
+  failing says so. A failed reload clears the registered fixtures rather than keeping the previous
+  venue's until the next restart, so a running player and a freshly booted one behave the same;
+  and the engine registers the current venue at boot, not at the first song.
+
+  Two fixtures whose address ranges partly intersect, or a span past 512, are reported at load and
+  in readiness; fixtures at an identical span are a gang and are not. The venue inspector refuses a
+  mode or address that would run over a neighbour before the save, naming the neighbour. In the
+  venue editor nothing is dropped silently any more: a row with no name, no type, a duplicate name
+  or an address below 1 blocks the save and is marked, and **Add Fixture** continues the patch
+  from the previous row's address plus its footprint, rolling to the next universe past 512.
 
 - **Venues that know where things are (#433, #434, #453)**: a venue can say where its fixtures
   hang — `position (x, y, z)` and `rotation (rx, ry, rz)` per fixture, in meters and degrees from a
@@ -284,8 +325,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still builds, still contains mtrack, and boots to nothing listening. Nothing else in the pipeline
   would catch that.
 
-  It says nothing about whether the card boots or whether audio and DMX work; those still need
-  hardware.
+  A second step boots the image (#492): its root filesystem starts under its own systemd in a
+  container and the check asserts that the system settles, that `mtrack.service` is enabled,
+  running as `mtrack`, started once and stayed up with no errors logged, that the API answers on
+  8080 with the package's version and comes up locked, that the player can save a fixture type
+  and a venue into `/var/lib/mtrack` and read them back, and that avahi, the hostname, olad and
+  ssh are as the image intends. It runs on a copy, so the image uploaded is the one that was
+  built; `make test-pi-image-boot IMAGE=…` runs it by hand. The image's kernel, firmware, wifi,
+  audio and DMX still need a card in a Pi. `gh workflow run pi-image.yaml -f from_source=true
+  -f ref=<ref>` builds an image of any ref and attaches it to the run, never to a release.
 
 - **Open Fixture Library definitions, by hand (#463)**: the fixture documentation gains a "From an
   Open Fixture Library definition" section with the capability-to-channel mapping and a worked
@@ -311,6 +359,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file.
 
 ### Changed
+
+- **Inline fixtures in a profile are retired (#502)**: `dmx.lighting.fixtures`, a map of name to
+  `"Type @ universe:address"` in a profile, was parsed and never read by anything that patches a
+  fixture, so those fixtures never lit. Fixtures are patched in venue files. A profile that still
+  has the field is refused at load with the way out: `mtrack migrate --apply` reads it from the
+  top-level `dmx`, every inline profile and every profile file, merges them into
+  `lighting/venues/inline_migrated.light`, and rewrites each profile file without the field after
+  a `.yaml.bak` backup. An empty `fixtures: {}` loads. `verify-light-show` validates a show
+  against groups only.
+
+- **The engine reads the default lighting directories (#494)**: fixture types and venues load
+  from `lighting/fixture_types` and `lighting/venues` whether or not the profile names them in
+  `dmx.lighting.directories`, which is where the web UI writes them. Before, the engine loaded
+  those directories only when the profile set them, so a venue made in the Lighting area on a
+  fresh install was "not found" until the directories were named by hand. A configured directory
+  behaves as before; a default one that does not exist is empty. A project that kept unrelated
+  files under those paths without naming them will now load them.
+
+- **The documentation describes the program that ships (#501, #503, #504)**: the book was read
+  front to back as a first-time user and checked claim by claim against the source. Quick Start
+  now ends with sound, Player Configuration is written around hardware profiles with a table of
+  every key, the Lighting area has its own chapter with a First Light walkthrough, and the
+  reference pages say what the code does — `key:` in MIDI event examples (a song using `note:`
+  was silently skipped), the real gRPC subcommands and all 27 RPCs, `profiles_dir` replacing
+  inline profiles rather than preceding them, a 10 ms loop crossfade, the effect defaults, the
+  measure-offset arithmetic, the DSL's layer commands and lint codes, and one audio-format list.
+  The shipped examples use the documented layout and pass `mtrack verify` on every profile.
 
 - **A song with no audio is as long as its lighting (#455, #459)**: a lighting-only song used to
   report zero length -- no progress bar in the TUI or web UI, no total in MCP song info, and every
