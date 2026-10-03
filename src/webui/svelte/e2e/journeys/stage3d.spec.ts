@@ -159,7 +159,7 @@ test.describe("3D on the venue card", () => {
     await field.fill("");
     await set.click();
     await expect.poll(file).not.toContain("beam_angle");
-    await expect(file()).toMatch(/fixture "P"[^\n]*position \(0, 2, 3\)/);
+    await expect.poll(file).toMatch(/fixture "P"[^\n]*position \(0, 2, 3\)/);
   });
 
   test("the current venue's 3D is live, with Live | Preview", async ({

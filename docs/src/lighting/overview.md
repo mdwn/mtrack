@@ -42,19 +42,34 @@ you want to.
 - **Movers and Positions**: The `move` effect aims moving heads at named focus points in a
   `.venue` file, or at explicit pan and tilt angles. See the
   [Move Effect](effects.md#move-effect) and [Venue files with positions](configuration.md#venue-files-with-positions-venue).
-- **GDTF and MVR**: Import a manufacturer's GDTF file as a fixture type, and a venue's MVR
-  file as a positioned venue; export a venue back out as MVR. See
+- **GDTF and MVR**: A manufacturer's GDTF file is a fixture type as it stands: import it (or
+  copy it into `lighting/library/`) and every one of its modes is available, with nothing to
+  transcribe. Each fixture in a venue names the mode its unit is set to. A venue's MVR comes in
+  as a positioned venue, and a venue goes back out as MVR. See
   [GDTF fixture types](configuration.md#gdtf-fixture-types)
   and [Importing a venue's MVR](configuration.md#importing-a-venues-mvr).
+- **Testing a fixture**: A fixture's page sends to the real light — full white, swatches,
+  sliders, every channel raw — and says what to check when nothing happens. See
+  [Testing a fixture](../interfaces/web-ui.md#testing-a-fixture).
 - **Pixel Fixtures**: Fixtures with cells can be driven per pixel with `per: cell` and
   `spread`. See [Rich channel definitions](configuration.md#rich-channel-definitions-fixture).
-- **Stage 3D**: The Venues page's stage card switches between the plot and the venue as a 3D
-  room with live beams. See [Stage 3D](configuration.md#stage-3d).
+- **Stage 3D**: The stage card (on the dashboard and the Venues page) switches between the plot
+  and the venue as a 3D room with live beams, and on the Venues page previews a song's show at
+  any moment. See [Stage 3D](configuration.md#stage-3d).
 - **Timeline Editor**: Visual DAW-style cue authoring in the web UI with integrated
   audio playback and real-time stage preview.
 - **Sequences**: Reusable cue patterns that can be referenced from multiple shows.
 - **Tempo-Aware Cueing**: Cues can be placed at measure/beat positions with automatic
   tempo change support.
+
+## The Lighting area
+
+The web UI's **Lighting** item holds all of it: an **Overview** that checks whether your shows
+will reach the lights and says what to fix, **Fixture types** (import a GDTF, see a fixture in
+3D with all its modes, test it, set what the GDTF does not say), **Venues** (patch, place and aim
+fixtures on a stage plot or in 3D), **Groups** (the current venue and the logical groups, per
+hardware profile) and **Fit shows** (tag an imported venue for your shows). See
+[Lighting](../interfaces/web-ui.md#lighting) in the web UI guide.
 
 ## Configuration Structure
 
@@ -102,8 +117,13 @@ background) make it easy to visualize how effects overlap and compose.
 
 ## Getting Started
 
-1. Define fixture types and venues (see [Configuration](configuration.md))
-2. Create a `.light` file for your song (see [Effects Reference](effects.md) and
-   [Cueing Features](cueing.md))
-3. Reference the light file in your song's `song.yaml`
-4. Use the web UI's timeline editor to visually author and preview your show
+[First Light](first-light.md) goes from a fixture's GDTF to a cue in a song, in the web UI:
+
+1. Give the profile a DMX output, and patch it in olad
+2. Import the fixture's GDTF on **Lighting → Fixture types**, and test the light there
+3. Add it to a venue in the mode the unit is set to, with a tag
+4. Make the venue current and give a group that tag, on **Lighting → Groups**
+5. Write a show for the group in the song's timeline editor (see [Effects Reference](effects.md)
+   and [Cueing Features](cueing.md))
+
+The files behind each step are described in [Configuration](configuration.md).

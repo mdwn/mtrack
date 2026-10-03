@@ -57,6 +57,10 @@ Rapidly flashes fixtures on and off at a specified frequency.
 - `frequency`: Flashes per second (Hz), or tempo-aware (e.g., `8`, `1beat`, `0.5measures`)
 - `duration`: **Required.** Duration of the strobe effect (e.g., `3s`, `4measures`)
 
+A fixture with a strobe channel is sent the rate on it, through the fixture's
+[strobe curve](configuration.md#strobe-curve-strobe_curve); a fixture without one is flashed by
+mtrack itself, switching its output on and off.
+
 **Example:**
 ```light
 @00:15.000
@@ -234,7 +238,7 @@ All effects support these optional parameters for advanced control:
   target the same value (`static`, `strobe`, `pulse`, `dimmer`) — the lint's
   `per-cell-no-effect` warning says so. It also does nothing, with the lint's `cells-absent`
   warning, on a group whose fixtures have no cells in the current venue. The dashboard's
-  stage plot and the Stage 3D view both show the cells: the plot as a segmented disc, the 3D
+  stage plot and the Stage 3D view both show the cells: the plot as a segmented bar (or disc), the 3D
   view lighting each cell's own lens and beam.
 - `spread`: An angle in degrees (e.g. `spread: 180deg`), for `rainbow` and `cycle` only — the
   lint's `spread-unused` warning fires on any other effect. It offsets each of the effect's

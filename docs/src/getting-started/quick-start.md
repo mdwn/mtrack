@@ -39,6 +39,8 @@ The nav bar links to:
 
 - **Songs** — Browse, create, import, and edit songs. See [Importing Songs](importing-songs.md).
 - **Playlists** — Create and manage setlists. See [Playlists](playlists.md).
+- **Lighting** — Fixtures, venues, groups and the readiness checks for your light shows. See
+  [Lighting](../interfaces/web-ui.md#lighting).
 - **Config** — Configure audio, MIDI, lighting, and controllers. See [Hardware Configuration](hardware-config.md).
 - **Status** — View connected devices, controller status, and system health.
 
@@ -47,3 +49,5 @@ The nav bar links to:
 - **Add songs** — Import existing audio files or create songs from scratch. See [Importing Songs](importing-songs.md).
 - **Configure hardware** — Set up your audio interface, MIDI devices, and lighting. See [Hardware Configuration](hardware-config.md).
 - **Build a setlist** — Create playlists for your shows. See [Playlists](playlists.md).
+- **Light it** — Import a fixture's GDTF, put it in a venue and write a show. See
+  [First Light](../lighting/first-light.md).

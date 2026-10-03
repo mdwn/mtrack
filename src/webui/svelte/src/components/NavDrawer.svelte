@@ -208,10 +208,12 @@
     transition: transform 240ms var(--nc-ease);
     display: flex;
     flex-direction: column;
-    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.3);
   }
+  /* The shadow only while open: closed, the drawer sits just off the left
+     edge and its shadow would paint a grey strip down every page. */
   .drawer--open {
     transform: translateX(0);
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.3);
   }
   .drawer__head {
     display: flex;
