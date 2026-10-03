@@ -13,7 +13,7 @@
 //
 
 mod layers;
-mod processing;
+pub(crate) mod processing;
 mod validation;
 
 #[cfg(test)]

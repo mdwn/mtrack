@@ -1408,3 +1408,50 @@ changing hue. The unit is a 25° fixture straight down from 4 m.
 - **The "beams miss the deck" caveat is gone.** A beam aimed up is usually on purpose, and
   with the deck lit by the cone rather than the centre ray, "misses" no longer describes
   anything.
+
+## 24. The strobe curve: how a rate in hertz becomes DMX (as built 2026-10-02)
+
+mtrack used to put every strobe rate through one formula: linear in the flash *period* across
+the strobe function's DMX range (10 Hz on the PixelBrick's 0.4–25 Hz over 7–255 → 248). That
+was measured right on real PixelBricks, whose GDTF says otherwise (linear in Hz: 10 Hz → 104),
+and it is wrong for a fixture that does what its file says. Robe's files go further and give
+their strobe a 10–12 step table that is neither. The file cannot tell us which units lie, so
+the curve is a setting of the fixture type.
+
+- **Model.** `StrobeCurve { Period, Linear, Declared }` (`lighting::types`). `FixtureType`
+  holds the stated curve as `Option` (none = automatic) and answers
+  `effective_strobe_curve()`: stated, else `Declared` for a GDTF-sourced type (the GDTF
+  spec's reading: the function's table, linear in Hz when it has only endpoints) and `Period`
+  for a hand-written one (mtrack's behaviour before the setting; nothing declares a curve
+  for it). The venue loader puts the effective curve on `FixtureInfo::strobe_curve`, beside
+  the movement limits.
+- **The table.** `ChannelFunction` gained `steps: Vec<FunctionStep>` (`dmx_from`, `dmx_to`,
+  `from`, `to` in Hz). The GDTF parser keeps each ChannelFunction's ChannelSets; the
+  distiller (`strobe_steps`) turns a `Shutter*Strobe` function's sets into steps — DMXFrom
+  to the next set's DMXFrom − 1 (the last to the function's end), PhysicalFrom..PhysicalTo
+  (a missing PhysicalTo holds PhysicalFrom); sets with no physical value bound their
+  neighbours but are not steps. The cache format grew, so `DISTILLER_VERSION` is 8. The
+  expansion's cache key is unchanged by the curve: it changes no channel, and is set on the
+  expanded type after the cache read.
+- **The one normalisation site** (`engine/processing.rs`, `apply_strobe`). `Declared` with a
+  table: the first step in DMX order whose Hz range holds the rate, interpolated inside it;
+  a rate in a gap or past either end goes to the nearest step end (`declared_dmx`); the byte
+  is rounded and sent at the centre of its bin so truncation lands on it. `Linear`, and
+  `Declared` with only endpoints: one step from the function's own endpoints and DMX range,
+  so a descending function (Martin's 20→1 Hz) is followed in its direction:
+  `DMX = from + (hz − hz_from)/(hz_to − hz_from) × (to − from)`, clamped. A v1 type with no
+  function in hertz keeps the min/max/offset formula. `Period` is the old formula, unchanged.
+- **DSL and record.** `strobe_curve: period | linear | declared` in any fixture type body
+  (`.light`, `.fixture`, a GDTF record). `fixture_patch` adds, changes and removes it like
+  the movement block; a record still exists only once something is set, and automatic is
+  "no statement". MVR import never writes it, the generated GDTF ignores it.
+- **Surfaces.** Settings `GET/POST …/settings` carry `strobe_curve` (null = automatic) and,
+  read from the archive, `strobe: {steps, automatic}` (null when no mode has a strobe rate
+  in Hz); the fixture page's settings show a **Strobe curve** select only then, with the
+  table's own option only when there is a table. MCP's `list_fixture_types` gives each
+  type's `strobe_curve` and `strobe_curve_in_use`.
+- **Corpus** (54 GDTFs in the gdtf.eu MVR samples plus the PB15, 47 distinct;
+  `tests/strobe_curve_corpus.rs`): 9 have a table (Robe 10–12 steps, Prolights 2, Roxx S2
+  1), 13 only endpoints (Astera, Martin, Roxx B-FC, Robe Tetra2/TetraX, SGM), 25 no strobe
+  rate. Under the default every tabled fixture follows its table and every endpoints-only
+  one is linear in Hz — including the PixelBrick, whose record must say `period`.

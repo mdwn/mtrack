@@ -47,7 +47,7 @@ use super::lighting_api::{
 };
 use crate::lighting;
 use crate::lighting::fixture_patch::{current_settings, patch_fixture_type, FixtureSettings};
-use crate::lighting::types::{Fixture, MovementLimits, Venue};
+use crate::lighting::types::{Fixture, MovementLimits, StrobeCurve, Venue};
 
 /// The directories a settings request works in.
 #[derive(serde::Deserialize, Default)]
@@ -62,6 +62,10 @@ pub(super) struct SettingsRequest {
     name: String,
     #[serde(default)]
     movement: MovementLimits,
+    /// How a strobe rate maps onto the strobe channel; absent or null is
+    /// automatic.
+    #[serde(default)]
+    strobe_curve: Option<StrobeCurve>,
     /// `false` answers what the save would do and writes nothing.
     write: bool,
     /// The venue files' versions the plan was made against, by file name; a
@@ -82,7 +86,7 @@ fn error(status: StatusCode, message: String) -> Response {
 }
 
 /// GET /api/lighting/fixture-types/:name/settings — a GDTF fixture's
-/// settings, for the form: `{name, movement, version}`. A fixture that is
+/// settings, for the form: `{name, movement, strobe_curve, strobe, version}`. A fixture that is
 /// its archive alone (no record) answers its derived name, no limits and the
 /// version [`UNRECORDED`]. A native type
 /// is a 404 here (it is edited as before).
@@ -99,25 +103,28 @@ pub(super) async fn get_settings(
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let Some((path, _)) = locate_fixture_type_file(&dir, &name).await? else {
-        let (dir, wanted) = (dir.clone(), name.clone());
-        let unrecorded = super::helpers::spawn_blocking_io("read the GDTF library", move || {
+        let (dir, wanted, project) = (dir.clone(), name.clone(), root.clone());
+        let archive = super::helpers::spawn_blocking_io("read the GDTF library", move || {
             Ok::<_, String>(
-                lighting::library::unrecorded_types(&root, Some(&dir))
+                lighting::library::unrecorded_types(&project, Some(&dir))
                     .get(&wanted)
-                    .is_some(),
+                    .map(|t| t.archive.clone()),
             )
         })
         .await?;
-        if !unrecorded {
+        let Some(archive) = archive else {
             return Err(error(
                 StatusCode::NOT_FOUND,
                 format!("Fixture type not found: {name}"),
             ));
-        }
+        };
+        let strobe = strobe_info(root, archive).await;
         return Ok::<_, Response>(
             Json(json!({
                 "name": name,
                 "movement": MovementLimits::default(),
+                "strobe_curve": null,
+                "strobe": strobe,
                 "version": UNRECORDED,
             }))
             .into_response(),
@@ -134,14 +141,43 @@ pub(super) async fn get_settings(
             format!("fixture type \"{name}\" is not a GDTF type"),
         ));
     };
+    let archive = lighting::parser::parse_fixture_types(&content)
+        .ok()
+        .and_then(|types| types.get(&name)?.source().map(|s| s.path.clone()));
+    let strobe = match archive {
+        Some(archive) => strobe_info(root, archive).await,
+        None => serde_json::Value::Null,
+    };
     Ok::<_, Response>(
         Json(json!({
             "name": settings.name,
             "movement": settings.movement,
+            "strobe_curve": settings.strobe_curve,
+            "strobe": strobe,
             "version": content_version(content.as_bytes()),
         }))
         .into_response(),
     )
+}
+
+/// What the strobe-curve control needs from a fixture's GDTF: `null` when
+/// no mode has a strobe rate in hertz, else `{steps, automatic}` — the
+/// size of the strobe function's own table (0: endpoints only, so the
+/// declared curve is linear in hertz) and the curve mtrack uses when the
+/// record states none (always `declared` for a GDTF, the spec's rule). An
+/// archive that cannot be read is `null` too.
+async fn strobe_info(root: PathBuf, archive: String) -> serde_json::Value {
+    tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(root.join(&archive)).ok()?;
+        let description = lighting::gdtf::parse_archive(&bytes).ok()?;
+        let steps = lighting::gdtf::strobe_table_steps(&description)?;
+        let automatic = StrobeCurve::automatic(true);
+        Some(json!({"steps": steps, "automatic": automatic}))
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(serde_json::Value::Null)
 }
 
 /// One venue file's planned rewrite for a rename.
@@ -304,6 +340,7 @@ fn plan(
     let settings = FixtureSettings {
         name: new_name.clone(),
         movement: request.movement,
+        strobe_curve: request.strobe_curve,
     };
     let unchanged = settings == current;
     let patched = patch_fixture_type(&content, name, &settings).map_err(bad)?;
@@ -920,6 +957,8 @@ mod test {
             json!({
                 "name": "Synth Brick",
                 "movement": {"max_pan_speed": null, "max_tilt_speed": null},
+                "strobe_curve": null,
+                "strobe": {"steps": 0, "automatic": "declared"},
                 "version": "unrecorded",
             })
         );
@@ -969,6 +1008,75 @@ mod test {
         let (_, body) = get_settings(state, "Synth Brick").await;
         assert_ne!(body["version"], "unrecorded");
         assert_eq!(body["movement"]["max_pan_speed"], 120.0);
+    }
+
+    #[tokio::test]
+    async fn the_strobe_curve_is_saved_in_the_record_and_read_back() {
+        let (state, dir) = test_state();
+        let root = dir.path();
+        library_project(root);
+        // Automatic is the default: saving it writes no record.
+        let (status, _) = post(
+            state.clone(),
+            "Synth Brick",
+            json!({"name": "Synth Brick", "write": true, "strobe_curve": null}),
+            Some("unrecorded"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(std::fs::read_dir(root.join("types")).unwrap().count(), 0);
+
+        let (status, saved) = post(
+            state.clone(),
+            "Synth Brick",
+            json!({"name": "Synth Brick", "write": true, "strobe_curve": "linear"}),
+            Some("unrecorded"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        let record = read(root, "types/synth_brick.fixture");
+        assert!(record.contains("  strobe_curve: linear\n"), "{record}");
+        let (_, body) = get_settings(state.clone(), "Synth Brick").await;
+        assert_eq!(body["strobe_curve"], "linear");
+        let version = body["version"].as_str().unwrap().to_string();
+
+        // A stale version is refused and writes nothing.
+        let (status, _) = post(
+            state.clone(),
+            "Synth Brick",
+            json!({"name": "Synth Brick", "write": true, "strobe_curve": "period"}),
+            Some("stale"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(read(root, "types/synth_brick.fixture"), record);
+
+        // Back to automatic: the statement goes; movement limits are kept
+        // apart.
+        let (status, _) = post(
+            state.clone(),
+            "Synth Brick",
+            json!({"name": "Synth Brick", "write": true, "strobe_curve": null,
+                   "movement": {"max_pan_speed": 90, "max_tilt_speed": null}}),
+            Some(&version),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let record = read(root, "types/synth_brick.fixture");
+        assert!(!record.contains("strobe_curve"), "{record}");
+        assert!(record.contains("max_pan_speed: 90deg/s"), "{record}");
+        let (_, body) = get_settings(state.clone(), "Synth Brick").await;
+        assert_eq!(body["strobe_curve"], serde_json::Value::Null);
+        assert_eq!(body["strobe"]["automatic"], "declared");
+        // An unknown curve is refused.
+        let (status, _) = post(
+            state,
+            "Synth Brick",
+            json!({"name": "Synth Brick", "write": true, "strobe_curve": "log"}),
+            None,
+        )
+        .await;
+        assert!(status.is_client_error(), "{status}");
     }
 
     #[tokio::test]

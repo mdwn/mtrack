@@ -196,6 +196,20 @@ pub struct Function {
     pub physical_from: Option<f64>,
     /// Physical value at the end of the range.
     pub physical_to: Option<f64>,
+    /// The function's ChannelSets, in document order: its own table of
+    /// DMX steps and their physical values, when the file has one.
+    pub sets: Vec<ChannelSet>,
+}
+
+/// A ChannelSet: a named step inside a channel function.
+#[derive(Debug, Default)]
+pub struct ChannelSet {
+    /// The DMX value the set starts at.
+    pub dmx_from: Option<DmxValue>,
+    /// Physical value at the start of the set.
+    pub physical_from: Option<f64>,
+    /// Physical value at the end of the set; absent holds `physical_from`.
+    pub physical_to: Option<f64>,
 }
 
 /// A GDTF DMX value: `value/bytes`, e.g. `7/1` or `4294967295/4`.
@@ -418,6 +432,22 @@ impl Walk {
                     logical.functions.push(Function {
                         name: attr(element, "Name")?.unwrap_or_default(),
                         attribute: attr(element, "Attribute")?.unwrap_or_default(),
+                        dmx_from: attr(element, "DMXFrom")?
+                            .as_deref()
+                            .and_then(parse_dmx_value),
+                        physical_from: parse_finite(attr(element, "PhysicalFrom")?.as_deref()),
+                        physical_to: parse_finite(attr(element, "PhysicalTo")?.as_deref()),
+                        sets: Vec::new(),
+                    });
+                }
+            }
+            "ChannelSet" if stack.last().is_some_and(|p| p == "ChannelFunction") => {
+                if let Some(function) = self
+                    .current_logical
+                    .as_mut()
+                    .and_then(|l| l.functions.last_mut())
+                {
+                    function.sets.push(ChannelSet {
                         dmx_from: attr(element, "DMXFrom")?
                             .as_deref()
                             .and_then(parse_dmx_value),

@@ -616,6 +616,15 @@ meanwhile), nothing is written and the message names the file. Inline fixtures i
 config that name it are listed for you to change by hand. A fixture's mode is not a setting of the
 fixture: each fixture in a venue names its own.
 
+For a fixture whose GDTF gives its strobe a rate in hertz, the settings also hold its **Strobe
+curve**: how a strobe rate becomes a DMX value. Left on **Automatic**, it follows the GDTF — its
+own table of steps when it has one ("as the GDTF declares (12 steps)"), else linear in Hz between
+its two ends. **Period** is for a unit whose firmware is linear in the flash length, as the Astera
+PixelBrick's is: set it there, or a 10 Hz strobe flashes about once every one and a half seconds.
+**Linear in Hz** ignores a table. If a 2 Hz strobe does not flash twice a second when you test the
+fixture, try another curve. See [Strobe curve](../lighting/configuration.md#strobe-curve-
+strobe_curve).
+
 Deleting a fixture from a GDTF removes its GDTF too, unless another fixture uses the same file.
 If a venue uses it, the confirmation says how many fixtures in which venues, and that those venues
 will stop loading.

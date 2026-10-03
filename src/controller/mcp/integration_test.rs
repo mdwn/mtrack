@@ -3960,6 +3960,11 @@ async fn mcp_lists_a_gdtf_type_and_says_when_a_write_darkens_the_venue(
     assert_eq!(brick["modes"], json!(["8: RGBS", "Mover 16bit"]), "{body}");
     let par = types.iter().find(|t| t["name"] == "RGBW_Par").expect("par");
     assert_eq!(par["gdtf"], false, "{body}");
+    // The strobe curve: none stated, so the spec's rule for a GDTF and
+    // period for a hand-written type.
+    assert_eq!(brick["strobe_curve"], json!(null), "{body}");
+    assert_eq!(brick["strobe_curve_in_use"], "declared", "{body}");
+    assert_eq!(par["strobe_curve_in_use"], "period", "{body}");
 
     // A write that leaves the current venue failing says so, with the
     // fixture and the reason; the file is still written.

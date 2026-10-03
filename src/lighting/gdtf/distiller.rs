@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use super::description::{Channel, Description};
 use super::GdtfError;
 use crate::lighting::types::{
-    Cell, ChannelDef, ChannelFunction, FixtureType, PhysicalRange, PhysicalUnit,
+    Cell, ChannelDef, ChannelFunction, FixtureType, FunctionStep, PhysicalRange, PhysicalUnit,
 };
 
 /// A distilled fixture type plus everything the distiller had to skip or
@@ -51,6 +51,60 @@ pub struct ModeSummary {
     pub footprint: u16,
     /// How many channels the mode declares (virtual ones included).
     pub channel_count: usize,
+}
+
+/// The variable-strobe function's table across a description's modes:
+/// `None` when no mode has a strobe rate in hertz (the strobe curve means
+/// nothing then), else the most steps any mode's table has (0 when only
+/// the endpoints are known, and the declared curve is linear in hertz).
+pub fn strobe_table_steps(description: &Description) -> Option<usize> {
+    strobe_tables(description)
+        .into_iter()
+        .map(|table| table.steps)
+        .max()
+}
+
+/// One mode's variable-strobe function, as the strobe curve sees it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StrobeTable {
+    pub mode: String,
+    pub function: String,
+    /// The hertz the function's endpoints declare.
+    pub from_hz: f64,
+    pub to_hz: f64,
+    /// Steps in its own table (ChannelSets with a physical value); 0 when
+    /// only the endpoints are known.
+    pub steps: usize,
+}
+
+/// Every mode's variable-strobe function (`Shutter1Strobe` with a rate in
+/// hertz), in document order.
+pub fn strobe_tables(description: &Description) -> Vec<StrobeTable> {
+    let mut out = Vec::new();
+    for mode in &description.modes {
+        for function in mode
+            .channels
+            .iter()
+            .flat_map(|channel| &channel.logical_channels)
+            .flat_map(|logical| &logical.functions)
+        {
+            if function.attribute != "Shutter1Strobe" {
+                continue;
+            }
+            let Some(range) = strobe_hz_range(function) else {
+                continue;
+            };
+            let from = function.dmx_from.map(|v| v.coarse()).unwrap_or(0);
+            out.push(StrobeTable {
+                mode: mode.name.clone(),
+                function: function.name.clone(),
+                from_hz: range.from,
+                to_hz: range.to,
+                steps: strobe_steps(function, from, u8::MAX).len(),
+            });
+        }
+    }
+    out
 }
 
 /// Summarizes every mode in a description. A channel on a template geometry
@@ -787,6 +841,7 @@ fn convert_functions(
         }
         let physical = strobe_hz_range(function);
         converted.push(ChannelFunction {
+            steps: strobe_steps(function, *dmx_from, dmx_to),
             name: canonical_function_name(function),
             dmx_from: *dmx_from,
             dmx_to,
@@ -794,6 +849,52 @@ fn convert_functions(
         });
     }
     converted
+}
+
+/// A strobe-frequency function's own table, from its ChannelSets: each
+/// set runs from its DMXFrom to the next set's DMXFrom − 1 (the last to
+/// the function's end) over its PhysicalFrom..PhysicalTo (a set with no
+/// PhysicalTo holds its PhysicalFrom). Sets without a physical value bound
+/// their neighbours but are not steps. Empty for any other function.
+pub(crate) fn strobe_steps(
+    function: &super::description::Function,
+    dmx_from: u8,
+    dmx_to: u8,
+) -> Vec<FunctionStep> {
+    if strobe_hz_range(function).is_none() {
+        return Vec::new();
+    }
+    let mut sets: Vec<(u8, Option<(f64, f64)>)> = function
+        .sets
+        .iter()
+        .filter_map(|set| {
+            let start = set.dmx_from?.coarse().clamp(dmx_from, dmx_to);
+            let physical = set
+                .physical_from
+                .map(|from| (from, set.physical_to.unwrap_or(from)));
+            Some((start, physical))
+        })
+        .collect();
+    // In DMX order; on a shared start the first in the document stands.
+    sets.sort_by_key(|(start, _)| *start);
+    sets.dedup_by_key(|(start, _)| *start);
+    let mut steps = Vec::new();
+    for (i, (start, physical)) in sets.iter().enumerate() {
+        let Some((from, to)) = physical else {
+            continue;
+        };
+        let end = match sets.get(i + 1) {
+            Some((next, _)) => next.saturating_sub(1).max(*start),
+            None => dmx_to,
+        };
+        steps.push(FunctionStep {
+            dmx_from: *start,
+            dmx_to: end,
+            from: *from,
+            to: *to,
+        });
+    }
+    steps
 }
 
 /// The Hz range of a strobe-frequency function, when it has one.

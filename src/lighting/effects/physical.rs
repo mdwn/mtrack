@@ -339,6 +339,7 @@ mod tests {
     fn a_function_sub_range_keeps_the_coarse_byte_inside_the_function() {
         let mut def = ChannelDef::at(1);
         def.functions.push(ChannelFunction {
+            steps: Vec::new(),
             name: "pan".to_string(),
             dmx_from: 64,
             dmx_to: 200,

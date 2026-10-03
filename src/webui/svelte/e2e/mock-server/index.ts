@@ -426,6 +426,9 @@ app.get("/api/lighting/fixture-types/:name/settings", (req, res) => {
   res.json({
     name: req.params.name,
     movement: { max_pan_speed: null, max_tilt_speed: null },
+    strobe_curve: null,
+    // The PB15's strobe function has only its endpoints.
+    strobe: { steps: 0, automatic: "declared" },
     version: "mock-v1",
   });
 });

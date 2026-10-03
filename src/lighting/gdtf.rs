@@ -42,11 +42,58 @@ pub(crate) use archive::tests::build_zip;
 #[cfg(test)]
 pub(crate) use description::tests::SYNTHETIC_DESCRIPTION;
 
+/// [`SYNTHETIC_DESCRIPTION`] with a Robe-shaped strobe: a variable strobe
+/// over DMX 64..95 whose own table has twelve steps (each a band of hertz,
+/// with a gap to the next, as Robe's files have), then "Open" from 96.
+#[cfg(test)]
+pub(crate) fn robe_strobe_description() -> String {
+    let marks = [
+        (64, 0.3),
+        (68, 0.4),
+        (71, 0.5),
+        (74, 0.6),
+        (77, 1.7),
+        (80, 3.5),
+        (83, 5.0),
+        (86, 6.5),
+        (89, 9.1),
+        (91, 11.0),
+        (93, 15.0),
+        (95, 20.0),
+    ];
+    let sets: String = marks
+        .iter()
+        .enumerate()
+        .map(|(i, (dmx, hz))| {
+            let to = marks
+                .get(i + 1)
+                .map_or(*hz, |(_, next)| hz + 0.9 * (next - hz));
+            format!(
+                "<ChannelSet Name=\"\" DMXFrom=\"{dmx}/1\" PhysicalFrom=\"{hz}\" PhysicalTo=\"{to}\"/>\n"
+            )
+        })
+        .collect();
+    let from = r#"<ChannelFunction Name="Random Strobe" Attribute="Shutter1StrobeRandom" DMXFrom="4/1" PhysicalFrom="25" PhysicalTo="0.4"/>
+              <ChannelFunction Name="Variable Strobe" Attribute="Shutter1Strobe" DMXFrom="7/1" PhysicalFrom="0.4" PhysicalTo="25"/>"#;
+    assert!(SYNTHETIC_DESCRIPTION.contains(from));
+    SYNTHETIC_DESCRIPTION.replace(
+        from,
+        &format!(
+            "<ChannelFunction Name=\"Strobe\" Attribute=\"Shutter1Strobe\" DMXFrom=\"64/1\" \
+             PhysicalFrom=\"0.3\" PhysicalTo=\"20\">\n{sets}</ChannelFunction>\n\
+             <ChannelFunction Name=\"Open\" Attribute=\"Shutter1\" DMXFrom=\"96/1\" \
+             PhysicalFrom=\"1\" PhysicalTo=\"1\"/>"
+        ),
+    )
+}
+
 pub use archive::{list_model_files, read_assets, read_description_xml, Assets};
 pub use description::{
     parse_description, BeamData, Description, GeometryKind, GeometryNode, Matrix4, Model, IDENTITY,
 };
-pub use distiller::{distill, mode_summaries, Distilled, ModeSummary};
+pub use distiller::{
+    distill, mode_summaries, strobe_table_steps, strobe_tables, Distilled, ModeSummary, StrobeTable,
+};
 pub use rig::{
     aim_calibration, beam_direction, beam_ray, distill_rig, RigBeam, RigModel, RigNode, RigRole,
     RigShape, DEFAULT_BEAM_ANGLE, RIG_VERSION,

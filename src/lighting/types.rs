@@ -49,6 +49,31 @@ pub struct ChannelFunction {
     pub dmx_to: u8,
     /// The physical values the DMX range maps onto, if any.
     pub physical: Option<PhysicalRange>,
+    /// The function's own table of steps (a GDTF's ChannelSets), in DMX
+    /// order, when the file states one: what `strobe_curve: declared`
+    /// follows. Empty when only the endpoints are known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<FunctionStep>,
+}
+
+/// One step of a function's table: DMX `dmx_from..=dmx_to` runs linearly
+/// over the physical values `from..to` (equal when the step holds a value).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FunctionStep {
+    pub dmx_from: u8,
+    pub dmx_to: u8,
+    pub from: f64,
+    pub to: f64,
+}
+
+/// The variable-strobe function of a fixture's channels: the "strobe"
+/// function on the "strobe" channel, which the engine drives.
+pub fn strobe_function(channel_defs: &HashMap<String, ChannelDef>) -> Option<&ChannelFunction> {
+    channel_defs
+        .get("strobe")?
+        .functions
+        .iter()
+        .find(|f| f.name == "strobe")
 }
 
 /// One cell of a pixel fixture (design §17.2): its own channel offsets and
@@ -115,6 +140,49 @@ impl ChannelDef {
 pub struct GdtfSource {
     /// Path to the GDTF archive, relative to the config directory.
     pub path: String,
+}
+
+/// How a strobe rate in hertz maps onto the strobe function's DMX range.
+/// The GDTF spec's rule is the default for a GDTF fixture: its strobe
+/// function's own table, linear in hertz where it has none. A unit whose
+/// firmware does otherwise (the Astera PixelBrick runs on a period curve)
+/// says so in its record; see [`StrobeCurve::automatic`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StrobeCurve {
+    /// Linear in the flash period (1/Hz) across the DMX range: what
+    /// measured units (the Astera PixelBrick) do. The default.
+    #[default]
+    Period,
+    /// Linear in hertz across the DMX range, between the endpoints.
+    Linear,
+    /// The function's own step table (GDTF ChannelSets), linear inside
+    /// each step; [`StrobeCurve::Linear`] when there is no table.
+    Declared,
+}
+
+impl StrobeCurve {
+    /// The DSL keyword.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            StrobeCurve::Period => "period",
+            StrobeCurve::Linear => "linear",
+            StrobeCurve::Declared => "declared",
+        }
+    }
+
+    /// The curve a fixture gets when nothing says otherwise: as declared
+    /// for a GDTF fixture (the spec's rule: the function's table, linear
+    /// in hertz when it has only endpoints); period for a hand-written
+    /// type, which declares no curve — mtrack's behaviour before the
+    /// setting existed.
+    pub fn automatic(gdtf_sourced: bool) -> StrobeCurve {
+        if gdtf_sourced {
+            StrobeCurve::Declared
+        } else {
+            StrobeCurve::Period
+        }
+    }
 }
 
 /// Movement limits — not part of GDTF; measured or configured per fixture.
@@ -206,6 +274,11 @@ pub struct FixtureType {
     #[serde(skip)]
     movement: MovementLimits,
 
+    /// How a strobe rate maps onto the strobe channel, when the type says;
+    /// `None` is automatic ([`StrobeCurve::automatic`]).
+    #[serde(skip)]
+    strobe_curve: Option<StrobeCurve>,
+
     /// The cells of a pixel fixture, in the manufacturer's order; empty for
     /// a fixture with one colour.
     #[serde(skip)]
@@ -282,6 +355,7 @@ impl FixtureType {
             channels,
             source: None,
             movement: MovementLimits::default(),
+            strobe_curve: None,
             cells: Vec::new(),
             rig: None,
             aim: None,
@@ -368,6 +442,7 @@ impl FixtureType {
             return;
         }
         def.functions.push(ChannelFunction {
+            steps: Vec::new(),
             name: STROBE_FUNCTION.to_string(),
             dmx_from: offset,
             dmx_to: u8::MAX,
@@ -412,6 +487,22 @@ impl FixtureType {
     /// Sets the movement limits.
     pub fn set_movement(&mut self, movement: MovementLimits) {
         self.movement = movement;
+    }
+
+    /// The strobe curve the type states; `None` is automatic.
+    pub fn strobe_curve(&self) -> Option<StrobeCurve> {
+        self.strobe_curve
+    }
+
+    /// The strobe curve the engine uses: the stated one, or the automatic.
+    pub fn effective_strobe_curve(&self) -> StrobeCurve {
+        self.strobe_curve
+            .unwrap_or_else(|| StrobeCurve::automatic(self.source.is_some()))
+    }
+
+    /// Sets (or, with `None`, clears) the strobe curve.
+    pub fn set_strobe_curve(&mut self, curve: Option<StrobeCurve>) {
+        self.strobe_curve = curve;
     }
 
     /// The cells of a pixel fixture, in the manufacturer's order.
@@ -571,6 +662,9 @@ impl fmt::Display for FixtureType {
                 }
                 writeln!(f, "  }}")?;
             }
+            if let Some(curve) = self.strobe_curve {
+                writeln!(f, "  strobe_curve: {}", curve.keyword())?;
+            }
             return write!(f, "}}");
         }
         writeln!(f, "fixture_type \"{}\" {{", self.name)?;
@@ -591,6 +685,9 @@ impl fmt::Display for FixtureType {
         }
         if let Some(v) = self.strobe_dmx_offset {
             writeln!(f, "  strobe_dmx_offset: {v}")?;
+        }
+        if let Some(curve) = self.strobe_curve {
+            writeln!(f, "  strobe_curve: {}", curve.keyword())?;
         }
         write!(f, "}}")
     }
@@ -1085,12 +1182,14 @@ mod tests {
                 range: None,
                 functions: vec![
                     ChannelFunction {
+                        steps: Vec::new(),
                         name: "off".to_string(),
                         dmx_from: 0,
                         dmx_to: 6,
                         physical: None,
                     },
                     ChannelFunction {
+                        steps: Vec::new(),
                         name: "strobe".to_string(),
                         dmx_from: 7,
                         dmx_to: 255,
@@ -1252,6 +1351,7 @@ mod tests {
                 fine: None,
                 range: None,
                 functions: vec![ChannelFunction {
+                    steps: Vec::new(),
                     name: "strobe".to_string(),
                     dmx_from: 7,
                     dmx_to: 200,
@@ -1294,6 +1394,7 @@ mod tests {
                 fine: None,
                 range: None,
                 functions: vec![ChannelFunction {
+                    steps: Vec::new(),
                     name: "strobe".to_string(),
                     dmx_from: 7,
                     dmx_to: 200,
