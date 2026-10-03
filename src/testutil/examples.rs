@@ -312,7 +312,7 @@ fn test_all_example_songs_load() {
 /// Test that playlist can be parsed
 #[test]
 fn test_parse_playlist() {
-    let playlist_path = examples_dir().join("playlist.yaml");
+    let playlist_path = examples_dir().join("playlists").join("playlist.yaml");
     let playlist =
         crate::config::Playlist::deserialize(&playlist_path).expect("Failed to parse playlist");
 
