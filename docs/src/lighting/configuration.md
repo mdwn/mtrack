@@ -618,7 +618,7 @@ head height mid-stage, `(0.7, 1.9, 1.5)`: `d = (0.237, 0.778, 0.583)`, so `a = 1
 
 ```light
 venue "house" {
-  fixture "Brick4" Astera-PixelBrick @ 1:13 position (0.09, -0.1, 0) rotation (125.7, 0, -17)
+  fixture "Brick4" Astera-PixelBrick mode "8: RGBS" @ 1:13 position (0.09, -0.1, 0) rotation (125.7, 0, -17)
   focus "center" (0.7, 1.9, 1.5)
 }
 ```

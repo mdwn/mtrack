@@ -656,7 +656,7 @@
   "lighting.settings.strobeCurve": "Strobe curve",
   "lighting.settings.strobeAutoTable": "Automatic: as the GDTF declares ({steps, plural, one {# step} other {# steps}})",
   "lighting.settings.strobeAutoLinear": "Automatic: as the GDTF declares (linear in Hz)",
-  "lighting.settings.strobePeriod": "Period (by flash length, as the Astera PixelBrick runs)",
+  "lighting.settings.strobePeriod": "Period (by flash length)",
   "lighting.settings.strobeLinear": "Linear in Hz",
   "lighting.settings.strobeDeclared": "As the GDTF declares ({steps, plural, one {# step} other {# steps}})",
   "lighting.settings.strobeHint": "How a strobe rate becomes a DMX value. If a 2 Hz strobe does not flash twice a second when you test the fixture, try another curve.",
