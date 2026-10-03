@@ -7,8 +7,14 @@
 ## Song Repository
 
 The song repository is a location on disk that houses your backing tracks, MIDI files, and song
-definitions. mtrack recursively scans the repository for `song.yaml` files, so songs can be
-organized in any directory structure — flat, by artist, by album, or any other scheme.
+definitions. mtrack walks the repository recursively and tries every `.yaml`/`.yml` file as a
+song definition, skipping files whose `kind` is something else (a `kind: playlist` file, for
+example). A song is usually `song.yaml` in its own directory, but `<name>.yaml` next to the
+audio works too. Songs can be organized in any directory structure — flat, by artist, by album,
+or any other scheme. Paths inside a song definition are relative to the directory holding it.
+
+A file with `kind: song` that fails to load is reported as an error in the web UI; a file with no
+`kind` that fails to load is skipped silently.
 
 The repository path is configured via the `songs` field in `mtrack.yaml`. For zero-config
 startup (no existing `mtrack.yaml`), it defaults to `.` (the project root directory).
@@ -22,10 +28,11 @@ A song comprises of:
 - One or more light shows (using `.light` DSL files, or MIDI files interpreted as DMX).
 - A song definition (`song.yaml`).
 
-The audio files must all be the same sample rate. They do not need to be the same length. mtrack
-will play until the last audio (or MIDI) file is complete.
+The audio files do not need to share a sample rate, format or length: each track is decoded and
+resampled to the audio device's sample rate, format and bit depth on its own (the algorithm is
+the profile's `audio.resampler`). mtrack plays until the last audio (or MIDI) file is complete.
 
-Supported audio formats: WAV, FLAC, MP3, OGG, AAC, M4A, AIFF.
+Supported audio formats: WAV, FLAC, MP3, OGG, AAC/M4A, AIFF.
 
 ## song.yaml Format
 
@@ -45,11 +52,20 @@ midi_event:
   channel: 16
   program: 3
 
-# Light shows using the new DSL format (.light files).
-# These files use the lighting DSL and can reference logical groups from mtrack.yaml.
+# Light shows written in the lighting DSL (.light files). They reference the logical
+# groups of the active profile's lighting configuration. See the Lighting chapter.
 lighting:
   - file: lighting/main_show.light
   - file: lighting/outro.light
+
+# MIDI files interpreted as DMX (the MIDI-based DMX path). Each entry names the
+# universe (as in the profile's dmx.universes), the file, and optionally the MIDI
+# channels to read lighting data from (all channels when omitted). See MIDI-Based DMX.
+light_shows:
+  - universe_name: light-show
+    dmx_file: Song Automation.mid
+    midi_channels:
+      - 15
 
 # An optional MIDI playback configuration.
 midi_playback:
@@ -102,13 +118,24 @@ tempo:
 
 # (Optional) A generated metronome click track, derived from the beat grid
 # (tempo map or click analysis). It appears as a virtual output track —
-# route it via track_mappings in the profile like any other track.
+# route it via track_mappings in the profile like any other track. All keys
+# are described under Metronome below.
 metronome:
   track: metronome # output track name (default "metronome")
   accent: [3, 2, 2] # optional accent grouping within a measure
   sounds: # optional; synthesized clicks by default
     accent: { freq: 1600, volume: 1.0 }
     normal: { file: clicks/lo.wav }
+
+# (Optional) Samples and MIDI triggers for this song only, loaded over the
+# player-wide ones when the song is selected or played. See Samples.
+samples:
+  kick:
+    file: samples/kick.wav
+    output_channels: [3, 4]
+sample_triggers:
+  - trigger: { type: note_on, channel: 10, key: 60 }
+    sample: kick
 
 # (Optional) Voice pilot hints: labeled cues at song positions, each with an
 # optional short audio sample rendered onto a virtual "pilot" track.
@@ -149,8 +176,8 @@ notification_audio:
 
 ## Directory Structure
 
-Songs can be organized in any directory structure. mtrack recursively scans for `song.yaml`
-files:
+Songs can be organized in any directory structure. mtrack recursively scans for YAML song
+definitions:
 
 ```
 songs/
@@ -179,7 +206,7 @@ songs/
 
 Setting `loop_playback: true` causes the song to loop indefinitely when it reaches the end:
 
-- **Audio** crossfades seamlessly at loop boundaries (100ms linear fade)
+- **Audio** crossfades at loop boundaries (10 ms linear fade)
 - **MIDI** restarts from the beginning
 - **Lighting/DMX** timelines reset cleanly
 
@@ -190,8 +217,7 @@ and auto-plays the next song. Stop cancels everything as usual.
 
 The optional `tempo:` block describes the song's tempo and meter explicitly. When present it
 is the canonical source of the song's beat grid, used for section resolution, the beat/measure
-display, and (in the future) metronome generation — taking precedence over click track
-analysis.
+display, pilot hints and metronome generation — taking precedence over click track analysis.
 
 ```yaml
 tempo:
@@ -210,18 +236,24 @@ tempo:
 - `time_signature` — Initial meter as `numerator/denominator` (default `4/4`)
 - `start` — Offset in seconds of the first downbeat within the audio (default 0)
 - `changes` — List of changes in ascending measure order. Each entry names a `measure`
-  (1-indexed, with optional fractional `beat` in quarter-note units) and provides a new
-  `bpm` and/or `time_signature`. An optional `transition` ramps the tempo linearly over
-  `{ beats: N }` or `{ measures: N }`; without it the change is instant.
+  (1-indexed, with an optional fractional `beat`, default 1) and provides a new `bpm` and/or
+  `time_signature`. An optional `transition` ramps the tempo linearly over `{ beats: N }` or
+  `{ measures: N }`; without it the change is instant.
 
-The generated beat grid emits one beat per denominator note — a 7/8 song gets seven beats per
-measure, matching how a metronome would click it.
+**Two beat units.** Inside the `tempo:` block, `bpm`, `changes[].beat` and
+`transition.beats` are all in **quarter notes**, the same unit as the lighting DSL's `tempo {}`
+block: a `beat: 2` change in 7/8 lands one quarter note (two eighths) after the downbeat.
+Everywhere else in `song.yaml` — section `start_beat`/`end_beat`, pilot hint `beat`, and the
+metronome's `accent`/`accents` patterns — a beat is one **grid beat**, one per numerator unit
+of the meter, so a 7/8 measure holds seven of them and beat 3 is the third eighth. The
+generated beat grid clicks one beat per denominator note, matching how a metronome would count
+it.
 
 A tempo map can be added in the web UI's Timeline tab, including a one-click "detect" that
 prefills it from the song's MIDI file or an analyzed click track.
 
-Songs with a DSL light show but no `tempo {}` block in the `.light` file automatically use
-the song's tempo map for measure-based cues and beat-based effect parameters.
+A DSL light show without a `tempo {}` block of its own uses the song's tempo map for
+measure-based cues and beat-based effect parameters.
 
 ## Metronome
 
@@ -232,28 +264,50 @@ map, and route anywhere.
 
 ```yaml
 metronome:
+  enabled: true # optional; omit to enable, false to switch off and keep the settings
   track: metronome # the output track name (default "metronome")
   accent: [3, 2, 2] # optional accent grouping (7/8: accents on beats 1, 4, 6)
+  # accents: [3, 1, 1, 2, 1, 1, 1] # or one level per beat: 0 silent, 1 normal, 2 half, 3 accent
+  subdivision: 2 # optional ticks per beat (1-12, default 1), or a clave: son / rumba
+  changes: # optional changes of feel, each in effect until the next
+    - measure: 33
+      accents: [3, 1, 2, 1]
+      subdivision: 3
   volume: 1.2 # optional master level (0.0-2.0); omit to follow the player
   sounds:
     accent: { freq: 1600, volume: 1.0 } # synthesized click, or:
     normal: { file: clicks/lo.wav } # a sample file (relative to the song dir)
+    half: { freq: 1400, volume: 0.9 } # half-accent clicks (level 2)
+    sub: { freq: 1000, volume: 0.45 } # subdivision and clave ticks
 ```
 
-- The metronome is a **virtual track**: add its track name to the profile's `track_mappings`
-  to route it (e.g. to your in-ear mix), and adjust its level in the track gains mixer.
-  Without a mapping it is silent and costs nothing.
+- `enabled` is a tri-state switch. A `metronome:` block without it enables the click. A song
+  with no `metronome:` block at all follows the player-wide `metronome.enabled` default in
+  `mtrack.yaml`, which gives every song with a `tempo:` block a default metronome;
+  `enabled: false` switches the click off while keeping the rest of the block in the file.
+- The metronome is a **virtual track**: add its track name (`track`, default `metronome`) to
+  the profile's `track_mappings` to route it (e.g. to your in-ear mix), and adjust its level
+  in the track gains mixer. Without a mapping it is silent and costs nothing.
 - One click per denominator note: a 7/8 song clicks seven eighths per measure. Accents fall
   on beat 1, or on each group start when `accent` is set.
-- Sounds default to short synthesized sine clicks (accent 1600 Hz, normal 1200 Hz); each can
-  be overridden with a sample file.
+- `accents` gives one level per beat of the measure and takes precedence over `accent`:
+  `0` silent, `1` normal, `2` half accent (the `half` sound), `3` accent. A measure with more
+  beats than the pattern pads the tail with normal clicks; one with fewer truncates it.
+- `subdivision` adds ticks between beats using the `sub` sound: an integer from 1 (none) to
+  12 (2 = eighths, 3 = triplets, ...), or `son` / `rumba` for a 3-2 clave pattern spanning a
+  two-measure cycle.
+- `changes` switches `accents` and/or `subdivision` at a 1-indexed `measure`; each change
+  stays in effect until the next one.
+- Sounds default to short synthesized sine clicks (accent 1600 Hz, normal 1200 Hz, half
+  1400 Hz, sub 1000 Hz); each can be overridden with a `freq`/`volume` pair or a sample
+  `file`. A `file` wins over `freq`.
 - `volume` is a master level over the whole click mix, scaling every sound uniformly and
   preserving the accent/half/normal/sub ordering. Omitting it follows the player-wide
   `metronome.volume`; setting it — even to `1.0` — overrides that for this song.
-- Player-wide default sounds and volume can be set once in `mtrack.yaml` (see the player
-  configuration); a song then just needs `metronome: {}` to enable the click with your
-  preferred sound. Song-level sound fields override the defaults per field.
-- The `metronome` track name must not collide with a real track. A beat grid (tempo map or
+- Player-wide default sounds and volume can be set once in `mtrack.yaml` (see the
+  [player configuration](player-config.md)); a song then just needs `metronome: {}` to enable
+  the click with your preferred sound. Song-level sound fields override the defaults per field.
+- The metronome track name must not collide with a real track. A beat grid (tempo map or
   analyzed click track) is required.
 
 ## Pilot Hints

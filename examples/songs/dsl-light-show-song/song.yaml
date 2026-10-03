@@ -1,12 +1,11 @@
 kind: song
 name: "DSL Light Show Song"
-midi_file: "song.mid"
+midi_playback:
+  file: "song.mid"
 lighting:
-  - name: "Main Show"
-    file: "lighting/main_show.light"
-  - name: "Outro Show"
-    file: "lighting/outro.light"
+  - file: "lighting/main_show.light"
+  - file: "lighting/outro.light"
 tracks:
   - name: "Main Track"
-    file: "song.mp3"  # MP3 format example - can use WAV, MP3, FLAC, OGG, AAC, ALAC, etc.
+    file: "song.mp3"  # MP3 format example - can use WAV, FLAC, MP3, OGG, AAC/M4A or AIFF.
     file_channel: 1

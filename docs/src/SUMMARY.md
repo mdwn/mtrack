@@ -6,10 +6,10 @@
 
 - [Installation](getting-started/installation.md)
 - [Quick Start](getting-started/quick-start.md)
+- [Discovering Devices](getting-started/devices.md)
+- [Hardware Configuration](getting-started/hardware-config.md)
 - [Importing Songs](getting-started/importing-songs.md)
 - [Playlists](getting-started/playlists.md)
-- [Hardware Configuration](getting-started/hardware-config.md)
-- [Discovering Devices](getting-started/devices.md)
 
 # Interfaces
 
@@ -22,9 +22,9 @@
 # Configuration Reference
 
 - [Player Configuration (YAML)](configuration/player-config.md)
-- [Song Configuration (YAML)](configuration/song-config.md)
 - [Hardware Profiles](configuration/hardware-profiles.md)
-- [MIDI-Triggered Samples](configuration/samples.md)
+- [Song Configuration (YAML)](configuration/song-config.md)
+- [Samples](configuration/samples.md)
 - [Trigger Configuration](configuration/triggers.md)
 - [File Formats](configuration/file-formats.md)
 
@@ -33,6 +33,7 @@
 - [Overview](lighting/overview.md)
 - [First Light: From a GDTF to a Show](lighting/first-light.md)
 - [Configuration](lighting/configuration.md)
+- [Lighting in the Web UI](lighting/web-ui.md)
 - [Effects Reference](lighting/effects.md)
 - [Cueing Features](lighting/cueing.md)
 - [Light Show Verification](lighting/verification.md)
@@ -50,4 +51,4 @@
 
 - [Command-Line Reference](reference/cli.md)
 - [MIDI Events](reference/midi-events.md)
-- [Known Limitations](reference/known-limitations.md)
+- [Tested Hardware and Limitations](reference/known-limitations.md)

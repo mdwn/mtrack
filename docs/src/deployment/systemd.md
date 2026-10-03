@@ -28,7 +28,7 @@ writes configuration, songs, playlists and lighting files there, and the user yo
 just created owns none of it:
 
 ```
-$ sudo chown -R mtrack:mtrack /mnt/storage
+$ sudo chown -R mtrack:mtrack /var/lib/mtrack
 ```
 
 Add it to a group that already owns the directory instead, if you would rather
@@ -40,7 +40,7 @@ Next, generate and install the systemd service file. Pass your project
 directory:
 
 ```
-$ sudo mtrack systemd /mnt/storage > /etc/systemd/system/mtrack.service
+$ sudo mtrack systemd /var/lib/mtrack > /etc/systemd/system/mtrack.service
 ```
 
 Passing it buys you the stricter sandbox. The unit then sets
@@ -53,7 +53,7 @@ absolute paths, so a config with `songs: /mnt/nas/songs` writes outside the
 project directory:
 
 ```
-$ sudo mtrack systemd /mnt/storage /mnt/nas/songs > /etc/systemd/system/mtrack.service
+$ sudo mtrack systemd /var/lib/mtrack /mnt/nas/songs > /etc/systemd/system/mtrack.service
 ```
 
 A directory that is not listed is read-only, and the service fails on its first
@@ -77,23 +77,14 @@ but it also implies `Requires=`, so a drive that blinks out mid-set would take t
 it — a worse failure on a machine playing a show than a slow boot. If you have a mount that takes
 longer than the retry window, add `RequiresMountsFor=` to the unit yourself, knowing that cost.
 
-> **Upgrading an existing install: regenerate your unit.** mtrack no longer creates a configured
-> directory that lies outside the project — see
-> [Player Configuration](../configuration/player-config.md). If your `songs` (or `playlists_dir`,
-> `profiles_dir`, or a lighting directory) points outside the project and might be absent at boot,
-> because it lives on a drive that mounts late, startup now fails instead of quietly writing under
-> the mount point. A unit generated before this change can land
-> in a permanently failed state -- it has neither the widened restart window that lets a late mount
-> recover nor this rule's clearer diagnostics. Regenerate it:
->
-> ```
-> $ sudo mtrack systemd /mnt/storage /mnt/nas/songs > /etc/systemd/system/mtrack.service
-> $ sudo systemctl daemon-reload
-> ```
-
 These paths are baked into the unit when it is generated. They are not read from
 `$MTRACK_PATH`, so if you move your library later, regenerate the unit as well as
-editing `/etc/default/mtrack`.
+editing `/etc/default/mtrack`:
+
+```
+$ sudo mtrack systemd /var/lib/mtrack /mnt/nas/songs > /etc/systemd/system/mtrack.service
+$ sudo systemctl daemon-reload
+```
 
 The path is optional, and without it the unit falls back to
 `ProtectSystem=full`: `/usr`, `/boot` and `/efi` read-only, everything else
@@ -109,13 +100,14 @@ is. mtrack says which in the journal when systemd started it, along with the
 directory to add or to `chown`, so `journalctl -u mtrack` should tell you
 without needing this page.
 
-The service expects that `mtrack` is available at the location `/usr/local/bin/mtrack`. It also
-expects you to define your project directory in `/etc/default/mtrack`. This file
-should contain one variable: `MTRACK_PATH`:
+The unit's `ExecStart` names the binary that generated it — the path of the `mtrack` you ran
+`mtrack systemd` with — so generate it with the binary you intend to run, and regenerate it if
+you move or reinstall `mtrack`. The unit also expects your project directory in
+`/etc/default/mtrack`. This file should contain one variable: `MTRACK_PATH`:
 
 ```
 # The project directory for mtrack (contains songs, config, playlists, lighting).
-MTRACK_PATH=/mnt/storage
+MTRACK_PATH=/var/lib/mtrack
 ```
 
 Once that's defined, you can start it with:

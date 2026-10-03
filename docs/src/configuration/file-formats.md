@@ -2,30 +2,45 @@
 
 ## Configuration files
 
-`mtrack` now uses [config-rs](https://github.com/rust-cli/config-rs) for configuration parsing, which
-means we should support any of the configuration file formats that it supports. Testing for anything
-other than YAML is limited at the moment.
+Configuration files are YAML. When mtrack scans a directory (the song repository,
+`profiles_dir`, `playlists_dir`) it reads only files with a `.yaml` or `.yml` extension.
 
-All YAML configuration files should include a `kind` field that identifies the file type. This allows
-mtrack to distinguish between different config types when scanning directories. Supported kinds:
+Each configuration file carries a `kind` field that identifies what it is, so that mtrack can
+tell the file types apart when it scans a directory:
 
-- `kind: song` — a song definition (`song.yaml`)
-- `kind: playlist` — a playlist definition
-- `kind: hardware_profile` — a hardware profile (from `profiles_dir`)
+| `kind` | File | Lives in |
+|--------|------|----------|
+| `song` | a song definition, usually `song.yaml` | the [song repository](song-config.md) |
+| `playlist` | a playlist | `playlists_dir` (or the file named by `playlist`) |
+| `hardware_profile` | a [hardware profile](hardware-profiles.md) | `profiles_dir` |
 
-Files without a `kind` field are still loaded for backward compatibility, but adding `kind` is
-recommended. Songs with `kind: song` that fail to load will appear as errors in the web UI so you
-can fix them.
+`mtrack.yaml` itself has no `kind`. A song or profile file without a `kind` is still loaded;
+adding it is recommended, because a song declared with `kind: song` that fails to load is shown
+as an error in the web UI, where a `kind`-less file that fails is skipped silently.
 
 ## Audio files
 
-`mtrack` supports a wide variety of audio formats through the [symphonia](https://github.com/pdeljanov/Symphonia) library. Supported formats include:
+`mtrack` decodes audio through the [symphonia](https://github.com/pdeljanov/Symphonia) library.
+Supported formats, by file extension:
 
-- **WAV** (PCM, various bit depths)
-- **FLAC** (Free Lossless Audio Codec)
-- **MP3** (MPEG Audio Layer III)
-- **OGG Vorbis**
-- **AAC** (Advanced Audio Coding)
-- **ALAC** (Apple Lossless, in M4A containers)
+- **WAV** (`.wav`; PCM, various bit depths)
+- **FLAC** (`.flac`)
+- **MP3** (`.mp3`)
+- **OGG Vorbis** (`.ogg`)
+- **AAC / M4A** (`.aac`, `.m4a`, `.mp4`)
+- **AIFF** (`.aiff`, `.aif`)
 
-All audio files are automatically transcoded to match your audio device's configuration (sample rate, bit depth, and format). Files can be mixed and matched within a song - for example, you can use a WAV file for your click track and an MP3 file for your backing track.
+Every audio file is transcoded to the audio device's configuration (sample rate, bit depth, and
+format) as it plays, each file on its own, so files can be mixed and matched within a song —
+a WAV click track next to an MP3 backing track, at different sample rates.
+
+## MIDI files
+
+Standard MIDI files (`.mid`) with metrical (ticks-per-beat) timing. SMPTE timecode-based files
+are rejected.
+
+## Lighting files
+
+Shows, fixture types and venues are written in the lighting DSL in `.light` files (fixture
+types are also read from `.fixture`, venues from `.venue`); `.gdtf` fixture descriptions and
+`.mvr` rig exports are imported. See the [Lighting overview](../lighting/overview.md).

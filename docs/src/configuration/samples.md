@@ -1,19 +1,22 @@
-# MIDI-Triggered Samples
+# Samples
 
-`mtrack` supports triggering audio samples via MIDI events. This is useful for playing one-shot sounds like clicks, cues, sound effects, or drum samples during a performance. Samples are preloaded into memory and transcoded at startup for low-latency playback. Trigger latency is approximately 2x the audio buffer size (e.g., ~11.6ms at 256 samples/44.1kHz).
+`mtrack` plays one-shot audio samples — clicks, cues, sound effects, drum hits — on demand
+during a performance. A sample is defined once, by name, and played by a **trigger**: a MIDI
+event or an audio input such as a piezo drum pad. Samples are preloaded into memory and
+transcoded to the output device's format at startup for low-latency playback. This page covers
+the sample definitions; the inputs that fire them, and the latency they add, are in
+[Trigger Configuration](triggers.md).
 
 ## Global vs Per-Song Samples
 
 Samples can be configured at two levels:
 
-1. **Global samples** - Defined in the main `mtrack.yaml` configuration file. These are available throughout the entire session.
-2. **Per-song samples** - Defined in individual song configuration files. These override or extend the global configuration when that song is selected.
+1. **Global samples** - Defined in `mtrack.yaml` (or in the file named by its `samples_file`
+   key). These are available throughout the entire session.
+2. **Per-song samples** - Defined in individual song configuration files. These override or
+   extend the global configuration when that song is selected or played.
 
-## Sample Configuration
-
-Samples are defined in two parts: **sample definitions** (the audio files and their behavior) and **sample triggers** (the MIDI events that play them).
-
-### Sample Definitions
+## Sample Definitions
 
 ```yaml
 samples:
@@ -38,7 +41,7 @@ samples:
       mode: scale
 
     # Behavior when released: play_to_completion, stop, or fade.
-    # (Also accepts "note_off" as a key name for backwards compatibility.)
+    # (Also accepts "note_off" as a key name.)
     release_behavior: play_to_completion
 
     # Behavior when retriggered while playing: cut or polyphonic.
@@ -72,44 +75,14 @@ profiles:
         kick-out: [13, 14]       # pi-b routes kick to channels 13-14
 ```
 
-### Sample Triggers
+## Triggers
 
-Triggers map MIDI events to samples. For Note On/Off events, only the channel and key are matched — the velocity from the incoming MIDI event is used for volume scaling or layer selection.
-
-The preferred way to define MIDI triggers is as `kind: midi` inputs in the [trigger configuration](triggers.md):
-
-```yaml
-trigger:
-  inputs:
-    - kind: midi
-      event:
-        type: note_on
-        channel: 10
-        key: 60  # C3
-      sample: kick
-    - kind: midi
-      event:
-        type: note_on
-        channel: 10
-        key: 62  # D3
-      sample: snare
-```
-
-The legacy top-level `sample_triggers` format is still supported and automatically converted at startup:
-
-```yaml
-sample_triggers:
-- trigger:
-    type: note_on
-    channel: 10
-    key: 60  # C3
-  sample: kick
-- trigger:
-    type: note_on
-    channel: 10
-    key: 62  # D3
-  sample: snare
-```
+A sample plays when a trigger input fires. Inputs live in the profile's `trigger.inputs` list
+and are either `kind: midi` (a MIDI event; for Note On/Off, only the channel and key are
+matched, and the incoming velocity drives volume scaling or layer selection) or `kind: audio`
+(a threshold on an audio input channel). See [Trigger Configuration](triggers.md) for the
+input definitions. A top-level `sample_triggers:` list in `mtrack.yaml` is the legacy spelling
+of MIDI inputs; see the note there.
 
 ## Velocity Handling Modes
 
@@ -192,10 +165,13 @@ All triggered samples can be stopped via:
 
 ## Per-Song Sample Overrides
 
-Individual songs can override or extend the global sample configuration:
+Individual songs can override or extend the global sample configuration. In `song.yaml` the
+MIDI triggers are written as `sample_triggers` entries; file paths are relative to the song's
+directory:
 
 ```yaml
 # In a song's configuration file (e.g., songs/my-song/song.yaml)
+kind: song
 name: My Song
 
 tracks:

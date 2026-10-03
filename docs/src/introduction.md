@@ -12,10 +12,29 @@ a phone, or any device with a browser — so you never have to babysit a compute
 
 ![Dashboard](images/dashboard.png)
 
+## What you need
+
+- A computer that runs Linux or macOS. A Raspberry Pi 3 or newer is a common choice for the
+  stage; a [pre-built Pi image](getting-started/installation.md) is available.
+- For multitrack playback, an audio interface with as many outputs as you want to route
+  separately. mtrack uses the operating system's audio drivers, so a class-compliant interface works
+  without extra drivers.
+- For lighting, an [OLA](https://www.openlighting.org/ola/) installation (the `olad` daemon)
+  and a DMX interface it supports.
+- For MIDI playback or control, a MIDI interface or controller the operating system can see.
+- A web browser on any device that can reach the player.
+
+## What mtrack is not
+
+- Not a DAW: it plays back prepared songs and does not record, edit audio, or mix live.
+- Not a lighting console: lighting is authored ahead of time as cues that play in sync with
+  songs.
+- Not released for Windows: the pre-built binaries are for Linux and macOS.
+
 ## Features
 
 - **Multitrack audio** — Play back multiple audio files simultaneously, mapping channels to
-  any class-compliant audio interface. Supports WAV, FLAC, MP3, OGG, AAC, M4A, and AIFF.
+  any class-compliant audio interface. Supports WAV, FLAC, MP3, OGG, AAC/M4A, and AIFF.
 - **MIDI playback** — Synchronize MIDI file playback with audio for automating on-stage gear.
 - **DMX lighting** — Programmable lighting effects with a custom DSL, real-time effects engine,
   and OLA integration for DMX output.
@@ -43,26 +62,21 @@ a phone, or any device with a browser — so you never have to babysit a compute
   with per-song overrides.
 - **Morningstar integration** — Automatic song name display on Morningstar MIDI controllers
   via SysEx.
-- **Internationalization** — Full i18n support for the web UI.
 
 ## Quick Start
 
-```
-# Install
-cargo install mtrack
+[Install mtrack](getting-started/installation.md), then start it in a directory of songs:
 
-# Start with a directory of songs
+```
 cd /path/to/my/songs
 mtrack start
-
-# Or point at a specific directory
-mtrack start /path/to/my/songs
 ```
 
 Open **<http://localhost:8080>** in a browser to access the web UI. From there you can import
 songs, configure hardware, build playlists, and control playback — no config files needed.
 
-See the [Quick Start guide](getting-started/quick-start.md) for a walkthrough.
+The [Quick Start guide](getting-started/quick-start.md) walks through getting a first song to
+play.
 
 ## How It Works
 
@@ -94,22 +108,7 @@ plain YAML files on disk. This is a deliberate design choice:
 The web UI reads and writes these same files. You can freely switch between the UI and
 hand-editing YAML — they're always in sync.
 
-## Documentation
+## Where to go next
 
-**Getting started:**
-
-- [Installation](getting-started/installation.md)
-- [Quick Start](getting-started/quick-start.md)
-- [Importing Songs](getting-started/importing-songs.md)
-- [Playlists](getting-started/playlists.md)
-- [Hardware Configuration](getting-started/hardware-config.md)
-
-**Interfaces and reference:**
-
-- [Web UI](interfaces/web-ui.md)
-- [Lighting](lighting/overview.md)
-- [Hardware Profiles](configuration/hardware-profiles.md)
-- [Player Configuration (YAML)](configuration/player-config.md)
-- [Song Configuration (YAML)](configuration/song-config.md)
-- [gRPC Control](interfaces/grpc.md)
-- [OSC Control](interfaces/osc.md)
+The sidebar lists every page. Start with [Installation](getting-started/installation.md) and
+the [Quick Start](getting-started/quick-start.md).

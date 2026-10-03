@@ -10,13 +10,9 @@ sorted alphabetically. It cannot be deleted or manually edited.
 
 ## Active Playlist
 
-The active playlist determines which songs are available for playback. Switch between playlists
-using:
-
-- The **dashboard playlist dropdown** in the web UI
-- The **playlist editor's Activate button**
-- The `SwitchToPlaylist` gRPC RPC
-- MIDI/OSC `Playlist` and `AllSongs` events
+The active playlist determines which songs are available for playback. In the web UI, switch
+between playlists with the **dashboard playlist dropdown** or the **playlist editor's Activate
+button**. Other control interfaces can switch too; see [See also](#see-also).
 
 The active playlist choice is persisted in `mtrack.yaml` (via the `active_playlist` field)
 and restored on restart. Switching to `all_songs` is session-only — on restart, the player
@@ -53,3 +49,11 @@ For backward compatibility, mtrack also supports a single legacy `playlist.yaml`
 the playlist named "playlist" if no file with that name exists in the `playlists/` directory.
 
 If no playlist file is provided at all, mtrack falls back to the `all_songs` playlist.
+
+## See also
+
+Playlists can also be switched from outside the web UI:
+
+- [gRPC Control](../interfaces/grpc.md) — the `SwitchToPlaylist` RPC and the `mtrack` CLI client
+- [OSC Control](../interfaces/osc.md) — OSC `playlist` and `all_songs` events
+- [Hardware Profiles](../configuration/hardware-profiles.md) — mapping MIDI `playlist` and `all_songs` events in a MIDI controller

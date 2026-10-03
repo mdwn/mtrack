@@ -1,6 +1,23 @@
 # Cueing Features
 
-Light shows support flexible cueing with time-based and measure-based timing, loops, sequences, and offset commands.
+Light shows support time-based and measure-based cue timing, inline loops, reusable sequences,
+measure offsets, and commands that act on whole layers.
+
+## Where the tempo comes from
+
+A show needs a tempo map to use anything musical: `@measure/beat` cues, `4measures` durations,
+`1beat` frequencies. The map comes from one of two places:
+
+- **The song's tempo map** (the default). A `.light` file with no `tempo {}` block is parsed with
+  the tempo of the song it belongs to: the song's `tempo:` block in `song.yaml` if it has one,
+  otherwise the beat grid mtrack derives from the song's click track. See
+  [Song Configuration](../configuration/song-config.md).
+- **A `tempo {}` block in the show** overrides the song's map. Use it when the show needs a
+  tempo the song does not carry, or when the file is verified on its own: `mtrack
+  verify-light-show` runs without a song, so a beat-based show needs the block to pass there
+  ([Verification](verification.md)).
+
+A show that uses musical timing with neither fails to parse with "requires a tempo section".
 
 ## Time-Based Cues
 
@@ -20,6 +37,9 @@ Cues can be specified using absolute time in two formats:
 @120.000      # 120 seconds (2 minutes)
 ```
 
+The fractional part is required: `@5` on its own is a syntax error, because without a `/` it is
+not a measure and without a `.` it is not a time. Write `@5.000`.
+
 **Example:**
 ```light
 show "Time-Based Show" {
@@ -36,7 +56,8 @@ show "Time-Based Show" {
 
 ## Measure-Based Cues
 
-When a tempo section is defined, cues can use measure/beat notation that automatically adjusts to tempo changes.
+With a tempo map (the song's, or a `tempo {}` block), cues can use measure/beat notation that
+follows tempo changes.
 
 **Format: `@measure/beat` or `@measure/beat.subdivision`**
 ```light
@@ -45,6 +66,8 @@ When a tempo section is defined, cues can use measure/beat notation that automat
 @4/1.5       # Measure 4, halfway through beat 1
 @8/2.75      # Measure 8, three-quarters through beat 2
 ```
+
+Measures and beats are 1-based: `@1/1` is the first downbeat.
 
 **Example with tempo:**
 ```light
@@ -68,7 +91,10 @@ show "Measure-Based Show" {
 
 ## Tempo Sections
 
-Tempo sections define BPM, time signature, and tempo changes throughout the show.
+A `tempo {}` block defines BPM, time signature, and tempo changes. It goes at file scope
+(applying to every show and sequence in the file) or as the first item inside a `show { }`
+body. `start` is where measure 1 beat 1 falls in the song: a song with a lead-in before the
+click starts needs it set to that lead-in, or every cue lands early by exactly that much.
 
 **Basic tempo:**
 ```light
@@ -98,7 +124,8 @@ tempo {
 **Tempo change parameters:**
 - `bpm`: New BPM value
 - `time_signature`: New time signature (e.g., `3/4`, `6/8`)
-- `transition`: Duration of tempo change - number of beats, `Xm` for measures, or `snap` for instant
+- `transition`: Duration of tempo change - a bare number of beats, `Xm` for measures, or `snap`
+  for instant
 
 ## Inline Loops
 
@@ -119,7 +146,8 @@ loop {
 } repeats: 4
 ```
 
-Timing inside loops is relative to the loop start time. The example above creates 4 cycles of red-blue-green, each cycle taking 1 second.
+Timing inside loops is relative to the loop start time. The example above creates 4 cycles of
+red-blue-green, each cycle taking 1 second.
 
 ## Sequences (Subsequences)
 
@@ -154,59 +182,67 @@ show "Song" {
 ```
 
 **Sequence parameters:**
-- `loop`: Number of times to loop (`once`, `loop` for infinite, or a number)
+- `loop`: How many times to play the sequence: a number, `once` (the default), or `loop`, which
+  repeats it 10,000 times — in practice until the song ends or a `stop sequence` command stops
+  it. `pingpong` and `random` are accepted by the grammar but rejected at parse time as not
+  implemented.
 
 ## Measure Offsets
 
-Shift the measure counter for subsequent cues, useful for complex timing, reusing sequences at different positions, or aligning with composition tools that use repeats.
+`offset N measures` shifts the measure numbering for the cues that follow it, so a cue written
+as `@M/B` plays at measure `M + N`. `reset_measures` puts the numbering back so `@M/B` plays at
+measure `M` again. Both need a tempo map.
 
-**Offset command:**
+Three rules decide what a command affects:
+
+- A command sits inside a cue, after the cue's `@` line, and takes effect from the **next** `@`
+  onward. It never moves the cue it is written in.
+- Offsets **accumulate**: `offset 4 measures` followed later by another `offset 4 measures` is a
+  shift of 8.
+- `reset_measures` and `offset` in the same cue read in that order: `reset_measures` then
+  `offset 4 measures` leaves a shift of exactly 4, whatever came before.
+
+The shift is worked out in seconds at the tempo in force where the command is issued, and it
+moves the tempo map's `changes` along with the cues, so a change the block places at `@8/1`
+happens at the shifted measure too.
+
+**Example:**
 ```light
-@8/1
-offset 4 measures    # Shift measure counter forward by 4 measures
-# Next cue at @8/1 will actually be at measure 12
+tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
 
-@12/1
-reset_measures      # Reset measure counter back to actual playback time
-```
-
-**Example use case:**
-```light
-show "Complex Timing" {
+show "Offset Rules" {
     @1/1
-    front_wash: static color: "red", dimmer: 100%, duration: 5s
+    front_wash: static color: "red", dimmer: 100%, duration: 2measures
 
     @4/1
-    offset 8 measures    # Shift forward 8 measures
-    # Now @4/1 actually plays at measure 12
+    front_wash: static color: "red", dimmer: 50%, duration: 1measure
+    offset 8 measures      # from the next cue on, @M/B means measure M + 8
 
     @4/1
-    back_wash: static color: "blue", dimmer: 100%, duration: 5s  # Plays at measure 12
+    back_wash: static color: "blue", dimmer: 100%, duration: 2measures   # plays at measure 12
 
     @8/1
-    reset_measures       # Reset counter
-    # Now back to actual playback time
+    back_wash: static color: "blue", dimmer: 50%, duration: 1measure     # plays at measure 16
+    reset_measures         # from the next cue on, @M/B means measure M again
 
-    @9/1
-    movers: strobe frequency: 4, duration: 5s  # Plays at actual measure 9
+    @17/1
+    movers: strobe frequency: 4, duration: 1measure                      # plays at measure 17
 }
 ```
 
 ## Using Composition Tools as Reference
 
-When composing light shows, you can use tools like Guitar Pro, MuseScore, or other notation software as a reference. These tools often use repeat signs that make measure numbers in the score differ from actual playback position.
+Notation software such as Guitar Pro or MuseScore numbers measures as the score prints them,
+and a repeat sign plays the same numbered measures again. Playback measure numbers run on
+without repeating, so a score that reads "intro, measures 1–4, play three times; verse from
+measure 5" has its verse at playback measure 13, not 5.
 
-**The Problem:**
-In Guitar Pro, if you have a 4-measure intro that repeats 3 times, the score might show:
-- Measures 1-4: Intro (first time)
-- Measures 1-4: Intro (repeat 1)
-- Measures 1-4: Intro (repeat 2)
-- Measure 5: Verse starts
-
-But in actual playback, measure 5 appears at measure 13 (4 + 4 + 4 + 1). If you write your light show using the score's measure numbers, cues won't align with playback.
-
-**The Solution:**
-Use `offset` commands to shift the measure counter to match where sections actually play:
+Offsets let the show use the score's numbers. Each pass through a repeat adds the repeat's
+length to the shift, and the shift stays in force for everything after the repeats:
 
 ```light
 tempo {
@@ -216,127 +252,93 @@ tempo {
 }
 
 show "Song with Repeats" {
-    # Intro section (measures 1-4, plays 3 times)
-    # First time through
+    # Intro, first time: score measures 1-4 are playback measures 1-4
     @1/1
-    front_wash: static color: "blue", dimmer: 50%, duration: 4measures
+    front_wash: static color: "blue", dimmer: 50%, duration: 3measures
 
     @4/1
-    front_wash: static color: "blue", dimmer: 100%, duration: 4measures
+    front_wash: static color: "blue", dimmer: 100%, duration: 1measure
+    offset 4 measures      # second time through: score measure 1 is playback measure 5
 
-    # After first repeat (4 measures later)
-    offset 4 measures
+    # Intro, second time
     @1/1
-    back_wash: static color: "red", dimmer: 50%, duration: 4measures  # Actually plays at measure 5
+    back_wash: static color: "red", dimmer: 50%, duration: 3measures     # playback measure 5
 
     @4/1
-    back_wash: static color: "red", dimmer: 100%, duration: 4measures  # Actually plays at measure 8
+    back_wash: static color: "red", dimmer: 100%, duration: 1measure     # playback measure 8
+    offset 4 measures      # third time through: a shift of 8 from here on
 
-    # After second repeat (8 more measures from start, 4 from previous offset)
-    offset 4 measures
+    # Intro, third time
     @1/1
-    movers: strobe frequency: 2, duration: 4measures  # Actually plays at measure 9
+    movers: strobe frequency: 2, duration: 3measures                     # playback measure 9
 
     @4/1
-    movers: strobe frequency: 4, duration: 4measures  # Actually plays at measure 12
+    movers: strobe frequency: 4, duration: 1measure                      # playback measure 12
 
-    # Verse starts at measure 13 (after 3x4 measure intro)
-    offset 4 measures
-    @1/1
-    reset_measures  # Reset to actual playback time
-    # Now we're at measure 13 in actual playback
+    # Verse: the score says measure 5, and the shift of 8 is still in force
+    @5/1
+    all_lights: static color: "green", dimmer: 100%, duration: 4measures # playback measure 13
 
-    @1/1
-    all_lights: static color: "green", dimmer: 100%, duration: 4measures  # Plays at actual measure 13
-
-    @4/1
-    all_lights: cycle color: "green", color: "yellow", speed: 2.0, duration: 10s  # Plays at measure 16
+    @9/1
+    all_lights: cycle color: "green", color: "yellow", speed: 2.0, duration: 8measures  # playback measure 17
 }
 ```
 
 **Workflow:**
-1. Create your light show using measure numbers from your composition tool (Guitar Pro, etc.)
-2. Identify where repeats occur and calculate the cumulative offset
-3. Add `offset X measures` commands after each repeat section
-4. Use `reset_measures` when you want to return to actual playback time
-5. Continue with measure numbers that match actual playback
+1. Write cues with the measure numbers your composition tool shows
+2. At the end of each pass through a repeated section, add `offset X measures`, where `X` is the
+   length of the repeated section
+3. Leave the accumulated offset in force for the rest of the score, since every later score
+   measure is that much later in playback
+4. Use `reset_measures` only where you want to go back to playback numbering
 
-**Example with Guitar Pro Structure:**
-```
-Guitar Pro Score Structure:
-- Measures 1-4: Intro (repeats 3x)
-- Measures 5-12: Verse
-- Measures 13-16: Chorus
-- Measures 17-20: Verse (repeat)
-- Measures 21-24: Chorus (repeat)
-- Measure 25: Outro
+## Commands
 
-Actual Playback:
-- Measures 1-12: Intro (3x4 measures)
-- Measures 13-20: Verse
-- Measures 21-24: Chorus
-- Measures 25-28: Verse (repeat)
-- Measures 29-32: Chorus (repeat)
-- Measure 33: Outro
-```
+A cue can carry commands as well as effects. Each goes on its own line under the cue's `@`
+time, and a cue may hold several.
 
+| Command | What it does |
+|---|---|
+| `clear()` | Stops every effect on every layer at once, and resets every layer's master and freeze. It also releases movers' pose memory, so the next `move` starts from its target rather than from where the heads were. |
+| `clear(layer: midground)` | Stops every effect on that one layer, and resets that layer's master and freeze. |
+| `freeze(layer: background)` | Holds every effect on the layer where it is: they stop advancing in time and keep their current output. |
+| `unfreeze(layer: background)` | Resumes the layer's effects from where they were frozen. |
+| `master(layer: foreground, intensity: 50%)` | Scales the layer's output. `speed: 0.5` scales how fast its effects run instead; give one or both. Values are a percentage or a `0.0`–`1.0` number. |
+| `stop sequence "Verse Pattern"` | Stops the named sequence if it is playing. |
+| `offset 4 measures` | Shifts the measure numbering of the cues that follow ([Measure Offsets](#measure-offsets)). |
+| `reset_measures` | Removes the shift for the cues that follow. |
+
+`layer:` is required on `freeze`, `unfreeze` and `master`; only `clear` may omit it, and then it
+means every layer. Layers are `background`, `midground` and `foreground`.
+
+`clear` is an immediate cut, not a fade. There is no command that fades a layer out: every
+effect has a finite duration, so put the fade on the effect itself with `down_time` and let it
+end when it should.
+
+Masters and freezes last for the song that set them. They are reset when playback stops or
+another song loads, and by `clear` as above, so a show stopped between a `master` and the cue
+that was going to undo it cannot leave the next song dimmed.
+
+**Example:**
 ```light
-show "Guitar Pro Aligned Show" {
-    # Intro section (measures 1-4, plays 3 times = 12 measures total)
-    @1/1
-    front_wash: static color: "blue", dimmer: 30%, duration: 4measures
+show "Commands" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%, duration: 60s, layer: background
+    movers: cycle color: "red", color: "white", speed: 1.0, duration: 60s, layer: midground
 
-    @4/1
-    front_wash: static color: "blue", dimmer: 100%, duration: 4measures
+    @00:20.000
+    master(layer: midground, intensity: 50%)
 
-    # After intro repeats, offset by 12 measures (3 repeats × 4 measures)
-    offset 12 measures
+    @00:30.000
+    freeze(layer: midground)
 
-    # Verse (score shows measures 5-12, actually plays at 13-20)
-    @5/1
-    reset_measures  # Reset to actual playback (now at measure 13)
-    all_lights: static color: "green", dimmer: 80%, duration: 8measures
+    @00:35.000
+    unfreeze(layer: midground)
 
-    @12/1
-    all_lights: cycle color: "green", color: "yellow", speed: 1.5, duration: 10s
+    @00:40.000
+    clear(layer: midground)
 
-    # Chorus (score shows measures 13-16, actually plays at 21-24)
-    @13/1
-    all_lights: static color: "red", dimmer: 100%, duration: 4measures
-
-    @16/1
-    movers: strobe frequency: 8, duration: 1measure
-
-    # Verse repeat (score shows measures 17-20, actually plays at 25-28)
-    @17/1
-    offset 4 measures  # Chorus was 4 measures, so offset by 4
-    reset_measures
-    all_lights: static color: "green", dimmer: 80%, duration: 4measures
-
-    # Chorus repeat (score shows measures 21-24, actually plays at 29-32)
-    @21/1
-    offset 4 measures
-    reset_measures
-    all_lights: static color: "red", dimmer: 100%, duration: 4measures
-
-    # Outro (score shows measure 25, actually plays at measure 33)
-    @25/1
-    offset 4 measures
-    reset_measures
-    all_lights: dimmer start_level: 100%, end_level: 0%, duration: 4s
+    @00:50.000
+    clear()
 }
 ```
-
-This approach lets you write light shows using the same measure numbers as your composition tool, making it easier to sync lighting with your musical arrangement.
-
-## Stopping Sequences
-
-Stop a running sequence at a specific cue time.
-
-**Syntax:**
-```light
-@00:30.000
-stop sequence "Verse Pattern"
-```
-
-This stops the named sequence if it's currently playing.

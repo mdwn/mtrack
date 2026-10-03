@@ -96,7 +96,8 @@ pub struct Player {
     /// Each profile contains audio (optional), MIDI (optional), and DMX (optional) configs.
     #[serde(skip_serializing_if = "Option::is_none")]
     profiles: Option<Vec<Profile>>,
-    /// Directory of external profile YAML files, loaded and prepended before inline profiles.
+    /// Directory of external profile YAML files. When it contains any profiles they replace the
+    /// inline `profiles` list entirely; inline profiles are only used if the directory is empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     profiles_dir: Option<String>,
     /// Events to emit to report status out via MIDI.
@@ -411,7 +412,7 @@ impl Player {
             }
             if self.status_events.is_some() {
                 warn!(
-                    "top-level 'status_events' ignored when 'profiles' is present; move to profile"
+                    "top-level 'status_events' is legacy; it is only used when the matched profile has none. Move it into the profile"
                 );
             }
             return;
