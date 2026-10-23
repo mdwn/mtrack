@@ -4487,6 +4487,126 @@ async fn mcp_handles_many_simultaneous_sessions() -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
+// Test 3b: Host allowlist
+// ---------------------------------------------------------------------------
+
+/// Posts an `initialize` with an explicit `Host` header and returns the status.
+async fn post_init_with_host(client: &Client, url: &str, host: &str) -> reqwest::StatusCode {
+    client
+        .post(url)
+        .header("host", host)
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "host-test", "version": "0"}
+            }
+        }))
+        .send()
+        .await
+        .expect("send")
+        .status()
+}
+
+/// A loopback bind keeps rmcp's DNS-rebinding allowlist by default: a
+/// request arriving with a foreign `Host` is refused with 403.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_loopback_bind_rejects_foreign_host_header() -> Result<(), Box<dyn Error>> {
+    let player = build_assets_player().await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    assert!(controller.statuses().iter().all(|s| s.status == "running"));
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+
+    assert!(
+        post_init_with_host(&client, &url, &format!("127.0.0.1:{port}"))
+            .await
+            .is_success(),
+        "loopback Host should be accepted"
+    );
+    assert_eq!(
+        post_init_with_host(&client, &url, "mtrack.example:43237").await,
+        reqwest::StatusCode::FORBIDDEN,
+        "foreign Host should be refused on a loopback bind"
+    );
+    Ok(())
+}
+
+/// `allowed_hosts` replaces the default list: the configured name is
+/// accepted even though it is not loopback, and loopback is no longer.
+/// An empty list accepts any `Host`, which is what a non-loopback
+/// `bind_address` falls back to (see `Driver::new`) — the server has to
+/// answer to whatever address the network reaches it by.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_allowed_hosts_config_overrides_default_list() -> Result<(), Box<dyn Error>> {
+    let player = build_assets_player().await?;
+
+    // Explicit list.
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(
+            config::McpController::with_allowed_hosts(port, Some(vec!["mtrack.example".into()])),
+        )],
+        player.clone(),
+    );
+    assert!(controller.statuses().iter().all(|s| s.status == "running"));
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    assert!(
+        post_init_with_host(&client, &url, "mtrack.example:43237")
+            .await
+            .is_success(),
+        "configured Host should be accepted"
+    );
+    assert_eq!(
+        post_init_with_host(&client, &url, &format!("127.0.0.1:{port}")).await,
+        reqwest::StatusCode::FORBIDDEN,
+        "Host outside the configured list should be refused"
+    );
+    drop(controller);
+
+    // Empty list: anything goes.
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(
+            config::McpController::with_allowed_hosts(port, Some(Vec::new())),
+        )],
+        player,
+    );
+    assert!(controller.statuses().iter().all(|s| s.status == "running"));
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    wait_until_listening(&client, &url).await;
+    for host in [
+        "mtrack.example:43237",
+        "192.168.1.111:43237",
+        "anything.at.all",
+    ] {
+        assert!(
+            post_init_with_host(&client, &url, host).await.is_success(),
+            "empty allowlist should accept Host {host}"
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Test 3c: bearer token auth
 // ---------------------------------------------------------------------------

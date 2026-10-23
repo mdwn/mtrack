@@ -252,6 +252,17 @@ pub struct McpController {
     /// receiving pushes stays alive without needing to send keepalive pings.
     #[serde(default = "default_mcp_idle_timeout_secs")]
     idle_session_timeout_secs: Option<u64>,
+    /// `Host` header values the server accepts, as DNS-rebinding protection.
+    /// Each entry is a host or `host:port` (`"mtrack.local"`,
+    /// `"192.168.1.20:43237"`). An empty list accepts any `Host`.
+    ///
+    /// When unset, a loopback `bind_address` accepts only `localhost`,
+    /// `127.0.0.1` and `::1`, and any other `bind_address` accepts every
+    /// `Host` — a server deliberately exposed on the network has to answer
+    /// to whatever name or address clients reach it by, and `bearer_token`
+    /// is what keeps a rebinding attacker's browser out.
+    #[serde(default)]
+    allowed_hosts: Option<Vec<String>>,
 }
 
 impl Default for McpController {
@@ -261,6 +272,7 @@ impl Default for McpController {
             bind_address: default_mcp_bind_address(),
             bearer_token: None,
             idle_session_timeout_secs: default_mcp_idle_timeout_secs(),
+            allowed_hosts: None,
         }
     }
 }
@@ -273,6 +285,7 @@ impl McpController {
             bind_address: default_mcp_bind_address(),
             bearer_token: None,
             idle_session_timeout_secs: default_mcp_idle_timeout_secs(),
+            allowed_hosts: None,
         }
     }
 
@@ -283,6 +296,18 @@ impl McpController {
             bind_address: default_mcp_bind_address(),
             bearer_token: Some(token.to_string()),
             idle_session_timeout_secs: default_mcp_idle_timeout_secs(),
+            allowed_hosts: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_allowed_hosts(port: u16, hosts: Option<Vec<String>>) -> McpController {
+        McpController {
+            port: Some(port),
+            bind_address: default_mcp_bind_address(),
+            bearer_token: None,
+            idle_session_timeout_secs: default_mcp_idle_timeout_secs(),
+            allowed_hosts: hosts,
         }
     }
 
@@ -293,6 +318,7 @@ impl McpController {
             bind_address: default_mcp_bind_address(),
             bearer_token: None,
             idle_session_timeout_secs: idle_secs,
+            allowed_hosts: None,
         }
     }
 
@@ -309,6 +335,11 @@ impl McpController {
     /// Returns the configured bearer token, if any.
     pub fn bearer_token(&self) -> Option<&str> {
         self.bearer_token.as_deref()
+    }
+
+    /// The configured `Host` allowlist, if the config set one.
+    pub fn allowed_hosts(&self) -> Option<&[String]> {
+        self.allowed_hosts.as_deref()
     }
 
     /// Idle session timeout, if eviction is enabled.

@@ -463,6 +463,12 @@ controllers:
   # Idle session timeout in seconds. Defaults to 14400 (4 hours). Set to null
   # to disable idle eviction.
   # idle_session_timeout_secs: 14400
+
+  # Host header values the server answers to (DNS-rebinding protection), each
+  # a host or host:port. Unset: a localhost bind accepts only localhost,
+  # 127.0.0.1 and ::1; any other bind_address accepts every Host. An empty
+  # list accepts every Host.
+  # allowed_hosts: ["mtrack.local", "192.168.1.20:43237"]
 ```
 
 ### Profile keys
