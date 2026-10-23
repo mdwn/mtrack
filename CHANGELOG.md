@@ -16,6 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the localhost-only list, and a new `allowed_hosts` key on the `mcp` controller sets the list
   explicitly either way.
 
+### Security
+
+- **Dependency advisories cleared**: every open Dependabot alert, `cargo audit` finding and `npm
+  audit` finding is resolved. Rust: `rustls` 0.23.46 (four advisories, among them a TLS 1.3
+  handshake-level confusion and a post-quantum downgrade), `quinn-proto` 0.11.19 (three remote
+  panics), `rtrb` 0.3.5 (use-after-free when an element's `Drop` panics), `webpki-root-certs`
+  1.0.11 (distrusted emSign intermediates), `tokio` 1.54 and `chacha20` 0.10.2 (yanked). The `zip`
+  crate moves to 9.0, whose three advisories concern `extract()`, which mtrack never calls — GDTF
+  and MVR entries are read by name into memory — but the major bump keeps the audit clean and the
+  reader API now reports an entry name it cannot decode as a per-entry error. Web UI: `vite` 8.2.4
+  (five advisories in the dev server and `launch-editor`), `proxy-addr` 2.0.8 (IP spoofing),
+  `source-map-js` 1.2.2 and `brace-expansion` 5.0.12 (denial of service). All of the web UI's are
+  development-time dependencies; nothing in the served bundle changes.
+
 ## [0.17.0] - 2026-10-03
 
 ### Added

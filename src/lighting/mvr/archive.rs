@@ -105,10 +105,21 @@ pub fn read_scene_xml(bytes: &[u8]) -> Result<String, MvrError> {
 /// The largest embedded mesh read out — scenery glTF runs KB to a few MB.
 const MAX_MESH_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Every entry name the archive can decode. zip 9 reports a name it cannot
+/// decode as an error per entry; such an entry cannot be looked up by name
+/// either, so it is left out rather than failing the whole listing.
+fn entry_names<R: std::io::Read + std::io::Seek>(archive: &ZipArchive<R>) -> Vec<String> {
+    archive
+        .file_names()
+        .filter_map(Result::ok)
+        .map(|name| name.into_owned())
+        .collect()
+}
+
 /// Every entry name in the archive, sorted.
 pub fn list_entries(bytes: &[u8]) -> Result<Vec<String>, MvrError> {
     let archive = open(bytes)?;
-    let mut names: Vec<String> = archive.file_names().map(str::to_string).collect();
+    let mut names = entry_names(&archive);
     names.sort();
     Ok(names)
 }
@@ -132,7 +143,7 @@ pub fn read_mesh_entry(bytes: &[u8], name: &str) -> Result<Vec<u8>, MvrError> {
     let index = (0..archive.len()).find(|&i| {
         archive
             .by_index_raw(i)
-            .map(|e| skeleton(e.name()) == wanted)
+            .and_then(|e| e.name().map(|n| skeleton(&n) == wanted))
             .unwrap_or(false)
     });
     let Some(index) = index else {
@@ -164,10 +175,9 @@ pub fn read_mesh_entry(bytes: &[u8], name: &str) -> Result<Vec<u8>, MvrError> {
 /// Lists the embedded `.gdtf` entry names, sorted.
 pub fn list_gdtf_entries(bytes: &[u8]) -> Result<Vec<String>, MvrError> {
     let archive = open(bytes)?;
-    let mut names: Vec<String> = archive
-        .file_names()
+    let mut names: Vec<String> = entry_names(&archive)
+        .into_iter()
         .filter(|name| name.to_ascii_lowercase().ends_with(".gdtf"))
-        .map(|name| name.to_string())
         .collect();
     names.sort();
     Ok(names)

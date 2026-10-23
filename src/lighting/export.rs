@@ -857,9 +857,9 @@ fn build_archive(
     let mut cursor = std::io::Cursor::new(Vec::new());
     {
         let mut writer = zip::ZipWriter::new(&mut cursor);
-        let deflated: zip::write::FileOptions<'_, ()> =
+        let deflated: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        let stored: zip::write::FileOptions<'_, ()> =
+        let stored: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         writer.start_file("GeneralSceneDescription.xml", deflated)?;
         writer.write_all(scene.as_bytes())?;
