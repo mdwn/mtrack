@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **MCP answers on the network when bound beyond localhost**: with `bind_address: 0.0.0.0` every
+  request from another machine came back `403 Forbidden: Host header is not allowed`, because the
+  HTTP layer's DNS-rebinding allowlist stayed at its localhost-only default. A non-loopback bind
+  now accepts any `Host` (the `bearer_token` is the access control there), a loopback bind keeps
+  the localhost-only list, and a new `allowed_hosts` key on the `mcp` controller sets the list
+  explicitly either way.
+
 ## [0.17.0] - 2026-10-03
 
 ### Added

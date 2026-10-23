@@ -31,6 +31,13 @@ controllers:
     # traffic is quiet for this long is closed and its resources released.
     # Defaults to 14400 (4 hours). Set to null to disable eviction.
     # idle_session_timeout_secs: 14400
+
+    # `Host` header values the server answers to, as DNS-rebinding
+    # protection; each is a host or host:port. Unset, a localhost bind
+    # accepts only localhost, 127.0.0.1 and ::1, and any other bind_address
+    # accepts every Host (bearer_token is the access control there). An
+    # empty list accepts every Host.
+    # allowed_hosts: ["mtrack.local", "192.168.1.20:43237"]
 ```
 
 The endpoint is then reachable at `http://<bind_address>:<port>/mcp`.

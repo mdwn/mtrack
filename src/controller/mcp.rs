@@ -56,6 +56,8 @@ pub struct Driver {
     addr: SocketAddr,
     bearer_token: Option<String>,
     idle_timeout: Option<Duration>,
+    /// `Host` values the HTTP layer accepts; empty accepts all.
+    allowed_hosts: Vec<String>,
 }
 
 impl Driver {
@@ -73,11 +75,24 @@ impl Driver {
             .parse()
             .map_err(|e| format!("invalid bind_address `{}`: {e}", config.bind_address()))?;
         let addr = SocketAddr::new(ip, config.port());
+        // rmcp's Streamable HTTP service rejects any request whose `Host`
+        // header is not on its allowlist (DNS-rebinding protection), and its
+        // default list is localhost only. Bound beyond loopback, that default
+        // would answer every network client with `403 Host header is not
+        // allowed`, so unless the config names the hosts itself, a
+        // non-loopback bind accepts every `Host` and leaves access control
+        // to `bearer_token`.
+        let allowed_hosts = match config.allowed_hosts() {
+            Some(hosts) => hosts.to_vec(),
+            None if ip.is_loopback() => StreamableHttpServerConfig::default().allowed_hosts,
+            None => Vec::new(),
+        };
         Ok(Arc::new(Driver {
             player,
             addr,
             bearer_token: config.bearer_token().map(str::to_owned),
             idle_timeout: config.idle_session_timeout(),
+            allowed_hosts,
         }))
     }
 }
@@ -88,6 +103,7 @@ impl super::Driver for Driver {
         let player = self.player.clone();
         let bearer_token = self.bearer_token.clone();
         let idle_timeout = self.idle_timeout;
+        let allowed_hosts = self.allowed_hosts.clone();
 
         tokio::spawn(async move {
             {
@@ -129,7 +145,9 @@ impl super::Driver for Driver {
             let service = StreamableHttpService::new(
                 move || Ok(McpServer::new(factory_player.clone())),
                 session_manager.clone(),
-                StreamableHttpServerConfig::default().with_cancellation_token(cancel_for_service),
+                StreamableHttpServerConfig::default()
+                    .with_cancellation_token(cancel_for_service)
+                    .with_allowed_hosts(allowed_hosts),
             );
 
             let mut app = axum::Router::new().nest_service("/mcp", service);
