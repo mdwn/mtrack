@@ -853,7 +853,28 @@ impl Ownership {
 
         // Mode last: chown clears the setuid and setgid bits on a file, so
         // setting the mode first would let the chown strip bits we just set.
-        file.set_permissions(std::fs::Permissions::from_mode(self.mode))
+        //
+        // Skip it when the mode already matches, which is always the case for
+        // a destination rewritten in place: it keeps its inode and so its mode.
+        // Like the chown, changing the mode of a file another user owns is
+        // refused to an unprivileged process, and there is nothing to correct
+        // when that happens, so it is logged rather than failing the write.
+        if current.mode() & 0o7777 == self.mode {
+            return Ok(());
+        }
+        match file.set_permissions(std::fs::Permissions::from_mode(self.mode)) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                tracing::warn!(
+                    "Unable to set the mode of {} to {:o} ({}). It keeps mode {:o}.",
+                    path.display(),
+                    self.mode,
+                    e,
+                    current.mode() & 0o7777,
+                );
+                Ok(())
+            }
+            other => other,
+        }
     }
 }
 

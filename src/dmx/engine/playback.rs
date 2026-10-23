@@ -452,10 +452,32 @@ impl Engine {
         }
 
         // Loop if the song has loop_playback enabled.
+        //
+        // The audio restarts its sources when they reach the end of the file,
+        // so the timeline restarts on the same boundaries: the first pass ran
+        // from `start_time` to the end, every later one is a whole song. The
+        // shared clock keeps counting across passes, so each pass measures its
+        // song time from its own boundary. Restarting when the *timeline*
+        // finishes instead would restart the moment the last cue fires — for
+        // a show whose cues are all near the top, immediately and forever.
+        let song_length = song.duration();
+        let mut pass_start = song_length.saturating_sub(start_time);
         while song.loop_playback()
+            && !song_length.is_zero()
             && !cancel_handle.is_cancelled()
             && !loop_break.load(Ordering::Relaxed)
         {
+            // Wait for the audio to reach the boundary.
+            while clock.elapsed() < pass_start {
+                if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
+                break;
+            }
+
             info!(
                 song = song.name(),
                 "DMX loop: restarting timeline from beginning"
@@ -475,34 +497,24 @@ impl Engine {
 
             dmx_engine.timeline_finished.store(false, Ordering::Relaxed);
 
-            // Start a new song time tracker for this loop iteration.
-            let loop_time_tracker = Self::start_song_time_tracker_from(
+            // Start a new song time tracker for this loop iteration, counting
+            // from this pass's boundary.
+            let loop_time_tracker = Self::start_loop_song_time_tracker(
                 dmx_engine.clone(),
                 cancel_handle.clone(),
-                Duration::ZERO,
+                pass_start,
                 clock.clone(),
             );
 
-            // Wait for timeline to finish again.
-            let loop_watcher = {
-                let cancel_handle = cancel_handle.clone();
-                let timeline_finished = dmx_engine.timeline_finished.clone();
-                let heartbeat = dmx_engine.effects_loop_heartbeat.clone();
-                let phase = dmx_engine.effects_loop_phase.clone();
-                let subphase = dmx_engine.update_subphase.clone();
-                thread::spawn(move || {
-                    Self::wait_for_timeline_with_heartbeat(
-                        &cancel_handle,
-                        timeline_finished,
-                        &heartbeat,
-                        &phase,
-                        &subphase,
-                    );
-                })
-            };
-
-            if let Err(e) = loop_watcher.join() {
-                error!("Error while joining loop timeline watcher: {:?}", e);
+            // Hold this pass until the next boundary. The effects loop may flag
+            // the timeline finished long before then, which only stops the time
+            // tracker, exactly as it does on the first pass.
+            let pass_end = pass_start + song_length;
+            while clock.elapsed() < pass_end {
+                if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(2));
             }
 
             dmx_engine.timeline_finished.store(true, Ordering::Relaxed);
@@ -510,6 +522,8 @@ impl Engine {
             if let Err(e) = loop_time_tracker.join() {
                 error!("Error waiting for loop time tracker to stop: {:?}", e);
             }
+
+            pass_start = pass_end;
         }
 
         // Stop section loop thread.
@@ -624,6 +638,25 @@ impl Engine {
             None,
             generation,
         )
+    }
+
+    /// Tracks song time for one pass of a looping song: the shared clock keeps
+    /// counting across passes, so song time is the clock less the pass's start.
+    fn start_loop_song_time_tracker(
+        dmx_engine: Arc<Engine>,
+        cancel_handle: CancelHandle,
+        pass_start: Duration,
+        clock: crate::clock::PlaybackClock,
+    ) -> JoinHandle<()> {
+        let generation = dmx_engine.begin_playback_generation();
+        let timeline_finished = dmx_engine.timeline_finished.clone();
+        thread::spawn(move || {
+            while !cancel_handle.is_cancelled() && !timeline_finished.load(Ordering::Relaxed) {
+                let song_time = clock.elapsed().saturating_sub(pass_start);
+                dmx_engine.update_song_time_for_generation(song_time, generation);
+                thread::sleep(Duration::from_millis(10));
+            }
+        })
     }
 
     fn start_song_time_tracker_with_section(

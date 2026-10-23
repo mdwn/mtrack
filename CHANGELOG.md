@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.2] - 2026-10-23
+
+### Fixed
+
+- **A chase lifts the bed instead of blacking it out when the blend says so (#518)**: on an
+  RGB-only fixture the chase wrote its mask into a multiplier whatever the `blend_mode`, so a
+  `screen`, `add` or `overlay` chase lit one fixture and sent every other one to zero — the
+  documented pass-through never happened. The lifting modes now write the mask into the colour
+  channels: the active fixture brightens toward white, the inactive ones keep the bed. `multiply`
+  and `replace` still gate (the classic running light). `overlay` is treated as `screen`, since
+  with a zero mask it would darken a dim bed, which no chase means.
+- **A looping song's lights no longer thrash after the first pass (#517)**: the DMX loop restarted
+  its timeline the moment the last cue fired and measured song time from a clock that kept
+  counting across passes, so a show whose cues sit near the top restarted ~40 times a second
+  from the loop point on. Passes now restart on the audio's own boundaries and count song time
+  from their start.
+- **`repeats: N` followed by a comment parses (#514)**: the number rule admitted implicit
+  whitespace, which includes comments, so the comment became part of the count.
+- **Writing a file another user owns no longer fails on the mode (#513)**: the in-place rewrite
+  re-applied the destination's own mode, which `fchmod` refuses to a non-owner. The mode is left
+  alone when it already matches, and a refused change is logged rather than failing the write.
+- **Named playlists resolve without `playlists_dir` (#512)**: `read_playlist` and
+  `write_playlist` with a `name` now default to `playlists/` beside the config, as the loader
+  already did, instead of refusing.
+
 ## [0.17.1] - 2026-10-23
 
 ### Fixed
