@@ -111,6 +111,17 @@ fn read_capped(
     Ok(content)
 }
 
+/// Every entry name the archive can decode. zip 9 reports a name it cannot
+/// decode as an error per entry; such an entry cannot be looked up by name
+/// either, so it is left out rather than failing the whole listing.
+fn entry_names<R: std::io::Read + std::io::Seek>(archive: &ZipArchive<R>) -> Vec<String> {
+    archive
+        .file_names()
+        .filter_map(Result::ok)
+        .map(|name| name.into_owned())
+        .collect()
+}
+
 /// The mesh stems the archive carries under `models/gltf/` or
 /// `models/gltf_low/`, lowercased — what a model table's `File` can
 /// resolve to.
@@ -118,7 +129,8 @@ pub fn list_model_files(bytes: &[u8]) -> Result<HashSet<String>, GdtfError> {
     let archive = open(bytes)?;
     Ok(archive
         .file_names()
-        .filter_map(|name| mesh_entry(name).map(|(stem, _)| stem))
+        .filter_map(Result::ok)
+        .filter_map(|name| mesh_entry(&name).map(|(stem, _)| stem))
         .collect())
 }
 
@@ -143,7 +155,7 @@ pub fn read_assets(
     thumbnail: Option<&str>,
 ) -> Result<Assets, GdtfError> {
     let mut archive = open(bytes)?;
-    let names: Vec<String> = archive.file_names().map(str::to_string).collect();
+    let names: Vec<String> = entry_names(&archive);
     let mut assets = Assets::default();
     let mut total: u64 = 0;
     let mut budget = |len: usize| -> Result<(), GdtfError> {
@@ -241,7 +253,7 @@ pub(super) mod tests {
         let mut cursor = Cursor::new(Vec::new());
         {
             let mut writer = zip::ZipWriter::new(&mut cursor);
-            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated);
             for (name, content) in entries {
                 writer.start_file(*name, options).unwrap();

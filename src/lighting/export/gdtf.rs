@@ -194,7 +194,7 @@ pub fn generate(fixture_type: &FixtureType) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut cursor = std::io::Cursor::new(Vec::new());
     {
         let mut writer = zip::ZipWriter::new(&mut cursor);
-        let options: zip::write::FileOptions<'_, ()> =
+        let options: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         writer.start_file("description.xml", options)?;
         writer.write_all(xml.as_bytes())?;
