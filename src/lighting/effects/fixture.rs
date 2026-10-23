@@ -443,19 +443,43 @@ impl FixtureProfile {
     /// channel the value goes to the chase multiplier rather than straight into RGB,
     /// so the chase modulates the colour the layers beneath provide instead of
     /// painting white over them and zeroing every inactive fixture.
+    ///
+    /// The blend mode decides what the mask does to the bed. `multiply` (and
+    /// `replace`) gate it: the active fixture keeps its colour and every other
+    /// fixture goes dark, the classic running light. `screen` and `add` lift it:
+    /// the active fixture brightens toward white and the inactive fixtures keep
+    /// the bed untouched, so a chase can ride over a wash without blacking out
+    /// the stage. A multiplier cannot lift anything, so the lifting modes write
+    /// the mask into the colour channels and let the blend do the work.
+    /// `overlay` is treated as `screen`: with a zero mask it would darken a dim
+    /// bed, which no chase means.
     pub fn apply_chase(
         &self,
         chase_value: f64,
         layer: EffectLayer,
         blend_mode: BlendMode,
     ) -> HashMap<String, ChannelState> {
-        Self::apply_dimmer_or_multiplier(
-            self.chase_strategy != ChaseStrategy::RgbChannels,
-            "chase",
-            chase_value,
-            layer,
-            blend_mode,
-        )
+        match (self.chase_strategy, blend_mode) {
+            (
+                ChaseStrategy::RgbChannels,
+                BlendMode::Screen | BlendMode::Add | BlendMode::Overlay,
+            ) => {
+                let lifting_mode = match blend_mode {
+                    BlendMode::Overlay => BlendMode::Screen,
+                    other => other,
+                };
+                let mut result = HashMap::new();
+                insert_rgb(&mut result, chase_value, layer, lifting_mode);
+                result
+            }
+            _ => Self::apply_dimmer_or_multiplier(
+                self.chase_strategy != ChaseStrategy::RgbChannels,
+                "chase",
+                chase_value,
+                layer,
+                blend_mode,
+            ),
+        }
     }
 }
 
@@ -1026,6 +1050,30 @@ mod tests {
         let state = result.get(&key).expect("chase multiplier");
         assert_eq!(state.value, 0.5);
         assert_eq!(state.blend_mode, BlendMode::Multiply);
+    }
+
+    #[test]
+    fn apply_chase_rgb_screen_lifts_through_rgb_channels() {
+        let p = rgb_fixture().profile().clone();
+
+        // A lifting blend cannot be expressed as a multiplier, so the mask goes
+        // into the colour channels with the blend intact: the active fixture
+        // brightens toward white, an inactive one (mask 0) screens to no change.
+        let result = p.apply_chase(1.0, EffectLayer::Foreground, BlendMode::Screen);
+        for channel in ["red", "green", "blue"] {
+            let state = result.get(channel).expect(channel);
+            assert_eq!(state.value, 1.0);
+            assert_eq!(state.blend_mode, BlendMode::Screen);
+        }
+        assert!(!result.contains_key(&multiplier_key("chase", EffectLayer::Foreground)));
+
+        let bed = ChannelState::new(0.4, EffectLayer::Background, BlendMode::Replace);
+        let inactive = p.apply_chase(0.0, EffectLayer::Foreground, BlendMode::Screen);
+        assert_eq!(bed.blend_with(*inactive.get("red").unwrap()).value, 0.4);
+
+        // Overlay would darken a dim bed where the mask is zero; it lifts instead.
+        let overlay = p.apply_chase(0.0, EffectLayer::Foreground, BlendMode::Overlay);
+        assert_eq!(overlay.get("red").unwrap().blend_mode, BlendMode::Screen);
     }
 
     // ── FixtureInfo accessors ────────────────────────────────────────

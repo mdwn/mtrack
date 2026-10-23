@@ -176,7 +176,9 @@ blend_mode_parameter = { "replace" | "multiply" | "add" | "overlay" | "screen" }
 percentage = @{ ASCII_DIGIT+ ~ "%" }
 
 // Canonical number form reused across numeric parameters
-number_value = { ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+// Atomic: implicit whitespace (which includes comments) must not be allowed
+// between the digits, or a comment after `repeats: 11` becomes part of the number.
+number_value = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 
 time_value = { number_value }
 

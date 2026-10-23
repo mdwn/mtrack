@@ -3590,12 +3590,11 @@ impl McpServer {
         match name {
             Some(n) => {
                 crate::webui::safe_path::SafePath::validate_name(n).map_err(safepath_err)?;
-                let dir = cfg.playlists_dir(&config_path).ok_or_else(|| {
-                    McpError::invalid_params(
-                        "no playlists_dir configured; cannot resolve named playlist",
-                        None,
-                    )
-                })?;
+                // The same default the loader uses: `playlists/` beside the
+                // config when no `playlists_dir` is configured.
+                let dir = cfg
+                    .playlists_dir(&config_path)
+                    .unwrap_or_else(|| crate::util::project_dir_of(&config_path).join("playlists"));
                 Ok(dir.join(format!("{n}.yaml")))
             }
             None => {

@@ -37,7 +37,7 @@ show "Optional Name" {
 | `cycle`   | one or more `color:`, `duration`                       | Iterates colors. Optional `speed`, `direction`. |
 | `strobe`  | `frequency`, `duration`                                | Hz strobe. Takes no color or intensity — it gates whatever is beneath it. |
 | `pulse`   | `frequency`, `duration`                                | Sinusoidal pulse. Optional `base_level` (default 50%) and `pulse_amplitude` (also spelled `intensity`). |
-| `chase`   | `speed`, `duration`                                    | A moving brightness mask over the layers beneath — needs a color bed under it. Optional `direction`, `pattern: linear|snake|random`. |
+| `chase`   | `speed`, `duration`                                    | A moving brightness mask over the layers beneath — needs a color bed under it. With `blend_mode: multiply` (or `replace`) it gates the bed: one fixture lit, the rest dark. With `screen` or `add` it lifts: the active fixture brightens toward white and the others keep the bed, so the stage stays lit. Optional `direction`, `pattern: linear|snake|random`. |
 | `dimmer`  | `start_level`, `end_level`, `duration`                 | Linear ramp; `curve: linear` optional. |
 | `rainbow` | `duration`                                             | Hue sweep. Optional `speed`. |
 
