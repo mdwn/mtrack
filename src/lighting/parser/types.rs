@@ -128,9 +128,111 @@ pub struct Effect {
     /// times are shifted by it, and so is the tempo map its `beats` /
     /// `measures` speeds and frequencies are read against at runtime (#525).
     pub tempo_offset_secs: f64,
+    /// The durations written in beats or measures, as written. A sequence's
+    /// effects are parsed at the sequence's own tempo; when it is expanded
+    /// into a show these are resolved again at the expansion point, as the
+    /// sequence's cue times are (#529).
+    pub musical: MusicalDurations,
+}
+
+/// A length written in musical units, kept so it can be resolved against a
+/// tempo other than the one it was parsed at.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MusicalLength {
+    Beats(f64),
+    Measures(f64),
+}
+
+impl MusicalLength {
+    /// The musical length a duration string spells, or `None` for one in
+    /// seconds (or that does not parse; `parse_duration_string` reports that).
+    pub fn parse(value: &str) -> Option<MusicalLength> {
+        let value = value.trim();
+        if let Some(n) = value
+            .strip_suffix("measures")
+            .or_else(|| value.strip_suffix("measure"))
+        {
+            n.trim().parse().ok().map(MusicalLength::Measures)
+        } else if let Some(n) = value
+            .strip_suffix("beats")
+            .or_else(|| value.strip_suffix("beat"))
+        {
+            n.trim().parse().ok().map(MusicalLength::Beats)
+        } else {
+            None
+        }
+    }
+
+    /// The length in time starting at `at_time` on `tempo_map`, with a show
+    /// `offset` of `offset_secs`.
+    pub fn resolve(
+        self,
+        tempo_map: &crate::lighting::tempo::TempoMap,
+        at_time: Duration,
+        offset_secs: f64,
+    ) -> Duration {
+        match self {
+            MusicalLength::Beats(beats) => tempo_map.beats_to_duration(beats, at_time, offset_secs),
+            MusicalLength::Measures(measures) => {
+                tempo_map.measures_to_duration(measures, at_time, offset_secs)
+            }
+        }
+    }
+}
+
+/// An effect's duration parameters that were written in beats or measures.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MusicalDurations {
+    pub duration: Option<MusicalLength>,
+    pub up_time: Option<MusicalLength>,
+    pub hold_time: Option<MusicalLength>,
+    pub down_time: Option<MusicalLength>,
+}
+
+impl MusicalDurations {
+    /// Records `value` for the duration parameter `key`, if it is one and is
+    /// written in musical units.
+    pub fn record(&mut self, key: &str, value: &str) {
+        let slot = match key {
+            "duration" => &mut self.duration,
+            "up_time" => &mut self.up_time,
+            "hold_time" => &mut self.hold_time,
+            "down_time" => &mut self.down_time,
+            _ => return,
+        };
+        *slot = MusicalLength::parse(value);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == MusicalDurations::default()
+    }
 }
 
 impl Effect {
+    /// Resolves the durations written in beats or measures at `at_time` on
+    /// `tempo_map` (with a show `offset` of `offset_secs`), leaving the ones
+    /// written in seconds as they are.
+    pub fn resolve_musical_durations(
+        &mut self,
+        tempo_map: &crate::lighting::tempo::TempoMap,
+        at_time: Duration,
+        offset_secs: f64,
+    ) {
+        let resolve = |len: MusicalLength| len.resolve(tempo_map, at_time, offset_secs);
+        if let Some(len) = self.musical.duration {
+            self.effect_type.set_duration(resolve(len));
+        }
+        if let Some(len) = self.musical.up_time {
+            self.up_time = Some(resolve(len));
+        }
+        if let Some(len) = self.musical.hold_time {
+            self.hold_time = Some(resolve(len));
+        }
+        if let Some(len) = self.musical.down_time {
+            self.down_time = Some(resolve(len));
+        }
+    }
+
     /// Calculate the total duration of this effect.
     /// All effects have a finite duration.
     pub fn total_duration(&self) -> Duration {
@@ -197,6 +299,7 @@ mod tests {
             sequence_name: None,
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
+            musical: Default::default(),
             per_cell: false,
             spread: 0.0,
         }
@@ -219,6 +322,7 @@ mod tests {
             sequence_name: None,
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
+            musical: Default::default(),
             per_cell: false,
             spread: 0.0,
         }

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Durations inside a sequence follow the tempo the sequence plays at (#529)**: a sequence's cue
+  times were rescaled to the tempo where it is expanded, but its effects' `beats` / `measures`
+  durations stayed resolved at the tempo the sequence was parsed at. In Esaweg (110 BPM at the top,
+  sequences played at 160) the verse's `8measures` chases lasted 17.4 s instead of 12 s and
+  overlapped the next half, and half-beat flashes ran 40% long. Musical durations are now kept as
+  written and resolved again when the sequence is expanded, at the expanded cue's time and offset;
+  durations in seconds are left as they are.
 - **A measure-long effect inside a tempo ramp lasts the whole bar (#526)**: `measures` durations
   were integrated as step changes, ignoring gradual transitions, so `duration: 1measure` on the
   downbeat of a ritardando bar ended at the pre-ramp tempo -- 0.6 s short in Jotunheim, a blackout

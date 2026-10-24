@@ -1089,3 +1089,81 @@ show "Test Show" {
         base + 2.0
     );
 }
+
+/// #529: a sequence parsed at the opening tempo and expanded in a faster
+/// section resolves its beat and measure durations at the expansion tempo,
+/// as its cue times are, and leaves durations in seconds alone. Esaweg's
+/// shape: 110 BPM at the top, 160 from bar 3.
+#[test]
+fn test_sequence_durations_resolve_at_the_expansion_tempo() {
+    let content = r#"
+tempo {
+    start: 0.0s
+    bpm: 110
+    time_signature: 4/4
+    changes: [
+        @3/1 { bpm: 160 }
+    ]
+}
+
+sequence "hit" {
+    @1/1
+    front_wash: static, color: "orange", duration: 3beats
+    back_wash: static, color: "white", duration: 1measure
+    side_wash: static, color: "red", duration: 0.5s
+    @1/4
+    front_wash: static, color: "orange", duration: 1beat
+}
+
+show "Test" {
+    @3/1
+    sequence "hit"
+}
+"#;
+
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let tm = show.tempo_map.as_ref().unwrap();
+    let bar3 = tm.measure_to_time_with_offset(3, 1.0, 0, 0.0).unwrap();
+    let first = show
+        .cues
+        .iter()
+        .find(|c| c.time == bar3)
+        .expect("the sequence's first cue lands on bar 3");
+
+    let duration_of = |group: &str| {
+        first
+            .effects
+            .iter()
+            .find(|e| e.groups == vec![group.to_string()])
+            .map(|e| e.effect_type.duration().as_secs_f64())
+            .unwrap()
+    };
+    // 160 BPM: a beat is 0.375 s, a bar 1.5 s. At 110 they were 1.636 s and
+    // 2.182 s, longer than the 1.5 s bar the sequence plays in.
+    assert!(
+        (duration_of("front_wash") - 1.125).abs() < 1e-6,
+        "3 beats: {}",
+        duration_of("front_wash")
+    );
+    assert!(
+        (duration_of("back_wash") - 1.5).abs() < 1e-6,
+        "1 measure: {}",
+        duration_of("back_wash")
+    );
+    assert!(
+        (duration_of("side_wash") - 0.5).abs() < 1e-9,
+        "0.5 s: {}",
+        duration_of("side_wash")
+    );
+
+    // The sequence's anchor cue on beat 4 is on the 160 grid, so a 3-beat
+    // effect from beat 1 ends exactly on it.
+    let anchor = bar3 + Duration::from_secs_f64(1.125);
+    assert!(
+        show.cues
+            .iter()
+            .any(|c| (c.time.as_secs_f64() - anchor.as_secs_f64()).abs() < 1e-6),
+        "the @1/4 cue should be at {anchor:?}"
+    );
+}

@@ -146,6 +146,20 @@ impl EffectType {
         }
     }
 
+    /// Replace the duration field.
+    pub fn set_duration(&mut self, new_duration: Duration) {
+        match self {
+            EffectType::Static { duration, .. }
+            | EffectType::Strobe { duration, .. }
+            | EffectType::Pulse { duration, .. }
+            | EffectType::Dimmer { duration, .. }
+            | EffectType::ColorCycle { duration, .. }
+            | EffectType::Chase { duration, .. }
+            | EffectType::Rainbow { duration, .. }
+            | EffectType::Move { duration, .. } => *duration = new_duration,
+        }
+    }
+
     /// The effect's authored parameters, as displayable strings keyed by the
     /// name the DSL uses.
     ///
