@@ -174,7 +174,8 @@ pub(crate) fn process_effect(
             transition,
             ..
         } => {
-            let current_speed = speed.to_cycles_per_second(tempo_map, absolute_time);
+            let current_speed =
+                speed.to_rate_with_offset(tempo_map, absolute_time, effect.tempo_offset_secs);
             apply_color_cycle(
                 fixture_registry,
                 effect,
@@ -186,7 +187,8 @@ pub(crate) fn process_effect(
             )
         }
         EffectType::Strobe { frequency, .. } => {
-            let current_frequency = frequency.to_hz(tempo_map, absolute_time);
+            let current_frequency =
+                frequency.to_rate_with_offset(tempo_map, absolute_time, effect.tempo_offset_secs);
             apply_strobe(fixture_registry, effect, current_frequency, elapsed)
         }
         EffectType::Dimmer {
@@ -210,7 +212,8 @@ pub(crate) fn process_effect(
             transition,
             ..
         } => {
-            let current_speed = speed.to_cycles_per_second(tempo_map, absolute_time);
+            let current_speed =
+                speed.to_rate_with_offset(tempo_map, absolute_time, effect.tempo_offset_secs);
             apply_chase(
                 fixture_registry,
                 effect,
@@ -227,7 +230,8 @@ pub(crate) fn process_effect(
             brightness,
             ..
         } => {
-            let current_speed = speed.to_cycles_per_second(tempo_map, absolute_time);
+            let current_speed =
+                speed.to_rate_with_offset(tempo_map, absolute_time, effect.tempo_offset_secs);
             apply_rainbow(
                 fixture_registry,
                 effect,
@@ -243,7 +247,8 @@ pub(crate) fn process_effect(
             frequency,
             ..
         } => {
-            let current_frequency = frequency.to_hz(tempo_map, absolute_time);
+            let current_frequency =
+                frequency.to_rate_with_offset(tempo_map, absolute_time, effect.tempo_offset_secs);
             apply_pulse(
                 fixture_registry,
                 effect,
