@@ -1463,6 +1463,16 @@ fn parse_cue_definition(
                     for effect in &mut expanded_cue.effects {
                         effect.sequence_name = Some(seq_name.clone());
                         effect.tempo_offset_secs = applied_offset_secs;
+                        // Durations in beats or measures were resolved at the
+                        // sequence's tempo; resolve them at the tempo where the
+                        // effect actually plays, as its cue time was (#529).
+                        if let Some(ref tm) = tempo_map {
+                            effect.resolve_musical_durations(
+                                tm,
+                                expanded_cue.time,
+                                applied_offset_secs,
+                            );
+                        }
                     }
                     // Only merge with the base cue if it exists and is at the same time
                     if let Some(base_idx) = base_cue_index {

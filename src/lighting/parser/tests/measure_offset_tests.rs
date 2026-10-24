@@ -1043,3 +1043,61 @@ show "Offset Chase" {
     // After the shifted change, 240: 4 cycles a second.
     assert!((rate(10.5) - 4.0).abs() < 1e-9, "at 10.5 s: {}", rate(10.5));
 }
+
+/// A tempo-aware rate is the rate at the instant, not the average over the
+/// next N beats: a `3beats` chase one second before a tempo change runs at
+/// the tempo in force, rather than already blending in the next one (the
+/// rest of #525 -- Esaweg's chase still sped up ~1.5 s early).
+#[test]
+fn test_beat_rates_use_the_instantaneous_tempo() {
+    let content = r#"tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @5/1 { bpm: 240 }
+    ]
+}
+
+show "Rate" {
+    @1/1
+    offset 1 measures
+
+    @2/1
+    front_wash: chase, speed: 3beats, duration: 8measures
+}"#;
+
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Rate").unwrap();
+    let tempo_map = show.tempo_map.as_ref().expect("tempo map");
+    let chase = show
+        .cues
+        .iter()
+        .flat_map(|c| c.effects.iter())
+        .next()
+        .expect("chase");
+    let crate::lighting::effects::EffectType::Chase { speed, .. } = &chase.effect_type else {
+        panic!("expected a chase")
+    };
+    let rate = |secs: f64| {
+        speed.to_rate_with_offset(
+            Some(tempo_map),
+            Duration::from_secs_f64(secs),
+            chase.tempo_offset_secs,
+        )
+    };
+
+    // The shifted change is at 10 s. At 9 s the music is at 120: 3 beats are
+    // 1.5 s. Averaging the next 3 beats would read 1.25 s (0.8 /s) here.
+    assert!(
+        (rate(9.0) - 1.0 / 1.5).abs() < 1e-9,
+        "at 9 s: {}",
+        rate(9.0)
+    );
+    // After it, 240: 3 beats are 0.75 s.
+    assert!(
+        (rate(10.5) - 1.0 / 0.75).abs() < 1e-9,
+        "at 10.5 s: {}",
+        rate(10.5)
+    );
+}

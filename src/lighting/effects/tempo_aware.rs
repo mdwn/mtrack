@@ -24,7 +24,14 @@ fn duration_to_rate(duration_secs: f64) -> f64 {
     }
 }
 
-/// Helper to convert measures to duration using tempo map or fallback
+/// Seconds that `measures` measures take at the tempo in force at `at_time`.
+///
+/// A rate is a property of the instant, so this uses the instantaneous tempo
+/// (`bpm_at_time`, which interpolates inside a gradual transition) rather than
+/// integrating the next N measures of the map: integrating would start pulling
+/// the rate toward an upcoming tempo change N measures before it happens.
+/// `offset_secs` shifts the map's tempo changes, as the parser does for an
+/// `offset` show.
 fn measures_to_duration_secs(
     measures: f64,
     tempo_map: Option<&crate::lighting::tempo::TempoMap>,
@@ -32,8 +39,11 @@ fn measures_to_duration_secs(
     offset_secs: f64,
 ) -> f64 {
     if let Some(tm) = tempo_map {
-        let duration = tm.measures_to_duration(measures, at_time, offset_secs);
-        duration.as_secs_f64()
+        let bpm = tm.bpm_at_time(at_time, offset_secs);
+        let beats_per_measure = tm
+            .time_signature_at_time(at_time, offset_secs)
+            .beats_per_measure();
+        measures * beats_per_measure * 60.0 / bpm
     } else {
         // Fallback: assume default BPM, 4/4 time
         let beats = measures * 4.0;
@@ -41,7 +51,8 @@ fn measures_to_duration_secs(
     }
 }
 
-/// Helper to convert beats to duration using tempo map or fallback
+/// Seconds that `beats` beats take at the tempo in force at `at_time` (see
+/// `measures_to_duration_secs` for why this is instantaneous, not integrated).
 fn beats_to_duration_secs(
     beats: f64,
     tempo_map: Option<&crate::lighting::tempo::TempoMap>,
@@ -49,8 +60,7 @@ fn beats_to_duration_secs(
     offset_secs: f64,
 ) -> f64 {
     if let Some(tm) = tempo_map {
-        let duration = tm.beats_to_duration(beats, at_time, offset_secs);
-        duration.as_secs_f64()
+        beats * 60.0 / tm.bpm_at_time(at_time, offset_secs)
     } else {
         // Fallback: assume default BPM
         beats * 60.0 / crate::lighting::tempo::DEFAULT_BPM

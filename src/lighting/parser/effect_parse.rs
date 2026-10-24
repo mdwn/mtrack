@@ -81,6 +81,7 @@ pub(crate) fn parse_effect_definition(
     let mut up_time = None;
     let mut hold_time = None;
     let mut down_time = None;
+    let mut musical = super::types::MusicalDurations::default();
     let mut per_cell = false;
     let mut spread = 0.0_f64;
 
@@ -151,6 +152,7 @@ pub(crate) fn parse_effect_definition(
                 for param_pair in inner_pair.into_inner() {
                     if param_pair.as_rule() == Rule::parameter {
                         let (key, value) = super::utils::parse_parameter(param_pair)?;
+                        musical.record(&key, &value);
                         match key.as_str() {
                             "color" if matches!(effect_type, EffectType::ColorCycle { .. }) => {
                                 color_parameters.push(value);
@@ -341,6 +343,7 @@ pub(crate) fn parse_effect_definition(
         spread,
         ignored_parameters,
         tempo_offset_secs: offset_secs,
+        musical,
     })
 }
 
