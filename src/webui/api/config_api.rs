@@ -542,13 +542,19 @@ pub(super) async fn put_config_profile(
         Err(e) => return e,
     };
 
+    let store = match require_config_store(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+
+    // Sections the body leaves out keep their current values (#523).
     let profile: config::Profile = match body.get("profile") {
-        Some(v) => match serde_json::from_value(v.clone()) {
+        Some(v) => match store.profile_from_update(index, v.clone()).await {
             Ok(p) => p,
             Err(e) => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({"error": format!("invalid profile: {}", e)})),
+                    Json(json!({"error": e.to_string()})),
                 )
                     .into_response()
             }
@@ -566,10 +572,6 @@ pub(super) async fn put_config_profile(
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
 
-    let store = match require_config_store(&state) {
-        Ok(s) => s,
-        Err(e) => return e,
-    };
     match store.update_profile(index, profile, &checksum).await {
         Ok(snapshot) => {
             reload_hardware_after_mutation(&state).await;

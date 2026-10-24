@@ -592,8 +592,13 @@ impl PlayerService for PlayerServer {
     ) -> Result<Response<UpdateConfigResponse>, Status> {
         let store = self.require_config_store()?;
         let req = request.into_inner();
-        let profile: config::Profile = serde_json::from_str(&req.profile_json)
+        let body: serde_json::Value = serde_json::from_str(&req.profile_json)
             .map_err(|e| Status::invalid_argument(format!("invalid profile JSON: {}", e)))?;
+        // Sections the request leaves out keep their current values (#523).
+        let profile = store
+            .profile_from_update(req.index as usize, body)
+            .await
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let snapshot = store
             .update_profile(req.index as usize, profile, &req.expected_checksum)
             .await

@@ -562,10 +562,34 @@ impl ConfigStore {
                     len: list.len(),
                 });
             }
+            let cleared = list[index].cleared_sections(&profile);
+            if !cleared.is_empty() {
+                warn!(
+                    index,
+                    hostname = profile.hostname().unwrap_or("<any>"),
+                    sections = cleared.join(", "),
+                    "profile update removes populated section(s)"
+                );
+            }
             list[index] = profile;
             Ok(())
         })
         .await
+    }
+
+    /// The profile a whole-profile update of `index` with `body` means,
+    /// per [`Profile::from_update`]: sections `body` leaves out keep the
+    /// current profile's values. The caller still passes the checksum it read
+    /// at, so a profile that changed in between is refused by the update.
+    pub async fn profile_from_update(
+        &self,
+        index: usize,
+        body: serde_json::Value,
+    ) -> Result<Profile, ConfigError> {
+        let guard = self.inner.read().await;
+        let current = guard.profile_list().and_then(|list| list.get(index));
+        Profile::from_update(current, body)
+            .map_err(|e| ConfigError::Validation(format!("invalid profile: {e}")))
     }
 
     /// Removes a profile at the given index.
@@ -916,6 +940,43 @@ profiles:
         std::fs::write(&main_path, "songs: songs\nprofiles_dir: profiles\n").unwrap();
         std::fs::write(profiles_dir.join("01-only.yaml"), profile_yaml).unwrap();
         (dir, main_path, profiles_dir)
+    }
+
+    /// #523: a whole-profile update that names only the controllers -- the
+    /// shape of an MCP `update_profile` call adding a controller -- keeps the
+    /// trigger in the profile file instead of writing `trigger: ~`.
+    #[tokio::test]
+    async fn a_profile_update_keeps_the_trigger_it_does_not_mention() {
+        let (_dir, main_path, profiles_dir) = profiles_dir_project(
+            "kind: hardware_profile\naudio:\n  device: a\n  track_mappings:\n    click: [1]\ntrigger:\n  device: a\n  inputs:\n    - kind: audio\n      channel: 12\n      sample: kick\ncontrollers:\n  - kind: grpc\n",
+        );
+        let player = Player::deserialize(&main_path).unwrap();
+        let store = ConfigStore::new(player, main_path.clone());
+        let snap = store.read().await.unwrap();
+
+        let profile = store
+            .profile_from_update(
+                0,
+                serde_json::json!({"controllers": [{"kind": "grpc"}, {"kind": "mcp", "port": 43237}]}),
+            )
+            .await
+            .unwrap();
+        store
+            .update_profile(0, profile, &snap.checksum)
+            .await
+            .unwrap();
+
+        let written = std::fs::read_to_string(profiles_dir.join("01-only.yaml")).unwrap();
+        assert!(
+            written.contains("kind: mcp"),
+            "the edit was not written: {written}"
+        );
+        assert!(
+            written.contains("channel: 12"),
+            "the trigger was dropped from the profile file: {written}"
+        );
+        let reloaded = Player::deserialize(&main_path).unwrap();
+        assert!(reloaded.all_profiles()[0].trigger().is_some());
     }
 
     /// Switching playlist happens constantly during a show and goes through a

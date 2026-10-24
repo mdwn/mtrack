@@ -146,8 +146,10 @@ pub struct Profile {
     /// Audio trigger configuration (optional).
     trigger: Option<TriggerConfig>,
 
-    /// Controllers associated with this profile.
-    #[serde(default)]
+    /// Controllers associated with this profile. `null` reads as none, so a
+    /// whole-profile update can clear the list the way it clears any other
+    /// section (see [`Profile::from_update`]).
+    #[serde(default, deserialize_with = "null_as_empty")]
     controllers: Vec<Controller>,
 
     /// Notification audio configuration (global overrides).
@@ -159,7 +161,65 @@ pub struct Profile {
     status_events: Option<super::statusevents::StatusEvents>,
 }
 
+/// A list that may be written as `null`, read as empty.
+fn null_as_empty<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 impl Profile {
+    /// The profile a whole-profile update means: `body` laid over `current`.
+    ///
+    /// A section `body` does not mention keeps its current value; a section
+    /// it sets to `null` is removed. Deserializing `body` on its own read
+    /// every section it left out as absent, so a client that sent the
+    /// sections it was editing -- adding a controller, say -- wiped the rest:
+    /// `trigger`, `status_events` and `notifications` came back as `~` and
+    /// the audio trigger silently stopped (#523).
+    pub fn from_update(
+        current: Option<&Profile>,
+        body: serde_json::Value,
+    ) -> Result<Profile, serde_json::Error> {
+        let (Some(current), serde_json::Value::Object(sections)) = (current, &body) else {
+            return serde_json::from_value(body);
+        };
+        let serde_json::Value::Object(mut merged) = serde_json::to_value(current)? else {
+            return serde_json::from_value(body);
+        };
+        for (key, value) in sections {
+            merged.insert(key.clone(), value.clone());
+        }
+        serde_json::from_value(serde_json::Value::Object(merged))
+    }
+
+    /// The sections populated in `self` that `after` leaves empty.
+    pub fn cleared_sections(&self, after: &Profile) -> Vec<&'static str> {
+        [
+            ("audio", self.audio.is_some() && after.audio.is_none()),
+            ("midi", self.midi.is_some() && after.midi.is_none()),
+            ("dmx", self.dmx.is_some() && after.dmx.is_none()),
+            ("trigger", self.trigger.is_some() && after.trigger.is_none()),
+            (
+                "controllers",
+                !self.controllers.is_empty() && after.controllers.is_empty(),
+            ),
+            (
+                "notifications",
+                self.notifications.is_some() && after.notifications.is_none(),
+            ),
+            (
+                "status_events",
+                self.status_events.is_some() && after.status_events.is_none(),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, cleared)| cleared.then_some(name))
+        .collect()
+    }
+
     /// Creates a new Profile.
     pub fn new(
         hostname: Option<String>,
@@ -328,6 +388,59 @@ mod tests {
     use config::{Config, File, FileFormat};
 
     use super::*;
+
+    fn rig_with_trigger() -> Profile {
+        serde_json::from_value(serde_json::json!({
+            "hostname": "rig",
+            "audio": {"device": "dev", "track_mappings": {"click": [1]}},
+            "trigger": {"device": "dev", "inputs": [
+                {"kind": "audio", "channel": 12, "sample": "kick"}
+            ]},
+            "status_events": {"off_events": [], "idling_events": [], "playing_events": []},
+            "controllers": [{"kind": "grpc"}],
+        }))
+        .unwrap()
+    }
+
+    /// #523: an update naming only the controllers keeps every other section.
+    #[test]
+    fn an_update_keeps_the_sections_it_leaves_out() {
+        let current = rig_with_trigger();
+        let updated = Profile::from_update(
+            Some(&current),
+            serde_json::json!({"controllers": [{"kind": "grpc"}, {"kind": "mcp", "port": 43237}]}),
+        )
+        .unwrap();
+        assert_eq!(updated.controllers().len(), 2);
+        assert!(updated.trigger().is_some(), "the trigger was dropped");
+        assert!(updated.status_events().is_some());
+        assert_eq!(updated.hostname(), Some("rig"));
+        assert!(current.cleared_sections(&updated).is_empty());
+    }
+
+    #[test]
+    fn an_update_removes_a_section_set_to_null() {
+        let current = rig_with_trigger();
+        let updated = Profile::from_update(
+            Some(&current),
+            serde_json::json!({"trigger": null, "controllers": null}),
+        )
+        .unwrap();
+        assert!(updated.trigger().is_none());
+        assert!(updated.controllers().is_empty());
+        assert!(updated.audio_config().is_some());
+        assert_eq!(
+            current.cleared_sections(&updated),
+            vec!["trigger", "controllers"]
+        );
+    }
+
+    #[test]
+    fn a_new_profile_is_the_body_alone() {
+        let created = Profile::from_update(None, serde_json::json!({"hostname": "new"})).unwrap();
+        assert_eq!(created.hostname(), Some("new"));
+        assert!(created.trigger().is_none());
+    }
 
     #[test]
     fn test_track_gains_round_trip() {
