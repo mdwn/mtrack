@@ -1457,9 +1457,14 @@ fn parse_cue_definition(
                         expanded_cue.start_sequences.push(seq_name.clone());
                     }
 
-                    // Mark all effects in this cue as belonging to this sequence
+                    // Mark all effects in this cue as belonging to this sequence, and
+                    // give them the show's offset at the expansion point: the sequence
+                    // was parsed in its own time (offset 0), but once it is placed in
+                    // an offset show its beat-based speeds must see the same shifted
+                    // tempo map as the cue that placed it.
                     for effect in &mut expanded_cue.effects {
                         effect.sequence_name = Some(seq_name.clone());
+                        effect.tempo_offset_secs = applied_offset_secs;
                     }
                     // Only merge with the base cue if it exists and is at the same time
                     if let Some(base_idx) = base_cue_index {

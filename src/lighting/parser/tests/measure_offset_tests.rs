@@ -1059,3 +1059,75 @@ show "Esaweg" {
         fast
     ));
 }
+
+/// #525, sequences: a sequence is parsed in its own time with no offset, but
+/// when an `offset` show places it, its effects must carry the show's offset
+/// so runtime beat-based speeds see the same shifted tempo map as the cue.
+#[test]
+fn sequence_effects_placed_by_an_offset_show_carry_the_shows_offset() {
+    use crate::lighting::effects::EffectType;
+
+    let content = r##"tempo {
+    bpm: 110
+    time_signature: 4/4
+    changes: [
+        @30/1 { bpm: 160 }
+    ]
+}
+
+sequence "riff" {
+    @1/1
+    all_wash: chase, speed: 3beats, duration: 1measure
+    @1/4
+    all_wash: static, color: "red", duration: 1beat
+}
+
+show "Esaweg" {
+    @1/1
+    offset 1 measures
+
+    @18/1
+    sequence "riff", loop: 4
+
+    @30/1
+    clear()
+    all_wash: static, color: "white", duration: 1beat
+}"##;
+
+    let shows = parse_light_shows(content).expect("Should parse offset show");
+    let show = shows.get("Esaweg").expect("Should have Esaweg show");
+    let tempo_map = show.tempo_map.as_ref().expect("show has a tempo map");
+    let one_measure_at_110 = 4.0 * 60.0 / 110.0;
+
+    let chases: Vec<_> = show
+        .cues
+        .iter()
+        .flat_map(|c| c.effects.iter())
+        .filter(|e| matches!(e.effect_type, EffectType::Chase { .. }))
+        .collect();
+    assert_eq!(chases.len(), 4, "one chase per loop iteration");
+    for chase in &chases {
+        assert_eq!(chase.sequence_name.as_deref(), Some("riff"));
+        assert!(
+            (chase.tempo_offset_secs - one_measure_at_110).abs() < 1e-9,
+            "sequence effect should carry the show offset ({one_measure_at_110}s), got {}",
+            chase.tempo_offset_secs
+        );
+    }
+
+    // And the runtime rate therefore switches at the shifted change, not the unshifted one.
+    let EffectType::Chase { speed, .. } = &chases[0].effect_type else {
+        panic!("expected a chase");
+    };
+    let unshifted_change = tempo_map
+        .measure_to_time_with_offset(30, 1.0, 0, 0.0)
+        .unwrap();
+    let shifted_change = unshifted_change + Duration::from_secs_f64(one_measure_at_110);
+    let rate =
+        |t: Duration| speed.to_cycles_per_second(Some(tempo_map), t, chases[0].tempo_offset_secs);
+    let slow = 110.0 / 60.0 / 3.0;
+    let fast = 160.0 / 60.0 / 3.0;
+    assert!((rate(unshifted_change) - slow).abs() < 1e-9);
+    assert!((rate(shifted_change - Duration::from_millis(1)) - slow).abs() < 1e-9);
+    assert!((rate(shifted_change) - fast).abs() < 1e-9);
+}
