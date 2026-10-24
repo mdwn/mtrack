@@ -193,6 +193,21 @@ impl SegmentRamp {
         }
     }
 
+    /// Beats covered by advancing `secs` from the current position,
+    /// integrating through the remainder of the ramp and then continuing at
+    /// `settled_bpm` once the ramp completes. The inverse of `secs_for_beats`.
+    fn beats_in_secs(&self, secs: f64, settled_bpm: f64) -> f64 {
+        let left = self.total_secs - self.elapsed_secs;
+        if secs <= left {
+            let through = |dt: f64| {
+                self.curve
+                    .beats_in_duration(self.old_bpm, self.new_bpm, self.total_secs, dt)
+            };
+            through(self.elapsed_secs + secs) - through(self.elapsed_secs)
+        } else {
+            self.beats_remaining() + (secs - left) * settled_bpm / 60.0
+        }
+    }
     /// BPM after advancing `secs` from the current position.
     fn bpm_after_secs(&self, secs: f64) -> f64 {
         let t = ((self.elapsed_secs + secs) / self.total_secs).clamp(0.0, 1.0);
@@ -220,6 +235,28 @@ fn segment_secs_for_beats(ramp: Option<&SegmentRamp>, bpm: f64, beats: f64) -> f
         Some(ramp) => ramp.secs_for_beats(beats, bpm),
         None => beats * 60.0 / bpm,
     }
+}
+
+/// Quarter-note beats covered by advancing `secs` given an optional
+/// in-progress ramp, continuing at `bpm` once the ramp completes (or
+/// throughout, when no ramp is active). The inverse of
+/// `segment_secs_for_beats`.
+fn segment_beats_in_secs(ramp: Option<&SegmentRamp>, bpm: f64, secs: f64) -> f64 {
+    match ramp {
+        Some(ramp) => ramp.beats_in_secs(secs, bpm),
+        None => secs * bpm / 60.0,
+    }
+}
+
+/// Tempo state at one instant while walking a tempo map forward in time:
+/// the settled BPM (what the tempo becomes once any ramp finishes), the
+/// time signature, and the ramp in progress, if any.
+#[derive(Debug, Clone, Copy)]
+struct TempoCursor {
+    time: Duration,
+    bpm: f64,
+    time_signature: TimeSignature,
+    ramp: Option<SegmentRamp>,
 }
 
 /// Tempo transition type
@@ -821,286 +858,179 @@ impl TempoMap {
         ts
     }
 
-    /// Convert a duration in beats to absolute Duration at a given time
-    /// This integrates through tempo changes during the duration
-    /// If offset_secs is provided, it's used to adjust tempo change lookups
+    /// Convert a duration in beats to absolute Duration at a given time.
+    ///
+    /// Integrates through every tempo change the span crosses, including
+    /// gradual (`transition:`) ramps — the same arithmetic
+    /// `measure_to_time_with_offset` uses for cue positions, so a `Nbeats`
+    /// duration always ends exactly where the cue `N` beats later fires.
+    /// If offset_secs is provided, it's added to tempo change times to account
+    /// for timeline shifts.
     pub fn beats_to_duration(&self, beats: f64, at_time: Duration, offset_secs: f64) -> Duration {
-        let mut remaining_beats = beats;
-        let mut current_time = at_time;
-        let mut current_bpm = self.bpm_at_time(at_time, offset_secs);
-
-        // Find all tempo changes that occur during the duration
-        // We'll process them in order, integrating through each segment
-        let offset_duration = Duration::from_secs_f64(offset_secs);
-        let mut relevant_changes: Vec<&TempoChange> = self
-            .changes
-            .iter()
-            .filter(|change| {
-                if let Some(change_time) = change.position.absolute_time() {
-                    (change_time + offset_duration) >= at_time
-                } else {
-                    false
-                }
-            })
-            .collect();
-
-        // Sort by time (with offset applied)
-        relevant_changes.sort_by(|a, b| {
-            let time_a = a.position.absolute_time().unwrap_or(Duration::ZERO) + offset_duration;
-            let time_b = b.position.absolute_time().unwrap_or(Duration::ZERO) + offset_duration;
-            time_a.cmp(&time_b)
-        });
-
-        // Process each tempo change that occurs during the duration
-        for change in relevant_changes {
-            if remaining_beats <= 0.0 {
-                break;
-            }
-
-            let change_time = change.position.absolute_time().unwrap() + offset_duration;
-            if change_time <= current_time {
-                // This change already happened, update current BPM
-                match change.transition {
-                    TempoTransition::Snap => {
-                        if let Some(new_bpm) = change.bpm {
-                            current_bpm = new_bpm;
-                        }
-                    }
-                    TempoTransition::Beats(_, curve) | TempoTransition::Measures(_, curve) => {
-                        // Check if we're still in the transition
-                        let old_bpm = if change_time > self.start_offset + offset_duration {
-                            self.bpm_at_time(change_time - Duration::from_nanos(1), offset_secs)
-                        } else {
-                            self.initial_bpm
-                        };
-
-                        let transition_duration = match change.transition {
-                            TempoTransition::Beats(beats, _) => {
-                                Duration::from_secs_f64(beats * 60.0 / old_bpm)
-                            }
-                            TempoTransition::Measures(measures, _) => {
-                                let current_ts =
-                                    self.time_signature_at_time(change_time, offset_secs);
-                                let beats = measures * current_ts.beats_per_measure();
-                                Duration::from_secs_f64(beats * 60.0 / old_bpm)
-                            }
-                            TempoTransition::Snap => Duration::ZERO,
-                        };
-
-                        if current_time < change_time + transition_duration {
-                            // Still in transition - need to integrate through the curve
-                            let elapsed = (current_time - change_time).as_secs_f64();
-                            let total = transition_duration.as_secs_f64();
-                            let new_bpm = change.bpm.unwrap_or(old_bpm);
-
-                            // Calculate how many beats remain in the transition using curve
-                            let beats_in_remaining_transition = curve
-                                .beats_in_remaining_transition(old_bpm, new_bpm, total, elapsed);
-
-                            if remaining_beats <= beats_in_remaining_transition {
-                                // Remaining beats fit within the remaining transition
-                                // Solve for duration using curve
-                                if let Some(dt) = curve.solve_duration_for_beats(
-                                    old_bpm,
-                                    new_bpm,
-                                    total,
-                                    elapsed,
-                                    remaining_beats,
-                                ) {
-                                    let duration_for_remaining = Duration::from_secs_f64(dt);
-                                    return current_time + duration_for_remaining - at_time;
-                                } else {
-                                    // Fallback to average BPM if calculation fails
-                                    let t = (elapsed / total).clamp(0.0, 1.0);
-                                    let current_bpm_at_start = curve.bpm_at(t, old_bpm, new_bpm);
-                                    let dt = remaining_beats * 60.0
-                                        / ((current_bpm_at_start + new_bpm) / 2.0);
-                                    let duration_for_remaining = Duration::from_secs_f64(dt);
-                                    return current_time + duration_for_remaining - at_time;
-                                }
-                            }
-
-                            // Consume all beats in the remaining transition
-                            remaining_beats -= beats_in_remaining_transition;
-                            current_time = change_time + transition_duration;
-                            current_bpm = new_bpm;
-                        } else {
-                            // Transition complete
-                            if let Some(new_bpm) = change.bpm {
-                                current_bpm = new_bpm;
-                            }
-                        }
-                    }
-                }
-                continue;
-            }
-
-            // Calculate how many beats occur before this change
-            let change_time_playback = change_time; // change_time already has offset applied
-            let time_to_change = change_time_playback - current_time;
-            let beats_in_segment = time_to_change.as_secs_f64() * current_bpm / 60.0;
-
-            // Use a small epsilon for floating point comparison to handle precision issues
-            // This ensures that when remaining_beats is very close to beats_in_segment,
-            // we treat it as equal and end the effect exactly at the tempo change
-            const EPSILON: f64 = 1e-6;
-            let beats_diff = (remaining_beats - beats_in_segment).abs();
-
-            if remaining_beats < beats_in_segment {
-                // All remaining beats fit in this segment (constant BPM)
-                let duration_for_remaining =
-                    Duration::from_secs_f64(remaining_beats * 60.0 / current_bpm);
-                return current_time + duration_for_remaining - at_time;
-            } else if beats_diff < EPSILON {
-                // remaining_beats is essentially equal to beats_in_segment (within epsilon)
-                // Effect ends exactly at the tempo change
-                return change_time - at_time;
-            }
-
-            // Consume all beats in this segment
-            remaining_beats -= beats_in_segment;
-            current_time = change_time;
-
-            // Handle the transition at this change
-            match change.transition {
-                TempoTransition::Snap => {
-                    if let Some(new_bpm) = change.bpm {
-                        current_bpm = new_bpm;
-                    }
-                }
-                TempoTransition::Beats(_, curve) | TempoTransition::Measures(_, curve) => {
-                    let old_bpm = current_bpm;
-                    let new_bpm = change.bpm.unwrap_or(old_bpm);
-
-                    // Calculate transition duration in time
-                    let transition_duration = match change.transition {
-                        TempoTransition::Beats(beats, _) => {
-                            Duration::from_secs_f64(beats * 60.0 / old_bpm)
-                        }
-                        TempoTransition::Measures(measures, _) => {
-                            let current_ts = self.time_signature_at_time(change_time, offset_secs);
-                            let beats = measures * current_ts.beats_per_measure();
-                            Duration::from_secs_f64(beats * 60.0 / old_bpm)
-                        }
-                        TempoTransition::Snap => Duration::ZERO,
-                    };
-
-                    // Calculate how many beats occur during the transition using curve
-                    let total_duration = transition_duration.as_secs_f64();
-                    let beats_in_transition =
-                        curve.beats_in_duration(old_bpm, new_bpm, total_duration, total_duration);
-
-                    if remaining_beats <= beats_in_transition {
-                        // Remaining beats fit within the transition
-                        // Solve for duration using curve
-                        if let Some(dt) = curve.solve_duration_for_beats_from_start(
-                            old_bpm,
-                            new_bpm,
-                            total_duration,
-                            remaining_beats,
-                        ) {
-                            let duration_for_remaining = Duration::from_secs_f64(dt);
-                            return current_time + duration_for_remaining - at_time;
-                        } else {
-                            // Fallback to average BPM if calculation fails
-                            let dt = remaining_beats * 60.0 / ((old_bpm + new_bpm) / 2.0);
-                            let duration_for_remaining = Duration::from_secs_f64(dt);
-                            return current_time + duration_for_remaining - at_time;
-                        }
-                    }
-
-                    // Consume all beats in the transition
-                    remaining_beats -= beats_in_transition;
-                    current_time += transition_duration;
-                    current_bpm = new_bpm;
-                }
-            }
-        }
-
-        // Remaining beats after all changes - use final BPM
-        let duration_for_remaining = Duration::from_secs_f64(remaining_beats * 60.0 / current_bpm);
-        current_time + duration_for_remaining - at_time
+        self.musical_units_to_duration(beats, at_time, offset_secs, |_| 1.0)
     }
 
-    /// Convert a duration in measures to absolute Duration at a given time
-    /// This integrates through tempo and time signature changes during the duration
-    /// If offset_secs is provided, it's used to adjust tempo change lookups
+    /// Convert a duration in measures to absolute Duration at a given time.
+    ///
+    /// Integrates through tempo and time signature changes during the
+    /// duration, including gradual (`transition:`) ramps, so a `1measure`
+    /// duration started on the first beat of a ramp bar lasts exactly as long
+    /// as that bar does on the cue grid.
+    /// If offset_secs is provided, it's added to tempo change times to account
+    /// for timeline shifts.
     pub fn measures_to_duration(
         &self,
         measures: f64,
         at_time: Duration,
         offset_secs: f64,
     ) -> Duration {
-        // Integrate through time signature changes to compute total beats
-        let offset_duration = Duration::from_secs_f64(offset_secs);
-        let mut remaining_measures = measures;
-        let mut current_time = at_time;
-        let mut current_bpm = self.bpm_at_time(at_time, offset_secs);
-        let mut current_ts = self.time_signature_at_time(at_time, offset_secs);
-        let mut total_duration = Duration::ZERO;
-
-        // Collect time-signature changes that occur after at_time
-        let mut ts_changes: Vec<(Duration, TimeSignature, f64)> = Vec::new();
-        for change in &self.changes {
-            if let Some(change_time) = change.position.absolute_time() {
-                let shifted = change_time + offset_duration;
-                if shifted > at_time {
-                    if let Some(new_ts) = change.time_signature {
-                        let new_bpm = change.bpm.unwrap_or(self.bpm_at_time(shifted, offset_secs));
-                        ts_changes.push((shifted, new_ts, new_bpm));
-                    } else if let Some(new_bpm) = change.bpm {
-                        // Tempo-only change — still need to track for bpm updates
-                        let ts_at = self.time_signature_at_time(shifted, offset_secs);
-                        ts_changes.push((shifted, ts_at, new_bpm));
-                    }
-                }
-            }
-        }
-        ts_changes.sort_by_key(|(t, _, _)| *t);
-
-        for (change_time, new_ts, new_bpm) in &ts_changes {
-            if remaining_measures <= 0.0 {
-                break;
-            }
-
-            // How many measures fit between current_time and change_time at current tempo/ts?
-            let beats_per_measure = current_ts.beats_per_measure();
-            let segment_secs = change_time.saturating_sub(current_time).as_secs_f64();
-            let segment_beats = segment_secs * current_bpm / 60.0;
-            let segment_measures = if beats_per_measure > 0.0 {
-                segment_beats / beats_per_measure
-            } else {
-                0.0
-            };
-
-            if remaining_measures <= segment_measures {
-                // All remaining measures fit in this segment
-                let beats_needed = remaining_measures * beats_per_measure;
-                let time_needed = Duration::from_secs_f64(beats_needed * 60.0 / current_bpm);
-                total_duration += time_needed;
-                remaining_measures = 0.0;
-                break;
-            }
-
-            // Consume this segment
-            remaining_measures -= segment_measures;
-            total_duration += change_time.saturating_sub(current_time);
-            current_time = *change_time;
-            current_ts = *new_ts;
-            current_bpm = *new_bpm;
-        }
-
-        // Remaining measures after all changes
-        if remaining_measures > 0.0 {
-            let beats_per_measure = current_ts.beats_per_measure();
-            let beats_needed = remaining_measures * beats_per_measure;
-            let time_needed = Duration::from_secs_f64(beats_needed * 60.0 / current_bpm);
-            total_duration += time_needed;
-        }
-
-        total_duration
+        self.musical_units_to_duration(measures, at_time, offset_secs, |ts| ts.beats_per_measure())
     }
 
+    /// Shared walker behind `beats_to_duration` and `measures_to_duration`.
+    ///
+    /// `beats_per_unit` says how many quarter-note beats one unit is under a
+    /// given time signature (1 for beats, `beats_per_measure()` for
+    /// measures). The walk starts from the tempo state in force at `at_time`
+    /// — settled BPM, time signature and any ramp still in progress — and
+    /// advances change by change, spending units until they run out.
+    fn musical_units_to_duration(
+        &self,
+        units: f64,
+        at_time: Duration,
+        offset_secs: f64,
+        beats_per_unit: impl Fn(TimeSignature) -> f64,
+    ) -> Duration {
+        if units <= 0.0 {
+            return Duration::ZERO;
+        }
+
+        // Treat a remainder this close to a change boundary as landing on it,
+        // so an effect sized to end at a tempo change ends exactly there.
+        const EPSILON: f64 = 1e-6;
+
+        let offset_duration = Duration::from_secs_f64(offset_secs);
+        let (mut cursor, next_change) = self.cursor_at(at_time, offset_secs);
+        let mut remaining = units;
+
+        for change in &self.changes[next_change..] {
+            let Some(change_time) = change.position.absolute_time() else {
+                continue;
+            };
+            let change_time = change_time + offset_duration;
+            let secs_to_change = change_time.saturating_sub(cursor.time).as_secs_f64();
+            let unit_beats = beats_per_unit(cursor.time_signature);
+            let units_in_segment =
+                segment_beats_in_secs(cursor.ramp.as_ref(), cursor.bpm, secs_to_change)
+                    / unit_beats;
+
+            if (remaining - units_in_segment).abs() < EPSILON {
+                return change_time.saturating_sub(at_time);
+            }
+            if remaining < units_in_segment {
+                let secs = segment_secs_for_beats(
+                    cursor.ramp.as_ref(),
+                    cursor.bpm,
+                    remaining * unit_beats,
+                );
+                return (cursor.time + Duration::from_secs_f64(secs)).saturating_sub(at_time);
+            }
+
+            remaining -= units_in_segment;
+            self.apply_change(&mut cursor, change, change_time, offset_secs);
+        }
+
+        // Past the last change: the remainder runs at the settled tempo,
+        // finishing any ramp still in progress first.
+        let unit_beats = beats_per_unit(cursor.time_signature);
+        let secs = segment_secs_for_beats(cursor.ramp.as_ref(), cursor.bpm, remaining * unit_beats);
+        (cursor.time + Duration::from_secs_f64(secs)).saturating_sub(at_time)
+    }
+
+    /// The tempo state in force at `at_time`, with tempo changes shifted by
+    /// `offset_secs`, and the index of the first change strictly after it.
+    ///
+    /// Agrees with `bpm_at_time` / `time_signature_at_time`: a change landing
+    /// exactly on `at_time` has already taken effect.
+    fn cursor_at(&self, at_time: Duration, offset_secs: f64) -> (TempoCursor, usize) {
+        let offset_duration = Duration::from_secs_f64(offset_secs);
+        let mut cursor = TempoCursor {
+            time: Duration::ZERO,
+            bpm: self.initial_bpm,
+            time_signature: self.initial_time_signature,
+            ramp: None,
+        };
+        let mut next_change = 0;
+
+        for (index, change) in self.changes.iter().enumerate() {
+            let Some(change_time) = change.position.absolute_time() else {
+                next_change = index + 1;
+                continue;
+            };
+            let change_time = change_time + offset_duration;
+            if change_time > at_time {
+                break;
+            }
+            self.apply_change(&mut cursor, change, change_time, offset_secs);
+            next_change = index + 1;
+        }
+
+        let advanced = at_time.saturating_sub(cursor.time).as_secs_f64();
+        cursor.ramp = cursor.ramp.and_then(|ramp| ramp.advanced_by(advanced));
+        cursor.time = at_time;
+        (cursor, next_change)
+    }
+
+    /// Advances `cursor` to `change_time` and applies `change` there, starting
+    /// a ramp for a gradual transition exactly as `integrate_through_segments`
+    /// does for cue positions.
+    fn apply_change(
+        &self,
+        cursor: &mut TempoCursor,
+        change: &TempoChange,
+        change_time: Duration,
+        offset_secs: f64,
+    ) {
+        let advanced = change_time.saturating_sub(cursor.time).as_secs_f64();
+        // The BPM actually in effect at this change may be a mid-ramp value.
+        let bpm_at_change = match cursor.ramp.as_ref() {
+            Some(ramp) => ramp.bpm_after_secs(advanced),
+            None => cursor.bpm,
+        };
+        cursor.ramp = cursor.ramp.and_then(|ramp| ramp.advanced_by(advanced));
+        cursor.time = change_time;
+
+        if let Some(new_ts) = change.time_signature {
+            cursor.time_signature = new_ts;
+        }
+        if let Some(new_bpm) = change.bpm {
+            cursor.ramp = match change.transition {
+                TempoTransition::Snap => None,
+                TempoTransition::Beats(beats, curve) => Some(SegmentRamp {
+                    old_bpm: bpm_at_change,
+                    new_bpm,
+                    total_secs: beats * 60.0 / bpm_at_change,
+                    elapsed_secs: 0.0,
+                    curve,
+                }),
+                TempoTransition::Measures(measures, curve) => {
+                    // Matches bpm_at_time: the duration is computed with the
+                    // time signature in effect at the change time (which
+                    // includes this change's own signature).
+                    let ts = self.time_signature_at_time(change_time, offset_secs);
+                    let beats = measures * ts.beats_per_measure();
+                    Some(SegmentRamp {
+                        old_bpm: bpm_at_change,
+                        new_bpm,
+                        total_secs: beats * 60.0 / bpm_at_change,
+                        elapsed_secs: 0.0,
+                        curve,
+                    })
+                }
+            };
+            cursor.bpm = new_bpm;
+        }
+    }
     /// Calculate duration for N playback measures
     /// score_start_measure: The score measure where the effect starts (e.g., 88)
     /// playback_measures: Number of playback measures (e.g., 30)
@@ -1783,5 +1713,142 @@ mod tests {
         assert!((bpm_5 - 60.0).abs() < f64::EPSILON);
         let bpm_9 = map.bpm_at_time(Duration::from_secs(9), 0.0);
         assert!((bpm_9 - 180.0).abs() < f64::EPSILON);
+    }
+
+    // ── durations through gradual transitions (#526) ───────────────
+
+    /// 12/8 at 169, then 150 from bar 99, then a one-bar ramp into 100 at
+    /// bar 120 — the Jotunheim map the gap was heard on.
+    fn ramp_map(from_bpm: f64, to_bpm: f64) -> TempoMap {
+        TempoMap::new(
+            Duration::from_millis(35),
+            169.0,
+            TimeSignature::new(12, 8),
+            vec![
+                TempoChange {
+                    position: TempoChangePosition::MeasureBeat(99, 1.0),
+                    original_measure_beat: Some((99, 1.0)),
+                    bpm: Some(from_bpm),
+                    time_signature: None,
+                    transition: TempoTransition::Snap,
+                },
+                TempoChange {
+                    position: TempoChangePosition::MeasureBeat(120, 1.0),
+                    original_measure_beat: Some((120, 1.0)),
+                    bpm: Some(to_bpm),
+                    time_signature: None,
+                    transition: TempoTransition::Measures(1.0, TransitionCurve::Linear),
+                },
+            ],
+        )
+    }
+
+    fn position(map: &TempoMap, measure: u32, beat: f64) -> Duration {
+        map.measure_to_time_with_offset(measure, beat, 0, 0.0)
+            .expect("position resolves")
+    }
+
+    fn assert_secs_eq(actual: Duration, expected: Duration, what: &str) {
+        assert!(
+            (actual.as_secs_f64() - expected.as_secs_f64()).abs() < 1e-6,
+            "{what}: got {:.6}s, expected {:.6}s",
+            actual.as_secs_f64(),
+            expected.as_secs_f64()
+        );
+    }
+
+    #[test]
+    fn one_measure_duration_at_the_top_of_a_ritardando_bar_lasts_the_whole_bar() {
+        let map = ramp_map(150.0, 100.0);
+        let bar_start = position(&map, 120, 1.0);
+        let bar_end = position(&map, 121, 1.0);
+        // Six quarters ramping 0.4s -> 0.6s: 3.0s, not the 2.4s a bar at
+        // 150 would take.
+        assert_secs_eq(
+            bar_end - bar_start,
+            Duration::from_secs_f64(3.0),
+            "ramp bar on the grid",
+        );
+        assert_secs_eq(
+            map.measures_to_duration(1.0, bar_start, 0.0),
+            bar_end - bar_start,
+            "1measure at the top of the ramp bar",
+        );
+    }
+
+    #[test]
+    fn one_measure_duration_at_the_top_of_an_accelerando_bar_lasts_the_whole_bar() {
+        let map = ramp_map(100.0, 150.0);
+        let bar_start = position(&map, 120, 1.0);
+        let bar_end = position(&map, 121, 1.0);
+        assert!(
+            (bar_end - bar_start).as_secs_f64() < 6.0 * 0.6,
+            "an accelerando bar is shorter than a bar at the old tempo"
+        );
+        assert_secs_eq(
+            map.measures_to_duration(1.0, bar_start, 0.0),
+            bar_end - bar_start,
+            "1measure at the top of the accelerando bar",
+        );
+    }
+
+    #[test]
+    fn one_beat_duration_inside_a_ramp_matches_the_grid() {
+        for (from, to) in [(150.0, 100.0), (100.0, 150.0)] {
+            let map = ramp_map(from, to);
+            for beat in [1.0, 2.0, 3.5, 5.0] {
+                let start = position(&map, 120, beat);
+                let end = position(&map, 120, beat + 1.0);
+                assert_secs_eq(
+                    map.beats_to_duration(1.0, start, 0.0),
+                    end - start,
+                    &format!("1beat from @120/{beat} ({from} -> {to})"),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn durations_spanning_into_and_out_of_a_ramp_match_the_grid() {
+        let map = ramp_map(150.0, 100.0);
+        // Two measures starting one bar before the ramp: cross into it and
+        // through it.
+        let start = position(&map, 119, 1.0);
+        assert_secs_eq(
+            map.measures_to_duration(2.0, start, 0.0),
+            position(&map, 121, 1.0) - start,
+            "2measures from @119/1",
+        );
+        // Nine beats from mid-ramp: finish the ramp and settle at 100.
+        let start = position(&map, 120, 3.0);
+        assert_secs_eq(
+            map.beats_to_duration(9.0, start, 0.0),
+            position(&map, 121, 6.0) - start,
+            "9beats from @120/3",
+        );
+    }
+
+    /// An `offset` show plays the score `offset` seconds late: the parser
+    /// shifts the resolved cue time by it and shifts the map's changes by
+    /// the same amount when sizing durations, so the ramp bar is still one
+    /// ramp bar long.
+    #[test]
+    fn ramp_durations_honour_the_offset_like_cue_positions_do() {
+        let map = ramp_map(150.0, 100.0);
+        let offset = 2.5;
+        let bar_len = position(&map, 121, 1.0) - position(&map, 120, 1.0);
+        let shifted_bar_start = position(&map, 120, 1.0) + Duration::from_secs_f64(offset);
+        assert_secs_eq(
+            map.measures_to_duration(1.0, shifted_bar_start, offset),
+            bar_len,
+            "1measure at the top of the shifted ramp bar",
+        );
+        // Without the shift the walker is 2.5s into a 2.4s ramp — already
+        // settled at 100 — and sizes the bar as six 0.6s beats.
+        assert_secs_eq(
+            map.measures_to_duration(1.0, shifted_bar_start, 0.0),
+            Duration::from_secs_f64(3.6),
+            "unshifted map, shifted time",
+        );
     }
 }

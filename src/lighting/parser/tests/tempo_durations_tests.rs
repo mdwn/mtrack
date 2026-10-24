@@ -272,3 +272,54 @@ fn test_beat_duration_without_tempo_section() {
 // These tests verify that the parsed show actually works correctly,
 // not just that it parses.
 // ============================================
+
+// ============================================
+// DURATIONS INSIDE GRADUAL TRANSITIONS (#526)
+// ============================================
+
+/// The Jotunheim ending: a one-bar ritardando at @120/1. A `1measure`
+/// effect cued on its first beat must run until the `@121/1` cue fires —
+/// no dark gap before the final chord.
+#[test]
+fn one_measure_duration_in_a_ramp_bar_ends_when_the_next_bar_cue_fires() {
+    use crate::lighting::effects::EffectType;
+
+    let content = r##"tempo {
+    start: 35ms
+    bpm: 169
+    time_signature: 12/8
+    changes: [
+        @99/1 { bpm: 150 },
+        @120/1 { bpm: 100, transition: 1m }
+    ]
+}
+
+show "Jotunheim" {
+    @120/1
+    all_wash: cycle, color: "#34A646", color: "#1E6B2A", speed: 2measures, duration: 1measure
+
+    @121/1
+    all_wash: static, color: "#FFFFFF", duration: 1beat
+}"##;
+
+    let shows = crate::lighting::parser::parse_light_shows(content).expect("show parses");
+    let show = shows.get("Jotunheim").expect("show exists");
+    assert_eq!(show.cues.len(), 2);
+    let (ramp_cue, next_cue) = (&show.cues[0], &show.cues[1]);
+    let bar_len = next_cue.time - ramp_cue.time;
+    assert!(
+        (bar_len.as_secs_f64() - 3.0).abs() < 1e-6,
+        "the ramp bar is 3.0s on the cue grid, got {:?}",
+        bar_len
+    );
+
+    let cycle = &ramp_cue.effects[0];
+    assert!(matches!(cycle.effect_type, EffectType::ColorCycle { .. }));
+    let ends_at = ramp_cue.time + cycle.total_duration();
+    assert!(
+        (ends_at.as_secs_f64() - next_cue.time.as_secs_f64()).abs() < 1e-6,
+        "the 1measure cycle must end at the @121/1 cue ({:?}), but ends at {:?}",
+        next_cue.time,
+        ends_at
+    );
+}
