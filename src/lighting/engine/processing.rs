@@ -840,9 +840,8 @@ fn apply_chase(
     let targets = spatial_order(fixture_registry, &effect.target_fixtures, direction);
 
     // Calculate fixture order based on pattern and direction
-    // For Random pattern, use cue_time (song time) as seed for deterministic randomness
-    // This ensures random effects are consistent when seeking to the same time
-    let fixture_order = calculate_fixture_order(fixture_count, pattern, direction, effect.cue_time);
+    let mut fixture_order =
+        calculate_fixture_order(fixture_count, pattern, direction, effect.cue_time);
 
     // Calculate the pattern cycle length
     let pattern_length = fixture_order.len();
@@ -851,6 +850,31 @@ fn apply_chase(
     // Each position in the pattern should last the same time as a linear chase position
     let position_duration = chase_period / fixture_count as f64;
     let pattern_cycle_period = position_duration * pattern_length as f64;
+
+    // The fixture lit just before this lap began: the order's own last entry
+    // for a pattern that repeats, the previous lap's last for a random one.
+    let mut previous_lap_last = fixture_order.last().copied();
+    if matches!(pattern, ChasePattern::Random) {
+        // A fresh shuffle every lap (#532): one order reused on every lap made
+        // a "random" chase a fixed loop. Seeded by the cue time and the lap, so
+        // the same moment always renders the same order.
+        let lap = (elapsed.as_secs_f64() / pattern_cycle_period)
+            .floor()
+            .max(0.0) as u64;
+        fixture_order = random_lap_order(fixture_count, effect.cue_time, lap);
+        if lap > 0 {
+            let previous = random_lap_order(fixture_count, effect.cue_time, lap - 1);
+            previous_lap_last = previous.last().copied();
+            // No double tap at the seam: a lap does not start on the fixture
+            // the previous one ended on. Swapping the first two never moves a
+            // lap's last entry (with three or more), so each lap only needs its
+            // predecessor's shuffle, not a chain back to the first.
+            if fixture_count >= 3 && fixture_order.first().copied() == previous_lap_last {
+                fixture_order.swap(0, 1);
+            }
+        }
+    }
+
     let pattern_progress = cycle_progress(elapsed, pattern_cycle_period);
     let current_pattern_index_f = pattern_progress * pattern_length as f64;
     let current_pattern_index = current_pattern_index_f.floor() as usize;
@@ -886,16 +910,12 @@ fn apply_chase(
                     };
 
                     // Check if this fixture is the previous fixture (fading out)
-                    let prev_index = if current_pattern_index > 0 {
-                        current_pattern_index - 1
+                    let previous = if current_pattern_index > 0 {
+                        fixture_order.get(current_pattern_index - 1).copied()
                     } else {
-                        pattern_length - 1
+                        previous_lap_last
                     };
-                    let is_previous = if prev_index < pattern_length {
-                        fixture_order[prev_index] == i
-                    } else {
-                        false
-                    };
+                    let is_previous = previous == Some(i);
 
                     if is_current {
                         // Current fixture: fade in if at start of position, otherwise full on
@@ -1001,6 +1021,35 @@ fn spatial_order(
     placed.into_iter().map(|(name, _)| name).collect()
 }
 
+/// A random chase's fixture order for one lap: a shuffle seeded by the cue
+/// time (the song time the effect was meant to start), the fixture count and
+/// the lap number. Deterministic, so seeking to a moment renders the order
+/// that moment always had; a different shuffle on every lap (#532).
+fn random_lap_order(fixture_count: usize, cue_time: Option<Duration>, lap: u64) -> Vec<usize> {
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    match cue_time {
+        Some(cue) => cue.as_nanos().hash(&mut hasher),
+        // Fallback if cue_time not set (shouldn't happen in normal operation)
+        None => 13u64.hash(&mut hasher),
+    }
+    fixture_count.hash(&mut hasher);
+    lap.hash(&mut hasher);
+    let mut rng = StdRng::seed_from_u64(hasher.finish());
+
+    // Fisher-Yates shuffle with proper random number generator
+    let mut order: Vec<usize> = (0..fixture_count).collect();
+    for i in (1..fixture_count).rev() {
+        let j = rng.random_range(0..=i);
+        order.swap(i, j);
+    }
+    order
+}
+
 /// Calculate fixture order for chase effects based on pattern and direction
 fn calculate_fixture_order(
     fixture_count: usize,
@@ -1009,38 +1058,8 @@ fn calculate_fixture_order(
     cue_time: Option<Duration>,
 ) -> Vec<usize> {
     match pattern {
-        ChasePattern::Random => {
-            use rand::rngs::StdRng;
-            use rand::{RngExt, SeedableRng};
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-
-            let mut order: Vec<usize> = (0..fixture_count).collect();
-
-            // Generate a seed from the cue_time (song time when effect was supposed to start)
-            // This ensures random effects are deterministic based on their position in the timeline
-            // When seeking, effects use their intended cue time, ensuring consistency
-            let seed = if let Some(cue) = cue_time {
-                let mut hasher = DefaultHasher::new();
-                cue.as_nanos().hash(&mut hasher);
-                fixture_count.hash(&mut hasher); // Include fixture count for uniqueness
-                hasher.finish()
-            } else {
-                // Fallback if cue_time not set (shouldn't happen in normal operation)
-                fixture_count as u64 * 7 + 13
-            };
-
-            // Create a seeded RNG for deterministic shuffling
-            let mut rng = StdRng::seed_from_u64(seed);
-
-            // Fisher-Yates shuffle with proper random number generator
-            for i in (1..fixture_count).rev() {
-                let j = rng.random_range(0..=i);
-                order.swap(i, j);
-            }
-
-            order
-        }
+        // The first lap's order; `apply_chase` reshuffles every lap.
+        ChasePattern::Random => random_lap_order(fixture_count, cue_time, 0),
         ChasePattern::Linear => {
             // Linear pattern - fixtures in order
             let mut order: Vec<usize> = (0..fixture_count).collect();
@@ -1561,5 +1580,140 @@ mod spatial_order_tests {
             spatial_order(&reg, &targets, &ChaseDirection::LeftToRight),
             names(&["c", "a", "b"])
         );
+    }
+}
+
+#[cfg(test)]
+mod random_chase_tests {
+    use super::*;
+
+    const FIXTURES: usize = 8;
+
+    fn rig() -> (HashMap<String, FixtureInfo>, EffectInstance) {
+        let names: Vec<String> = (0..FIXTURES).map(|i| format!("brick{i}")).collect();
+        let registry = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let mut channels = HashMap::new();
+                channels.insert("dimmer".to_string(), 1);
+                let info = FixtureInfo::new(
+                    name.clone(),
+                    1,
+                    1 + i as u16,
+                    "Dimmer".to_string(),
+                    channels,
+                    None,
+                );
+                (name.clone(), info)
+            })
+            .collect();
+        let mut effect = EffectInstance::new(
+            "random".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Random,
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
+                duration: Duration::from_secs(60),
+            },
+            names,
+            None,
+            None,
+            None,
+        );
+        effect.cue_time = Some(Duration::from_secs(42));
+        (registry, effect)
+    }
+
+    /// The fixture lit at `secs` into the chase (one lap a second).
+    fn lit_at(
+        registry: &HashMap<String, FixtureInfo>,
+        effect: &EffectInstance,
+        secs: f64,
+    ) -> usize {
+        let states = apply_chase(
+            registry,
+            effect,
+            &ChasePattern::Random,
+            1.0,
+            &ChaseDirection::LeftToRight,
+            CycleTransition::Snap,
+            Duration::from_secs_f64(secs),
+        )
+        .unwrap()
+        .unwrap();
+        let lit: Vec<usize> = (0..FIXTURES)
+            .filter(|i| {
+                states[&format!("brick{i}")]
+                    .channels
+                    .values()
+                    .any(|c| c.value > 0.5)
+            })
+            .collect();
+        assert_eq!(lit.len(), 1, "exactly one fixture lit at {secs}: {lit:?}");
+        lit[0]
+    }
+
+    /// Each lap's order, sampled in the middle of every step.
+    fn laps(
+        registry: &HashMap<String, FixtureInfo>,
+        effect: &EffectInstance,
+        count: usize,
+    ) -> Vec<Vec<usize>> {
+        (0..count)
+            .map(|lap| {
+                (0..FIXTURES)
+                    .map(|step| {
+                        lit_at(
+                            registry,
+                            effect,
+                            lap as f64 + (step as f64 + 0.5) / FIXTURES as f64,
+                        )
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// #532: every lap is a fresh permutation, not the first one repeated.
+    #[test]
+    fn a_random_chase_reshuffles_every_lap() {
+        let (registry, effect) = rig();
+        let laps = laps(&registry, &effect, 6);
+        for lap in &laps {
+            let mut sorted = lap.clone();
+            sorted.sort();
+            assert_eq!(
+                sorted,
+                (0..FIXTURES).collect::<Vec<_>>(),
+                "a lap visits every fixture once: {lap:?}"
+            );
+        }
+        let distinct: std::collections::HashSet<&Vec<usize>> = laps.iter().collect();
+        assert!(distinct.len() > 1, "every lap had the same order: {laps:?}");
+        assert_ne!(laps[0], laps[1], "the second lap repeated the first");
+    }
+
+    /// The same moment always renders the same fixture, so seeking and
+    /// re-renders agree.
+    #[test]
+    fn a_random_chase_is_deterministic() {
+        let (registry, effect) = rig();
+        assert_eq!(laps(&registry, &effect, 4), laps(&registry, &effect, 4));
+    }
+
+    /// No lap starts on the fixture the previous lap ended on.
+    #[test]
+    fn a_random_chase_never_double_taps_at_a_lap_seam() {
+        let (registry, effect) = rig();
+        let laps = laps(&registry, &effect, 40);
+        for pair in laps.windows(2) {
+            assert_ne!(
+                pair[0].last(),
+                pair[1].first(),
+                "a lap began on the fixture the last one ended on: {pair:?}"
+            );
+        }
     }
 }
