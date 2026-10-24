@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A strobe no longer keeps strobing after it ends**: the engine only wrote the channels an
+  effect drove that frame, and DMX holds whatever it was last sent, so when a hardware strobe
+  expired, was cleared, or was cut off by the next song, the fixture's strobe channel stayed at
+  its last rate. The next look strobed in hardware until something drove the strobe again — an
+  Esaweg ending at 10 Hz strobed straight through the gap and into the following song. A strobe
+  channel driven on one frame and not the next is now sent off.
 - **A chase lifts the bed instead of blacking it out when the blend says so (#518)**: on an
   RGB-only fixture the chase wrote its mask into a multiplier whatever the `blend_mode`, so a
   `screen`, `add` or `overlay` chase lit one fixture and sent every other one to zero — the
