@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quarter-note BPM (`bpm_unit: "quarter"`; `"click"` when there is no meter to read against).
   `tempo-grid-mismatch` no longer fires on a single downbeat the click track displaces at a tempo
   change when the following bars land back on the tempo block.
+- **A fading `replace` static crossfades with the bed instead of dipping to black (#521)**: an
+  `up_time` / `down_time` on a `replace` static scaled the static's own colour toward zero and
+  then replaced the layers beneath with it, so a lift over a coloured bed went bed → black →
+  colour → black → bed. A partial replace now moves from the value beneath toward its colour by
+  the fade amount; over nothing it still fades from black, and `screen` / `multiply` / `add` /
+  `overlay` statics fade their own contribution as before.
 - **A chase lifts the bed instead of blacking it out when the blend says so (#518)**: on an
   RGB-only fixture the chase wrote its mask into a multiplier whatever the `blend_mode`, so a
   `screen`, `add` or `overlay` chase lit one fixture and sent every other one to zero — the

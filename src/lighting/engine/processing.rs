@@ -278,11 +278,20 @@ fn apply_static_effect(
                 .filter(|(param_name, _)| param_name.as_str() != "dimmer")
                 .filter(|(param_name, _)| fixture.takes_channel(param_name))
                 .map(|(param_name, value)| {
-                    let faded_value = *value * crossfade_multiplier;
-                    (
-                        param_name.clone(),
-                        ChannelState::new(faded_value, effect.layer, effect.blend_mode),
-                    )
+                    // A replace fades by crossfading with what is beneath it;
+                    // the other modes fade their own contribution, which at
+                    // zero leaves the bed untouched.
+                    let state = if effect.blend_mode == BlendMode::Replace {
+                        ChannelState::new(*value, effect.layer, effect.blend_mode)
+                            .with_mix(crossfade_multiplier)
+                    } else {
+                        ChannelState::new(
+                            *value * crossfade_multiplier,
+                            effect.layer,
+                            effect.blend_mode,
+                        )
+                    };
+                    (param_name.clone(), state)
                 });
             let mut state = FixtureState::from_channels(channels);
 
