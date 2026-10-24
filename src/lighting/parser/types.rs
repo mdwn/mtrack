@@ -124,6 +124,12 @@ pub struct Effect {
     /// leftovers lets a lint say so; rejecting them at parse time would break
     /// shows that already carry one.
     pub ignored_parameters: Vec<String>,
+    /// The show's `offset` (seconds) in force at the cue this effect belongs
+    /// to. The parser resolved the cue's time and the effect's musical
+    /// durations against a tempo map shifted by this much; the engine shifts
+    /// it the same way when it resolves beat/measure-based speeds and
+    /// frequencies at runtime, so both agree on when a tempo change lands.
+    pub tempo_offset_secs: f64,
 }
 
 impl Effect {
@@ -192,6 +198,7 @@ mod tests {
             down_time: None,
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
         }
@@ -213,6 +220,7 @@ mod tests {
             down_time: down,
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
         }

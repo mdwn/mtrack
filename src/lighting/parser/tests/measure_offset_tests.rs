@@ -928,7 +928,7 @@ show "Esaweg" {
     if let crate::lighting::effects::EffectType::Strobe { frequency, .. } =
         &strobe_effect.effect_type
     {
-        let hz = frequency.to_hz(None, Duration::ZERO);
+        let hz = frequency.to_hz(None, Duration::ZERO, 0.0);
         assert!(
             (hz - 10.0).abs() < 0.001,
             "Strobe frequency should be 10Hz, got {}",
@@ -959,4 +959,111 @@ show "Esaweg" {
         "Strobe window should be ~1.4s, got {}",
         window
     );
+}
+
+/// #525: an `offset` show shifts its cue times, and the engine must shift the
+/// tempo map by the same amount when it resolves a beat-based speed at
+/// runtime — otherwise a chase under a tempo change speeds up one offset
+/// early. The parsed effect carries the offset the cue was resolved with.
+#[test]
+fn offset_show_effects_carry_the_offset_so_runtime_speed_changes_with_the_cue_grid() {
+    use crate::lighting::effects::EffectType;
+
+    let content = r##"tempo {
+    bpm: 110
+    time_signature: 4/4
+    changes: [
+        @30/1 { bpm: 160 }
+    ]
+}
+
+show "Esaweg" {
+    @1/1
+    offset 1 measures
+
+    @18/1
+    all_wash: chase, speed: 3beats, duration: 12measures
+
+    @30/1
+    clear()
+    all_wash: static, color: "white", duration: 1beat
+}"##;
+
+    let shows = parse_light_shows(content).expect("Should parse offset show");
+    let show = shows.get("Esaweg").expect("Should have Esaweg show");
+    let tempo_map = show.tempo_map.as_ref().expect("show has a tempo map");
+
+    let one_measure_at_110 = 4.0 * 60.0 / 110.0;
+    let chase_cue = show
+        .cues
+        .iter()
+        .find(|c| {
+            c.effects
+                .iter()
+                .any(|e| matches!(e.effect_type, EffectType::Chase { .. }))
+        })
+        .expect("chase cue");
+    let chase = &chase_cue.effects[0];
+    assert!(
+        (chase.tempo_offset_secs - one_measure_at_110).abs() < 1e-9,
+        "chase should carry the 1-measure offset ({one_measure_at_110}s), got {}",
+        chase.tempo_offset_secs
+    );
+
+    // The @30/1 cue sits where the click actually changes tempo.
+    let change_cue = show
+        .cues
+        .iter()
+        .find(|c| {
+            c.effects
+                .iter()
+                .any(|e| matches!(e.effect_type, EffectType::Static { .. }))
+        })
+        .expect("static cue at @30/1");
+    let unshifted_change = tempo_map
+        .measure_to_time_with_offset(30, 1.0, 0, 0.0)
+        .unwrap();
+    let shifted_change = unshifted_change + Duration::from_secs_f64(one_measure_at_110);
+    assert_eq!(change_cue.time, shifted_change);
+
+    let EffectType::Chase { speed, .. } = &chase.effect_type else {
+        panic!("expected a chase");
+    };
+    let rate =
+        |t: Duration| speed.to_cycles_per_second(Some(tempo_map), t, chase.tempo_offset_secs);
+    let slow = 110.0 / 60.0 / 3.0;
+    let fast = 160.0 / 60.0 / 3.0;
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+
+    assert!(close(rate(chase_cue.time), slow), "at the chase cue");
+    assert!(
+        close(rate(unshifted_change), slow),
+        "at the unshifted change time ({unshifted_change:?}) the music is still at 110: got {}",
+        rate(unshifted_change)
+    );
+    // The last 3-beat window that fits entirely before the shifted change
+    // still runs at 110; a window that straddles it integrates through both.
+    let three_beats_at_110 = Duration::from_secs_f64(3.0 * 60.0 / 110.0);
+    assert!(
+        close(
+            rate(shifted_change - three_beats_at_110 - Duration::from_millis(1)),
+            slow
+        ),
+        "just before the last full 110-BPM window"
+    );
+    let straddling = rate(shifted_change - Duration::from_millis(1));
+    assert!(
+        straddling > slow && straddling < fast,
+        "1ms before the shifted change the 3-beat window straddles it: got {straddling}"
+    );
+    assert!(
+        close(rate(shifted_change), fast),
+        "at the shifted change ({shifted_change:?}): got {}",
+        rate(shifted_change)
+    );
+    // Without the offset the engine would switch one measure early.
+    assert!(close(
+        speed.to_cycles_per_second(Some(tempo_map), unshifted_change, 0.0),
+        fast
+    ));
 }

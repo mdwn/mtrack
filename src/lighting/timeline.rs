@@ -439,6 +439,7 @@ impl LightingTimeline {
         }
         effect_instance.per_cell = effect.per_cell;
         effect_instance.spread = effect.spread;
+        effect_instance.tempo_offset_secs = effect.tempo_offset_secs;
 
         effect_instance
     }
@@ -495,6 +496,29 @@ mod tests {
     }
 
     #[test]
+    fn effect_instances_carry_the_cue_offset_for_tempo_lookups() {
+        let effect = Effect {
+            sequence_name: None,
+            ignored_parameters: Vec::new(),
+            tempo_offset_secs: 2.5,
+            per_cell: false,
+            spread: 0.0,
+            groups: vec!["g".to_string()],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration: Duration::from_secs(5),
+            },
+            layer: None,
+            blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
+        };
+        let instance = LightingTimeline::create_effect_instance(&effect, Duration::ZERO);
+        assert_eq!(instance.tempo_offset_secs, 2.5);
+    }
+
+    #[test]
     fn test_timeline_is_finished() {
         use crate::lighting::parser::Cue;
 
@@ -509,6 +533,7 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["test_group".to_string()],
@@ -615,6 +640,7 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["front_wash".to_string()],
@@ -657,6 +683,7 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["test_group".to_string()],
@@ -722,6 +749,7 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["test_group".to_string()],
@@ -769,6 +797,7 @@ mod tests {
         let effect1 = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["fixture1".to_string()],
@@ -786,6 +815,7 @@ mod tests {
         let effect2 = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["fixture2".to_string()],
@@ -930,6 +960,7 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["test_group".to_string()],
@@ -978,6 +1009,7 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["test_group".to_string()],
@@ -1039,6 +1071,7 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["test_group".to_string()],
@@ -1106,6 +1139,7 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["test_group".to_string()],
@@ -1225,6 +1259,7 @@ mod tests {
         let bg_effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["test_group".to_string()],
@@ -1242,6 +1277,7 @@ mod tests {
         let fg_effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["test_group".to_string()],
@@ -1332,6 +1368,7 @@ mod tests {
         let effect = Effect {
             sequence_name: None,
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["test_group".to_string()],
@@ -1400,6 +1437,7 @@ mod tests {
         let seq_effect = |seq: &str| Effect {
             sequence_name: Some(seq.to_string()),
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["test_group".to_string()],
@@ -1478,6 +1516,7 @@ mod tests {
         let seq_effect = |seq: &str| Effect {
             sequence_name: Some(seq.to_string()),
             ignored_parameters: Vec::new(),
+            tempo_offset_secs: 0.0,
             per_cell: false,
             spread: 0.0,
             groups: vec!["test_group".to_string()],

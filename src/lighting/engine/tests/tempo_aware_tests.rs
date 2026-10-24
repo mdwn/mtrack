@@ -487,6 +487,7 @@ fn test_chase_after_tempo_change_with_measure_offset() {
     let current_speed = TempoAwareSpeed::Beats(0.5).to_cycles_per_second(
         Some(&tempo_map),
         linear_chase_time + Duration::from_millis(100),
+        0.0,
     );
     assert!(
         current_speed > 0.0,
@@ -545,7 +546,8 @@ fn test_chase_timing_edge_cases_after_tempo_change() {
     ];
 
     for (i, test_time) in test_times.iter().enumerate() {
-        let speed = TempoAwareSpeed::Beats(0.5).to_cycles_per_second(Some(&tempo_map), *test_time);
+        let speed =
+            TempoAwareSpeed::Beats(0.5).to_cycles_per_second(Some(&tempo_map), *test_time, 0.0);
         assert!(
             speed > 0.0,
             "Speed should never be zero at test point {} (time={:?}): got speed={}",

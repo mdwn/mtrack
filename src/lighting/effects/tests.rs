@@ -163,28 +163,28 @@ fn test_tempo_aware_speed_zero_values() {
 
     // Zero seconds should return 0.0 (stopped), not infinity
     let speed = TempoAwareSpeed::Seconds(0.0);
-    let result = speed.to_cycles_per_second(None, Duration::ZERO);
+    let result = speed.to_cycles_per_second(None, Duration::ZERO, 0.0);
     assert_eq!(result, 0.0, "Zero seconds should return 0.0");
     assert!(!result.is_infinite(), "Should not be infinite");
 
     // Negative seconds should also return 0.0
     let speed = TempoAwareSpeed::Seconds(-1.0);
-    let result = speed.to_cycles_per_second(None, Duration::ZERO);
+    let result = speed.to_cycles_per_second(None, Duration::ZERO, 0.0);
     assert_eq!(result, 0.0, "Negative seconds should return 0.0");
 
     // Zero measures should return 0.0
     let speed = TempoAwareSpeed::Measures(0.0);
-    let result = speed.to_cycles_per_second(None, Duration::ZERO);
+    let result = speed.to_cycles_per_second(None, Duration::ZERO, 0.0);
     assert_eq!(result, 0.0, "Zero measures should return 0.0");
 
     // Zero beats should return 0.0
     let speed = TempoAwareSpeed::Beats(0.0);
-    let result = speed.to_cycles_per_second(None, Duration::ZERO);
+    let result = speed.to_cycles_per_second(None, Duration::ZERO, 0.0);
     assert_eq!(result, 0.0, "Zero beats should return 0.0");
 
     // Positive values should still work normally
     let speed = TempoAwareSpeed::Seconds(2.0);
-    let result = speed.to_cycles_per_second(None, Duration::ZERO);
+    let result = speed.to_cycles_per_second(None, Duration::ZERO, 0.0);
     assert!(
         (result - 0.5).abs() < 0.001,
         "2 seconds should give 0.5 cycles/sec"
@@ -197,28 +197,28 @@ fn test_tempo_aware_frequency_zero_values() {
 
     // Zero seconds should return 0.0 (stopped), not infinity
     let freq = TempoAwareFrequency::Seconds(0.0);
-    let result = freq.to_hz(None, Duration::ZERO);
+    let result = freq.to_hz(None, Duration::ZERO, 0.0);
     assert_eq!(result, 0.0, "Zero seconds should return 0.0");
     assert!(!result.is_infinite(), "Should not be infinite");
 
     // Negative seconds should also return 0.0
     let freq = TempoAwareFrequency::Seconds(-1.0);
-    let result = freq.to_hz(None, Duration::ZERO);
+    let result = freq.to_hz(None, Duration::ZERO, 0.0);
     assert_eq!(result, 0.0, "Negative seconds should return 0.0");
 
     // Zero measures should return 0.0
     let freq = TempoAwareFrequency::Measures(0.0);
-    let result = freq.to_hz(None, Duration::ZERO);
+    let result = freq.to_hz(None, Duration::ZERO, 0.0);
     assert_eq!(result, 0.0, "Zero measures should return 0.0");
 
     // Zero beats should return 0.0
     let freq = TempoAwareFrequency::Beats(0.0);
-    let result = freq.to_hz(None, Duration::ZERO);
+    let result = freq.to_hz(None, Duration::ZERO, 0.0);
     assert_eq!(result, 0.0, "Zero beats should return 0.0");
 
     // Positive values should still work normally
     let freq = TempoAwareFrequency::Seconds(0.5);
-    let result = freq.to_hz(None, Duration::ZERO);
+    let result = freq.to_hz(None, Duration::ZERO, 0.0);
     assert!((result - 2.0).abs() < 0.001, "0.5 seconds should give 2 Hz");
 }
 

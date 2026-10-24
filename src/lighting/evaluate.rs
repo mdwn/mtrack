@@ -937,4 +937,62 @@ show "T" {
         };
         assert_eq!(lit.is_dark(), Some(false));
     }
+
+    /// #525: with `offset 1 measures`, a `speed: 1beat` chase must keep the
+    /// old tempo until the shifted change time — the instant the cue grid
+    /// (and the click) switch — and not one measure earlier.
+    ///
+    /// 60 -> 120 BPM at @5/1 in 4/4: unshifted change at 16s, shifted at 20s.
+    /// Two fixtures and one beat per cycle: each fixture holds the head for
+    /// 0.5s at 60 BPM and 0.25s at 120 BPM, measured from the cue at 12s.
+    /// On RGB-only fixtures a chase is a brightness mask over the colour bed
+    /// beneath it, so the head shows as the bed's red on one fixture at a time.
+    #[test]
+    fn an_offset_shows_beat_based_chase_changes_tempo_at_the_shifted_change() {
+        let source = r#"
+tempo {
+    bpm: 60
+    time_signature: 4/4
+    changes: [ @5/1 { bpm: 120 } ]
+}
+show "T" {
+    @1/1
+    offset 1 measures
+    @3/1
+    a, b: static, color: "red", layer: background, duration: 12s
+    a, b: chase, speed: 1beat, layer: midground, blend_mode: replace, duration: 12s
+}
+"#;
+        let fixtures = vec![rgb_fixture("a", 1), rgb_fixture("b", 4)];
+        let head = |evaluation: &Evaluation| -> &'static str {
+            match (
+                channel(evaluation, "a", "red") > 0,
+                channel(evaluation, "b", "red") > 0,
+            ) {
+                (true, false) => "a",
+                (false, true) => "b",
+                other => panic!("exactly one fixture should be lit, got {other:?}"),
+            }
+        };
+        // Before the fix the chase ran at 120 BPM from the unshifted change
+        // at 16s. Sample points keep the one-beat window on one side of the
+        // shifted change (a window straddling it blends both tempos by
+        // design):
+        // elapsed 5.3s: 60 BPM puts the head on a (floor(5.3/0.5) = 10),
+        // 120 BPM would put it on b (floor(5.3/0.25) = 21).
+        // elapsed 6.3s: a at 60 BPM (12), b at 120 BPM (25).
+        // elapsed 8.3s, past the shifted change: b at 120 BPM (33); a at 60 (16).
+        let evaluations = eval(source, &fixtures, &[17.3, 18.3, 20.3]);
+        assert_eq!(
+            head(&evaluations[0]),
+            "a",
+            "17.3s: past the unshifted change, still at 60 BPM"
+        );
+        assert_eq!(
+            head(&evaluations[1]),
+            "a",
+            "18.3s: still at 60 BPM, the shifted change is at 20s"
+        );
+        assert_eq!(head(&evaluations[2]), "b", "20.3s: now at 120 BPM");
+    }
 }

@@ -41,6 +41,10 @@ pub struct EffectInstance {
     /// For a `move` without `from`: each target's pose when the effect
     /// started, captured from the engine's pose memory. Empty otherwise.
     pub start_poses: std::collections::HashMap<String, super::pointing::Pose>,
+    /// The show's `offset` (seconds) in force where this effect was cued.
+    /// Tempo-aware speeds and frequencies shift the tempo map's changes by
+    /// it, as the parser did for the cue's time and durations.
+    pub tempo_offset_secs: f64,
 }
 
 impl EffectInstance {
@@ -85,6 +89,7 @@ impl EffectInstance {
             per_cell: false,
             spread: 0.0,
             start_poses: std::collections::HashMap::new(),
+            tempo_offset_secs: 0.0,
         }
     }
 

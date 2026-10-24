@@ -24,14 +24,17 @@ fn duration_to_rate(duration_secs: f64) -> f64 {
     }
 }
 
-/// Helper to convert measures to duration using tempo map or fallback
+/// Helper to convert measures to duration using tempo map or fallback.
+/// `offset_secs` shifts the map's tempo changes, as the parser does for an
+/// `offset` show.
 fn measures_to_duration_secs(
     measures: f64,
     tempo_map: Option<&crate::lighting::tempo::TempoMap>,
     at_time: Duration,
+    offset_secs: f64,
 ) -> f64 {
     if let Some(tm) = tempo_map {
-        let duration = tm.measures_to_duration(measures, at_time, 0.0);
+        let duration = tm.measures_to_duration(measures, at_time, offset_secs);
         duration.as_secs_f64()
     } else {
         // Fallback: assume default BPM, 4/4 time
@@ -40,14 +43,17 @@ fn measures_to_duration_secs(
     }
 }
 
-/// Helper to convert beats to duration using tempo map or fallback
+/// Helper to convert beats to duration using tempo map or fallback.
+/// `offset_secs` shifts the map's tempo changes, as the parser does for an
+/// `offset` show.
 fn beats_to_duration_secs(
     beats: f64,
     tempo_map: Option<&crate::lighting::tempo::TempoMap>,
     at_time: Duration,
+    offset_secs: f64,
 ) -> f64 {
     if let Some(tm) = tempo_map {
-        let duration = tm.beats_to_duration(beats, at_time, 0.0);
+        let duration = tm.beats_to_duration(beats, at_time, offset_secs);
         duration.as_secs_f64()
     } else {
         // Fallback: assume default BPM
@@ -73,11 +79,17 @@ pub enum TempoAwareValue {
 }
 
 impl TempoAwareValue {
-    /// Get the current rate (cycles per second / Hz), using tempo map if available
+    /// Get the current rate (cycles per second / Hz), using tempo map if available.
+    ///
+    /// `offset_secs` is the show's `offset` in force where the effect was
+    /// cued: the tempo map's changes are shifted by it, exactly as the parser
+    /// shifts them when it resolves the effect's cue time and durations, so a
+    /// beat-based speed changes tempo at the same instant the cue grid does.
     pub fn to_rate(
         &self,
         tempo_map: Option<&crate::lighting::tempo::TempoMap>,
         at_time: Duration,
+        offset_secs: f64,
     ) -> f64 {
         match self {
             TempoAwareValue::Fixed(rate) => *rate,
@@ -86,14 +98,15 @@ impl TempoAwareValue {
                 if *measures <= 0.0 {
                     return 0.0;
                 }
-                let duration_secs = measures_to_duration_secs(*measures, tempo_map, at_time);
+                let duration_secs =
+                    measures_to_duration_secs(*measures, tempo_map, at_time, offset_secs);
                 duration_to_rate(duration_secs)
             }
             TempoAwareValue::Beats(beats) => {
                 if *beats <= 0.0 {
                     return 0.0;
                 }
-                let duration_secs = beats_to_duration_secs(*beats, tempo_map, at_time);
+                let duration_secs = beats_to_duration_secs(*beats, tempo_map, at_time, offset_secs);
                 duration_to_rate(duration_secs)
             }
         }
@@ -105,8 +118,9 @@ impl TempoAwareValue {
         &self,
         tempo_map: Option<&crate::lighting::tempo::TempoMap>,
         at_time: Duration,
+        offset_secs: f64,
     ) -> f64 {
-        self.to_rate(tempo_map, at_time)
+        self.to_rate(tempo_map, at_time, offset_secs)
     }
 
     /// Alias for `to_rate` — reads naturally when the value represents frequency (Hz).
@@ -115,8 +129,9 @@ impl TempoAwareValue {
         &self,
         tempo_map: Option<&crate::lighting::tempo::TempoMap>,
         at_time: Duration,
+        offset_secs: f64,
     ) -> f64 {
-        self.to_rate(tempo_map, at_time)
+        self.to_rate(tempo_map, at_time, offset_secs)
     }
 }
 
@@ -157,7 +172,7 @@ mod tests {
     #[test]
     fn value_fixed() {
         let val = TempoAwareValue::Fixed(2.5);
-        assert!((val.to_rate(None, Duration::ZERO) - 2.5).abs() < 1e-9);
+        assert!((val.to_rate(None, Duration::ZERO, 0.0) - 2.5).abs() < 1e-9);
     }
 
     // ── TempoAwareValue — Seconds ──────────────────────────────────
@@ -165,13 +180,13 @@ mod tests {
     #[test]
     fn value_seconds() {
         let val = TempoAwareValue::Seconds(4.0);
-        assert!((val.to_rate(None, Duration::ZERO) - 0.25).abs() < 1e-9);
+        assert!((val.to_rate(None, Duration::ZERO, 0.0) - 0.25).abs() < 1e-9);
     }
 
     #[test]
     fn value_seconds_zero() {
         let val = TempoAwareValue::Seconds(0.0);
-        assert_eq!(val.to_rate(None, Duration::ZERO), 0.0);
+        assert_eq!(val.to_rate(None, Duration::ZERO, 0.0), 0.0);
     }
 
     // ── TempoAwareValue — Beats (no tempo map -> fallback 120 BPM) ─
@@ -180,7 +195,7 @@ mod tests {
     fn value_beats_no_tempo_map() {
         // 1 beat at 120 BPM = 0.5 seconds -> rate = 2.0
         let val = TempoAwareValue::Beats(1.0);
-        let rate = val.to_rate(None, Duration::ZERO);
+        let rate = val.to_rate(None, Duration::ZERO, 0.0);
         assert!((rate - 2.0).abs() < 1e-9);
     }
 
@@ -188,20 +203,20 @@ mod tests {
     fn value_beats_two_beats_no_tempo_map() {
         // 2 beats at 120 BPM = 1.0 second -> rate = 1.0
         let val = TempoAwareValue::Beats(2.0);
-        let rate = val.to_rate(None, Duration::ZERO);
+        let rate = val.to_rate(None, Duration::ZERO, 0.0);
         assert!((rate - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn value_beats_zero() {
         let val = TempoAwareValue::Beats(0.0);
-        assert_eq!(val.to_rate(None, Duration::ZERO), 0.0);
+        assert_eq!(val.to_rate(None, Duration::ZERO, 0.0), 0.0);
     }
 
     #[test]
     fn value_beats_negative() {
         let val = TempoAwareValue::Beats(-1.0);
-        assert_eq!(val.to_rate(None, Duration::ZERO), 0.0);
+        assert_eq!(val.to_rate(None, Duration::ZERO, 0.0), 0.0);
     }
 
     // ── TempoAwareValue — Measures (no tempo map -> fallback) ──────
@@ -210,20 +225,20 @@ mod tests {
     fn value_measures_no_tempo_map() {
         // 1 measure = 4 beats at 120 BPM = 2.0 seconds -> rate = 0.5
         let val = TempoAwareValue::Measures(1.0);
-        let rate = val.to_rate(None, Duration::ZERO);
+        let rate = val.to_rate(None, Duration::ZERO, 0.0);
         assert!((rate - 0.5).abs() < 1e-9);
     }
 
     #[test]
     fn value_measures_zero() {
         let val = TempoAwareValue::Measures(0.0);
-        assert_eq!(val.to_rate(None, Duration::ZERO), 0.0);
+        assert_eq!(val.to_rate(None, Duration::ZERO, 0.0), 0.0);
     }
 
     #[test]
     fn value_measures_negative() {
         let val = TempoAwareValue::Measures(-1.0);
-        assert_eq!(val.to_rate(None, Duration::ZERO), 0.0);
+        assert_eq!(val.to_rate(None, Duration::ZERO, 0.0), 0.0);
     }
 
     // ── Aliases work identically ───────────────────────────────────
@@ -231,13 +246,13 @@ mod tests {
     #[test]
     fn speed_alias_works() {
         let speed = TempoAwareSpeed::Fixed(2.5);
-        assert!((speed.to_cycles_per_second(None, Duration::ZERO) - 2.5).abs() < 1e-9);
+        assert!((speed.to_cycles_per_second(None, Duration::ZERO, 0.0) - 2.5).abs() < 1e-9);
     }
 
     #[test]
     fn frequency_alias_works() {
         let freq = TempoAwareFrequency::Fixed(10.0);
-        assert!((freq.to_hz(None, Duration::ZERO) - 10.0).abs() < 1e-9);
+        assert!((freq.to_hz(None, Duration::ZERO, 0.0) - 10.0).abs() < 1e-9);
     }
 
     // ── TempoAwareValue with TempoMap ──────────────────────────────
@@ -248,7 +263,7 @@ mod tests {
         let tm = TempoMap::new(Duration::ZERO, 90.0, TimeSignature::new(4, 4), vec![]);
         // 1 beat at 90 BPM = 60/90 = 0.667s -> rate ~ 1.5
         let val = TempoAwareValue::Beats(1.0);
-        let rate = val.to_rate(Some(&tm), Duration::ZERO);
+        let rate = val.to_rate(Some(&tm), Duration::ZERO, 0.0);
         assert!((rate - 1.5).abs() < 0.01);
     }
 
@@ -258,7 +273,7 @@ mod tests {
         let tm = TempoMap::new(Duration::ZERO, 60.0, TimeSignature::new(4, 4), vec![]);
         // 1 measure = 4 beats at 60 BPM = 4.0s -> rate = 0.25
         let val = TempoAwareValue::Measures(1.0);
-        let rate = val.to_rate(Some(&tm), Duration::ZERO);
+        let rate = val.to_rate(Some(&tm), Duration::ZERO, 0.0);
         assert!((rate - 0.25).abs() < 0.01);
     }
 
@@ -268,7 +283,7 @@ mod tests {
         let tm = TempoMap::new(Duration::ZERO, 60.0, TimeSignature::new(4, 4), vec![]);
         // 1 beat at 60 BPM = 1.0s -> 1.0 Hz
         let freq = TempoAwareFrequency::Beats(1.0);
-        let hz = freq.to_hz(Some(&tm), Duration::ZERO);
+        let hz = freq.to_hz(Some(&tm), Duration::ZERO, 0.0);
         assert!((hz - 1.0).abs() < 0.01);
     }
 }
