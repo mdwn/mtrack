@@ -807,7 +807,7 @@ show "Test" {
 #[test]
 fn test_sequence_with_fractional_measure_hold_time() {
     // Test that fractional measure durations in hold_time are calculated correctly
-    // This verifies the fix for playback_measures_to_duration handling fractional measures
+    // (hold_time in measures is resolved as a measure duration, fractions included)
     // Since parse_light_shows only returns shows, not sequences directly,
     // we need to test the sequence by referencing it in a show
     // We'll verify the hold_time calculation by using the sequence in a show

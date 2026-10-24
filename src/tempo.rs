@@ -1188,79 +1188,6 @@ impl TempoMap {
         self.score_time_at_beats(end_beats, &ts_changes)
             .saturating_sub(score_at)
     }
-
-    /// Calculate duration for N playback measures
-    /// score_start_measure: The score measure where the effect starts (e.g., 88)
-    /// playback_measures: Number of playback measures (e.g., 30)
-    /// measure_offset: The offset in measures (playback_measure = score_measure + measure_offset)
-    ///
-    /// This calculates duration by iterating through playback measures and finding tempo changes
-    /// at their playback measure positions (which are the same as score measure positions for tempo changes)
-    pub fn playback_measures_to_duration(
-        &self,
-        score_start_measure: u32,
-        playback_measures: f64,
-        measure_offset: u32,
-    ) -> Duration {
-        let playback_start_measure = score_start_measure as f64 + measure_offset as f64;
-        let playback_end_measure = playback_start_measure + playback_measures;
-
-        // Calculate duration by integrating through playback measures
-        // Tempo changes are at fixed score measures, which correspond to the same playback measures
-        let mut duration = Duration::ZERO;
-        let mut current_playback_measure = playback_start_measure;
-        let mut current_bpm = self.bpm_at_time(
-            self.measure_to_time_with_offset(score_start_measure, 1.0, 0, 0.0)
-                .unwrap_or(self.start_offset),
-            0.0,
-        );
-        let mut current_ts = self.time_signature_at_time(
-            self.measure_to_time_with_offset(score_start_measure, 1.0, 0, 0.0)
-                .unwrap_or(self.start_offset),
-            0.0,
-        );
-
-        while current_playback_measure < playback_end_measure {
-            let playback_measure_int = current_playback_measure as u32;
-
-            // Check if there's a tempo change at this playback measure
-            // Tempo changes are at score measures, which are the same as playback measures
-            // (offsets don't affect tempo change positions)
-            let mut measure_bpm = current_bpm;
-            let mut measure_ts = current_ts;
-
-            for change in &self.changes {
-                if let Some((score_measure, beat)) = change.original_measure_beat {
-                    // Tempo changes are at score measures, which equal playback measures
-                    if score_measure == playback_measure_int && (beat - 1.0).abs() < 0.001 {
-                        if let Some(new_bpm) = change.bpm {
-                            measure_bpm = new_bpm;
-                            current_bpm = new_bpm;
-                        }
-                        if let Some(new_ts) = change.time_signature {
-                            measure_ts = new_ts;
-                            current_ts = new_ts;
-                        }
-                    }
-                }
-            }
-
-            // Calculate how much of this measure we need
-            let measures_remaining = playback_end_measure - current_playback_measure;
-            let measures_in_this_iteration = measures_remaining.min(1.0);
-
-            // Calculate duration for this measure (full or partial)
-            let beats_per_measure = measure_ts.beats_per_measure();
-            let beats_in_this_iteration = beats_per_measure * measures_in_this_iteration;
-            let measure_duration =
-                Duration::from_secs_f64(beats_in_this_iteration * 60.0 / measure_bpm);
-            duration += measure_duration;
-
-            current_playback_measure += 1.0;
-        }
-
-        duration
-    }
 }
 
 #[cfg(test)]
@@ -1755,39 +1682,6 @@ mod tests {
         assert!((map.bpm_at_time(Duration::from_secs(6), 3.0) - 120.0).abs() < f64::EPSILON);
         // With offset=3, at t=9 we should be at 60
         assert!((map.bpm_at_time(Duration::from_secs(9), 3.0) - 60.0).abs() < f64::EPSILON);
-    }
-
-    // ── TempoMap::playback_measures_to_duration ──────────────────────
-
-    #[test]
-    fn playback_measures_to_duration_constant() {
-        let map = simple_tempo_map(120.0);
-        // 4 playback measures of 4/4 at 120 bpm from score measure 1
-        // = 16 beats = 8 seconds
-        let dur = map.playback_measures_to_duration(1, 4.0, 0);
-        assert!((dur.as_secs_f64() - 8.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn playback_measures_to_duration_with_tempo_change() {
-        let map = TempoMap::new(
-            Duration::ZERO,
-            120.0,
-            TimeSignature::new(4, 4),
-            vec![TempoChange {
-                position: TempoChangePosition::MeasureBeat(3, 1.0),
-                original_measure_beat: Some((3, 1.0)),
-                bpm: Some(60.0),
-                time_signature: None,
-                transition: TempoTransition::Snap,
-            }],
-        );
-        // 4 measures from score measure 1:
-        // Measures 1-2 at 120 bpm: 8 beats = 4s
-        // Measures 3-4 at 60 bpm: 8 beats = 8s
-        // Total = 12s
-        let dur = map.playback_measures_to_duration(1, 4.0, 0);
-        assert!((dur.as_secs_f64() - 12.0).abs() < 1e-6);
     }
 
     // ── Multiple tempo changes ────────────────────────────────────────
