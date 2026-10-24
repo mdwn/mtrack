@@ -19,7 +19,7 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -233,6 +233,13 @@ pub struct EffectEngine {
     goals: HashMap<String, Pose>,
     /// The last tick's length, for the slew clamp.
     last_dt: Duration,
+    /// Fixtures whose strobe channel was driven on the last full frame.
+    /// A hardware strobe latches: the fixture keeps flashing at the last
+    /// rate it was sent until told otherwise, so a strobe nobody drives
+    /// any more is sent off rather than left at its last byte. Survives
+    /// clears and song changes on purpose — those are exactly when the
+    /// strobe stops being driven.
+    strobe_driven: HashSet<String>,
 }
 
 impl Default for EffectEngine {
@@ -259,6 +266,7 @@ impl EffectEngine {
             poses: HashMap::new(),
             goals: HashMap::new(),
             last_dt: Duration::ZERO,
+            strobe_driven: HashSet::new(),
         }
     }
 
@@ -962,6 +970,8 @@ impl EffectEngine {
         // declared limit; and the pose memory records where it ends up.
         self.settle_poses(&mut current_fixture_states);
 
+        self.release_undriven_strobes(&mut current_fixture_states);
+
         self.update_subphase.store(80, Ordering::Relaxed);
 
         // Store states for preview/debugging (before converting to DMX)
@@ -1010,6 +1020,29 @@ impl EffectEngine {
 
         self.update_subphase.store(0, Ordering::Relaxed);
         Ok(self.cache.get_cached())
+    }
+
+    /// Sends strobe off to every fixture whose strobe channel was driven
+    /// last frame and is not driven this one — an effect that expired, a
+    /// clear, a stopped sequence, a new song. Without it the DMX universe
+    /// holds the last strobe byte and the fixture strobes on in hardware
+    /// under whatever comes next.
+    fn release_undriven_strobes(&mut self, states: &mut HashMap<String, FixtureState>) {
+        let driven: HashSet<String> = states
+            .iter()
+            .filter(|(_, state)| state.channels.contains_key("strobe"))
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in self.strobe_driven.difference(&driven) {
+            if !self.fixtures.contains(name) {
+                continue;
+            }
+            states.entry(name.clone()).or_default().set_channel(
+                "strobe".to_string(),
+                ChannelState::new(0.0, EffectLayer::Background, BlendMode::Replace),
+            );
+        }
+        self.strobe_driven = driven;
     }
 
     /// Stop all active effects and reset per-song layer state

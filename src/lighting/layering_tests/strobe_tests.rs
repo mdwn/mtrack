@@ -121,7 +121,8 @@ fn test_strobe_effect_crossfade() {
     let strobe_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert!(strobe_cmd.value > 0 && strobe_cmd.value < 255); // Dimmed strobe during fade out
 
-    // Test effect end - should be no commands (at 5s total)
+    // Test effect end (at 5s total) - the only command is the strobe sent off
     let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 4.5s + 0.5s = 5s
-    assert!(commands.is_empty()); // Effect should be finished
+    assert_eq!(commands.len(), 1);
+    assert_eq!((commands[0].channel, commands[0].value), (1, 0));
 }

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A strobe no longer keeps strobing after it ends**: the engine only wrote the channels an
+  effect drove that frame, and DMX holds whatever it was last sent, so when a hardware strobe
+  expired, was cleared, or was cut off by the next song, the fixture's strobe channel stayed at
+  its last rate. The next look strobed in hardware until something drove the strobe again — an
+  Esaweg ending at 10 Hz strobed straight through the gap and into the following song. A strobe
+  channel driven on one frame and not the next is now sent off.
+
 ## [0.17.2] - 2026-10-23
 
 ### Fixed

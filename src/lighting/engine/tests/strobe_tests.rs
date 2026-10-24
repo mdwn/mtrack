@@ -191,11 +191,13 @@ fn test_clear_layer_resets_strobe_channel() {
     // Update again - no active effects, so no strobe commands
     let commands_after = engine.update(Duration::from_millis(16), None).unwrap();
 
-    // After clear, with no active effects, strobe channel is simply not set
+    // The strobe channel latches in the fixture, so the frame after the
+    // clear sends it off rather than leaving the last rate in the universe.
     let strobe_cmd_after = commands_after.iter().find(|cmd| cmd.channel == 6);
-    assert!(
-        strobe_cmd_after.is_none(),
-        "No strobe command after clear (no active effects)"
+    assert_eq!(
+        strobe_cmd_after.map(|cmd| cmd.value),
+        Some(0),
+        "strobe channel should be sent off after the clear"
     );
 }
 
@@ -261,11 +263,111 @@ fn test_clear_all_layers_resets_strobe_channel() {
     // Update again - no active effects, so no strobe commands
     let commands_after = engine.update(Duration::from_millis(16), None).unwrap();
 
-    // After clear, with no active effects, strobe channel is simply not set
+    // The strobe channel latches in the fixture, so the frame after the
+    // clear sends it off rather than leaving the last rate in the universe.
     let strobe_cmd_after = commands_after.iter().find(|cmd| cmd.channel == 6);
-    assert!(
-        strobe_cmd_after.is_none(),
-        "No strobe command after clear_all_layers (no active effects)"
+    assert_eq!(
+        strobe_cmd_after.map(|cmd| cmd.value),
+        Some(0),
+        "strobe channel should be sent off after the clear"
+    );
+}
+
+#[test]
+fn an_expired_strobe_sends_the_strobe_channel_off() {
+    // A hardware strobe that runs out its duration must not leave its rate
+    // latched in the universe: the next frame sends the channel off, and
+    // nothing writes it after that.
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(create_test_fixture("test_fixture", 1, 1));
+
+    let mut strobe = EffectInstance::new(
+        "strobe".to_string(),
+        EffectType::Strobe {
+            frequency: TempoAwareFrequency::Fixed(10.0),
+            duration: Duration::from_millis(100),
+        },
+        vec!["test_fixture".to_string()],
+        None,
+        None,
+        None,
+    );
+    strobe.layer = EffectLayer::Foreground;
+    engine.start_effect(strobe).unwrap();
+
+    let during = engine.update(Duration::from_millis(16), None).unwrap();
+    assert!(during.iter().any(|cmd| cmd.channel == 6 && cmd.value > 0));
+
+    let after = engine
+        .update(Duration::from_millis(200), None)
+        .unwrap()
+        .iter()
+        .find(|cmd| cmd.channel == 6)
+        .map(|cmd| cmd.value);
+    assert_eq!(engine.active_effects_count(), 0);
+    assert_eq!(
+        after,
+        Some(0),
+        "an expired strobe should send the strobe channel off"
+    );
+}
+
+#[test]
+fn a_new_song_sends_a_latched_strobe_off() {
+    // The Esaweg -> So Willingly Deceived transition: the outgoing song is
+    // strobing when the next one starts (stop_all_effects), and the next
+    // song's first look never touches the strobe channel. The strobe must
+    // still be sent off, or the new song's colors strobe in hardware.
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(create_pixelbrick_fixture("Brick1", 1, 1));
+
+    let mut strobe = EffectInstance::new(
+        "strobe".to_string(),
+        EffectType::Strobe {
+            frequency: TempoAwareFrequency::Fixed(10.0),
+            duration: Duration::from_secs(5),
+        },
+        vec!["Brick1".to_string()],
+        None,
+        None,
+        None,
+    );
+    strobe.layer = EffectLayer::Foreground;
+    strobe.blend_mode = BlendMode::Overlay;
+    engine.start_effect(strobe).unwrap();
+    engine.update(Duration::from_millis(23), None).unwrap();
+
+    // Next song.
+    engine.stop_all_effects();
+    let mut teal = EffectInstance::new(
+        "teal".to_string(),
+        EffectType::Static {
+            parameters: {
+                let mut p = HashMap::new();
+                p.insert("red".to_string(), 0.09);
+                p.insert("green".to_string(), 0.48);
+                p.insert("blue".to_string(), 0.5);
+                p
+            },
+            duration: Duration::from_secs(10),
+        },
+        vec!["Brick1".to_string()],
+        None,
+        None,
+        None,
+    );
+    teal.layer = EffectLayer::Background;
+    teal.blend_mode = BlendMode::Replace;
+    engine.start_effect(teal).unwrap();
+
+    let commands = engine.update(Duration::from_millis(23), None).unwrap();
+    assert_eq!(
+        commands
+            .iter()
+            .find(|cmd| cmd.channel == 4)
+            .map(|cmd| cmd.value),
+        Some(0),
+        "the next song's first frame should send the strobe channel off"
     );
 }
 
@@ -718,15 +820,15 @@ fn test_esaweg_timeline_strobe_sequence() {
     black_static.blend_mode = BlendMode::Replace;
     engine.start_effect(black_static).unwrap();
 
-    // After clear: strobe channel is not set (no strobe effect active),
-    // RGB should be 0 from the black static effect
+    // After clear: the strobe is sent off (left alone it would latch at
+    // 10 Hz into the next song), RGB should be 0 from the black static effect
     let commands = engine.update(dt, None).unwrap();
 
-    // Strobe channel is not emitted after clear (no active strobe effect)
     let strobe_cmd = commands.iter().find(|c| c.channel == 4);
-    assert!(
-        strobe_cmd.is_none(),
-        "Strobe channel should not be present after clear (no active strobe)"
+    assert_eq!(
+        strobe_cmd.map(|c| c.value),
+        Some(0),
+        "Strobe channel should be sent off after clear"
     );
 
     let red_cmd = commands.iter().find(|c| c.channel == 1);
