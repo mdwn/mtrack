@@ -89,6 +89,25 @@ fn carry_unknown_keys(path: &std::path::Path, old_bytes: &[u8], new: &mut serde_
     carry(&raw, &typed, new);
 }
 
+/// The profile currently in `filename` (`.yaml`, else `.yml`), if there is
+/// one and it parses.
+async fn existing_profile(profiles_dir: &std::path::Path, filename: &str) -> Option<Profile> {
+    let path = ["yaml", "yml"]
+        .iter()
+        .filter_map(|ext| resolve_resource_path(profiles_dir, filename, ext).ok())
+        .find(|p| p.is_file())?;
+    tokio::task::spawn_blocking(move || {
+        Config::builder()
+            .add_source(config::File::from(path.as_path()))
+            .build()
+            .and_then(|c| c.try_deserialize::<Profile>())
+            .ok()
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 fn carry(raw: &serde_json::Value, typed: &serde_json::Value, new: &mut serde_json::Value) {
     let (Some(raw), Some(typed), Some(new)) =
         (raw.as_object(), typed.as_object(), new.as_object_mut())
@@ -261,8 +280,11 @@ pub(super) async fn put_profile(
         StatusCode::SERVICE_UNAVAILABLE,
     )?;
 
-    // Validate that the body deserializes as a Profile.
-    let profile: Profile = serde_json::from_value(body).map_err(|e| {
+    // Sections the body leaves out keep the values in the file it replaces;
+    // `null` removes one (#523). The existing file is read the way the
+    // profile read does; a missing or unreadable one has nothing to keep.
+    let existing = existing_profile(&profiles_dir, &filename).await;
+    let profile: Profile = Profile::from_update(existing.as_ref(), body).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": format!("Invalid profile: {}", e)})),
@@ -677,6 +699,52 @@ mod test {
             Some("dev-changed"),
             "the reload would re-initialise from the pre-save profile"
         );
+    }
+
+    /// #523: a save that leaves sections out keeps them in the file; a
+    /// section sent as `null` is removed.
+    #[tokio::test]
+    async fn put_profile_keeps_omitted_sections_and_removes_null_ones() {
+        let (mut state, dir) = test_state();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("rig.yaml"),
+            "hostname: rig\naudio:\n  device: dev-x\n  track_mappings:\n    drums: [1]\ntrigger:\n  device: dev-x\n  inputs:\n    - kind: audio\n      channel: 12\n      sample: kick\nstatus_events:\n  off_events: []\n  idling_events: []\n  playing_events: []\n",
+        )
+        .unwrap();
+        state.profiles_dir = Some(profiles_dir.clone());
+
+        let put = |body: &'static str| {
+            router().with_state(state.clone()).oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/profiles/rig")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+        };
+
+        let response = put(r#"{"controllers": [{"kind": "grpc"}]}"#).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let written = std::fs::read_to_string(profiles_dir.join("rig.yaml")).unwrap();
+        assert!(written.contains("kind: grpc"), "{written}");
+        assert!(
+            written.contains("channel: 12"),
+            "trigger dropped: {written}"
+        );
+        assert!(
+            written.contains("off_events"),
+            "status_events dropped: {written}"
+        );
+        assert!(written.contains("dev-x"), "audio dropped: {written}");
+
+        let response = put(r#"{"trigger": null}"#).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let written = std::fs::read_to_string(profiles_dir.join("rig.yaml")).unwrap();
+        assert!(!written.contains("channel: 12"), "trigger kept: {written}");
+        assert!(written.contains("kind: grpc"), "{written}");
     }
 
     #[tokio::test]

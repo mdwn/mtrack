@@ -105,13 +105,16 @@
           playing_events: [],
         };
     } else {
-      if (section === "audio") delete profile.audio;
-      else if (section === "midi") delete profile.midi;
-      else if (section === "lighting") delete profile.dmx;
-      else if (section === "trigger") delete profile.trigger;
-      else if (section === "controllers") delete profile.controllers;
-      else if (section === "notifications") delete profile.notifications;
-      else if (section === "status_events") delete profile.status_events;
+      // An explicit null, not a deleted key: the server keeps a section a
+      // save leaves out (so a partial save cannot wipe it), and removes one
+      // sent as null.
+      if (section === "audio") profile.audio = null;
+      else if (section === "midi") profile.midi = null;
+      else if (section === "lighting") profile.dmx = null;
+      else if (section === "trigger") profile.trigger = null;
+      else if (section === "controllers") profile.controllers = null;
+      else if (section === "notifications") profile.notifications = null;
+      else if (section === "status_events") profile.status_events = null;
     }
     onchange();
   }
@@ -179,7 +182,8 @@
         if (v) {
           profile.hostname = v;
         } else {
-          delete profile.hostname;
+          // null, not deleted: a key a save leaves out is kept as it was.
+          profile.hostname = null;
         }
         onchange();
       }}

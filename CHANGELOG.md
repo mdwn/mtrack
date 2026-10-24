@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A profile update no longer wipes the sections it does not mention (#523)**: a whole-profile
+  update -- MCP and gRPC `update_profile`, and the web UI's profile saves -- deserialized the body
+  on its own, so every section it left out came back empty. Adding a controller that way wrote
+  `trigger: ~`, `status_events: ~` and `notifications: ~`, and the audio trigger silently
+  stopped. A section the body omits now keeps its current value and one sent as `null` is
+  removed; the web UI sends `null` when a section or the hostname is removed. A profile update
+  that empties a populated section is logged as a warning.
 - **A strobe no longer keeps strobing after it ends**: the engine only wrote the channels an
   effect drove that frame, and DMX holds whatever it was last sent, so when a hardware strobe
   expired, was cleared, or was cut off by the next song, the fixture's strobe channel stayed at

@@ -886,14 +886,20 @@ impl McpServer {
         Ok(snapshot_response(&snapshot))
     }
 
-    #[tool(description = "Replace the profile at a given index in the `profiles` list.")]
+    #[tool(description = "Update the profile at a given index in the `profiles` \
+        list. Top-level sections (`audio`, `midi`, `dmx`, `trigger`, \
+        `controllers`, `notifications`, `status_events`, `hostname`) that the \
+        body leaves out keep their current values; set a section to `null` to \
+        remove it. A section that is present replaces the current one whole.")]
     async fn update_profile(
         &self,
         Parameters(args): Parameters<ProfileIndexArgs>,
     ) -> Result<CallToolResult, McpError> {
         let store = self.config_store()?;
-        let profile: crate::config::Profile = serde_json::from_value(args.body)
-            .map_err(|e| McpError::invalid_params(format!("invalid profile: {e}"), None))?;
+        let profile = store
+            .profile_from_update(args.index as usize, args.body)
+            .await
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         let snapshot = store
             .update_profile(args.index as usize, profile, &args.expected_checksum)
             .await
