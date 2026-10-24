@@ -952,8 +952,13 @@ impl McpServer {
         wrong by exactly that much), and a `tempo_segments` list that breaks \
         the song into \
         runs of roughly constant tempo (each with `start_seconds`, \
-        `end_seconds`, `beat_count`, `bpm`). The raw per-beat times are NOT \
-        included here — call `song_beat_grid` for those.")]
+        `end_seconds`, `beat_count`, `bpm`). `bpm_unit` says what the BPMs \
+        count: `quarter` when the song or one of its shows declares a meter \
+        (each bar's clicks are read against that bar's length, so a 12/8 \
+        dotted-quarter click reports the tempo block's quarter-note BPM), \
+        `click` otherwise (one beat per detected click). `beat_count` always \
+        counts clicks. The raw per-beat times are NOT included here — call \
+        `song_beat_grid` for those.")]
     async fn song_details(
         &self,
         Parameters(args): Parameters<SongNameArgs>,
@@ -1002,13 +1007,25 @@ impl McpServer {
                 "lead_in_seconds": g.lead_in().as_secs_f64(),
             })
         });
-        let bpm = song
-            .beat_grid()
-            .and_then(|g| compute_bpm_from_beats(&g.beats));
-        let tempo_segments = song
-            .beat_grid()
-            .map(|g| compute_tempo_segments(&g.beats))
-            .unwrap_or_default();
+        // With a declared meter the click intervals are read as quarter notes,
+        // the unit a `tempo` block is written in; without one, a click is all
+        // there is to count.
+        let quarter_intervals = song.beat_grid().and_then(|g| {
+            declared_meter(&song).and_then(|meter| quarter_note_intervals(g, &meter))
+        });
+        let (bpm, tempo_segments, bpm_unit) = match (song.beat_grid(), &quarter_intervals) {
+            (Some(g), Some((intervals, weights))) => (
+                compute_bpm_from_intervals(intervals),
+                compute_tempo_segments_from(&g.beats, intervals, weights),
+                Some("quarter"),
+            ),
+            (Some(g), None) => (
+                compute_bpm_from_beats(&g.beats),
+                compute_tempo_segments(&g.beats),
+                Some("click"),
+            ),
+            (None, _) => (None, Vec::new(), None),
+        };
 
         let light_shows: Vec<Value> = song
             .light_shows()
@@ -1045,6 +1062,7 @@ impl McpServer {
             "sections": sections,
             "beat_grid": beat_grid,
             "bpm": bpm,
+            "bpm_unit": bpm_unit,
             "tempo_segments": tempo_segments,
             "light_shows": light_shows,
             "dsl_lighting_shows": dsl_lighting_shows,
@@ -2964,14 +2982,14 @@ pub(crate) fn ok_json(value: Value) -> CallToolResult {
 /// interval. Median is robust to tempo changes and bad first/last beats;
 /// when a song has a single uniform tempo it matches the mean.
 pub(crate) fn compute_bpm_from_beats(beats: &[f64]) -> Option<f64> {
-    if beats.len() < 2 {
-        return None;
-    }
-    let mut intervals: Vec<f64> = beats
-        .windows(2)
-        .map(|w| w[1] - w[0])
-        .filter(|d| *d > 0.0)
-        .collect();
+    let intervals: Vec<f64> = beats.windows(2).map(|w| w[1] - w[0]).collect();
+    compute_bpm_from_intervals(&intervals)
+}
+
+/// [`compute_bpm_from_beats`] over intervals already measured, so a caller
+/// can hand it intervals normalized to quarter notes.
+fn compute_bpm_from_intervals(intervals: &[f64]) -> Option<f64> {
+    let mut intervals: Vec<f64> = intervals.iter().copied().filter(|d| *d > 0.0).collect();
     if intervals.is_empty() {
         return None;
     }
@@ -2982,6 +3000,66 @@ pub(crate) fn compute_bpm_from_beats(beats: &[f64]) -> Option<f64> {
     } else {
         None
     }
+}
+
+/// Each click interval of `grid` scaled to the length of one quarter note,
+/// with the number of quarters each click is worth,
+/// using the meter `meter` declares for the bar the interval falls in.
+///
+/// A click is not always a quarter note: in 12/8 it is usually the dotted
+/// quarter, and a click track may switch to eighths for a bar or two. Read
+/// raw, those report the click rate (112 for a 12/8 song at 169) rather than
+/// the tempo a `tempo` block is written in (#515). Bars come from the accented
+/// clicks, so each bar's length is known whatever its clicks subdivide into;
+/// a click in a bar of `n` clicks is worth `beats_per_measure / n` quarters.
+/// Clicks before the first downbeat or after the last take the nearest bar's
+/// value.
+fn quarter_note_intervals(
+    grid: &crate::audio::click_analysis::BeatGrid,
+    meter: &crate::tempo::TempoMap,
+) -> Option<(Vec<f64>, Vec<f64>)> {
+    let starts = &grid.measure_starts;
+    if starts.len() < 2 || grid.beats.len() < 2 {
+        return None;
+    }
+    // Quarters per click, one value per complete bar.
+    let per_bar: Vec<(usize, f64)> = starts
+        .windows(2)
+        .filter_map(|w| {
+            let clicks = w[1].checked_sub(w[0]).filter(|n| *n > 0)?;
+            let at = std::time::Duration::from_secs_f64(grid.beats.get(w[0])?.max(0.0));
+            let quarters = meter.time_signature_at_time(at, 0.0).beats_per_measure();
+            Some((w[0], quarters / clicks as f64))
+        })
+        .collect();
+    if per_bar.is_empty() {
+        return None;
+    }
+    let quarters_per_click = |beat: usize| {
+        let bar = per_bar.partition_point(|(start, _)| *start <= beat);
+        per_bar[bar.saturating_sub(1)].1
+    };
+    Some(
+        grid.beats
+            .windows(2)
+            .enumerate()
+            .map(|(i, w)| {
+                let quarters = quarters_per_click(i);
+                ((w[1] - w[0]) / quarters, quarters)
+            })
+            .unzip(),
+    )
+}
+
+/// The meter a song declares, for reading its click grid in quarter notes:
+/// its own `tempo:` block, else the first of its shows with a `tempo` block.
+fn declared_meter(song: &crate::songs::Song) -> Option<crate::tempo::TempoMap> {
+    song.tempo_map().cloned().or_else(|| {
+        song.dsl_lighting_shows()
+            .iter()
+            .flat_map(|s| s.shows().values())
+            .find_map(|show| show.tempo_map.clone())
+    })
 }
 
 /// Width (in intervals) of the median window used to smooth out individual
@@ -3001,11 +3079,22 @@ const TEMPO_MIN_SEGMENT_INTERVALS: usize = 8;
 /// arrangement (e.g. an 8-minute song with a half-time bridge yields
 /// three segments rather than a sea of single-beat fluctuations).
 pub(crate) fn compute_tempo_segments(beats: &[f64]) -> Vec<Value> {
-    if beats.len() < TEMPO_SMOOTHING_WINDOW + 2 {
-        return Vec::new();
-    }
     let intervals: Vec<f64> = beats.windows(2).map(|w| w[1] - w[0]).collect();
-    if intervals.is_empty() {
+    let weights = vec![1.0; intervals.len()];
+    compute_tempo_segments_from(beats, &intervals, &weights)
+}
+
+/// [`compute_tempo_segments`] over intervals already measured: `intervals[i]`
+/// is the length of one beat between `beats[i]` and `beats[i + 1]`, and
+/// `weights[i]` how many beats that span is worth — 1 for a raw click, the
+/// quarters per click once normalized (see [`quarter_note_intervals`]). The
+/// noise filter measures a segment in those beats, so a bar of eighth clicks
+/// is as short as the bar it is.
+fn compute_tempo_segments_from(beats: &[f64], intervals: &[f64], weights: &[f64]) -> Vec<Value> {
+    if beats.len() < TEMPO_SMOOTHING_WINDOW + 2
+        || intervals.len() + 1 != beats.len()
+        || weights.len() != intervals.len()
+    {
         return Vec::new();
     }
 
@@ -3067,26 +3156,27 @@ pub(crate) fn compute_tempo_segments(beats: &[f64]) -> Vec<Value> {
     // its larger neighbour, then re-merge any adjacent equal-BPM runs that
     // result. Terminates when no sub-threshold segment remains (or there's
     // only one segment left).
+    let len = |s: usize, e: usize| weights[s..=e].iter().sum::<f64>();
     loop {
         let short = segs
             .iter()
             .enumerate()
-            .filter(|(_, (s, e, _))| e - s + 1 < TEMPO_MIN_SEGMENT_INTERVALS)
-            .min_by_key(|(_, (s, e, _))| e - s + 1)
+            .filter(|(_, (s, e, _))| len(*s, *e) < TEMPO_MIN_SEGMENT_INTERVALS as f64)
+            .min_by(|(_, (sa, ea, _)), (_, (sb, eb, _))| len(*sa, *ea).total_cmp(&len(*sb, *eb)))
             .map(|(idx, _)| idx);
         let Some(idx) = short else { break };
         if segs.len() == 1 {
             break;
         }
         let left_len = if idx > 0 {
-            segs[idx - 1].1 - segs[idx - 1].0 + 1
+            len(segs[idx - 1].0, segs[idx - 1].1)
         } else {
-            0
+            0.0
         };
         let right_len = if idx + 1 < segs.len() {
-            segs[idx + 1].1 - segs[idx + 1].0 + 1
+            len(segs[idx + 1].0, segs[idx + 1].1)
         } else {
-            0
+            0.0
         };
         let merge_left = idx > 0 && (idx + 1 >= segs.len() || left_len >= right_len);
         if merge_left {
@@ -4194,7 +4284,12 @@ mod register_lighting_tests {
 
 #[cfg(test)]
 mod bpm_tests {
-    use super::{compute_bpm_from_beats, compute_tempo_segments};
+    use super::{
+        compute_bpm_from_beats, compute_bpm_from_intervals, compute_tempo_segments,
+        compute_tempo_segments_from, quarter_note_intervals,
+    };
+    use crate::audio::click_analysis::BeatGrid;
+    use crate::tempo::{TempoMap, TimeSignature};
 
     #[test]
     fn empty_or_singleton_yields_none() {
@@ -4309,6 +4404,65 @@ mod bpm_tests {
             vec![120.0],
             "tiny intermediate run should have been merged; got {segments:?}",
         );
+    }
+
+    /// A grid of `bars` bars at `clicks` clicks each, `spacing` seconds apart,
+    /// with `odd_bar` (if any) clicked `odd_clicks` times across the same span.
+    fn bar_grid(bars: usize, clicks: usize, spacing: f64, odd: Option<(usize, usize)>) -> BeatGrid {
+        let bar_len = clicks as f64 * spacing;
+        let mut beats = Vec::new();
+        let mut measure_starts = Vec::new();
+        for bar in 0..bars {
+            measure_starts.push(beats.len());
+            let n = match odd {
+                Some((b, n)) if b == bar => n,
+                _ => clicks,
+            };
+            for k in 0..n {
+                beats.push(bar as f64 * bar_len + k as f64 * bar_len / n as f64);
+            }
+        }
+        beats.push(bars as f64 * bar_len);
+        measure_starts.push(beats.len() - 1);
+        BeatGrid {
+            beats,
+            measure_starts,
+        }
+    }
+
+    fn twelve_eight() -> TempoMap {
+        TempoMap::new(
+            std::time::Duration::ZERO,
+            169.0,
+            TimeSignature::new(12, 8),
+            vec![],
+        )
+    }
+
+    #[test]
+    fn a_dotted_quarter_click_reports_the_quarter_note_tempo() {
+        // 12/8 at 169: four dotted-quarter clicks a bar at 112.67 (#515).
+        let grid = bar_grid(16, 4, 60.0 / (169.0 / 1.5), None);
+        let (intervals, weights) = quarter_note_intervals(&grid, &twelve_eight()).unwrap();
+        let bpm = compute_bpm_from_intervals(&intervals).unwrap();
+        assert!((bpm - 169.0).abs() < 0.01, "{bpm}");
+        let segments = compute_tempo_segments_from(&grid.beats, &intervals, &weights);
+        assert_eq!(bpms(&segments), vec![169.0]);
+        // Read raw, the same grid is the click rate.
+        assert_eq!(
+            compute_bpm_from_beats(&grid.beats).map(f64::round),
+            Some(113.0)
+        );
+    }
+
+    #[test]
+    fn a_bar_of_eighth_clicks_is_still_the_same_tempo() {
+        // One bar clicked on the eighth (12 clicks) in a dotted-quarter song:
+        // the click rate triples, the tempo does not move.
+        let grid = bar_grid(16, 4, 60.0 / (169.0 / 1.5), Some((8, 12)));
+        let (intervals, weights) = quarter_note_intervals(&grid, &twelve_eight()).unwrap();
+        let segments = compute_tempo_segments_from(&grid.beats, &intervals, &weights);
+        assert_eq!(bpms(&segments), vec![169.0], "{segments:?}");
     }
 
     #[test]

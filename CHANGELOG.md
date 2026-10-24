@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the song root, while every other new show went to `<song>/lighting/`. An unreferenced
   root-level file in a directory-layout song is no longer reused; referenced files, drafts under
   `lighting/`, and the flat-layout pre-created file still are.
+- **12/8 click tracks report the tempo the show is written in (#515)**: `song_details` counted
+  one beat per click, so a 12/8 song clicked on the dotted quarter reported 112 for a 169 tempo
+  block, and a bar of eighth clicks showed up as its own 240 BPM segment. When the song or one of
+  its shows declares a meter, each bar's clicks are now read against that bar's length, giving
+  quarter-note BPM (`bpm_unit: "quarter"`; `"click"` when there is no meter to read against).
+  `tempo-grid-mismatch` no longer fires on a single downbeat the click track displaces at a tempo
+  change when the following bars land back on the tempo block.
 - **A chase lifts the bed instead of blacking it out when the blend says so (#518)**: on an
   RGB-only fixture the chase wrote its mask into a multiplier whatever the `blend_mode`, so a
   `screen`, `add` or `overlay` chase lit one fixture and sent every other one to zero — the

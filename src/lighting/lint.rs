@@ -680,6 +680,14 @@ fn tempo_disagrees_with_grid(show: &LightShow, ctx: &LintContext, out: &mut Vec<
     // does the audio? A block that agrees drifts by milliseconds; one that
     // disagrees diverges and stays diverged.
     const TOLERANCE: f64 = 0.050;
+    // A downbeat off by more than the tolerance whose following bars land
+    // back on the block is the click track's doing, not the block's: some
+    // click tracks drop or move the first click after a tempo change, which
+    // puts that one downbeat late while the next bar is exactly where the
+    // block says (#515). An error in the block accumulates, so it does not
+    // come back.
+    const RECOVERY_BARS: usize = 4;
+    let mut bars = Vec::new();
     for measure in 0..measure_count {
         let Some(&beat_index) = grid.measure_starts.get(measure) else {
             break;
@@ -691,17 +699,29 @@ fn tempo_disagrees_with_grid(show: &LightShow, ctx: &LintContext, out: &mut Vec<
         else {
             break;
         };
-        let drift = (block_time.as_secs_f64() - grid_time).abs();
-        if drift <= TOLERANCE {
+        bars.push((block_time.as_secs_f64(), grid_time));
+    }
+    let drift = |(block_time, grid_time): (f64, f64)| (block_time - grid_time).abs();
+    for (measure, &(block_time, grid_time)) in bars.iter().enumerate() {
+        if drift((block_time, grid_time)) <= TOLERANCE {
             continue;
         }
+        let recovers = bars
+            .iter()
+            .skip(measure + 1)
+            .take(RECOVERY_BARS)
+            .any(|&bar| drift(bar) <= TOLERANCE);
+        if recovers {
+            continue;
+        }
+        let drift = drift((block_time, grid_time));
         out.push(Warning::new(
             "tempo-grid-mismatch",
             format!(
                 "the tempo block puts bar {} at {:.3}s but the click track has it at {:.3}s \
                  ({:.3}s off) — the block and the audio disagree from here on",
                 measure + 1,
-                block_time.as_secs_f64(),
+                block_time,
                 grid_time,
                 drift,
             ),
@@ -1444,6 +1464,61 @@ show "T" {
         assert_eq!(kinds(&warnings), ["tempo-grid-mismatch"], "{warnings:?}");
         // Reported once, at the first bar that disagrees, not at all of them.
         assert!(warnings[0].message.contains("bar 2"), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_12_8_block_matching_a_dotted_quarter_click_is_quiet() {
+        // 12/8 at 169 (quarter-note BPM): six quarters a bar, clicked on the
+        // dotted quarter, so four clicks a bar at 112.67 (#515).
+        let source = r#"
+tempo {
+    start: 0ms
+    bpm: 169
+    time_signature: 12/8
+}
+
+show "T" {
+    @1/1
+    wash: static color: "blue", duration: 1s
+}
+"#;
+        let g = grid(169.0 / 1.5, 16);
+        let ctx = LintContext {
+            beat_grid: Some(&g),
+            ..Default::default()
+        };
+        assert!(
+            lint_shows(&shows(source), &ctx).is_empty(),
+            "a correct 12/8 block should be silent"
+        );
+    }
+
+    #[test]
+    fn a_displaced_downbeat_the_next_bar_recovers_from_is_quiet() {
+        // The click track drops the first click after a tempo change, so bar
+        // 5's downbeat is detected an eighth late; bar 6 is back on the block.
+        let source = r#"
+tempo {
+    start: 0ms
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "T" {
+    @1/1
+    wash: static color: "blue", duration: 1s
+}
+"#;
+        let mut g = grid(120.0, 8);
+        g.beats[g.measure_starts[4]] += 0.25;
+        let ctx = LintContext {
+            beat_grid: Some(&g),
+            ..Default::default()
+        };
+        assert!(
+            lint_shows(&shows(source), &ctx).is_empty(),
+            "a downbeat the next bar recovers from is the click track's, not the block's"
+        );
     }
 
     #[test]
