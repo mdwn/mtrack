@@ -24,9 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one beat per click, so a 12/8 song clicked on the dotted quarter reported 112 for a 169 tempo
   block, and a bar of eighth clicks showed up as its own 240 BPM segment. When the song or one of
   its shows declares a meter, each bar's clicks are now read against that bar's length, giving
-  quarter-note BPM (`bpm_unit: "quarter"`; `"click"` when there is no meter to read against).
-  `tempo-grid-mismatch` no longer fires on a single downbeat the click track displaces at a tempo
-  change when the following bars land back on the tempo block.
+  quarter-note BPM (`bpm_unit: "quarter"`; `"click"` when there is no meter to read against). A
+  short, jittery stretch at a section change is folded into the neighbour whose tempo it is
+  nearer rather than the longer one, so the change is reported on the bar it happens.
 - **A fading `replace` static crossfades with the bed instead of dipping to black (#521)**: an
   `up_time` / `down_time` on a `replace` static scaled the static's own colour toward zero and
   then replaced the layers beneath with it, so a lift over a coloured bed went bed → black →

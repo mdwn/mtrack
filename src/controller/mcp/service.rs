@@ -3153,7 +3153,7 @@ fn compute_tempo_segments_from(beats: &[f64], intervals: &[f64], weights: &[f64]
     segs.push((run_start, smoothed.len() - 1, current));
 
     // Noise filter: repeatedly fold the shortest sub-threshold segment into
-    // its larger neighbour, then re-merge any adjacent equal-BPM runs that
+    // its nearer-tempo neighbour, then re-merge any adjacent equal-BPM runs that
     // result. Terminates when no sub-threshold segment remains (or there's
     // only one segment left).
     let len = |s: usize, e: usize| weights[s..=e].iter().sum::<f64>();
@@ -3178,7 +3178,14 @@ fn compute_tempo_segments_from(beats: &[f64], intervals: &[f64], weights: &[f64]
         } else {
             0.0
         };
-        let merge_left = idx > 0 && (idx + 1 >= segs.len() || left_len >= right_len);
+        // Into the neighbour whose tempo it is nearer — a jittery fragment of
+        // the next section belongs to the next section, however short that
+        // section is — and the longer one only on a tie.
+        let gap = |other: usize| (segs[other].2 - segs[idx].2).abs();
+        let merge_left = idx > 0
+            && (idx + 1 >= segs.len()
+                || gap(idx - 1) < gap(idx + 1)
+                || (gap(idx - 1) == gap(idx + 1) && left_len >= right_len));
         if merge_left {
             segs[idx - 1].1 = segs[idx].1;
             segs.remove(idx);
@@ -4463,6 +4470,26 @@ mod bpm_tests {
         let (intervals, weights) = quarter_note_intervals(&grid, &twelve_eight()).unwrap();
         let segments = compute_tempo_segments_from(&grid.beats, &intervals, &weights);
         assert_eq!(bpms(&segments), vec![169.0], "{segments:?}");
+    }
+
+    #[test]
+    fn a_short_jittery_fragment_joins_the_tempo_it_belongs_to() {
+        // A long 120 section, then a 160 section whose first few beats read a
+        // little fast (eighth clicks quantized by the detector). The fragment
+        // is shorter than the noise threshold and belongs to the 160, not to
+        // the longer 120 beside it — the section change stays where it is.
+        let mut beats = Vec::new();
+        let t = extend_at(&mut beats, 0.0, 120.0, 40);
+        let change = t;
+        let t = extend_at(&mut beats, t, 166.0, 4);
+        extend_at(&mut beats, t, 160.0, 12);
+        let segments = compute_tempo_segments(&beats);
+        assert_eq!(bpms(&segments), vec![120.0, 160.0], "{segments:?}");
+        let start = segments[1]["start_seconds"].as_f64().unwrap();
+        assert!(
+            (start - change).abs() < 0.6,
+            "the 160 section should start at the change ({change}), got {start}"
+        );
     }
 
     #[test]
