@@ -1041,20 +1041,12 @@ show "Esaweg" {
         "at the unshifted change time ({unshifted_change:?}) the music is still at 110: got {}",
         rate(unshifted_change)
     );
-    // The last 3-beat window that fits entirely before the shifted change
-    // still runs at 110; a window that straddles it integrates through both.
-    let three_beats_at_110 = Duration::from_secs_f64(3.0 * 60.0 / 110.0);
+    // The rate is a property of the instant: it stays at the 110 rate right up
+    // to the shifted change and does not start blending toward 160 early.
     assert!(
-        close(
-            rate(shifted_change - three_beats_at_110 - Duration::from_millis(1)),
-            slow
-        ),
-        "just before the last full 110-BPM window"
-    );
-    let straddling = rate(shifted_change - Duration::from_millis(1));
-    assert!(
-        straddling > slow && straddling < fast,
-        "1ms before the shifted change the 3-beat window straddles it: got {straddling}"
+        close(rate(shifted_change - Duration::from_millis(1)), slow),
+        "1ms before the shifted change the music is still at 110: got {}",
+        rate(shifted_change - Duration::from_millis(1))
     );
     assert!(
         close(rate(shifted_change), fast),
