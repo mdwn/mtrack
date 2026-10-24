@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.17.2] - 2026-10-23
 
 ### Fixed
 
@@ -15,11 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its last rate. The next look strobed in hardware until something drove the strobe again — an
   Esaweg ending at 10 Hz strobed straight through the gap and into the following song. A strobe
   channel driven on one frame and not the next is now sent off.
-
-## [0.17.2] - 2026-10-23
-
-### Fixed
-
 - **A chase lifts the bed instead of blacking it out when the blend says so (#518)**: on an
   RGB-only fixture the chase wrote its mask into a multiplier whatever the `blend_mode`, so a
   `screen`, `add` or `overlay` chase lit one fixture and sent every other one to zero — the
