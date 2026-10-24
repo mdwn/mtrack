@@ -2722,6 +2722,7 @@ mod test {
             let effect = Effect {
                 sequence_name: None,
                 ignored_parameters: Vec::new(),
+                tempo_offset_secs: 0.0,
                 per_cell: false,
                 spread: 0.0,
                 groups: vec!["front_wash".to_string()],
@@ -2819,6 +2820,7 @@ mod test {
                 effects: vec![Effect {
                     sequence_name: None,
                     ignored_parameters: Vec::new(),
+                    tempo_offset_secs: 0.0,
                     per_cell: false,
                     spread: 0.0,
                     groups: vec!["test_fixture".to_string()],
@@ -2911,6 +2913,7 @@ mod test {
                 effects: vec![Effect {
                     sequence_name: None,
                     ignored_parameters: Vec::new(),
+                    tempo_offset_secs: 0.0,
                     per_cell: false,
                     spread: 0.0,
                     groups: vec!["test_fixture".to_string()],

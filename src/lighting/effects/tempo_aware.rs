@@ -29,9 +29,10 @@ fn measures_to_duration_secs(
     measures: f64,
     tempo_map: Option<&crate::lighting::tempo::TempoMap>,
     at_time: Duration,
+    offset_secs: f64,
 ) -> f64 {
     if let Some(tm) = tempo_map {
-        let duration = tm.measures_to_duration(measures, at_time, 0.0);
+        let duration = tm.measures_to_duration(measures, at_time, offset_secs);
         duration.as_secs_f64()
     } else {
         // Fallback: assume default BPM, 4/4 time
@@ -45,9 +46,10 @@ fn beats_to_duration_secs(
     beats: f64,
     tempo_map: Option<&crate::lighting::tempo::TempoMap>,
     at_time: Duration,
+    offset_secs: f64,
 ) -> f64 {
     if let Some(tm) = tempo_map {
-        let duration = tm.beats_to_duration(beats, at_time, 0.0);
+        let duration = tm.beats_to_duration(beats, at_time, offset_secs);
         duration.as_secs_f64()
     } else {
         // Fallback: assume default BPM
@@ -79,6 +81,18 @@ impl TempoAwareValue {
         tempo_map: Option<&crate::lighting::tempo::TempoMap>,
         at_time: Duration,
     ) -> f64 {
+        self.to_rate_with_offset(tempo_map, at_time, 0.0)
+    }
+
+    /// [`TempoAwareValue::to_rate`] against the tempo map shifted by a show
+    /// `offset` of `offset_secs`, as the effect's cue time was. Without the
+    /// shift a `beats` speed changed tempo `offset` early (#525).
+    pub fn to_rate_with_offset(
+        &self,
+        tempo_map: Option<&crate::lighting::tempo::TempoMap>,
+        at_time: Duration,
+        offset_secs: f64,
+    ) -> f64 {
         match self {
             TempoAwareValue::Fixed(rate) => *rate,
             TempoAwareValue::Seconds(duration) => duration_to_rate(*duration),
@@ -86,14 +100,15 @@ impl TempoAwareValue {
                 if *measures <= 0.0 {
                     return 0.0;
                 }
-                let duration_secs = measures_to_duration_secs(*measures, tempo_map, at_time);
+                let duration_secs =
+                    measures_to_duration_secs(*measures, tempo_map, at_time, offset_secs);
                 duration_to_rate(duration_secs)
             }
             TempoAwareValue::Beats(beats) => {
                 if *beats <= 0.0 {
                     return 0.0;
                 }
-                let duration_secs = beats_to_duration_secs(*beats, tempo_map, at_time);
+                let duration_secs = beats_to_duration_secs(*beats, tempo_map, at_time, offset_secs);
                 duration_to_rate(duration_secs)
             }
         }

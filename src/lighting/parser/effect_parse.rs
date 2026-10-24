@@ -340,6 +340,7 @@ pub(crate) fn parse_effect_definition(
         per_cell,
         spread,
         ignored_parameters,
+        tempo_offset_secs: offset_secs,
     })
 }
 
