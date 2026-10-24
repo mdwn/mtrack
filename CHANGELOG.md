@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its last rate. The next look strobed in hardware until something drove the strobe again — an
   Esaweg ending at 10 Hz strobed straight through the gap and into the following song. A strobe
   channel driven on one frame and not the next is now sent off.
+- **`write_song_lighting` puts every new show under `lighting/` (#516)**: a song with an old,
+  unreferenced `show.light` beside its `song.yaml` had the new show written over that stray at
+  the song root, while every other new show went to `<song>/lighting/`. An unreferenced
+  root-level file in a directory-layout song is no longer reused; referenced files, drafts under
+  `lighting/`, and the flat-layout pre-created file still are.
 - **A chase lifts the bed instead of blacking it out when the blend says so (#518)**: on an
   RGB-only fixture the chase wrote its mask into a multiplier whatever the `blend_mode`, so a
   `screen`, `add` or `overlay` chase lit one fixture and sent every other one to zero — the

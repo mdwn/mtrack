@@ -2315,7 +2315,7 @@ impl McpServer {
         )
         .map_err(|e| McpError::invalid_params(format!("invalid .light source: {e}"), None))?;
 
-        let path = match find_song_lighting_path(&song, &args.file) {
+        let path = match find_song_lighting_write_path(&song, &args.file) {
             Some(existing) => existing,
             None => {
                 // First time we're writing this basename for this song: drop
@@ -3701,6 +3701,30 @@ pub(crate) fn find_song_lighting_path(
         return Some(root_level);
     }
     None
+}
+
+/// Where `write_song_lighting` writes an existing file: as
+/// [`find_song_lighting_path`], except that an unreferenced file at the root
+/// of a directory-layout song is not reused. That is a stray (an old draft
+/// beside `song.yaml`), not a location anyone chose for this show — reusing it
+/// put one song's show at the root while every other new show went under
+/// `lighting/` (#516). A referenced root-level file is still reused: it was
+/// loaded. In flat layout the root-level file is the documented way to pick
+/// a location, so it is kept.
+fn find_song_lighting_write_path(
+    song: &crate::songs::Song,
+    file: &str,
+) -> Option<std::path::PathBuf> {
+    let path = find_song_lighting_path(song, file)?;
+    let unreferenced_root = path == song.base_path().join(file)
+        && !song
+            .dsl_lighting_shows()
+            .iter()
+            .any(|s| s.file_path() == path);
+    if unreferenced_root && is_directory_layout(song) {
+        return None;
+    }
+    Some(path)
 }
 
 /// Returns true if the song was loaded from `<dir>/song.yaml` (the

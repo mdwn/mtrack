@@ -2422,6 +2422,68 @@ async fn mcp_write_song_lighting_registers_the_show() -> Result<(), Box<dyn Erro
 }
 
 // ---------------------------------------------------------------------------
+// Test 3c-sexies-bis: a stray root-level file does not move a new show (#516)
+// ---------------------------------------------------------------------------
+
+/// A directory-layout song with no `lighting:` block but an old, unreferenced
+/// `show.light` beside its `song.yaml`. The new show goes under `lighting/`
+/// like every other new show; the stray is left alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_write_song_lighting_ignores_an_unreferenced_root_file() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+
+    let song = "DSL Light Show Song";
+    let song_dir = fixture.root.join("songs/dsl-light-show-song");
+    std::fs::write(
+        song_dir.join("song.yaml"),
+        "kind: song\nname: \"DSL Light Show Song\"\nmidi_file: \"song.mid\"\ntracks:\n  - name: \"Main Track\"\n    file: \"song.mp3\"\n    file_channel: 1\n",
+    )?;
+    let _ = std::fs::remove_dir_all(song_dir.join("lighting"));
+    let stray = "# an old draft nobody references\n";
+    std::fs::write(song_dir.join("show.light"), stray)?;
+
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let source = "show \"Written\" {\n    @00:00.000\n    all_lights: static color: \"blue\", duration: 4s\n}\n";
+    let write = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            996,
+            "write_song_lighting",
+            json!({"song": song, "file": "show.light", "source": source}),
+        )
+        .await,
+    );
+    assert_eq!(write["reference"], "lighting/show.light", "{write}");
+    assert_eq!(
+        std::fs::read_to_string(song_dir.join("lighting/show.light"))?,
+        source
+    );
+    assert_eq!(
+        std::fs::read_to_string(song_dir.join("show.light"))?,
+        stray,
+        "the stray must be left as it was"
+    );
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3c-septies: diff_shows (#341)
 // ---------------------------------------------------------------------------
 
