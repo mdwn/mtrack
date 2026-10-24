@@ -15,6 +15,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its last rate. The next look strobed in hardware until something drove the strobe again — an
   Esaweg ending at 10 Hz strobed straight through the gap and into the following song. A strobe
   channel driven on one frame and not the next is now sent off.
+- **`write_song_lighting` puts every new show under `lighting/` (#516)**: a song with an old,
+  unreferenced `show.light` beside its `song.yaml` had the new show written over that stray at
+  the song root, while every other new show went to `<song>/lighting/`. An unreferenced
+  root-level file in a directory-layout song is no longer reused; referenced files, drafts under
+  `lighting/`, and the flat-layout pre-created file still are.
+- **12/8 click tracks report the tempo the show is written in (#515)**: `song_details` counted
+  one beat per click, so a 12/8 song clicked on the dotted quarter reported 112 for a 169 tempo
+  block, and a bar of eighth clicks showed up as its own 240 BPM segment. When the song or one of
+  its shows declares a meter, each bar's clicks are now read against that bar's length, giving
+  quarter-note BPM (`bpm_unit: "quarter"`; `"click"` when there is no meter to read against). A
+  short, jittery stretch at a section change is folded into the neighbour whose tempo it is
+  nearer rather than the longer one, so the change is reported on the bar it happens.
+- **A fading `replace` static crossfades with the bed instead of dipping to black (#521)**: an
+  `up_time` / `down_time` on a `replace` static scaled the static's own colour toward zero and
+  then replaced the layers beneath with it, so a lift over a coloured bed went bed → black →
+  colour → black → bed. A partial replace now moves from the value beneath toward its colour by
+  the fade amount; over nothing it still fades from black, and `screen` / `multiply` / `add` /
+  `overlay` statics fade their own contribution as before.
 - **A chase lifts the bed instead of blacking it out when the blend says so (#518)**: on an
   RGB-only fixture the chase wrote its mask into a multiplier whatever the `blend_mode`, so a
   `screen`, `add` or `overlay` chase lit one fixture and sent every other one to zero — the

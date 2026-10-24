@@ -1447,6 +1447,33 @@ show "T" {
     }
 
     #[test]
+    fn a_12_8_block_matching_a_dotted_quarter_click_is_quiet() {
+        // 12/8 at 169 (quarter-note BPM): six quarters a bar, clicked on the
+        // dotted quarter, so four clicks a bar at 112.67 (#515).
+        let source = r#"
+tempo {
+    start: 0ms
+    bpm: 169
+    time_signature: 12/8
+}
+
+show "T" {
+    @1/1
+    wash: static color: "blue", duration: 1s
+}
+"#;
+        let g = grid(169.0 / 1.5, 16);
+        let ctx = LintContext {
+            beat_grid: Some(&g),
+            ..Default::default()
+        };
+        assert!(
+            lint_shows(&shows(source), &ctx).is_empty(),
+            "a correct 12/8 block should be silent"
+        );
+    }
+
+    #[test]
     fn without_a_grid_the_tempo_check_does_not_run() {
         let source = r#"
 tempo {

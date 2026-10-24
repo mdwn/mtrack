@@ -47,6 +47,11 @@ pub struct ChannelState {
     pub value: f64, // 0.0 to 1.0
     pub layer: EffectLayer,
     pub blend_mode: BlendMode,
+    /// How far a `Replace` moves from the value beneath toward `value`, 0.0
+    /// to 1.0. A replace fading in or out is a crossfade with the layers
+    /// below it, not its own colour scaled toward black (#521). Always 1.0
+    /// for every other blend mode, and once blended.
+    pub mix: f64,
 }
 
 impl ChannelState {
@@ -55,13 +60,32 @@ impl ChannelState {
             value: value.clamp(0.0, 1.0),
             layer,
             blend_mode,
+            mix: 1.0,
+        }
+    }
+
+    /// This state with a partial `mix` (see [`ChannelState::mix`]).
+    pub fn with_mix(self, mix: f64) -> Self {
+        Self {
+            mix: mix.clamp(0.0, 1.0),
+            ..self
+        }
+    }
+
+    /// This state as it stands with nothing beneath it: a partial replace
+    /// over nothing fades from zero, as it always has.
+    pub fn resolved(self) -> Self {
+        Self {
+            value: self.value * self.mix,
+            mix: 1.0,
+            ..self
         }
     }
 
     /// Blend this channel state with another
     pub fn blend_with(&self, other: ChannelState) -> ChannelState {
         let blended_value = match other.blend_mode {
-            BlendMode::Replace => other.value,
+            BlendMode::Replace => self.value + (other.value - self.value) * other.mix,
             BlendMode::Multiply => self.value * other.value,
             BlendMode::Add => (self.value + other.value).min(1.0),
             BlendMode::Overlay => {
@@ -87,6 +111,7 @@ impl ChannelState {
             value: blended_value.clamp(0.0, 1.0),
             layer: result_layer,
             blend_mode: result_blend_mode,
+            mix: 1.0,
         }
     }
 }
@@ -150,7 +175,8 @@ impl FixtureState {
                 self.channels.insert(channel_name.clone(), blended_state);
             } else {
                 // Add new channel
-                self.channels.insert(channel_name.clone(), *other_state);
+                self.channels
+                    .insert(channel_name.clone(), other_state.resolved());
             }
         }
     }
@@ -235,8 +261,8 @@ impl FixtureState {
             let over = own.and_then(|o| o.channels.get(channel_name));
             let state = match (base, over) {
                 (Some(b), Some(o)) => b.blend_with(*o),
-                (Some(b), None) => *b,
-                (None, Some(o)) => *o,
+                (Some(b), None) => b.resolved(),
+                (None, Some(o)) => o.resolved(),
                 (None, None) => continue,
             };
             out.push((
