@@ -499,14 +499,6 @@ fn parse_sequence_cue_structure(
         }
     }
 
-    // Extract score measure early (before measure_time_pair is moved)
-    let score_measure = if let Some(ref measure_pair) = measure_time_pair {
-        let (measure, _) = parse_measure_time(measure_pair.as_str())?;
-        Some(measure)
-    } else {
-        None
-    };
-
     // Calculate unshifted score_time first for use as score_anchor
     let mut unshifted_score_time = Duration::ZERO;
     if let Some(measure_pair) = measure_time_pair.clone() {
@@ -605,8 +597,6 @@ fn parse_sequence_cue_structure(
             cue_time: abs_time,
             offset_secs: applied_offset_secs,
             unshifted_score_time: unshifted_for_effects,
-            score_measure,
-            measure_offset: cumulative_measure_offset,
         };
         let effect = parse_effect_definition(effect_pair, &effect_ctx)?;
         effects.push(effect);
@@ -1211,14 +1201,6 @@ fn parse_cue_definition(
         }
     }
 
-    // Extract score measure early (before measure_time_pair is moved)
-    let score_measure_seq = if let Some(ref measure_pair) = measure_time_pair {
-        let (measure, _) = parse_measure_time(measure_pair.as_str())?;
-        Some(measure)
-    } else {
-        None
-    };
-
     // Resolve measure_time to score_time
     // Note: We pass offset_secs here so that tempo changes are shifted by offsets
     // This ensures that when offsets are applied, tempo changes happen at the correct shifted times
@@ -1333,8 +1315,6 @@ fn parse_cue_definition(
             } else {
                 None
             },
-            score_measure: score_measure_seq,
-            measure_offset: cumulative_measure_offset_seq,
         };
         for effect_pair in effect_pairs {
             let effect = parse_effect_definition(effect_pair, &seq_effect_ctx)?;
@@ -1530,8 +1510,6 @@ fn parse_cue_definition(
         } else {
             None
         },
-        score_measure: score_measure_seq,
-        measure_offset: cumulative_measure_offset_seq,
     };
     for effect_pair in effect_pairs {
         let effect = parse_effect_definition(effect_pair, &seq_effect_ctx)?;

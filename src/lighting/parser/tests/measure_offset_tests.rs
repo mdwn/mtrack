@@ -1101,3 +1101,67 @@ show "Rate" {
         rate(10.5)
     );
 }
+
+/// A `hold_time` in measures is the same length as a `duration` in measures:
+/// it counts the bars actually played from the cue, through the offset-shifted
+/// tempo changes and through gradual transitions.
+#[test]
+fn test_hold_time_measures_match_duration_measures() {
+    let content = r#"tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @5/1 { bpm: 240 },
+        @7/1 { bpm: 120, transition: 1m }
+    ]
+}
+
+show "Hold" {
+    @1/1
+    offset 1 measures
+
+    @4/1
+    front_wash: static, color: "red", hold_time: 2measures
+    back_wash: static, color: "red", duration: 2measures
+
+    @7/1
+    side_wash: static, color: "blue", hold_time: 1measure
+}"#;
+
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Hold").unwrap();
+    let tm = show.tempo_map.as_ref().unwrap();
+    let effect = |group: &str| {
+        show.cues
+            .iter()
+            .flat_map(|c| c.effects.iter().map(move |e| (c.time, e)))
+            .find(|(_, e)| e.groups == vec![group.to_string()])
+            .unwrap()
+    };
+
+    // Bar 4 at 120 (2 s), then bar 5 at 240 (1 s): 3 s. The old "playback
+    // measures" path applied the bar-5 change at playback bar 5, i.e. from
+    // the start of this hold, and gave 2 s.
+    let (_, hold) = effect("front_wash");
+    let (_, duration) = effect("back_wash");
+    let hold = hold.hold_time.expect("hold_time").as_secs_f64();
+    assert!(
+        (hold - 3.0).abs() < 1e-6,
+        "2 measures across the change: {hold}"
+    );
+    assert!(
+        (hold - duration.effect_type.duration().as_secs_f64()).abs() < 1e-9,
+        "hold_time and duration disagree"
+    );
+
+    // One measure on the downbeat of the ramp bar ends on the next downbeat.
+    let (start, ramp) = effect("side_wash");
+    let offset = Duration::from_secs_f64(2.0);
+    let next = tm.measure_to_time_with_offset(8, 1.0, 0, 0.0).unwrap() + offset;
+    let end = start + ramp.hold_time.expect("hold_time");
+    assert!(
+        (end.as_secs_f64() - next.as_secs_f64()).abs() < 1e-6,
+        "ramp bar hold ends at {end:?}, next bar at {next:?}"
+    );
+}

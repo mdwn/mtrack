@@ -26,8 +26,6 @@ pub(crate) struct ParseContext {
     pub cue_time: Duration,
     pub offset_secs: f64,
     pub unshifted_score_time: Option<Duration>,
-    pub score_measure: Option<u32>,
-    pub measure_offset: u32,
 }
 
 // Light show DSL data structures

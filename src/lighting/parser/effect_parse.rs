@@ -67,8 +67,6 @@ pub(crate) fn parse_effect_definition(
     let cue_time = ctx.cue_time;
     let offset_secs = ctx.offset_secs;
     let unshifted_score_time = ctx.unshifted_score_time;
-    let score_measure = ctx.score_measure;
-    let measure_offset = ctx.measure_offset;
     let mut groups = Vec::new();
     let mut effect_type = EffectType::Static {
         parameters: HashMap::new(),
@@ -192,64 +190,23 @@ pub(crate) fn parse_effect_definition(
                                 up_time = Some(duration);
                             }
                             "hold_time" => {
-                                // For hold_time: 30measures means 30 PLAYBACK measures
-                                // Calculate duration in playback measure space
-                                let duration = if value.ends_with("measures")
-                                    || value.ends_with("measure")
-                                {
-                                    let num_str = value
-                                        .trim_end_matches("measures")
-                                        .trim_end_matches("measure");
-                                    if let Ok(playback_measures) = num_str.parse::<f64>() {
-                                        if let Some(tm) = tempo_map {
-                                            if let Some(score_measure_val) = score_measure {
-                                                // Calculate duration for N playback measures
-                                                tm.playback_measures_to_duration(
-                                                    score_measure_val,
-                                                    playback_measures,
-                                                    measure_offset,
-                                                )
-                                            } else {
-                                                // Fallback to time-based calculation if no score measure
-                                                let score_time_for_calc = unshifted_score_time
-                                                    .unwrap_or_else(|| {
-                                                        cue_time.saturating_sub(
-                                                            Duration::from_secs_f64(offset_secs),
-                                                        )
-                                                    });
-                                                parse_duration_string(
-                                                    value.as_str(),
-                                                    tempo_map,
-                                                    Some(score_time_for_calc),
-                                                    0.0,
-                                                )?
-                                            }
-                                        } else {
-                                            return Err(
-                                                "Measure-based durations require a tempo section"
-                                                    .into(),
-                                            );
-                                        }
-                                    } else {
-                                        return Err(
-                                            format!("Invalid measure count: {}", num_str).into()
-                                        );
-                                    }
-                                } else {
-                                    // For non-measure durations, use standard calculation
-                                    let score_time_for_calc =
-                                        unshifted_score_time.unwrap_or_else(|| {
-                                            cue_time.saturating_sub(Duration::from_secs_f64(
-                                                offset_secs,
-                                            ))
-                                        });
-                                    parse_duration_string(
-                                        value.as_str(),
-                                        tempo_map,
-                                        Some(score_time_for_calc),
-                                        0.0,
-                                    )?
-                                };
+                                // Resolved exactly as `duration` is: in score space, so a
+                                // hold in measures integrates through gradual transitions
+                                // and follows the offset-shifted tempo changes the cue
+                                // times do. It used to count "playback measures" with
+                                // every tempo change as a step at its unshifted bar, which
+                                // disagreed with both inside a ramp or an offset show.
+                                let score_time_for_calc =
+                                    unshifted_score_time.unwrap_or_else(|| {
+                                        cue_time
+                                            .saturating_sub(Duration::from_secs_f64(offset_secs))
+                                    });
+                                let duration = parse_duration_string(
+                                    value.as_str(),
+                                    tempo_map,
+                                    Some(score_time_for_calc),
+                                    0.0,
+                                )?;
                                 hold_time = Some(duration);
                             }
                             "per" => {
@@ -753,8 +710,6 @@ mod tests {
             cue_time: Duration::ZERO,
             offset_secs: 0.0,
             unshifted_score_time: None,
-            score_measure: None,
-            measure_offset: 0,
         }
     }
 

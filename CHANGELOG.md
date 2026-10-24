@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`hold_time` in measures is as long as `duration` in measures**: a `hold_time` counted
+  "playback measures" on its own path, stepping through tempo changes at their unshifted bars and
+  ignoring gradual transitions, so in an offset show or a ramp it disagreed with the same length
+  written as `duration` and with the cue grid. It is now resolved exactly as `duration` is.
 - **Durations inside a sequence follow the tempo the sequence plays at (#529)**: a sequence's cue
   times were rescaled to the tempo where it is expanded, but its effects' `beats` / `measures`
   durations stayed resolved at the tempo the sequence was parsed at. In Esaweg (110 BPM at the top,
