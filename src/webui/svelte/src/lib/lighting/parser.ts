@@ -63,10 +63,16 @@ export function parseLightFile(dsl: string): LightFile {
     }
 
     // Sequence block
-    const seqMatch = line.match(/^sequence\s+"([^"]+)"\s*\{/);
+    const seqMatch = line.match(
+      /^sequence\s+"([^"]+)"\s*(?:,\s*length\s*:\s*([^\s{]+)\s*)?\{/,
+    );
     if (seqMatch) {
       const [seq, newI] = parseCueBlock(lines, i + 1);
-      result.sequences.push({ name: seqMatch[1], cues: seq });
+      result.sequences.push({
+        name: seqMatch[1],
+        ...(seqMatch[2] ? { length: seqMatch[2] } : {}),
+        cues: seq,
+      });
       i = newI;
       continue;
     }

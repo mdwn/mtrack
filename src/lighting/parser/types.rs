@@ -43,6 +43,9 @@ pub struct Sequence {
     /// The effective BPM used when parsing this sequence's internal cue timing.
     /// Used to rescale cue times when the sequence is expanded at a different tempo.
     pub bpm: f64,
+    /// How long one pass lasts, from the first cue, when the sequence declares
+    /// a `length:`. Otherwise a pass lasts until its last effect ends.
+    pub length: Option<Duration>,
 }
 
 impl Sequence {
@@ -468,6 +471,7 @@ mod tests {
         let seq = Sequence {
             cues: vec![],
             bpm: 120.0,
+            length: None,
         };
         assert_eq!(seq.duration(), Duration::ZERO);
     }
@@ -483,6 +487,7 @@ mod tests {
                 start_sequences: vec![],
             }],
             bpm: 120.0,
+            length: None,
         };
         // cue_time(2) + effect_duration(3) = 5
         assert_eq!(seq.duration(), Duration::from_secs(5));
@@ -508,6 +513,7 @@ mod tests {
                 },
             ],
             bpm: 120.0,
+            length: None,
         };
         // max(0+3, 5+10) = 15
         assert_eq!(seq.duration(), Duration::from_secs(15));
@@ -527,6 +533,7 @@ mod tests {
                 start_sequences: vec![],
             }],
             bpm: 120.0,
+            length: None,
         };
         assert_eq!(seq.duration(), Duration::from_secs(5));
     }

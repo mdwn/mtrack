@@ -24,7 +24,7 @@ use super::grammar::{LightingParser, Rule};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{Cue, LayerCommand, LayerCommandType, LightShow, ParseContext, Sequence};
 use super::types::{SequenceLoop, UnexpandedSequenceCue};
-use super::utils::{parse_measure_time, parse_time_string};
+use super::utils::{parse_duration_string, parse_measure_time, parse_time_string};
 use pest::iterators::Pair;
 use pest::Parser;
 
@@ -119,33 +119,31 @@ pub fn parse_light_shows_with_tempo(
 
     // Parse sequences in two passes to support forward references
     // First pass: Parse all sequence definitions and extract unexpanded cue data
-    let mut unexpanded_sequences: Vec<(String, Option<TempoMap>, Vec<UnexpandedSequenceCue>)> =
-        Vec::new();
+    let mut unexpanded_sequences = Vec::new();
 
     for pair in sequence_pairs {
-        let (name, tempo_map, unexpanded_cues) = parse_sequence_structure(pair, &global_tempo)?;
-        unexpanded_sequences.push((name, tempo_map, unexpanded_cues));
+        unexpanded_sequences.push(parse_sequence_structure(pair, &global_tempo)?);
     }
 
     // Insert all sequences into the map (with empty cues for now)
-    for (name, tempo_map_seq, _) in &unexpanded_sequences {
-        let effective_bpm = tempo_map_seq
-            .as_ref()
-            .or(global_tempo.as_ref())
+    for definition in &unexpanded_sequences {
+        let effective_tempo = definition.tempo_map.as_ref().or(global_tempo.as_ref());
+        let effective_bpm = effective_tempo
             .map(|tm| tm.initial_bpm)
             .unwrap_or(crate::lighting::tempo::DEFAULT_BPM);
         let sequence = Sequence {
             cues: Vec::new(),
             bpm: effective_bpm,
+            length: definition.declared_length(effective_tempo)?,
         };
-        sequences.insert(name.clone(), sequence);
+        sequences.insert(definition.name.clone(), sequence);
     }
 
     // Second pass: Expand nested references in all sequences recursively
     // Build a map of unexpanded data for recursive expansion
     let mut unexpanded_data_map = HashMap::new();
-    for (name, tempo_map, unexpanded_cues) in unexpanded_sequences {
-        unexpanded_data_map.insert(name, (tempo_map, unexpanded_cues));
+    for definition in unexpanded_sequences {
+        unexpanded_data_map.insert(definition.name, (definition.tempo_map, definition.cues));
     }
 
     // Recursive function to expand a sequence and its dependencies
@@ -359,22 +357,72 @@ fn parse_light_show_definition(
     })
 }
 
-/// Parse sequence structure without expanding nested references
-/// Returns (name, tempo_map, unexpanded_cues) for later expansion
-type SequenceStructureResult = (String, Option<TempoMap>, Vec<UnexpandedSequenceCue>);
+/// A sequence definition as written, before nested references are expanded.
+struct SequenceDefinition {
+    name: String,
+    tempo_map: Option<TempoMap>,
+    /// The `length:` value as written, e.g. `1measure`.
+    length: Option<String>,
+    cues: Vec<UnexpandedSequenceCue>,
+}
+
+impl SequenceDefinition {
+    /// The declared `length:` in time from the first cue, or `None` when the
+    /// sequence declares none. Every cue must start inside it: one starting
+    /// at or past the end would land on the next pass's first cue.
+    fn declared_length(
+        &self,
+        tempo_map: Option<&TempoMap>,
+    ) -> Result<Option<Duration>, Box<dyn Error>> {
+        let Some(written) = &self.length else {
+            return Ok(None);
+        };
+        let start = self.cues.iter().map(|c| c.time).min().unwrap_or_default();
+        let length = parse_duration_string(written, &tempo_map.cloned(), Some(start), 0.0)
+            .map_err(|e| {
+                format!(
+                    "Sequence '{}': invalid length '{}': {}",
+                    self.name, written, e
+                )
+            })?;
+        if length.is_zero() {
+            return Err(
+                format!("Sequence '{}': length must be greater than zero", self.name).into(),
+            );
+        }
+        if let Some(late) = self.cues.iter().find(|c| c.time - start >= length) {
+            return Err(format!(
+                "Sequence '{}': a cue starts {:.3}s in, at or past its length of {} ({:.3}s)",
+                self.name,
+                (late.time - start).as_secs_f64(),
+                written,
+                length.as_secs_f64()
+            )
+            .into());
+        }
+        Ok(Some(length))
+    }
+}
 
 fn parse_sequence_structure(
     pair: Pair<Rule>,
     global_tempo: &Option<TempoMap>,
-) -> Result<SequenceStructureResult, Box<dyn Error>> {
+) -> Result<SequenceDefinition, Box<dyn Error>> {
     let mut name = String::new();
     let mut tempo_map: Option<TempoMap> = None;
+    let mut length = None;
     let mut unexpanded_cues = Vec::new();
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::sequence_name => {
                 name = inner_pair.as_str().trim_matches('"').to_string();
+            }
+            Rule::sequence_length => {
+                length = inner_pair
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::time_parameter)
+                    .map(|p| p.as_str().trim().to_string());
             }
             Rule::sequence_content => {
                 // Parse the sequence content which contains cues and potentially tempo
@@ -437,7 +485,12 @@ fn parse_sequence_structure(
         }
     }
 
-    Ok((name, tempo_map, unexpanded_cues))
+    Ok(SequenceDefinition {
+        name,
+        tempo_map,
+        length,
+        cues: unexpanded_cues,
+    })
 }
 
 /// Parse a sequence cue structure without expanding nested sequence references
@@ -725,8 +778,12 @@ fn iteration_offset(base_time: Duration, duration: Duration, iteration: usize) -
     base_time + (duration * iteration as u32)
 }
 
-/// Calculate sequence duration from a sequence
+/// How long one pass of a sequence lasts: its declared `length:`, or else
+/// until its last effect ends.
 fn calculate_sequence_duration(sequence: &Sequence) -> Duration {
+    if let Some(length) = sequence.length {
+        return length;
+    }
     let sequence_base_time = get_sequence_base_time(sequence);
     let completion_time = sequence.duration();
     // duration() returns absolute completion time, convert to relative
@@ -1724,7 +1781,11 @@ mod tests {
     }
 
     fn make_sequence(cues: Vec<Cue>) -> Sequence {
-        Sequence { cues, bpm: 120.0 }
+        Sequence {
+            cues,
+            bpm: 120.0,
+            length: None,
+        }
     }
 
     #[test]

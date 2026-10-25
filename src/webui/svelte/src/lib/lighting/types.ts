@@ -183,6 +183,8 @@ export interface Cue {
 /** A named sequence of cues */
 export interface Sequence {
   name: string;
+  /** Declared pass length (`length: 1measure`), as written. */
+  length?: string;
   cues: Cue[];
 }
 

@@ -26,7 +26,11 @@ show_content = { "{" ~ (tempo | cue)* ~ "}" }
 cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command | offset_command | reset_measures_command | inline_loop)* }
 
 // Sequence definition rules
-sequence = { "sequence" ~ sequence_name ~ sequence_content }
+// `length:` fixes how long one pass lasts, so a loop restarts on time however
+// long its last effect runs.
+sequence = { "sequence" ~ sequence_name ~ ("," ~ sequence_length)? ~ sequence_content }
+
+sequence_length = { "length" ~ ":" ~ time_parameter }
 
 sequence_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 

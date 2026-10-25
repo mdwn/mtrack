@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Sequence `length:` (#541)**: `sequence "x", length: 1measure { … }` fixes how long one pass of
+  a sequence lasts, in the same units as `duration:`. A looped sequence whose effects end before
+  the bar now restarts on the bar without a padding cue to stretch it, and an effect that runs
+  past the length is cut when the next pass starts. A cue starting at or past the length is a
+  parse error. The web UI's lighting editor keeps the length when it saves the file.
+
 ## [0.17.2] - 2026-10-25
 
 Upgrade note: a lighting show with an invalid `color:` or level value now fails to parse instead

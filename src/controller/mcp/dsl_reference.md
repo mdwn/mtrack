@@ -129,6 +129,22 @@ show "Song" {
 }
 ```
 
+A pass lasts until its last effect ends. To loop on the bar when the effects
+end early, declare the pass length, in the same units as `duration:`:
+
+```
+sequence "Centre Beats", length: 1measure {
+    @1/1
+    centre: static color: "blue", duration: 1beat
+    @1/3
+    centre: static color: "white", duration: 1.5beats
+}
+```
+
+Each pass then starts one measure after the last; an effect running past the
+length is cut when the next pass starts, and a cue at or past the length is a
+parse error. Padding cues that only stretch a pass are no longer needed.
+
 For one-off repetition without naming, use an inline loop. Timestamps inside
 the block are relative to the loop's start:
 

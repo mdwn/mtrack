@@ -187,6 +187,27 @@ show "Song" {
   it. `pingpong` and `random` are accepted by the grammar but rejected at parse time as not
   implemented.
 
+**Sequence length:**
+
+A pass of a sequence normally lasts until its last effect ends, so a looped sequence whose last
+effect stops short of the bar drifts off it. Declare `length:` to fix how long one pass lasts,
+counted from the sequence's first cue:
+
+```light
+sequence "Centre Beats", length: 1measure {
+    @1/1
+    centre: static color: "blue", duration: 1beat
+
+    @1/3
+    centre: static color: "white", duration: 1.5beats
+}
+```
+
+Looped, each pass starts exactly one measure after the one before, even though the effects end
+half a beat early. An effect that runs past the length is cut when the next pass starts. The
+length takes the same units as `duration:` (`2s`, `500ms`, `4beats`, `1measure`). Every cue must
+start inside it: a cue at or past the length is a parse error.
+
 ## Measure Offsets
 
 `offset N measures` shifts the measure numbering for the cues that follow it, so a cue written

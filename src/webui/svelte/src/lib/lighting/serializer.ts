@@ -36,7 +36,8 @@ export function serializeLightFile(file: LightFile): string {
 
   // Sequences
   for (const seq of file.sequences) {
-    parts.push(`sequence "${seq.name}" {`);
+    const length = seq.length ? `, length: ${seq.length}` : "";
+    parts.push(`sequence "${seq.name}"${length} {`);
     parts.push(serializeCues(seq.cues));
     parts.push("}");
     parts.push("");
