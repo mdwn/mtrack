@@ -530,6 +530,14 @@ fn effects_past_end_of_song(shows: &[LightShow], ctx: &LintContext, out: &mut Ve
     }
 }
 
+/// Overlaps and dark windows shorter than this are not reported.
+///
+/// A gap or overlap of a few nanoseconds is rounding, not authoring: a frame is
+/// tens of milliseconds, so nothing that short can be seen, and a list padded
+/// with them hides the one window that matters (#534). A millisecond is well
+/// under a frame and well over any rounding.
+pub(crate) const MIN_REPORTED_SPAN: Duration = Duration::from_millis(1);
+
 /// Two `replace`-blend effects overlapping on the same layer *and* group. Last
 /// writer wins with no diagnostic, which is the easiest way to author a cue
 /// that appears to do nothing because something else is stomping it.
@@ -577,8 +585,9 @@ fn stomping_replace_effects(shows: &[LightShow], out: &mut Vec<Warning>) {
         occupied.sort();
         for pair in occupied.windows(2) {
             let ((_, first_end), (second_start, _)) = (pair[0], pair[1]);
-            // Touching is fine — one ends exactly where the next begins.
-            if second_start >= first_end {
+            // Touching is fine — one ends exactly where the next begins — and
+            // so is an overlap too short to be anything but rounding.
+            if second_start + MIN_REPORTED_SPAN >= first_end {
                 continue;
             }
             out.push(Warning::new(
@@ -1256,6 +1265,20 @@ show "T" {
         let warnings = lint_shows(&shows(source), &LintContext::default());
         assert_eq!(kinds(&warnings), ["replace-overlap"]);
         assert!(warnings[0].message.contains("wash"), "{warnings:?}");
+    }
+
+    /// An overlap shorter than a millisecond is rounding, not a stomp (#534).
+    #[test]
+    fn a_sub_millisecond_overlap_is_not_reported() {
+        let source = r#"
+show "T" {
+    @00:00.000
+    wash: static color: "blue", duration: 1.0005s
+    @00:01.000
+    wash: static color: "red", duration: 1s
+}
+"#;
+        assert!(lint_shows(&shows(source), &LintContext::default()).is_empty());
     }
 
     #[test]

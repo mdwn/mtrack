@@ -241,6 +241,19 @@ fn segment_secs_for_beats(ramp: Option<&SegmentRamp>, bpm: f64, beats: f64) -> f
     }
 }
 
+/// A beat position rounded to a millionth of a beat.
+///
+/// Times are whole nanoseconds, so a position read back from a time carries
+/// a few nanoseconds' worth of noise (about 3e-9 of a beat at 180 BPM). Adding
+/// a length to that and converting back lands a nanosecond off the position a
+/// cue computes from the exact beat, and an effect ending "on the next
+/// downbeat" leaves a nanosecond gap before it (#534). A millionth of a beat
+/// is far below that noise's reach yet far finer than anything musical --
+/// 0.2 µs at 300 BPM -- so snapping removes the noise and nothing else.
+pub(crate) fn snap_beats(beats: f64) -> f64 {
+    (beats * 1e6).round() / 1e6
+}
+
 /// Tempo transition type
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TempoTransition {
@@ -964,205 +977,22 @@ impl TempoMap {
         ts
     }
 
-    /// Convert a duration in beats to absolute Duration at a given time
-    /// This integrates through tempo changes during the duration
-    /// If offset_secs is provided, it's used to adjust tempo change lookups
+    /// Convert a duration in beats to absolute Duration at a given time.
+    ///
+    /// Computed as a position problem, like [`TempoMap::measures_to_duration`]:
+    /// the beat position at `at_time`, plus `beats`, converted back to time
+    /// through the same walk cue positions use. So an effect lasting up to the
+    /// next cue ends exactly where that cue starts -- not a nanosecond either
+    /// side, which a separately rounded start and length could miss by (#534) --
+    /// and gradual transitions are integrated as cue positions integrate them.
+    /// `offset_secs` shifts the tempo map the way it shifts cue times.
     pub fn beats_to_duration(&self, beats: f64, at_time: Duration, offset_secs: f64) -> Duration {
-        let mut remaining_beats = beats;
-        let mut current_time = at_time;
-        let mut current_bpm = self.bpm_at_time(at_time, offset_secs);
-
-        // Find all tempo changes that occur during the duration
-        // We'll process them in order, integrating through each segment
-        let offset_duration = Duration::from_secs_f64(offset_secs);
-        let mut relevant_changes: Vec<&TempoChange> = self
-            .changes
-            .iter()
-            .filter(|change| {
-                if let Some(change_time) = change.position.absolute_time() {
-                    (change_time + offset_duration) >= at_time
-                } else {
-                    false
-                }
-            })
-            .collect();
-
-        // Sort by time (with offset applied)
-        relevant_changes.sort_by(|a, b| {
-            let time_a = a.position.absolute_time().unwrap_or(Duration::ZERO) + offset_duration;
-            let time_b = b.position.absolute_time().unwrap_or(Duration::ZERO) + offset_duration;
-            time_a.cmp(&time_b)
-        });
-
-        // Process each tempo change that occurs during the duration
-        for change in relevant_changes {
-            if remaining_beats <= 0.0 {
-                break;
-            }
-
-            let change_time = change.position.absolute_time().unwrap() + offset_duration;
-            if change_time <= current_time {
-                // This change already happened, update current BPM
-                match change.transition {
-                    TempoTransition::Snap => {
-                        if let Some(new_bpm) = change.bpm {
-                            current_bpm = new_bpm;
-                        }
-                    }
-                    TempoTransition::Beats(_, curve) | TempoTransition::Measures(_, curve) => {
-                        // Check if we're still in the transition
-                        let old_bpm = if change_time > self.start_offset + offset_duration {
-                            self.bpm_at_time(change_time - Duration::from_nanos(1), offset_secs)
-                        } else {
-                            self.initial_bpm
-                        };
-
-                        let transition_duration = match change.transition {
-                            TempoTransition::Beats(beats, _) => {
-                                Duration::from_secs_f64(beats * 60.0 / old_bpm)
-                            }
-                            TempoTransition::Measures(measures, _) => {
-                                let current_ts =
-                                    self.time_signature_at_time(change_time, offset_secs);
-                                let beats = measures * current_ts.beats_per_measure();
-                                Duration::from_secs_f64(beats * 60.0 / old_bpm)
-                            }
-                            TempoTransition::Snap => Duration::ZERO,
-                        };
-
-                        if current_time < change_time + transition_duration {
-                            // Still in transition - need to integrate through the curve
-                            let elapsed = (current_time - change_time).as_secs_f64();
-                            let total = transition_duration.as_secs_f64();
-                            let new_bpm = change.bpm.unwrap_or(old_bpm);
-
-                            // Calculate how many beats remain in the transition using curve
-                            let beats_in_remaining_transition = curve
-                                .beats_in_remaining_transition(old_bpm, new_bpm, total, elapsed);
-
-                            if remaining_beats <= beats_in_remaining_transition {
-                                // Remaining beats fit within the remaining transition
-                                // Solve for duration using curve
-                                if let Some(dt) = curve.solve_duration_for_beats(
-                                    old_bpm,
-                                    new_bpm,
-                                    total,
-                                    elapsed,
-                                    remaining_beats,
-                                ) {
-                                    let duration_for_remaining = Duration::from_secs_f64(dt);
-                                    return current_time + duration_for_remaining - at_time;
-                                } else {
-                                    // Fallback to average BPM if calculation fails
-                                    let t = (elapsed / total).clamp(0.0, 1.0);
-                                    let current_bpm_at_start = curve.bpm_at(t, old_bpm, new_bpm);
-                                    let dt = remaining_beats * 60.0
-                                        / ((current_bpm_at_start + new_bpm) / 2.0);
-                                    let duration_for_remaining = Duration::from_secs_f64(dt);
-                                    return current_time + duration_for_remaining - at_time;
-                                }
-                            }
-
-                            // Consume all beats in the remaining transition
-                            remaining_beats -= beats_in_remaining_transition;
-                            current_time = change_time + transition_duration;
-                            current_bpm = new_bpm;
-                        } else {
-                            // Transition complete
-                            if let Some(new_bpm) = change.bpm {
-                                current_bpm = new_bpm;
-                            }
-                        }
-                    }
-                }
-                continue;
-            }
-
-            // Calculate how many beats occur before this change
-            let change_time_playback = change_time; // change_time already has offset applied
-            let time_to_change = change_time_playback - current_time;
-            let beats_in_segment = time_to_change.as_secs_f64() * current_bpm / 60.0;
-
-            // Use a small epsilon for floating point comparison to handle precision issues
-            // This ensures that when remaining_beats is very close to beats_in_segment,
-            // we treat it as equal and end the effect exactly at the tempo change
-            const EPSILON: f64 = 1e-6;
-            let beats_diff = (remaining_beats - beats_in_segment).abs();
-
-            if remaining_beats < beats_in_segment {
-                // All remaining beats fit in this segment (constant BPM)
-                let duration_for_remaining =
-                    Duration::from_secs_f64(remaining_beats * 60.0 / current_bpm);
-                return current_time + duration_for_remaining - at_time;
-            } else if beats_diff < EPSILON {
-                // remaining_beats is essentially equal to beats_in_segment (within epsilon)
-                // Effect ends exactly at the tempo change
-                return change_time - at_time;
-            }
-
-            // Consume all beats in this segment
-            remaining_beats -= beats_in_segment;
-            current_time = change_time;
-
-            // Handle the transition at this change
-            match change.transition {
-                TempoTransition::Snap => {
-                    if let Some(new_bpm) = change.bpm {
-                        current_bpm = new_bpm;
-                    }
-                }
-                TempoTransition::Beats(_, curve) | TempoTransition::Measures(_, curve) => {
-                    let old_bpm = current_bpm;
-                    let new_bpm = change.bpm.unwrap_or(old_bpm);
-
-                    // Calculate transition duration in time
-                    let transition_duration = match change.transition {
-                        TempoTransition::Beats(beats, _) => {
-                            Duration::from_secs_f64(beats * 60.0 / old_bpm)
-                        }
-                        TempoTransition::Measures(measures, _) => {
-                            let current_ts = self.time_signature_at_time(change_time, offset_secs);
-                            let beats = measures * current_ts.beats_per_measure();
-                            Duration::from_secs_f64(beats * 60.0 / old_bpm)
-                        }
-                        TempoTransition::Snap => Duration::ZERO,
-                    };
-
-                    // Calculate how many beats occur during the transition using curve
-                    let total_duration = transition_duration.as_secs_f64();
-                    let beats_in_transition =
-                        curve.beats_in_duration(old_bpm, new_bpm, total_duration, total_duration);
-
-                    if remaining_beats <= beats_in_transition {
-                        // Remaining beats fit within the transition
-                        // Solve for duration using curve
-                        if let Some(dt) = curve.solve_duration_for_beats_from_start(
-                            old_bpm,
-                            new_bpm,
-                            total_duration,
-                            remaining_beats,
-                        ) {
-                            let duration_for_remaining = Duration::from_secs_f64(dt);
-                            return current_time + duration_for_remaining - at_time;
-                        } else {
-                            // Fallback to average BPM if calculation fails
-                            let dt = remaining_beats * 60.0 / ((old_bpm + new_bpm) / 2.0);
-                            let duration_for_remaining = Duration::from_secs_f64(dt);
-                            return current_time + duration_for_remaining - at_time;
-                        }
-                    }
-
-                    // Consume all beats in the transition
-                    remaining_beats -= beats_in_transition;
-                    current_time += transition_duration;
-                    current_bpm = new_bpm;
-                }
-            }
-        }
-
-        // Remaining beats after all changes - use final BPM
-        let duration_for_remaining = Duration::from_secs_f64(remaining_beats * 60.0 / current_bpm);
-        current_time + duration_for_remaining - at_time
+        let ts_changes = self.build_time_signature_changes();
+        let score_at = at_time.saturating_sub(Duration::from_secs_f64(offset_secs.max(0.0)));
+        let start_beats = snap_beats(self.score_beats_at(score_at, &ts_changes));
+        let end_beats = snap_beats(start_beats + beats);
+        self.score_time_at_beats(end_beats, &ts_changes)
+            .saturating_sub(score_at)
     }
 
     /// Convert a duration in measures to absolute Duration at a given time.
@@ -1182,9 +1012,9 @@ impl TempoMap {
     ) -> Duration {
         let ts_changes = self.build_time_signature_changes();
         let score_at = at_time.saturating_sub(Duration::from_secs_f64(offset_secs.max(0.0)));
-        let start_beats = self.score_beats_at(score_at, &ts_changes);
+        let start_beats = snap_beats(self.score_beats_at(score_at, &ts_changes));
         let end_measures = self.measures_at_beats(start_beats, &ts_changes) + measures;
-        let end_beats = self.beats_at_measures(end_measures, &ts_changes);
+        let end_beats = snap_beats(self.beats_at_measures(end_measures, &ts_changes));
         self.score_time_at_beats(end_beats, &ts_changes)
             .saturating_sub(score_at)
     }
