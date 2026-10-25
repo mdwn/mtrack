@@ -288,6 +288,82 @@ impl AudioMixer {
     /// Each source gets its own envelope instance so they don't share the
     /// atomic position counter (which would cause the fade to advance
     /// N times faster with N sources).
+    /// Fades out every source of the playback `playback` cancels, from the
+    /// gain each has now -- a source part way through another fade carries on
+    /// down from where it is rather than jumping back up -- over
+    /// `fade_samples`, or `cut_samples` for a source whose tracks `cut` picks
+    /// (it is given each source's channel labels). A source not yet started
+    /// never starts. Other playbacks' sources, triggered samples and
+    /// notifications among them, are left alone. Returns the ids now fading.
+    pub fn fade_out_playback(
+        &self,
+        playback: &crate::playsync::CancelHandle,
+        fade_samples: u64,
+        cut_samples: u64,
+        cut: impl Fn(&[Vec<String>]) -> bool,
+    ) -> Vec<u64> {
+        self.fade_out_matching(
+            |source| source.cancel_handle.same_as(playback),
+            fade_samples,
+            cut_samples,
+            cut,
+        )
+    }
+
+    /// Fades out the sources `ids` names over `samples`, each from the gain
+    /// it has now, as [`AudioMixer::fade_out_playback`] does.
+    pub fn fade_out_sources(&self, ids: &[u64], samples: u64) {
+        self.fade_out_matching(
+            |source| ids.contains(&source.id),
+            samples,
+            samples,
+            |_| false,
+        );
+    }
+
+    fn fade_out_matching(
+        &self,
+        select: impl Fn(&ActiveSource) -> bool,
+        fade_samples: u64,
+        cut_samples: u64,
+        cut: impl Fn(&[Vec<String>]) -> bool,
+    ) -> Vec<u64> {
+        use crate::audio::crossfade::{CrossfadeCurve, GainEnvelope};
+        let now = self.current_sample();
+        let sources = self.active_sources.read();
+        let mut fading = Vec::new();
+        for source_arc in sources.iter() {
+            let mut source = source_arc.lock();
+            if !select(&source) {
+                continue;
+            }
+            if source.start_at_sample.is_some_and(|start| start > now) {
+                source.is_finished.store(true, Ordering::Relaxed);
+                continue;
+            }
+            let gain = match &source.gain_envelope {
+                None => 1.0,
+                Some(env) if env.start_at_sample().is_some_and(|start| now < start) => {
+                    env.start_gain()
+                }
+                Some(env) if env.is_finished() => env.end_gain(),
+                Some(env) => env.gain_at(env.position()),
+            };
+            if gain <= 0.0 {
+                source.is_finished.store(true, Ordering::Relaxed);
+                continue;
+            }
+            let (samples, curve) = if cut(source.source.channel_mappings()) {
+                (cut_samples, CrossfadeCurve::Linear)
+            } else {
+                (fade_samples, CrossfadeCurve::EqualPower)
+            };
+            source.gain_envelope = Some(Arc::new(GainEnvelope::new(gain, 0.0, samples, curve)));
+            fading.push(source.id);
+        }
+        fading
+    }
+
     pub fn set_gain_envelope(
         &self,
         source_ids: &[u64],
@@ -1097,6 +1173,80 @@ mod tests {
 
         // Source should have been marked finished and cleaned up.
         assert_eq!(mixer.active_sources.read().len(), 0);
+    }
+
+    #[test]
+    fn fade_out_playback_fades_one_playback_from_where_each_source_is() {
+        use crate::audio::crossfade::{CrossfadeCurve, GainEnvelope};
+        let mixer = AudioMixer::new(1, 48_000);
+        let mut tm = HashMap::new();
+        tm.insert("pad".to_string(), vec![1]);
+        tm.insert("click".to_string(), vec![1]);
+        let playback = CancelHandle::new();
+        let source = |id, track: &str, value: f32| {
+            let mut s = make_active_source(
+                id,
+                create_test_source(vec![value; 4_000], 1, vec![vec![track.to_string()]]),
+                tm.clone(),
+            );
+            s.cancel_handle = playback.clone();
+            s
+        };
+
+        // A pad at full gain; a second, half way through fading in; a click;
+        // one not yet started; and a triggered sample of its own playback.
+        mixer.add_source(source(1, "pad", 1.0));
+        let mut fading_in = source(2, "pad", 1.0);
+        fading_in.gain_envelope =
+            Some(Arc::new(GainEnvelope::fade_in(400, CrossfadeCurve::Linear)));
+        mixer.add_source(fading_in);
+        mixer.add_source(source(3, "click", 1.0));
+        let mut pending = source(4, "pad", 1.0);
+        pending.start_at_sample = Some(10_000);
+        mixer.add_source(pending);
+        let mut other = make_active_source(
+            5,
+            create_test_source(vec![1.0; 4_000], 1, vec![vec!["pad".to_string()]]),
+            tm.clone(),
+        );
+        other.cancel_handle = CancelHandle::new();
+        mixer.add_source(other);
+
+        let mut out = vec![0.0f32; 200];
+        mixer.process_into_output(&mut out, 200);
+
+        let fading = mixer.fade_out_playback(&playback, 1_000, 10, |labels| {
+            labels.iter().flatten().all(|l| l == "click")
+        });
+        assert_eq!(fading, vec![1, 2, 3]);
+        let envelope = |id: u64| {
+            let sources = mixer.active_sources.read();
+            let s = sources.iter().find(|s| s.lock().id == id).unwrap().clone();
+            let s = s.lock();
+            (
+                s.gain_envelope
+                    .as_ref()
+                    .map(|e| (e.start_gain(), e.duration_samples())),
+                s.is_finished.load(Ordering::Relaxed),
+            )
+        };
+        assert_eq!(
+            envelope(1).0,
+            Some((1.0, 1_000)),
+            "full gain fades from full"
+        );
+        let (half, _) = envelope(2).0.unwrap();
+        assert!(
+            (half - 0.5).abs() < 0.05,
+            "half way in fades from half: {half}"
+        );
+        assert_eq!(envelope(3).0, Some((1.0, 10)), "the click cuts");
+        assert!(envelope(4).1, "the pending source never starts");
+        assert_eq!(
+            envelope(5).0,
+            None,
+            "another playback's source is left alone"
+        );
     }
 
     #[test]

@@ -84,7 +84,9 @@ impl Player {
                     PlaylistDirection::Next => playlist.peek_next(),
                     PlaylistDirection::Prev => playlist.peek_prev(),
                 };
-                self.fade_out_current_audio();
+                if let Some(ref handles) = *join {
+                    self.fade_out_for_loop_break(&handles.cancel, target.as_ref());
+                }
                 self.loop_break_to_prev
                     .store(direction == PlaylistDirection::Prev, Ordering::Relaxed);
                 self.loop_break.store(true, Ordering::Relaxed);

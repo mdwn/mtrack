@@ -386,6 +386,13 @@ pub struct Player {
     /// Set with `loop_break` when the break came from previous rather than
     /// next or play, so the cleanup moves the playlist back, not on.
     loop_break_to_prev: Arc<AtomicBool>,
+    /// A looping song fading out after a loop break (`loop_break_fade`):
+    /// when the break came and how long the fade lasts. The audio monitor
+    /// reads it to carry the fade across a loop boundary.
+    break_fade: Arc<parking_lot::Mutex<Option<(std::time::Instant, Duration)>>>,
+    /// The mixer sources fading out after a loop break, which a stop or seek
+    /// cuts rather than letting them finish.
+    break_fade_ids: Arc<parking_lot::Mutex<Vec<u64>>>,
     /// Active section loop bounds. When Some, audio/MIDI/DMX subsystems
     /// loop the specified time region instead of the full song.
     active_section: Arc<parking_lot::RwLock<Option<SectionBounds>>>,
@@ -630,6 +637,8 @@ impl Player {
             controller_config: Arc::new(parking_lot::Mutex::new(None)),
             loop_break: Arc::new(AtomicBool::new(false)),
             loop_break_to_prev: Arc::new(AtomicBool::new(false)),
+            break_fade: Arc::new(parking_lot::Mutex::new(None)),
+            break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
             loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),

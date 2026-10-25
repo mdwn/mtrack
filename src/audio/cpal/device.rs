@@ -781,6 +781,60 @@ impl Device {
         true
     }
 
+    /// Starts the song again under a loop break's fade that its last pass did
+    /// not see out: from the top at `at.start_sample`, at `gain` (where the
+    /// fade has got to) and fading to silence over `at.overlap_samples`. Its
+    /// cut tracks stay cut. The new sources join the ones a stop cuts.
+    #[allow(clippy::too_many_arguments)]
+    fn carry_break_fade(
+        &self,
+        song: &Arc<Song>,
+        playback_context: &crate::audio::PlaybackContext,
+        mappings: &HashMap<String, Vec<u16>>,
+        cancel_handle: &CancelHandle,
+        at: PassCrossover,
+        gain: f32,
+        break_fade_ids: &parking_lot::Mutex<Vec<u64>>,
+    ) {
+        use crate::audio::crossfade::{CrossfadeCurve, GainEnvelope};
+        let sources = match build_pass_sources(
+            song,
+            playback_context,
+            mappings,
+            Duration::ZERO,
+            Duration::ZERO,
+        ) {
+            Ok(sources) => sources,
+            Err(e) => {
+                error!(err = %e, "Failed to carry a loop break's fade into the next pass");
+                return;
+            }
+        };
+        info!(
+            song = song.name(),
+            start_sample = at.start_sample,
+            gain,
+            "Loop break: carrying the fade-out into the next pass"
+        );
+        let start = at
+            .start_sample
+            .max(self.output_manager.mixer.current_sample());
+        for (source, group) in sources {
+            if group == PassGroup::Cut {
+                continue;
+            }
+            let envelope =
+                GainEnvelope::new(gain, 0.0, at.overlap_samples, CrossfadeCurve::EqualPower);
+            let (mut active_source, _) =
+                build_active_source(source, mappings, cancel_handle, Some(Arc::new(envelope)));
+            active_source.start_at_sample = Some(start);
+            break_fade_ids.lock().push(active_source.id);
+            if let Err(e) = self.output_manager.add_source(active_source) {
+                error!(err = %e, "Failed to add a loop break's carried fade");
+            }
+        }
+    }
+
     /// Ends a crossfading song loop's playback mid-crossfade: a pass not yet
     /// started never starts, and, unless the player is already fading
     /// everything out for a loop break, the outgoing pass -- whose fade-out
@@ -1136,6 +1190,10 @@ struct SongLoopCrossfade {
     consumed: Duration,
     /// The outgoing pass's sources, still fading while the next plays.
     outgoing_ids: Vec<u64>,
+    /// When the pass before the latest, and the latest, end on the playback
+    /// clock: where a loop break's fade would need carrying on.
+    previous_end: Duration,
+    latest_end: Duration,
 }
 
 /// How far ahead of a pass boundary its sources are built: long enough for a
@@ -1238,6 +1296,8 @@ impl AudioDevice for Device {
             active_section,
             section_loop_break,
             loop_time_consumed,
+            break_fade,
+            break_fade_ids,
         } = loop_control;
         let span = span!(Level::INFO, "play song (cpal)");
         let _enter = span.enter();
@@ -1305,6 +1365,8 @@ impl AudioDevice for Device {
             pass: 1,
             consumed: Duration::ZERO,
             outgoing_ids: Vec::new(),
+            previous_end: song.duration().saturating_sub(start_time),
+            latest_end: song.duration().saturating_sub(start_time),
         });
         let channel_mapped_sources: GroupedSources = if song_loop.is_some() {
             build_pass_sources(&song, &playback_context, mappings, start_time, start_time)
@@ -1772,6 +1834,8 @@ impl AudioDevice for Device {
                     let played = start_time + target;
                     let amount = played.saturating_sub(song_loop.consumed);
                     song_loop.consumed = played;
+                    song_loop.previous_end = song_loop.latest_end;
+                    song_loop.latest_end = target + song.duration();
                     song_loop.pass += 1;
                     pending_consumption.push((
                         song_loop
@@ -1806,6 +1870,10 @@ impl AudioDevice for Device {
             *section = None;
         }
 
+        // When the audible pass ends on the clock: the first from wherever it
+        // started, each later one a song length after it starts.
+        let mut plain_pass_end = song.duration().saturating_sub(start_time);
+
         // Loop if the song has loop_playback and we haven't been told to stop.
         // A song with a crossfade has already looped inside the monitor.
         while song.loop_playback()
@@ -1834,6 +1902,8 @@ impl AudioDevice for Device {
                     .mixer
                     .set_gain_envelope(&current_ids, fade_out);
             }
+
+            plain_pass_end = clock.elapsed() + song.duration();
 
             // Create new sources at t=0 with fade-in.
             let new_sources = match song.create_channel_mapped_sources_from(
@@ -1889,6 +1959,53 @@ impl AudioDevice for Device {
             });
 
             cancel_handle.wait(loop_finished);
+        }
+
+        // A loop break fading the song out (`loop_break_fade`) over longer than
+        // its audible pass has left: carry the fade on into the next pass, so
+        // the song does not fall silent part way through.
+        let fade = *break_fade.lock();
+        if let (true, Some((broke_at, length))) = (loop_break.load(Ordering::Relaxed), fade) {
+            let since_break = broke_at.elapsed();
+            let pass_end = match song_loop.as_ref() {
+                Some(song_loop) => {
+                    // A pass not yet started when the break came never did.
+                    let break_sample = self.output_manager.mixer.current_sample().saturating_sub(
+                        (since_break.as_secs_f64() * mixer_sample_rate as f64) as u64,
+                    );
+                    match &song_loop.latest_start {
+                        Some((start, _)) if *start > break_sample => song_loop.previous_end,
+                        _ => song_loop.latest_end,
+                    }
+                }
+                None => plain_pass_end,
+            };
+            if let Some((gain, rest)) = crate::audio::song_loop::break_fade_continuation(
+                pass_end,
+                clock.elapsed(),
+                since_break,
+                length,
+            ) {
+                self.carry_break_fade(
+                    &song,
+                    &playback_context,
+                    mappings,
+                    &cancel_handle,
+                    crate::audio::song_loop::PassCrossover {
+                        start_sample: crate::section_loop::loop_boundary_sample(
+                            self.output_manager.mixer.current_sample(),
+                            clock.elapsed(),
+                            pass_end,
+                            mixer_sample_rate,
+                        )
+                        .saturating_add(audio_clock_skew_samples),
+                        overlap_samples: (rest.as_secs_f64() * mixer_sample_rate as f64) as u64,
+                        crossfade_samples,
+                    },
+                    gain,
+                    &break_fade_ids,
+                );
+            }
         }
 
         Ok(())

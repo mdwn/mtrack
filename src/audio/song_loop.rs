@@ -21,6 +21,7 @@
 //! twice.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::crossfade::{CrossfadeCurve, GainEnvelope};
 use super::mixer::AudioMixer;
@@ -92,6 +93,33 @@ impl PassCrossover {
             ),
         }
     }
+}
+
+/// A loop break's fade-out (`loop_break_fade`) that outlasts the pass it
+/// began in: where the next pass has to carry it on. A loop break fades the
+/// song out on the equal-power out half from full gain; the pass it began in
+/// ends at `pass_end` on the playback clock, `now` is the clock now,
+/// `since_break` how long ago the break was, and `fade` the fade's length.
+/// Returns the gain the fade has reached at `pass_end` and how long it still
+/// has to run from there, or `None` when the pass outlasts the fade (with a
+/// little to spare: a pass ending in the fade's last moments is not worth a
+/// new one).
+pub(crate) fn break_fade_continuation(
+    pass_end: Duration,
+    now: Duration,
+    since_break: Duration,
+    fade: Duration,
+) -> Option<(f32, Duration)> {
+    const SPARE: Duration = Duration::from_millis(50);
+    let fade_end = (now + fade).saturating_sub(since_break);
+    let from = pass_end.max(now);
+    if from + SPARE >= fade_end {
+        return None;
+    }
+    let into = (from + since_break).saturating_sub(now);
+    let t = (into.as_secs_f64() / fade.as_secs_f64()).clamp(0.0, 1.0) as f32;
+    let (gain, _) = CrossfadeCurve::EqualPower.gains(t);
+    Some((gain, fade_end - from))
 }
 
 #[cfg(test)]
@@ -192,5 +220,27 @@ mod tests {
         assert_eq!(out[cut - 10].1, 1.0, "old click to the midpoint");
         assert_eq!(out[cut + 600].1, 0.5, "new click after it");
         assert!(out[start + 10].1 == 1.0 && out[end - 10].1 == 0.5);
+    }
+
+    #[test]
+    fn a_break_fade_outlasting_its_pass_carries_on_where_it_got_to() {
+        let s = Duration::from_secs_f64;
+        // A 4 s fade from a break 1 s ago; the pass ends 1 s from now, half
+        // way through the fade: the next pass starts at cos(pi/4) and fades
+        // the last 2 s.
+        let (gain, rest) = break_fade_continuation(s(11.0), s(10.0), s(1.0), s(4.0)).unwrap();
+        assert!(
+            (gain - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
+            "{gain}"
+        );
+        assert!((rest.as_secs_f64() - 2.0).abs() < 1e-9, "{rest:?}");
+
+        // A pass already over (a short last pass): from now.
+        let (_, rest) = break_fade_continuation(s(9.0), s(10.0), s(1.0), s(4.0)).unwrap();
+        assert!((rest.as_secs_f64() - 3.0).abs() < 1e-9, "{rest:?}");
+
+        // A pass that outlasts the fade, or ends in its last moments: none.
+        assert!(break_fade_continuation(s(20.0), s(10.0), s(1.0), s(4.0)).is_none());
+        assert!(break_fade_continuation(s(12.98), s(10.0), s(1.0), s(4.0)).is_none());
     }
 }

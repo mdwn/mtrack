@@ -71,6 +71,11 @@ pub struct LoopControl {
     pub section_loop_break: Arc<AtomicBool>,
     /// Accumulated time consumed by section loop iterations.
     pub loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
+    /// A loop break's fade-out (`loop_break_fade`): when it began and how
+    /// long it lasts, set by the player as it breaks the loop.
+    pub break_fade: Arc<parking_lot::Mutex<Option<(std::time::Instant, Duration)>>>,
+    /// The sources fading out after a loop break, which a stop cuts.
+    pub break_fade_ids: Arc<parking_lot::Mutex<Vec<u64>>>,
 }
 
 impl LoopControl {
@@ -81,6 +86,8 @@ impl LoopControl {
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
             loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
+            break_fade: Arc::new(parking_lot::Mutex::new(None)),
+            break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 }
@@ -138,6 +145,11 @@ impl CancelHandle {
     /// cleanup cares about the difference.
     pub fn is_cancelled(&self) -> bool {
         *self.cancelled.lock() != CancelState::Untouched
+    }
+
+    /// Whether `other` is a clone of this handle: the same playback.
+    pub fn same_as(&self, other: &CancelHandle) -> bool {
+        Arc::ptr_eq(&self.cancelled, &other.cancelled)
     }
 
     /// Waits for the cancel handle to be cancelled or for finished to be set to true.

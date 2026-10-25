@@ -59,7 +59,10 @@ impl Player {
             // task sees loop_broken and auto-plays the next song.
             if self.is_current_song_looping() {
                 info!("Breaking out of song loop to advance playlist.");
-                self.fade_out_current_audio();
+                if let Some(ref handles) = *join {
+                    let target = self.get_playlist().peek_next();
+                    self.fade_out_for_loop_break(&handles.cancel, target.as_ref());
+                }
                 self.loop_break_to_prev.store(false, Ordering::Relaxed);
                 self.loop_break.store(true, Ordering::Relaxed);
                 if let Some(ref handles) = *join {
@@ -156,6 +159,8 @@ impl Player {
                     active_section: self.active_section.clone(),
                     section_loop_break: self.section_loop_break.clone(),
                     loop_time_consumed: self.loop_time_consumed.clone(),
+                    break_fade: self.break_fade.clone(),
+                    break_fade_ids: self.break_fade_ids.clone(),
                 },
             };
             tokio::task::spawn_blocking(move || {
@@ -473,6 +478,7 @@ impl Player {
             }
         };
 
+        self.cut_break_fade();
         let song = match self.get_playlist().current() {
             Some(song) => song,
             None => {
@@ -800,6 +806,65 @@ impl Player {
     /// Delegates to the notification engine.
     fn play_confirmation_tone(&self) {
         self.play_notification(crate::notification::NotificationEvent::LoopArmed);
+    }
+
+    /// Fades out the looping song a loop break leaves, as it gives way to
+    /// `target`: over its `loop_break_fade`, from the gain each source has
+    /// now, its `loop_crossfade_cut` tracks cut at once -- or, without one,
+    /// all of it over the short default crossfade. The lights cross into the
+    /// next song's over the same length. Only `playback`'s sources fade.
+    pub(super) fn fade_out_for_loop_break(
+        &self,
+        playback: &CancelHandle,
+        target: Option<&Arc<Song>>,
+    ) {
+        let Some(song) = self.get_playlist().current() else {
+            return;
+        };
+        let fade = song.loop_break_fade_into(target.map(|t| t.as_ref()));
+        let hw = self.hardware.read();
+        if let Some(mixer) = hw.device.as_ref().and_then(|device| device.mixer()) {
+            let rate = mixer.sample_rate();
+            let cut_samples = crate::audio::crossfade::default_crossfade_samples(rate);
+            let fade_samples = fade
+                .map(|d| (d.as_secs_f64() * rate as f64).round() as u64)
+                .unwrap_or(cut_samples);
+            let cut_tracks = song.loop_crossfade_cut();
+            let ids = mixer.fade_out_playback(playback, fade_samples, cut_samples, |labels| {
+                let mut tracks = labels.iter().flatten().peekable();
+                tracks.peek().is_some() && tracks.all(|t| cut_tracks.contains(t))
+            });
+            *self.break_fade_ids.lock() = if fade.is_some() { ids } else { Vec::new() };
+        }
+        *self.break_fade.lock() = fade.map(|d| (std::time::Instant::now(), d));
+        if let (Some(dmx), Some(d)) = (hw.dmx_engine.as_ref(), fade) {
+            dmx.begin_break_fade(d);
+        }
+        if let Some(d) = fade {
+            info!(
+                song = song.name(),
+                fade_ms = d.as_millis() as u64,
+                "Loop break: fading out under the next song"
+            );
+        }
+    }
+
+    /// Cuts a looping song still fading out after a loop break, for a stop or
+    /// seek that ends whatever is playing.
+    pub(super) fn cut_break_fade(&self) {
+        let ids = std::mem::take(&mut *self.break_fade_ids.lock());
+        *self.break_fade.lock() = None;
+        let hw = self.hardware.read();
+        if let Some(dmx) = hw.dmx_engine.as_ref() {
+            dmx.end_break_fade();
+        }
+        if ids.is_empty() {
+            return;
+        }
+        if let Some(mixer) = hw.device.as_ref().and_then(|device| device.mixer()) {
+            let samples = crate::audio::crossfade::default_crossfade_samples(mixer.sample_rate());
+            mixer.fade_out_sources(&ids, samples);
+        }
     }
 
     /// Sets fade-out envelopes on all current audio sources for a smooth

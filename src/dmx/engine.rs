@@ -514,8 +514,8 @@ impl Engine {
             match outgoing.as_mut() {
                 Some(pass) => {
                     let incoming = effect_engine.update(dt, Some(song_time))?.to_vec();
-                    let t = song_time.as_secs_f64() / pass.overlap.as_secs_f64().max(f64::EPSILON);
-                    let old = pass.effect_engine.update(dt, Some(song_time + pass.lead))?;
+                    let (t, time) = pass.timing(song_time);
+                    let old = pass.effect_engine.update(dt, Some(time))?;
                     let blended = effect_engine.crossfade_commands(old, &incoming, t);
                     if t >= 1.0 {
                         *outgoing = None;
@@ -2768,6 +2768,62 @@ mod test {
             assert_eq!(frame_at(&engine, 2.0), (0.0, 0.0, 255.0));
             assert!(engine.outgoing_pass.lock().is_none());
             assert_eq!(frame_at(&engine, 3.0), (0.0, 0.0, 255.0));
+            Ok(())
+        }
+
+        #[test]
+        fn a_loop_breaks_fade_crosses_into_the_next_songs_show() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+
+            // The prelude: red.
+            *engine.current_song_timeline.lock() = Some(timeline(
+                "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", duration: 60s\n}\n",
+            ));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            assert_eq!(frame_at(&engine, 10.0), (255.0, 0.0, 0.0));
+
+            // Next breaks the loop: a 400 ms fade. The prelude's playback
+            // stops, then the next song's show (blue) starts -- neither ends
+            // the fade.
+            engine.begin_break_fade(Duration::from_millis(400));
+            engine.stop_lighting_timeline();
+            *engine.current_song_timeline.lock() = Some(timeline(
+                "show \"b\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 60s\n}\n",
+            ));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            assert!(engine.outgoing_pass.lock().is_some());
+
+            // Part way: red going, blue coming, on the wall clock -- the next
+            // song's own time has barely moved.
+            std::thread::sleep(Duration::from_millis(150));
+            let (red, _, blue) = frame_at(&engine, 0.01);
+            assert!(red > 50.0 && red < 230.0, "red {red}");
+            assert!(blue > 25.0 && blue < 205.0, "blue {blue}");
+            assert!((red + blue - 255.0).abs() <= 2.0, "{red} + {blue}");
+
+            // Over: the next song alone.
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(frame_at(&engine, 0.5), (0.0, 0.0, 255.0));
+            assert!(engine.outgoing_pass.lock().is_none());
+
+            // A stop or seek ends one early.
+            engine.begin_break_fade(Duration::from_secs(5));
+            engine.end_break_fade();
+            assert!(engine.outgoing_pass.lock().is_none());
             Ok(())
         }
 
