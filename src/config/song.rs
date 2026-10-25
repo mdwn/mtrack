@@ -109,6 +109,17 @@ pub enum LoopCrossfade {
     Measures(f64),
 }
 
+impl std::fmt::Display for LoopCrossfade {
+    /// As it would be written in song.yaml.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoopCrossfade::Time(length) => write!(f, "{}s", length.as_secs_f64()),
+            LoopCrossfade::Beats(beats) => write!(f, "{beats}beats"),
+            LoopCrossfade::Measures(measures) => write!(f, "{measures}measures"),
+        }
+    }
+}
+
 impl LoopCrossfade {
     /// Parses `"6s"`, `"500ms"`, `"8beats"` or `"2measures"` (singular units
     /// too). The length must be greater than zero.

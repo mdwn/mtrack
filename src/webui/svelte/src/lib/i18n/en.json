@@ -871,6 +871,8 @@
   "songs.detail.loopCrossfade": "Loop crossfade",
   "songs.detail.loopCrossfadeHint": "Start each pass this long before the last ends, crossing the audio and lights over the overlap: 6s, 500ms, 8beats or 2measures. Beats and measures count back from the end of the song. Leave empty for passes back to back.",
   "songs.detail.loopCrossfadeCut": "Switch at the midpoint",
+  "songs.detail.loopBreakFade": "Fade out on break",
+  "songs.detail.loopBreakFadeHint": "When Play, Next or Previous breaks the loop, keep playing and fade out this long under the next song: 3s, 6beats or 1measure. Beats and measures count on the next song's grid from its first bar, so 1measure fades over its count-in. Leave empty to cut.",
   "songs.detail.loopCrossfadeCutHint": "Tracks that switch over halfway through the crossfade instead of fading, such as a click, so they are never heard twice.",
   "songs.detail.failedToLoadSong": "Failed to load song",
   "songs.detail.failedToLoad": "This song failed to load and will not be playable until it's valid.",

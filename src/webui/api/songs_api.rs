@@ -90,6 +90,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 "loop_playback": song.loop_playback(),
                 "loop_crossfade_ms": song.loop_crossfade().map(|d| d.as_millis() as u64),
                 "loop_crossfade_cut": song.loop_crossfade_cut(),
+                "loop_break_fade": song.loop_break_fade_setting(),
                 "sections": song.sections().iter().map(|s| json!({
                     "name": s.name,
                     "start_measure": s.start_measure,

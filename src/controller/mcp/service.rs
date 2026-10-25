@@ -1073,6 +1073,7 @@ impl McpServer {
             "loop_playback": song.loop_playback(),
             "loop_crossfade_seconds": song.loop_crossfade().map(|d| d.as_secs_f64()),
             "loop_crossfade_cut": song.loop_crossfade_cut(),
+            "loop_break_fade": song.loop_break_fade_setting(),
             "has_midi_playback": song.midi_playback().is_some(),
             "tracks": tracks,
             "sections": sections,

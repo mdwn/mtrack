@@ -789,6 +789,12 @@ impl Song {
         &self.loop_crossfade_cut
     }
 
+    /// The `loop_break_fade` as configured, written as in song.yaml: beats and
+    /// measures resolve against whichever song follows.
+    pub fn loop_break_fade_setting(&self) -> Option<String> {
+        self.loop_break_fade.map(|fade| fade.to_string())
+    }
+
     /// How long this looping song fades out over when a loop break hands
     /// over to `next`, which starts underneath it. Beats and measures count
     /// on `next`'s grid from its first bar -- `1measure` lasts its count-in,

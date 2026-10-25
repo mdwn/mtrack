@@ -108,6 +108,10 @@ loop_crossfade: 2measures
 # fading, so a click or cue track is never heard twice.
 loop_crossfade_cut: [click]
 
+# (Optional) When Play, Next or Previous breaks the loop, keep playing and fade
+# out this long under the next song. See "Fading out under the next song" below.
+loop_break_fade: 1measure
+
 # (Optional) The song's tempo map. When present, this is the canonical source
 # of the beat grid — it takes precedence over click track analysis. BPM is in
 # quarter notes per minute.
@@ -253,6 +257,35 @@ loop_crossfade_cut: [click, cues]
   crossfade after the last. Playback started inside the overlap starts the next pass at once.
 - A song with `loop_crossfade` loops as a whole: its sections cannot be looped, and are not
   offered for reactive looping.
+
+### Fading out under the next song
+
+Breaking out of a loop normally cuts the song in 10 ms. For a prelude that should carry the
+room into the song it introduces, set `loop_break_fade`: Play, Next or Previous then starts the
+next song at once, as always, while the looping song plays on from where it was and fades out
+underneath it.
+
+```yaml
+loop_playback: true
+loop_crossfade: 4s
+loop_break_fade: 1measure
+loop_crossfade_cut: [click, cues]
+```
+
+- **Length**: `3s`, `500ms`, `6beats` or `1measure`. Beats and measures are counted on the
+  **next** song's grid from its first bar -- any lead-in before it included -- so `1measure`
+  fades out exactly over the next song's count-in, whatever its tempo and meter. A song with no
+  grid of its own (a prelude usually has none) needs the next song to have one; failing both, the
+  song cuts as without the setting.
+- **Audio**: the next song starts at full level; only the looping song fades, on the
+  equal-power out half (it holds its level early, then falls away). A source part way through a
+  loop crossfade fades from where it is. Tracks in `loop_crossfade_cut` -- the click and cue
+  tracks -- cut at once, so the count-in click is never doubled. If the fade outlasts the pass it
+  began in, the song carries on into another pass to see it out.
+- **Lights** cross from the looping song's show into the next song's over the same length, as a
+  loop crossfade crosses passes.
+- **MIDI** from the looping song stops at the break; the next song's goes out as usual.
+- **Stop** or a seek still cuts everything, the fading song included.
 
 At a steady tempo, with the crossfade in whole beats or measures and a song whose audio is a
 whole number of beats long, the new pass's beats fall on the old pass's, so the overlap stays in
