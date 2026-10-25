@@ -646,6 +646,11 @@ export function getSequenceIterationMs(
   tempo?: TempoSection,
 ): number {
   if (seq.cues.length === 0) return 1000;
+  // A declared `length:` is the pass length, however long the effects run.
+  if (seq.length) {
+    const lengthMs = durationStringToMs(seq.length, tempo, refMs);
+    if (lengthMs > 0) return lengthMs;
+  }
 
   const seqBaseMs = timestampToMs(seq.cues[0].timestamp, tempo);
   const seqParseBpm = getTempoAtMs(0, tempo);

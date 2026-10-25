@@ -21,9 +21,10 @@ use super::super::tempo::TempoMap;
 use super::effect_parse::parse_effect_definition;
 use super::error::{analyze_parsing_failure, get_error_context};
 use super::grammar::{LightingParser, Rule};
+use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{Cue, LayerCommand, LayerCommandType, LightShow, ParseContext, Sequence};
-use super::types::{SequenceLoop, UnexpandedSequenceCue};
+use super::types::{SequenceCall, SequenceLoop, UnexpandedSequenceCue};
 use super::utils::{parse_duration_string, parse_measure_time, parse_time_string};
 use pest::iterators::Pair;
 use pest::Parser;
@@ -78,7 +79,6 @@ pub fn parse_light_shows_with_tempo(
     };
 
     let mut shows = HashMap::new();
-    let mut sequences = HashMap::new();
     // Seeded with the song's map so a file with no tempo block inherits it; a
     // file-level `tempo { }` overwrites this below.
     let mut global_tempo: Option<TempoMap> = external.cloned();
@@ -117,125 +117,21 @@ pub fn parse_light_shows_with_tempo(
         }
     }
 
-    // Parse sequences in two passes to support forward references
-    // First pass: Parse all sequence definitions and extract unexpanded cue data
-    let mut unexpanded_sequences = Vec::new();
-
-    for pair in sequence_pairs {
-        unexpanded_sequences.push(parse_sequence_structure(pair, &global_tempo)?);
-    }
-
-    // Insert all sequences into the map (with empty cues for now)
-    for definition in &unexpanded_sequences {
-        let effective_tempo = definition.tempo_map.as_ref().or(global_tempo.as_ref());
-        let effective_bpm = effective_tempo
-            .map(|tm| tm.initial_bpm)
-            .unwrap_or(crate::lighting::tempo::DEFAULT_BPM);
-        let sequence = Sequence {
-            cues: Vec::new(),
-            bpm: effective_bpm,
-            length: definition.declared_length(effective_tempo)?,
-        };
-        sequences.insert(definition.name.clone(), sequence);
-    }
-
-    // Second pass: Expand nested references in all sequences recursively
-    // Build a map of unexpanded data for recursive expansion
-    let mut unexpanded_data_map = HashMap::new();
-    for definition in unexpanded_sequences {
-        unexpanded_data_map.insert(definition.name, (definition.tempo_map, definition.cues));
-    }
-
-    // Recursive function to expand a sequence and its dependencies
-    fn expand_sequence_recursive(
-        name: &str,
-        sequences: &mut HashMap<String, Sequence>,
-        unexpanded_data: &HashMap<String, (Option<TempoMap>, Vec<UnexpandedSequenceCue>)>,
-        global_tempo: &Option<TempoMap>,
-        expanded: &mut std::collections::HashSet<String>,
-        recursion_stack: &mut Vec<String>,
-    ) -> Result<(), Box<dyn Error>> {
-        // Check for circular reference
-        if recursion_stack.contains(&name.to_string()) {
-            return Err(format!(
-                "Circular sequence reference detected: {} -> {}",
-                recursion_stack.join(" -> "),
-                name
-            )
-            .into());
-        }
-
-        // If already expanded, skip
-        if expanded.contains(name) {
-            return Ok(());
-        }
-
-        // Get unexpanded data
-        let (tempo_map, unexpanded_cues) = unexpanded_data
-            .get(name)
-            .ok_or_else(|| format!("Sequence '{}' not found in unexpanded data", name))?;
-
-        // Add to recursion stack
-        recursion_stack.push(name.to_string());
-
-        let effective_tempo = tempo_map.as_ref().or(global_tempo.as_ref());
-        let mut expanded_cues = Vec::new();
-
-        // Expand all cues in this sequence
-        for unexpanded_cue in unexpanded_cues {
-            // Check if this cue references other sequences that need expansion first
-            for (ref_seq_name, _) in &unexpanded_cue.sequence_references {
-                // Recursively expand referenced sequences first
-                expand_sequence_recursive(
-                    ref_seq_name,
-                    sequences,
-                    unexpanded_data,
-                    global_tempo,
-                    expanded,
-                    recursion_stack,
-                )?;
-            }
-
-            // Now expand this cue
-            let cues = expand_unexpanded_sequence_cue(
-                unexpanded_cue.clone(),
-                &effective_tempo.cloned(),
-                sequences,
-                recursion_stack,
-            )?;
-            expanded_cues.extend(cues);
-        }
-
-        // Remove from recursion stack
-        recursion_stack.pop();
-
-        // Mark as expanded and update the sequence
-        if let Some(sequence) = sequences.get_mut(name) {
-            sequence.cues = expanded_cues;
-        }
-        expanded.insert(name.to_string());
-
-        Ok(())
-    }
-
-    // Expand all sequences (recursive expansion will handle dependencies)
-    let mut expanded_sequence_names = std::collections::HashSet::new();
-    for name in unexpanded_data_map.keys() {
-        let mut recursion_stack = Vec::new();
-        expand_sequence_recursive(
-            name,
-            &mut sequences,
-            &unexpanded_data_map,
-            &global_tempo,
-            &mut expanded_sequence_names,
-            &mut recursion_stack,
-        )?;
-    }
+    let library = SequenceLibrary::new(sequence_pairs, &global_tempo)?;
+    library.check_all()?;
 
     // Second pass: parse shows with tempo and sequences available
     let mut parsed_shows = Vec::new();
     for pair in show_pairs {
-        let mut show = parse_light_show_definition(pair, &global_tempo, &sequences)?;
+        if let Some((offset, name)) = param_refs(pair.as_str()).first() {
+            return Err(format!(
+                "line {}: ${name} is a sequence parameter, but this is a show, not a sequence \
+                 that declares it",
+                pair.line_col().0 + line_at(pair.as_str(), *offset) - 1
+            )
+            .into());
+        }
+        let mut show = parse_light_show_definition(pair, &global_tempo, &library)?;
         // If show doesn't have its own tempo, use global tempo
         if show.tempo_map.is_none() {
             show.tempo_map = global_tempo.clone();
@@ -276,7 +172,7 @@ pub fn parse_light_shows_with_tempo(
 fn parse_light_show_definition(
     pair: Pair<Rule>,
     global_tempo: &Option<TempoMap>,
-    sequences: &HashMap<String, Sequence>,
+    library: &SequenceLibrary,
 ) -> Result<LightShow, Box<dyn Error>> {
     let mut name = String::new();
     let mut cues = Vec::new();
@@ -326,7 +222,7 @@ fn parse_light_show_definition(
                         parse_cue_definition(
                             cue_pair,
                             &effective_tempo.cloned(),
-                            sequences,
+                            library,
                             offset_secs,
                             cumulative_measure_offset,
                             last_abs_time,
@@ -358,19 +254,19 @@ fn parse_light_show_definition(
 }
 
 /// A sequence definition as written, before nested references are expanded.
-struct SequenceDefinition {
+pub(super) struct SequenceDefinition {
     name: String,
-    tempo_map: Option<TempoMap>,
+    pub(super) tempo_map: Option<TempoMap>,
     /// The `length:` value as written, e.g. `1measure`.
     length: Option<String>,
-    cues: Vec<UnexpandedSequenceCue>,
+    pub(super) cues: Vec<UnexpandedSequenceCue>,
 }
 
 impl SequenceDefinition {
     /// The declared `length:` in time from the first cue, or `None` when the
     /// sequence declares none. Every cue must start inside it: one starting
     /// at or past the end would land on the next pass's first cue.
-    fn declared_length(
+    pub(super) fn declared_length(
         &self,
         tempo_map: Option<&TempoMap>,
     ) -> Result<Option<Duration>, Box<dyn Error>> {
@@ -404,7 +300,7 @@ impl SequenceDefinition {
     }
 }
 
-fn parse_sequence_structure(
+pub(super) fn parse_sequence_structure(
     pair: Pair<Rule>,
     global_tempo: &Option<TempoMap>,
 ) -> Result<SequenceDefinition, Box<dyn Error>> {
@@ -675,8 +571,7 @@ fn parse_sequence_cue_structure(
 
     // Parse sequence references (store as metadata for later expansion)
     for seq_ref_pair in sequence_ref_pairs {
-        let (seq_name, loop_param) = parse_sequence_reference_pair(seq_ref_pair)?;
-        sequence_references.push((seq_name, loop_param));
+        sequence_references.push(parse_sequence_reference_pair(seq_ref_pair)?);
     }
 
     let mut produced_cues = Vec::new();
@@ -807,16 +702,24 @@ fn determine_loop_count(loop_param: Option<SequenceLoop>) -> Result<usize, Box<d
 }
 
 /// Parse sequence reference from a Pair
-fn parse_sequence_reference_pair(
-    seq_ref_pair: Pair<Rule>,
-) -> Result<(String, Option<SequenceLoop>), Box<dyn Error>> {
+fn parse_sequence_reference_pair(seq_ref_pair: Pair<Rule>) -> Result<SequenceCall, Box<dyn Error>> {
+    let line = seq_ref_pair.line_col().0;
     let mut seq_name = String::new();
+    let mut args = Vec::new();
     let mut loop_param: Option<SequenceLoop> = None;
 
     for inner in seq_ref_pair.into_inner() {
         match inner.as_rule() {
             Rule::sequence_name => {
                 seq_name = inner.as_str().trim_matches('"').to_string();
+            }
+            Rule::sequence_args => {
+                for arg in inner.into_inner() {
+                    let mut parts = arg.into_inner();
+                    if let (Some(param), Some(value)) = (parts.next(), parts.next()) {
+                        args.push((param.as_str().to_string(), value.as_str().to_string()));
+                    }
+                }
             }
             Rule::sequence_params => {
                 for param_pair in inner.into_inner() {
@@ -846,7 +749,12 @@ fn parse_sequence_reference_pair(
         }
     }
 
-    Ok((seq_name, loop_param))
+    Ok(SequenceCall {
+        name: seq_name,
+        args,
+        loop_param,
+        line,
+    })
 }
 
 fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>> {
@@ -915,11 +823,10 @@ fn parse_offset_command(pair: Pair<Rule>) -> Result<u32, Box<dyn Error>> {
 }
 
 /// Expand an unexpanded sequence cue, resolving all nested sequence references
-fn expand_unexpanded_sequence_cue(
+pub(super) fn expand_unexpanded_sequence_cue(
     unexpanded: UnexpandedSequenceCue,
     tempo_map: &Option<TempoMap>,
-    sequences: &HashMap<String, Sequence>,
-    recursion_stack: &mut Vec<String>,
+    library: &SequenceLibrary,
 ) -> Result<Vec<Cue>, Box<dyn Error>> {
     // If there are sequence references, expand them
     if !unexpanded.sequence_references.is_empty() {
@@ -929,34 +836,13 @@ fn expand_unexpanded_sequence_cue(
         let outer_bpm = tempo_map.as_ref().map(|tm| tm.initial_bpm);
 
         // Expand each sequence reference
-        for (seq_name, loop_param) in unexpanded.sequence_references {
-            // Check for circular reference
-            if recursion_stack.contains(&seq_name) {
-                return Err(format!(
-                    "Circular sequence reference detected: {} -> {}",
-                    recursion_stack.join(" -> "),
-                    seq_name
-                )
-                .into());
-            }
-
-            let sequence = sequences
-                .get(&seq_name)
-                .ok_or_else(|| format!("Sequence '{}' not found", seq_name))?;
-
-            // If the referenced sequence hasn't been expanded yet (empty cues), we need to expand it first
-            // This handles forward references - when seq_a references seq_b, we expand seq_b first
-            if sequence.cues.is_empty() {
-                // This shouldn't happen in the two-pass approach, but handle it gracefully
-                return Err(format!(
-                    "Sequence '{}' has not been expanded yet (internal error)",
-                    seq_name
-                )
-                .into());
-            }
+        for call in unexpanded.sequence_references {
+            let sequence = library.instance(&call)?;
+            let seq_name = call.name;
+            let loop_param = call.loop_param;
 
             // Calculate sequence duration at the sequence's internal BPM
-            let sequence_duration_internal = calculate_sequence_duration(sequence);
+            let sequence_duration_internal = calculate_sequence_duration(&sequence);
 
             // Rescale sequence duration from the inner sequence's BPM to the outer
             // sequence's BPM. Convert to beats at the inner BPM, then back to seconds
@@ -976,11 +862,8 @@ fn expand_unexpanded_sequence_cue(
             // Determine how many times to loop
             let loop_count = determine_loop_count(loop_param)?;
 
-            // Add to recursion stack
-            recursion_stack.push(seq_name.clone());
-
             // Expand the sequence the specified number of times
-            let sequence_base_time = get_sequence_base_time(sequence);
+            let sequence_base_time = get_sequence_base_time(&sequence);
             for iteration in 0..loop_count {
                 let iter_offset = iteration_offset(unexpanded.time, sequence_duration, iteration);
 
@@ -1022,9 +905,6 @@ fn expand_unexpanded_sequence_cue(
                     expanded_cues.push(expanded_cue);
                 }
             }
-
-            // Remove from recursion stack
-            recursion_stack.pop();
         }
 
         // Add effects and layer commands to the first expanded cue
@@ -1113,7 +993,7 @@ fn parse_and_expand_inline_loop(
             parse_cue_definition(
                 loop_cue_pair,
                 tempo_map,
-                &HashMap::new(), // No sequences available in inline loops
+                &SequenceLibrary::empty(), // No sequences available in inline loops
                 loop_offset_secs,
                 loop_cumulative_measure_offset,
                 loop_last_abs_time,
@@ -1207,7 +1087,7 @@ fn parse_and_expand_inline_loop(
 fn parse_cue_definition(
     pair: Pair<Rule>,
     tempo_map: &Option<TempoMap>,
-    sequences: &HashMap<String, Sequence>,
+    library: &SequenceLibrary,
     offset_secs: f64,
     cumulative_measure_offset: u32,
     last_abs_time: Option<Duration>,
@@ -1435,14 +1315,13 @@ fn parse_cue_definition(
 
         // Expand each sequence reference
         for seq_ref_pair in sequence_references {
-            let (seq_name, loop_param) = parse_sequence_reference_pair(seq_ref_pair)?;
-
-            let sequence = sequences
-                .get(&seq_name)
-                .ok_or_else(|| format!("Sequence '{}' not found", seq_name))?;
+            let call = parse_sequence_reference_pair(seq_ref_pair)?;
+            let sequence = library.instance(&call)?;
+            let seq_name = call.name;
+            let loop_param = call.loop_param;
 
             // Calculate sequence duration at the sequence's internal BPM
-            let sequence_duration_internal = calculate_sequence_duration(sequence);
+            let sequence_duration_internal = calculate_sequence_duration(&sequence);
 
             // Rescale sequence duration from the sequence's BPM to the expansion-point tempo.
             // Convert duration to beats at the sequence's BPM, then convert beats to
@@ -1463,7 +1342,7 @@ fn parse_cue_definition(
             let loop_count = determine_loop_count(loop_param)?;
 
             // Expand the sequence the specified number of times
-            let sequence_base_time = get_sequence_base_time(sequence);
+            let sequence_base_time = get_sequence_base_time(&sequence);
             for iteration in 0..loop_count {
                 // Total beats elapsed at the start of this iteration
                 let iter_total_beats = duration_beats * iteration as f64;

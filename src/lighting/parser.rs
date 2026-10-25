@@ -16,6 +16,7 @@ mod effect_parse;
 mod error;
 pub(crate) mod fixture_venue; // Make accessible for tests
 pub(crate) mod grammar;
+mod sequences;
 mod show;
 mod tempo_parse;
 mod types;

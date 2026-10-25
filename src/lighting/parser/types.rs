@@ -89,7 +89,18 @@ pub(crate) struct UnexpandedSequenceCue {
     pub effects: Vec<Effect>,
     pub layer_commands: Vec<LayerCommand>,
     pub stop_sequences: Vec<String>,
-    pub sequence_references: Vec<(String, Option<SequenceLoop>)>, // (sequence_name, loop_param)
+    pub sequence_references: Vec<SequenceCall>,
+}
+
+/// A `sequence "name"(…), loop: …` reference, as written in a cue.
+#[derive(Debug, Clone)]
+pub(crate) struct SequenceCall {
+    pub name: String,
+    /// The parameters bound here, in source order, with their values as written.
+    pub args: Vec<(String, String)>,
+    pub loop_param: Option<SequenceLoop>,
+    /// The line the reference is on, for errors raised expanding it.
+    pub line: usize,
 }
 
 #[derive(Debug, Clone)]

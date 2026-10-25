@@ -145,6 +145,27 @@ Each pass then starts one measure after the last; an effect running past the
 length is cut when the next pass starts, and a cue at or past the length is a
 parse error. Padding cues that only stretch a pass are no longer needed.
 
+A sequence can take parameters, written `$name` in its body and bound where
+it is used. One without a default must be given at every use; values are
+substituted as written (a quoted colour, a group, a number, a duration):
+
+```
+sequence "Strike"(hit, bed: "#1E6FE0", target: all_wash) {
+    @1/1
+    $target: static color: $bed, layer: background, duration: 2measures
+    @1/1
+    $target: static color: $hit, layer: foreground, duration: 1beat
+}
+
+show "Song" {
+    @1/1
+    sequence "Strike"(hit: "#FFD870"), loop: 4
+}
+```
+
+Prefer one parameterized sequence over copies that differ only by colour or
+group. `stop sequence "Strike"` stops every use of it.
+
 For one-off repetition without naming, use an inline loop. Timestamps inside
 the block are relative to the loop's start:
 

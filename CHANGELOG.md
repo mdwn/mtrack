@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sequence parameters (#540)**: a sequence can declare parameters, `sequence "x"(hit, bed:
+  "#1E6FE0") { … }`, use them as `$hit` in its body, and bind them where it is used:
+  `sequence "x"(hit: "#FFD870"), loop: 4`. Colours, groups, levels, durations and loop counts can
+  all be parameters, and a sequence can pass its own on to one it uses. A parameter with no
+  default must be bound at every use. Errors name both the line of the use and the line in the
+  sequence. The web UI's lighting editor keeps parameters and arguments when it saves.
 - **Sequence `length:` (#541)**: `sequence "x", length: 1measure { … }` fixes how long one pass of
   a sequence lasts, in the same units as `duration:`. A looped sequence whose effects end before
   the bar now restarts on the bar without a padding cue to stretch it, and an effect that runs

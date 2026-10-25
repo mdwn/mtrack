@@ -24,6 +24,8 @@ mod measure_offset_tests;
 #[cfg(test)]
 mod parameters_tests;
 #[cfg(test)]
+mod sequence_params_tests;
+#[cfg(test)]
 mod sequences_tests;
 #[cfg(test)]
 mod show_edge_cases_tests;

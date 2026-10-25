@@ -208,6 +208,40 @@ half a beat early. An effect that runs past the length is cut when the next pass
 length takes the same units as `duration:` (`2s`, `500ms`, `4beats`, `1measure`). Every cue must
 start inside it: a cue at or past the length is a parse error.
 
+**Sequence parameters (colours, groups and values bound where it is used):**
+
+A sequence can declare parameters after its name, and use each as `$name` in its body. Every use
+binds them, so a figure that differs between songs only by colour or group is written once:
+
+```light
+sequence "Strike"(hit, bed: "#1E6FE0", target: all_wash) {
+    @1/1
+    $target: static color: $bed, layer: background, duration: 2measures
+
+    @1/1
+    $target: static color: $hit, layer: foreground, duration: 1beat
+}
+
+show "Song" {
+    @1/1
+    sequence "Strike"(hit: "#FFD870"), loop: 4
+
+    @9/1
+    sequence "Strike"(hit: "#FFFFFF", bed: "#C8402A", target: front_wash)
+}
+```
+
+- A parameter with a default (`bed: "#1E6FE0"`) may be left out; one without (`hit`) must be
+  given wherever the sequence is used.
+- A value is substituted as written, so anything a parameter can stand for works: a colour in
+  quotes, a group, a number, a percentage, a duration, a `loop:` count.
+- A sequence can pass its own parameters on: `sequence "Inner"(colour: $hit)`.
+- Errors name the line the sequence is used on and the line in its body, e.g.
+  `line 40: in sequence "Strike" used here: line 3: Invalid color '#X'`. A missing or unknown
+  parameter, and a `$name` the sequence does not declare, are errors too.
+- `stop sequence "Strike"` stops every use of it, whatever its parameters.
+- A parameter stands for one value. To vary a list of groups, pass a group defined for it.
+
 ## Measure Offsets
 
 `offset N measures` shifts the measure numbering for the cues that follow it, so a cue written
