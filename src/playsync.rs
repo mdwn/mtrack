@@ -59,6 +59,18 @@ pub struct PlaybackSync {
     pub loop_control: LoopControl,
 }
 
+/// A loop break's fade-out in progress (`loop_break_fade`).
+#[derive(Clone, Debug)]
+pub struct BreakFade {
+    /// When the break came.
+    pub started: std::time::Instant,
+    /// How long the audio fades.
+    pub length: Duration,
+    pub curve: crate::audio::crossfade::CrossfadeCurve,
+    /// Tracks that cut at once instead.
+    pub exclude: Vec<String>,
+}
+
 /// Bundles the shared loop-control state threaded through audio, MIDI, and DMX
 /// `play_from` / `play` methods.
 #[derive(Clone)]
@@ -71,9 +83,9 @@ pub struct LoopControl {
     pub section_loop_break: Arc<AtomicBool>,
     /// Accumulated time consumed by section loop iterations.
     pub loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
-    /// A loop break's fade-out (`loop_break_fade`): when it began and how
-    /// long it lasts, set by the player as it breaks the loop.
-    pub break_fade: Arc<parking_lot::Mutex<Option<(std::time::Instant, Duration)>>>,
+    /// A loop break's fade-out (`loop_break_fade`), set by the player as it
+    /// breaks the loop.
+    pub break_fade: Arc<parking_lot::Mutex<Option<BreakFade>>>,
     /// The sources fading out after a loop break, which a stop cuts.
     pub break_fade_ids: Arc<parking_lot::Mutex<Vec<u64>>>,
 }

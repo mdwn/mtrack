@@ -74,7 +74,10 @@ pub use self::samples::{
     ReleaseBehavior, RetriggerBehavior, SampleDefinition, SampleTrigger, SamplesConfig,
     VelocityConfig, VelocityLayer, VelocityMode,
 };
-pub use self::song::{LightShow, LightingShow, LoopCrossfade, MidiPlayback, Section, Song};
+pub use self::song::{
+    Fade, FadeConfig, FadeCurve, LightShow, LightingShow, LoopCrossfade, MidiPlayback, Section,
+    Song,
+};
 pub use self::statusevents::StatusEvents;
 pub use self::store::ConfigStore;
 pub use self::tempo::{parse_time_signature, TempoChangeConfig, TempoConfig, TransitionConfig};

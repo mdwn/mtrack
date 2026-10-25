@@ -291,20 +291,23 @@ impl AudioMixer {
     /// Fades out every source of the playback `playback` cancels, from the
     /// gain each has now -- a source part way through another fade carries on
     /// down from where it is rather than jumping back up -- over
-    /// `fade_samples`, or `cut_samples` for a source whose tracks `cut` picks
-    /// (it is given each source's channel labels). A source not yet started
-    /// never starts. Other playbacks' sources, triggered samples and
-    /// notifications among them, are left alone. Returns the ids now fading.
+    /// `fade_samples` on `curve`, or `cut_samples` for a source whose tracks
+    /// `cut` picks (it is given each source's channel labels). A source not
+    /// yet started never starts. Other playbacks' sources, triggered samples
+    /// and notifications among them, are left alone. Returns the ids now
+    /// fading.
     pub fn fade_out_playback(
         &self,
         playback: &crate::playsync::CancelHandle,
         fade_samples: u64,
+        curve: crate::audio::crossfade::CrossfadeCurve,
         cut_samples: u64,
         cut: impl Fn(&[Vec<String>]) -> bool,
     ) -> Vec<u64> {
         self.fade_out_matching(
             |source| source.cancel_handle.same_as(playback),
             fade_samples,
+            curve,
             cut_samples,
             cut,
         )
@@ -316,6 +319,7 @@ impl AudioMixer {
         self.fade_out_matching(
             |source| ids.contains(&source.id),
             samples,
+            crate::audio::crossfade::CrossfadeCurve::Linear,
             samples,
             |_| false,
         );
@@ -325,6 +329,7 @@ impl AudioMixer {
         &self,
         select: impl Fn(&ActiveSource) -> bool,
         fade_samples: u64,
+        fade_curve: crate::audio::crossfade::CrossfadeCurve,
         cut_samples: u64,
         cut: impl Fn(&[Vec<String>]) -> bool,
     ) -> Vec<u64> {
@@ -356,7 +361,7 @@ impl AudioMixer {
             let (samples, curve) = if cut(source.source.channel_mappings()) {
                 (cut_samples, CrossfadeCurve::Linear)
             } else {
-                (fade_samples, CrossfadeCurve::EqualPower)
+                (fade_samples, fade_curve)
             };
             source.gain_envelope = Some(Arc::new(GainEnvelope::new(gain, 0.0, samples, curve)));
             fading.push(source.id);
@@ -1215,9 +1220,10 @@ mod tests {
         let mut out = vec![0.0f32; 200];
         mixer.process_into_output(&mut out, 200);
 
-        let fading = mixer.fade_out_playback(&playback, 1_000, 10, |labels| {
-            labels.iter().flatten().all(|l| l == "click")
-        });
+        let fading =
+            mixer.fade_out_playback(&playback, 1_000, CrossfadeCurve::EqualPower, 10, |labels| {
+                labels.iter().flatten().all(|l| l == "click")
+            });
         assert_eq!(fading, vec![1, 2, 3]);
         let envelope = |id: u64| {
             let sources = mixer.active_sources.read();

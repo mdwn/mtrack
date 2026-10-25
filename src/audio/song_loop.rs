@@ -97,7 +97,7 @@ impl PassCrossover {
 
 /// A loop break's fade-out (`loop_break_fade`) that outlasts the pass it
 /// began in: where the next pass has to carry it on. A loop break fades the
-/// song out on the equal-power out half from full gain; the pass it began in
+/// song out from full gain on `curve`'s out half; the pass it began in
 /// ends at `pass_end` on the playback clock, `now` is the clock now,
 /// `since_break` how long ago the break was, and `fade` the fade's length.
 /// Returns the gain the fade has reached at `pass_end` and how long it still
@@ -109,6 +109,7 @@ pub(crate) fn break_fade_continuation(
     now: Duration,
     since_break: Duration,
     fade: Duration,
+    curve: CrossfadeCurve,
 ) -> Option<(f32, Duration)> {
     const SPARE: Duration = Duration::from_millis(50);
     let fade_end = (now + fade).saturating_sub(since_break);
@@ -118,7 +119,7 @@ pub(crate) fn break_fade_continuation(
     }
     let into = (from + since_break).saturating_sub(now);
     let t = (into.as_secs_f64() / fade.as_secs_f64()).clamp(0.0, 1.0) as f32;
-    let (gain, _) = CrossfadeCurve::EqualPower.gains(t);
+    let (gain, _) = curve.gains(t);
     Some((gain, fade_end - from))
 }
 
@@ -228,19 +229,31 @@ mod tests {
         // A 4 s fade from a break 1 s ago; the pass ends 1 s from now, half
         // way through the fade: the next pass starts at cos(pi/4) and fades
         // the last 2 s.
-        let (gain, rest) = break_fade_continuation(s(11.0), s(10.0), s(1.0), s(4.0)).unwrap();
+        let (gain, rest) =
+            break_fade_continuation(s(11.0), s(10.0), s(1.0), s(4.0), CrossfadeCurve::EqualPower)
+                .unwrap();
         assert!(
             (gain - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
             "{gain}"
         );
         assert!((rest.as_secs_f64() - 2.0).abs() < 1e-9, "{rest:?}");
 
-        // A pass already over (a short last pass): from now.
-        let (_, rest) = break_fade_continuation(s(9.0), s(10.0), s(1.0), s(4.0)).unwrap();
+        // A pass already over (a short last pass): from now -- on a linear
+        // curve, a quarter of the way down, 1 s of the 4 gone.
+        let (gain, rest) =
+            break_fade_continuation(s(9.0), s(10.0), s(1.0), s(4.0), CrossfadeCurve::Linear)
+                .unwrap();
         assert!((rest.as_secs_f64() - 3.0).abs() < 1e-9, "{rest:?}");
+        assert!((gain - 0.75).abs() < 1e-6, "{gain}");
 
         // A pass that outlasts the fade, or ends in its last moments: none.
-        assert!(break_fade_continuation(s(20.0), s(10.0), s(1.0), s(4.0)).is_none());
-        assert!(break_fade_continuation(s(12.98), s(10.0), s(1.0), s(4.0)).is_none());
+        assert!(
+            break_fade_continuation(s(20.0), s(10.0), s(1.0), s(4.0), CrossfadeCurve::Linear)
+                .is_none()
+        );
+        assert!(
+            break_fade_continuation(s(12.98), s(10.0), s(1.0), s(4.0), CrossfadeCurve::Linear)
+                .is_none()
+        );
     }
 }

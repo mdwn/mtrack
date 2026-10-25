@@ -706,6 +706,7 @@ impl Device {
                         &mappings,
                         Duration::ZERO,
                         half_overlap,
+                        song.loop_crossfade_cut(),
                     ));
                 });
             song_loop.build_rx = Some(rx);
@@ -783,8 +784,9 @@ impl Device {
 
     /// Starts the song again under a loop break's fade that its last pass did
     /// not see out: from the top at `at.start_sample`, at `gain` (where the
-    /// fade has got to) and fading to silence over `at.overlap_samples`. Its
-    /// cut tracks stay cut. The new sources join the ones a stop cuts.
+    /// fade has got to) and fading to silence over `at.overlap_samples` on
+    /// the fade's curve. Its excluded tracks, cut at the break, stay out. The
+    /// new sources join the ones a stop cuts.
     #[allow(clippy::too_many_arguments)]
     fn carry_break_fade(
         &self,
@@ -794,15 +796,17 @@ impl Device {
         cancel_handle: &CancelHandle,
         at: PassCrossover,
         gain: f32,
+        fade: &crate::playsync::BreakFade,
         break_fade_ids: &parking_lot::Mutex<Vec<u64>>,
     ) {
-        use crate::audio::crossfade::{CrossfadeCurve, GainEnvelope};
+        use crate::audio::crossfade::GainEnvelope;
         let sources = match build_pass_sources(
             song,
             playback_context,
             mappings,
             Duration::ZERO,
             Duration::ZERO,
+            &fade.exclude,
         ) {
             Ok(sources) => sources,
             Err(e) => {
@@ -823,8 +827,7 @@ impl Device {
             if group == PassGroup::Cut {
                 continue;
             }
-            let envelope =
-                GainEnvelope::new(gain, 0.0, at.overlap_samples, CrossfadeCurve::EqualPower);
+            let envelope = GainEnvelope::new(gain, 0.0, at.overlap_samples, fade.curve);
             let (mut active_source, _) =
                 build_active_source(source, mappings, cancel_handle, Some(Arc::new(envelope)));
             active_source.start_at_sample = Some(start);
@@ -1139,8 +1142,8 @@ fn build_pass_sources(
     mappings: &HashMap<String, Vec<u16>>,
     fade_from: Duration,
     cut_from: Duration,
+    cut: &[String],
 ) -> Result<GroupedSources, String> {
-    let cut = song.loop_crossfade_cut();
     let in_group = |group: PassGroup| -> HashMap<String, Vec<u16>> {
         mappings
             .iter()
@@ -1369,8 +1372,15 @@ impl AudioDevice for Device {
             latest_end: song.duration().saturating_sub(start_time),
         });
         let channel_mapped_sources: GroupedSources = if song_loop.is_some() {
-            build_pass_sources(&song, &playback_context, mappings, start_time, start_time)
-                .map_err(crate::audio::AudioError::Playback)?
+            build_pass_sources(
+                &song,
+                &playback_context,
+                mappings,
+                start_time,
+                start_time,
+                song.loop_crossfade_cut(),
+            )
+            .map_err(crate::audio::AudioError::Playback)?
         } else {
             song.create_channel_mapped_sources_from(&playback_context, start_time, mappings)
                 .map_err(|e| crate::audio::AudioError::Playback(e.to_string()))?
@@ -1964,9 +1974,9 @@ impl AudioDevice for Device {
         // A loop break fading the song out (`loop_break_fade`) over longer than
         // its audible pass has left: carry the fade on into the next pass, so
         // the song does not fall silent part way through.
-        let fade = *break_fade.lock();
-        if let (true, Some((broke_at, length))) = (loop_break.load(Ordering::Relaxed), fade) {
-            let since_break = broke_at.elapsed();
+        let fade = break_fade.lock().clone();
+        if let (true, Some(fade)) = (loop_break.load(Ordering::Relaxed), fade) {
+            let since_break = fade.started.elapsed();
             let pass_end = match song_loop.as_ref() {
                 Some(song_loop) => {
                     // A pass not yet started when the break came never did.
@@ -1984,7 +1994,8 @@ impl AudioDevice for Device {
                 pass_end,
                 clock.elapsed(),
                 since_break,
-                length,
+                fade.length,
+                fade.curve,
             ) {
                 self.carry_break_fade(
                     &song,
@@ -2003,6 +2014,7 @@ impl AudioDevice for Device {
                         crossfade_samples,
                     },
                     gain,
+                    &fade,
                     &break_fade_ids,
                 );
             }

@@ -826,24 +826,42 @@ impl Player {
         if let Some(mixer) = hw.device.as_ref().and_then(|device| device.mixer()) {
             let rate = mixer.sample_rate();
             let cut_samples = crate::audio::crossfade::default_crossfade_samples(rate);
-            let fade_samples = fade
-                .map(|d| (d.as_secs_f64() * rate as f64).round() as u64)
-                .unwrap_or(cut_samples);
-            let cut_tracks = song.loop_crossfade_cut();
-            let ids = mixer.fade_out_playback(playback, fade_samples, cut_samples, |labels| {
-                let mut tracks = labels.iter().flatten().peekable();
-                tracks.peek().is_some() && tracks.all(|t| cut_tracks.contains(t))
-            });
+            let (fade_samples, curve) = match &fade {
+                Some(fade) => (
+                    (fade.length.as_secs_f64() * rate as f64).round() as u64,
+                    fade.curve,
+                ),
+                None => (cut_samples, crate::audio::crossfade::CrossfadeCurve::Linear),
+            };
+            let exclude = fade
+                .as_ref()
+                .map(|f| f.exclude.as_slice())
+                .unwrap_or_default();
+            let ids =
+                mixer.fade_out_playback(playback, fade_samples, curve, cut_samples, |labels| {
+                    let mut tracks = labels.iter().flatten().peekable();
+                    tracks.peek().is_some() && tracks.all(|t| exclude.contains(t))
+                });
             *self.break_fade_ids.lock() = if fade.is_some() { ids } else { Vec::new() };
         }
-        *self.break_fade.lock() = fade.map(|d| (std::time::Instant::now(), d));
-        if let (Some(dmx), Some(d)) = (hw.dmx_engine.as_ref(), fade) {
-            dmx.begin_break_fade(d);
+        *self.break_fade.lock() = fade.as_ref().map(|f| crate::playsync::BreakFade {
+            started: std::time::Instant::now(),
+            length: f.length,
+            curve: f.curve,
+            exclude: f.exclude.clone(),
+        });
+        if let (Some(dmx), Some(fade)) = (hw.dmx_engine.as_ref(), fade.as_ref()) {
+            // Lights of zero switch at once: the next song's show takes over
+            // as it starts, as without a fade.
+            if !fade.lights.is_zero() {
+                dmx.begin_break_fade(fade.lights);
+            }
         }
-        if let Some(d) = fade {
+        if let Some(fade) = &fade {
             info!(
                 song = song.name(),
-                fade_ms = d.as_millis() as u64,
+                fade_ms = fade.length.as_millis() as u64,
+                lights_ms = fade.lights.as_millis() as u64,
                 "Loop break: fading out under the next song"
             );
         }

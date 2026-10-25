@@ -69,14 +69,21 @@ pub struct Song {
     /// through the overlap.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     loop_crossfade_cut: Vec<String>,
-    /// How long a looping song keeps playing after a loop break (play, next
-    /// or previous), fading out while the song it gives way to starts
-    /// underneath it. `"3s"`, `"500ms"`, `"6beats"` or `"1measure"`; beats
-    /// and measures are counted on the incoming song's grid from its first
-    /// bar, so `1measure` fades out over its count-in. Omitted, the song
-    /// cuts with the short default crossfade.
+    /// How a looping song fades out after a loop break (play, next or
+    /// previous), playing on under the song it gives way to: a length
+    /// (`"3s"`, `"500ms"`, `"6beats"`, `"1measure"`), or a [`FadeConfig`]
+    /// with its curve, excluded tracks and light crossfade. Beats and
+    /// measures are counted on the incoming song's grid from its first bar,
+    /// so `1measure` fades out over its count-in. Omitted, the song cuts
+    /// with the short default crossfade.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    loop_break_fade: Option<String>,
+    loop_break_fade: Option<FadeConfig>,
+    /// How the song fades in when it starts from the top: a length, or a
+    /// [`FadeConfig`] with its curve and excluded tracks. Beats and measures
+    /// are counted on this song's grid from its first bar. Omitted, it starts
+    /// at full level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fade_in: Option<FadeConfig>,
     /// Named sections of the song, defined by measure boundaries.
     /// Used for section looping during playback.
     #[serde(default)]
@@ -96,6 +103,101 @@ pub struct Song {
     /// Per-song notification audio overrides.
     #[serde(default)]
     notification_audio: Option<SongNotificationConfig>,
+}
+
+/// A fade as written in song.yaml: a length alone, or with its settings.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum FadeConfig {
+    /// `"3s"`, `"500ms"`, `"6beats"`, `"1measure"`.
+    Length(String),
+    /// The length with its settings.
+    Full {
+        /// As for the short form.
+        length: String,
+        /// `equal_power` (the default) or `linear`. Equal power fades in
+        /// quickly and out slowly, holding the level up; linear is a straight
+        /// ramp in amplitude.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        curve: Option<String>,
+        /// Tracks that do not fade: on a fade-out they cut at once, on a
+        /// fade-in they start at full level. A loop break's fade-out
+        /// defaults to the song's `loop_crossfade_cut` tracks.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exclude: Option<Vec<String>>,
+        /// A loop break only: how long the lights take to cross into the
+        /// next song's show, `0s` to switch at once. Defaults to `length`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lights: Option<String>,
+    },
+}
+
+/// A fade's curve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FadeCurve {
+    /// Quick in, slow out: the level holds up through the fade.
+    EqualPower,
+    /// A straight ramp in amplitude.
+    Linear,
+}
+
+/// A fade's settings, parsed: see [`FadeConfig`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fade {
+    pub length: LoopCrossfade,
+    pub curve: FadeCurve,
+    /// `None` for the default.
+    pub exclude: Option<Vec<String>>,
+    /// `None` for the default (the fade's length); `Some(Time(0))` switches
+    /// at once.
+    pub lights: Option<LoopCrossfade>,
+}
+
+impl FadeConfig {
+    /// Parses the fade `field` sets. Only a loop break's fade (`lights`)
+    /// crosses the lights.
+    fn parse(&self, field: &str, lights: bool) -> Result<Fade, String> {
+        let (length, curve, exclude, light) = match self {
+            FadeConfig::Length(length) => (length, None, None, None),
+            FadeConfig::Full {
+                length,
+                curve,
+                exclude,
+                lights,
+            } => (length, curve.as_deref(), exclude.clone(), lights.as_deref()),
+        };
+        let curve = match curve.map(str::trim) {
+            None | Some("equal_power") => FadeCurve::EqualPower,
+            Some("linear") => FadeCurve::Linear,
+            Some(other) => {
+                return Err(format!(
+                    "{field}: unknown curve {other:?} (expected equal_power or linear)"
+                ))
+            }
+        };
+        let light = match light {
+            Some(_) if !lights => {
+                return Err(format!(
+                    "{field}: lights applies only to loop_break_fade, which crosses one \
+                     song's show into the next"
+                ))
+            }
+            None => None,
+            Some(value) if value.trim().trim_end_matches(['m', 's']).trim() == "0" => {
+                Some(LoopCrossfade::Time(std::time::Duration::ZERO))
+            }
+            Some(value) => Some(LoopCrossfade::parse_field(
+                &format!("{field}.lights"),
+                value,
+            )?),
+        };
+        Ok(Fade {
+            length: LoopCrossfade::parse_field(field, length)?,
+            curve,
+            exclude,
+            lights: light,
+        })
+    }
 }
 
 /// How long consecutive passes of a looping song overlap.
@@ -225,6 +327,7 @@ impl Song {
             loop_crossfade: None,
             loop_crossfade_cut: Vec::new(),
             loop_break_fade: None,
+            fade_in: None,
             sections: Vec::new(),
             tempo: None,
             metronome: None,
@@ -413,6 +516,9 @@ impl Song {
         if let Err(e) = self.loop_break_fade() {
             errors.push(e);
         }
+        if let Err(e) = self.fade_in() {
+            errors.push(e);
+        }
 
         if errors.is_empty() {
             Ok(())
@@ -486,12 +592,19 @@ impl Song {
         &self.loop_crossfade_cut
     }
 
-    /// How long a looping song fades out over after a loop break, as
-    /// configured.
-    pub fn loop_break_fade(&self) -> Result<Option<LoopCrossfade>, String> {
+    /// How a looping song fades out after a loop break, as configured.
+    pub fn loop_break_fade(&self) -> Result<Option<Fade>, String> {
         self.loop_break_fade
-            .as_deref()
-            .map(|value| LoopCrossfade::parse_field("loop_break_fade", value))
+            .as_ref()
+            .map(|fade| fade.parse("loop_break_fade", true))
+            .transpose()
+    }
+
+    /// How the song fades in when it starts from the top, as configured.
+    pub fn fade_in(&self) -> Result<Option<Fade>, String> {
+        self.fade_in
+            .as_ref()
+            .map(|fade| fade.parse("fade_in", false))
             .transpose()
     }
 

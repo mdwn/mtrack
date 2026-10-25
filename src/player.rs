@@ -389,7 +389,7 @@ pub struct Player {
     /// A looping song fading out after a loop break (`loop_break_fade`):
     /// when the break came and how long the fade lasts. The audio monitor
     /// reads it to carry the fade across a loop boundary.
-    break_fade: Arc<parking_lot::Mutex<Option<(std::time::Instant, Duration)>>>,
+    break_fade: Arc<parking_lot::Mutex<Option<crate::playsync::BreakFade>>>,
     /// The mixer sources fading out after a loop break, which a stop or seek
     /// cuts rather than letting them finish.
     break_fade_ids: Arc<parking_lot::Mutex<Vec<u64>>>,
