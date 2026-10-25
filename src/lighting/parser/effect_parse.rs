@@ -54,15 +54,38 @@ fn parse_duration_in_score_space(
     parse_duration_string(value, tempo_map, Some(score_time), 0.0)
 }
 
+/// A `color:` value, or an error naming it.
+///
+/// An unparseable colour used to be dropped without a word: a `static` set no
+/// colour at all and rendered as if it were not there, and a `cycle` ran on
+/// its other colours -- while the show validated clean (#538). It is an error
+/// like any other bad parameter value.
+fn parse_color_value(value: &str) -> Result<crate::lighting::effects::Color, Box<dyn Error>> {
+    parse_color_string(value).ok_or_else(|| {
+        format!(
+            "Invalid color '{}' (expected #RRGGBB, rgb(r, g, b) or a color name)",
+            value.trim_matches('"')
+        )
+        .into()
+    })
+}
+
 /// Helper to clean and normalize string values (strip quotes, trim, lowercase)
 fn clean_string_value(value: &str) -> String {
     value.trim_matches('"').trim().to_lowercase()
 }
 
+/// Parses one effect line. An error names the line it is on, so a bad value
+/// in a long show can be found (#538).
 pub(crate) fn parse_effect_definition(
     pair: Pair<Rule>,
     ctx: &ParseContext,
 ) -> Result<Effect, Box<dyn Error>> {
+    let (line, _) = pair.line_col();
+    parse_effect_line(pair, ctx).map_err(|e| format!("line {line}: {e}").into())
+}
+
+fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box<dyn Error>> {
     let tempo_map = &ctx.tempo_map;
     let cue_time = ctx.cue_time;
     let offset_secs = ctx.offset_secs;
@@ -356,12 +379,11 @@ pub(crate) fn apply_parameters_to_effect_type(
                         }
                     }
                     "color" => {
-                        if let Some(color) = parse_color_string(value) {
-                            let (r, g, b) = color_to_normalized_params(&color);
-                            static_params.insert("red".to_string(), r);
-                            static_params.insert("green".to_string(), g);
-                            static_params.insert("blue".to_string(), b);
-                        }
+                        let color = parse_color_value(value)?;
+                        let (r, g, b) = color_to_normalized_params(&color);
+                        static_params.insert("red".to_string(), r);
+                        static_params.insert("green".to_string(), g);
+                        static_params.insert("blue".to_string(), b);
                     }
                     "duration" => {
                         // Convert shifted cue_time back to score-space for duration calculation
@@ -397,9 +419,7 @@ pub(crate) fn apply_parameters_to_effect_type(
         } => {
             // Add all color parameters
             for color_str in color_parameters {
-                if let Some(color) = parse_color_string(color_str) {
-                    colors.push(color);
-                }
+                colors.push(parse_color_value(color_str)?);
             }
 
             // Handle other parameters

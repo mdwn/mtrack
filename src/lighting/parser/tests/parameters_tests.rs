@@ -443,3 +443,48 @@ fn a_move_refuses_a_missing_or_mixed_target_and_a_unitless_angle() {
         assert!(err.contains(needle), "{source}: {err}");
     }
 }
+
+/// #538: an unparseable colour is a parse error naming the value and its
+/// line, not silently dropped (a `static` with no colour, a `cycle` short a
+/// colour, and a show that validated clean).
+#[test]
+fn an_invalid_color_is_a_parse_error_naming_it() {
+    for bad in ["#X", "#12345", "#GGGGGG", "notacolour"] {
+        let source = format!(
+            r##"show "t" {{
+    @00:00.000
+    all_wash: static, color: "#FFD000", duration: 4s
+    left: static, color: "{bad}", duration: 4s
+}}"##
+        );
+        let error = parse_light_shows(&source)
+            .err()
+            .unwrap_or_else(|| panic!("{bad:?} parsed"))
+            .to_string();
+        assert!(error.contains(&format!("'{bad}'")), "{bad:?}: {error}");
+        assert!(error.contains("line 4"), "{bad:?}: {error}");
+    }
+
+    let cycle = r##"show "t" {
+    @00:00.000
+    all_wash: cycle, color: "red", color: "#X", color: "blue", speed: 1s, duration: 4s
+}"##;
+    let error = parse_light_shows(cycle)
+        .expect_err("cycle parsed")
+        .to_string();
+    assert!(
+        error.contains("'#X'") && error.contains("line 3"),
+        "{error}"
+    );
+}
+
+#[test]
+fn valid_colors_still_parse() {
+    let source = r##"show "t" {
+    @00:00.000
+    a: static, color: "#010101", duration: 1s
+    b: static, color: "rgb(255, 0, 128)", duration: 1s
+    c: cycle, color: "red", color: "#00FF00", speed: 1s, duration: 1s
+}"##;
+    assert!(parse_light_shows(source).is_ok());
+}
