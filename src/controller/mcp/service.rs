@@ -1179,15 +1179,23 @@ impl McpServer {
 
     #[tool(
         description = "Write a playlist YAML file. Validates the YAML against \
-        `config::Playlist` before writing. With no `name`, writes the top-level \
-        playlist file. With a `name`, writes `<playlists_dir>/<name>.yaml` and \
-        creates the file if missing."
+        `config::Playlist`, and its transitions against the songs, before \
+        writing. With no `name`, writes the top-level playlist file. With a \
+        `name`, writes `<playlists_dir>/<name>.yaml` and creates the file if \
+        missing. Each `songs:` entry is a song name, or a map with `song:` and \
+        its own transitions: `fade_out` (how a looping song fades out under the \
+        next song when play/next/previous breaks its loop) and `fade_in` (how \
+        the song fades in when it starts under such a fade-out). Each is a \
+        length (`3s`, `500ms`, `6beats`, `1measure`; `0s` for none) or a map \
+        with `length`, `curve` (`equal_power` or `linear`), `exclude` (track \
+        names that do not fade) and, for `fade_out` only, `lights` (how long \
+        the lights cross into the next song's show)."
     )]
     async fn write_playlist(
         &self,
         Parameters(args): Parameters<WritePlaylistArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let _: crate::config::Playlist = serde_yaml_from_str(&args.yaml)?;
+        self.validate_playlist(&args.yaml)?;
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
         // Same rule as the web UI's playlist write and every other configured
         // root: created only when it is inside the project. A `playlists_dir:`
@@ -2510,8 +2518,10 @@ impl McpServer {
     }
 
     #[tool(description = "Patch a playlist YAML file with a string replacement. \
-        The result is parse-validated as `config::Playlist` before being \
-        written. With no `name`, edits the top-level playlist file.")]
+        The result is validated as `config::Playlist`, its transitions against \
+        the songs, before being written. With no `name`, edits the top-level \
+        playlist file. See `write_playlist` for the entry format, including \
+        `fade_out` and `fade_in`.")]
     async fn patch_playlist(
         &self,
         Parameters(args): Parameters<PatchPlaylistArgs>,
@@ -2519,7 +2529,7 @@ impl McpServer {
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
-        let _: crate::config::Playlist = serde_yaml_from_str(&updated)?;
+        self.validate_playlist(&updated)?;
         staged_write_string(&path, &updated).await?;
         self.reload_songs_from_config().await?;
         Ok(patch_response(&path, &original, &updated))
@@ -3727,6 +3737,17 @@ impl McpServer {
             playlists_dir.as_deref(),
             legacy_playlist_path.as_deref(),
         );
+        Ok(())
+    }
+
+    /// Checks a playlist about to be written: that it parses, and that its
+    /// transitions do and name tracks their songs have, as the player will
+    /// when it loads it. Songs it names that do not exist are left to the
+    /// player, as before.
+    fn validate_playlist(&self, yaml: &str) -> Result<(), McpError> {
+        let config: crate::config::Playlist = serde_yaml_from_str(yaml)?;
+        crate::playlist::validate_transitions(&config, &self.player.songs())
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         Ok(())
     }
 

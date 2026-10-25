@@ -84,27 +84,7 @@ impl Playlist {
                 .map_err(|_| PlaylistError::SongNotFound(song_name.clone()))?;
         }
 
-        let transitions = config
-            .entry_transitions()
-            .map_err(PlaylistError::InvalidTransition)?;
-        for (song_name, entry) in song_names.iter().zip(&transitions) {
-            let Ok(song) = registry.get(song_name) else {
-                continue;
-            };
-            let fades = [
-                ("fade_out", entry.fade_out.as_ref()),
-                ("fade_in", entry.fade_in.as_ref()),
-            ];
-            for (field, fade) in fades {
-                let tracks = fade.and_then(|f| f.exclude.as_deref()).unwrap_or_default();
-                if let Some(track) = tracks.iter().find(|t| !song.has_track(t)) {
-                    return Err(PlaylistError::InvalidTransition(format!(
-                        "song {song_name}: {field}.exclude names track {track:?}, \
-                         which the song does not have"
-                    )));
-                }
-            }
-        }
+        let transitions = validate_transitions(config, &registry)?;
 
         Ok(Arc::new(Playlist {
             name: name.to_string(),
@@ -252,6 +232,36 @@ impl Playlist {
         let position = self.position.read();
         self.registry.get(&self.songs[*position]).ok()
     }
+}
+
+/// Parses a playlist's transitions and checks each entry's `exclude` names
+/// tracks its song has. A song not in `registry` is not checked.
+pub fn validate_transitions(
+    config: &config::Playlist,
+    registry: &Songs,
+) -> Result<Vec<config::EntryTransitions>, PlaylistError> {
+    let transitions = config
+        .entry_transitions()
+        .map_err(PlaylistError::InvalidTransition)?;
+    for (song_name, entry) in config.songs().iter().zip(&transitions) {
+        let Ok(song) = registry.get(song_name) else {
+            continue;
+        };
+        let fades = [
+            ("fade_out", entry.fade_out.as_ref()),
+            ("fade_in", entry.fade_in.as_ref()),
+        ];
+        for (field, fade) in fades {
+            let tracks = fade.and_then(|f| f.exclude.as_deref()).unwrap_or_default();
+            if let Some(track) = tracks.iter().find(|t| !song.has_track(t)) {
+                return Err(PlaylistError::InvalidTransition(format!(
+                    "song {song_name}: {field}.exclude names track {track:?}, \
+                     which the song does not have"
+                )));
+            }
+        }
+    }
+    Ok(transitions)
 }
 
 /// Creates an alphabetized playlist from all available songs.
