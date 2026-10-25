@@ -450,7 +450,7 @@ function parseLayerCommand(cmd: string, paramsStr: string): LayerCommand {
     command: cmd as LayerCommand["command"],
   };
 
-  const layerM = paramsStr.match(/layer:\s*(\w+)/);
+  const layerM = paramsStr.match(/layer:\s*(\$?\w+)/);
   if (layerM) result.layer = layerM[1];
 
   const intensityM = paramsStr.match(/intensity:\s*(\S+)/);
@@ -461,6 +461,17 @@ function parseLayerCommand(cmd: string, paramsStr: string): LayerCommand {
 
   return result;
 }
+
+/** Effect parameters held as numbers, which a `$param` cannot be. */
+const NUMERIC_PARAMS = new Set([
+  "intensity",
+  "start_level",
+  "end_level",
+  "base_level",
+  "pulse_amplitude",
+  "saturation",
+  "brightness",
+]);
 
 /**
  * Parse the effect portion of a line, e.g.:
@@ -516,6 +527,13 @@ function parseEffectParams(str: string, effect: EffectParams): void {
       (val.startsWith("'") && val.endsWith("'"))
     ) {
       val = val.slice(1, -1);
+    }
+
+    // A sequence parameter stands in for a number the fields below would
+    // read as NaN; keep it as written.
+    if (val.startsWith("$") && NUMERIC_PARAMS.has(key)) {
+      effect.extra[key] = val;
+      continue;
     }
 
     switch (key) {

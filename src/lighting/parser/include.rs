@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use pest::iterators::Pair;
 use pest::Parser;
 
+use super::error::describe_pest_error;
 use super::grammar::{LightingParser, Rule};
 use super::sequences::SequenceLibrary;
 
@@ -56,6 +57,10 @@ pub(super) struct IncludingFile<'a> {
     /// How errors name the file: `None` for the file being parsed, else its
     /// path as included, relative to that file.
     pub display: Option<PathBuf>,
+    /// The folder includes must stay inside, canonicalized, when the source
+    /// comes from somewhere that may not read the whole disk (the web UI, an
+    /// MCP client).
+    pub root: Option<&'a Path>,
 }
 
 /// Adds the sequences of every file `includes` names, and of the files they
@@ -94,6 +99,13 @@ pub(super) fn add_included(
                 path.display()
             ))
         })?;
+        if let Some(root) = from.root {
+            if !canonical.starts_with(root) {
+                return Err(in_file(format!(
+                    "line {line}: include \"{written}\" is outside the songs folder"
+                )));
+            }
+        }
         if !seen.insert(canonical.clone()) {
             continue;
         }
@@ -107,7 +119,10 @@ pub(super) fn add_included(
                 path.display()
             ))
         })?;
-        add_file(library, &content, &canonical, display, seen)?;
+        // Nested includes resolve from the path as written, not the
+        // canonical one, so a symlinked file includes what its link's folder
+        // holds, the same however the file was reached.
+        add_file(library, &content, &path, display, from.root, seen)?;
     }
     Ok(())
 }
@@ -119,19 +134,12 @@ fn add_file(
     content: &str,
     path: &Path,
     display: PathBuf,
+    root: Option<&Path>,
     seen: &mut HashSet<PathBuf>,
 ) -> Result<(), Box<dyn Error>> {
     let shown = display.display().to_string();
-    let pairs = LightingParser::parse(Rule::file, content).map_err(|e| {
-        let (line, col) = match e.line_col {
-            pest::error::LineColLocation::Pos(pos) => pos,
-            pest::error::LineColLocation::Span(pos, _) => pos,
-        };
-        format!(
-            "{shown}: DSL parsing error at line {line}, column {col}: {}",
-            e.variant.message()
-        )
-    })?;
+    let pairs = LightingParser::parse(Rule::file, content)
+        .map_err(|e| format!("{shown}: {}", describe_pest_error(&e, content)))?;
 
     let mut includes = Vec::new();
     let mut sequences = Vec::new();
@@ -170,6 +178,7 @@ fn add_file(
         IncludingFile {
             path: Some(path),
             display: Some(display),
+            root,
         },
         seen,
     )?;
@@ -177,7 +186,7 @@ fn add_file(
 }
 
 /// Every file `path` includes, directly or through another included file,
-/// for watching alongside it. Best effort: a file that does not read or
+/// canonicalized for watching alongside it. Best effort: a file that does not read or
 /// parse ends the search along that branch, and parsing reports why.
 pub fn included_files(path: &Path) -> Vec<PathBuf> {
     let mut seen: HashSet<PathBuf> = path.canonicalize().into_iter().collect();
@@ -199,12 +208,13 @@ fn collect(path: &Path, seen: &mut HashSet<PathBuf>, found: &mut Vec<PathBuf>) {
             continue;
         }
         let include = Include::from_pair(pair);
-        let Ok(included) = folder.join(&include.written).canonicalize() else {
+        let written = folder.join(&include.written);
+        let Ok(included) = written.canonicalize() else {
             continue;
         };
         if seen.insert(included.clone()) {
-            found.push(included.clone());
-            collect(&included, seen, found);
+            found.push(included);
+            collect(&written, seen, found);
         }
     }
 }

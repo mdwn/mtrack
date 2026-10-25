@@ -19,8 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defines, its path relative to the including file. An included file defines only sequences (and
   may include others); they play under the including file's tempo. A sequence defined in two
   files is an error, and errors in an included sequence name its file. Editing an included file
-  reloads the shows that use it. `validate_lighting` and the web UI resolve includes against the
-  song's lighting file.
+  reloads the shows that use it. Sequences from an included file are checked where they are used,
+  so a shared library may hold sequences a song without a tempo never plays. The web UI and the
+  MCP lighting tools resolve includes where the file is or will be saved (`validate_lighting`
+  takes an optional `file`), and keep them inside the songs folder.
 - **Hue-wheel fades on cycles (#541)**: `cycle … transition: hue` fades around the colour wheel,
   turning the hue the short way while blending saturation and brightness. A plain `fade` blends
   red, green and blue separately, so colours far apart pass through a dull midpoint (yellow to

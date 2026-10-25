@@ -266,6 +266,9 @@ show "Song" {
   other. A file included twice, directly or through another file, is read once.
 - Errors in an included sequence name its file and line, e.g. `../common/isenmor.light: line 12:
   …`.
+- An included file's sequences are checked where they are used, so a shared library may hold
+  sequences in bars and beats that a song without a tempo never plays.
+- Through the web UI or MCP, an include must stay inside the songs folder.
 - Editing an included file reloads the shows that include it, like editing the show itself.
 
 ## Measure Offsets

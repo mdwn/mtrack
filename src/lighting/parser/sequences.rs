@@ -29,6 +29,7 @@ use pest::iterators::Pair;
 use pest::Parser;
 
 use super::super::tempo::TempoMap;
+use super::error::describe_pest_error;
 use super::grammar::{LightingParser, Rule};
 use super::show::{expand_unexpanded_sequence_cue, parse_sequence_structure};
 use super::types::{Sequence, SequenceCall};
@@ -174,16 +175,18 @@ impl SequenceLibrary {
         Ok(())
     }
 
-    /// Expands every sequence that needs no arguments, so an error in one is
-    /// reported whether or not a show uses it. One with a required
-    /// parameter can only be checked where it is used.
+    /// Expands every sequence of the file itself that needs no arguments, so
+    /// an error in one is reported whether or not a show uses it. One with a
+    /// required parameter can only be checked where it is used, and so can
+    /// one from an included file: a shared library may hold sequences in
+    /// bars and beats that a file without a tempo never uses.
     pub(crate) fn check_all(&self) -> Result<(), Box<dyn Error>> {
         // In file order, so the first error reported is the first in the file.
         let mut names: Vec<&String> = self.templates.keys().collect();
         names.sort_by_key(|name| self.templates[*name].position);
         for name in names {
             let template = &self.templates[name];
-            if !template.standalone() {
+            if !template.standalone() || template.origin.is_some() {
                 continue;
             }
             self.resolve(name, &[]).map_err(|e| -> Box<dyn Error> {
@@ -264,14 +267,9 @@ impl SequenceLibrary {
         let text = substitute(&template.source, bindings);
         let pair = LightingParser::parse(Rule::sequence_source, &text)
             .map_err(|e| {
-                let (line, col) = match e.line_col {
-                    pest::error::LineColLocation::Pos(pos) => pos,
-                    pest::error::LineColLocation::Span(pos, _) => pos,
-                };
                 format!(
-                    "DSL parsing error at line {line}, column {col} with the parameters \
-                     substituted: {}",
-                    e.variant.message()
+                    "with its parameters substituted, {}",
+                    describe_pest_error(&e, &text)
                 )
             })?
             .next()

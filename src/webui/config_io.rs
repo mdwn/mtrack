@@ -45,13 +45,15 @@ pub fn validate_player_config(yaml: &str) -> Result<(), Vec<String>> {
 /// or one derived from its click track. Musical timing resolves at parse time,
 /// so validating a tempo-inheriting show without it rejects content the player
 /// loads without complaint. `path` is where the content is (or will be)
-/// saved, which its `include`s resolve against.
+/// saved, which its `include`s resolve against; `root`, when given, is the
+/// folder they must stay inside.
 pub fn validate_light_show(
     content: &str,
     path: Option<&Path>,
+    root: Option<&Path>,
     tempo: Option<&crate::tempo::TempoMap>,
 ) -> Result<(), Vec<String>> {
-    crate::lighting::parser::parse_light_file(content, path, tempo)
+    crate::lighting::parser::parse_light_file_within(content, path, root, tempo)
         .map_err(|e| vec![format!("{}", e)])?;
     Ok(())
 }
@@ -85,13 +87,13 @@ show "test" {
     lights: static color: "red", duration: 5s
 }
 "#;
-        assert!(validate_light_show(content, None, None).is_ok());
+        assert!(validate_light_show(content, None, None, None).is_ok());
     }
 
     #[test]
     fn test_validate_light_show_invalid() {
         let content = "this is not valid DSL content {{{";
-        assert!(validate_light_show(content, None, None).is_err());
+        assert!(validate_light_show(content, None, None, None).is_err());
     }
 
     #[test]

@@ -60,8 +60,10 @@ pub fn start_watching(
     // The files those include are watched too: an edit to a shared sequence
     // changes the shows that use it. One included only after the song is
     // loaded is watched from its next load.
+    // Includes resolve from the path as given, as the song load did, so a
+    // symlinked show includes what its link's folder holds.
     let mut watched = paths.clone();
-    for path in &paths {
+    for path in &file_paths {
         for included in crate::lighting::parser::included_files(path) {
             if !watched.contains(&included) {
                 watched.push(included);
@@ -161,7 +163,7 @@ pub fn start_watching(
                     info!("Light show file changed, reloading...");
 
                     match reload_timeline(
-                        &paths,
+                        &file_paths,
                         &effect_engine,
                         &current_song_timeline,
                         &current_song_time,

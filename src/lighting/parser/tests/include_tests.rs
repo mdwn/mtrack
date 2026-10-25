@@ -146,7 +146,10 @@ fn errors_in_an_included_sequence_name_its_file() {
             "common.light",
             "sequence \"wash\"(colour: \"#X\") {\n    @0.000\n    front_wash: static, color: $colour, duration: 1s\n}\n",
         ),
-        ("show.light", "include \"common.light\"\n"),
+        (
+            "show.light",
+            "include \"common.light\"\nshow \"Song\" {\n    @0.000\n    sequence \"wash\"\n}\n",
+        ),
     ]);
     let err = parse_at(dir.path(), "show.light").expect_err("bad default");
     assert!(
@@ -192,4 +195,82 @@ fn included_files_lists_every_file_reached() {
         .collect();
     names.sort();
     assert_eq!(names, vec!["a.light", "b.light"]);
+}
+
+#[test]
+fn an_unused_included_sequence_is_not_checked_against_this_file() {
+    // The library holds one sequence in bars and beats; a file with no tempo
+    // uses only the one in seconds.
+    let dir = tree(&[
+        (
+            "common.light",
+            "sequence \"bars\" {\n    @1/1\n    front_wash: static, color: \"red\", duration: 1beat\n}\n\nsequence \"secs\" {\n    @0.000\n    front_wash: static, color: \"blue\", duration: 1s\n}\n",
+        ),
+        (
+            "show.light",
+            "include \"common.light\"\nshow \"Song\" {\n    @0.000\n    sequence \"secs\"\n}\n",
+        ),
+        (
+            "uses_bars.light",
+            "include \"common.light\"\nshow \"Song\" {\n    @0.000\n    sequence \"bars\"\n}\n",
+        ),
+    ]);
+    parse_at(dir.path(), "show.light").expect("the bar/beat sequence is never used here");
+    let err = parse_at(dir.path(), "uses_bars.light").expect_err("used without a tempo");
+    assert!(
+        err.contains("common.light") && err.contains("tempo"),
+        "{err}"
+    );
+}
+
+#[test]
+fn includes_can_be_confined_to_a_root() {
+    let dir = tree(&[
+        (
+            "outside.light",
+            "sequence \"away\" {\n    @0.000\n    front_wash: static, color: \"red\", duration: 1s\n}\n",
+        ),
+        ("songs/song/show.light", ""),
+        (
+            "songs/common.light",
+            "sequence \"near\" {\n    @0.000\n    front_wash: static, color: \"red\", duration: 1s\n}\n",
+        ),
+    ]);
+    let root = dir.path().join("songs");
+    let path = root.join("song/show.light");
+    let parse = |source: &str| {
+        parse_light_file_within(source, Some(&path), Some(&root), None).map_err(|e| e.to_string())
+    };
+    parse("include \"../common.light\"\n").expect("inside the root");
+    let err = parse("include \"../../outside.light\"\n").expect_err("outside the root");
+    assert!(err.contains("outside the songs folder"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_file_includes_from_its_links_folder() {
+    // songs/a/lib/one.light links to shared/one.light. Its own include
+    // resolves from songs/a/lib/, where the link is, not from shared/.
+    let dir = tree(&[
+        (
+            "songs/a/show.light",
+            "include \"lib/one.light\"\nshow \"Song\" {\n    @0.000\n    sequence \"two\"\n}\n",
+        ),
+        ("shared/one.light", "include \"two.light\"\n"),
+        (
+            "songs/a/lib/two.light",
+            "sequence \"two\" {\n    @0.000\n    front_wash: static, color: \"red\", duration: 1s\n}\n",
+        ),
+    ]);
+    std::os::unix::fs::symlink(
+        dir.path().join("shared/one.light"),
+        dir.path().join("songs/a/lib/one.light"),
+    )
+    .unwrap();
+    parse_at(dir.path(), "songs/a/show.light").expect("resolves from the link's folder");
+    let names: Vec<String> = included_files(&dir.path().join("songs/a/show.light"))
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["one.light", "two.light"]);
 }

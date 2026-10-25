@@ -13,6 +13,25 @@
 //
 
 /// Get context around an error location for better error reporting
+/// A pest error on `content` as the parser reports it: where, what, and the
+/// lines around it.
+pub(crate) fn describe_pest_error(
+    e: &pest::error::Error<super::grammar::Rule>,
+    content: &str,
+) -> String {
+    let (line, col) = match e.line_col {
+        pest::error::LineColLocation::Pos(pos) => pos,
+        pest::error::LineColLocation::Span(pos, _) => pos,
+    };
+    format!(
+        "DSL parsing error at line {}, column {}: {}\n\nContent around error:\n{}",
+        line,
+        col,
+        e.variant.message(),
+        get_error_context(content, line, col)
+    )
+}
+
 pub(crate) fn get_error_context(content: &str, line: usize, col: usize) -> String {
     let lines: Vec<&str> = content.lines().collect();
 

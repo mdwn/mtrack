@@ -456,11 +456,13 @@ pub(crate) fn apply_parameters_to_effect_type(
                             "snap" => CycleTransition::Snap,
                             "fade" | "crossfade" => CycleTransition::Fade,
                             "hue" => CycleTransition::Hue,
-                            other => return Err(format!(
+                            other => {
+                                return Err(format!(
                                 "Invalid transition: '{}' (expected: snap, fade, crossfade, hue)",
                                 other
                             )
-                            .into()),
+                                .into())
+                            }
                         };
                     }
                     "duration" => {

@@ -20,7 +20,7 @@ use std::time::Duration;
 use super::super::effects::EffectLayer;
 use super::super::tempo::TempoMap;
 use super::effect_parse::parse_effect_definition;
-use super::error::{analyze_parsing_failure, get_error_context};
+use super::error::{analyze_parsing_failure, describe_pest_error};
 use super::grammar::{LightingParser, Rule};
 use super::include::{add_included, Include, IncludingFile};
 use super::sequences::{line_at, param_refs, SequenceLibrary};
@@ -73,23 +73,27 @@ pub fn parse_light_file(
     path: Option<&Path>,
     external: Option<&TempoMap>,
 ) -> Result<HashMap<String, LightShow>, Box<dyn Error>> {
-    let pairs = match LightingParser::parse(Rule::file, content) {
-        Ok(pairs) => pairs,
-        Err(e) => {
-            let (line, col) = match e.line_col {
-                pest::error::LineColLocation::Pos((line, col)) => (line, col),
-                pest::error::LineColLocation::Span((line, col), _) => (line, col),
-            };
-            return Err(format!(
-                "DSL parsing error at line {}, column {}: {}\n\nContent around error:\n{}",
-                line,
-                col,
-                e.variant.message(),
-                get_error_context(content, line, col)
-            )
-            .into());
-        }
+    parse_light_file_within(content, path, None, external)
+}
+
+/// Parses a `.light` file as `parse_light_file` does, its `include`s
+/// confined to `root` when one is given: for source from somewhere that may
+/// not read the whole disk, such as the web UI or an MCP client.
+pub fn parse_light_file_within(
+    content: &str,
+    path: Option<&Path>,
+    root: Option<&Path>,
+    external: Option<&TempoMap>,
+) -> Result<HashMap<String, LightShow>, Box<dyn Error>> {
+    let root = match root {
+        Some(root) => Some(
+            root.canonicalize()
+                .map_err(|e| format!("cannot read songs folder {}: {e}", root.display()))?,
+        ),
+        None => None,
     };
+    let pairs =
+        LightingParser::parse(Rule::file, content).map_err(|e| describe_pest_error(&e, content))?;
 
     let mut shows = HashMap::new();
     // Seeded with the song's map so a file with no tempo block inherits it; a
@@ -144,6 +148,7 @@ pub fn parse_light_file(
         IncludingFile {
             path,
             display: None,
+            root: root.as_deref(),
         },
         &mut seen,
     )?;
