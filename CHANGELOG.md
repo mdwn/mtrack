@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Back-to-back steps meet exactly; no nanosecond dark windows (#534)**: an effect lasting to
+  the next downbeat ended at its rounded start plus its rounded length, a nanosecond off the next
+  cue, and looped sequences crept a nanosecond later every pass. `analyze_show` reported each gap
+  as a dark window -- 37 in Battle Scarred, about 200 across the Isenmor set -- burying any real
+  one. Beat durations are now positions, like measure durations, snapped to a millionth of a beat
+  so the end lands exactly on the next cue; loop lengths are snapped the same way. `analyze_show`
+  and the replace-overlap lint ignore anything shorter than a millisecond.
 - **A random chase is random on every lap (#532)**: `pattern: random` shuffled the fixtures once
   per effect and repeated that order on every lap, so the same brick lit on the same beat every
   bar -- a fixed loop, not a sparkle. Each lap is now a fresh shuffle, seeded by the cue time and

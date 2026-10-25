@@ -1167,3 +1167,69 @@ show "Test" {
         "the @1/4 cue should be at {anchor:?}"
     );
 }
+
+/// #534: at 180 BPM a beat is a third of a second, which whole nanoseconds
+/// cannot hold. A looped one-bar sequence must still start every pass exactly
+/// on its bar (no creep), and effects lasting to the next downbeat must end
+/// exactly where the next cue starts (no nanosecond gap).
+#[test]
+fn test_looped_sequence_stays_on_the_grid_to_the_nanosecond() {
+    let content = r#"
+tempo {
+    start: 29ms
+    bpm: 180
+    time_signature: 4/4
+}
+
+sequence "bar" {
+    @1/1
+    front_wash: static, color: "blue", duration: 1measure
+    @1/4
+    back_wash: static, color: "white", duration: 1beat
+}
+
+show "Test" {
+    @2/1
+    sequence "bar", loop: 8
+    @10/1
+    front_wash: static, color: "red", duration: 1measure
+    back_wash: static, color: "red", duration: 1measure
+}
+"#;
+
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let tm = show.tempo_map.as_ref().unwrap();
+
+    for bar in 2..=10u32 {
+        let downbeat = tm.measure_to_time_with_offset(bar, 1.0, 0, 0.0).unwrap();
+        let cue = show
+            .cues
+            .iter()
+            .find(|c| c.time.as_millis() == downbeat.as_millis())
+            .unwrap_or_else(|| panic!("no cue near bar {bar}"));
+        assert_eq!(cue.time, downbeat, "bar {bar} drifted off its downbeat");
+    }
+
+    let cue_times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    for cue in &show.cues {
+        if cue.time >= tm.measure_to_time_with_offset(10, 1.0, 0, 0.0).unwrap() {
+            continue;
+        }
+        for effect in &cue.effects {
+            let end = cue.time + effect.total_duration();
+            assert!(
+                cue_times.contains(&end),
+                "an effect from {:?} ends at {end:?}, on no cue",
+                cue.time
+            );
+        }
+    }
+
+    let analysis = crate::lighting::analyze::analyze_show(shows.into_values().collect(), None);
+    assert!(
+        analysis.dark_windows.is_empty(),
+        "abutting effects reported as dark: {:?}",
+        analysis.dark_windows
+    );
+}

@@ -905,7 +905,11 @@ fn expand_unexpanded_sequence_cue(
             // sequence's BPM. Convert to beats at the inner BPM, then back to seconds
             // at the outer BPM.
             let seq_bpm = sequence.bpm;
-            let duration_beats = sequence_duration_internal.as_secs_f64() * (seq_bpm / 60.0);
+            // Snapped: the duration is whole nanoseconds, and its rounding error
+            // multiplied by the iteration count crept the loop later every pass (#534).
+            let duration_beats = crate::tempo::snap_beats(
+                sequence_duration_internal.as_secs_f64() * (seq_bpm / 60.0),
+            );
             let sequence_duration = if let Some(o_bpm) = outer_bpm {
                 Duration::from_secs_f64(duration_beats * 60.0 / o_bpm)
             } else {
@@ -929,7 +933,8 @@ fn expand_unexpanded_sequence_cue(
                     // then rescale to the outer BPM.
                     let rel_time = relative_time(seq_cue.time, sequence_base_time);
                     let rescaled_rel_time = if let Some(o_bpm) = outer_bpm {
-                        let rel_beats = rel_time.as_secs_f64() * (seq_bpm / 60.0);
+                        let rel_beats =
+                            crate::tempo::snap_beats(rel_time.as_secs_f64() * (seq_bpm / 60.0));
                         Duration::from_secs_f64(rel_beats * 60.0 / o_bpm)
                     } else {
                         rel_time
@@ -1386,7 +1391,11 @@ fn parse_cue_definition(
             // Convert duration to beats at the sequence's BPM, then convert beats to
             // duration at the expansion point's tempo using the tempo map.
             let seq_bpm = sequence.bpm;
-            let duration_beats = sequence_duration_internal.as_secs_f64() * (seq_bpm / 60.0);
+            // Snapped: the duration is whole nanoseconds, and its rounding error
+            // multiplied by the iteration count crept the loop later every pass (#534).
+            let duration_beats = crate::tempo::snap_beats(
+                sequence_duration_internal.as_secs_f64() * (seq_bpm / 60.0),
+            );
             let sequence_duration = if let Some(ref tm) = tempo_map {
                 tm.beats_to_duration(duration_beats, abs_time, applied_offset_secs)
             } else {
@@ -1407,7 +1416,8 @@ fn parse_cue_definition(
                     // Convert absolute sequence cue time to relative (in seconds at seq BPM),
                     // then rescale to beats and convert to duration at expansion tempo.
                     let rel_time = relative_time(seq_cue.time, sequence_base_time);
-                    let rel_beats = rel_time.as_secs_f64() * (seq_bpm / 60.0);
+                    let rel_beats =
+                        crate::tempo::snap_beats(rel_time.as_secs_f64() * (seq_bpm / 60.0));
                     let rescaled_rel_time = if let Some(ref tm) = tempo_map {
                         tm.beats_to_duration(
                             iter_total_beats + rel_beats,

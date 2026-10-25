@@ -76,7 +76,8 @@ pub struct Analysis {
 impl Analysis {
     /// Total dark time across the span.
     pub fn dark_seconds(&self) -> f64 {
-        self.dark_windows.iter().map(|w| w.seconds()).sum()
+        // `+ 0.0`: an empty f64 sum is -0.0, which prints as "-0".
+        self.dark_windows.iter().map(|w| w.seconds()).sum::<f64>() + 0.0
     }
 }
 
@@ -153,7 +154,11 @@ pub fn analyze_show(shows: Vec<LightShow>, fallback_tempo_map: Option<&TempoMap>
                 // runs, and reporting that as a window would put dark seconds
                 // outside the span and make the two numbers contradict each
                 // other. Trailing silence is dropped below for the same reason.
-                if first_active.is_some() {
+                // Nor does one too short to see: a window of a few
+                // nanoseconds between abutting effects is rounding (#534).
+                if first_active.is_some()
+                    && start.saturating_sub(from) >= super::lint::MIN_REPORTED_SPAN
+                {
                     analysis.dark_windows.push(window(from, start, &tempo_map));
                 }
             }
@@ -321,6 +326,35 @@ show "T" {
         // Union, not sum: the overlap is not counted twice for either group.
         assert_eq!(analysis.per_group_seconds["wash"], 10.0);
         assert_eq!(analysis.per_group_seconds["spot"], 2.0);
+    }
+
+    /// A gap shorter than a millisecond is rounding, not a blackout (#534);
+    /// one of a couple of milliseconds is still reported.
+    #[test]
+    fn a_sub_millisecond_gap_is_not_a_dark_window() {
+        let tiny = analyze(
+            r#"
+show "T" {
+    @00:00.000
+    wash: static color: "blue", duration: 0.9995s
+    @00:01.000
+    wash: static color: "red", duration: 1s
+}
+"#,
+        );
+        assert!(tiny.dark_windows.is_empty(), "{:?}", tiny.dark_windows);
+
+        let real = analyze(
+            r#"
+show "T" {
+    @00:00.000
+    wash: static color: "blue", duration: 0.998s
+    @00:01.000
+    wash: static color: "red", duration: 1s
+}
+"#,
+        );
+        assert_eq!(real.dark_windows.len(), 1, "{:?}", real.dark_windows);
     }
 
     #[test]
