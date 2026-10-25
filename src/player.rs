@@ -395,7 +395,7 @@ pub struct Player {
     break_fade_ids: Arc<parking_lot::Mutex<Vec<u64>>>,
     /// How the song a loop break moves to fades in under the one fading out
     /// (a playlist `fade_in`), taken by the audio device as it starts.
-    start_fade: Arc<parking_lot::Mutex<Option<crate::songs::ResolvedFade>>>,
+    start_fade: Arc<parking_lot::Mutex<Option<crate::playsync::StartFade>>>,
     /// Active section loop bounds. When Some, audio/MIDI/DMX subsystems
     /// loop the specified time region instead of the full song.
     active_section: Arc<parking_lot::RwLock<Option<SectionBounds>>>,
@@ -3303,6 +3303,8 @@ mod test {
         let fade = player.break_fade.lock().clone().expect("a break fade");
         assert_eq!(fade.length, Duration::from_secs(2));
         let fade_in = player.start_fade.lock().clone().expect("a fade-in");
+        assert_eq!(fade_in.song, "A");
+        let fade_in = fade_in.fade;
         assert_eq!(fade_in.length, Duration::from_secs(1));
         assert_eq!(fade_in.exclude, ["t".to_string()]);
         playing_eventually(&player, "A").await?;

@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `curve` (`equal_power` or `linear`) and tracks to `exclude` (a fade-out's default to the song's
   `loop_crossfade_cut`); a fade-out's lights cross into the next song's show over its `lights`
   (the length by default). Only the looping song's own sources fade, each from the gain it has
-  (no jump mid-crossfade); a fade outlasting the pass carries on into another. Stop and seek cut
+  (no jump mid-crossfade); a fade outlasting the pass carries on into as many more passes as
+  it takes, crossing them over the song's `loop_crossfade`. Stop and seek cut
   it. Playlist entries can now be maps (`song:` with its settings) as well as names, and the
   playlist editor keeps them when it saves.
 - **Long crossfades for looping songs**: `loop_crossfade: 2measures` (or `6s`, `500ms`,

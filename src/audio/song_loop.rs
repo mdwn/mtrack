@@ -21,7 +21,6 @@
 //! twice.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use super::crossfade::{CrossfadeCurve, GainEnvelope};
 use super::mixer::AudioMixer;
@@ -95,32 +94,140 @@ impl PassCrossover {
     }
 }
 
-/// A loop break's fade-out (a playlist `fade_out`) that outlasts the pass it
-/// began in: where the next pass has to carry it on. A loop break fades the
-/// song out from full gain on `curve`'s out half; the pass it began in
-/// ends at `pass_end` on the playback clock, `now` is the clock now,
-/// `since_break` how long ago the break was, and `fade` the fade's length.
-/// Returns the gain the fade has reached at `pass_end` and how long it still
-/// has to run from there, or `None` when the pass outlasts the fade (with a
-/// little to spare: a pass ending in the fade's last moments is not worth a
-/// new one).
-pub(crate) fn break_fade_continuation(
-    pass_end: Duration,
-    now: Duration,
-    since_break: Duration,
-    fade: Duration,
-    curve: CrossfadeCurve,
-) -> Option<(f32, Duration)> {
-    const SPARE: Duration = Duration::from_millis(50);
-    let fade_end = (now + fade).saturating_sub(since_break);
-    let from = pass_end.max(now);
-    if from + SPARE >= fade_end {
+/// Whether a source playing `labels` (its channels' track names) plays only
+/// tracks in `names`, and at least one: a source a fade's `exclude` leaves
+/// out.
+pub(crate) fn only_tracks_in(labels: &[Vec<String>], names: &[String]) -> bool {
+    let mut tracks = labels.iter().flatten().peekable();
+    tracks.peek().is_some() && tracks.all(|t| names.contains(t))
+}
+
+/// Gain knots for [`GainEnvelope::piecewise`]: (samples from the envelope's
+/// start, gain).
+pub(crate) type Knots = Vec<(u64, f32)>;
+
+/// Where a loop break's fade-out (a playlist `fade_out`) stands, in mixer
+/// samples, when the song's playback ends: for [`plan_break_carry`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BreakCarryTiming {
+    pub now: u64,
+    /// When the break came, and how long the fade lasts from there, on what
+    /// curve. The fade runs from each source's gain at the break.
+    pub break_sample: u64,
+    pub fade: u64,
+    pub curve: CrossfadeCurve,
+    /// When the pass playing out ends, how long a pass is, and how long
+    /// passes overlap (`loop_crossfade`; zero when they do not).
+    pub pass_end: u64,
+    pub pass_len: u64,
+    pub overlap: u64,
+    pub sample_rate: u32,
+}
+
+/// How a loop break's fade-out that outlasts the pass playing out is seen
+/// out: by as many more passes as it takes, crossing pass to pass as the
+/// song's own loop does. Gains are for a source at full level at the break;
+/// scale them by where it was.
+#[derive(Debug)]
+pub(crate) struct BreakCarry {
+    /// For the pass playing out, from `now`: the fade going on and, with an
+    /// overlap, crossing out over its last. `None` when it just plays to its
+    /// end.
+    pub outgoing: Option<Knots>,
+    /// The passes that carry the fade on: each one's start sample, and its
+    /// knots from there.
+    pub passes: Vec<(u64, Knots)>,
+}
+
+/// Ends `knots` at exactly zero, as a fade-out the mixer lets outlive its
+/// playback must: at its last knot if it is all but there, or just after
+/// it -- past the end of a pass that stops where the next takes over, so
+/// the splice does not dip.
+fn end_silent(knots: &mut Knots) {
+    let Some(last) = knots.last_mut() else {
+        return;
+    };
+    if last.1.abs() < 1e-4 {
+        last.1 = 0.0;
+    } else {
+        let after = last.0 + 1;
+        knots.push((after, 0.0));
+    }
+}
+
+/// How a loop break's fade-out is carried past the pass playing out, or
+/// `None` when that pass outlasts it (with a little to spare: a pass ending
+/// in the fade's last moments is not worth a new one).
+pub(crate) fn plan_break_carry(t: BreakCarryTiming) -> Option<BreakCarry> {
+    /// A pass the fade would hardly be heard in is not started; nor are more
+    /// than this many, however short the song.
+    const SPARE_MS: u64 = 50;
+    const MAX_PASSES: usize = 32;
+    let spare = t.sample_rate as u64 * SPARE_MS / 1000;
+    let step = (t.sample_rate as u64 / 50).max(1);
+    let fade_end = t.break_sample + t.fade;
+    if t.pass_end.max(t.now) + spare >= fade_end || t.pass_len == 0 {
         return None;
     }
-    let into = (from + since_break).saturating_sub(now);
-    let t = (into.as_secs_f64() / fade.as_secs_f64()).clamp(0.0, 1.0) as f32;
-    let (gain, _) = curve.gains(t);
-    Some((gain, fade_end - from))
+    let fade = |at: u64| {
+        let into = at.saturating_sub(t.break_sample) as f32 / t.fade.max(1) as f32;
+        t.curve.gains(into).0
+    };
+    // Equal power across an overlap, as the loop's own crossfade.
+    let ramp = |at: u64, from: u64, to: u64, up: bool| {
+        if to <= from {
+            return 1.0;
+        }
+        let (down, rise) =
+            CrossfadeCurve::EqualPower.gains(at.saturating_sub(from) as f32 / (to - from) as f32);
+        if up {
+            rise
+        } else {
+            down
+        }
+    };
+    let knots = |from: u64, to: u64, gain: &dyn Fn(u64) -> f32| -> Knots {
+        let mut knots: Knots = (from..to)
+            .step_by(step as usize)
+            .map(|at| (at - from, gain(at)))
+            .collect();
+        knots.push((to - from, gain(to)));
+        knots
+    };
+
+    let outgoing = (t.overlap > 0).then(|| {
+        let cross = t.pass_end.saturating_sub(t.overlap).max(t.now);
+        let mut knots = knots(t.now, t.pass_end, &|at| {
+            fade(at) * ramp(at, cross, t.pass_end, false)
+        });
+        end_silent(&mut knots);
+        knots
+    });
+
+    let mut passes = Vec::new();
+    let mut prev_end = t.pass_end;
+    while passes.len() < MAX_PASSES {
+        let start = prev_end.saturating_sub(t.overlap).max(t.now);
+        if start + spare >= fade_end {
+            break;
+        }
+        let end = start + t.pass_len;
+        let rise = (start + t.overlap).min(end);
+        let to = end.min(fade_end);
+        let ends_first = end < fade_end;
+        let fall = if ends_first {
+            end.saturating_sub(t.overlap).max(rise)
+        } else {
+            end
+        };
+        let mut knots = knots(start, to, &|at| {
+            fade(at) * ramp(at, start, rise, true) * ramp(at, fall, end, false)
+        });
+        end_silent(&mut knots);
+        passes.push((start, knots));
+        prev_end = end;
+    }
+    Some(BreakCarry { outgoing, passes })
 }
 
 #[cfg(test)]
@@ -223,37 +330,87 @@ mod tests {
         assert!(out[start + 10].1 == 1.0 && out[end - 10].1 == 0.5);
     }
 
+    /// The gain `knots` give `at` samples from their start.
+    fn gain(knots: &Knots, at: u64) -> f32 {
+        GainEnvelope::piecewise(knots.clone().into()).gain_at(at)
+    }
+
+    fn timing(
+        break_sample: u64,
+        fade: u64,
+        pass_end: u64,
+        pass_len: u64,
+        overlap: u64,
+    ) -> BreakCarryTiming {
+        BreakCarryTiming {
+            now: break_sample,
+            break_sample,
+            fade,
+            curve: CrossfadeCurve::Linear,
+            pass_end,
+            pass_len,
+            overlap,
+            sample_rate: 1_000,
+        }
+    }
+
     #[test]
     fn a_break_fade_outlasting_its_pass_carries_on_where_it_got_to() {
-        let s = Duration::from_secs_f64;
-        // A 4 s fade from a break 1 s ago; the pass ends 1 s from now, half
-        // way through the fade: the next pass starts at cos(pi/4) and fades
-        // the last 2 s.
-        let (gain, rest) =
-            break_fade_continuation(s(11.0), s(10.0), s(1.0), s(4.0), CrossfadeCurve::EqualPower)
-                .unwrap();
-        assert!(
-            (gain - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
-            "{gain}"
-        );
-        assert!((rest.as_secs_f64() - 2.0).abs() < 1e-9, "{rest:?}");
-
-        // A pass already over (a short last pass): from now -- on a linear
-        // curve, a quarter of the way down, 1 s of the 4 gone.
-        let (gain, rest) =
-            break_fade_continuation(s(9.0), s(10.0), s(1.0), s(4.0), CrossfadeCurve::Linear)
-                .unwrap();
-        assert!((rest.as_secs_f64() - 3.0).abs() < 1e-9, "{rest:?}");
-        assert!((gain - 0.75).abs() < 1e-6, "{gain}");
+        // A linear 4 s fade from a break 1 s before the pass ends, with no
+        // overlap: the pass plays out, and the next starts where it ends, a
+        // quarter of the way down, and fades the last 3 s.
+        let carry = plan_break_carry(timing(10_000, 4_000, 11_000, 10_000, 0)).unwrap();
+        assert!(carry.outgoing.is_none());
+        assert_eq!(carry.passes.len(), 1);
+        let (start, knots) = &carry.passes[0];
+        assert_eq!(*start, 11_000);
+        assert!((gain(knots, 0) - 0.75).abs() < 1e-3, "{}", gain(knots, 0));
+        assert!((gain(knots, 1_500) - 0.375).abs() < 1e-3);
+        assert_eq!(knots.last().unwrap(), &(3_000, 0.0));
 
         // A pass that outlasts the fade, or ends in its last moments: none.
+        assert!(plan_break_carry(timing(10_000, 4_000, 20_000, 10_000, 0)).is_none());
+        assert!(plan_break_carry(timing(10_000, 4_000, 13_980, 10_000, 0)).is_none());
+    }
+
+    #[test]
+    fn a_long_fade_on_a_short_loop_takes_as_many_passes_as_it_needs() {
+        // A 2 s loop, an 8 s fade, the break 1 s before the pass ends: passes
+        // at 1, 3, 5 and 7 s in, each picking up where the last left off.
+        let carry = plan_break_carry(timing(0, 8_000, 1_000, 2_000, 0)).unwrap();
+        let starts: Vec<u64> = carry.passes.iter().map(|(s, _)| *s).collect();
+        assert_eq!(starts, [1_000, 3_000, 5_000, 7_000]);
+        for (start, knots) in &carry.passes {
+            let expected = 1.0 - *start as f32 / 8_000.0;
+            assert!((gain(knots, 0) - expected).abs() < 1e-3, "{start}");
+        }
+    }
+
+    #[test]
+    fn carried_passes_cross_over_the_loops_overlap() {
+        // A 10 s song crossing passes over 2 s; a linear 10 s fade from a break
+        // 5 s before the pass ends. The pass playing out crosses out over its
+        // last 2 s while the next crosses in, holding the level as the loop
+        // does, then the next fades the rest on its own.
+        let carry = plan_break_carry(timing(0, 10_000, 5_000, 10_000, 2_000)).unwrap();
+        let outgoing = carry.outgoing.unwrap();
         assert!(
-            break_fade_continuation(s(20.0), s(10.0), s(1.0), s(4.0), CrossfadeCurve::Linear)
-                .is_none()
+            (gain(&outgoing, 2_000) - 0.8).abs() < 1e-3,
+            "no cross until the overlap"
         );
-        assert!(
-            break_fade_continuation(s(12.98), s(10.0), s(1.0), s(4.0), CrossfadeCurve::Linear)
-                .is_none()
-        );
+        assert_eq!(outgoing.last().unwrap(), &(5_000, 0.0));
+        assert_eq!(carry.passes.len(), 1);
+        let (start, incoming) = &carry.passes[0];
+        assert_eq!(*start, 3_000);
+        assert!(gain(incoming, 0) < 1e-3, "crosses in from silence");
+        for at in [3_000u64, 3_500, 4_000, 4_500] {
+            let (out, inc) = (gain(&outgoing, at), gain(incoming, at - 3_000));
+            let level = 1.0 - at as f32 / 10_000.0;
+            assert!(
+                ((out * out + inc * inc).sqrt() - level).abs() < 0.02,
+                "power held at {at}: {out} {inc}"
+            );
+        }
+        assert!((gain(incoming, 4_000) - 0.3).abs() < 1e-3);
     }
 }

@@ -59,6 +59,14 @@ pub struct PlaybackSync {
     pub loop_control: LoopControl,
 }
 
+/// How the song a loop break moves to fades in under the one fading out.
+#[derive(Clone, Debug)]
+pub struct StartFade {
+    /// The song it is for: another song started instead does not fade in.
+    pub song: String,
+    pub fade: crate::songs::ResolvedFade,
+}
+
 /// A loop break's fade-out in progress (a playlist `fade_out`).
 #[derive(Clone, Debug)]
 pub struct BreakFade {
@@ -91,7 +99,7 @@ pub struct LoopControl {
     /// How the song fades in under a song a loop break is fading out (a
     /// playlist `fade_in`), set by the player as it breaks the loop and taken
     /// by the audio device as the song starts.
-    pub start_fade: Arc<parking_lot::Mutex<Option<crate::songs::ResolvedFade>>>,
+    pub start_fade: Arc<parking_lot::Mutex<Option<StartFade>>>,
 }
 
 impl LoopControl {

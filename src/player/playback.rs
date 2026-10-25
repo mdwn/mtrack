@@ -245,6 +245,10 @@ impl Player {
                 *join = None;
                 player.stop_run.store(false, Ordering::Relaxed);
                 let should_auto_play = action == CleanupAction::LoopBreakAndPlay;
+                if !should_auto_play {
+                    // Nothing starts under the fade-out: no fade-in waits.
+                    *player.start_fade.lock() = None;
+                }
                 drop(join);
 
                 // If loop was broken (play/next during loop), auto-play the next song.
@@ -255,6 +259,7 @@ impl Player {
                     tokio::task::spawn_blocking(move || {
                         let rt = tokio::runtime::Handle::current();
                         if let Err(e) = rt.block_on(player_for_play.play()) {
+                            *player_for_play.start_fade.lock() = None;
                             error!(err = %e, "Failed to auto-play next song after loop break");
                         }
                     });
@@ -829,7 +834,14 @@ impl Player {
             .as_ref()
             .and_then(|fade| song.fade_out_into(fade, target.as_deref()));
         *self.start_fade.lock() = match (&fade, &target, &handover.fade_in) {
-            (Some(_), Some(target), Some(fade_in)) => target.fade_in(fade_in),
+            (Some(_), Some(target), Some(fade_in)) => {
+                target
+                    .fade_in(fade_in)
+                    .map(|fade| crate::playsync::StartFade {
+                        song: target.name().to_string(),
+                        fade,
+                    })
+            }
             _ => None,
         };
         let hw = self.hardware.read();
@@ -849,10 +861,20 @@ impl Player {
                 .unwrap_or_default();
             let ids =
                 mixer.fade_out_playback(playback, fade_samples, curve, cut_samples, |labels| {
-                    let mut tracks = labels.iter().flatten().peekable();
-                    tracks.peek().is_some() && tracks.all(|t| exclude.contains(t))
+                    crate::audio::song_loop::only_tracks_in(labels, exclude)
                 });
-            *self.break_fade_ids.lock() = if fade.is_some() { ids } else { Vec::new() };
+            // An earlier song may still be fading out under this one: a stop
+            // cuts it too.
+            let active: std::collections::HashSet<u64> = {
+                let sources = mixer.get_active_sources();
+                let guard = sources.read();
+                guard.iter().map(|s| s.lock().id).collect()
+            };
+            let mut fading = self.break_fade_ids.lock();
+            fading.retain(|id| active.contains(id));
+            if fade.is_some() {
+                fading.extend(ids);
+            }
         }
         *self.break_fade.lock() = fade.as_ref().map(|f| crate::playsync::BreakFade {
             started: std::time::Instant::now(),
@@ -876,7 +898,7 @@ impl Player {
                     .start_fade
                     .lock()
                     .as_ref()
-                    .map_or(0, |f| f.length.as_millis() as u64),
+                    .map_or(0, |f| f.fade.length.as_millis() as u64),
                 "Loop break: fading out under the next song"
             );
         }

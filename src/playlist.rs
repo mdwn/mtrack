@@ -87,23 +87,17 @@ impl Playlist {
         let transitions = config
             .entry_transitions()
             .map_err(PlaylistError::InvalidTransition)?;
-        for (song_name, entry) in song_names.iter().zip(&transitions) {
+        // Only an entry's own: a default applies to songs that may not have
+        // its tracks, which is no matter.
+        for (song_name, field, tracks) in config.entry_excludes() {
             let Ok(song) = registry.get(song_name) else {
                 continue;
             };
-            let named = [
-                ("fade_out", entry.fade_out.as_ref()),
-                ("fade_in", entry.fade_in.as_ref()),
-            ];
-            for (field, fade) in named {
-                for track in fade.and_then(|f| f.exclude.as_deref()).unwrap_or_default() {
-                    if !song.has_track(track) {
-                        return Err(PlaylistError::InvalidTransition(format!(
-                            "song {song_name}: {field}.exclude names track {track:?}, \
-                             which the song does not have"
-                        )));
-                    }
-                }
+            if let Some(track) = tracks.iter().find(|t| !song.has_track(t)) {
+                return Err(PlaylistError::InvalidTransition(format!(
+                    "song {song_name}: {field}.exclude names track {track:?}, \
+                     which the song does not have"
+                )));
             }
         }
 
@@ -517,5 +511,10 @@ mod test {
             .unwrap()
             .to_string();
         assert!(err.contains("song A") && err.contains("click"), "{err}");
+        // A default's may name tracks some songs lack.
+        assert!(playlist_from(
+            "transitions:\n  fade_out: {length: 2s, exclude: [click]}\nsongs:\n- A\n"
+        )
+        .is_ok());
     }
 }

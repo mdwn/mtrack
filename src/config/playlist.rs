@@ -134,7 +134,7 @@ pub struct EntryTransitions {
 }
 
 /// A fade as written in a playlist: a length alone, or with its settings.
-#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum FadeConfig {
     /// `"3s"`, `"500ms"`, `"6beats"`, `"1measure"`; `"0s"` for none.
@@ -181,7 +181,84 @@ pub struct Fade {
     pub lights: Option<LoopCrossfade>,
 }
 
+/// [`FadeConfig::Full`] as read, unknown settings refused.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FullFade {
+    #[serde(deserialize_with = "string_or_number")]
+    length: String,
+    #[serde(default)]
+    curve: Option<String>,
+    #[serde(default)]
+    exclude: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "optional_string_or_number")]
+    lights: Option<String>,
+}
+
+/// By hand rather than untagged: `fade_out: 0` reaches us as a number, and
+/// a misspelt setting should be refused, not ignored.
+impl<'de> Deserialize<'de> for FadeConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct FadeVisitor;
+        impl<'de> serde::de::Visitor<'de> for FadeVisitor {
+            type Value = FadeConfig;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a fade length, or a map with `length` and its settings")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(FadeConfig::Length(v.to_string()))
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(FadeConfig::Length(v.to_string()))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(FadeConfig::Length(v.to_string()))
+            }
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
+                Ok(FadeConfig::Length(v.to_string()))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let full =
+                    FullFade::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(FadeConfig::Full {
+                    length: full.length,
+                    curve: full.curve,
+                    exclude: full.exclude,
+                    lights: full.lights,
+                })
+            }
+        }
+        deserializer.deserialize_any(FadeVisitor)
+    }
+}
+
+/// A length written as a string or, for a bare `0`, a number.
+fn string_or_number<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    match FadeConfig::deserialize(deserializer)? {
+        FadeConfig::Length(length) => Ok(length),
+        FadeConfig::Full { .. } => Err(serde::de::Error::custom("expected a length")),
+    }
+}
+
+fn optional_string_or_number<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    string_or_number(deserializer).map(Some)
+}
+
 impl FadeConfig {
+    /// The tracks the fade names to leave out, if it names any.
+    pub fn exclude(&self) -> Option<&[String]> {
+        match self {
+            FadeConfig::Length(_) => None,
+            FadeConfig::Full { exclude, .. } => exclude.as_deref(),
+        }
+    }
+
     /// Parses the fade `field` sets. Only a fade-out (`lights`) crosses the
     /// lights.
     pub(crate) fn parse(&self, field: &str, lights: bool) -> Result<Fade, String> {
@@ -256,6 +333,26 @@ impl Playlist {
     /// The playlist's entries, in order.
     pub fn entries(&self) -> &[PlaylistEntry] {
         &self.songs
+    }
+
+    /// Each entry's song with the tracks its own transitions leave out, by
+    /// setting: `("fade_out", tracks)`. A default's are not here: it applies
+    /// to songs that may not have them, which is no matter.
+    pub fn entry_excludes(&self) -> Vec<(&str, &'static str, &[String])> {
+        self.songs
+            .iter()
+            .filter_map(|entry| match entry {
+                PlaylistEntry::Configured(entry) => Some(entry),
+                PlaylistEntry::Song(_) => None,
+            })
+            .flat_map(|entry| {
+                [("fade_out", &entry.fade_out), ("fade_in", &entry.fade_in)]
+                    .into_iter()
+                    .filter_map(move |(field, fade)| {
+                        Some((entry.song.as_str(), field, fade.as_ref()?.exclude()?))
+                    })
+            })
+            .collect()
     }
 
     /// The playlist's default transitions.
@@ -494,6 +591,19 @@ songs:
         let e = p.entry_transitions().unwrap_err();
         assert!(e.contains("lights applies only to fade_out"), "{e}");
         assert!(parse("songs:\n  - song: A\n    fade_ot: 2s\n").is_err());
+        assert!(
+            parse("songs:\n  - song: A\n    fade_out: {length: 2s, exlude: [click]}\n").is_err(),
+            "a misspelt setting is refused"
+        );
+    }
+
+    #[test]
+    fn a_bare_zero_turns_a_fade_off() {
+        let p = parse("songs:\n  - song: A\n    fade_out: 0\n  - song: B\n    fade_out: {length: 2s, lights: 0}\n").unwrap();
+        let t = p.entry_transitions().unwrap();
+        let zero = LoopCrossfade::Time(std::time::Duration::ZERO);
+        assert_eq!(t[0].fade_out.as_ref().unwrap().length, zero);
+        assert_eq!(t[1].fade_out.as_ref().unwrap().lights, Some(zero));
     }
 
     #[test]

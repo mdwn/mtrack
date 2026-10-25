@@ -20,6 +20,7 @@
 //! and song-to-song transitions.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Default crossfade duration used for loop boundaries and song transitions.
@@ -90,6 +91,10 @@ pub struct GainEnvelope {
     /// so the audible transition lands on a precise sample. `None` means the
     /// envelope advances from the moment it is first sampled.
     start_at_sample: Option<u64>,
+    /// For a piecewise envelope, its knots: (position, gain), ascending,
+    /// the first at 0. The gain runs straight between them, and holds at the
+    /// last.
+    knots: Option<Arc<[(u64, f32)]>>,
 }
 
 impl GainEnvelope {
@@ -102,6 +107,7 @@ impl GainEnvelope {
             duration_samples,
             position: AtomicU64::new(0),
             start_at_sample: None,
+            knots: None,
         }
     }
 
@@ -114,6 +120,7 @@ impl GainEnvelope {
             duration_samples,
             position: AtomicU64::new(0),
             start_at_sample: None,
+            knots: None,
         }
     }
 
@@ -131,6 +138,37 @@ impl GainEnvelope {
             duration_samples,
             position: AtomicU64::new(0),
             start_at_sample: None,
+            knots: None,
+        }
+    }
+
+    /// Creates a piecewise envelope through `knots`: (position, gain),
+    /// ascending, the first at 0 and at least one. The gain runs straight
+    /// from knot to knot and holds at the last.
+    pub fn piecewise(knots: Arc<[(u64, f32)]>) -> Self {
+        let (first, last) = (knots[0], knots[knots.len() - 1]);
+        Self {
+            start_gain: first.1,
+            end_gain: last.1,
+            curve: CrossfadeCurve::Linear,
+            duration_samples: last.0,
+            position: AtomicU64::new(0),
+            start_at_sample: None,
+            knots: Some(knots),
+        }
+    }
+
+    /// The same envelope from its beginning, with a position of its own: an
+    /// envelope's position cannot be shared between sources.
+    pub fn fresh(&self) -> Self {
+        Self {
+            start_gain: self.start_gain,
+            end_gain: self.end_gain,
+            curve: self.curve,
+            duration_samples: self.duration_samples,
+            position: AtomicU64::new(0),
+            start_at_sample: self.start_at_sample,
+            knots: self.knots.clone(),
         }
     }
 
@@ -186,6 +224,18 @@ impl GainEnvelope {
 
     /// Returns the gain value at the given sample position without advancing.
     pub fn gain_at(&self, position: u64) -> f32 {
+        if let Some(knots) = &self.knots {
+            let next = knots.partition_point(|&(at, _)| at <= position);
+            if next == 0 {
+                return knots[0].1;
+            }
+            if next == knots.len() {
+                return self.end_gain;
+            }
+            let ((a, ga), (b, gb)) = (knots[next - 1], knots[next]);
+            let t = (position - a) as f32 / (b - a) as f32;
+            return ga + (gb - ga) * t;
+        }
         if self.duration_samples == 0 {
             return self.end_gain;
         }
@@ -576,5 +626,23 @@ mod tests {
             crossfade_duration * iterations,
             "Old scheduling should drift by crossfade_duration per iteration"
         );
+    }
+
+    #[test]
+    fn a_piecewise_envelope_runs_straight_between_its_knots() {
+        let env = GainEnvelope::piecewise(vec![(0, 0.0), (100, 1.0), (300, 0.0)].into());
+        assert_eq!(env.start_gain(), 0.0);
+        assert_eq!(env.end_gain(), 0.0);
+        assert_eq!(env.duration_samples(), 300);
+        assert!((env.gain_at(50) - 0.5).abs() < 1e-6);
+        assert!((env.gain_at(100) - 1.0).abs() < 1e-6);
+        assert!((env.gain_at(200) - 0.5).abs() < 1e-6);
+        assert_eq!(env.gain_at(1_000), 0.0);
+
+        // A fresh copy starts over with a position of its own.
+        env.advance(150);
+        let copy = env.fresh();
+        assert_eq!(copy.position(), 0);
+        assert!((copy.gain_at(200) - 0.5).abs() < 1e-6);
     }
 }

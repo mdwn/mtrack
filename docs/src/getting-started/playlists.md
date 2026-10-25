@@ -75,7 +75,9 @@ songs:
 ```
 
 An entry is a song's name, or a map with `song` and its own `fade_out` and `fade_in`. Each
-setting an entry gives replaces the playlist's default for it; `0s` turns it off.
+setting an entry gives replaces the playlist's default for it; `0s` (or `0`) turns it off.
+A misspelt setting is an error, as is an entry's `exclude` naming a track its song does not have;
+a default's `exclude` may name tracks some songs lack.
 
 - **`fade_out`** applies when a loop break leaves the entry's song: the next song starts at once,
   as always, while the looping song plays on from where it was and fades out underneath it.
@@ -99,12 +101,13 @@ Either can be a length alone or a map:
 - **`lights`** (`fade_out` only): how long the lights take to cross from the looping song's show
   into the next song's, `0s` to switch at once. Defaults to the length.
 
-A source part way through a loop crossfade fades out from where it is, and a fade that outlasts
-the pass it began in carries on into another pass to see it out. MIDI from the looping song stops
+A source part way through a loop crossfade fades out from where it is. A fade that outlasts the
+pass it began in carries on into as many more passes as it takes, crossing pass to pass over the
+song's `loop_crossfade` as its loop does. MIDI from the looping song stops
 at the break. Stop or a seek cuts everything, the fading song included.
 
-The web UI's playlist editor keeps a playlist's transitions when it saves; they are edited in the
-file.
+The web UI's playlist editor keeps a playlist's transitions when it saves, and will not overwrite
+a playlist file that does not read; transitions are edited in the file.
 
 ## See also
 

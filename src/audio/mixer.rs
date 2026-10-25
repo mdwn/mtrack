@@ -284,10 +284,6 @@ impl AudioMixer {
         }
     }
 
-    /// Sets a gain envelope on all active sources matching the given IDs.
-    /// Each source gets its own envelope instance so they don't share the
-    /// atomic position counter (which would cause the fade to advance
-    /// N times faster with N sources).
     /// Fades out every source of the playback `playback` cancels, from the
     /// gain each has now -- a source part way through another fade carries on
     /// down from where it is rather than jumping back up -- over
@@ -325,6 +321,49 @@ impl AudioMixer {
         );
     }
 
+    /// The gain each of the sources `ids` names that `playback` cancels has
+    /// now, by id: where its envelope has got to.
+    pub fn source_gains(
+        &self,
+        ids: &[u64],
+        playback: &crate::playsync::CancelHandle,
+    ) -> Vec<(u64, f32)> {
+        let now = self.current_sample();
+        let sources = self.active_sources.read();
+        sources
+            .iter()
+            .filter_map(|source_arc| {
+                let source = source_arc.lock();
+                (ids.contains(&source.id) && source.cancel_handle.same_as(playback))
+                    .then(|| (source.id, Self::gain_now(&source, now)))
+            })
+            .collect()
+    }
+
+    /// Replaces the envelopes of the sources named, each with its own.
+    pub fn replace_gain_envelopes(
+        &self,
+        envelopes: Vec<(u64, crate::audio::crossfade::GainEnvelope)>,
+    ) {
+        let sources = self.active_sources.read();
+        for source_arc in sources.iter() {
+            let mut source = source_arc.lock();
+            if let Some((_, envelope)) = envelopes.iter().find(|(id, _)| *id == source.id) {
+                source.gain_envelope = Some(Arc::new(envelope.fresh()));
+            }
+        }
+    }
+
+    /// Where `source`'s envelope has got to at mixer sample `now`.
+    fn gain_now(source: &ActiveSource, now: u64) -> f32 {
+        match &source.gain_envelope {
+            None => 1.0,
+            Some(env) if env.start_at_sample().is_some_and(|start| now < start) => env.start_gain(),
+            Some(env) if env.is_finished() => env.end_gain(),
+            Some(env) => env.gain_at(env.position()),
+        }
+    }
+
     fn fade_out_matching(
         &self,
         select: impl Fn(&ActiveSource) -> bool,
@@ -346,14 +385,7 @@ impl AudioMixer {
                 source.is_finished.store(true, Ordering::Relaxed);
                 continue;
             }
-            let gain = match &source.gain_envelope {
-                None => 1.0,
-                Some(env) if env.start_at_sample().is_some_and(|start| now < start) => {
-                    env.start_gain()
-                }
-                Some(env) if env.is_finished() => env.end_gain(),
-                Some(env) => env.gain_at(env.position()),
-            };
+            let gain = Self::gain_now(&source, now);
             if gain <= 0.0 {
                 source.is_finished.store(true, Ordering::Relaxed);
                 continue;
@@ -369,6 +401,10 @@ impl AudioMixer {
         fading
     }
 
+    /// Sets a gain envelope on all active sources matching the given IDs.
+    /// Each source gets its own envelope instance so they don't share the
+    /// atomic position counter (which would cause the fade to advance
+    /// N times faster with N sources).
     pub fn set_gain_envelope(
         &self,
         source_ids: &[u64],
@@ -378,16 +414,7 @@ impl AudioMixer {
         for source_arc in sources.iter() {
             let mut source = source_arc.lock();
             if source_ids.contains(&source.id) {
-                let mut own = crate::audio::crossfade::GainEnvelope::new(
-                    envelope.start_gain(),
-                    envelope.end_gain(),
-                    envelope.duration_samples(),
-                    envelope.curve(),
-                );
-                if let Some(s) = envelope.start_at_sample() {
-                    own = own.with_start_sample(s);
-                }
-                source.gain_envelope = Some(Arc::new(own));
+                source.gain_envelope = Some(Arc::new(envelope.fresh()));
             }
         }
     }
