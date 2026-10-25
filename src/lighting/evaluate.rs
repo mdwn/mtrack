@@ -535,6 +535,49 @@ show "T" {
         assert!(results[2].active_effects.is_empty());
     }
 
+    /// #536: an effect is live right up to its own end. Two back-to-back
+    /// 8-bar sequences cued from the show at 180 BPM meet at 10.695666667 s;
+    /// sampled a microsecond or less before that, the first is still lit, and
+    /// on the downbeat the second is.
+    #[test]
+    fn back_to_back_sequences_leave_no_dark_instant() {
+        let fixtures = vec![rgb_fixture("wash", 1)];
+        let source = r#"
+tempo {
+    start: 29ms
+    bpm: 180
+    time_signature: 4/4
+}
+sequence "a" {
+    @1/1
+    wash: static, color: "red", layer: background, blend_mode: replace, duration: 8measures
+}
+show "t" {
+    @1/1
+    sequence "a"
+    @9/1
+    sequence "a"
+}
+"#;
+        let times = [
+            10.695665,
+            10.695666,
+            10.6956666,
+            10.695666666,
+            10.695666667,
+            10.69566667,
+        ];
+        let results = eval(source, &fixtures, &times);
+        for (t, result) in times.iter().zip(&results) {
+            assert_eq!(
+                result.is_dark(),
+                Some(false),
+                "dark at {t}: {:?}",
+                result.active_effects
+            );
+        }
+    }
+
     #[test]
     fn elapsed_is_measured_from_the_cue() {
         let fixtures = vec![rgb_fixture("wash", 1)];
