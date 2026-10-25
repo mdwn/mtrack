@@ -98,6 +98,16 @@ tracks:
 # boundaries. Press Play or Next to break out and advance the playlist.
 loop_playback: true
 
+# (Optional) Overlap consecutive passes of a looping song: each pass starts this
+# long before the last ends, and the audio, lights and MIDI cross over the
+# overlap. 6s, 500ms, 8beats or 2measures; beats and measures count back from
+# the end of the song. See "Song Looping" below.
+loop_crossfade: 2measures
+
+# (Optional) Tracks that switch over at the crossfade's midpoint instead of
+# fading, so a click or cue track is never heard twice.
+loop_crossfade_cut: [click]
+
 # (Optional) The song's tempo map. When present, this is the canonical source
 # of the beat grid — it takes precedence over click track analysis. BPM is in
 # quarter notes per minute.
@@ -212,6 +222,41 @@ Setting `loop_playback: true` causes the song to loop indefinitely when it reach
 
 During a looping song, pressing Play or Next breaks out of the loop, advances the playlist,
 and auto-plays the next song. Stop cancels everything as usual.
+
+### Long crossfades
+
+For an interlude or bed that should wash from its end back into its start, set
+`loop_crossfade`. Each pass then starts that long before the last ends, and the two overlap:
+
+```yaml
+loop_playback: true
+loop_crossfade: 2measures
+loop_crossfade_cut: [click, cues]
+```
+
+- **Length**: `6s`, `500ms`, `8beats` or `2measures`. Beats and measures need a beat grid (a
+  `tempo:` block or a click track) and count back from the end of the song, through any tempo
+  or meter changes. It must be shorter than the song.
+- **Audio** fades over the whole overlap on an equal-power curve, so the level holds through
+  the middle. Tracks in `loop_crossfade_cut` instead switch over at the midpoint with the
+  short 10 ms crossfade: a click heard twice for several seconds is no use to anyone.
+- **Lights** cross over the overlap as a console crosses cues. The outgoing pass keeps playing
+  -- including any cues still to come in it -- while the incoming one starts from the top, and
+  each frame blends the two channel by channel: intensity and colour fade; pan and tilt fade,
+  but a mover only one pass drives holds its position; discrete channels (strobe, gobo,
+  prism, anything else whose in-between values are other settings) switch at the midpoint.
+- **MIDI** from both passes plays through the overlap, in time order. Something sent at the
+  top of the song, such as a program change, lands mid-crossfade, so keep those out of songs
+  that loop this way.
+- **MIDI DMX** restarts with the new pass rather than crossing.
+- The playhead restarts with each new pass, which arrives a pass's length less the
+  crossfade after the last.
+
+At a steady tempo, with the crossfade in whole beats or measures and a song whose audio is a
+whole number of beats long, the new pass's beats fall on the old pass's, so the overlap stays in
+time. Pressing
+Play or Next during the overlap breaks out of the loop as usual, fading both passes out at
+once.
 
 ## Tempo Map
 

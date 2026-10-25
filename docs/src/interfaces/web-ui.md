@@ -185,7 +185,9 @@ A song that is currently playing cannot be deleted.
 
 Click a song to open its detail view with five tabs: Tracks, Samples, Timeline, Lighting and
 Config. A **Loop Playback** checkbox above the tabs sets `loop_playback` for the song (see
-[Song Looping](#whole-song-looping)).
+[Song Looping](#whole-song-looping)). While it is on, **Loop crossfade** sets `loop_crossfade`
+(e.g. `2measures`), and the tracks ticked under **Switch at the midpoint** go in
+`loop_crossfade_cut`.
 
 ![Song detail](../images/song-detail.png)
 
@@ -666,6 +668,10 @@ Songs with `loop_playback: true` in their `song.yaml` loop indefinitely. Audio c
 seamlessly at loop boundaries (a 10 ms crossfade), MIDI restarts from the beginning, and
 lighting/DMX timelines reset cleanly. During a looping song, pressing Play or Next breaks out
 of the loop, advances the playlist, and auto-plays the next song.
+
+With `loop_crossfade` set, consecutive passes overlap instead: the audio, lights and MIDI cross
+from one pass to the next over seconds or measures. See
+[Long crossfades](../configuration/song-config.md#long-crossfades).
 
 ### Section Looping
 

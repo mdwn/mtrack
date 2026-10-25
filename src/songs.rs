@@ -769,6 +769,14 @@ impl Song {
         self.loop_crossfade.filter(|_| self.loop_playback)
     }
 
+    /// How often a looping song starts a new pass: its length less the loop
+    /// crossfade. The playhead of a looping song is its elapsed time modulo
+    /// this.
+    pub fn loop_period(&self) -> Duration {
+        self.length()
+            .saturating_sub(self.loop_crossfade().unwrap_or_default())
+    }
+
     /// Tracks that switch over halfway through the loop crossfade instead of
     /// fading.
     pub fn loop_crossfade_cut(&self) -> &[String] {
@@ -1876,6 +1884,7 @@ mod test {
         let song = looping_song("loop_crossfade: 1measure\nloop_crossfade_cut: [click]\n")?;
         assert_eq!(song.duration(), Duration::from_secs(8));
         assert_eq!(song.loop_crossfade(), Some(Duration::from_secs(2)));
+        assert_eq!(song.loop_period(), Duration::from_secs(6));
         assert_eq!(song.loop_crossfade_cut(), ["click".to_string()]);
         // Passes every 6 s after the first, which starts its successor 2 s
         // before its end -- or sooner, when it began part way in.
@@ -1901,6 +1910,7 @@ mod test {
         // No crossfade: passes abut.
         let song = looping_song("")?;
         assert_eq!(song.loop_crossfade(), None);
+        assert_eq!(song.loop_period(), Duration::from_secs(8));
         assert_eq!(
             song.loop_pass_start(Duration::ZERO, 2),
             Duration::from_secs(16)

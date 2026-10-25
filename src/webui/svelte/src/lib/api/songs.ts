@@ -36,6 +36,9 @@ export interface SongSummary {
   has_tempo_map: boolean;
   /** Whether this song loops when it finishes playing */
   loop_playback: boolean;
+  /** The resolved loop crossfade, when the song has one. */
+  loop_crossfade_ms?: number | null;
+  loop_crossfade_cut?: string[];
   /** Named sections defined by measure boundaries, optionally offset to a
    * (possibly fractional) beat within the boundary measures. */
   sections: {

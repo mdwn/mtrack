@@ -146,6 +146,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             tracks,
             beat_grid,
             looping,
+            loop_period_ms,
             available_sections,
             pilot_hints,
         ) = if let Some(current_song) = playlist.current() {
@@ -226,11 +227,12 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 tracks,
                 beat_grid,
                 current_song.loop_playback(),
+                current_song.loop_period().as_millis() as u64,
                 available_sections,
                 pilot_hints,
             )
         } else {
-            (String::new(), 0, vec![], None, false, vec![], vec![])
+            (String::new(), 0, vec![], None, false, 0, vec![], vec![])
         };
 
         let available_playlists = player.list_playlists();
@@ -280,8 +282,10 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             } else {
                 raw_elapsed_ms
             }
-        } else if looping && song_duration_ms > 0 {
-            raw_elapsed_ms % song_duration_ms
+        } else if looping && loop_period_ms > 0 {
+            // A pass starts every period: the song's length, less its loop
+            // crossfade when passes overlap.
+            raw_elapsed_ms % loop_period_ms
         } else {
             raw_elapsed_ms
         };

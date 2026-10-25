@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Long crossfades for looping songs**: `loop_crossfade: 2measures` (or `6s`, `500ms`,
+  `8beats`) in `song.yaml` makes each pass of a looping song start that long before the last
+  ends, and crosses the two over the overlap. Audio fades on an equal-power curve; the lights
+  run both passes -- the outgoing one still firing its own cues -- and blend them channel by
+  channel, as a console crosses cues (intensity and colour fade, pan and tilt fade but hold
+  where one pass drives none, strobe/gobo and other discrete channels switch at the midpoint);
+  MIDI from both passes plays through the overlap. Tracks listed in `loop_crossfade_cut`, such
+  as a click, switch over at the midpoint instead of fading. Beats and measures count back from
+  the end of the song on its beat grid. The song editor has fields for both.
 - **Sequence parameters (#540)**: a sequence can declare parameters, `sequence "x"(hit, bed:
   "#1E6FE0") { … }`, use them as `$hit` in its body, and bind them where it is used:
   `sequence "x"(hit: "#FFD870"), loop: 4`. Colours, groups, levels, durations and loop counts can

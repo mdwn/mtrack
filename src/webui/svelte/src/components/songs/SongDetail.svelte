@@ -140,6 +140,10 @@
 
   // Loop playback state
   let loopPlayback = $state(false);
+  // `loop_crossfade` as written ("2measures", "6s"), and the tracks that
+  // switch over at its midpoint instead of fading.
+  let loopCrossfade = $state("");
+  let loopCrossfadeCut = $state<string[]>([]);
 
   // Section editor state
   let sections = $state<
@@ -281,6 +285,15 @@
         }));
         midiEvent = (parsed.midi_event as MidiEvent) ?? null;
         loopPlayback = parsed.loop_playback === true;
+        loopCrossfade =
+          typeof parsed.loop_crossfade === "string"
+            ? parsed.loop_crossfade
+            : "";
+        loopCrossfadeCut = Array.isArray(parsed.loop_crossfade_cut)
+          ? parsed.loop_crossfade_cut.filter(
+              (t: unknown): t is string => typeof t === "string",
+            )
+          : [];
         sections = (parsed.sections ?? []).map((s: Record<string, unknown>) => {
           const entry: {
             name: string;
@@ -322,6 +335,8 @@
       tracks = [];
       midiEvent = null;
       loopPlayback = false;
+      loopCrossfade = "";
+      loopCrossfadeCut = [];
       sections = [];
       songSamples = {};
       notificationAudio = {};
@@ -353,6 +368,16 @@
       updated.loop_playback = true;
     } else {
       delete updated.loop_playback;
+    }
+    if (loopCrossfade.trim()) {
+      updated.loop_crossfade = loopCrossfade.trim();
+    } else {
+      delete updated.loop_crossfade;
+    }
+    if (loopCrossfadeCut.length > 0) {
+      updated.loop_crossfade_cut = loopCrossfadeCut;
+    } else {
+      delete updated.loop_crossfade_cut;
     }
     if (sections.length > 0) {
       updated.sections = sections;
@@ -938,6 +963,47 @@
         </label>
         <span class="field-hint">{$t("songs.detail.loopPlaybackHint")}</span>
       </div>
+      {#if loopPlayback}
+        <div class="field loop-crossfade">
+          <label for="loop-crossfade">{$t("songs.detail.loopCrossfade")}</label>
+          <input
+            id="loop-crossfade"
+            class="input"
+            type="text"
+            placeholder="2measures"
+            value={loopCrossfade}
+            onchange={(e) => {
+              loopCrossfade = (e.currentTarget as HTMLInputElement).value;
+              editedYaml = buildYaml();
+            }}
+          />
+          <span class="field-hint">{$t("songs.detail.loopCrossfadeHint")}</span>
+          {#if loopCrossfade.trim() && tracks.length > 0}
+            <fieldset class="loop-crossfade-cut">
+              <legend>{$t("songs.detail.loopCrossfadeCut")}</legend>
+              {#each tracks as track (track.name)}
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={loopCrossfadeCut.includes(track.name)}
+                    onchange={(e) => {
+                      const on = (e.currentTarget as HTMLInputElement).checked;
+                      loopCrossfadeCut = on
+                        ? [...loopCrossfadeCut, track.name]
+                        : loopCrossfadeCut.filter((t) => t !== track.name);
+                      editedYaml = buildYaml();
+                    }}
+                  />
+                  {track.name}
+                </label>
+              {/each}
+              <span class="field-hint"
+                >{$t("songs.detail.loopCrossfadeCutHint")}</span
+              >
+            </fieldset>
+          {/if}
+        </div>
+      {/if}
     {/if}
 
     <!-- Tab bar with inline save -->
@@ -1407,6 +1473,40 @@
     font-size: 14px;
     cursor: pointer;
     color: var(--nc-fg-1);
+  }
+  .loop-crossfade {
+    margin-left: 24px;
+  }
+  .loop-crossfade > label {
+    display: block;
+    font-size: 13px;
+    color: var(--nc-fg-2);
+    margin-bottom: 4px;
+  }
+  .loop-crossfade input[type="text"] {
+    max-width: 12rem;
+  }
+  .loop-crossfade .field-hint {
+    margin-left: 0;
+  }
+  .loop-crossfade-cut {
+    border: none;
+    padding: 0;
+    margin: 8px 0 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+  }
+  .loop-crossfade-cut legend {
+    font-size: 13px;
+    color: var(--nc-fg-2);
+    margin-bottom: 4px;
+  }
+  .loop-crossfade-cut label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
   }
   .field-hint {
     display: block;
