@@ -47,6 +47,7 @@ use crate::{
 };
 
 /// Direction for playlist navigation.
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum PlaylistDirection {
     Next,
     Prev,
@@ -382,6 +383,9 @@ pub struct Player {
     /// loop checks this flag and exits cleanly, allowing the cleanup task
     /// to advance the playlist and start the next song.
     loop_break: Arc<AtomicBool>,
+    /// Set with `loop_break` when the break came from previous rather than
+    /// next or play, so the cleanup moves the playlist back, not on.
+    loop_break_to_prev: Arc<AtomicBool>,
     /// Active section loop bounds. When Some, audio/MIDI/DMX subsystems
     /// loop the specified time region instead of the full song.
     active_section: Arc<parking_lot::RwLock<Option<SectionBounds>>>,
@@ -625,6 +629,7 @@ impl Player {
             controller: Arc::new(parking_lot::Mutex::new(None)),
             controller_config: Arc::new(parking_lot::Mutex::new(None)),
             loop_break: Arc::new(AtomicBool::new(false)),
+            loop_break_to_prev: Arc::new(AtomicBool::new(false)),
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
             loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
@@ -3172,6 +3177,97 @@ mod test {
         assert_eq!(active.start_time, Duration::from_secs(10));
         assert_eq!(active.end_time, Duration::from_secs(20));
 
+        Ok(())
+    }
+
+    /// A player on the mock device whose playlist is A, B, C, with B a
+    /// 10-second looping song, playing B.
+    async fn player_looping_b() -> Result<(Arc<Player>, tempfile::TempDir), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let songs_dir = dir.path().join("songs");
+        for (name, looping) in [("A", false), ("B", true), ("C", false)] {
+            let song_dir = songs_dir.join(name);
+            std::fs::create_dir_all(&song_dir)?;
+            crate::testutil::write_wav(song_dir.join("t.wav"), vec![vec![0_i32; 8000 * 10]], 8000)?;
+            std::fs::write(
+                song_dir.join("song.yaml"),
+                format!(
+                    "name: {name}\ntracks:\n  - name: t\n    file: t.wav\nloop_playback: {looping}\n"
+                ),
+            )?;
+        }
+        let playlist_path = dir.path().join("playlist.yaml");
+        std::fs::write(&playlist_path, "songs:\n- A\n- B\n- C\n")?;
+        let songs = songs::get_all_songs(&songs_dir)?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(&playlist_path)?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                songs_dir.to_str().unwrap(),
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        player.get_playlist().navigate_to("B");
+        player.play().await?;
+        assert!(player.is_current_song_looping());
+        Ok((player, dir))
+    }
+
+    /// Waits until the playlist sits on `name` with a song playing.
+    async fn playing_eventually(player: &Arc<Player>, name: &str) -> Result<(), Box<dyn Error>> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let current = player
+                .get_playlist()
+                .current()
+                .map(|s| s.name().to_string());
+            if current.as_deref() == Some(name) && player.is_playing().await {
+                return Ok(());
+            }
+            if std::time::Instant::now() > deadline {
+                return Err(format!("never reached {name} playing (at {current:?})").into());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn next_on_a_looping_song_reports_where_it_goes() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) = player_looping_b().await?;
+        let target = player.next().await.map(|s| s.name().to_string());
+        assert_eq!(
+            target.as_deref(),
+            Some("C"),
+            "next names the song it moves to"
+        );
+        playing_eventually(&player, "C").await?;
+        player.stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn previous_on_a_looping_song_goes_back() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) = player_looping_b().await?;
+        let target = player.prev().await.map(|s| s.name().to_string());
+        assert_eq!(
+            target.as_deref(),
+            Some("A"),
+            "previous names the song it moves to"
+        );
+        // And goes there: the cleanup used to move on whatever the direction.
+        playing_eventually(&player, "A").await?;
+        player.stop().await;
         Ok(())
     }
 

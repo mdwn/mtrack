@@ -45,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Next and previous on a looping song name, and go to, the right song (#545)**: they break the
+  loop and the player moves on a moment later, but the reply named the song still fading out,
+  so a client driving the player took Next as having done nothing (the MCP `next`/`previous`
+  tools said so). They now return the song playback is moving to. And previous went forward:
+  the loop-break cleanup always advanced the playlist, so previous on a looping song played the
+  next song instead.
+
 - **A looping song's MIDI keeps to the song's length**: each pass of a looping song's MIDI
   restarted the moment its last event played, so a MIDI file ending before the audio drifted
   ahead of the audio and lights a little more every pass. Passes now start on the song's own

@@ -725,7 +725,8 @@ impl McpServer {
 
     #[tool(
         description = "Advance the active playlist to the next song. Returns the \
-        new current song."
+        new current song. On a looping song this breaks the loop and returns the \
+        song playback moves on to, which starts a moment later."
     )]
     async fn next(&self) -> Result<CallToolResult, McpError> {
         let song = self.player.next().await;
@@ -736,7 +737,8 @@ impl McpServer {
 
     #[tool(
         description = "Move the active playlist to the previous song. Returns the \
-        new current song."
+        new current song. On a looping song this breaks the loop and returns the \
+        song playback moves back to, which starts a moment later."
     )]
     async fn previous(&self) -> Result<CallToolResult, McpError> {
         let song = self.player.prev().await;

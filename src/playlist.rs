@@ -143,6 +143,24 @@ impl Playlist {
         Some(current)
     }
 
+    /// The song [`Playlist::next`] would move to, without moving.
+    pub fn peek_next(&self) -> Option<Arc<Song>> {
+        if self.songs.is_empty() {
+            return None;
+        }
+        let position = (*self.position.read() + 1).min(self.songs.len() - 1);
+        self.registry.get(&self.songs[position]).ok()
+    }
+
+    /// The song [`Playlist::prev`] would move to, without moving.
+    pub fn peek_prev(&self) -> Option<Arc<Song>> {
+        if self.songs.is_empty() {
+            return None;
+        }
+        let position = self.position.read().saturating_sub(1);
+        self.registry.get(&self.songs[position]).ok()
+    }
+
     /// Sets the playlist position to the song matching the given name.
     /// Returns the song if found, None otherwise.
     pub fn navigate_to(&self, name: &str) -> Option<Arc<Song>> {
