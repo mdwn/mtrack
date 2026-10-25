@@ -106,7 +106,9 @@ impl std::fmt::Display for LoopCrossfade {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LoopCrossfade::Time(length) => write!(f, "{}s", length.as_secs_f64()),
+            LoopCrossfade::Beats(beats) if *beats == 1.0 => write!(f, "1beat"),
             LoopCrossfade::Beats(beats) => write!(f, "{beats}beats"),
+            LoopCrossfade::Measures(measures) if *measures == 1.0 => write!(f, "1measure"),
             LoopCrossfade::Measures(measures) => write!(f, "{measures}measures"),
         }
     }

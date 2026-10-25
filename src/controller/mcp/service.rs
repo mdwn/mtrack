@@ -464,7 +464,10 @@ impl McpServer {
         light show is loaded — whether its timeline is armed and where its cue \
         pointer sits. `lighting.armed` false, or `cues_remaining` 0 while the \
         song is still playing, means no cues will fire for the rest of this \
-        playback.")]
+        playback. `transitions` says what breaking a looping song's loop would \
+        do, by the playlist: the current entry's `fade_out`, and the song \
+        `next` and `previous` would move to with its `fade_in` (each `null` \
+        for none).")]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         Ok(ok_json(self.status_snapshot().await?))
     }
@@ -3473,7 +3476,45 @@ async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
         "playing": playing,
         "elapsed": format_duration(elapsed),
         "lighting": lighting,
+        "transitions": transitions_json(&playlist),
     }))
+}
+
+/// What breaking the current song's loop would do, by the playlist's
+/// transitions: how the current entry fades out, and the song next and
+/// previous would move to with how it fades in.
+fn transitions_json(playlist: &crate::playlist::Playlist) -> Value {
+    let on = playlist.loop_break(false);
+    let back = playlist.loop_break(true);
+    let target = |handover: &crate::playlist::LoopBreak| {
+        json!({
+            "song": handover.target.as_ref().map(|s| s.name().to_string()),
+            "fade_in": fade_json(handover.fade_in.as_ref()),
+        })
+    };
+    json!({
+        "fade_out": fade_json(on.fade_out.as_ref()),
+        "next": target(&on),
+        "previous": target(&back),
+    })
+}
+
+/// A transition's fade as configured, `null` for none. A `null` `exclude`
+/// is the default (a fade-out's `loop_crossfade_cut`, a fade-in's none),
+/// as is a `null` `lights` (the length).
+fn fade_json(fade: Option<&crate::config::Fade>) -> Value {
+    let Some(fade) = fade else {
+        return Value::Null;
+    };
+    json!({
+        "length": fade.length.to_string(),
+        "curve": match fade.curve {
+            crate::config::FadeCurve::EqualPower => "equal_power",
+            crate::config::FadeCurve::Linear => "linear",
+        },
+        "exclude": fade.exclude,
+        "lights": fade.lights.map(|l| l.to_string()),
+    })
 }
 
 impl McpServer {
