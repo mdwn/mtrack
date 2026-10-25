@@ -589,3 +589,49 @@ fn test_single_color_cycle() {
         }
     }
 }
+
+#[test]
+fn test_color_cycle_hue_transition_stays_saturated() {
+    // Yellow to blue: halfway, a straight fade is grey and a hue fade a
+    // full-strength colour (#541).
+    let midpoint = |transition: CycleTransition| {
+        let mut engine = EffectEngine::new();
+        engine.register_fixture(create_test_fixture("test_fixture", 1, 1));
+        engine
+            .start_effect(EffectInstance::new(
+                "test_effect".to_string(),
+                EffectType::ColorCycle {
+                    colors: vec![Color::new(255, 255, 0), Color::new(0, 0, 255)],
+                    speed: TempoAwareSpeed::Fixed(1.0),
+                    direction: CycleDirection::Forward,
+                    transition,
+                    duration: Duration::from_secs(10),
+                },
+                vec!["test_fixture".to_string()],
+                None,
+                None,
+                None,
+            ))
+            .unwrap();
+        engine.update(Duration::ZERO, None).unwrap();
+        let commands = engine.update(Duration::from_millis(250), None).unwrap();
+        let value = |channel| {
+            commands
+                .iter()
+                .find(|c| c.channel == channel)
+                .unwrap()
+                .value
+        };
+        (value(2), value(3), value(4))
+    };
+
+    let (r, g, b) = midpoint(CycleTransition::Fade);
+    assert!(
+        r.abs_diff(g) <= 1 && g.abs_diff(b) <= 1,
+        "fade is grey: {r} {g} {b}"
+    );
+
+    let (r, g, b) = midpoint(CycleTransition::Hue);
+    assert_eq!(r.max(g).max(b), 255, "full brightness: {r} {g} {b}");
+    assert_eq!(r.min(g).min(b), 0, "full saturation: {r} {g} {b}");
+}

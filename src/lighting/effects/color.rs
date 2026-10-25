@@ -130,6 +130,55 @@ impl Color {
         }
     }
 
+    /// Hue in degrees, saturation and value of the colour's RGB, each of
+    /// saturation and value from 0.0 to 1.0.
+    pub fn to_hsv(&self) -> (f64, f64, f64) {
+        let (r, g, b) = (
+            self.r as f64 / 255.0,
+            self.g as f64 / 255.0,
+            self.b as f64 / 255.0,
+        );
+        let max = r.max(g).max(b);
+        let delta = max - r.min(g).min(b);
+        let hue = if delta == 0.0 {
+            0.0
+        } else if max == r {
+            60.0 * ((g - b) / delta).rem_euclid(6.0)
+        } else if max == g {
+            60.0 * ((b - r) / delta + 2.0)
+        } else {
+            60.0 * ((r - g) / delta + 4.0)
+        };
+        let saturation = if max == 0.0 { 0.0 } else { delta / max };
+        (hue, saturation, max)
+    }
+
+    /// Interpolate between two colours around the colour wheel: the hue
+    /// turns the short way from `self` to `other` while saturation and
+    /// brightness blend linearly, so the midpoint keeps its colour where a
+    /// straight [`Color::lerp`] goes dull: yellow to blue is grey halfway
+    /// in RGB (#541). Colours opposite each other turn through red. A grey
+    /// has no hue of its own and takes the other colour's, so white to red
+    /// only gains saturation. The white channel blends as in `lerp`.
+    pub fn lerp_hue(&self, other: &Color, t: f64) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        let (h1, s1, v1) = self.to_hsv();
+        let (h2, s2, v2) = other.to_hsv();
+        let (h1, h2) = match (s1 == 0.0, s2 == 0.0) {
+            (true, true) => return self.lerp(other, t),
+            (true, false) => (h2, h2),
+            (false, true) => (h1, h1),
+            (false, false) => (h1, h2),
+        };
+        let turn = (h2 - h1 + 540.0).rem_euclid(360.0) - 180.0;
+        let hue = (h1 + turn * t).rem_euclid(360.0);
+        let blended = Color::from_hsv(hue, s1 + (s2 - s1) * t, v1 + (v2 - v1) * t);
+        Self {
+            w: self.lerp(other, t).w,
+            ..blended
+        }
+    }
+
     /// Linearly interpolate between two colors.
     /// `t` should be between 0.0 (returns `self`) and 1.0 (returns `other`).
     pub fn lerp(&self, other: &Color, t: f64) -> Self {
@@ -372,5 +421,61 @@ mod tests {
         let b = Color::new(255, 255, 255);
         let result = a.lerp(&b, 0.5);
         assert_eq!(result.w, None);
+    }
+
+    // ── Color::to_hsv / lerp_hue ───────────────────────────────────
+
+    #[test]
+    fn to_hsv_primaries_and_grey() {
+        assert_eq!(Color::new(255, 0, 0).to_hsv(), (0.0, 1.0, 1.0));
+        assert_eq!(Color::new(0, 255, 0).to_hsv(), (120.0, 1.0, 1.0));
+        assert_eq!(Color::new(0, 0, 255).to_hsv(), (240.0, 1.0, 1.0));
+        let (_, s, v) = Color::new(128, 128, 128).to_hsv();
+        assert_eq!(s, 0.0);
+        assert!((v - 128.0 / 255.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn lerp_hue_keeps_the_midpoint_saturated() {
+        let yellow = Color::new(255, 255, 0);
+        let blue = Color::new(0, 0, 255);
+        // In RGB the midpoint is grey.
+        let straight = yellow.lerp(&blue, 0.5);
+        assert_eq!((straight.r, straight.g, straight.b), (127, 127, 127));
+        // Around the wheel it is a full-strength colour.
+        let (_, s, v) = yellow.lerp_hue(&blue, 0.5).to_hsv();
+        assert_eq!((s, v), (1.0, 1.0));
+    }
+
+    #[test]
+    fn lerp_hue_turns_the_short_way() {
+        // Red (0°) to magenta (300°): back through 330°, not round by green.
+        let mid = Color::new(255, 0, 0).lerp_hue(&Color::new(255, 0, 255), 0.5);
+        assert_eq!((mid.r, mid.g), (255, 0));
+        assert!((126..=128).contains(&mid.b), "{mid:?}");
+    }
+
+    #[test]
+    fn lerp_hue_reaches_its_endpoints() {
+        let a = Color::new(255, 128, 0);
+        let b = Color::new(0, 64, 200);
+        assert_eq!(a.lerp_hue(&b, 0.0), a);
+        let end = a.lerp_hue(&b, 1.0);
+        assert!(
+            end.r.abs_diff(b.r) <= 1 && end.g.abs_diff(b.g) <= 1 && end.b.abs_diff(b.b) <= 1,
+            "{end:?}"
+        );
+    }
+
+    #[test]
+    fn lerp_hue_from_grey_takes_the_other_hue() {
+        let mid = Color::new(255, 255, 255).lerp_hue(&Color::new(255, 0, 0), 0.5);
+        assert_eq!(mid.r, 255);
+        assert!(mid.g == mid.b && (126..=128).contains(&mid.g), "{mid:?}");
+        let greys = Color::new(0, 0, 0).lerp_hue(&Color::new(200, 200, 200), 0.5);
+        assert_eq!(
+            greys,
+            Color::new(0, 0, 0).lerp(&Color::new(200, 200, 200), 0.5)
+        );
     }
 }

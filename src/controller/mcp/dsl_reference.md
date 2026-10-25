@@ -68,6 +68,10 @@ takes effect — `validate_lighting` reports it as an `unused-parameter` warning
   - `chase`: `left_to_right | right_to_left | top_to_bottom | bottom_to_top |
     clockwise | counter_clockwise` (where the mask travels).
   - No other effect reads `direction`; on `rainbow` it is accepted and ignored.
+- `transition` (`cycle`, `chase`): `snap | fade` (`crossfade` = `fade`). A
+  `cycle` also takes `hue`, a fade around the colour wheel: use it when
+  consecutive colours are far apart (yellow → blue, red → cyan), whose plain
+  fade passes through grey.
 - `layer`: `background | midground | foreground` (grandMA-inspired layers).
 - `blend_mode`: `replace | multiply | add | overlay | screen`.
 

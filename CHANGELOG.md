@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files is an error, and errors in an included sequence name its file. Editing an included file
   reloads the shows that use it. `validate_lighting` and the web UI resolve includes against the
   song's lighting file.
+- **Hue-wheel fades on cycles (#541)**: `cycle … transition: hue` fades around the colour wheel,
+  turning the hue the short way while blending saturation and brightness. A plain `fade` blends
+  red, green and blue separately, so colours far apart pass through a dull midpoint (yellow to
+  blue is grey halfway); a hue fade stays vivid. `fade` is unchanged.
 - **Sequence `length:` (#541)**: `sequence "x", length: 1measure { … }` fixes how long one pass of
   a sequence lasts, in the same units as `duration:`. A looped sequence whose effects end before
   the bar now restarts on the bar without a padding cue to stretch it, and an effect that runs

@@ -288,6 +288,10 @@ pub enum CycleTransition {
     Snap,
     /// Fade smoothly between colors
     Fade,
+    /// Fade around the colour wheel: the hue turns the short way while
+    /// saturation and brightness blend, so yellow to blue passes through
+    /// red and magenta rather than grey. Cycles only.
+    Hue,
 }
 
 /// Chase pattern for spatial effects

@@ -361,6 +361,8 @@ fn apply_color_cycle(
             let next_color = colors[next_index % colors.len()];
             current_color.lerp(&next_color, segment_progress)
         }
+        CycleTransition::Hue => colors[color_index % colors.len()]
+            .lerp_hue(&colors[next_index % colors.len()], segment_progress),
         CycleTransition::Snap => {
             // Snap to current color (original behavior)
             colors[color_index % colors.len()]
@@ -376,6 +378,9 @@ fn apply_color_cycle(
             let color = match transition {
                 CycleTransition::Fade => {
                     colors[i % colors.len()].lerp(&colors[next % colors.len()], t)
+                }
+                CycleTransition::Hue => {
+                    colors[i % colors.len()].lerp_hue(&colors[next % colors.len()], t)
                 }
                 CycleTransition::Snap => colors[i % colors.len()],
             };
@@ -896,7 +901,9 @@ fn apply_chase(
                         0.0
                     }
                 }
-                CycleTransition::Fade => {
+                // A chase has no colours to turn through; the parser
+                // accepts `hue` on cycles only.
+                CycleTransition::Fade | CycleTransition::Hue => {
                     // Fade in/out: calculate smooth transitions
                     // Each fixture fades in over the first 50% of its position, stays at 1.0 for the middle,
                     // and fades out over the last 50% of its position
