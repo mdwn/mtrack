@@ -70,6 +70,20 @@ fn parse_color_value(value: &str) -> Result<crate::lighting::effects::Color, Box
     })
 }
 
+/// A level parameter's value -- a number or a percentage -- or an error
+/// naming it. A value that did not parse used to be dropped, leaving the
+/// effect at its default level with no word about why (the same silence as
+/// an invalid colour, #538).
+fn parse_level(key: &str, value: &str) -> Result<f64, Box<dyn Error>> {
+    parse_percentage_to_f64(value).map_err(|_| {
+        format!(
+            "Invalid {key} '{}' (expected a number or a percentage, e.g. 0.5 or 50%)",
+            value.trim_matches('"')
+        )
+        .into()
+    })
+}
+
 /// Helper to clean and normalize string values (strip quotes, trim, lowercase)
 fn clean_string_value(value: &str) -> String {
     value.trim_matches('"').trim().to_lowercase()
@@ -369,14 +383,12 @@ pub(crate) fn apply_parameters_to_effect_type(
                     // `intensity` is the documented common parameter, `dimmer` the
                     // static-specific spelling. They mean the same level.
                     "dimmer" | "intensity" => {
-                        if let Ok(val) = parse_percentage_to_f64(value) {
-                            static_params.insert("dimmer".to_string(), val);
-                        }
+                        let val = parse_level(key, value)?;
+                        static_params.insert("dimmer".to_string(), val);
                     }
                     "red" | "green" | "blue" | "white" => {
-                        if let Ok(val) = parse_percentage_to_f64(value) {
-                            static_params.insert(key.clone(), val);
-                        }
+                        let val = parse_level(key, value)?;
+                        static_params.insert(key.clone(), val);
                     }
                     "color" => {
                         let color = parse_color_value(value)?;
@@ -494,14 +506,12 @@ pub(crate) fn apply_parameters_to_effect_type(
             for (key, value) in parameters {
                 match key.as_str() {
                     "base_level" => {
-                        if let Ok(val) = parse_percentage_to_f64(value) {
-                            *base_level = val;
-                        }
+                        let val = parse_level(key, value)?;
+                        *base_level = val;
                     }
                     "pulse_amplitude" | "intensity" => {
-                        if let Ok(val) = parse_percentage_to_f64(value) {
-                            *pulse_amplitude = val;
-                        }
+                        let val = parse_level(key, value)?;
+                        *pulse_amplitude = val;
                     }
                     "frequency" => match parse_frequency_string(value, tempo_map) {
                         Ok(val) => *frequency = val,
@@ -592,14 +602,12 @@ pub(crate) fn apply_parameters_to_effect_type(
             for (key, value) in parameters {
                 match key.as_str() {
                     "start" | "start_level" => {
-                        if let Ok(val) = parse_percentage_to_f64(value) {
-                            *start_level = val;
-                        }
+                        let val = parse_level(key, value)?;
+                        *start_level = val;
                     }
                     "end" | "end_level" => {
-                        if let Ok(val) = parse_percentage_to_f64(value) {
-                            *end_level = val;
-                        }
+                        let val = parse_level(key, value)?;
+                        *end_level = val;
                     }
                     "duration" => {
                         let dur =
@@ -695,14 +703,12 @@ pub(crate) fn apply_parameters_to_effect_type(
                         }
                     },
                     "saturation" => {
-                        if let Ok(val) = parse_percentage_to_f64(value) {
-                            *saturation = val;
-                        }
+                        let val = parse_level(key, value)?;
+                        *saturation = val;
                     }
                     "brightness" => {
-                        if let Ok(val) = parse_percentage_to_f64(value) {
-                            *brightness = val;
-                        }
+                        let val = parse_level(key, value)?;
+                        *brightness = val;
                     }
                     "duration" => {
                         let dur =

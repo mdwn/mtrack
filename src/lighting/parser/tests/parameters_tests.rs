@@ -488,3 +488,44 @@ fn valid_colors_still_parse() {
 }"##;
     assert!(parse_light_shows(source).is_ok());
 }
+
+/// A level that is not a number or a percentage is a parse error naming the
+/// parameter and value, for every effect that takes one -- not dropped,
+/// leaving the effect at its default level.
+#[test]
+fn an_invalid_level_is_a_parse_error_naming_it() {
+    let cases = [
+        ("static, color: \"red\", dimmer: full", "dimmer", "full"),
+        ("static, red: lots", "red", "lots"),
+        ("pulse, base_level: half", "base_level", "half"),
+        (
+            "dimmer, start_level: 1.0, end_level: zero",
+            "end_level",
+            "zero",
+        ),
+        ("rainbow, saturation: vivid", "saturation", "vivid"),
+    ];
+    for (effect, key, value) in cases {
+        let source = format!("show \"t\" {{\n    @00:00.000\n    wash: {effect}, duration: 2s\n}}");
+        let error = parse_light_shows(&source)
+            .expect_err(&format!("{effect} parsed"))
+            .to_string();
+        assert!(
+            error.contains(&format!("Invalid {key} '{value}'")) && error.contains("line 3"),
+            "{effect}: {error}"
+        );
+    }
+}
+
+#[test]
+fn valid_levels_still_parse() {
+    let source = r##"show "t" {
+    @00:00.000
+    a: static, color: "red", dimmer: 50%, duration: 1s
+    b: static, red: 0.5, green: 25%, duration: 1s
+    c: pulse, base_level: 0.2, intensity: 80%, duration: 1s
+    d: dimmer, start_level: 100%, end_level: 0, duration: 1s
+    e: rainbow, saturation: 0.9, brightness: 100%, duration: 1s
+}"##;
+    parse_light_shows(source).expect("valid levels parse");
+}
