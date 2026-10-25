@@ -74,14 +74,24 @@ impl Player {
         let join = self.join.lock().await;
         if join.is_some() {
             // If the current song is looping, break out immediately with crossfade.
+            // The cleanup task moves the playlist in this direction and plays
+            // what it lands on a moment later; that song is the answer, not the
+            // one still fading out (#545).
             if self.is_current_song_looping() {
                 info!("Breaking out of song loop via {} navigation.", direction);
+                let playlist = self.get_playlist();
+                let target = match direction {
+                    PlaylistDirection::Next => playlist.peek_next(),
+                    PlaylistDirection::Prev => playlist.peek_prev(),
+                };
                 self.fade_out_current_audio();
+                self.loop_break_to_prev
+                    .store(direction == PlaylistDirection::Prev, Ordering::Relaxed);
                 self.loop_break.store(true, Ordering::Relaxed);
                 if let Some(ref handles) = *join {
                     handles.cancel.cancel();
                 }
-                return self.get_playlist().current();
+                return target;
             }
             let current = self.get_playlist().current();
             if let Some(ref song) = current {
