@@ -236,7 +236,7 @@ loop_crossfade_cut: [click, cues]
 
 - **Length**: `6s`, `500ms`, `8beats` or `2measures`. Beats and measures need a beat grid (a
   `tempo:` block or a click track) and count back from the end of the song, through any tempo
-  or meter changes. It must be shorter than the song.
+  or meter changes. It can be at most half the song, so no more than two passes overlap.
 - **Audio** fades over the whole overlap on an equal-power curve, so the level holds through
   the middle. Tracks in `loop_crossfade_cut` instead switch over at the midpoint with the
   short 10 ms crossfade: a click heard twice for several seconds is no use to anyone.
@@ -250,7 +250,9 @@ loop_crossfade_cut: [click, cues]
   that loop this way.
 - **MIDI DMX** restarts with the new pass rather than crossing.
 - The playhead restarts with each new pass, which arrives a pass's length less the
-  crossfade after the last.
+  crossfade after the last. Playback started inside the overlap starts the next pass at once.
+- A song with `loop_crossfade` loops as a whole: its sections cannot be looped, and are not
+  offered for reactive looping.
 
 At a steady tempo, with the crossfade in whole beats or measures and a song whose audio is a
 whole number of beats long, the new pass's beats fall on the old pass's, so the overlap stays in

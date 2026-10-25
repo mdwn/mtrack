@@ -760,7 +760,14 @@ fn run_playback(sender: &mut dyn MidiSender, mut ctx: PlaybackContext<'_>) {
                         continue;
                     }
                 }
-                crate::section_loop::LoopPoll::Waiting(_) => {}
+                // Armed, its end not reached: the first play stops at the
+                // first event past the section, which can be well before the
+                // clock gets there. Wait for the trigger rather than taking
+                // the song as over -- or, looping, restarting it.
+                crate::section_loop::LoopPoll::Waiting(_) => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
                 crate::section_loop::LoopPoll::NoSection
                 | crate::section_loop::LoopPoll::SectionCleared => {}
             }
@@ -1347,7 +1354,10 @@ fn play_looping_passes(params: &LoopingPasses<'_>, sender: &mut dyn MidiSender) 
         params.first_origin,
         events.partition_point(|e| e.time < boundary.max(params.start_time)),
     )];
-    let mut next_origin = params.first_origin + period;
+    // The second pass starts at the first boundary, or at once for a start
+    // already past it: the same grid as the audio and lights
+    // (`Song::loop_pass_start`).
+    let mut next_origin = params.first_origin + boundary.max(params.start_time).as_secs_f64();
     let mut buf = Vec::with_capacity(8);
 
     loop {
@@ -2587,6 +2597,66 @@ mod test {
                 assert!((at - want_at).abs() < 0.03, "{sent:?}");
                 assert_eq!(*note, want_note, "{sent:?}");
             }
+        }
+
+        #[test]
+        fn an_armed_section_loops_its_midi_in_a_looping_song() {
+            // A 1 s looping song with the section 0-0.3 s armed: its notes at
+            // 0 and 0.1 s repeat every 0.3 s. The first play stops at the
+            // note past the section (0.5 s), long before the clock reaches
+            // the section end; MIDI used to take that as the end of the song.
+            let midi = make_events(&[0, 100, 500]);
+            let cancel = CancelHandle::new();
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let exclude = HashSet::new();
+            let clock = PlaybackClock::wall();
+            clock.start();
+            let mut sender = TimedSender {
+                clock: clock.clone(),
+                sent: Vec::new(),
+            };
+            let loop_break = Arc::new(AtomicBool::new(false));
+            let breaker = {
+                let loop_break = loop_break.clone();
+                let clock = clock.clone();
+                std::thread::spawn(move || {
+                    while clock.elapsed() < Duration::from_millis(750) {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    loop_break.store(true, Ordering::Relaxed);
+                })
+            };
+
+            run_playback(
+                &mut sender,
+                PlaybackContext {
+                    precomputed: &midi,
+                    start_time: Duration::ZERO,
+                    playback_delay: Duration::ZERO,
+                    cancel_handle: &cancel,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    finished: Arc::new(AtomicBool::new(false)),
+                    exclude_channels: &exclude,
+                    clock: &clock,
+                    loop_playback: true,
+                    loop_passes: Some((Duration::from_secs(1), Duration::ZERO)),
+                    loop_break: loop_break.clone(),
+                    active_section: Arc::new(parking_lot::RwLock::new(Some(
+                        crate::player::SectionBounds {
+                            name: "intro".to_string(),
+                            start_time: Duration::ZERO,
+                            end_time: Duration::from_millis(300),
+                        },
+                    ))),
+                    section_loop_break: Arc::new(AtomicBool::new(false)),
+                },
+            );
+            breaker.join().unwrap();
+
+            let notes: Vec<u8> = sender.sent.iter().map(|(_, note)| *note).collect();
+            assert_eq!(notes, vec![60, 61, 60, 61, 60, 61], "{:?}", sender.sent);
+            assert!((sender.sent[2].0 - 0.3).abs() < 0.03, "{:?}", sender.sent);
+            assert!((sender.sent[4].0 - 0.6).abs() < 0.03, "{:?}", sender.sent);
         }
 
         #[test]

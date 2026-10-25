@@ -527,11 +527,16 @@ impl Engine {
 
             // Start a new song time tracker for this loop iteration, counting
             // from this pass's boundary.
+            // A crossfading pass's song time also drives the lights' blend
+            // between passes, so its tracker runs to the end of the pass even
+            // once its cues are all done.
+            let pass_over = Arc::new(AtomicBool::new(false));
             let loop_time_tracker = Self::start_loop_song_time_tracker(
                 dmx_engine.clone(),
                 cancel_handle.clone(),
                 pass_start,
                 clock.clone(),
+                crossfade.is_some().then(|| pass_over.clone()),
             );
 
             // Hold this pass until the next boundary. The effects loop may flag
@@ -547,6 +552,7 @@ impl Engine {
             }
 
             dmx_engine.timeline_finished.store(true, Ordering::Relaxed);
+            pass_over.store(true, Ordering::Relaxed);
 
             if let Err(e) = loop_time_tracker.join() {
                 error!("Error waiting for loop time tracker to stop: {:?}", e);
@@ -671,16 +677,19 @@ impl Engine {
 
     /// Tracks song time for one pass of a looping song: the shared clock keeps
     /// counting across passes, so song time is the clock less the pass's start.
+    /// It stops when the pass's timeline finishes, or, given `until`, when
+    /// that is set instead.
     fn start_loop_song_time_tracker(
         dmx_engine: Arc<Engine>,
         cancel_handle: CancelHandle,
         pass_start: Duration,
         clock: crate::clock::PlaybackClock,
+        until: Option<Arc<AtomicBool>>,
     ) -> JoinHandle<()> {
         let generation = dmx_engine.begin_playback_generation();
-        let timeline_finished = dmx_engine.timeline_finished.clone();
+        let stop = until.unwrap_or_else(|| dmx_engine.timeline_finished.clone());
         thread::spawn(move || {
-            while !cancel_handle.is_cancelled() && !timeline_finished.load(Ordering::Relaxed) {
+            while !cancel_handle.is_cancelled() && !stop.load(Ordering::Relaxed) {
                 let song_time = clock.elapsed().saturating_sub(pass_start);
                 dmx_engine.update_song_time_for_generation(song_time, generation);
                 thread::sleep(Duration::from_millis(10));

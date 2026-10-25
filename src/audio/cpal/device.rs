@@ -689,7 +689,7 @@ impl Device {
         }
 
         let half_overlap = song_loop.overlap / 2;
-        if timing.song_time + PASS_PREBUILD_AHEAD >= timing.boundary
+        if timing.now + PASS_PREBUILD_AHEAD >= timing.target
             && song_loop.prebuilt.is_none()
             && song_loop.build_rx.is_none()
         {
@@ -711,7 +711,7 @@ impl Device {
             song_loop.build_rx = Some(rx);
         }
 
-        if timing.song_time + timing.lookahead < timing.boundary {
+        if timing.now + timing.lookahead < timing.target {
             return false;
         }
         let Some(incoming) = song_loop.prebuilt.take() else {
@@ -732,14 +732,10 @@ impl Device {
         let now_sample = mixer.current_sample();
         // Late (a slow build, or a start inside the overlap): as soon as
         // possible rather than in the past.
-        let start_sample = crate::section_loop::loop_boundary_sample(
-            now_sample,
-            timing.song_time,
-            timing.boundary,
-            rate,
-        )
-        .saturating_add(timing.skew_samples)
-        .max(now_sample + (timing.lookahead.as_secs_f64() * rate as f64 / 2.0) as u64);
+        let start_sample =
+            crate::section_loop::loop_boundary_sample(now_sample, timing.now, timing.target, rate)
+                .saturating_add(timing.skew_samples)
+                .max(now_sample + (timing.lookahead.as_secs_f64() * rate as f64 / 2.0) as u64);
         let crossover = PassCrossover {
             start_sample,
             overlap_samples: (song_loop.overlap.as_secs_f64() * rate as f64).round() as u64,
@@ -754,6 +750,12 @@ impl Device {
         );
 
         crossover.cross_out(mixer, &song_loop.fade_ids, &song_loop.cut_ids);
+        song_loop.outgoing_ids = song_loop
+            .fade_ids
+            .iter()
+            .chain(&song_loop.cut_ids)
+            .copied()
+            .collect();
 
         // The incoming pass, each source with its own envelope.
         song_loop.fade_ids.clear();
@@ -779,10 +781,18 @@ impl Device {
         true
     }
 
-    /// Ends a crossfading song loop's playback mid-crossfade: every source
-    /// fades out over the short crossfade instead of finishing a long one,
-    /// and a pass not yet started never starts.
-    fn end_song_loop_crossfade(&self, song_loop: &SongLoopCrossfade, crossfade_samples: u64) {
+    /// Ends a crossfading song loop's playback mid-crossfade: a pass not yet
+    /// started never starts, and, unless the player is already fading
+    /// everything out for a loop break, the outgoing pass -- whose fade-out
+    /// would otherwise keep it playing through a cancel for the rest of a
+    /// long overlap -- fades over the short crossfade instead. Only this
+    /// song's sources are touched.
+    fn end_song_loop_crossfade(
+        &self,
+        song_loop: &SongLoopCrossfade,
+        crossfade_samples: u64,
+        loop_broken: bool,
+    ) {
         use crate::audio::crossfade::{CrossfadeCurve, GainEnvelope};
         let mixer = &self.output_manager.mixer;
         let now_sample = mixer.current_sample();
@@ -791,14 +801,9 @@ impl Device {
                 mixer.set_cancel_at_sample(ids, now_sample.max(1));
             }
         }
-        let ids: Vec<u64> = {
-            let sources = mixer.get_active_sources();
-            let guard = sources.read();
-            guard.iter().map(|s| s.lock().id).collect()
-        };
-        if !ids.is_empty() {
+        if !loop_broken && !song_loop.outgoing_ids.is_empty() {
             mixer.set_gain_envelope(
-                &ids,
+                &song_loop.outgoing_ids,
                 Arc::new(GainEnvelope::fade_out(
                     crossfade_samples,
                     CrossfadeCurve::Linear,
@@ -1125,20 +1130,25 @@ struct SongLoopCrossfade {
     latest_start: Option<(u64, Vec<u64>)>,
     /// Whether a missing build at the boundary has been reported.
     warned_late: bool,
+    /// The pass to start next, counting the first as 0.
+    pass: u32,
+    /// How much of the reported position the passes so far have consumed.
+    consumed: Duration,
+    /// The outgoing pass's sources, still fading while the next plays.
+    outgoing_ids: Vec<u64>,
 }
 
 /// How far ahead of a pass boundary its sources are built: long enough for a
 /// cold file open, seek and buffer warmup.
 const PASS_PREBUILD_AHEAD: Duration = Duration::from_secs(5);
 
-/// Where the current pass of a crossfading song loop is, for
-/// [`Device::song_loop_boundary`].
+/// Where a crossfading song loop is, for [`Device::song_loop_boundary`].
 struct SongLoopTiming {
-    /// Song time in the current pass.
-    song_time: Duration,
-    /// The song time the next pass starts at: the song's length less the
-    /// overlap.
-    boundary: Duration,
+    /// The playback clock now.
+    now: Duration,
+    /// When the next pass starts on the playback clock
+    /// ([`Song::loop_pass_start`], the grid the MIDI and lights keep too).
+    target: Duration,
     /// How far ahead of the boundary to schedule it.
     lookahead: Duration,
     /// The startup skew between the clock and the audio (see
@@ -1292,6 +1302,9 @@ impl AudioDevice for Device {
             build_rx: None,
             latest_start: None,
             warned_late: false,
+            pass: 1,
+            consumed: Duration::ZERO,
+            outgoing_ids: Vec::new(),
         });
         let channel_mapped_sources: GroupedSources = if song_loop.is_some() {
             build_pass_sources(&song, &playback_context, mappings, start_time, start_time)
@@ -1734,45 +1747,41 @@ impl AudioDevice for Device {
             }
 
             // A looping song with a crossfade starts each pass `overlap`
-            // before the last one ends. Section loops own the boundary while
-            // one is armed.
+            // before the last one ends, on the clock grid the MIDI and lights
+            // keep too. (It cannot loop a section; see `Player::loop_section`.)
             if let Some(song_loop) = song_loop.as_mut() {
-                if active_section.read().is_none() {
-                    // Song time in the current pass: every boundary consumes a
-                    // pass's worth of the clock, as a section loop consumes a
-                    // section's, including those scheduled but not yet heard.
-                    let consumed = *loop_time_consumed.lock()
-                        + pending_consumption
-                            .iter()
-                            .map(|(_, amount)| *amount)
-                            .sum::<Duration>();
-                    let song_time = (start_time + clock.elapsed()).saturating_sub(consumed);
-                    let boundary = song.duration().saturating_sub(song_loop.overlap);
-                    if self.song_loop_boundary(
-                        &song,
-                        song_loop,
-                        SongLoopTiming {
-                            song_time,
-                            boundary,
-                            lookahead: loop_trigger_lookahead,
-                            skew_samples: audio_clock_skew_samples,
-                            crossfade_samples,
-                        },
-                        &playback_context,
-                        mappings,
-                        &cancel_handle,
-                        &mut source_finish_flags,
-                    ) {
-                        pending_consumption.push((
-                            song_loop
-                                .latest_start
-                                .as_ref()
-                                .map(|(sample, _)| *sample)
-                                .unwrap_or_default(),
-                            boundary,
-                        ));
-                        continue 'monitor;
-                    }
+                let target = song.loop_pass_start(start_time, song_loop.pass);
+                if self.song_loop_boundary(
+                    &song,
+                    song_loop,
+                    SongLoopTiming {
+                        now: clock.elapsed(),
+                        target,
+                        lookahead: loop_trigger_lookahead,
+                        skew_samples: audio_clock_skew_samples,
+                        crossfade_samples,
+                    },
+                    &playback_context,
+                    mappings,
+                    &cancel_handle,
+                    &mut source_finish_flags,
+                ) {
+                    // The reported position restarts with the new pass: it
+                    // consumes everything played up to the pass's start,
+                    // applied when the audio gets there.
+                    let played = start_time + target;
+                    let amount = played.saturating_sub(song_loop.consumed);
+                    song_loop.consumed = played;
+                    song_loop.pass += 1;
+                    pending_consumption.push((
+                        song_loop
+                            .latest_start
+                            .as_ref()
+                            .map(|(sample, _)| *sample)
+                            .unwrap_or_default(),
+                        amount,
+                    ));
+                    continue 'monitor;
                 }
             }
 
@@ -1784,8 +1793,9 @@ impl AudioDevice for Device {
         // and the incoming pass could still be waiting to start. Cut both
         // short, as a loop break or stop does any other loop.
         if let Some(song_loop) = song_loop.as_ref() {
-            if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
-                self.end_song_loop_crossfade(song_loop, crossfade_samples);
+            let loop_broken = loop_break.load(Ordering::Relaxed);
+            if cancel_handle.is_cancelled() || loop_broken {
+                self.end_song_loop_crossfade(song_loop, crossfade_samples, loop_broken);
             }
         }
 

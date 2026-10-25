@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where one pass drives none, strobe/gobo and other discrete channels switch at the midpoint);
   MIDI from both passes plays through the overlap. Tracks listed in `loop_crossfade_cut`, such
   as a click, switch over at the midpoint instead of fading. Beats and measures count back from
-  the end of the song on its beat grid. The song editor has fields for both.
+  the end of the song on its beat grid, and the crossfade can be at most half the song. A song
+  looping this way cannot also loop a section. The song editor has fields for both.
 - **Sequence parameters (#540)**: a sequence can declare parameters, `sequence "x"(hit, bed:
   "#1E6FE0") { … }`, use them as `$hit` in its body, and bind them where it is used:
   `sequence "x"(hit: "#FFD870"), loop: 4`. Colours, groups, levels, durations and loop counts can
@@ -49,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ahead of the audio and lights a little more every pass. Passes now start on the song's own
   grid, every song length (less any `loop_crossfade`). A song with no audio still loops on its
   MIDI, having no other length.
+- **MIDI keeps playing while an armed section waits to loop**: MIDI's first play stops at the
+  first event past an armed section's end, often well before the clock gets there, and took
+  that as the end of the song -- falling silent, or in a looping song restarting it. It now
+  waits for the section to loop.
 
 ## [0.17.2] - 2026-10-25
 

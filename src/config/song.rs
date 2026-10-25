@@ -114,13 +114,17 @@ impl LoopCrossfade {
         };
         let number = |n: &str| -> Result<f64, String> {
             let n: f64 = n.trim().parse().map_err(|_| invalid())?;
-            if n.is_finite() && n > 0.0 {
-                Ok(n)
-            } else {
-                Err(format!(
+            if !(n.is_finite() && n > 0.0) {
+                return Err(format!(
                     "loop_crossfade: {value:?} must be greater than zero"
-                ))
+                ));
             }
+            // Far past any song, in any unit; a bound, so a typo cannot
+            // overflow the time arithmetic downstream.
+            if n > 1e6 {
+                return Err(format!("loop_crossfade: {value:?} is longer than any song"));
+            }
+            Ok(n)
         };
         if let Some(n) = value
             .strip_suffix("measures")
@@ -1263,5 +1267,7 @@ mod tests {
         assert!(LoopCrossfade::parse("-2beats").is_err());
         assert!(LoopCrossfade::parse("6").is_err());
         assert!(LoopCrossfade::parse("lots").is_err());
+        assert!(LoopCrossfade::parse("1e300s").is_err());
+        assert!(LoopCrossfade::parse("1e20beats").is_err());
     }
 }

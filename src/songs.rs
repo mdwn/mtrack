@@ -830,9 +830,10 @@ impl Song {
                 musical("measures")?.measures_before(measures, song_length)
             }
         };
-        if length >= song_length {
+        // At most half the song, so no more than two passes ever overlap.
+        if length > song_length / 2 {
             return Err(format!(
-                "song {}: loop_crossfade ({:.3}s) must be shorter than the song ({:.3}s)",
+                "song {}: loop_crossfade ({:.3}s) can be at most half the song ({:.3}s)",
                 config.name(),
                 length.as_secs_f64(),
                 song_length.as_secs_f64()
@@ -1901,6 +1902,16 @@ mod test {
             song.loop_pass_start(Duration::from_secs(1), 1),
             Duration::from_secs(5)
         );
+        // Started inside the overlap: the next pass starts at once, and the
+        // grid runs on from there.
+        assert_eq!(
+            song.loop_pass_start(Duration::from_secs(7), 1),
+            Duration::ZERO
+        );
+        assert_eq!(
+            song.loop_pass_start(Duration::from_secs(7), 2),
+            Duration::from_secs(6)
+        );
 
         let song = looping_song("loop_crossfade: 3beats\n")?;
         assert_eq!(song.loop_crossfade(), Some(Duration::from_millis(1500)));
@@ -1921,7 +1932,8 @@ mod test {
     #[test]
     fn bad_loop_crossfades_fail_the_song() {
         let err = |extra: &str| looping_song(extra).err().map(|e| e.to_string());
-        assert!(err("loop_crossfade: 4measures\n").is_some_and(|e| e.contains("shorter than")));
+        assert!(err("loop_crossfade: 3measures\n").is_some_and(|e| e.contains("at most half")));
+        assert!(looping_song("loop_crossfade: 2measures\n").is_ok());
         assert!(err("loop_crossfade: soon\n").is_some_and(|e| e.contains("invalid length")));
         assert!(err("loop_crossfade: 1s\nloop_crossfade_cut: [clik]\n")
             .is_some_and(|e| e.contains("\"clik\"")));
