@@ -69,6 +69,14 @@ pub struct Song {
     /// through the overlap.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     loop_crossfade_cut: Vec<String>,
+    /// How long a looping song keeps playing after a loop break (play, next
+    /// or previous), fading out while the song it gives way to starts
+    /// underneath it. `"3s"`, `"500ms"`, `"6beats"` or `"1measure"`; beats
+    /// and measures are counted on the incoming song's grid from its first
+    /// bar, so `1measure` fades out over its count-in. Omitted, the song
+    /// cuts with the short default crossfade.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    loop_break_fade: Option<String>,
     /// Named sections of the song, defined by measure boundaries.
     /// Used for section looping during playback.
     #[serde(default)]
@@ -105,24 +113,28 @@ impl LoopCrossfade {
     /// Parses `"6s"`, `"500ms"`, `"8beats"` or `"2measures"` (singular units
     /// too). The length must be greater than zero.
     pub fn parse(value: &str) -> Result<LoopCrossfade, String> {
+        LoopCrossfade::parse_field("loop_crossfade", value)
+    }
+
+    /// Parses a length as [`LoopCrossfade::parse`] does, errors naming
+    /// `field`.
+    pub fn parse_field(field: &str, value: &str) -> Result<LoopCrossfade, String> {
         let value = value.trim();
         let invalid = || {
             format!(
-                "loop_crossfade: invalid length {value:?} (expected e.g. \"6s\", \"500ms\", \
+                "{field}: invalid length {value:?} (expected e.g. \"6s\", \"500ms\", \
                  \"8beats\" or \"2measures\")"
             )
         };
         let number = |n: &str| -> Result<f64, String> {
             let n: f64 = n.trim().parse().map_err(|_| invalid())?;
             if !(n.is_finite() && n > 0.0) {
-                return Err(format!(
-                    "loop_crossfade: {value:?} must be greater than zero"
-                ));
+                return Err(format!("{field}: {value:?} must be greater than zero"));
             }
             // Far past any song, in any unit; a bound, so a typo cannot
             // overflow the time arithmetic downstream.
             if n > 1e6 {
-                return Err(format!("loop_crossfade: {value:?} is longer than any song"));
+                return Err(format!("{field}: {value:?} is longer than any song"));
             }
             Ok(n)
         };
@@ -201,6 +213,7 @@ impl Song {
             loop_playback: false,
             loop_crossfade: None,
             loop_crossfade_cut: Vec::new(),
+            loop_break_fade: None,
             sections: Vec::new(),
             tempo: None,
             metronome: None,
@@ -386,6 +399,9 @@ impl Song {
         if let Err(e) = self.loop_crossfade() {
             errors.push(e);
         }
+        if let Err(e) = self.loop_break_fade() {
+            errors.push(e);
+        }
 
         if errors.is_empty() {
             Ok(())
@@ -457,6 +473,15 @@ impl Song {
     /// Tracks that switch over halfway through the loop crossfade.
     pub fn loop_crossfade_cut(&self) -> &[String] {
         &self.loop_crossfade_cut
+    }
+
+    /// How long a looping song fades out over after a loop break, as
+    /// configured.
+    pub fn loop_break_fade(&self) -> Result<Option<LoopCrossfade>, String> {
+        self.loop_break_fade
+            .as_deref()
+            .map(|value| LoopCrossfade::parse_field("loop_break_fade", value))
+            .transpose()
     }
 
     /// Gets the named sections of this song.
