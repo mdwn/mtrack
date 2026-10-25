@@ -60,6 +60,7 @@ impl Player {
             if self.is_current_song_looping() {
                 info!("Breaking out of song loop to advance playlist.");
                 self.fade_out_current_audio();
+                self.loop_break_to_prev.store(false, Ordering::Relaxed);
                 self.loop_break.store(true, Ordering::Relaxed);
                 if let Some(ref handles) = *join {
                     handles.cancel.cancel();
@@ -202,6 +203,7 @@ impl Player {
                 // it. See decide_cleanup_action.
                 let self_cancelled = cancel_handle_for_cleanup.cancelled_due_to_failure();
                 let loop_broken = player.loop_break.swap(false, Ordering::Relaxed);
+                let back = player.loop_break_to_prev.swap(false, Ordering::Relaxed);
 
                 info!(
                     song = song.name(),
@@ -219,8 +221,14 @@ impl Player {
                 }
 
                 // Natural finish or loop break: advance playlist and clean up.
+                // A loop broken by previous goes back instead.
                 let mut join = player.join.lock().await;
-                if let Some(song) = playlist.next() {
+                let moved = if loop_broken && back {
+                    playlist.prev()
+                } else {
+                    playlist.next()
+                };
+                if let Some(song) = moved {
                     player.emit_song_change(&song);
                 }
 
