@@ -68,6 +68,10 @@ takes effect — `validate_lighting` reports it as an `unused-parameter` warning
   - `chase`: `left_to_right | right_to_left | top_to_bottom | bottom_to_top |
     clockwise | counter_clockwise` (where the mask travels).
   - No other effect reads `direction`; on `rainbow` it is accepted and ignored.
+- `transition` (`cycle`, `chase`): `snap | fade` (`crossfade` = `fade`). A
+  `cycle` also takes `hue`, a fade around the colour wheel: use it when
+  consecutive colours are far apart (yellow → blue, red → cyan), whose plain
+  fade passes through grey.
 - `layer`: `background | midground | foreground` (grandMA-inspired layers).
 - `blend_mode`: `replace | multiply | add | overlay | screen`.
 
@@ -128,6 +132,51 @@ show "Song" {
     stop sequence "Verse"
 }
 ```
+
+A pass lasts until its last effect ends. To loop on the bar when the effects
+end early, declare the pass length, in the same units as `duration:`:
+
+```
+sequence "Centre Beats", length: 1measure {
+    @1/1
+    centre: static color: "blue", duration: 1beat
+    @1/3
+    centre: static color: "white", duration: 1.5beats
+}
+```
+
+Each pass then starts one measure after the last; an effect running past the
+length is cut when the next pass starts, and a cue at or past the length is a
+parse error. Padding cues that only stretch a pass are no longer needed.
+
+A sequence can take parameters, written `$name` in its body and bound where
+it is used. One without a default must be given at every use; values are
+substituted as written (a quoted colour, a group, a number, a duration):
+
+```
+sequence "Strike"(hit, bed: "#1E6FE0", target: all_wash) {
+    @1/1
+    $target: static color: $bed, layer: background, duration: 2measures
+    @1/1
+    $target: static color: $hit, layer: foreground, duration: 1beat
+}
+
+show "Song" {
+    @1/1
+    sequence "Strike"(hit: "#FFD870"), loop: 4
+}
+```
+
+Prefer one parameterized sequence over copies that differ only by colour or
+group. `stop sequence "Strike"` stops every use of it.
+
+Sequences shared by several songs can live in one file. `include
+"../common/looks.light"` at the top of a file brings in that file's
+sequences; the path is relative to the including file's folder, and the
+included file may define only sequences (and include others). Its sequences
+run at the including song's tempo. A name defined in two files is an error.
+Validating source with an `include` needs `song`, which gives it a folder to
+resolve against.
 
 For one-off repetition without naming, use an inline loop. Timestamps inside
 the block are relative to the loop's start:

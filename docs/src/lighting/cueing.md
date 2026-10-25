@@ -187,6 +187,90 @@ show "Song" {
   it. `pingpong` and `random` are accepted by the grammar but rejected at parse time as not
   implemented.
 
+**Sequence length:**
+
+A pass of a sequence normally lasts until its last effect ends, so a looped sequence whose last
+effect stops short of the bar drifts off it. Declare `length:` to fix how long one pass lasts,
+counted from the sequence's first cue:
+
+```light
+sequence "Centre Beats", length: 1measure {
+    @1/1
+    centre: static color: "blue", duration: 1beat
+
+    @1/3
+    centre: static color: "white", duration: 1.5beats
+}
+```
+
+Looped, each pass starts exactly one measure after the one before, even though the effects end
+half a beat early. An effect that runs past the length is cut when the next pass starts. The
+length takes the same units as `duration:` (`2s`, `500ms`, `4beats`, `1measure`). Every cue must
+start inside it: a cue at or past the length is a parse error.
+
+**Sequence parameters (colours, groups and values bound where it is used):**
+
+A sequence can declare parameters after its name, and use each as `$name` in its body. Every use
+binds them, so a figure that differs between songs only by colour or group is written once:
+
+```light
+sequence "Strike"(hit, bed: "#1E6FE0", target: all_wash) {
+    @1/1
+    $target: static color: $bed, layer: background, duration: 2measures
+
+    @1/1
+    $target: static color: $hit, layer: foreground, duration: 1beat
+}
+
+show "Song" {
+    @1/1
+    sequence "Strike"(hit: "#FFD870"), loop: 4
+
+    @9/1
+    sequence "Strike"(hit: "#FFFFFF", bed: "#C8402A", target: front_wash)
+}
+```
+
+- A parameter with a default (`bed: "#1E6FE0"`) may be left out; one without (`hit`) must be
+  given wherever the sequence is used.
+- A value is substituted as written, so anything a parameter can stand for works: a colour in
+  quotes, a group, a number, a percentage, a duration, a `loop:` count.
+- A sequence can pass its own parameters on: `sequence "Inner"(colour: $hit)`.
+- Errors name the line the sequence is used on and the line in its body, e.g.
+  `line 40: in sequence "Strike" used here: line 3: Invalid color '#X'`. A missing or unknown
+  parameter, and a `$name` the sequence does not declare, are errors too.
+- `stop sequence "Strike"` stops every use of it, whatever its parameters.
+- A parameter stands for one value. To vary a list of groups, pass a group defined for it.
+
+**Sharing sequences between files:**
+
+`include` brings in the sequences another `.light` file defines, so a set's shared figures live
+in one place:
+
+```light
+include "../common/isenmor.light"
+
+show "Song" {
+    @1/1
+    sequence "Strike"(hit: "#FFD870"), loop: 4
+}
+```
+
+- The path is relative to the folder of the file that includes it, and must name a `.light`
+  file.
+- An included file defines only sequences, and may include other files; a show, tempo, fixture
+  type or venue in it is an error.
+- Its sequences play under the tempo of the file that includes them, so beats and measures
+  follow each song.
+- A sequence name defined in two files is an error, rather than one silently replacing the
+  other. A file included twice, directly or through another file, is read once.
+- Errors in an included sequence name its file and line, e.g. `../common/isenmor.light: line 12:
+  …`.
+- An included file's sequences are checked where they are used, so a shared library may hold
+  sequences in bars and beats that a song without a tempo never plays.
+- Through the web UI or MCP, an include must stay inside the songs folder.
+- Editing an included file reloads the shows that include it, like editing the show itself.
+
 ## Measure Offsets
 
 `offset N measures` shifts the measure numbering for the cues that follow it, so a cue written

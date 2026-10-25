@@ -23,7 +23,7 @@ use tracing::info;
 use crate::audio::format::SampleFormat;
 use crate::calibrate;
 use crate::config;
-use crate::lighting::parser::parse_light_shows;
+use crate::lighting::parser::parse_light_file;
 use crate::lighting::validation::validate_groups;
 use crate::playlist::Playlist;
 use crate::songs;
@@ -372,7 +372,7 @@ pub fn verify_light_show(show_path: &str, config_path: Option<&str>) -> Result<(
     // Verified standalone, so there is no song to inherit a tempo from: a show
     // that relies on its song's tempo cannot be checked here, and will report
     // that it needs a tempo section.
-    let shows = match parse_light_shows(&content) {
+    let shows = match parse_light_file(&content, Some(path), None) {
         Ok(shows) => shows,
         Err(e) => {
             eprintln!("❌ Syntax error in light show:");

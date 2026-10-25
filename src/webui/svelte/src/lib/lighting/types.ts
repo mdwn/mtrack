@@ -158,8 +158,17 @@ export interface LayerCommand {
 /** Reference to a named sequence */
 export interface SequenceRef {
   name: string;
+  /** Parameters bound here, in source order, values as written. */
+  args?: SequenceArg[];
   loop?: string;
   stop?: boolean;
+}
+
+/** A `name: value` in a sequence's parameter list or a reference's arguments. */
+export interface SequenceArg {
+  name: string;
+  /** As written: a quoted colour, a group, a number, a `$param`… */
+  value?: string;
 }
 
 /** Sub-lane content type for multi-lane show rendering */
@@ -183,6 +192,10 @@ export interface Cue {
 /** A named sequence of cues */
 export interface Sequence {
   name: string;
+  /** Parameters (`$name` in the body), with their defaults if any. */
+  params?: SequenceArg[];
+  /** Declared pass length (`length: 1measure`), as written. */
+  length?: string;
   cues: Cue[];
 }
 
@@ -194,6 +207,8 @@ export interface LightShow {
 
 /** Top-level parsed light file */
 export interface LightFile {
+  /** `include "…"` paths, relative to this file's folder, as written. */
+  includes?: string[];
   tempo?: TempoSection;
   sequences: Sequence[];
   shows: LightShow[];

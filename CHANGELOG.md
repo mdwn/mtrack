@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Sequence parameters (#540)**: a sequence can declare parameters, `sequence "x"(hit, bed:
+  "#1E6FE0") { … }`, use them as `$hit` in its body, and bind them where it is used:
+  `sequence "x"(hit: "#FFD870"), loop: 4`. Colours, groups, levels, durations and loop counts can
+  all be parameters, and a sequence can pass its own on to one it uses. A parameter with no
+  default must be bound at every use. Errors name both the line of the use and the line in the
+  sequence. The web UI's lighting editor keeps parameters and arguments when it saves.
+- **`include` (#540)**: `include "../common/looks.light"` brings in the sequences another file
+  defines, its path relative to the including file. An included file defines only sequences (and
+  may include others); they play under the including file's tempo. A sequence defined in two
+  files is an error, and errors in an included sequence name its file. Editing an included file
+  reloads the shows that use it. Sequences from an included file are checked where they are used,
+  so a shared library may hold sequences a song without a tempo never plays. The web UI and the
+  MCP lighting tools resolve includes where the file is or will be saved (`validate_lighting`
+  takes an optional `file`), and keep them inside the songs folder.
+- **Hue-wheel fades on cycles (#541)**: `cycle … transition: hue` fades around the colour wheel,
+  turning the hue the short way while blending saturation and brightness. A plain `fade` blends
+  red, green and blue separately, so colours far apart pass through a dull midpoint (yellow to
+  blue is grey halfway); a hue fade stays vivid. `fade` is unchanged.
+- **Sequence `length:` (#541)**: `sequence "x", length: 1measure { … }` fixes how long one pass of
+  a sequence lasts, in the same units as `duration:`. A looped sequence whose effects end before
+  the bar now restarts on the bar without a padding cue to stretch it, and an effect that runs
+  past the length is cut when the next pass starts. A cue starting at or past the length is a
+  parse error. The web UI's lighting editor keeps the length when it saves the file.
+
 ## [0.17.2] - 2026-10-25
 
 Upgrade note: a lighting show with an invalid `color:` or level value now fails to parse instead

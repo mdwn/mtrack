@@ -16,6 +16,8 @@ mod effect_parse;
 mod error;
 pub(crate) mod fixture_venue; // Make accessible for tests
 pub(crate) mod grammar;
+mod include;
+mod sequences;
 mod show;
 mod tempo_parse;
 mod types;
@@ -26,5 +28,8 @@ mod tests;
 
 // Re-export public items
 pub use fixture_venue::{parse_fixture_types, parse_venues};
-pub use show::{parse_light_shows, parse_light_shows_with_tempo};
+pub use include::included_files;
+pub use show::{
+    parse_light_file, parse_light_file_within, parse_light_shows, parse_light_shows_with_tempo,
+};
 pub use types::{Cue, Effect, LayerCommand, LayerCommandType, LightShow};

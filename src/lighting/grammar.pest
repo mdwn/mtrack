@@ -12,7 +12,11 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 // Main file rule - can contain any combination of fixture types, venues, light shows, sequences, and tempo
-file = { SOI ~ (fixture_type | venue | light_show | sequence | tempo)* ~ EOI }
+file = { SOI ~ (include | fixture_type | venue | light_show | sequence | tempo)* ~ EOI }
+
+// `include "common.light"`: the sequences another file defines, its path
+// relative to this file's folder.
+include = { "include" ~ string }
 
 // Light show rules
 // Allow optional show names so a single unnamed show per file is valid.
@@ -26,7 +30,20 @@ show_content = { "{" ~ (tempo | cue)* ~ "}" }
 cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command | offset_command | reset_measures_command | inline_loop)* }
 
 // Sequence definition rules
-sequence = { "sequence" ~ sequence_name ~ sequence_content }
+// `length:` fixes how long one pass lasts, so a loop restarts on time however
+// long its last effect runs.
+// Parameters, `(hit, bed: "#1E6FE0")`, are written `$hit` in the body and bound
+// where the sequence is used; one without a default must be bound there.
+sequence = { "sequence" ~ sequence_name ~ sequence_param_decls? ~ ("," ~ sequence_length)? ~ sequence_content }
+
+// One sequence definition alone, for re-parsing it with its parameters bound.
+sequence_source = { SOI ~ sequence ~ EOI }
+
+sequence_param_decls = { "(" ~ (sequence_param_decl ~ ("," ~ sequence_param_decl)*)? ~ ")" }
+
+sequence_param_decl = { identifier ~ (":" ~ sequence_arg_value)? }
+
+sequence_length = { "length" ~ ":" ~ time_parameter }
 
 sequence_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
@@ -35,7 +52,19 @@ sequence_content = { "{" ~ (tempo | sequence_cue)* ~ "}" }
 sequence_cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command | offset_command | reset_measures_command | inline_loop)* }
 
 // Sequence reference in a cue
-sequence_reference = { "sequence" ~ sequence_name ~ (","? ~ sequence_params)? }
+sequence_reference = { "sequence" ~ sequence_name ~ sequence_args? ~ (","? ~ sequence_params)? }
+
+sequence_args = { "(" ~ (sequence_arg ~ ("," ~ sequence_arg)*)? ~ ")" }
+
+sequence_arg = { identifier ~ ":" ~ sequence_arg_value }
+
+// Substituted as written wherever the body says `$name`: a quoted string (a
+// colour), a `$name` passed through from an enclosing sequence, or a bare
+// token such as a group, number, percentage or duration.
+sequence_arg_value = @{ string | param_ref | (!("," | ")" | "(" | "\"" | "#" | WHITESPACE | NEWLINE) ~ ANY)+ }
+
+// A sequence parameter, replaced by its bound value before the body is parsed.
+param_ref = @{ "$" ~ identifier }
 
 sequence_params = { sequence_param ~ ("," ~ sequence_param)* }
 
@@ -43,7 +72,7 @@ sequence_param = { sequence_param_name ~ ":" ~ sequence_param_value }
 
 sequence_param_name = { "loop" }
 
-sequence_param_value = { loop_parameter | number_value }
+sequence_param_value = { param_ref | loop_parameter | number_value }
 
 // Stop sequence command
 stop_sequence_command = { "stop" ~ "sequence" ~ sequence_name }
@@ -69,7 +98,7 @@ layer_command_param = { layer_command_param_name ~ ":" ~ layer_command_param_val
 
 layer_command_param_name = { "layer" | "intensity" | "speed" }
 
-layer_command_param_value = { layer_parameter | percentage | number_value }
+layer_command_param_value = { param_ref | layer_parameter | percentage | number_value }
 
 time_string = @{ "@" ~ (time_mm_ss_mmm | time_ss_mmm) }
 
@@ -84,7 +113,7 @@ effect = { group_list ~ ":" ~ effect_type ~ (","? ~ parameters)? }
 
 group_list = { group_name ~ ("," ~ group_name)* }
 
-group_name = { (ASCII_ALPHANUMERIC | "_" | "-")+ }
+group_name = { param_ref | (ASCII_ALPHANUMERIC | "_" | "-")+ }
 
 effect_type = { "static" | "cycle" | "strobe" | "pulse" | "chase" | "dimmer" | "rainbow" | "move" }
 
@@ -96,6 +125,7 @@ parameter = { parameter_name ~ ":" ~ parameter_value }
 parameter_name = { identifier | string }
 
 parameter_value = { 
+    param_ref |
     degrees_parameter |
     percentage |
     time_parameter |
@@ -167,7 +197,7 @@ step_content = { step_param ~ ("," ~ step_param)* }
 
 step_param = { parameter_name ~ ":" ~ parameter_value }
 
-transition_parameter = { "snap" | "fade" | "crossfade" }
+transition_parameter = { "snap" | "fade" | "crossfade" | "hue" }
 
 layer_parameter = { "background" | "midground" | "foreground" }
 

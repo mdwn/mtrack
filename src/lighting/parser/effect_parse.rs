@@ -455,11 +455,12 @@ pub(crate) fn apply_parameters_to_effect_type(
                         *transition = match clean_string_value(value).as_str() {
                             "snap" => CycleTransition::Snap,
                             "fade" | "crossfade" => CycleTransition::Fade,
+                            "hue" => CycleTransition::Hue,
                             other => {
                                 return Err(format!(
-                                    "Invalid transition: '{}' (expected: snap, fade, crossfade)",
-                                    other
-                                )
+                                "Invalid transition: '{}' (expected: snap, fade, crossfade, hue)",
+                                other
+                            )
                                 .into())
                             }
                         };
@@ -1353,6 +1354,38 @@ mod tests {
         } else {
             panic!("Expected Chase");
         }
+    }
+
+    #[test]
+    fn hue_transition_is_for_cycles_only() {
+        let mut params = HashMap::new();
+        params.insert("transition".to_string(), "hue".to_string());
+        let cycle = EffectType::ColorCycle {
+            colors: vec![],
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: CycleDirection::Forward,
+            transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
+        };
+        let result = apply_parameters_to_effect_type(cycle, &params, &[], &default_ctx())
+            .unwrap()
+            .0;
+        assert!(matches!(
+            result,
+            EffectType::ColorCycle {
+                transition: CycleTransition::Hue,
+                ..
+            }
+        ));
+
+        let chase = EffectType::Chase {
+            pattern: ChasePattern::Linear,
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: ChaseDirection::LeftToRight,
+            transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
+        };
+        assert!(apply_parameters_to_effect_type(chase, &params, &[], &default_ctx()).is_err());
     }
 
     #[test]

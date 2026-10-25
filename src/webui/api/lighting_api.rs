@@ -313,44 +313,54 @@ pub(super) async fn get_lighting_file(
     }
 }
 
+/// Where lighting file `name` is, or would be written, under the songs root.
+fn resolve_lighting_path(
+    state: &WebUiState,
+    name: &str,
+) -> Result<std::path::PathBuf, super::super::safe_path::SafePathError> {
+    use super::super::safe_path::{SafePath, SafePathError, VerifiedRoot};
+
+    let root = VerifiedRoot::new(&state.songs_path)?;
+
+    // Resolve the file path under the songs root. For existing files, SafePath::resolve
+    // canonicalizes and verifies containment. For new files, resolve the parent directory
+    // and join the filename to it.
+    let candidate = root.as_path().join(name);
+    match SafePath::resolve(&candidate, &root) {
+        Ok(p) => Ok(p.as_path().to_path_buf()),
+        Err(_) => {
+            // File doesn't exist — resolve the parent and join the filename.
+            let (parent, filename) = match (candidate.parent(), candidate.file_name()) {
+                (Some(p), Some(f)) => (p, f),
+                _ => return Err(SafePathError::InvalidName),
+            };
+            let safe_parent = SafePath::resolve(parent, &root)?;
+            Ok(safe_parent.as_path().join(filename))
+        }
+    }
+}
+
 /// PUT /api/lighting/:name — validates and atomically writes a lighting DSL file.
 pub(super) async fn put_lighting_file(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
     body: String,
 ) -> impl IntoResponse {
-    use super::super::safe_path::{SafePath, SafePathError, VerifiedRoot};
-
-    let root = match VerifiedRoot::new(&state.songs_path) {
-        Ok(r) => r,
+    let verified_path = match resolve_lighting_path(&state, &name) {
+        Ok(path) => path,
         Err(e) => return e.into_response(),
-    };
-
-    // Resolve the file path under the songs root. For existing files, SafePath::resolve
-    // canonicalizes and verifies containment. For new files, resolve the parent directory
-    // and join the filename to it.
-    let candidate = root.as_path().join(&name);
-    let verified_path = match SafePath::resolve(&candidate, &root) {
-        Ok(p) => p.as_path().to_path_buf(),
-        Err(_) => {
-            // File doesn't exist — resolve the parent and join the filename.
-            let (parent, filename) = match (candidate.parent(), candidate.file_name()) {
-                (Some(p), Some(f)) => (p, f),
-                _ => return SafePathError::InvalidName.into_response(),
-            };
-            let safe_parent = match SafePath::resolve(parent, &root) {
-                Ok(p) => p,
-                Err(e) => return e.into_response(),
-            };
-            safe_parent.as_path().join(filename)
-        }
     };
 
     // Validate against the tempo the owning song loads this file with. A show
     // inheriting its song's tempo is valid content that a tempo-less parse
     // rejects, so writing it through the UI would fail for no real reason.
     let tempo = song_tempo_for_path(&state, &verified_path);
-    if let Err(errors) = config_io::validate_light_show(&body, tempo.as_ref()) {
+    if let Err(errors) = config_io::validate_light_show(
+        &body,
+        Some(&verified_path),
+        Some(&state.songs_path),
+        tempo.as_ref(),
+    ) {
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
 
@@ -413,6 +423,9 @@ pub(super) async fn delete_lighting_file(
 #[derive(serde::Deserialize)]
 pub(super) struct ValidateQuery {
     song: Option<String>,
+    /// The lighting file the source is a draft of, as `PUT /api/lighting/:name`
+    /// names it, so its `include`s resolve where saving it would.
+    file: Option<String>,
 }
 
 /// POST /api/lighting/validate — validates lighting DSL content without saving.
@@ -425,12 +438,24 @@ pub(super) async fn validate_lighting(
     Query(query): Query<ValidateQuery>,
     body: String,
 ) -> impl IntoResponse {
-    let tempo = query
+    let song = query
         .song
         .as_deref()
-        .and_then(|name| state.player.songs().get(name).ok())
-        .and_then(|song| song.lighting_tempo_map());
-    match config_io::validate_light_show(&body, tempo.as_ref()) {
+        .and_then(|name| state.player.songs().get(name).ok());
+    let tempo = song.as_ref().and_then(|song| song.lighting_tempo_map());
+    let path = match query.file.as_deref() {
+        Some(file) => match resolve_lighting_path(&state, file) {
+            Ok(path) => Some(path),
+            Err(e) => return e.into_response(),
+        },
+        None => song.as_ref().map(|song| song.lighting_draft_path()),
+    };
+    match config_io::validate_light_show(
+        &body,
+        path.as_deref(),
+        Some(&state.songs_path),
+        tempo.as_ref(),
+    ) {
         Ok(()) => (StatusCode::OK, Json(json!({"valid": true}))).into_response(),
         Err(errors) => (
             StatusCode::BAD_REQUEST,
@@ -3462,6 +3487,47 @@ show "test" {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn validate_lighting_resolves_includes_from_the_named_file() {
+        let (state, _dir) = test_state();
+        let songs = state.songs_path.clone();
+        std::fs::create_dir_all(songs.join("song/lighting")).unwrap();
+        std::fs::write(
+            songs.join("common.light"),
+            "sequence \"wash\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n",
+        )
+        .unwrap();
+        std::fs::write(songs.parent().unwrap().join("outside.light"), "").unwrap();
+        let validate = |file: &str, body: &'static str| {
+            let app = router().with_state(state.clone());
+            let uri = format!("/lighting/validate?file={file}");
+            async move {
+                let response = app
+                    .oneshot(
+                        http::Request::builder()
+                            .method("POST")
+                            .uri(uri)
+                            .body(Body::from(body))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                (response.status(), response_body(response).await)
+            }
+        };
+        let show = "include \"../../common.light\"\nshow \"test\" {\n    @00:00.000\n    sequence \"wash\"\n}\n";
+
+        let (status, body) = validate("song/lighting/show.light", show).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        // From another folder the same include misses.
+        let (status, _) = validate("song/show.light", show).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // And it may not leave the songs folder.
+        let (status, body) = validate("song/show.light", "include \"../../outside.light\"\n").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("outside the songs folder"), "{body}");
     }
 
     #[tokio::test]

@@ -2422,6 +2422,113 @@ async fn mcp_write_song_lighting_registers_the_show() -> Result<(), Box<dyn Erro
 }
 
 // ---------------------------------------------------------------------------
+// Test 3c-sexies-ter: lighting with an `include` can be written and patched
+// ---------------------------------------------------------------------------
+
+/// Whether a tool call failed: a JSON-RPC error or an error result.
+fn tool_is_error(response: &Value) -> bool {
+    response.get("error").is_some() || response["result"]["isError"] == true
+}
+
+/// Write, patch and validate all resolve a source's `include`s where the file
+/// lives (or will), confined to the songs folder.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_lighting_tools_resolve_includes() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let song = "DSL Light Show Song";
+    let songs_dir = fixture.root.join("songs");
+    std::fs::create_dir_all(songs_dir.join("common"))?;
+    std::fs::write(
+        songs_dir.join("common/looks.light"),
+        "sequence \"wash\"(colour: \"blue\") {\n    @00:00.000\n    all_lights: static color: $colour, duration: 4s\n}\n",
+    )?;
+    std::fs::write(
+        fixture.root.join("outside.light"),
+        "sequence \"away\" {\n    @00:00.000\n    all_lights: static color: \"red\", duration: 4s\n}\n",
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // New file: it lands in `<song>/lighting/`, two folders below `common/`.
+    let source = "include \"../../common/looks.light\"\n\nshow \"Shared\" {\n    @00:00.000\n    sequence \"wash\"\n}\n";
+    let validate = call_tool(
+        &client,
+        &url,
+        &session,
+        1001,
+        "validate_lighting",
+        json!({"song": song, "file": "shared.light", "source": source}),
+    )
+    .await;
+    assert!(
+        !tool_is_error(&validate),
+        "validates where it will be written: {validate}"
+    );
+    let write = call_tool(
+        &client,
+        &url,
+        &session,
+        1002,
+        "write_song_lighting",
+        json!({"song": song, "file": "shared.light", "source": source}),
+    )
+    .await;
+    assert!(!tool_is_error(&write), "an include can be written: {write}");
+
+    let patch = call_tool(
+        &client,
+        &url,
+        &session,
+        1003,
+        "patch_song_lighting",
+        json!({
+            "song": song,
+            "file": "shared.light",
+            "old_string": "sequence \"wash\"\n",
+            "new_string": "sequence \"wash\"(colour: \"red\")\n",
+        }),
+    )
+    .await;
+    assert!(
+        !tool_is_error(&patch),
+        "a file with an include can be patched: {patch}"
+    );
+
+    let outside = call_tool(
+        &client,
+        &url,
+        &session,
+        1004,
+        "validate_lighting",
+        json!({
+            "song": song,
+            "file": "shared.light",
+            "source": "include \"../../../outside.light\"\n",
+        }),
+    )
+    .await;
+    assert!(
+        outside.to_string().contains("outside the songs folder"),
+        "an include may not leave the songs folder: {outside}"
+    );
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3c-sexies-bis: a stray root-level file does not move a new show (#516)
 // ---------------------------------------------------------------------------
 

@@ -20,6 +20,7 @@ import type {
   CueEffect,
   LayerCommand,
   SequenceRef,
+  SequenceArg,
 } from "./types";
 
 /**
@@ -27,6 +28,11 @@ import type {
  */
 export function serializeLightFile(file: LightFile): string {
   const parts: string[] = [];
+
+  if (file.includes?.length) {
+    for (const path of file.includes) parts.push(`include "${path}"`);
+    parts.push("");
+  }
 
   // Tempo block
   if (file.tempo) {
@@ -36,7 +42,9 @@ export function serializeLightFile(file: LightFile): string {
 
   // Sequences
   for (const seq of file.sequences) {
-    parts.push(`sequence "${seq.name}" {`);
+    const params = seq.params ? serializeArgList(seq.params) : "";
+    const length = seq.length ? `, length: ${seq.length}` : "";
+    parts.push(`sequence "${seq.name}"${params}${length} {`);
     parts.push(serializeCues(seq.cues));
     parts.push("}");
     parts.push("");
@@ -164,7 +172,7 @@ function serializeEffect(cueEffect: CueEffect): string {
   const usesColor = effect.type === "static" || effect.type === "cycle";
   if (usesColor) {
     for (const color of effect.colors) {
-      parts.push(`color: "${color}"`);
+      parts.push(`color: ${quoted(color)}`);
     }
   }
 
@@ -208,7 +216,7 @@ function serializeEffect(cueEffect: CueEffect): string {
     parts.push(`brightness: ${effect.brightness}`);
   // `move`: a focus point or explicit angles, never both.
   if (effect.focus !== undefined && effect.focus !== "")
-    parts.push(`focus: "${effect.focus}"`);
+    parts.push(`focus: ${quoted(effect.focus)}`);
   else {
     if (effect.pan !== undefined && effect.pan !== "")
       parts.push(`pan: ${withDeg(effect.pan)}`);
@@ -216,7 +224,7 @@ function serializeEffect(cueEffect: CueEffect): string {
       parts.push(`tilt: ${withDeg(effect.tilt)}`);
   }
   if (effect.from !== undefined && effect.from !== "")
-    parts.push(`from: "${effect.from}"`);
+    parts.push(`from: ${quoted(effect.from)}`);
   else {
     if (effect.from_pan !== undefined && effect.from_pan !== "")
       parts.push(`from_pan: ${withDeg(effect.from_pan)}`);
@@ -239,7 +247,17 @@ function serializeEffect(cueEffect: CueEffect): string {
 /** An angle as the DSL wants it: `45deg`; a bare number gets the unit. */
 function withDeg(value: string): string {
   const v = value.trim();
-  return v.endsWith("deg") ? v : `${v}deg`;
+  return v.endsWith("deg") || isParam(v) ? v : `${v}deg`;
+}
+
+/** A sequence parameter, `$name`, substituted before the value is read. */
+function isParam(value: string): boolean {
+  return /^\$[A-Za-z_][\w-]*$/.test(value.trim());
+}
+
+/** A string value in quotes, unless it is a parameter, which must stay bare. */
+function quoted(value: string): string {
+  return isParam(value) ? value.trim() : `"${value}"`;
 }
 
 function serializeLayerCommand(cmd: LayerCommand): string {
@@ -254,6 +272,15 @@ function serializeSequenceRef(ref: SequenceRef): string {
   const parts: string[] = [];
   if (ref.stop) parts.push("stop ");
   parts.push(`sequence "${ref.name}"`);
+  if (ref.args && !ref.stop) parts.push(serializeArgList(ref.args));
   if (ref.loop && !ref.stop) parts.push(` loop: ${ref.loop}`);
   return parts.join("");
+}
+
+/** `(name: value, …)`; a parameter with no default is its name alone. */
+function serializeArgList(args: SequenceArg[]): string {
+  const items = args.map((a) =>
+    a.value === undefined ? a.name : `${a.name}: ${a.value}`,
+  );
+  return `(${items.join(", ")})`;
 }

@@ -64,7 +64,11 @@ Cycles through a list of colors continuously. Colors transition smoothly or inst
 - `color`: Multiple color values (e.g., `color: "red", color: "green", color: "blue"`)
 - `speed`: Cycles per second, or tempo-aware (e.g., `1.5`, `1measure`, `2beats`). Default `1.0`
 - `direction`: `forward` (default), `backward`, or `pingpong`
-- `transition`: `snap` (instant, the default) or `fade` (smooth; `crossfade` means the same)
+- `transition`: `snap` (instant, the default), `fade` (smooth; `crossfade` means the same), or
+  `hue`: a fade around the colour wheel. A plain fade blends red, green and blue separately, so
+  colours far apart on the wheel pass through a dull midpoint (yellow to blue is grey halfway).
+  `hue` turns the hue the short way instead, blending saturation and brightness, so the colour
+  stays vivid; colours opposite each other turn through red.
 - `duration`: **Required** (or `hold_time`). Total duration of the effect (e.g., `10s`,
   `4measures`)
 

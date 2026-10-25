@@ -22,6 +22,7 @@ import type {
   EffectType,
   LayerCommand,
   SequenceRef,
+  SequenceArg,
   Layer,
   BlendMode,
 } from "./types";
@@ -63,11 +64,28 @@ export function parseLightFile(dsl: string): LightFile {
     }
 
     // Sequence block
-    const seqMatch = line.match(/^sequence\s+"([^"]+)"\s*\{/);
-    if (seqMatch) {
+    const seqMatch = line.match(/^sequence\s+"([^"]+)"\s*(.*)$/);
+    const seqHead = seqMatch && splitArgList(seqMatch[2]);
+    const lengthMatch = seqHead?.rest.match(
+      /^(?:,\s*length\s*:\s*([^\s{]+)\s*)?\{/,
+    );
+    if (seqMatch && seqHead && lengthMatch) {
       const [seq, newI] = parseCueBlock(lines, i + 1);
-      result.sequences.push({ name: seqMatch[1], cues: seq });
+      result.sequences.push({
+        name: seqMatch[1],
+        ...(seqHead.args ? { params: seqHead.args } : {}),
+        ...(lengthMatch[1] ? { length: lengthMatch[1] } : {}),
+        cues: seq,
+      });
       i = newI;
+      continue;
+    }
+
+    // Include: sequences from another file
+    const includeMatch = line.match(/^include\s+"([^"]+)"/);
+    if (includeMatch) {
+      (result.includes ??= []).push(includeMatch[1]);
+      i++;
       continue;
     }
 
@@ -191,6 +209,45 @@ function parseTempoBlock(
 }
 
 /**
+ * A leading `(name: value, …)` list, as on a sequence definition or
+ * reference, and the text after it. Commas and parentheses inside quotes
+ * belong to the value.
+ */
+function splitArgList(text: string): {
+  args?: SequenceArg[];
+  rest: string;
+} {
+  const s = text.trimStart();
+  if (!s.startsWith("(")) return { rest: s };
+  const items: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let i = 1; i < s.length; i++) {
+    const c = s[i];
+    if (c === '"') quoted = !quoted;
+    if (!quoted && (c === "," || c === ")")) {
+      if (current.trim() !== "") items.push(current.trim());
+      current = "";
+      if (c === ")") {
+        const args = items.map((item): SequenceArg => {
+          const colon = item.indexOf(":");
+          return colon < 0
+            ? { name: item }
+            : {
+                name: item.slice(0, colon).trim(),
+                value: item.slice(colon + 1).trim(),
+              };
+        });
+        return { args, rest: s.slice(i + 1).trimStart() };
+      }
+      continue;
+    }
+    current += c;
+  }
+  return { rest: s };
+}
+
+/**
  * Parse a block of cues inside a show or sequence { ... }.
  * Returns the cues and the line index after the closing brace.
  */
@@ -262,16 +319,14 @@ function parseCueBlock(lines: string[], startIdx: number): [Cue[], number] {
     }
 
     // Sequence reference: sequence "name"
-    const seqRefMatch = line.match(
-      /^(?:stop\s+)?sequence\s+"([^"]+)"(?:[,\s]+(.*))?/,
-    );
+    const seqRefMatch = line.match(/^(?:stop\s+)?sequence\s+"([^"]+)"(.*)$/);
     if (seqRefMatch) {
       const ref: SequenceRef = { name: seqRefMatch[1] };
       if (line.startsWith("stop")) ref.stop = true;
-      if (seqRefMatch[2]) {
-        const loopM = seqRefMatch[2].match(/loop:\s*(\w+)/);
-        if (loopM) ref.loop = loopM[1];
-      }
+      const { args, rest } = splitArgList(seqRefMatch[2]);
+      if (args) ref.args = args;
+      const loopM = rest.match(/loop:\s*(\$?\w+)/);
+      if (loopM) ref.loop = loopM[1];
       currentCue.sequences.push(ref);
       i++;
       continue;
@@ -395,7 +450,7 @@ function parseLayerCommand(cmd: string, paramsStr: string): LayerCommand {
     command: cmd as LayerCommand["command"],
   };
 
-  const layerM = paramsStr.match(/layer:\s*(\w+)/);
+  const layerM = paramsStr.match(/layer:\s*(\$?\w+)/);
   if (layerM) result.layer = layerM[1];
 
   const intensityM = paramsStr.match(/intensity:\s*(\S+)/);
@@ -406,6 +461,17 @@ function parseLayerCommand(cmd: string, paramsStr: string): LayerCommand {
 
   return result;
 }
+
+/** Effect parameters held as numbers, which a `$param` cannot be. */
+const NUMERIC_PARAMS = new Set([
+  "intensity",
+  "start_level",
+  "end_level",
+  "base_level",
+  "pulse_amplitude",
+  "saturation",
+  "brightness",
+]);
 
 /**
  * Parse the effect portion of a line, e.g.:
@@ -461,6 +527,13 @@ function parseEffectParams(str: string, effect: EffectParams): void {
       (val.startsWith("'") && val.endsWith("'"))
     ) {
       val = val.slice(1, -1);
+    }
+
+    // A sequence parameter stands in for a number the fields below would
+    // read as NaN; keep it as written.
+    if (val.startsWith("$") && NUMERIC_PARAMS.has(key)) {
+      effect.extra[key] = val;
+      continue;
     }
 
     switch (key) {

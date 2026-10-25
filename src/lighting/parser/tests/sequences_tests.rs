@@ -1233,3 +1233,137 @@ show "Test" {
         analysis.dark_windows
     );
 }
+
+#[test]
+fn test_sequence_length_sets_the_loop_period() {
+    // Three and a half beats of content: without a length, each pass would
+    // last 3.5 beats and the loop would drift off the bar.
+    let content = r#"
+tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "centre-beats", length: 1measure {
+    @1/1
+    front_wash: static, color: "blue", duration: 1beat
+    @1/3
+    front_wash: static, color: "white", duration: 1.5beats
+}
+
+sequence "inner", length: 2beats {
+    @1/1
+    back_wash: static, color: "red", duration: 1beat
+}
+
+sequence "outer" {
+    @1/1
+    sequence "inner", loop: 2
+    @2/1
+    side_wash: static, color: "green", duration: 1beat
+}
+
+show "Test" {
+    @2/1
+    sequence "centre-beats", loop: 3
+    @6/1
+    sequence "outer"
+}
+"#;
+
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let tm = show.tempo_map.as_ref().unwrap();
+    let at = |bar: u32, beat: f64| tm.measure_to_time_with_offset(bar, beat, 0, 0.0).unwrap();
+    let starts_of = |group: &str| -> Vec<Duration> {
+        show.cues
+            .iter()
+            .filter(|c| {
+                c.effects
+                    .iter()
+                    .any(|e| e.groups == vec![group.to_string()])
+            })
+            .map(|c| c.time)
+            .collect()
+    };
+
+    assert_eq!(
+        starts_of("front_wash"),
+        vec![
+            at(2, 1.0),
+            at(2, 3.0),
+            at(3, 1.0),
+            at(3, 3.0),
+            at(4, 1.0),
+            at(4, 3.0)
+        ],
+        "each pass starts on its own bar"
+    );
+    // Nested, the inner sequence's length still sets its period: two passes
+    // of 2 beats each, not of the 1 beat its effect lasts.
+    assert_eq!(starts_of("back_wash"), vec![at(6, 1.0), at(6, 3.0)]);
+    assert_eq!(starts_of("side_wash"), vec![at(7, 1.0)]);
+}
+
+#[test]
+fn test_sequence_length_shorter_than_its_effects() {
+    let content = r#"
+sequence "hold", length: 2s {
+    @0.000
+    front_wash: static, color: "blue", duration: 5s
+}
+
+show "Test" {
+    @1.000
+    sequence "hold", loop: 3
+}
+"#;
+
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            Duration::from_secs(5)
+        ]
+    );
+    // Each later pass stops the one before it, cutting the 5 s effect at
+    // the pass boundary.
+    assert!(show.cues[1].stop_sequences.contains(&"hold".to_string()));
+    assert!(show.cues[2].stop_sequences.contains(&"hold".to_string()));
+}
+
+#[test]
+fn test_sequence_length_rejects_cues_past_it_and_zero() {
+    let past = r#"
+sequence "late", length: 1s {
+    @0.000
+    front_wash: static, color: "blue", duration: 1s
+    @1.000
+    front_wash: static, color: "red", duration: 1s
+}
+
+show "Test" {
+    @0.000
+    sequence "late"
+}
+"#;
+    let err = parse_light_shows(past).expect_err("a cue at the length is rejected");
+    let message = err.to_string();
+    assert!(
+        message.contains("late") && message.contains("1s"),
+        "names the sequence and its length: {message}"
+    );
+
+    let zero = past.replace("length: 1s", "length: 0s");
+    let err = parse_light_shows(&zero).expect_err("a zero length is rejected");
+    assert!(err.to_string().contains("greater than zero"), "{err}");
+
+    let musical = past.replace("length: 1s", "length: 1measure");
+    let err = parse_light_shows(&musical).expect_err("musical length needs a tempo");
+    assert!(err.to_string().contains("tempo"), "{err}");
+}

@@ -250,8 +250,14 @@ pub struct ValidateLightingArgs {
     /// Song whose tempo map should resolve musical timing when the source has
     /// no `tempo` block of its own. Without it, a show using `@bar/beat`,
     /// `Nbeats`, or `Nbeat` cannot be validated even though it would load fine
-    /// against that song.
+    /// against that song. The source's `include`s also resolve against the
+    /// song's lighting file, so a source with an `include` needs it.
     pub song: Option<String>,
+    /// The song's lighting file the source is a draft of, as
+    /// `write_song_lighting` names it, so its `include`s resolve where
+    /// writing it would. Defaults to the song's first lighting file.
+    #[serde(default)]
+    pub file: Option<String>,
     /// Include each show's resolved cue timeline. Defaults to true; set false
     /// for a parse-only check on a very large show.
     #[serde(default = "default_true")]
@@ -1230,10 +1236,35 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ValidateLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let tempo = self.song_tempo_map(args.song.as_deref())?;
-        let parsed_shows =
-            crate::lighting::parser::parse_light_shows_with_tempo(&args.source, tempo.as_ref())
-                .map_err(|e| e.to_string());
+        let (tempo, draft_path, root) = match args.song.as_deref() {
+            Some(name) => {
+                let song = self
+                    .player
+                    .songs()
+                    .get(name)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let path = match args.file.as_deref() {
+                    Some(file) => {
+                        validate_lighting_filename(file)?;
+                        song_lighting_target(&song, file)
+                    }
+                    None => song.lighting_draft_path(),
+                };
+                (
+                    song_lighting_tempo(&song),
+                    Some(path),
+                    Some(self.include_root(&song).await),
+                )
+            }
+            None => (None, None, None),
+        };
+        let parsed_shows = crate::lighting::parser::parse_light_file_within(
+            &args.source,
+            draft_path.as_deref(),
+            root.as_deref(),
+            tempo.as_ref(),
+        )
+        .map_err(|e| e.to_string());
         match parsed_shows {
             Ok(shows) => {
                 let mut parsed: Vec<_> = shows.values().cloned().collect();
@@ -1312,25 +1343,18 @@ impl McpServer {
         build_lighting_snapshot(&self.player).await
     }
 
-    /// Looks up a song's lighting tempo map by name, if a name was given.
-    fn song_tempo_map(
-        &self,
-        song: Option<&str>,
-    ) -> Result<Option<crate::tempo::TempoMap>, McpError> {
-        let Some(name) = song else {
-            return Ok(None);
-        };
-        let song = self
-            .player
-            .songs()
-            .get(name)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        Ok(song_lighting_tempo(&song))
+    /// The folder a song's lighting `include`s must stay inside: the songs
+    /// root, or the song's own folder when the root cannot be resolved.
+    async fn include_root(&self, song: &crate::songs::Song) -> std::path::PathBuf {
+        match self.songs_root_verified().await {
+            Ok(root) => root.as_path().to_path_buf(),
+            Err(_) => song.base_path().to_path_buf(),
+        }
     }
 
     /// Resolves `evaluate_show`'s `song`/`source` choice into the shows to
     /// evaluate plus the song's tempo map, if any.
-    fn resolve_shows_to_evaluate(
+    async fn resolve_shows_to_evaluate(
         &self,
         args: &EvaluateShowArgs,
     ) -> Result<
@@ -1352,9 +1376,13 @@ impl McpServer {
                     .get(name)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                 let tempo = song_lighting_tempo(&song);
-                let shows =
-                    crate::lighting::parser::parse_light_shows_with_tempo(source, tempo.as_ref())
-                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let shows = crate::lighting::parser::parse_light_file_within(
+                    source,
+                    Some(&song.lighting_draft_path()),
+                    Some(&self.include_root(&song).await),
+                    tempo.as_ref(),
+                )
+                .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                 let mut shows: Vec<_> = shows.into_values().collect();
                 sort_shows(&mut shows);
                 Ok((shows, tempo))
@@ -1411,7 +1439,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<EvaluateShowArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (shows, fallback_tempo) = self.resolve_shows_to_evaluate(&args)?;
+        let (shows, fallback_tempo) = self.resolve_shows_to_evaluate(&args).await?;
 
         let times = args
             .times
@@ -1466,12 +1494,14 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<AnalyzeShowArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (shows, fallback_tempo) = self.resolve_shows_to_evaluate(&EvaluateShowArgs {
-            song: args.song.clone(),
-            source: args.source.clone(),
-            times: Vec::new(),
-            include_fixtures: false,
-        })?;
+        let (shows, fallback_tempo) = self
+            .resolve_shows_to_evaluate(&EvaluateShowArgs {
+                song: args.song.clone(),
+                source: args.source.clone(),
+                times: Vec::new(),
+                include_fixtures: false,
+            })
+            .await?;
 
         // Warnings come from the shared linter rather than a second
         // implementation here, so `analyze_show` and `validate_lighting` cannot
@@ -1530,18 +1560,22 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<DiffShowsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (before, before_tempo) = self.resolve_shows_to_evaluate(&EvaluateShowArgs {
-            song: args.a_song.clone(),
-            source: args.a_source.clone(),
-            times: Vec::new(),
-            include_fixtures: false,
-        })?;
-        let (after, after_tempo) = self.resolve_shows_to_evaluate(&EvaluateShowArgs {
-            song: args.b_song.clone(),
-            source: args.b_source.clone(),
-            times: Vec::new(),
-            include_fixtures: false,
-        })?;
+        let (before, before_tempo) = self
+            .resolve_shows_to_evaluate(&EvaluateShowArgs {
+                song: args.a_song.clone(),
+                source: args.a_source.clone(),
+                times: Vec::new(),
+                include_fixtures: false,
+            })
+            .await?;
+        let (after, after_tempo) = self
+            .resolve_shows_to_evaluate(&EvaluateShowArgs {
+                song: args.b_song.clone(),
+                source: args.b_source.clone(),
+                times: Vec::new(),
+                include_fixtures: false,
+            })
+            .await?;
 
         let diff = tokio::task::spawn_blocking(move || {
             crate::lighting::diff::diff_shows(
@@ -2332,9 +2366,12 @@ impl McpServer {
             .get(&args.song)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         // Validate against the tempo this song will actually load it with,
-        // otherwise a bar/beat show is rejected here and then loads fine.
-        crate::lighting::parser::parse_light_shows_with_tempo(
+        // otherwise a bar/beat show is rejected here and then loads fine; and
+        // where it will be written, which its `include`s resolve against.
+        crate::lighting::parser::parse_light_file_within(
             &args.source,
+            Some(&song_lighting_target(&song, &args.file)),
+            Some(&self.include_root(&song).await),
             song_lighting_tempo(&song).as_ref(),
         )
         .map_err(|e| McpError::invalid_params(format!("invalid .light source: {e}"), None))?;
@@ -2515,8 +2552,10 @@ impl McpServer {
         // Validate against the tempo this song loads it with, matching
         // `write_song_lighting`. Otherwise a patch to a tempo-inheriting show
         // is rejected here and would have loaded fine.
-        crate::lighting::parser::parse_light_shows_with_tempo(
+        crate::lighting::parser::parse_light_file_within(
             &updated,
+            Some(&path),
+            Some(&self.include_root(&song).await),
             song_lighting_tempo(&song).as_ref(),
         )
         .map_err(|e| McpError::invalid_params(format!("patched .light is invalid: {e}"), None))?;
@@ -2771,6 +2810,13 @@ fn evaluation_json(
 /// The tempo map a song's `.light` files are parsed with.
 fn song_lighting_tempo(song: &crate::songs::Song) -> Option<crate::tempo::TempoMap> {
     song.lighting_tempo_map()
+}
+
+/// Where `write_song_lighting` puts lighting file `file` of `song`: the
+/// existing file of that name, else `<song>/lighting/<file>`.
+fn song_lighting_target(song: &crate::songs::Song, file: &str) -> std::path::PathBuf {
+    find_song_lighting_write_path(song, file)
+        .unwrap_or_else(|| song.base_path().join("lighting").join(file))
 }
 
 /// What `write_song_lighting` did about the song's `lighting:` block.

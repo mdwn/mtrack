@@ -1286,14 +1286,21 @@ export async function deleteLightingFile(name: string): Promise<void> {
 }
 
 /** Validates `.light` DSL. Pass `song` when the source belongs to one —
- *  `@bar`/`beat` timing cannot be parsed without that song's tempo map. */
+ *  `@bar`/`beat` timing cannot be parsed without that song's tempo map —
+ *  and `file`, the lighting file it is a draft of, so its `include`s resolve
+ *  where saving it would. */
 export async function validateLighting(
   content: string,
   song?: string,
+  file?: string,
 ): Promise<{ valid: boolean; errors?: string[] }> {
-  const path = song
-    ? `/lighting/validate?song=${encodeURIComponent(song)}`
-    : "/lighting/validate";
-  const res = await postText(path, content);
+  const query = new URLSearchParams();
+  if (song) query.set("song", song);
+  if (file) query.set("file", file);
+  const qs = query.toString();
+  const res = await postText(
+    qs ? `/lighting/validate?${qs}` : "/lighting/validate",
+    content,
+  );
   return res.json();
 }

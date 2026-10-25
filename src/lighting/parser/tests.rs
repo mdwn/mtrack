@@ -18,11 +18,15 @@ mod chase_pattern_tests;
 #[cfg(test)]
 mod fixture_venue_tests;
 #[cfg(test)]
+mod include_tests;
+#[cfg(test)]
 mod layer_commands_tests;
 #[cfg(test)]
 mod measure_offset_tests;
 #[cfg(test)]
 mod parameters_tests;
+#[cfg(test)]
+mod sequence_params_tests;
 #[cfg(test)]
 mod sequences_tests;
 #[cfg(test)]
