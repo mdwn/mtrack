@@ -27,8 +27,8 @@ use std::time::Duration;
 
 use crate::audio::click_analysis::BeatGrid;
 use crate::lighting::effects::{BlendMode, EffectLayer, EffectType};
-use crate::lighting::parser::LayerCommandType;
 use crate::lighting::parser::LightShow;
+use crate::lighting::parser::{Effect, LayerCommandType};
 
 /// A non-fatal finding.
 #[derive(Clone, Debug, PartialEq)]
@@ -512,7 +512,9 @@ fn effects_past_end_of_song(shows: &[LightShow], ctx: &LintContext, out: &mut Ve
                 &clears,
                 &stops,
             );
-            if end <= song_end {
+            // Under a frame past the end is rounding against the audio's
+            // length, not an effect cut short: nothing that brief can be seen.
+            if end <= song_end + PAST_END_TOLERANCE {
                 continue;
             }
             out.push(Warning::new(
@@ -530,6 +532,11 @@ fn effects_past_end_of_song(shows: &[LightShow], ctx: &LintContext, out: &mut Ve
     }
 }
 
+/// How far past the end of the song an effect may run before it is reported:
+/// one frame of the 44 Hz engine. A last effect sized in beats routinely ends
+/// a few milliseconds after the audio does (#541).
+const PAST_END_TOLERANCE: Duration = Duration::from_millis(25);
+
 /// Overlaps and dark windows shorter than this are not reported.
 ///
 /// A gap or overlap of a few nanoseconds is rounding, not authoring: a frame is
@@ -538,6 +545,9 @@ fn effects_past_end_of_song(shows: &[LightShow], ctx: &LintContext, out: &mut Ve
 /// under a frame and well over any rounding.
 pub(crate) const MIN_REPORTED_SPAN: Duration = Duration::from_millis(1);
 
+/// When a replace-blend effect starts and ends, and the effect itself.
+type Span<'a> = (Duration, Duration, &'a Effect);
+
 /// Two `replace`-blend effects overlapping on the same layer *and* group. Last
 /// writer wins with no diagnostic, which is the easiest way to author a cue
 /// that appears to do nothing because something else is stomping it.
@@ -545,8 +555,9 @@ fn stomping_replace_effects(shows: &[LightShow], out: &mut Vec<Warning>) {
     let clears: Vec<(Option<EffectLayer>, Duration)> = shows.iter().flat_map(clear_times).collect();
     let stops: Vec<(String, Duration)> = shows.iter().flat_map(stop_times).collect();
 
-    // (layer, group) -> the spans replace-blend effects occupy on it.
-    let mut spans: BTreeMap<(EffectLayer, String), Vec<(Duration, Duration)>> = BTreeMap::new();
+    // (layer, group) -> the spans replace-blend effects occupy on it, with the
+    // effect occupying each.
+    let mut spans: BTreeMap<(EffectLayer, String), Vec<Span>> = BTreeMap::new();
 
     for cue in shows.iter().flat_map(|show| show.cues.iter()) {
         for effect in &cue.effects {
@@ -576,18 +587,24 @@ fn stomping_replace_effects(shows: &[LightShow], out: &mut Vec<Warning>) {
                 spans
                     .entry((layer, group.clone()))
                     .or_default()
-                    .push((cue.time, end));
+                    .push((cue.time, end, effect));
             }
         }
     }
 
     for ((layer, group), mut occupied) in spans {
-        occupied.sort();
+        occupied.sort_by_key(|(start, end, _)| (*start, *end));
         for pair in occupied.windows(2) {
-            let ((_, first_end), (second_start, _)) = (pair[0], pair[1]);
+            let ((_, first_end, first), (second_start, _, second)) = (pair[0], pair[1]);
             // Touching is fine — one ends exactly where the next begins — and
             // so is an overlap too short to be anything but rounding.
             if second_start + MIN_REPORTED_SPAN >= first_end {
+                continue;
+            }
+            // A restatement changes nothing on stage: the padding cue that
+            // re-sends the colour already showing, so a sequence lasts the
+            // length it should, is not something being stomped (#541).
+            if restates(first, second) {
                 continue;
             }
             out.push(Warning::new(
@@ -603,6 +620,16 @@ fn stomping_replace_effects(shows: &[LightShow], out: &mut Vec<Warning>) {
             break; // One report per layer+group is enough to send them looking.
         }
     }
+}
+
+/// Whether `later` puts on stage exactly what `earlier` already does: the same
+/// effect with the same parameters (durations aside), not fading in.
+fn restates(earlier: &Effect, later: &Effect) -> bool {
+    later.up_time.is_none()
+        && earlier.effect_type.name() == later.effect_type.name()
+        && earlier.effect_type.parameters() == later.effect_type.parameters()
+        && earlier.per_cell == later.per_cell
+        && earlier.spread == later.spread
 }
 
 /// When each layer is cleared. `None` as the layer key means `clear()` with no
@@ -1234,6 +1261,24 @@ show "T" {
         assert_eq!(kinds(&warnings), ["past-end-of-song"]);
     }
 
+    /// Running past the end by less than a frame is rounding, not an effect
+    /// cut short (#541); a tenth of a second past is still reported.
+    #[test]
+    fn an_overrun_under_a_frame_is_not_reported() {
+        let ctx = LintContext {
+            song_duration: Some(Duration::from_secs(10)),
+            ..Default::default()
+        };
+        let source = |length: &str| {
+            format!("show \"T\" {{\n    @00:00.000\n    wash: static color: \"blue\", duration: {length}\n}}")
+        };
+        assert!(lint_shows(&shows(&source("10.014s")), &ctx).is_empty());
+        assert_eq!(
+            kinds(&lint_shows(&shows(&source("10.1s")), &ctx)),
+            ["past-end-of-song"]
+        );
+    }
+
     #[test]
     fn an_effect_ending_exactly_at_the_song_end_is_fine() {
         let source = r#"
@@ -1279,6 +1324,37 @@ show "T" {
 }
 "#;
         assert!(lint_shows(&shows(source), &LintContext::default()).is_empty());
+    }
+
+    /// A padding cue that re-sends the colour already showing is not a stomp
+    /// (#541): it changes nothing on stage. A different colour, or the same
+    /// one fading in, still is.
+    #[test]
+    fn a_restatement_is_not_an_overlap() {
+        let source = |second: &str| {
+            format!(
+                "show \"T\" {{\n    @00:00.000\n    wash: static color: \"blue\", duration: 4s\n    @00:03.000\n    wash: static {second}\n}}"
+            )
+        };
+        let ctx = LintContext::default();
+        assert!(
+            lint_shows(&shows(&source("color: \"blue\", duration: 1s")), &ctx).is_empty(),
+            "a restatement was reported"
+        );
+        assert_eq!(
+            kinds(&lint_shows(
+                &shows(&source("color: \"red\", duration: 1s")),
+                &ctx
+            )),
+            ["replace-overlap"]
+        );
+        assert_eq!(
+            kinds(&lint_shows(
+                &shows(&source("color: \"blue\", duration: 1s, up_time: 0.5s")),
+                &ctx
+            )),
+            ["replace-overlap"]
+        );
     }
 
     #[test]

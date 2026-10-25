@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Quieter lint on padding cues and beat-rounded endings (#541)**: `replace-overlap` no longer
+  reports a later effect that restates the one it overlaps -- the same effect with the same
+  parameters, not fading in -- since nothing changes on stage; padding and anchor cues were most of
+  that warning's output on real shows. `past-end-of-song` now lets an effect run up to one engine
+  frame (25ms) past the audio before reporting it, so a last effect sized in beats that ends a few
+  milliseconds late is not flagged.
 - **An invalid color is a parse error, not silently dropped (#538)**: a `color:` value that did
   not parse was discarded without a word -- a `static` set no colour and rendered as if it were not
   there, a `cycle` ran on its other colours -- and `validate_lighting` reported the show clean. It
