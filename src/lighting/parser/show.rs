@@ -12,8 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::super::effects::EffectLayer;
@@ -21,6 +22,7 @@ use super::super::tempo::TempoMap;
 use super::effect_parse::parse_effect_definition;
 use super::error::{analyze_parsing_failure, get_error_context};
 use super::grammar::{LightingParser, Rule};
+use super::include::{add_included, Include, IncludingFile};
 use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{Cue, LayerCommand, LayerCommandType, LightShow, ParseContext, Sequence};
@@ -60,6 +62,17 @@ pub fn parse_light_shows_with_tempo(
     content: &str,
     external: Option<&TempoMap>,
 ) -> Result<HashMap<String, LightShow>, Box<dyn Error>> {
+    parse_light_file(content, None, external)
+}
+
+/// Parses a `.light` file's shows, as `parse_light_shows_with_tempo` does.
+/// `path` is where the content lives, which its `include`s resolve against;
+/// content with an `include` and no path is an error.
+pub fn parse_light_file(
+    content: &str,
+    path: Option<&Path>,
+    external: Option<&TempoMap>,
+) -> Result<HashMap<String, LightShow>, Box<dyn Error>> {
     let pairs = match LightingParser::parse(Rule::file, content) {
         Ok(pairs) => pairs,
         Err(e) => {
@@ -84,6 +97,7 @@ pub fn parse_light_shows_with_tempo(
     let mut global_tempo: Option<TempoMap> = external.cloned();
     let mut show_pairs = Vec::new();
     let mut sequence_pairs = Vec::new();
+    let mut includes = Vec::new();
 
     // First pass: collect tempo sections, sequences, and show pairs
     for pair in pairs {
@@ -98,6 +112,7 @@ pub fn parse_light_shows_with_tempo(
             Rule::light_show => {
                 show_pairs.push(pair);
             }
+            Rule::include => includes.push(Include::from_pair(pair)),
             _ => {
                 for inner_pair in pair.into_inner() {
                     match inner_pair.as_rule() {
@@ -110,6 +125,7 @@ pub fn parse_light_shows_with_tempo(
                         Rule::light_show => {
                             show_pairs.push(inner_pair);
                         }
+                        Rule::include => includes.push(Include::from_pair(inner_pair)),
                         _ => {}
                     }
                 }
@@ -117,7 +133,21 @@ pub fn parse_light_shows_with_tempo(
         }
     }
 
-    let library = SequenceLibrary::new(sequence_pairs, &global_tempo)?;
+    let mut library = SequenceLibrary::new(&global_tempo);
+    let mut seen: HashSet<PathBuf> = path
+        .and_then(|p| p.canonicalize().ok())
+        .into_iter()
+        .collect();
+    add_included(
+        &mut library,
+        includes,
+        IncludingFile {
+            path,
+            display: None,
+        },
+        &mut seen,
+    )?;
+    library.add(sequence_pairs, None)?;
     library.check_all()?;
 
     // Second pass: parse shows with tempo and sequences available

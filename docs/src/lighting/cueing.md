@@ -242,6 +242,32 @@ show "Song" {
 - `stop sequence "Strike"` stops every use of it, whatever its parameters.
 - A parameter stands for one value. To vary a list of groups, pass a group defined for it.
 
+**Sharing sequences between files:**
+
+`include` brings in the sequences another `.light` file defines, so a set's shared figures live
+in one place:
+
+```light
+include "../common/isenmor.light"
+
+show "Song" {
+    @1/1
+    sequence "Strike"(hit: "#FFD870"), loop: 4
+}
+```
+
+- The path is relative to the folder of the file that includes it, and must name a `.light`
+  file.
+- An included file defines only sequences, and may include other files; a show, tempo, fixture
+  type or venue in it is an error.
+- Its sequences play under the tempo of the file that includes them, so beats and measures
+  follow each song.
+- A sequence name defined in two files is an error, rather than one silently replacing the
+  other. A file included twice, directly or through another file, is read once.
+- Errors in an included sequence name its file and line, e.g. `../common/isenmor.light: line 12:
+  …`.
+- Editing an included file reloads the shows that include it, like editing the show itself.
+
 ## Measure Offsets
 
 `offset N measures` shifts the measure numbering for the cues that follow it, so a cue written

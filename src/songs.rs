@@ -80,15 +80,16 @@ impl DslLightingShow {
             )
         })?;
 
-        let shows = crate::lighting::parser::parse_light_shows_with_tempo(&content, tempo_map)
-            .map_err(|e| {
-                // Prepend the file path to the error, preserving newlines in the original error
-                format!(
-                    "Failed to parse DSL lighting show {}:\n{}",
-                    file_path.display(),
-                    e
-                )
-            })?;
+        let shows =
+            crate::lighting::parser::parse_light_file(&content, Some(&file_path), tempo_map)
+                .map_err(|e| {
+                    // Prepend the file path to the error, preserving newlines in the original error
+                    format!(
+                        "Failed to parse DSL lighting show {}:\n{}",
+                        file_path.display(),
+                        e
+                    )
+                })?;
 
         Ok(DslLightingShow { file_path, shows })
     }
@@ -497,8 +498,9 @@ impl Song {
             let content = std::fs::read_to_string(&path).map_err(|e| {
                 format!("Failed to read DSL lighting show {}: {}", path.display(), e)
             })?;
-            let shows = crate::lighting::parser::parse_light_shows_with_tempo(
+            let shows = crate::lighting::parser::parse_light_file(
                 &content,
+                Some(&path),
                 lighting_tempo.as_ref(),
             )
             .map_err(|e| {
@@ -678,6 +680,15 @@ impl Song {
         self.tempo_map
             .clone()
             .or_else(|| self.beat_grid.as_ref().and_then(|grid| grid.to_tempo_map()))
+    }
+
+    /// Where a draft of this song's lighting is taken to live, for resolving
+    /// its `include`s: its first `.light` file, or one in its folder.
+    pub fn lighting_draft_path(&self) -> PathBuf {
+        self.dsl_lighting_shows
+            .first()
+            .map(|show| show.file_path().to_path_buf())
+            .unwrap_or_else(|| self.base_path().join("draft.light"))
     }
 
     /// Gets the metronome configuration, if configured.

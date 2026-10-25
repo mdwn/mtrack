@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   all be parameters, and a sequence can pass its own on to one it uses. A parameter with no
   default must be bound at every use. Errors name both the line of the use and the line in the
   sequence. The web UI's lighting editor keeps parameters and arguments when it saves.
+- **`include` (#540)**: `include "../common/looks.light"` brings in the sequences another file
+  defines, its path relative to the including file. An included file defines only sequences (and
+  may include others); they play under the including file's tempo. A sequence defined in two
+  files is an error, and errors in an included sequence name its file. Editing an included file
+  reloads the shows that use it. `validate_lighting` and the web UI resolve includes against the
+  song's lighting file.
 - **Sequence `length:` (#541)**: `sequence "x", length: 1measure { … }` fixes how long one pass of
   a sequence lasts, in the same units as `duration:`. A looped sequence whose effects end before
   the bar now restarts on the bar without a padding cue to stretch it, and an effect that runs

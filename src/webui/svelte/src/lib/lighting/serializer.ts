@@ -29,6 +29,11 @@ import type {
 export function serializeLightFile(file: LightFile): string {
   const parts: string[] = [];
 
+  if (file.includes?.length) {
+    for (const path of file.includes) parts.push(`include "${path}"`);
+    parts.push("");
+  }
+
   // Tempo block
   if (file.tempo) {
     parts.push(serializeTempo(file.tempo));

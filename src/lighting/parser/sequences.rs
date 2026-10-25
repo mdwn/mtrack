@@ -35,8 +35,11 @@ use super::types::{Sequence, SequenceCall};
 
 /// A sequence as written: its parameters and its source.
 struct SequenceTemplate {
-    /// The line the definition starts on.
-    line: usize,
+    /// The included file it is defined in, or `None` for the file itself.
+    origin: Option<String>,
+    /// Where the definition is: which file, in the order they were read,
+    /// and the line it starts on.
+    position: (usize, usize),
     /// Each parameter with its default, in declaration order.
     params: Vec<(String, Option<String>)>,
     /// The definition's text, preceded by blank lines and spaces so that
@@ -60,6 +63,8 @@ pub(crate) struct SequenceLibrary {
     instances: RefCell<HashMap<(String, Bindings), Rc<Sequence>>>,
     /// The sequences being expanded, outermost first, to catch cycles.
     expanding: RefCell<Vec<String>>,
+    /// How many files' definitions have been added.
+    files_added: usize,
 }
 
 impl SequenceLibrary {
@@ -70,16 +75,34 @@ impl SequenceLibrary {
             global_tempo: None,
             instances: RefCell::new(HashMap::new()),
             expanding: RefCell::new(Vec::new()),
+            files_added: 0,
         }
     }
 
-    /// Reads each `sequence` definition. Nothing is expanded yet, so a
-    /// sequence may use one defined after it.
-    pub(crate) fn new(
+    /// A library for a file whose shows run under `global_tempo`.
+    pub(crate) fn new(global_tempo: &Option<TempoMap>) -> Self {
+        SequenceLibrary {
+            global_tempo: global_tempo.clone(),
+            ..SequenceLibrary::empty()
+        }
+    }
+
+    /// Adds each `sequence` definition from one file: the file being
+    /// parsed when `origin` is `None`, otherwise the included file it names.
+    /// Nothing is expanded yet, so a sequence may use one defined after it.
+    pub(crate) fn add(
+        &mut self,
         pairs: Vec<Pair<Rule>>,
-        global_tempo: &Option<TempoMap>,
-    ) -> Result<Self, Box<dyn Error>> {
-        let mut templates = HashMap::new();
+        origin: Option<&str>,
+    ) -> Result<(), Box<dyn Error>> {
+        let in_file = |e: String| -> Box<dyn Error> {
+            match origin {
+                Some(origin) => format!("{origin}: {e}").into(),
+                None => e.into(),
+            }
+        };
+        let file_index = self.files_added;
+        self.files_added += 1;
         for pair in pairs {
             let (line, col) = pair.line_col();
             let source = format!(
@@ -100,17 +123,15 @@ impl SequenceLibrary {
                             let default = parts.next().map(|p| p.as_str().to_string());
                             let Some(param) = param else { continue };
                             if params.iter().any(|(p, _)| *p == param) {
-                                return Err(format!(
+                                return Err(in_file(format!(
                                     "line {line}: Sequence '{name}' declares parameter '{param}' twice"
-                                )
-                                .into());
+                                )));
                             }
                             if default.as_deref().is_some_and(|d| d.starts_with('$')) {
-                                return Err(format!(
+                                return Err(in_file(format!(
                                     "line {line}: Sequence '{name}': the default for '{param}' \
                                      cannot be another parameter"
-                                )
-                                .into());
+                                )));
                             }
                             params.push((param, default));
                         }
@@ -122,27 +143,35 @@ impl SequenceLibrary {
                 .into_iter()
                 .find(|(_, used)| !params.iter().any(|(p, _)| p == used))
             {
-                return Err(format!(
+                return Err(in_file(format!(
                     "line {}: Sequence '{name}' uses ${used}, but declares no parameter '{used}'",
                     line_at(&source, offset)
-                )
-                .into());
+                )));
             }
-            templates.insert(
+            if let Some(existing) = self.templates.get(&name) {
+                // Within one file the later definition wins, as it always
+                // has. Across files that would be a silent override.
+                if existing.origin.as_deref() != origin {
+                    let place = |o: Option<&str>| o.unwrap_or("this file").to_string();
+                    return Err(format!(
+                        "Sequence '{name}' is defined in both {} and {}",
+                        place(existing.origin.as_deref()),
+                        place(origin)
+                    )
+                    .into());
+                }
+            }
+            self.templates.insert(
                 name,
                 SequenceTemplate {
-                    line,
+                    origin: origin.map(str::to_string),
+                    position: (file_index, line),
                     params,
                     source,
                 },
             );
         }
-        Ok(SequenceLibrary {
-            templates,
-            global_tempo: global_tempo.clone(),
-            instances: RefCell::new(HashMap::new()),
-            expanding: RefCell::new(Vec::new()),
-        })
+        Ok(())
     }
 
     /// Expands every sequence that needs no arguments, so an error in one is
@@ -151,7 +180,7 @@ impl SequenceLibrary {
     pub(crate) fn check_all(&self) -> Result<(), Box<dyn Error>> {
         // In file order, so the first error reported is the first in the file.
         let mut names: Vec<&String> = self.templates.keys().collect();
-        names.sort_by_key(|name| self.templates[*name].line);
+        names.sort_by_key(|name| self.templates[*name].position);
         for name in names {
             let template = &self.templates[name];
             if !template.standalone() {
@@ -212,7 +241,14 @@ impl SequenceLibrary {
             .into());
         }
         self.expanding.borrow_mut().push(name.to_string());
-        let expanded = self.expand(template, &key.1);
+        let expanded = self
+            .expand(template, &key.1)
+            .map_err(|e| -> Box<dyn Error> {
+                match &template.origin {
+                    Some(origin) => format!("{origin}: {e}").into(),
+                    None => e,
+                }
+            });
         self.expanding.borrow_mut().pop();
 
         let sequence = Rc::new(expanded?);

@@ -250,7 +250,8 @@ pub struct ValidateLightingArgs {
     /// Song whose tempo map should resolve musical timing when the source has
     /// no `tempo` block of its own. Without it, a show using `@bar/beat`,
     /// `Nbeats`, or `Nbeat` cannot be validated even though it would load fine
-    /// against that song.
+    /// against that song. The source's `include`s also resolve against the
+    /// song's lighting file, so a source with an `include` needs it.
     pub song: Option<String>,
     /// Include each show's resolved cue timeline. Defaults to true; set false
     /// for a parse-only check on a very large show.
@@ -1231,9 +1232,13 @@ impl McpServer {
         Parameters(args): Parameters<ValidateLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
         let tempo = self.song_tempo_map(args.song.as_deref())?;
-        let parsed_shows =
-            crate::lighting::parser::parse_light_shows_with_tempo(&args.source, tempo.as_ref())
-                .map_err(|e| e.to_string());
+        let draft_path = self.song_draft_path(args.song.as_deref())?;
+        let parsed_shows = crate::lighting::parser::parse_light_file(
+            &args.source,
+            draft_path.as_deref(),
+            tempo.as_ref(),
+        )
+        .map_err(|e| e.to_string());
         match parsed_shows {
             Ok(shows) => {
                 let mut parsed: Vec<_> = shows.values().cloned().collect();
@@ -1328,6 +1333,20 @@ impl McpServer {
         Ok(song_lighting_tempo(&song))
     }
 
+    /// Where a draft of `song`'s lighting is taken to live, which its
+    /// `include`s resolve against.
+    fn song_draft_path(&self, song: Option<&str>) -> Result<Option<std::path::PathBuf>, McpError> {
+        let Some(name) = song else {
+            return Ok(None);
+        };
+        let song = self
+            .player
+            .songs()
+            .get(name)
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        Ok(Some(song.lighting_draft_path()))
+    }
+
     /// Resolves `evaluate_show`'s `song`/`source` choice into the shows to
     /// evaluate plus the song's tempo map, if any.
     fn resolve_shows_to_evaluate(
@@ -1352,9 +1371,12 @@ impl McpServer {
                     .get(name)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                 let tempo = song_lighting_tempo(&song);
-                let shows =
-                    crate::lighting::parser::parse_light_shows_with_tempo(source, tempo.as_ref())
-                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let shows = crate::lighting::parser::parse_light_file(
+                    source,
+                    Some(&song.lighting_draft_path()),
+                    tempo.as_ref(),
+                )
+                .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                 let mut shows: Vec<_> = shows.into_values().collect();
                 sort_shows(&mut shows);
                 Ok((shows, tempo))

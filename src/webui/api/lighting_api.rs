@@ -350,7 +350,8 @@ pub(super) async fn put_lighting_file(
     // inheriting its song's tempo is valid content that a tempo-less parse
     // rejects, so writing it through the UI would fail for no real reason.
     let tempo = song_tempo_for_path(&state, &verified_path);
-    if let Err(errors) = config_io::validate_light_show(&body, tempo.as_ref()) {
+    if let Err(errors) = config_io::validate_light_show(&body, Some(&verified_path), tempo.as_ref())
+    {
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
 
@@ -425,12 +426,13 @@ pub(super) async fn validate_lighting(
     Query(query): Query<ValidateQuery>,
     body: String,
 ) -> impl IntoResponse {
-    let tempo = query
+    let song = query
         .song
         .as_deref()
-        .and_then(|name| state.player.songs().get(name).ok())
-        .and_then(|song| song.lighting_tempo_map());
-    match config_io::validate_light_show(&body, tempo.as_ref()) {
+        .and_then(|name| state.player.songs().get(name).ok());
+    let tempo = song.as_ref().and_then(|song| song.lighting_tempo_map());
+    let path = song.as_ref().map(|song| song.lighting_draft_path());
+    match config_io::validate_light_show(&body, path.as_deref(), tempo.as_ref()) {
         Ok(()) => (StatusCode::OK, Json(json!({"valid": true}))).into_response(),
         Err(errors) => (
             StatusCode::BAD_REQUEST,

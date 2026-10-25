@@ -207,6 +207,8 @@ export interface LightShow {
 
 /** Top-level parsed light file */
 export interface LightFile {
+  /** `include "…"` paths, relative to this file's folder, as written. */
+  includes?: string[];
   tempo?: TempoSection;
   sequences: Sequence[];
   shows: LightShow[];

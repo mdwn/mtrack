@@ -57,11 +57,23 @@ pub fn start_watching(
         .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
         .collect();
 
+    // The files those include are watched too: an edit to a shared sequence
+    // changes the shows that use it. One included only after the song is
+    // loaded is watched from its next load.
+    let mut watched = paths.clone();
+    for path in &paths {
+        for included in crate::lighting::parser::included_files(path) {
+            if !watched.contains(&included) {
+                watched.push(included);
+            }
+        }
+    }
+
     let (tx, rx) = std::sync::mpsc::channel();
     let mut debouncer = new_debouncer(Duration::from_millis(300), tx)?;
 
     // Watch each file path
-    for path in &paths {
+    for path in &watched {
         if let Some(parent) = path.parent() {
             debouncer
                 .watcher()
@@ -81,7 +93,7 @@ pub fn start_watching(
         // notify in certain backend configurations, etc.). Pre-seed with the
         // current mtimes so the first event we process compares against a
         // real baseline rather than treating every watched file as "new".
-        let mut last_mtimes: std::collections::HashMap<PathBuf, std::time::SystemTime> = paths
+        let mut last_mtimes: std::collections::HashMap<PathBuf, std::time::SystemTime> = watched
             .iter()
             .filter_map(|p| {
                 std::fs::metadata(p)
@@ -103,7 +115,7 @@ pub fn start_watching(
                             .path
                             .canonicalize()
                             .unwrap_or_else(|_| event.path.clone());
-                        paths.contains(&event_path)
+                        watched.contains(&event_path)
                     });
                     if !relevant {
                         continue;
@@ -122,7 +134,7 @@ pub fn start_watching(
                     // would update only the first file's baseline and
                     // trigger a spurious second reload when the next event
                     // arrives for one of the stale entries.
-                    let any_changed = paths.iter().fold(false, |acc, p| {
+                    let any_changed = watched.iter().fold(false, |acc, p| {
                         let changed = match std::fs::metadata(p).and_then(|m| m.modified()) {
                             Ok(mt) => {
                                 let changed =
@@ -209,7 +221,7 @@ fn reload_timeline(
         // tempo-less entry point here meant a show inheriting the song's tempo
         // failed every live edit, and the timeline silently never swapped.
         let shows =
-            crate::lighting::parser::parse_light_shows_with_tempo(&content, fallback_tempo_map)
+            crate::lighting::parser::parse_light_file(&content, Some(path), fallback_tempo_map)
                 .map_err(|e| format!("Parse error in {}: {}", path.display(), e))?;
 
         // Validate if lighting config is available
@@ -792,6 +804,64 @@ show "test" {
             timeline.lock().is_some(),
             "Timeline should be set after reload"
         );
+    }
+
+    #[test]
+    fn editing_an_included_file_reloads_the_show() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let common_dir = tmp_dir.path().join("common");
+        std::fs::create_dir(&common_dir).unwrap();
+        let common_path = common_dir.join("looks.light");
+        let looks = |colour: &str| {
+            format!(
+                "sequence \"wash\" {{\n    @00:00.000\n    front_wash: static color: \"{colour}\", duration: 5s\n}}\n"
+            )
+        };
+        std::fs::write(&common_path, looks("blue")).unwrap();
+        let song_dir = tmp_dir.path().join("song");
+        std::fs::create_dir(&song_dir).unwrap();
+        let dsl_path = song_dir.join("show.light");
+        std::fs::write(
+            &dsl_path,
+            "include \"../common/looks.light\"\n\nshow \"test\" {\n    @00:00.000\n    sequence \"wash\"\n}\n",
+        )
+        .unwrap();
+
+        let timeline = Arc::new(Mutex::new(None));
+        let (tx, mut rx) = broadcast::channel(16);
+        let _handle = start_watching(
+            vec![dsl_path.clone()],
+            Arc::new(Mutex::new(EffectEngine::new())),
+            timeline.clone(),
+            Arc::new(AtomicU64::new(0)),
+            None,
+            None,
+            None,
+            tx,
+        )
+        .unwrap();
+
+        // Only the included file changes; the show file is untouched.
+        std::thread::sleep(Duration::from_millis(500));
+        std::fs::write(&common_path, looks("red")).unwrap();
+
+        let start = std::time::Instant::now();
+        let mut status = None;
+        while start.elapsed() < Duration::from_secs(5) {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    status = Some(msg);
+                    break;
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => panic!("Unexpected error: {:?}", e),
+            }
+        }
+        let status = status.expect("an edit to an included file reloads the show");
+        assert!(status.contains("\"ok\""), "reload failed: {status}");
+        assert!(timeline.lock().is_some());
     }
 
     #[test]

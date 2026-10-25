@@ -166,6 +166,14 @@ show "Song" {
 Prefer one parameterized sequence over copies that differ only by colour or
 group. `stop sequence "Strike"` stops every use of it.
 
+Sequences shared by several songs can live in one file. `include
+"../common/looks.light"` at the top of a file brings in that file's
+sequences; the path is relative to the including file's folder, and the
+included file may define only sequences (and include others). Its sequences
+run at the including song's tempo. A name defined in two files is an error.
+Validating source with an `include` needs `song`, which gives it a folder to
+resolve against.
+
 For one-off repetition without naming, use an inline loop. Timestamps inside
 the block are relative to the loop's start:
 

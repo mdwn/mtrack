@@ -12,7 +12,11 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 // Main file rule - can contain any combination of fixture types, venues, light shows, sequences, and tempo
-file = { SOI ~ (fixture_type | venue | light_show | sequence | tempo)* ~ EOI }
+file = { SOI ~ (include | fixture_type | venue | light_show | sequence | tempo)* ~ EOI }
+
+// `include "common.light"`: the sequences another file defines, its path
+// relative to this file's folder.
+include = { "include" ~ string }
 
 // Light show rules
 // Allow optional show names so a single unnamed show per file is valid.

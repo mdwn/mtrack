@@ -81,6 +81,14 @@ export function parseLightFile(dsl: string): LightFile {
       continue;
     }
 
+    // Include: sequences from another file
+    const includeMatch = line.match(/^include\s+"([^"]+)"/);
+    if (includeMatch) {
+      (result.includes ??= []).push(includeMatch[1]);
+      i++;
+      continue;
+    }
+
     // Show block
     const showMatch = line.match(/^show\s+"([^"]+)"\s*\{/);
     if (showMatch) {
