@@ -5,10 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.17.2] - 2026-10-23
+## [0.17.2] - 2026-10-25
+
+Upgrade note: a lighting show with an invalid `color:` or level value now fails to parse instead
+of silently dropping it (#538). Run `validate_lighting` over your shows before upgrading.
 
 ### Fixed
 
+- **Quieter lint on padding cues and beat-rounded endings (#541)**: `replace-overlap` no longer
+  reports a later effect that restates the one it overlaps -- the same effect with the same
+  parameters, not fading in -- since nothing changes on stage; padding and anchor cues were most of
+  that warning's output on real shows. `past-end-of-song` now lets an effect run up to one engine
+  frame (25ms) past the audio before reporting it, so a last effect sized in beats that ends a few
+  milliseconds late is not flagged.
 - **An invalid color is a parse error, not silently dropped (#538)**: a `color:` value that did
   not parse was discarded without a word -- a `static` set no colour and rendered as if it were not
   there, a `cycle` ran on its other colours -- and `validate_lighting` reported the show clean. It
