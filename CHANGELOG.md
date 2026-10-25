@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An invalid color is a parse error, not silently dropped (#538)**: a `color:` value that did
+  not parse was discarded without a word -- a `static` set no colour and rendered as if it were not
+  there, a `cycle` ran on its other colours -- and `validate_lighting` reported the show clean. It
+  is now a parse error naming the value. The same goes for a level that is not a number or a
+  percentage (`dimmer`/`intensity` and colour channels on `static`, `pulse` levels, `dimmer` start
+  and end, `rainbow` saturation and brightness), which used to leave the effect at its default.
+  Every effect parse error now also names its line.
 - **An effect lasts to its own end, not a microsecond short (#536)**: an effect was retired once
   it was within a microsecond of its end, so one ending on the downbeat the next cue starts on left
   the rig dark for that microsecond, and `evaluate_show` reported dark there while the effect's own
