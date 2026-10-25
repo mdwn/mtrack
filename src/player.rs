@@ -3294,12 +3294,12 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_loop_break_takes_its_fades_from_the_playlist() -> Result<(), Box<dyn Error>> {
         let (player, _dir) = player_looping_b_with(
-            "transitions:\n  fade_out: 2s\nsongs:\n- song: A\n  fade_in: {length: 1s, exclude: [t]}\n- B\n- C\n",
+            "songs:\n- song: A\n  fade_in: {length: 1s, exclude: [t]}\n- song: B\n  fade_out: 2s\n- C\n",
         )
         .await?;
         player.prev().await;
-        // B fades out on the playlist's default, and A, which it gives way
-        // to, fades in on its own.
+        // B fades out on its entry's setting, and A, which it gives way to,
+        // fades in on its own.
         let fade = player.break_fade.lock().clone().expect("a break fade");
         assert_eq!(fade.length, Duration::from_secs(2));
         let fade_in = player.start_fade.lock().clone().expect("a fade-in");
@@ -3316,7 +3316,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_fade_in_needs_a_fade_out_to_start_under() -> Result<(), Box<dyn Error>> {
         let (player, _dir) = player_looping_b_with(
-            "transitions:\n  fade_in: 1s\nsongs:\n- A\n- song: B\n  fade_out: 0s\n- C\n",
+            "songs:\n- A\n- song: B\n  fade_out: 0s\n- song: C\n  fade_in: 1s\n",
         )
         .await?;
         player.next().await;

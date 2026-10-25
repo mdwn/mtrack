@@ -87,17 +87,22 @@ impl Playlist {
         let transitions = config
             .entry_transitions()
             .map_err(PlaylistError::InvalidTransition)?;
-        // Only an entry's own: a default applies to songs that may not have
-        // its tracks, which is no matter.
-        for (song_name, field, tracks) in config.entry_excludes() {
+        for (song_name, entry) in song_names.iter().zip(&transitions) {
             let Ok(song) = registry.get(song_name) else {
                 continue;
             };
-            if let Some(track) = tracks.iter().find(|t| !song.has_track(t)) {
-                return Err(PlaylistError::InvalidTransition(format!(
-                    "song {song_name}: {field}.exclude names track {track:?}, \
-                     which the song does not have"
-                )));
+            let fades = [
+                ("fade_out", entry.fade_out.as_ref()),
+                ("fade_in", entry.fade_in.as_ref()),
+            ];
+            for (field, fade) in fades {
+                let tracks = fade.and_then(|f| f.exclude.as_deref()).unwrap_or_default();
+                if let Some(track) = tracks.iter().find(|t| !song.has_track(t)) {
+                    return Err(PlaylistError::InvalidTransition(format!(
+                        "song {song_name}: {field}.exclude names track {track:?}, \
+                         which the song does not have"
+                    )));
+                }
             }
         }
 
@@ -488,7 +493,7 @@ mod test {
     #[test]
     fn a_loop_break_hands_over_with_the_entries_fades() {
         let playlist = playlist_from(
-            "transitions:\n  fade_in: 1s\nsongs:\n- A\n- song: B\n  fade_out: 2s\n- song: C\n  fade_in: 3s\n",
+            "songs:\n- song: A\n  fade_in: 1s\n- song: B\n  fade_out: 2s\n- song: C\n  fade_in: 3s\n",
         )
         .unwrap();
         let length = |f: Option<config::Fade>| f.map(|f| f.length.to_string());
@@ -511,10 +516,5 @@ mod test {
             .unwrap()
             .to_string();
         assert!(err.contains("song A") && err.contains("click"), "{err}");
-        // A default's may name tracks some songs lack.
-        assert!(playlist_from(
-            "transitions:\n  fade_out: {length: 2s, exclude: [click]}\nsongs:\n- A\n"
-        )
-        .is_ok());
     }
 }

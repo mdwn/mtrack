@@ -53,13 +53,11 @@ If no playlist file is provided at all, mtrack falls back to the `all_songs` pla
 ## Transitions
 
 Breaking out of a looping song (Play, Next or Previous) normally cuts it in 10 ms. A playlist
-can instead have it play on and fade out under the song it gives way to -- a prelude carrying
-the room into the song it introduces -- and have that song fade in.
+entry can instead have its song play on and fade out under the song it gives way to -- a prelude
+carrying the room into the song it introduces -- and an entry can have its song fade in.
 
 ```yaml
 kind: playlist
-transitions:            # defaults for every entry
-  fade_out: 1measure
 songs:
 - song: Walk-in loop
   fade_out:
@@ -70,14 +68,12 @@ songs:
 - song: Opener
   fade_in: {length: 4beats, exclude: [click]}
 - The slow one
-- song: Interlude
-  fade_out: 0s          # no fade for this one
 ```
 
-An entry is a song's name, or a map with `song` and its own `fade_out` and `fade_in`. Each
-setting an entry gives replaces the playlist's default for it; `0s` (or `0`) turns it off.
-A misspelt setting is an error, as is an entry's `exclude` naming a track its song does not have;
-a default's `exclude` may name tracks some songs lack.
+An entry is a song's name, or a map with `song` and its own `fade_out` and `fade_in`; an entry
+without them cuts and starts as usual. The same song can fade differently in different
+playlists, or at different places in one. A misspelt setting is an error, as is an `exclude`
+naming a track the entry's song does not have.
 
 - **`fade_out`** applies when a loop break leaves the entry's song: the next song starts at once,
   as always, while the looping song plays on from where it was and fades out underneath it.

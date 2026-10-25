@@ -343,7 +343,7 @@ mod test {
     #[tokio::test]
     async fn put_playlist_keeps_its_transitions() {
         let (status, after) = put_over(
-            "transitions:\n  fade_out: 2s\nsongs:\n- song: Song A\n  fade_in: 1s\n",
+            "songs:\n- song: Song A\n  fade_out: 2s\n  fade_in: 1s\n",
             r#"["Song B", "Song A"]"#,
         )
         .await;

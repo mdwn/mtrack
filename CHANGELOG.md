@@ -10,8 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Playlist transitions: fading a looping song out under the next one (#546)**: a playlist
-  entry's `fade_out: 1measure` (or `3s`, `6beats`), or a playlist-wide default under
-  `transitions:`, makes Play, Next or Previous on a looping song start the next song at once
+  entry's `fade_out: 1measure` (or `3s`, `6beats`) makes Play, Next or Previous on a looping song start the next song at once
   while the looping song plays on and fades out underneath it, instead of cutting in 10 ms. The
   song it gives way to can `fade_in` under it. Beats and measures in a fade-out count on the next
   song's grid from its first bar, so `1measure` fades over its count-in. Each fade takes a

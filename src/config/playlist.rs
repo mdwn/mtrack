@@ -25,32 +25,8 @@ pub struct Playlist {
     /// Identifies this config file as a playlist.
     #[serde(default = "default_playlist_kind")]
     kind: super::kind::ConfigKind,
-    /// How songs hand over to each other, for every entry that does not say
-    /// otherwise.
-    #[serde(default, skip_serializing_if = "Transitions::is_empty")]
-    transitions: Transitions,
     /// The songs that belong to this playlist.
     songs: Vec<PlaylistEntry>,
-}
-
-/// How songs hand over to each other: the playlist's defaults, or an entry's
-/// own settings.
-#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct Transitions {
-    /// How a looping song fades out when a loop break (play, next or
-    /// previous) leaves it, playing on under the song it gives way to.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fade_out: Option<FadeConfig>,
-    /// How a song fades in when it starts under a song fading out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fade_in: Option<FadeConfig>,
-}
-
-impl Transitions {
-    fn is_empty(&self) -> bool {
-        self.fade_out.is_none() && self.fade_in.is_none()
-    }
 }
 
 /// A song in a playlist: its name alone, or with its transitions.
@@ -63,15 +39,17 @@ pub enum PlaylistEntry {
     Configured(ConfiguredEntry),
 }
 
-/// A playlist entry with its own transitions, which replace the playlist's
-/// defaults setting by setting.
+/// A playlist entry with its own transitions.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConfiguredEntry {
     /// The song's name.
     pub song: String,
+    /// How the song fades out when a loop break (play, next or previous)
+    /// leaves it, playing on under the song it gives way to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_out: Option<FadeConfig>,
+    /// How the song fades in when it starts under a song fading out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_in: Option<FadeConfig>,
 }
@@ -124,7 +102,7 @@ impl PlaylistEntry {
     }
 }
 
-/// An entry's transitions, parsed, with the playlist's defaults filled in.
+/// An entry's transitions, parsed.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EntryTransitions {
     /// How the song fades out when a loop break leaves it.
@@ -251,14 +229,6 @@ fn optional_string_or_number<'de, D: serde::Deserializer<'de>>(
 }
 
 impl FadeConfig {
-    /// The tracks the fade names to leave out, if it names any.
-    pub fn exclude(&self) -> Option<&[String]> {
-        match self {
-            FadeConfig::Length(_) => None,
-            FadeConfig::Full { exclude, .. } => exclude.as_deref(),
-        }
-    }
-
     /// Parses the fade `field` sets. Only a fade-out (`lights`) crosses the
     /// lights.
     pub(crate) fn parse(&self, field: &str, lights: bool) -> Result<Fade, String> {
@@ -312,7 +282,6 @@ impl Playlist {
     pub fn new(songs: &[String]) -> Playlist {
         Playlist {
             kind: super::kind::ConfigKind::Playlist,
-            transitions: Transitions::default(),
             songs: songs.iter().cloned().map(PlaylistEntry::Song).collect(),
         }
     }
@@ -335,78 +304,31 @@ impl Playlist {
         &self.songs
     }
 
-    /// Each entry's song with the tracks its own transitions leave out, by
-    /// setting: `("fade_out", tracks)`. A default's are not here: it applies
-    /// to songs that may not have them, which is no matter.
-    pub fn entry_excludes(&self) -> Vec<(&str, &'static str, &[String])> {
-        self.songs
-            .iter()
-            .filter_map(|entry| match entry {
-                PlaylistEntry::Configured(entry) => Some(entry),
-                PlaylistEntry::Song(_) => None,
-            })
-            .flat_map(|entry| {
-                [("fade_out", &entry.fade_out), ("fade_in", &entry.fade_in)]
-                    .into_iter()
-                    .filter_map(move |(field, fade)| {
-                        Some((entry.song.as_str(), field, fade.as_ref()?.exclude()?))
-                    })
-            })
-            .collect()
-    }
-
-    /// The playlist's default transitions.
-    pub fn transitions(&self) -> &Transitions {
-        &self.transitions
-    }
-
-    /// Each entry's transitions, in order: its own settings, each falling
-    /// back to the playlist's default.
+    /// Each entry's transitions, parsed, in order.
     pub fn entry_transitions(&self) -> Result<Vec<EntryTransitions>, String> {
-        let parse = |fade: Option<&FadeConfig>, field: &str, lights: bool, at: &str| {
-            fade.map(|fade| fade.parse(field, lights))
-                .transpose()
-                .map_err(|e| format!("{at}: {e}"))
-        };
-        let default_out = parse(
-            self.transitions.fade_out.as_ref(),
-            "fade_out",
-            true,
-            "transitions",
-        )?;
-        let default_in = parse(
-            self.transitions.fade_in.as_ref(),
-            "fade_in",
-            false,
-            "transitions",
-        )?;
         self.songs
             .iter()
             .map(|entry| {
-                let (fade_out, fade_in) = match entry {
-                    PlaylistEntry::Song(_) => (None, None),
-                    PlaylistEntry::Configured(entry) => {
-                        (entry.fade_out.as_ref(), entry.fade_in.as_ref())
-                    }
+                let PlaylistEntry::Configured(entry) = entry else {
+                    return Ok(EntryTransitions::default());
                 };
-                let at = format!("song {}", entry.song());
+                let parse = |fade: &Option<FadeConfig>, field: &str, lights: bool| {
+                    fade.as_ref()
+                        .map(|fade| fade.parse(field, lights))
+                        .transpose()
+                        .map_err(|e| format!("song {}: {e}", entry.song))
+                };
                 Ok(EntryTransitions {
-                    fade_out: match parse(fade_out, "fade_out", true, &at)? {
-                        Some(fade) => Some(fade),
-                        None => default_out.clone(),
-                    },
-                    fade_in: match parse(fade_in, "fade_in", false, &at)? {
-                        Some(fade) => Some(fade),
-                        None => default_in.clone(),
-                    },
+                    fade_out: parse(&entry.fade_out, "fade_out", true)?,
+                    fade_in: parse(&entry.fade_in, "fade_in", false)?,
                 })
             })
             .collect()
     }
 
     /// This playlist with `songs` as its songs, in that order, for an editor
-    /// that knows only the names. The defaults carry over, and each entry's
-    /// own settings with the first entry left of the same song.
+    /// that knows only the names. Each entry's settings carry over with the
+    /// first entry left of the same song.
     pub fn with_songs(&self, songs: &[String]) -> Playlist {
         let mut left: Vec<Option<&PlaylistEntry>> = self.songs.iter().map(Some).collect();
         let songs = songs
@@ -421,7 +343,6 @@ impl Playlist {
             .collect();
         Playlist {
             kind: self.kind.clone(),
-            transitions: self.transitions.clone(),
             songs,
         }
     }
@@ -531,12 +452,9 @@ songs:
     }
 
     #[test]
-    fn entries_take_transitions_and_fall_back_to_the_defaults() {
+    fn entries_take_their_own_transitions() {
         let p = parse(
             r#"
-transitions:
-  fade_out: 1measure
-  fade_in: 2beats
 songs:
   - 1999
   - song: Prelude
@@ -546,20 +464,13 @@ songs:
       exclude: [click]
       lights: 0s
   - song: Opener
-    fade_in: 0s
+    fade_in: 2beats
 "#,
         )
         .unwrap();
         assert_eq!(p.songs(), ["1999", "Prelude", "Opener"]);
         let t = p.entry_transitions().unwrap();
-        assert_eq!(
-            t[0].fade_out.as_ref().unwrap().length,
-            LoopCrossfade::Measures(1.0)
-        );
-        assert_eq!(
-            t[0].fade_in.as_ref().unwrap().length,
-            LoopCrossfade::Beats(2.0)
-        );
+        assert_eq!(t[0], EntryTransitions::default());
         let out = t[1].fade_out.as_ref().unwrap();
         assert_eq!(
             out.length,
@@ -571,15 +482,12 @@ songs:
             out.lights,
             Some(LoopCrossfade::Time(std::time::Duration::ZERO))
         );
-        assert_eq!(
-            t[1].fade_in.as_ref().unwrap().length,
-            LoopCrossfade::Beats(2.0)
-        );
-        // Its own setting replaces the default: zero, no fade.
+        assert!(t[1].fade_in.is_none());
         assert_eq!(
             t[2].fade_in.as_ref().unwrap().length,
-            LoopCrossfade::Time(std::time::Duration::ZERO)
+            LoopCrossfade::Beats(2.0)
         );
+        assert!(t[2].fade_out.is_none());
     }
 
     #[test]
@@ -587,7 +495,7 @@ songs:
         let p = parse("songs:\n  - song: A\n    fade_out: {length: 2s, curve: wobbly}\n").unwrap();
         let e = p.entry_transitions().unwrap_err();
         assert!(e.contains("song A") && e.contains("wobbly"), "{e}");
-        let p = parse("transitions:\n  fade_in: {length: 2s, lights: 1s}\nsongs: []\n").unwrap();
+        let p = parse("songs:\n  - song: A\n    fade_in: {length: 2s, lights: 1s}\n").unwrap();
         let e = p.entry_transitions().unwrap_err();
         assert!(e.contains("lights applies only to fade_out"), "{e}");
         assert!(parse("songs:\n  - song: A\n    fade_ot: 2s\n").is_err());
@@ -610,8 +518,6 @@ songs:
     fn with_songs_keeps_each_entrys_transitions() {
         let p = parse(
             r#"
-transitions:
-  fade_out: 2s
 songs:
   - A
   - song: B
@@ -621,7 +527,6 @@ songs:
         .unwrap();
         let q = p.with_songs(&["B".to_string(), "C".to_string(), "B".to_string()]);
         assert_eq!(q.songs(), ["B", "C", "B"]);
-        assert_eq!(q.transitions(), p.transitions());
         assert_eq!(q.entries()[0], p.entries()[1]);
         assert_eq!(q.entries()[2], PlaylistEntry::Song("B".to_string()));
 
