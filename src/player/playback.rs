@@ -60,8 +60,7 @@ impl Player {
             if self.is_current_song_looping() {
                 info!("Breaking out of song loop to advance playlist.");
                 if let Some(ref handles) = *join {
-                    let target = self.get_playlist().peek_next();
-                    self.fade_out_for_loop_break(&handles.cancel, target.as_ref());
+                    self.fade_out_for_loop_break(&handles.cancel, false);
                 }
                 self.loop_break_to_prev.store(false, Ordering::Relaxed);
                 self.loop_break.store(true, Ordering::Relaxed);
@@ -161,6 +160,7 @@ impl Player {
                     loop_time_consumed: self.loop_time_consumed.clone(),
                     break_fade: self.break_fade.clone(),
                     break_fade_ids: self.break_fade_ids.clone(),
+                    start_fade: self.start_fade.clone(),
                 },
             };
             tokio::task::spawn_blocking(move || {
@@ -809,19 +809,29 @@ impl Player {
     }
 
     /// Fades out the looping song a loop break leaves, as it gives way to
-    /// `target`: over its `loop_break_fade`, from the gain each source has
-    /// now, its `loop_crossfade_cut` tracks cut at once -- or, without one,
-    /// all of it over the short default crossfade. The lights cross into the
-    /// next song's over the same length. Only `playback`'s sources fade.
+    /// the song before it (`back`) or after it, and returns that song: over
+    /// the playlist's `fade_out` for the entry, from the gain each source
+    /// has now, its excluded tracks cut at once -- or, without one, all of it
+    /// over the short default crossfade. The lights cross into the next
+    /// song's over the fade's `lights`, and the next song fades in over its
+    /// entry's `fade_in`, if it has one. Only `playback`'s sources fade.
     pub(super) fn fade_out_for_loop_break(
         &self,
         playback: &CancelHandle,
-        target: Option<&Arc<Song>>,
-    ) {
-        let Some(song) = self.get_playlist().current() else {
-            return;
+        back: bool,
+    ) -> Option<Arc<Song>> {
+        let playlist = self.get_playlist();
+        let handover = playlist.loop_break(back);
+        let target = handover.target;
+        let song = playlist.current()?;
+        let fade = handover
+            .fade_out
+            .as_ref()
+            .and_then(|fade| song.fade_out_into(fade, target.as_deref()));
+        *self.start_fade.lock() = match (&fade, &target, &handover.fade_in) {
+            (Some(_), Some(target), Some(fade_in)) => target.fade_in(fade_in),
+            _ => None,
         };
-        let fade = song.loop_break_fade_into(target.map(|t| t.as_ref()));
         let hw = self.hardware.read();
         if let Some(mixer) = hw.device.as_ref().and_then(|device| device.mixer()) {
             let rate = mixer.sample_rate();
@@ -862,9 +872,15 @@ impl Player {
                 song = song.name(),
                 fade_ms = fade.length.as_millis() as u64,
                 lights_ms = fade.lights.as_millis() as u64,
+                fade_in_ms = self
+                    .start_fade
+                    .lock()
+                    .as_ref()
+                    .map_or(0, |f| f.length.as_millis() as u64),
                 "Loop break: fading out under the next song"
             );
         }
+        target
     }
 
     /// Cuts a looping song still fading out after a loop break, for a stop or
@@ -872,6 +888,7 @@ impl Player {
     pub(super) fn cut_break_fade(&self) {
         let ids = std::mem::take(&mut *self.break_fade_ids.lock());
         *self.break_fade.lock() = None;
+        *self.start_fade.lock() = None;
         let hw = self.hardware.read();
         if let Some(dmx) = hw.dmx_engine.as_ref() {
             dmx.end_break_fade();

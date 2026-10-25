@@ -63,7 +63,11 @@ pub use self::midi::MidiTransformer;
 pub use self::midi::ToMidiEvent;
 pub use self::pilot::PilotConfig;
 pub use self::player::{MetronomeDefaults, Player};
-pub use self::playlist::Playlist;
+#[allow(unused_imports)]
+pub use self::playlist::{
+    ConfiguredEntry, EntryTransitions, Fade, FadeConfig, FadeCurve, Playlist, PlaylistEntry,
+    Transitions,
+};
 // Sample types are exported for external configuration
 pub use self::hostname::resolve_hostname;
 pub use self::notification::{NotificationConfig, SongNotificationConfig};
@@ -74,10 +78,7 @@ pub use self::samples::{
     ReleaseBehavior, RetriggerBehavior, SampleDefinition, SampleTrigger, SamplesConfig,
     VelocityConfig, VelocityLayer, VelocityMode,
 };
-pub use self::song::{
-    Fade, FadeConfig, FadeCurve, LightShow, LightingShow, LoopCrossfade, MidiPlayback, Section,
-    Song,
-};
+pub use self::song::{LightShow, LightingShow, LoopCrossfade, MidiPlayback, Section, Song};
 pub use self::statusevents::StatusEvents;
 pub use self::store::ConfigStore;
 pub use self::tempo::{parse_time_signature, TempoChangeConfig, TempoConfig, TransitionConfig};

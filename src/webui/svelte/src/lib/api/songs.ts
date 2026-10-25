@@ -39,8 +39,6 @@ export interface SongSummary {
   /** The resolved loop crossfade, when the song has one. */
   loop_crossfade_ms?: number | null;
   loop_crossfade_cut?: string[];
-  /** `loop_break_fade` as configured. */
-  loop_break_fade?: string | null;
   /** Named sections defined by measure boundaries, optionally offset to a
    * (possibly fractional) beat within the boundary measures. */
   sections: {

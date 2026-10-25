@@ -103,8 +103,26 @@ pub(super) async fn put_playlist_by_name(
     let playlists_dir =
         require_configured_dir(&state.playlists_dir, "playlists", StatusCode::NOT_FOUND)?;
 
-    // Write the playlist YAML file.
-    let playlist_config = config::Playlist::new(&body.songs);
+    // Before `resolve_resource_path`, which canonicalizes the directory and
+    // fails if it is missing -- a creation after that call can never run.
+    // Created only when it is inside the project: a `playlists_dir:` pointing
+    // elsewhere is the operator's to set up, like `songs` and the rest.
+    let playlists_dir = super::helpers::ensure_configured_dir(&playlists_dir, &state).await?;
+
+    // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
+    // verified via canonicalize + starts_with containment in resolve_resource_path.
+    let file_path = resolve_resource_path(&playlists_dir, &name, "yaml")?;
+
+    // The editor knows only the songs: an existing playlist keeps its
+    // transitions, and each entry its own with the song.
+    let existing = file_path
+        .is_file()
+        .then(|| config::Playlist::deserialize(&file_path).ok())
+        .flatten();
+    let playlist_config = match existing {
+        Some(existing) => existing.with_songs(&body.songs),
+        None => config::Playlist::new(&body.songs),
+    };
     let yaml = match crate::util::to_yaml_string(&playlist_config) {
         Ok(y) => y,
         Err(e) => {
@@ -115,16 +133,6 @@ pub(super) async fn put_playlist_by_name(
                 .into_response());
         }
     };
-
-    // Before `resolve_resource_path`, which canonicalizes the directory and
-    // fails if it is missing -- a creation after that call can never run.
-    // Created only when it is inside the project: a `playlists_dir:` pointing
-    // elsewhere is the operator's to set up, like `songs` and the rest.
-    let playlists_dir = super::helpers::ensure_configured_dir(&playlists_dir, &state).await?;
-
-    // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
-    // verified via canonicalize + starts_with containment in resolve_resource_path.
-    let file_path = resolve_resource_path(&playlists_dir, &name, "yaml")?;
 
     // Write atomically, off the async runtime.
     let fp = file_path.clone();

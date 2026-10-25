@@ -9,14 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Fading a looping song out under the next one (#546)**: `loop_break_fade: 1measure` (or
-  `3s`, `6beats`) makes Play, Next or Previous on a looping song start the next song at once
-  while the looping song plays on and fades out underneath it, instead of cutting in 10 ms.
-  Beats and measures count on the next song's grid from its first bar, so `1measure` fades over
-  its count-in. Only the looping song's own sources fade, each from the gain it has (no jump
-  mid-crossfade), on the equal-power out half; `loop_crossfade_cut` tracks cut at once; a fade
-  outlasting the pass carries on into another. The lights cross into the next song's show over
-  the same length. Stop and seek cut it. The song editor has a field for it.
+- **Playlist transitions: fading a looping song out under the next one (#546)**: a playlist
+  entry's `fade_out: 1measure` (or `3s`, `6beats`), or a playlist-wide default under
+  `transitions:`, makes Play, Next or Previous on a looping song start the next song at once
+  while the looping song plays on and fades out underneath it, instead of cutting in 10 ms. The
+  song it gives way to can `fade_in` under it. Beats and measures in a fade-out count on the next
+  song's grid from its first bar, so `1measure` fades over its count-in. Each fade takes a
+  `curve` (`equal_power` or `linear`) and tracks to `exclude` (a fade-out's default to the song's
+  `loop_crossfade_cut`); a fade-out's lights cross into the next song's show over its `lights`
+  (the length by default). Only the looping song's own sources fade, each from the gain it has
+  (no jump mid-crossfade); a fade outlasting the pass carries on into another. Stop and seek cut
+  it. Playlist entries can now be maps (`song:` with its settings) as well as names, and the
+  playlist editor keeps them when it saves.
 - **Long crossfades for looping songs**: `loop_crossfade: 2measures` (or `6s`, `500ms`,
   `8beats`) in `song.yaml` makes each pass of a looping song start that long before the last
   ends, and crosses the two over the overlap. Audio fades on an equal-power curve; the lights

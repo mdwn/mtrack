@@ -144,9 +144,6 @@
   // switch over at its midpoint instead of fading.
   let loopCrossfade = $state("");
   let loopCrossfadeCut = $state<string[]>([]);
-  // `loop_break_fade` as written: how long the song fades out under the next
-  // one when play/next/previous breaks its loop.
-  let loopBreakFade = $state("");
 
   // Section editor state
   let sections = $state<
@@ -297,10 +294,6 @@
               (t: unknown): t is string => typeof t === "string",
             )
           : [];
-        loopBreakFade =
-          typeof parsed.loop_break_fade === "string"
-            ? parsed.loop_break_fade
-            : "";
         sections = (parsed.sections ?? []).map((s: Record<string, unknown>) => {
           const entry: {
             name: string;
@@ -344,7 +337,6 @@
       loopPlayback = false;
       loopCrossfade = "";
       loopCrossfadeCut = [];
-      loopBreakFade = "";
       sections = [];
       songSamples = {};
       notificationAudio = {};
@@ -386,11 +378,6 @@
       updated.loop_crossfade_cut = loopCrossfadeCut;
     } else {
       delete updated.loop_crossfade_cut;
-    }
-    if (loopBreakFade.trim()) {
-      updated.loop_break_fade = loopBreakFade.trim();
-    } else {
-      delete updated.loop_break_fade;
     }
     if (sections.length > 0) {
       updated.sections = sections;
@@ -1015,21 +1002,6 @@
               >
             </fieldset>
           {/if}
-          <label for="loop-break-fade" class="loop-break-fade-label"
-            >{$t("songs.detail.loopBreakFade")}</label
-          >
-          <input
-            id="loop-break-fade"
-            class="input"
-            type="text"
-            placeholder="1measure"
-            value={loopBreakFade}
-            onchange={(e) => {
-              loopBreakFade = (e.currentTarget as HTMLInputElement).value;
-              editedYaml = buildYaml();
-            }}
-          />
-          <span class="field-hint">{$t("songs.detail.loopBreakFadeHint")}</span>
         </div>
       {/if}
     {/if}
@@ -1516,9 +1488,6 @@
   }
   .loop-crossfade .field-hint {
     margin-left: 0;
-  }
-  .loop-crossfade .loop-break-fade-label {
-    margin-top: 12px;
   }
   .loop-crossfade-cut {
     border: none;

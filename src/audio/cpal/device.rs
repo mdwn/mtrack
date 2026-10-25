@@ -1301,7 +1301,9 @@ impl AudioDevice for Device {
             loop_time_consumed,
             break_fade,
             break_fade_ids,
+            start_fade,
         } = loop_control;
+        let start_fade = start_fade.lock().take();
         let span = span!(Level::INFO, "play song (cpal)");
         let _enter = span.enter();
 
@@ -1421,13 +1423,32 @@ impl AudioDevice for Device {
             None
         };
 
+        // Starting under a song a loop break is fading out, with a playlist
+        // `fade_in`: everything but its excluded tracks fades in over it.
+        let start_fade_envelope = start_fade.as_ref().map(|fade| {
+            let samples = (fade.length.as_secs_f64()
+                * self.output_manager.mixer.sample_rate() as f64)
+                .round() as u64;
+            Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                samples, fade.curve,
+            ))
+        });
         for (source, group) in channel_mapped_sources.into_iter() {
-            let (active_source, flag) = build_active_source(
-                source,
-                mappings,
-                &cancel_handle,
-                song_crossfade_envelope.clone(),
-            );
+            let envelope = match (&start_fade, &start_fade_envelope) {
+                (Some(fade), Some(envelope)) => {
+                    let mut tracks = source.channel_mappings().iter().flatten().peekable();
+                    let excluded =
+                        tracks.peek().is_some() && tracks.all(|t| fade.exclude.contains(t));
+                    if excluded {
+                        song_crossfade_envelope.clone()
+                    } else {
+                        Some(envelope.clone())
+                    }
+                }
+                _ => song_crossfade_envelope.clone(),
+            };
+            let (active_source, flag) =
+                build_active_source(source, mappings, &cancel_handle, envelope);
             if let Some(song_loop) = song_loop.as_mut() {
                 match group {
                     PassGroup::Fade => song_loop.fade_ids.push(active_source.id),
@@ -1971,7 +1992,7 @@ impl AudioDevice for Device {
             cancel_handle.wait(loop_finished);
         }
 
-        // A loop break fading the song out (`loop_break_fade`) over longer than
+        // A loop break fading the song out (a playlist `fade_out`) over longer than
         // its audible pass has left: carry the fade on into the next pass, so
         // the song does not fall silent part way through.
         let fade = break_fade.lock().clone();

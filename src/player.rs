@@ -386,13 +386,16 @@ pub struct Player {
     /// Set with `loop_break` when the break came from previous rather than
     /// next or play, so the cleanup moves the playlist back, not on.
     loop_break_to_prev: Arc<AtomicBool>,
-    /// A looping song fading out after a loop break (`loop_break_fade`):
+    /// A looping song fading out after a loop break (a playlist `fade_out`):
     /// when the break came and how long the fade lasts. The audio monitor
     /// reads it to carry the fade across a loop boundary.
     break_fade: Arc<parking_lot::Mutex<Option<crate::playsync::BreakFade>>>,
     /// The mixer sources fading out after a loop break, which a stop or seek
     /// cuts rather than letting them finish.
     break_fade_ids: Arc<parking_lot::Mutex<Vec<u64>>>,
+    /// How the song a loop break moves to fades in under the one fading out
+    /// (a playlist `fade_in`), taken by the audio device as it starts.
+    start_fade: Arc<parking_lot::Mutex<Option<crate::songs::ResolvedFade>>>,
     /// Active section loop bounds. When Some, audio/MIDI/DMX subsystems
     /// loop the specified time region instead of the full song.
     active_section: Arc<parking_lot::RwLock<Option<SectionBounds>>>,
@@ -639,6 +642,7 @@ impl Player {
             loop_break_to_prev: Arc::new(AtomicBool::new(false)),
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            start_fade: Arc::new(parking_lot::Mutex::new(None)),
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
             loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
@@ -3192,6 +3196,13 @@ mod test {
     /// A player on the mock device whose playlist is A, B, C, with B a
     /// 10-second looping song, playing B.
     async fn player_looping_b() -> Result<(Arc<Player>, tempfile::TempDir), Box<dyn Error>> {
+        player_looping_b_with("songs:\n- A\n- B\n- C\n").await
+    }
+
+    /// As [`player_looping_b`], with the playlist written as `playlist`.
+    async fn player_looping_b_with(
+        playlist: &str,
+    ) -> Result<(Arc<Player>, tempfile::TempDir), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let songs_dir = dir.path().join("songs");
         for (name, looping) in [("A", false), ("B", true), ("C", false)] {
@@ -3206,7 +3217,7 @@ mod test {
             )?;
         }
         let playlist_path = dir.path().join("playlist.yaml");
-        std::fs::write(&playlist_path, "songs:\n- A\n- B\n- C\n")?;
+        std::fs::write(&playlist_path, playlist)?;
         let songs = songs::get_all_songs(&songs_dir)?;
         let playlist = Playlist::new(
             "playlist",
@@ -3276,6 +3287,40 @@ mod test {
         );
         // And goes there: the cleanup used to move on whatever the direction.
         playing_eventually(&player, "A").await?;
+        player.stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_loop_break_takes_its_fades_from_the_playlist() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) = player_looping_b_with(
+            "transitions:\n  fade_out: 2s\nsongs:\n- song: A\n  fade_in: {length: 1s, exclude: [t]}\n- B\n- C\n",
+        )
+        .await?;
+        player.prev().await;
+        // B fades out on the playlist's default, and A, which it gives way
+        // to, fades in on its own.
+        let fade = player.break_fade.lock().clone().expect("a break fade");
+        assert_eq!(fade.length, Duration::from_secs(2));
+        let fade_in = player.start_fade.lock().clone().expect("a fade-in");
+        assert_eq!(fade_in.length, Duration::from_secs(1));
+        assert_eq!(fade_in.exclude, ["t".to_string()]);
+        playing_eventually(&player, "A").await?;
+        player.stop().await;
+        assert!(player.start_fade.lock().is_none(), "a stop clears it");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_fade_in_needs_a_fade_out_to_start_under() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) = player_looping_b_with(
+            "transitions:\n  fade_in: 1s\nsongs:\n- A\n- song: B\n  fade_out: 0s\n- C\n",
+        )
+        .await?;
+        player.next().await;
+        assert!(player.break_fade.lock().is_none());
+        assert!(player.start_fade.lock().is_none());
+        playing_eventually(&player, "C").await?;
         player.stop().await;
         Ok(())
     }

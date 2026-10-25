@@ -39,7 +39,7 @@ pub(crate) enum PassClock {
     /// looping song, the outgoing pass `lead` (a pass's length less the
     /// overlap) ahead.
     Song { lead: Duration },
-    /// The wall clock from a loop break (`loop_break_fade`): the looping song
+    /// The wall clock from a loop break (a playlist `fade_out`): the looping song
     /// fades out over the next song's start, whose song time is not running
     /// yet and has nothing to do with it. The outgoing pass plays on from
     /// `from`, its song time at the break.
@@ -141,7 +141,7 @@ impl Engine {
     }
 
     /// Begins fading a looping song's lights out after a loop break, over
-    /// `fade` (its `loop_break_fade`): the running effects engine and timeline
+    /// `fade` (its playlist `fade_out`): the running effects engine and timeline
     /// play on as the outgoing pass, on the wall clock from now, while a fresh
     /// engine for the same rig waits for the next song's show. That pass
     /// outlives this playback -- its cleanup and the next song's timeline

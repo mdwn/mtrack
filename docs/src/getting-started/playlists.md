@@ -50,6 +50,62 @@ the playlist named "playlist" if no file with that name exists in the `playlists
 
 If no playlist file is provided at all, mtrack falls back to the `all_songs` playlist.
 
+## Transitions
+
+Breaking out of a looping song (Play, Next or Previous) normally cuts it in 10 ms. A playlist
+can instead have it play on and fade out under the song it gives way to -- a prelude carrying
+the room into the song it introduces -- and have that song fade in.
+
+```yaml
+kind: playlist
+transitions:            # defaults for every entry
+  fade_out: 1measure
+songs:
+- song: Walk-in loop
+  fade_out:
+    length: 2measures
+    curve: linear
+    exclude: [click, cues]
+    lights: 1measure
+- song: Opener
+  fade_in: {length: 4beats, exclude: [click]}
+- The slow one
+- song: Interlude
+  fade_out: 0s          # no fade for this one
+```
+
+An entry is a song's name, or a map with `song` and its own `fade_out` and `fade_in`. Each
+setting an entry gives replaces the playlist's default for it; `0s` turns it off.
+
+- **`fade_out`** applies when a loop break leaves the entry's song: the next song starts at once,
+  as always, while the looping song plays on from where it was and fades out underneath it.
+  It applies only to loop breaks; a song that ends by itself just ends.
+- **`fade_in`** applies when the entry's song starts under a song fading out: it has no effect
+  otherwise.
+
+Either can be a length alone or a map:
+
+- **`length`**: `3s`, `500ms`, `6beats` or `1measure`. A `fade_out`'s beats and measures count on
+  the **next** song's grid from its first bar -- any lead-in before it included -- so `1measure`
+  fades out exactly over the next song's count-in, whatever its tempo and meter. A song with no
+  grid of its own (a prelude usually has none) needs the next song to have one; failing both,
+  the song cuts. A `fade_in`'s count on
+  its own song's grid.
+- **`curve`**: `equal_power` (the default) holds the level up and falls away late on a
+  fade-out, and comes up quickly on a fade-in; `linear` is a straight ramp.
+- **`exclude`**: tracks that do not fade. On a fade-out they cut at once; on a fade-in they start
+  at full level -- usually the click and cues, so the count-in is heard once and clearly. A
+  `fade_out` defaults to the song's `loop_crossfade_cut` tracks, a `fade_in` to none.
+- **`lights`** (`fade_out` only): how long the lights take to cross from the looping song's show
+  into the next song's, `0s` to switch at once. Defaults to the length.
+
+A source part way through a loop crossfade fades out from where it is, and a fade that outlasts
+the pass it began in carries on into another pass to see it out. MIDI from the looping song stops
+at the break. Stop or a seek cuts everything, the fading song included.
+
+The web UI's playlist editor keeps a playlist's transitions when it saves; they are edited in the
+file.
+
 ## See also
 
 Playlists can also be switched from outside the web UI:

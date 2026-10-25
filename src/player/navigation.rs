@@ -79,14 +79,12 @@ impl Player {
             // one still fading out (#545).
             if self.is_current_song_looping() {
                 info!("Breaking out of song loop via {} navigation.", direction);
-                let playlist = self.get_playlist();
-                let target = match direction {
-                    PlaylistDirection::Next => playlist.peek_next(),
-                    PlaylistDirection::Prev => playlist.peek_prev(),
-                };
-                if let Some(ref handles) = *join {
-                    self.fade_out_for_loop_break(&handles.cancel, target.as_ref());
-                }
+                let target = join.as_ref().and_then(|handles| {
+                    self.fade_out_for_loop_break(
+                        &handles.cancel,
+                        direction == PlaylistDirection::Prev,
+                    )
+                });
                 self.loop_break_to_prev
                     .store(direction == PlaylistDirection::Prev, Ordering::Relaxed);
                 self.loop_break.store(true, Ordering::Relaxed);

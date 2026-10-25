@@ -95,7 +95,7 @@ impl PassCrossover {
     }
 }
 
-/// A loop break's fade-out (`loop_break_fade`) that outlasts the pass it
+/// A loop break's fade-out (a playlist `fade_out`) that outlasts the pass it
 /// began in: where the next pass has to carry it on. A loop break fades the
 /// song out from full gain on `curve`'s out half; the pass it began in
 /// ends at `pass_end` on the playback clock, `now` is the clock now,

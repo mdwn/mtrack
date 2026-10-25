@@ -59,7 +59,7 @@ pub struct PlaybackSync {
     pub loop_control: LoopControl,
 }
 
-/// A loop break's fade-out in progress (`loop_break_fade`).
+/// A loop break's fade-out in progress (a playlist `fade_out`).
 #[derive(Clone, Debug)]
 pub struct BreakFade {
     /// When the break came.
@@ -83,11 +83,15 @@ pub struct LoopControl {
     pub section_loop_break: Arc<AtomicBool>,
     /// Accumulated time consumed by section loop iterations.
     pub loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
-    /// A loop break's fade-out (`loop_break_fade`), set by the player as it
+    /// A loop break's fade-out (a playlist `fade_out`), set by the player as it
     /// breaks the loop.
     pub break_fade: Arc<parking_lot::Mutex<Option<BreakFade>>>,
     /// The sources fading out after a loop break, which a stop cuts.
     pub break_fade_ids: Arc<parking_lot::Mutex<Vec<u64>>>,
+    /// How the song fades in under a song a loop break is fading out (a
+    /// playlist `fade_in`), set by the player as it breaks the loop and taken
+    /// by the audio device as the song starts.
+    pub start_fade: Arc<parking_lot::Mutex<Option<crate::songs::ResolvedFade>>>,
 }
 
 impl LoopControl {
@@ -100,6 +104,7 @@ impl LoopControl {
             loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            start_fade: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 }
