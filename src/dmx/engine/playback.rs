@@ -114,18 +114,7 @@ impl Engine {
                 dsl_lighting_shows.len()
             );
 
-            // Collect cached shows from DSL lighting shows
-            let all_shows: Vec<_> = dsl_lighting_shows
-                .iter()
-                .flat_map(|dsl_show| dsl_show.shows().values().cloned())
-                .collect();
-
-            if !all_shows.is_empty() {
-                let mut timeline = crate::lighting::timeline::LightingTimeline::new(all_shows);
-                // With audio, the audio ends the song as it always has;
-                // without, the last effect does rather than the last cue.
-                let audio_length = song.duration();
-                timeline.set_end_cap((!audio_length.is_zero()).then_some(audio_length));
+            if let Some(timeline) = super::timeline::song_lighting_timeline(&song) {
                 // Set or clear the tempo map — a song without a tempo block must not
                 // inherit one from the previous song. Shows without their own tempo
                 // block fall back to the song's tempo map (song.yaml `tempo:`).
@@ -313,6 +302,27 @@ impl Engine {
             })
         };
 
+        // A song looping with a crossfade starts its second pass the overlap
+        // before the first ends, cues left in the first or not: those play
+        // on in the outgoing pass. So the first pass's wait ends at that
+        // boundary at the latest, as it ends when the cues run out.
+        let first_boundary_thread = song.loop_crossfade().map(|_| {
+            let cancel_handle = cancel_handle.clone();
+            let timeline_finished = dmx_engine.timeline_finished.clone();
+            let clock = clock.clone();
+            let boundary = song.loop_pass_start(start_time, 1);
+            thread::spawn(move || {
+                while clock.elapsed() < boundary {
+                    if cancel_handle.is_cancelled() || timeline_finished.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                }
+                timeline_finished.store(true, Ordering::Relaxed);
+                cancel_handle.notify();
+            })
+        });
+
         // Section loop: continuously update song time to wrap within section bounds.
         // Runs alongside the timeline watcher and song time tracker. When active,
         // it overrides the song time tracker's writes with the wrapped time.
@@ -446,6 +456,9 @@ impl Engine {
 
         // Song playback finished - signal the song time tracker to stop.
         dmx_engine.timeline_finished.store(true, Ordering::Relaxed);
+        if let Some(thread) = first_boundary_thread {
+            let _ = thread.join();
+        }
 
         if let Err(e) = song_time_tracker.join() {
             error!("Error waiting for song time tracker to stop: {:?}", e);
@@ -460,8 +473,14 @@ impl Engine {
         // song time from its own boundary. Restarting when the *timeline*
         // finishes instead would restart the moment the last cue fires — for
         // a show whose cues are all near the top, immediately and forever.
+        //
+        // With a `loop_crossfade`, each pass begins that long before the last
+        // ends, and the lights cross from one to the other over the overlap
+        // (`begin_loop_crossfade`) instead of cutting.
         let song_length = song.duration();
-        let mut pass_start = song_length.saturating_sub(start_time);
+        let crossfade = song.loop_crossfade();
+        let mut pass = 1;
+        let mut pass_start = song.loop_pass_start(start_time, pass);
         while song.loop_playback()
             && !song_length.is_zero()
             && !cancel_handle.is_cancelled()
@@ -484,8 +503,17 @@ impl Engine {
             );
 
             // Reset state for new loop iteration.
-            dmx_engine.update_song_time(Duration::ZERO);
-            dmx_engine.start_lighting_timeline_at(Duration::ZERO);
+            match crossfade {
+                Some(overlap) => dmx_engine.begin_loop_crossfade(
+                    super::timeline::song_lighting_timeline(&song),
+                    song_length.saturating_sub(overlap),
+                    overlap,
+                ),
+                None => {
+                    dmx_engine.update_song_time(Duration::ZERO);
+                    dmx_engine.start_lighting_timeline_at(Duration::ZERO);
+                }
+            }
 
             // Reset MIDI DMX playback cursors to the beginning.
             {
@@ -499,17 +527,23 @@ impl Engine {
 
             // Start a new song time tracker for this loop iteration, counting
             // from this pass's boundary.
+            // A crossfading pass's song time also drives the lights' blend
+            // between passes, so its tracker runs to the end of the pass even
+            // once its cues are all done.
+            let pass_over = Arc::new(AtomicBool::new(false));
             let loop_time_tracker = Self::start_loop_song_time_tracker(
                 dmx_engine.clone(),
                 cancel_handle.clone(),
                 pass_start,
                 clock.clone(),
+                crossfade.is_some().then(|| pass_over.clone()),
             );
 
             // Hold this pass until the next boundary. The effects loop may flag
             // the timeline finished long before then, which only stops the time
             // tracker, exactly as it does on the first pass.
-            let pass_end = pass_start + song_length;
+            pass += 1;
+            let pass_end = song.loop_pass_start(start_time, pass);
             while clock.elapsed() < pass_end {
                 if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
                     break;
@@ -518,6 +552,7 @@ impl Engine {
             }
 
             dmx_engine.timeline_finished.store(true, Ordering::Relaxed);
+            pass_over.store(true, Ordering::Relaxed);
 
             if let Err(e) = loop_time_tracker.join() {
                 error!("Error waiting for loop time tracker to stop: {:?}", e);
@@ -642,16 +677,19 @@ impl Engine {
 
     /// Tracks song time for one pass of a looping song: the shared clock keeps
     /// counting across passes, so song time is the clock less the pass's start.
+    /// It stops when the pass's timeline finishes, or, given `until`, when
+    /// that is set instead.
     fn start_loop_song_time_tracker(
         dmx_engine: Arc<Engine>,
         cancel_handle: CancelHandle,
         pass_start: Duration,
         clock: crate::clock::PlaybackClock,
+        until: Option<Arc<AtomicBool>>,
     ) -> JoinHandle<()> {
         let generation = dmx_engine.begin_playback_generation();
-        let timeline_finished = dmx_engine.timeline_finished.clone();
+        let stop = until.unwrap_or_else(|| dmx_engine.timeline_finished.clone());
         thread::spawn(move || {
-            while !cancel_handle.is_cancelled() && !timeline_finished.load(Ordering::Relaxed) {
+            while !cancel_handle.is_cancelled() && !stop.load(Ordering::Relaxed) {
                 let song_time = clock.elapsed().saturating_sub(pass_start);
                 dmx_engine.update_song_time_for_generation(song_time, generation);
                 thread::sleep(Duration::from_millis(10));

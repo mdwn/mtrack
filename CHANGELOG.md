@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Long crossfades for looping songs**: `loop_crossfade: 2measures` (or `6s`, `500ms`,
+  `8beats`) in `song.yaml` makes each pass of a looping song start that long before the last
+  ends, and crosses the two over the overlap. Audio fades on an equal-power curve; the lights
+  run both passes -- the outgoing one still firing its own cues -- and blend them channel by
+  channel, as a console crosses cues (intensity and colour fade, pan and tilt fade but hold
+  where one pass drives none, strobe/gobo and other discrete channels switch at the midpoint);
+  MIDI from both passes plays through the overlap. Tracks listed in `loop_crossfade_cut`, such
+  as a click, switch over at the midpoint instead of fading. Beats and measures count back from
+  the end of the song on its beat grid, and the crossfade can be at most half the song. A song
+  looping this way cannot also loop a section. The song editor has fields for both.
 - **Sequence parameters (#540)**: a sequence can declare parameters, `sequence "x"(hit, bed:
   "#1E6FE0") { … }`, use them as `$hit` in its body, and bind them where it is used:
   `sequence "x"(hit: "#FFD870"), loop: 4`. Colours, groups, levels, durations and loop counts can
@@ -32,6 +42,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the bar now restarts on the bar without a padding cue to stretch it, and an effect that runs
   past the length is cut when the next pass starts. A cue starting at or past the length is a
   parse error. The web UI's lighting editor keeps the length when it saves the file.
+
+### Fixed
+
+- **A looping song's MIDI keeps to the song's length**: each pass of a looping song's MIDI
+  restarted the moment its last event played, so a MIDI file ending before the audio drifted
+  ahead of the audio and lights a little more every pass. Passes now start on the song's own
+  grid, every song length (less any `loop_crossfade`). A song with no audio still loops on its
+  MIDI, having no other length.
+- **MIDI keeps playing while an armed section waits to loop**: MIDI's first play stops at the
+  first event past an armed section's end, often well before the clock gets there, and took
+  that as the end of the song -- falling silent, or in a looping song restarting it. It now
+  waits for the section to loop.
 
 ## [0.17.2] - 2026-10-25
 

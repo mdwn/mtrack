@@ -1018,6 +1018,25 @@ impl TempoMap {
         self.score_time_at_beats(end_beats, &ts_changes)
             .saturating_sub(score_at)
     }
+
+    /// How long the `beats` before `end` last: the same position walk as
+    /// [`Self::beats_to_duration`], run backwards from `end`.
+    pub fn beats_before(&self, beats: f64, end: Duration) -> Duration {
+        let ts_changes = self.build_time_signature_changes();
+        let end_beats = snap_beats(self.score_beats_at(end, &ts_changes));
+        let start_beats = snap_beats(end_beats - beats);
+        end.saturating_sub(self.score_time_at_beats(start_beats, &ts_changes))
+    }
+
+    /// How long the `measures` before `end` last: the same position walk as
+    /// [`Self::measures_to_duration`], run backwards from `end`.
+    pub fn measures_before(&self, measures: f64, end: Duration) -> Duration {
+        let ts_changes = self.build_time_signature_changes();
+        let end_beats = snap_beats(self.score_beats_at(end, &ts_changes));
+        let start_measures = self.measures_at_beats(end_beats, &ts_changes) - measures;
+        let start_beats = snap_beats(self.beats_at_measures(start_measures, &ts_changes));
+        end.saturating_sub(self.score_time_at_beats(start_beats, &ts_changes))
+    }
 }
 
 #[cfg(test)]
@@ -1315,6 +1334,38 @@ mod tests {
         // 4 beats at 120 bpm = 2 seconds
         let dur = map.beats_to_duration(4.0, Duration::from_secs(5), 0.0);
         assert!((dur.as_secs_f64() - 2.0).abs() < 1e-6);
+    }
+
+    // ── TempoMap::beats_before / measures_before ──────────────────────
+
+    #[test]
+    fn beats_and_measures_before_count_back_through_changes() {
+        // 60 bpm to t=2, then 120 bpm.
+        let map = TempoMap::new(
+            Duration::ZERO,
+            60.0,
+            TimeSignature::new(4, 4),
+            vec![TempoChange {
+                position: TempoChangePosition::Time(Duration::from_secs(2)),
+                original_measure_beat: None,
+                bpm: Some(120.0),
+                time_signature: None,
+                transition: TempoTransition::Snap,
+            }],
+        );
+        // From t=3: the 2 beats after the change (1 s), then 1 at 60 bpm.
+        let three_beats = map.beats_before(3.0, Duration::from_secs(3));
+        assert!(
+            (three_beats.as_secs_f64() - 2.0).abs() < 1e-6,
+            "{three_beats:?}"
+        );
+        // Bar 2 starts at t=4 (four beats at 60); one bar back from t=6 is
+        // 4 beats at 120 = 2 s.
+        let bar = map.measures_before(1.0, Duration::from_secs(6));
+        assert!((bar.as_secs_f64() - 2.0).abs() < 1e-6, "{bar:?}");
+        // Counting back and forward agree.
+        let forward = map.measures_to_duration(1.0, Duration::from_secs(6) - bar, 0.0);
+        assert_eq!(forward, bar);
     }
 
     // ── TempoMap::measures_to_duration ────────────────────────────────

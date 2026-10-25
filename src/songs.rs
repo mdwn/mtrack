@@ -170,6 +170,11 @@ pub struct Song {
     beat_grid: Option<crate::audio::click_analysis::BeatGrid>,
     /// Whether this song should loop when it finishes playing.
     loop_playback: bool,
+    /// How long consecutive passes of a looping song overlap, resolved
+    /// against the song's length and beat grid. `None` when they do not.
+    loop_crossfade: Option<Duration>,
+    /// Tracks that switch over halfway through the loop crossfade.
+    loop_crossfade_cut: Vec<String>,
     /// Named sections defined by measure boundaries.
     sections: Vec<config::Section>,
     /// Per-song notification audio overrides.
@@ -262,6 +267,21 @@ impl Song {
             None => Vec::new(),
         };
 
+        let loop_crossfade =
+            Self::resolve_loop_crossfade(config, max_duration, lighting_tempo.as_ref())?;
+        for cut in config.loop_crossfade_cut() {
+            let known = tracks.iter().any(|t| t.name == *cut)
+                || config.metronome().is_some_and(|m| m.track == *cut)
+                || config.pilot().is_some_and(|p| p.track == *cut);
+            if !known {
+                return Err(format!(
+                    "song {}: loop_crossfade_cut names track {cut:?}, which the song does not have",
+                    config.name()
+                )
+                .into());
+            }
+        }
+
         let pilot_hints = match config.pilot() {
             Some(pilot) => Self::resolve_pilot_hints(pilot, beat_grid.as_ref(), start_path)
                 .map_err(|e| format!("song {}: {}", config.name(), e))?,
@@ -289,6 +309,8 @@ impl Song {
             pilot_hints,
             beat_grid,
             loop_playback: config.loop_playback(),
+            loop_crossfade,
+            loop_crossfade_cut: config.loop_crossfade_cut().to_vec(),
             sections: config.sections().to_vec(),
             notification_audio: config.notification_audio().cloned(),
         })
@@ -740,6 +762,87 @@ impl Song {
         self.loop_playback
     }
 
+    /// How long consecutive passes of a looping song overlap: the next pass
+    /// starts this long before the song ends. `None` when a pass starts as
+    /// the last one ends.
+    pub fn loop_crossfade(&self) -> Option<Duration> {
+        self.loop_crossfade.filter(|_| self.loop_playback)
+    }
+
+    /// How often a looping song starts a new pass: its length less the loop
+    /// crossfade. The playhead of a looping song is its elapsed time modulo
+    /// this.
+    pub fn loop_period(&self) -> Duration {
+        self.length()
+            .saturating_sub(self.loop_crossfade().unwrap_or_default())
+    }
+
+    /// Tracks that switch over halfway through the loop crossfade instead of
+    /// fading.
+    pub fn loop_crossfade_cut(&self) -> &[String] {
+        &self.loop_crossfade_cut
+    }
+
+    /// When pass `pass` of a looping song starts on the playback clock, for a
+    /// playback that began `start_time` into the song: the first pass (0) at
+    /// once, each later one a song length less the crossfade after the last.
+    pub fn loop_pass_start(&self, start_time: Duration, pass: u32) -> Duration {
+        if pass == 0 {
+            return Duration::ZERO;
+        }
+        let overlap = self.loop_crossfade().unwrap_or_default();
+        let period = self.duration.saturating_sub(overlap);
+        self.duration
+            .saturating_sub(start_time)
+            .saturating_sub(overlap)
+            + period * (pass - 1)
+    }
+
+    /// The loop crossfade a song config asks for, as a length of time ending
+    /// at the end of the song.
+    fn resolve_loop_crossfade(
+        config: &config::Song,
+        song_length: Duration,
+        tempo_map: Option<&crate::tempo::TempoMap>,
+    ) -> Result<Option<Duration>, Box<dyn Error>> {
+        let Some(crossfade) = config
+            .loop_crossfade()
+            .map_err(|e| format!("song {}: {e}", config.name()))?
+        else {
+            return Ok(None);
+        };
+        let musical = |kind: &str| -> Result<&crate::tempo::TempoMap, Box<dyn Error>> {
+            tempo_map.ok_or_else(|| {
+                format!(
+                    "song {}: loop_crossfade in {kind} needs a beat grid (a tempo: block or a \
+                     click track)",
+                    config.name()
+                )
+                .into()
+            })
+        };
+        let length = match crossfade {
+            config::LoopCrossfade::Time(length) => length,
+            config::LoopCrossfade::Beats(beats) => {
+                musical("beats")?.beats_before(beats, song_length)
+            }
+            config::LoopCrossfade::Measures(measures) => {
+                musical("measures")?.measures_before(measures, song_length)
+            }
+        };
+        // At most half the song, so no more than two passes ever overlap.
+        if length > song_length / 2 {
+            return Err(format!(
+                "song {}: loop_crossfade ({:.3}s) can be at most half the song ({:.3}s)",
+                config.name(),
+                length.as_secs_f64(),
+                song_length.as_secs_f64()
+            )
+            .into());
+        }
+        Ok(Some(length))
+    }
+
     /// Gets the named sections of this song.
     pub fn sections(&self) -> &[config::Section] {
         &self.sections
@@ -1096,6 +1199,8 @@ impl Default for Song {
             pilot_hints: Vec::new(),
             beat_grid: None,
             loop_playback: false,
+            loop_crossfade: None,
+            loop_crossfade_cut: Vec::new(),
             sections: Vec::new(),
             notification_audio: None,
         }
@@ -1750,6 +1855,89 @@ mod test {
         songs::{get_all_songs, initialize_songs},
         testutil::write_wav,
     };
+
+    /// An 8-second, 120 bpm 4/4 song (four bars) with the extra song.yaml
+    /// lines given, loaded.
+    fn looping_song(extra: &str) -> Result<super::Song, Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        write_wav(
+            dir.path().join("pad.wav"),
+            vec![vec![0_i32; 8000 * 8]],
+            8000,
+        )?;
+        write_wav(
+            dir.path().join("click.wav"),
+            vec![vec![0_i32; 8000 * 8]],
+            8000,
+        )?;
+        let yaml = format!(
+            "name: loop\ntracks:\n  - name: pad\n    file: pad.wav\n  - name: click\n    \
+             file: click.wav\ntempo:\n  bpm: 120\n  time_signature: 4/4\nloop_playback: true\n{extra}"
+        );
+        fs::write(dir.path().join("song.yaml"), yaml)?;
+        let config = crate::config::Song::deserialize(&dir.path().join("song.yaml"))?;
+        super::Song::new(dir.path(), &config)
+    }
+
+    #[test]
+    fn loop_crossfade_resolves_against_the_songs_end() -> Result<(), Box<dyn Error>> {
+        use std::time::Duration;
+        let song = looping_song("loop_crossfade: 1measure\nloop_crossfade_cut: [click]\n")?;
+        assert_eq!(song.duration(), Duration::from_secs(8));
+        assert_eq!(song.loop_crossfade(), Some(Duration::from_secs(2)));
+        assert_eq!(song.loop_period(), Duration::from_secs(6));
+        assert_eq!(song.loop_crossfade_cut(), ["click".to_string()]);
+        // Passes every 6 s after the first, which starts its successor 2 s
+        // before its end -- or sooner, when it began part way in.
+        assert_eq!(song.loop_pass_start(Duration::ZERO, 0), Duration::ZERO);
+        assert_eq!(
+            song.loop_pass_start(Duration::ZERO, 1),
+            Duration::from_secs(6)
+        );
+        assert_eq!(
+            song.loop_pass_start(Duration::ZERO, 3),
+            Duration::from_secs(18)
+        );
+        assert_eq!(
+            song.loop_pass_start(Duration::from_secs(1), 1),
+            Duration::from_secs(5)
+        );
+        // Started inside the overlap: the next pass starts at once, and the
+        // grid runs on from there.
+        assert_eq!(
+            song.loop_pass_start(Duration::from_secs(7), 1),
+            Duration::ZERO
+        );
+        assert_eq!(
+            song.loop_pass_start(Duration::from_secs(7), 2),
+            Duration::from_secs(6)
+        );
+
+        let song = looping_song("loop_crossfade: 3beats\n")?;
+        assert_eq!(song.loop_crossfade(), Some(Duration::from_millis(1500)));
+        let song = looping_song("loop_crossfade: 2500ms\n")?;
+        assert_eq!(song.loop_crossfade(), Some(Duration::from_millis(2500)));
+
+        // No crossfade: passes abut.
+        let song = looping_song("")?;
+        assert_eq!(song.loop_crossfade(), None);
+        assert_eq!(song.loop_period(), Duration::from_secs(8));
+        assert_eq!(
+            song.loop_pass_start(Duration::ZERO, 2),
+            Duration::from_secs(16)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bad_loop_crossfades_fail_the_song() {
+        let err = |extra: &str| looping_song(extra).err().map(|e| e.to_string());
+        assert!(err("loop_crossfade: 3measures\n").is_some_and(|e| e.contains("at most half")));
+        assert!(looping_song("loop_crossfade: 2measures\n").is_ok());
+        assert!(err("loop_crossfade: soon\n").is_some_and(|e| e.contains("invalid length")));
+        assert!(err("loop_crossfade: 1s\nloop_crossfade_cut: [clik]\n")
+            .is_some_and(|e| e.contains("\"clik\"")));
+    }
 
     fn count_songs(path: &Path) -> Result<usize, TestError> {
         let songs = get_all_songs(path)?;

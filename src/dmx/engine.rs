@@ -128,6 +128,8 @@ pub struct Engine {
     ola_http_port: u16,
     pub(super) effects_loop_handle: Mutex<Option<JoinHandle<()>>>,
     pub(super) current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
+    /// The pass a crossfading song loop is fading out of, while it does.
+    pub(super) outgoing_pass: Mutex<Option<timeline::OutgoingPass>>,
     pub(super) current_song_time: Arc<AtomicU64>,
     /// Which playback the song-time writers belong to.
     ///
@@ -257,6 +259,7 @@ impl Engine {
             lighting_config: lighting_config.cloned(),
             ola_http_port: config.ola_http_port(),
             current_song_timeline,
+            outgoing_pass: Mutex::new(None),
             playback_generation,
             current_song_time,
             timeline_finished,
@@ -503,12 +506,30 @@ impl Engine {
                 return Ok(());
             }
         };
-        let commands = effect_engine.update(dt, Some(song_time))?;
+        // Mid-crossfade between passes of a looping song: render the outgoing
+        // pass too, a pass ahead in song time, and cross the two frames over
+        // the overlap. The outgoing pass goes once the overlap is over.
+        let mut outgoing = self.outgoing_pass.lock();
+        let commands: std::borrow::Cow<[crate::lighting::effects::DmxCommand]> =
+            match outgoing.as_mut() {
+                Some(pass) => {
+                    let incoming = effect_engine.update(dt, Some(song_time))?.to_vec();
+                    let t = song_time.as_secs_f64() / pass.overlap.as_secs_f64().max(f64::EPSILON);
+                    let old = pass.effect_engine.update(dt, Some(song_time + pass.lead))?;
+                    let blended = effect_engine.crossfade_commands(old, &incoming, t);
+                    if t >= 1.0 {
+                        *outgoing = None;
+                    }
+                    std::borrow::Cow::Owned(blended)
+                }
+                None => std::borrow::Cow::Borrowed(effect_engine.update(dt, Some(song_time))?),
+            };
+        drop(outgoing);
 
         // Group commands by universe
         let mut universe_commands: std::collections::HashMap<u16, Vec<(u16, u8)>> =
             std::collections::HashMap::new();
-        for command in commands {
+        for command in commands.iter() {
             universe_commands
                 .entry(command.universe)
                 .or_default()
@@ -2671,6 +2692,97 @@ mod test {
                 Vec::new(),
             );
             assert!(crate::songs::Song::new(tmp_dir.path(), &song_config).is_err());
+        }
+    }
+
+    mod loop_crossfade_tests {
+        use super::*;
+
+        fn timeline(source: &str) -> crate::lighting::timeline::LightingTimeline {
+            let shows = crate::lighting::parser::parse_light_shows(source).unwrap();
+            crate::lighting::timeline::LightingTimeline::new(shows.into_values().collect())
+        }
+
+        /// Renders a frame at incoming-pass song time `secs`; returns the
+        /// wash's (red, green, blue).
+        fn frame_at(engine: &Engine, secs: f64) -> (f64, f64, f64) {
+            let at = Duration::from_secs_f64(secs);
+            engine.update_song_time(at);
+            engine.update_song_lighting(at).unwrap();
+            engine.update_effects().unwrap();
+            let universe = engine.get_universe(5).unwrap();
+            (
+                universe.get_target_value(0),
+                universe.get_target_value(1),
+                universe.get_target_value(2),
+            )
+        }
+
+        #[test]
+        fn passes_cross_over_the_overlap() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+
+            // An 8 s song with a 2 s crossfade: the outgoing pass is 6 s
+            // ahead. It is red throughout, and turns green 7 s in -- a cue
+            // inside the overlap, which must still fire.
+            *engine.current_song_timeline.lock() = Some(timeline(
+                "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", duration: 7s\n    \
+                 @7.000\n    wash: static, color: \"green\", duration: 1s\n}\n",
+            ));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            assert_eq!(frame_at(&engine, 0.0), (255.0, 0.0, 0.0));
+            assert_eq!(frame_at(&engine, 5.5), (255.0, 0.0, 0.0));
+
+            engine.begin_loop_crossfade(
+                Some(timeline(
+                    "show \"a\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 7s\n}\n",
+                )),
+                Duration::from_secs(6),
+                Duration::from_secs(2),
+            );
+            // The first frame of the new pass is still the old one.
+            assert_eq!(frame_at(&engine, 0.0), (255.0, 0.0, 0.0));
+
+            // Halfway: the outgoing pass, at 7 s, has turned green; it and
+            // the incoming blue each at half.
+            let (red, green, blue) = frame_at(&engine, 1.0);
+            assert_eq!(red, 0.0, "the outgoing red gave way to green");
+            assert!((green - 128.0).abs() <= 1.0, "green {green}");
+            assert!((blue - 128.0).abs() <= 1.0, "blue {blue}");
+
+            // Over: the new pass alone, and the old one gone.
+            assert_eq!(frame_at(&engine, 2.0), (0.0, 0.0, 255.0));
+            assert!(engine.outgoing_pass.lock().is_none());
+            assert_eq!(frame_at(&engine, 3.0), (0.0, 0.0, 255.0));
+            Ok(())
+        }
+
+        #[test]
+        fn a_new_start_drops_a_crossfade_in_progress() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            engine.begin_loop_crossfade(None, Duration::from_secs(6), Duration::from_secs(2));
+            assert!(engine.outgoing_pass.lock().is_some());
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            assert!(engine.outgoing_pass.lock().is_none());
+
+            engine.begin_loop_crossfade(None, Duration::from_secs(6), Duration::from_secs(2));
+            engine.stop_lighting_timeline();
+            assert!(engine.outgoing_pass.lock().is_none());
+            Ok(())
         }
     }
 
