@@ -34,6 +34,8 @@ mod formatting_tests;
 #[cfg(test)]
 mod layer_commands_tests;
 #[cfg(test)]
+mod loop_crossfade_tests;
+#[cfg(test)]
 mod pulse_tests;
 #[cfg(test)]
 mod rainbow_tests;

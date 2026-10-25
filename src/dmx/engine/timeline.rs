@@ -20,7 +20,129 @@ use crate::songs::Song;
 
 use super::Engine;
 
+/// The pass of a crossfading song loop that the lights are fading out of: the
+/// effects engine and timeline the last pass ran in, moved aside whole when
+/// the next pass began, so it plays on exactly as it was -- its remaining
+/// cues included -- while the two frames cross.
+pub(crate) struct OutgoingPass {
+    pub(super) effect_engine: crate::lighting::EffectEngine,
+    pub(super) timeline: Option<crate::lighting::timeline::LightingTimeline>,
+    /// How far ahead of the incoming pass it is in song time: a pass's length
+    /// less the overlap.
+    pub(super) lead: Duration,
+    /// How long the passes overlap.
+    pub(super) overlap: Duration,
+}
+
+/// The lighting timeline for a song's DSL shows, ready to start; `None` for a
+/// song without any. With audio, the audio ends the song as it always has;
+/// without, the last effect does rather than the last cue.
+pub(crate) fn song_lighting_timeline(
+    song: &Song,
+) -> Option<crate::lighting::timeline::LightingTimeline> {
+    let all_shows: Vec<_> = song
+        .dsl_lighting_shows()
+        .iter()
+        .flat_map(|dsl_show| dsl_show.shows().values().cloned())
+        .collect();
+    if all_shows.is_empty() {
+        return None;
+    }
+    let mut timeline = crate::lighting::timeline::LightingTimeline::new(all_shows);
+    let audio_length = song.duration();
+    timeline.set_end_cap((!audio_length.is_zero()).then_some(audio_length));
+    Some(timeline)
+}
+
 impl Engine {
+    /// Begins the next pass of a song looping with a crossfade of `overlap`:
+    /// the running effects engine and timeline become the outgoing pass, `lead`
+    /// ahead in song time, and a fresh engine for the same rig starts `next`
+    /// (the song's timeline, from [`song_lighting_timeline`]) from the top.
+    /// [`Engine::update_effects`] crosses the two over the overlap.
+    pub fn begin_loop_crossfade(
+        &self,
+        next: Option<crate::lighting::timeline::LightingTimeline>,
+        lead: Duration,
+        overlap: Duration,
+    ) {
+        // Song time first: a frame rendered between the swap and the reset
+        // would read the old pass's time as the new one's, and end the
+        // crossfade before it began.
+        self.update_song_time(Duration::ZERO);
+        // The engines swap and the outgoing one is put aside under the one
+        // lock (taken in the effects loop's order: engine, then pass), so no
+        // frame renders the fresh engine alone.
+        {
+            let mut effect_engine = self.effect_engine.lock();
+            let fresh = effect_engine.sibling();
+            let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
+            *self.outgoing_pass.lock() = Some(OutgoingPass {
+                effect_engine: outgoing_engine,
+                timeline: None,
+                lead,
+                overlap,
+            });
+        }
+        // Then the timelines. Until the old one joins its pass, that pass's
+        // cues wait a frame; none are lost, since a timeline fires every cue
+        // up to the time it is given.
+        let outgoing_timeline = {
+            let mut current = self.current_song_timeline.lock();
+            let outgoing = current.take();
+            *current = next.map(|mut timeline| {
+                timeline.start();
+                timeline
+            });
+            outgoing
+        };
+        if let Some(pass) = self.outgoing_pass.lock().as_mut() {
+            pass.timeline = outgoing_timeline;
+        }
+    }
+
+    /// Advances the outgoing pass's timeline to `song_time` (the incoming
+    /// pass's) and starts what it fires in the outgoing pass's engine.
+    fn update_outgoing_pass(&self, song_time: Duration) {
+        let update = {
+            let mut outgoing = self.outgoing_pass.lock();
+            let Some(pass) = outgoing.as_mut() else {
+                return;
+            };
+            let lead = pass.lead;
+            match pass.timeline.as_mut() {
+                Some(timeline) => timeline.update(song_time + lead),
+                None => return,
+            }
+        };
+        // Groups resolve against the lighting system before the outgoing
+        // pass is locked again, as for the incoming pass.
+        let mut effects = update.effects;
+        effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
+        let effects: Vec<_> = effects
+            .into_iter()
+            .map(|effect| self.resolve_effect_groups(effect))
+            .collect();
+        let mut outgoing = self.outgoing_pass.lock();
+        let Some(pass) = outgoing.as_mut() else {
+            return;
+        };
+        for cmd in &update.layer_commands {
+            pass.effect_engine.apply_layer_command(cmd);
+        }
+        for sequence_name in &update.stop_sequences {
+            pass.effect_engine.stop_sequence(sequence_name);
+        }
+        for effect in effects {
+            if let Err(e) = pass.effect_engine.start_effect(effect) {
+                error!(
+                    "Failed to start lighting effect in the outgoing loop pass: {}",
+                    e
+                );
+            }
+        }
+    }
+
     /// Validates a song's lighting shows against the engine's lighting config.
     /// Returns an error if any lighting show references invalid groups or fixtures.
     pub fn validate_song_lighting(&self, song: &Song) -> Result<(), Box<dyn Error>> {
@@ -64,6 +186,7 @@ impl Engine {
             }
         };
 
+        self.update_outgoing_pass(song_time);
         self.apply_timeline_update(timeline_update)
     }
 
@@ -73,6 +196,8 @@ impl Engine {
     /// base so the reconstructed state matches what the live loop advances from.
     pub fn start_lighting_timeline_at(&self, start_time: Duration) {
         let start_time = self.to_delayed_song_time(start_time);
+        // A crossfade in progress belongs to the playback being replaced.
+        *self.outgoing_pass.lock() = None;
         // Clear effects from previous song before starting new timeline
         {
             let mut effect_engine = self.effect_engine.lock();
@@ -193,6 +318,9 @@ impl Engine {
 
     /// Stops the lighting timeline
     pub fn stop_lighting_timeline(&self) {
+        // A pass being faded out stops with the playback; the song time that
+        // drives the fade does too.
+        *self.outgoing_pass.lock() = None;
         let mut current_timeline = self.current_song_timeline.lock();
         if let Some(timeline) = current_timeline.as_mut() {
             timeline.stop();

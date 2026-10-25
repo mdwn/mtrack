@@ -32,6 +32,34 @@ use tracing::debug;
 use crate::dmx::midi_dmx_store::MidiDmxStore;
 
 /// Registry of known fixtures and their DMX mappings.
+/// How a channel crosses a crossfade between two engines' frames
+/// ([`EffectEngine::crossfade_commands`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CrossKind {
+    /// Intensity, colour, zoom, focus: fade.
+    Fade,
+    /// Pan and tilt: fade, holding a side's position where the other side
+    /// drives none.
+    Position,
+    /// Anything whose in-between values are other settings: switch at the
+    /// midpoint.
+    Snap,
+}
+
+impl CrossKind {
+    fn of(channel: &str) -> CrossKind {
+        let base = channel.strip_suffix("_fine").unwrap_or(channel);
+        match base {
+            "pan" | "tilt" => CrossKind::Position,
+            "dimmer" | "red" | "green" | "blue" | "white" | "warm_white" | "cool_white" | "uv"
+            | "amber" | "lime" | "cyan" | "magenta" | "yellow" | "zoom" | "focus" | "iris"
+            | "frost" | "ct" | "cto" | "ctb" => CrossKind::Fade,
+            _ => CrossKind::Snap,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct FixtureRegistry {
     fixtures: HashMap<String, FixtureInfo>,
     /// Each pixel fixture's sub-fixture names (`parent/cell`), in cell
@@ -429,6 +457,86 @@ impl EffectEngine {
     /// Binds the venue's focus points, the stage points a `move` may aim at.
     pub fn set_focus_points(&mut self, focus_points: HashMap<String, [f64; 3]>) {
         self.focus_points = focus_points;
+    }
+
+    /// A fresh engine for the same rig: its fixtures, tempo map, MIDI DMX
+    /// store and focus points, and where each mover is and is headed, with
+    /// no effects running and its layers at rest. The next pass of a
+    /// crossfading song loop starts in one while this one plays out.
+    pub fn sibling(&self) -> EffectEngine {
+        EffectEngine {
+            fixtures: self.fixtures.clone(),
+            tempo_map: self.tempo_map.clone(),
+            midi_dmx_store: self.midi_dmx_store.clone(),
+            focus_points: self.focus_points.clone(),
+            poses: self.poses.clone(),
+            goals: self.goals.clone(),
+            // The effects loop's stall diagnostics watch this one counter.
+            update_subphase: self.update_subphase.clone(),
+            ..EffectEngine::new()
+        }
+    }
+
+    /// The frame `t` of the way (0.0 to 1.0) through a crossfade from
+    /// `outgoing` (another engine's frame for the same rig) to `incoming`
+    /// (this engine's), channel by channel as a console crosses cues:
+    /// intensity, colour and other continuous channels fade, a channel only
+    /// one side drives fading from or to zero; pan and tilt fade too, but a
+    /// mover only one side drives holds that side's position rather than
+    /// swinging home; and discrete channels -- strobe, gobo, prism and the
+    /// like, where a value in between is some other setting -- switch at
+    /// the midpoint.
+    pub fn crossfade_commands(
+        &self,
+        outgoing: &[DmxCommand],
+        incoming: &[DmxCommand],
+        t: f64,
+    ) -> Vec<DmxCommand> {
+        let t = t.clamp(0.0, 1.0);
+        let mut kinds: HashMap<(u16, u16), CrossKind> = HashMap::new();
+        for fixture in self.fixtures.as_map().values() {
+            for (name, &offset) in &fixture.channels {
+                kinds.insert(
+                    (fixture.universe, fixture.address + offset - 1),
+                    CrossKind::of(name),
+                );
+            }
+        }
+
+        let mut pairs: std::collections::BTreeMap<(u16, u16), (Option<u8>, Option<u8>)> =
+            std::collections::BTreeMap::new();
+        for c in outgoing {
+            pairs.entry((c.universe, c.channel)).or_default().0 = Some(c.value);
+        }
+        for c in incoming {
+            pairs.entry((c.universe, c.channel)).or_default().1 = Some(c.value);
+        }
+
+        let lerp = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * t).round() as u8;
+        pairs
+            .into_iter()
+            .map(|((universe, channel), (old, new))| {
+                let value = match kinds.get(&(universe, channel)).copied() {
+                    Some(CrossKind::Position) => {
+                        let old = old.or(new).unwrap_or(0);
+                        lerp(old, new.unwrap_or(old))
+                    }
+                    Some(CrossKind::Snap) => {
+                        if t < 0.5 {
+                            old.unwrap_or(0)
+                        } else {
+                            new.unwrap_or(0)
+                        }
+                    }
+                    Some(CrossKind::Fade) | None => lerp(old.unwrap_or(0), new.unwrap_or(0)),
+                };
+                DmxCommand {
+                    universe,
+                    channel,
+                    value,
+                }
+            })
+            .collect()
     }
 
     /// The pose memory: where each mover was last driven to.
