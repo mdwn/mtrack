@@ -286,6 +286,9 @@ impl super::Device for Device {
                         exclude_channels: &exclude_midi_channels,
                         clock: &clock,
                         loop_playback: song.loop_playback(),
+                        loop_crossfade: song
+                            .loop_crossfade()
+                            .map(|overlap| (song.duration(), overlap)),
                         loop_break: loop_break.clone(),
                         active_section: active_section.clone(),
                         section_loop_break: section_loop_break.clone(),
@@ -647,6 +650,9 @@ struct PlaybackContext<'a> {
     exclude_channels: &'a HashSet<u8>,
     clock: &'a PlaybackClock,
     loop_playback: bool,
+    /// For a song looping with a `loop_crossfade`: its length and the
+    /// overlap, each pass starting that long before the last ends.
+    loop_crossfade: Option<(Duration, Duration)>,
     loop_break: Arc<AtomicBool>,
     active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
     section_loop_break: Arc<AtomicBool>,
@@ -691,12 +697,17 @@ fn run_playback(sender: &mut dyn MidiSender, mut ctx: PlaybackContext<'_>) {
         }
     }
 
+    // A crossfading loop's first pass plays to the first boundary here; the
+    // passes from there on overlap (`play_crossfading_passes`).
+    let first_clock_base = ctx.clock.elapsed();
     play_precomputed(
         &MidiPlaybackParams {
             precomputed: ctx.precomputed,
             start_time: ctx.start_time,
-            end_time: None,
-            clock_base: ctx.clock.elapsed(),
+            end_time: ctx
+                .loop_crossfade
+                .map(|(length, overlap)| length.saturating_sub(overlap)),
+            clock_base: first_clock_base,
             cancel_handle: ctx.cancel_handle,
             exclude_channels: ctx.exclude_channels,
             clock: ctx.clock,
@@ -750,6 +761,31 @@ fn run_playback(sender: &mut dyn MidiSender, mut ctx: PlaybackContext<'_>) {
         }
 
         // Whole-song loop check.
+        if let Some((length, overlap)) = ctx.loop_crossfade {
+            if ctx.loop_playback
+                && !ctx.cancel_handle.is_cancelled()
+                && !ctx.loop_break.load(Ordering::Relaxed)
+                && ctx.active_section.read().is_none()
+            {
+                info!("MIDI loop: overlapping passes");
+                play_crossfading_passes(
+                    &CrossfadingPasses {
+                        precomputed: ctx.precomputed,
+                        // Song time 0 of the first pass on the clock.
+                        first_origin: first_clock_base.as_secs_f64() - ctx.start_time.as_secs_f64(),
+                        start_time: ctx.start_time,
+                        length,
+                        overlap,
+                        cancel_handle: ctx.cancel_handle,
+                        loop_break: &ctx.loop_break,
+                        exclude_channels: ctx.exclude_channels,
+                        clock: ctx.clock,
+                    },
+                    sender,
+                );
+            }
+            break;
+        }
         if ctx.loop_playback
             && !ctx.cancel_handle.is_cancelled()
             && !ctx.loop_break.load(Ordering::Relaxed)
@@ -1269,6 +1305,91 @@ struct MidiPlaybackParams<'a> {
     /// If set, stop playback when this section becomes active and event time
     /// reaches the section end. Allows the section loop to take over.
     active_section: Option<&'a Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>>,
+}
+
+/// The passes of a song looping with a crossfade, for
+/// [`play_crossfading_passes`].
+struct CrossfadingPasses<'a> {
+    precomputed: &'a super::playback::PrecomputedMidi,
+    /// When the first pass's song time 0 falls on the clock, in seconds
+    /// (negative for a playback that began part way in).
+    first_origin: f64,
+    /// Where the first pass's playback began; a start inside the overlap
+    /// plays none of what came before it.
+    start_time: Duration,
+    length: Duration,
+    overlap: Duration,
+    cancel_handle: &'a CancelHandle,
+    loop_break: &'a AtomicBool,
+    exclude_channels: &'a HashSet<u8>,
+    clock: &'a PlaybackClock,
+}
+
+/// Plays a crossfading loop from its first boundary on: the first pass's
+/// events from `length - overlap`, and each later pass from its start, a
+/// pass's length less the overlap after the last. Through each overlap both
+/// passes play, their events in time order. Returns on cancel or loop break.
+fn play_crossfading_passes(params: &CrossfadingPasses<'_>, sender: &mut dyn MidiSender) {
+    let events = params.precomputed.events();
+    let period = params.length.saturating_sub(params.overlap).as_secs_f64();
+    if period <= 0.0 {
+        return;
+    }
+    let boundary = params.length.saturating_sub(params.overlap);
+    // (when the pass's song time 0 falls on the clock, its next event)
+    let mut passes: Vec<(f64, usize)> = vec![(
+        params.first_origin,
+        events.partition_point(|e| e.time < boundary.max(params.start_time)),
+    )];
+    let mut next_origin = params.first_origin + period;
+    let mut buf = Vec::with_capacity(8);
+
+    loop {
+        passes.retain(|(_, index)| *index < events.len());
+        // The earliest thing due: a pass's next event, or the next pass.
+        // Events of two passes at the same moment (to the microsecond, past
+        // float rounding) go older pass first; `passes` is in age order.
+        let next_event = passes
+            .iter()
+            .enumerate()
+            .map(|(i, (origin, index))| (origin + events[*index].time.as_secs_f64(), i))
+            .min_by_key(|(at, i)| ((at * 1e6).round() as i64, *i));
+        let (due, pass) = match next_event {
+            Some((at, pass)) if at < next_origin => (at, Some(pass)),
+            _ => (next_origin, None),
+        };
+
+        // Wait in short steps, so a stop or break is heard promptly even
+        // across a long stretch with no events.
+        loop {
+            if params.cancel_handle.is_cancelled() || params.loop_break.load(Ordering::Relaxed) {
+                return;
+            }
+            let now = params.clock.elapsed().as_secs_f64();
+            if now >= due {
+                break;
+            }
+            spin_sleep::sleep(Duration::from_secs_f64((due - now).min(0.05)));
+        }
+
+        match pass {
+            Some(pass) => {
+                let index = &mut passes[pass].1;
+                if let Some(bytes) =
+                    serialize_midi_event(&events[*index], params.exclude_channels, &mut buf)
+                {
+                    if let Err(e) = sender.send(&bytes) {
+                        debug!("MIDI send failed: {:?}", e);
+                    }
+                }
+                *index += 1;
+            }
+            None => {
+                passes.push((next_origin, 0));
+                next_origin += period;
+            }
+        }
+    }
 }
 
 /// Plays pre-computed MIDI events through a MIDI sender.
@@ -2319,6 +2440,86 @@ mod test {
             PrecomputedMidi::from_events(events)
         }
 
+        /// Records when on the clock each note was sent, and which.
+        struct TimedSender {
+            clock: PlaybackClock,
+            sent: Vec<(f64, u8)>,
+        }
+
+        impl MidiSender for TimedSender {
+            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                self.sent
+                    .push((self.clock.elapsed().as_secs_f64(), bytes[1]));
+                Ok(())
+            }
+        }
+
+        #[test]
+        fn crossfading_loop_overlaps_its_passes() {
+            // A 1 s song with a 0.4 s overlap: a pass every 0.6 s, notes
+            // 60, 61, 62 at 0, 0.3 and 0.9 s into each.
+            let midi = make_events(&[0, 300, 900]);
+            let cancel = CancelHandle::new();
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let exclude = HashSet::new();
+            let clock = PlaybackClock::wall();
+            clock.start();
+            let mut sender = TimedSender {
+                clock: clock.clone(),
+                sent: Vec::new(),
+            };
+            let loop_break = Arc::new(AtomicBool::new(false));
+            let breaker = {
+                let loop_break = loop_break.clone();
+                let clock = clock.clone();
+                std::thread::spawn(move || {
+                    while clock.elapsed() < Duration::from_millis(1_650) {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    loop_break.store(true, Ordering::Relaxed);
+                })
+            };
+
+            run_playback(
+                &mut sender,
+                PlaybackContext {
+                    precomputed: &midi,
+                    start_time: Duration::ZERO,
+                    playback_delay: Duration::ZERO,
+                    cancel_handle: &cancel,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    finished: Arc::new(AtomicBool::new(false)),
+                    exclude_channels: &exclude,
+                    clock: &clock,
+                    loop_playback: true,
+                    loop_crossfade: Some((Duration::from_secs(1), Duration::from_millis(400))),
+                    loop_break: loop_break.clone(),
+                    active_section: Arc::new(parking_lot::RwLock::new(None)),
+                    section_loop_break: Arc::new(AtomicBool::new(false)),
+                },
+            );
+            breaker.join().unwrap();
+
+            // Pass 0 at 0, pass 1 at 0.6, pass 2 at 1.2: the first pass's
+            // last note (0.9) lands with the second's second (0.6 + 0.3).
+            let expected = [
+                (0.0, 60),
+                (0.3, 61),
+                (0.6, 60),
+                (0.9, 62),
+                (0.9, 61),
+                (1.2, 60),
+                (1.5, 62),
+                (1.5, 61),
+            ];
+            let sent = &sender.sent;
+            assert_eq!(sent.len(), expected.len(), "{sent:?}");
+            for ((at, note), (want_at, want_note)) in sent.iter().zip(expected) {
+                assert!((at - want_at).abs() < 0.03, "{sent:?}");
+                assert_eq!(*note, want_note, "{sent:?}");
+            }
+        }
+
         #[test]
         fn normal_playback_sets_finished() {
             let midi = make_events(&[0, 0]);
@@ -2342,6 +2543,7 @@ mod test {
                     exclude_channels: &exclude,
                     clock: &clock,
                     loop_playback: false,
+                    loop_crossfade: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
@@ -2376,6 +2578,7 @@ mod test {
                     exclude_channels: &exclude,
                     clock: &clock,
                     loop_playback: false,
+                    loop_crossfade: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
@@ -2417,6 +2620,7 @@ mod test {
                     exclude_channels: &exclude,
                     clock: &clock,
                     loop_playback: false,
+                    loop_crossfade: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
@@ -2452,6 +2656,7 @@ mod test {
                     exclude_channels: &exclude,
                     clock: &clock,
                     loop_playback: false,
+                    loop_crossfade: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
@@ -2504,6 +2709,7 @@ mod test {
                     exclude_channels: &exclude,
                     clock: &clock,
                     loop_playback: false,
+                    loop_crossfade: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
@@ -2542,6 +2748,7 @@ mod test {
                         exclude_channels: &exclude,
                         clock: &clock_clone,
                         loop_playback: false,
+                        loop_crossfade: None,
                         loop_break: Arc::new(AtomicBool::new(false)),
                         active_section: Arc::new(parking_lot::RwLock::new(None)),
                         section_loop_break: Arc::new(AtomicBool::new(false)),
