@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A random chase is random on every lap (#532)**: `pattern: random` shuffled the fixtures once
+  per effect and repeated that order on every lap, so the same brick lit on the same beat every
+  bar -- a fixed loop, not a sparkle. Each lap is now a fresh shuffle, seeded by the cue time and
+  the lap so a given moment always renders the same way, and a lap never starts on the fixture the
+  previous one ended on.
 - **`hold_time` in measures is as long as `duration` in measures**: a `hold_time` counted
   "playback measures" on its own path, stepping through tempo changes at their unshifted bars and
   ignoring gradual transitions, so in an offset show or a ramp it disagreed with the same length
