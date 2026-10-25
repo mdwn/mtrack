@@ -660,6 +660,153 @@ impl fmt::Display for Device {
 }
 
 impl Device {
+    /// Builds the next pass of a crossfading song loop ahead of its boundary,
+    /// and schedules it once the boundary is within the lookahead: the
+    /// fading tracks cross over the whole overlap on an equal-power curve,
+    /// the cut tracks switch at its midpoint. Returns whether a pass was
+    /// scheduled, its start sample in `song_loop.latest_start`.
+    #[allow(clippy::too_many_arguments)]
+    fn song_loop_boundary(
+        &self,
+        song: &Arc<Song>,
+        song_loop: &mut SongLoopCrossfade,
+        timing: SongLoopTiming,
+        playback_context: &crate::audio::PlaybackContext,
+        mappings: &HashMap<String, Vec<u16>>,
+        cancel_handle: &CancelHandle,
+        source_finish_flags: &mut Vec<Arc<AtomicBool>>,
+    ) -> bool {
+        // Collect a finished build.
+        if let Some(rx) = song_loop.build_rx.take() {
+            match rx.try_recv() {
+                Ok(Ok(sources)) => song_loop.prebuilt = Some(sources),
+                Ok(Err(e)) => {
+                    error!(err = %e, "Failed to pre-build the next loop pass; will retry")
+                }
+                Err(mpsc::TryRecvError::Empty) => song_loop.build_rx = Some(rx),
+                Err(mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+
+        let half_overlap = song_loop.overlap / 2;
+        if timing.song_time + PASS_PREBUILD_AHEAD >= timing.boundary
+            && song_loop.prebuilt.is_none()
+            && song_loop.build_rx.is_none()
+        {
+            let (tx, rx) = mpsc::channel();
+            let song = song.clone();
+            let context = playback_context.clone();
+            let mappings = mappings.clone();
+            let _ = thread::Builder::new()
+                .name("mtrack-loop-pass-prebuild".into())
+                .spawn(move || {
+                    let _ = tx.send(build_pass_sources(
+                        &song,
+                        &context,
+                        &mappings,
+                        Duration::ZERO,
+                        half_overlap,
+                    ));
+                });
+            song_loop.build_rx = Some(rx);
+        }
+
+        if timing.song_time + timing.lookahead < timing.boundary {
+            return false;
+        }
+        let Some(incoming) = song_loop.prebuilt.take() else {
+            if !song_loop.warned_late {
+                warn!(
+                    song = song.name(),
+                    "Song loop crossfade: the next pass is not built at its boundary; \
+                     starting it as soon as it is"
+                );
+                song_loop.warned_late = true;
+            }
+            return false;
+        };
+        song_loop.warned_late = false;
+
+        let rate = self.output_manager.mixer.sample_rate();
+        let mixer = &self.output_manager.mixer;
+        let now_sample = mixer.current_sample();
+        // Late (a slow build, or a start inside the overlap): as soon as
+        // possible rather than in the past.
+        let start_sample = crate::section_loop::loop_boundary_sample(
+            now_sample,
+            timing.song_time,
+            timing.boundary,
+            rate,
+        )
+        .saturating_add(timing.skew_samples)
+        .max(now_sample + (timing.lookahead.as_secs_f64() * rate as f64 / 2.0) as u64);
+        let crossover = PassCrossover {
+            start_sample,
+            overlap_samples: (song_loop.overlap.as_secs_f64() * rate as f64).round() as u64,
+            crossfade_samples: timing.crossfade_samples,
+        };
+
+        info!(
+            song = song.name(),
+            start_sample,
+            overlap_ms = song_loop.overlap.as_millis() as u64,
+            "Song loop: scheduling the next pass's crossfade"
+        );
+
+        crossover.cross_out(mixer, &song_loop.fade_ids, &song_loop.cut_ids);
+
+        // The incoming pass, each source with its own envelope.
+        song_loop.fade_ids.clear();
+        song_loop.cut_ids.clear();
+        source_finish_flags.clear();
+        let mut incoming_ids = Vec::new();
+        for (source, group) in incoming {
+            let (envelope, starts_at) = crossover.cross_in(group);
+            let (mut active_source, flag) =
+                build_active_source(source, mappings, cancel_handle, Some(Arc::new(envelope)));
+            active_source.start_at_sample = Some(starts_at);
+            match group {
+                PassGroup::Fade => song_loop.fade_ids.push(active_source.id),
+                PassGroup::Cut => song_loop.cut_ids.push(active_source.id),
+            }
+            incoming_ids.push(active_source.id);
+            source_finish_flags.push(flag);
+            if let Err(e) = self.output_manager.add_source(active_source) {
+                error!(err = %e, "Failed to add song loop source");
+            }
+        }
+        song_loop.latest_start = Some((start_sample, incoming_ids));
+        true
+    }
+
+    /// Ends a crossfading song loop's playback mid-crossfade: every source
+    /// fades out over the short crossfade instead of finishing a long one,
+    /// and a pass not yet started never starts.
+    fn end_song_loop_crossfade(&self, song_loop: &SongLoopCrossfade, crossfade_samples: u64) {
+        use crate::audio::crossfade::{CrossfadeCurve, GainEnvelope};
+        let mixer = &self.output_manager.mixer;
+        let now_sample = mixer.current_sample();
+        if let Some((start_sample, ids)) = &song_loop.latest_start {
+            if now_sample < *start_sample {
+                mixer.set_cancel_at_sample(ids, now_sample.max(1));
+            }
+        }
+        let ids: Vec<u64> = {
+            let sources = mixer.get_active_sources();
+            let guard = sources.read();
+            guard.iter().map(|s| s.lock().id).collect()
+        };
+        if !ids.is_empty() {
+            mixer.set_gain_envelope(
+                &ids,
+                Arc::new(GainEnvelope::fade_out(
+                    crossfade_samples,
+                    CrossfadeCurve::Linear,
+                )),
+            );
+        }
+    }
+
     /// Lists cpal devices and produces the Device trait.
     pub fn list() -> Result<Vec<Box<dyn AudioDevice>>, Box<dyn Error>> {
         Ok(Device::list_cpal_devices()?
@@ -916,6 +1063,91 @@ fn current_playhead_section(
     })
 }
 
+use crate::audio::song_loop::{PassCrossover, PassGroup};
+
+type GroupedSources = Vec<(
+    Box<dyn crate::audio::sample_source::ChannelMappedSampleSource>,
+    PassGroup,
+)>;
+
+/// One pass of a looping song's sources, in its two groups: the fading tracks
+/// from `fade_from`, the cut tracks from `cut_from`. A file holding tracks of
+/// both groups is opened once for each, each copy carrying only its group's
+/// tracks; a copy left carrying none is dropped.
+fn build_pass_sources(
+    song: &Song,
+    context: &crate::audio::PlaybackContext,
+    mappings: &HashMap<String, Vec<u16>>,
+    fade_from: Duration,
+    cut_from: Duration,
+) -> Result<GroupedSources, String> {
+    let cut = song.loop_crossfade_cut();
+    let in_group = |group: PassGroup| -> HashMap<String, Vec<u16>> {
+        mappings
+            .iter()
+            .filter(|(track, _)| cut.contains(track) == (group == PassGroup::Cut))
+            .map(|(track, channels)| (track.clone(), channels.clone()))
+            .collect()
+    };
+    let mut grouped = Vec::new();
+    for (group, from) in [(PassGroup::Fade, fade_from), (PassGroup::Cut, cut_from)] {
+        let group_mappings = in_group(group);
+        if group_mappings.is_empty() {
+            continue;
+        }
+        let sources = song
+            .create_channel_mapped_sources_from(context, from, &group_mappings)
+            .map_err(|e| e.to_string())?;
+        grouped.extend(
+            sources
+                .into_iter()
+                .filter(|s| s.channel_mappings().iter().any(|labels| !labels.is_empty()))
+                .map(|s| (s, group)),
+        );
+    }
+    Ok(grouped)
+}
+
+/// The state of a looping song's crossfade between passes (`loop_crossfade`):
+/// the current pass's sources by group, and the next pass's, built ahead.
+struct SongLoopCrossfade {
+    /// How long passes overlap.
+    overlap: Duration,
+    /// The current pass's sources, by group.
+    fade_ids: Vec<u64>,
+    cut_ids: Vec<u64>,
+    /// The next pass's sources, built and waiting for the boundary.
+    prebuilt: Option<GroupedSources>,
+    /// A build of the next pass's sources in flight.
+    build_rx: Option<mpsc::Receiver<Result<GroupedSources, String>>>,
+    /// The sample the latest pass starts at, and its sources' ids, to cancel
+    /// them outright if playback ends before they have started.
+    latest_start: Option<(u64, Vec<u64>)>,
+    /// Whether a missing build at the boundary has been reported.
+    warned_late: bool,
+}
+
+/// How far ahead of a pass boundary its sources are built: long enough for a
+/// cold file open, seek and buffer warmup.
+const PASS_PREBUILD_AHEAD: Duration = Duration::from_secs(5);
+
+/// Where the current pass of a crossfading song loop is, for
+/// [`Device::song_loop_boundary`].
+struct SongLoopTiming {
+    /// Song time in the current pass.
+    song_time: Duration,
+    /// The song time the next pass starts at: the song's length less the
+    /// overlap.
+    boundary: Duration,
+    /// How far ahead of the boundary to schedule it.
+    lookahead: Duration,
+    /// The startup skew between the clock and the audio (see
+    /// `audio_clock_skew_samples`).
+    skew_samples: u64,
+    /// The short crossfade a cut track switches over with.
+    crossfade_samples: u64,
+}
+
 fn build_active_source(
     source: Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync>,
     track_mappings: &HashMap<String, Vec<u16>>,
@@ -1050,9 +1282,27 @@ impl AudioDevice for Device {
         .with_metronome_defaults(self.metronome_defaults.lock().clone());
 
         // Create channel mapped sources for each track in the song, starting from start_time.
-        let channel_mapped_sources = song
-            .create_channel_mapped_sources_from(&playback_context, start_time, mappings)
-            .map_err(|e| crate::audio::AudioError::Playback(e.to_string()))?;
+        // A song that loops with a crossfade keeps its cut tracks in sources of
+        // their own, so each group can cross the pass boundary its own way.
+        let mut song_loop = song.loop_crossfade().map(|overlap| SongLoopCrossfade {
+            overlap,
+            fade_ids: Vec::new(),
+            cut_ids: Vec::new(),
+            prebuilt: None,
+            build_rx: None,
+            latest_start: None,
+            warned_late: false,
+        });
+        let channel_mapped_sources: GroupedSources = if song_loop.is_some() {
+            build_pass_sources(&song, &playback_context, mappings, start_time, start_time)
+                .map_err(crate::audio::AudioError::Playback)?
+        } else {
+            song.create_channel_mapped_sources_from(&playback_context, start_time, mappings)
+                .map_err(|e| crate::audio::AudioError::Playback(e.to_string()))?
+                .into_iter()
+                .map(|s| (s, PassGroup::Fade))
+                .collect()
+        };
 
         // Add all sources to the output manager
         if channel_mapped_sources.is_empty() {
@@ -1086,13 +1336,19 @@ impl AudioDevice for Device {
             None
         };
 
-        for source in channel_mapped_sources.into_iter() {
+        for (source, group) in channel_mapped_sources.into_iter() {
             let (active_source, flag) = build_active_source(
                 source,
                 mappings,
                 &cancel_handle,
                 song_crossfade_envelope.clone(),
             );
+            if let Some(song_loop) = song_loop.as_mut() {
+                match group {
+                    PassGroup::Fade => song_loop.fade_ids.push(active_source.id),
+                    PassGroup::Cut => song_loop.cut_ids.push(active_source.id),
+                }
+            }
             source_finish_flags.push(flag);
             self.output_manager
                 .add_source(active_source)
@@ -1477,7 +1733,60 @@ impl AudioDevice for Device {
                 }
             }
 
+            // A looping song with a crossfade starts each pass `overlap`
+            // before the last one ends. Section loops own the boundary while
+            // one is armed.
+            if let Some(song_loop) = song_loop.as_mut() {
+                if active_section.read().is_none() {
+                    // Song time in the current pass: every boundary consumes a
+                    // pass's worth of the clock, as a section loop consumes a
+                    // section's, including those scheduled but not yet heard.
+                    let consumed = *loop_time_consumed.lock()
+                        + pending_consumption
+                            .iter()
+                            .map(|(_, amount)| *amount)
+                            .sum::<Duration>();
+                    let song_time = (start_time + clock.elapsed()).saturating_sub(consumed);
+                    let boundary = song.duration().saturating_sub(song_loop.overlap);
+                    if self.song_loop_boundary(
+                        &song,
+                        song_loop,
+                        SongLoopTiming {
+                            song_time,
+                            boundary,
+                            lookahead: loop_trigger_lookahead,
+                            skew_samples: audio_clock_skew_samples,
+                            crossfade_samples,
+                        },
+                        &playback_context,
+                        mappings,
+                        &cancel_handle,
+                        &mut source_finish_flags,
+                    ) {
+                        pending_consumption.push((
+                            song_loop
+                                .latest_start
+                                .as_ref()
+                                .map(|(sample, _)| *sample)
+                                .unwrap_or_default(),
+                            boundary,
+                        ));
+                        continue 'monitor;
+                    }
+                }
+            }
+
             thread::sleep(Duration::from_millis(10));
+        }
+
+        // Playback ending in the middle of a crossfade: the outgoing pass's
+        // fade-out would keep it playing for the rest of a multi-second fade,
+        // and the incoming pass could still be waiting to start. Cut both
+        // short, as a loop break or stop does any other loop.
+        if let Some(song_loop) = song_loop.as_ref() {
+            if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
+                self.end_song_loop_crossfade(song_loop, crossfade_samples);
+            }
         }
 
         // When section_loop_break is set, clear active_section so the song
@@ -1488,7 +1797,9 @@ impl AudioDevice for Device {
         }
 
         // Loop if the song has loop_playback and we haven't been told to stop.
+        // A song with a crossfade has already looped inside the monitor.
         while song.loop_playback()
+            && song_loop.is_none()
             && !cancel_handle.is_cancelled()
             && !loop_break.load(Ordering::Relaxed)
         {
