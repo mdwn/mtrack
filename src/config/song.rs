@@ -101,28 +101,45 @@ pub enum LoopCrossfade {
     Measures(f64),
 }
 
+impl std::fmt::Display for LoopCrossfade {
+    /// As it would be written in song.yaml.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoopCrossfade::Time(length) => write!(f, "{}s", length.as_secs_f64()),
+            LoopCrossfade::Beats(beats) if *beats == 1.0 => write!(f, "1beat"),
+            LoopCrossfade::Beats(beats) => write!(f, "{beats}beats"),
+            LoopCrossfade::Measures(measures) if *measures == 1.0 => write!(f, "1measure"),
+            LoopCrossfade::Measures(measures) => write!(f, "{measures}measures"),
+        }
+    }
+}
+
 impl LoopCrossfade {
     /// Parses `"6s"`, `"500ms"`, `"8beats"` or `"2measures"` (singular units
     /// too). The length must be greater than zero.
     pub fn parse(value: &str) -> Result<LoopCrossfade, String> {
+        LoopCrossfade::parse_field("loop_crossfade", value)
+    }
+
+    /// Parses a length as [`LoopCrossfade::parse`] does, errors naming
+    /// `field`.
+    pub fn parse_field(field: &str, value: &str) -> Result<LoopCrossfade, String> {
         let value = value.trim();
         let invalid = || {
             format!(
-                "loop_crossfade: invalid length {value:?} (expected e.g. \"6s\", \"500ms\", \
+                "{field}: invalid length {value:?} (expected e.g. \"6s\", \"500ms\", \
                  \"8beats\" or \"2measures\")"
             )
         };
         let number = |n: &str| -> Result<f64, String> {
             let n: f64 = n.trim().parse().map_err(|_| invalid())?;
             if !(n.is_finite() && n > 0.0) {
-                return Err(format!(
-                    "loop_crossfade: {value:?} must be greater than zero"
-                ));
+                return Err(format!("{field}: {value:?} must be greater than zero"));
             }
             // Far past any song, in any unit; a bound, so a typo cannot
             // overflow the time arithmetic downstream.
             if n > 1e6 {
-                return Err(format!("loop_crossfade: {value:?} is longer than any song"));
+                return Err(format!("{field}: {value:?} is longer than any song"));
             }
             Ok(n)
         };

@@ -260,6 +260,9 @@ time. Pressing
 Play or Next during the overlap breaks out of the loop as usual, fading both passes out at
 once.
 
+To have a looping song fade out under the next one when Play, Next or Previous breaks its loop,
+set a `fade_out` in the playlist: see [Transitions](../getting-started/playlists.md#transitions).
+
 ## Tempo Map
 
 The optional `tempo:` block describes the song's tempo and meter explicitly. When present it

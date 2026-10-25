@@ -103,8 +103,38 @@ pub(super) async fn put_playlist_by_name(
     let playlists_dir =
         require_configured_dir(&state.playlists_dir, "playlists", StatusCode::NOT_FOUND)?;
 
-    // Write the playlist YAML file.
-    let playlist_config = config::Playlist::new(&body.songs);
+    // Before `resolve_resource_path`, which canonicalizes the directory and
+    // fails if it is missing -- a creation after that call can never run.
+    // Created only when it is inside the project: a `playlists_dir:` pointing
+    // elsewhere is the operator's to set up, like `songs` and the rest.
+    let playlists_dir = super::helpers::ensure_configured_dir(&playlists_dir, &state).await?;
+
+    // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
+    // verified via canonicalize + starts_with containment in resolve_resource_path.
+    let file_path = resolve_resource_path(&playlists_dir, &name, "yaml")?;
+
+    // The editor knows only the songs: an existing playlist keeps its
+    // transitions, and each entry its own with the song. One that does not
+    // read is not overwritten, which would lose them.
+    let playlist_config = if file_path.is_file() {
+        match config::Playlist::deserialize(&file_path) {
+            Ok(existing) => existing.with_songs(&body.songs),
+            Err(e) => {
+                return Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(json!({
+                        "error": format!(
+                            "The playlist file does not read, so saving would lose its \
+                             settings; fix it by hand first: {e}"
+                        )
+                    })),
+                )
+                    .into_response());
+            }
+        }
+    } else {
+        config::Playlist::new(&body.songs)
+    };
     let yaml = match crate::util::to_yaml_string(&playlist_config) {
         Ok(y) => y,
         Err(e) => {
@@ -115,16 +145,6 @@ pub(super) async fn put_playlist_by_name(
                 .into_response());
         }
     };
-
-    // Before `resolve_resource_path`, which canonicalizes the directory and
-    // fails if it is missing -- a creation after that call can never run.
-    // Created only when it is inside the project: a `playlists_dir:` pointing
-    // elsewhere is the operator's to set up, like `songs` and the rest.
-    let playlists_dir = super::helpers::ensure_configured_dir(&playlists_dir, &state).await?;
-
-    // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
-    // verified via canonicalize + starts_with containment in resolve_resource_path.
-    let file_path = resolve_resource_path(&playlists_dir, &name, "yaml")?;
 
     // Write atomically, off the async runtime.
     let fp = file_path.clone();
@@ -297,6 +317,48 @@ mod test {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert!(playlists_dir.join("mylist.yaml").exists());
+    }
+
+    /// PUTs `songs` (JSON) to the playlist `mylist`, whose file holds
+    /// `existing`; returns the status and the file after.
+    async fn put_over(existing: &str, songs: &str) -> (StatusCode, String) {
+        let (state, _dir) = test_state();
+        let path = state.playlists_dir.clone().unwrap().join("mylist.yaml");
+        std::fs::write(&path, existing).unwrap();
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/playlists/mylist")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"songs": {songs}}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        (response.status(), std::fs::read_to_string(&path).unwrap())
+    }
+
+    #[tokio::test]
+    async fn put_playlist_keeps_its_transitions() {
+        let (status, after) = put_over(
+            "songs:\n- song: Song A\n  fade_out: 2s\n  fade_in: 1s\n",
+            r#"["Song B", "Song A"]"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(after.contains("fade_out: 2s"), "{after}");
+        assert!(after.contains("fade_in: 1s"), "{after}");
+        assert!(after.contains("- Song B"), "{after}");
+    }
+
+    #[tokio::test]
+    async fn put_playlist_wont_overwrite_one_that_does_not_read() {
+        let broken = "songs:\n- song: Song A\n  fade_ot: 1s\n";
+        let (status, after) = put_over(broken, r#"["Song A"]"#).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(after, broken);
     }
 
     #[tokio::test]

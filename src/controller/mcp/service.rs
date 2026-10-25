@@ -464,7 +464,10 @@ impl McpServer {
         light show is loaded — whether its timeline is armed and where its cue \
         pointer sits. `lighting.armed` false, or `cues_remaining` 0 while the \
         song is still playing, means no cues will fire for the rest of this \
-        playback.")]
+        playback. `transitions` says what breaking a looping song's loop would \
+        do, by the playlist: the current entry's `fade_out`, and the song \
+        `next` and `previous` would move to with its `fade_in` (each `null` \
+        for none).")]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         Ok(ok_json(self.status_snapshot().await?))
     }
@@ -1179,15 +1182,23 @@ impl McpServer {
 
     #[tool(
         description = "Write a playlist YAML file. Validates the YAML against \
-        `config::Playlist` before writing. With no `name`, writes the top-level \
-        playlist file. With a `name`, writes `<playlists_dir>/<name>.yaml` and \
-        creates the file if missing."
+        `config::Playlist`, and its transitions against the songs, before \
+        writing. With no `name`, writes the top-level playlist file. With a \
+        `name`, writes `<playlists_dir>/<name>.yaml` and creates the file if \
+        missing. Each `songs:` entry is a song name, or a map with `song:` and \
+        its own transitions: `fade_out` (how a looping song fades out under the \
+        next song when play/next/previous breaks its loop) and `fade_in` (how \
+        the song fades in when it starts under such a fade-out). Each is a \
+        length (`3s`, `500ms`, `6beats`, `1measure`; `0s` for none) or a map \
+        with `length`, `curve` (`equal_power` or `linear`), `exclude` (track \
+        names that do not fade) and, for `fade_out` only, `lights` (how long \
+        the lights cross into the next song's show)."
     )]
     async fn write_playlist(
         &self,
         Parameters(args): Parameters<WritePlaylistArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let _: crate::config::Playlist = serde_yaml_from_str(&args.yaml)?;
+        self.validate_playlist(&args.yaml)?;
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
         // Same rule as the web UI's playlist write and every other configured
         // root: created only when it is inside the project. A `playlists_dir:`
@@ -2510,8 +2521,10 @@ impl McpServer {
     }
 
     #[tool(description = "Patch a playlist YAML file with a string replacement. \
-        The result is parse-validated as `config::Playlist` before being \
-        written. With no `name`, edits the top-level playlist file.")]
+        The result is validated as `config::Playlist`, its transitions against \
+        the songs, before being written. With no `name`, edits the top-level \
+        playlist file. See `write_playlist` for the entry format, including \
+        `fade_out` and `fade_in`.")]
     async fn patch_playlist(
         &self,
         Parameters(args): Parameters<PatchPlaylistArgs>,
@@ -2519,7 +2532,7 @@ impl McpServer {
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
-        let _: crate::config::Playlist = serde_yaml_from_str(&updated)?;
+        self.validate_playlist(&updated)?;
         staged_write_string(&path, &updated).await?;
         self.reload_songs_from_config().await?;
         Ok(patch_response(&path, &original, &updated))
@@ -3463,7 +3476,45 @@ async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
         "playing": playing,
         "elapsed": format_duration(elapsed),
         "lighting": lighting,
+        "transitions": transitions_json(&playlist),
     }))
+}
+
+/// What breaking the current song's loop would do, by the playlist's
+/// transitions: how the current entry fades out, and the song next and
+/// previous would move to with how it fades in.
+fn transitions_json(playlist: &crate::playlist::Playlist) -> Value {
+    let on = playlist.loop_break(false);
+    let back = playlist.loop_break(true);
+    let target = |handover: &crate::playlist::LoopBreak| {
+        json!({
+            "song": handover.target.as_ref().map(|s| s.name().to_string()),
+            "fade_in": fade_json(handover.fade_in.as_ref()),
+        })
+    };
+    json!({
+        "fade_out": fade_json(on.fade_out.as_ref()),
+        "next": target(&on),
+        "previous": target(&back),
+    })
+}
+
+/// A transition's fade as configured, `null` for none. A `null` `exclude`
+/// is the default (a fade-out's `loop_crossfade_cut`, a fade-in's none),
+/// as is a `null` `lights` (the length).
+fn fade_json(fade: Option<&crate::config::Fade>) -> Value {
+    let Some(fade) = fade else {
+        return Value::Null;
+    };
+    json!({
+        "length": fade.length.to_string(),
+        "curve": match fade.curve {
+            crate::config::FadeCurve::EqualPower => "equal_power",
+            crate::config::FadeCurve::Linear => "linear",
+        },
+        "exclude": fade.exclude,
+        "lights": fade.lights.map(|l| l.to_string()),
+    })
 }
 
 impl McpServer {
@@ -3727,6 +3778,17 @@ impl McpServer {
             playlists_dir.as_deref(),
             legacy_playlist_path.as_deref(),
         );
+        Ok(())
+    }
+
+    /// Checks a playlist about to be written: that it parses, and that its
+    /// transitions do and name tracks their songs have, as the player will
+    /// when it loads it. Songs it names that do not exist are left to the
+    /// player, as before.
+    fn validate_playlist(&self, yaml: &str) -> Result<(), McpError> {
+        let config: crate::config::Playlist = serde_yaml_from_str(yaml)?;
+        crate::playlist::validate_transitions(&config, &self.player.songs())
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         Ok(())
     }
 

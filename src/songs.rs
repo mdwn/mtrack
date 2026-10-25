@@ -181,6 +181,19 @@ pub struct Song {
     notification_audio: Option<config::SongNotificationConfig>,
 }
 
+/// A playlist transition's fade resolved to time ([`Song::fade_out_into`],
+/// [`Song::fade_in`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedFade {
+    /// How long the audio fades.
+    pub length: Duration,
+    /// How long the lights cross, for a loop break; zero switches at once.
+    pub lights: Duration,
+    pub curve: crate::audio::crossfade::CrossfadeCurve,
+    /// Tracks that do not fade.
+    pub exclude: Vec<String>,
+}
+
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
 /// symphonia is able to read.
 impl Song {
@@ -269,13 +282,13 @@ impl Song {
 
         let loop_crossfade =
             Self::resolve_loop_crossfade(config, max_duration, lighting_tempo.as_ref())?;
-        for cut in config.loop_crossfade_cut() {
-            let known = tracks.iter().any(|t| t.name == *cut)
-                || config.metronome().is_some_and(|m| m.track == *cut)
-                || config.pilot().is_some_and(|p| p.track == *cut);
+        for name in config.loop_crossfade_cut() {
+            let known = tracks.iter().any(|t| t.name == *name)
+                || config.metronome().is_some_and(|m| m.track == *name)
+                || config.pilot().is_some_and(|p| p.track == *name);
             if !known {
                 return Err(format!(
-                    "song {}: loop_crossfade_cut names track {cut:?}, which the song does not have",
+                    "song {}: loop_crossfade_cut names track {name:?}, which the song does not have",
                     config.name()
                 )
                 .into());
@@ -781,6 +794,95 @@ impl Song {
     /// fading.
     pub fn loop_crossfade_cut(&self) -> &[String] {
         &self.loop_crossfade_cut
+    }
+
+    /// Whether the song plays a track called `name`: an audio track, its
+    /// metronome or its pilot.
+    pub fn has_track(&self, name: &str) -> bool {
+        self.tracks.iter().any(|t| t.name == name)
+            || self.metronome.as_ref().is_some_and(|m| m.track == name)
+            || self.pilot.as_ref().is_some_and(|p| p.track == name)
+    }
+
+    /// How this looping song fades out, on a playlist's `fade_out`, when a
+    /// loop break hands over to `next`, which starts underneath it. Beats and
+    /// measures count on `next`'s grid from its first bar -- `1measure` lasts
+    /// its count-in, whatever its tempo and meter -- and fall back to this
+    /// song's own grid when `next` has none. The excluded tracks default to
+    /// the song's `loop_crossfade_cut`. `None` when the song cuts with the
+    /// short default crossfade: a zero length, or a musical one with no grid
+    /// to count it on.
+    pub fn fade_out_into(&self, fade: &config::Fade, next: Option<&Song>) -> Option<ResolvedFade> {
+        let grid = next
+            .and_then(|next| next.lighting_tempo_map())
+            .or_else(|| self.lighting_tempo_map());
+        let resolved = self.resolve_fade(fade, grid.as_ref(), "fade_out")?;
+        Some(ResolvedFade {
+            exclude: fade
+                .exclude
+                .clone()
+                .unwrap_or_else(|| self.loop_crossfade_cut.clone()),
+            ..resolved
+        })
+    }
+
+    /// How the song fades in, on a playlist's `fade_in`, as it starts under
+    /// a song fading out: beats and measures on its own grid from its first
+    /// bar. `None` when it starts at full level.
+    pub fn fade_in(&self, fade: &config::Fade) -> Option<ResolvedFade> {
+        self.resolve_fade(fade, self.lighting_tempo_map().as_ref(), "fade_in")
+    }
+
+    /// A fade's lengths on `grid`, counted from its first bar so any lead-in
+    /// before it is part of the fade. `None` for a zero length, and, with a
+    /// warning, for a musical length with no grid.
+    fn resolve_fade(
+        &self,
+        fade: &config::Fade,
+        grid: Option<&crate::tempo::TempoMap>,
+        field: &str,
+    ) -> Option<ResolvedFade> {
+        let on_grid = |length: config::LoopCrossfade| -> Option<Duration> {
+            let (amount, measures) = match length {
+                config::LoopCrossfade::Time(length) => return Some(length),
+                config::LoopCrossfade::Beats(beats) => (beats, false),
+                config::LoopCrossfade::Measures(measures) => (measures, true),
+            };
+            let tempo = grid?;
+            let bar_one = tempo.start_offset;
+            let after = if measures {
+                tempo.measures_to_duration(amount, bar_one, 0.0)
+            } else {
+                tempo.beats_to_duration(amount, bar_one, 0.0)
+            };
+            Some(bar_one + after)
+        };
+        let Some(length) = on_grid(fade.length) else {
+            warn!(
+                song = self.name(),
+                "{field} is in beats or measures, but there is no beat grid to count it on; \
+                 not fading"
+            );
+            return None;
+        };
+        if length.is_zero() {
+            return None;
+        }
+        let lights = match fade.lights {
+            None => length,
+            Some(lights) => on_grid(lights).unwrap_or(length),
+        };
+        Some(ResolvedFade {
+            length,
+            lights,
+            curve: match fade.curve {
+                config::FadeCurve::EqualPower => {
+                    crate::audio::crossfade::CrossfadeCurve::EqualPower
+                }
+                config::FadeCurve::Linear => crate::audio::crossfade::CrossfadeCurve::Linear,
+            },
+            exclude: fade.exclude.clone().unwrap_or_default(),
+        })
     }
 
     /// When pass `pass` of a looping song starts on the playback clock, for a
@@ -1926,6 +2028,91 @@ mod test {
             song.loop_pass_start(Duration::ZERO, 2),
             Duration::from_secs(16)
         );
+        Ok(())
+    }
+
+    /// A 4-second song with the song.yaml lines given, loaded.
+    fn song_with(yaml: &str) -> Result<super::Song, Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        write_wav(dir.path().join("t.wav"), vec![vec![0_i32; 8000 * 4]], 8000)?;
+        fs::write(
+            dir.path().join("song.yaml"),
+            format!("name: s\ntracks:\n  - name: t\n    file: t.wav\n{yaml}"),
+        )?;
+        let config = crate::config::Song::deserialize(&dir.path().join("song.yaml"))?;
+        super::Song::new(dir.path(), &config)
+    }
+
+    /// A fade as a playlist would set it.
+    fn fade(yaml: &str) -> crate::config::Fade {
+        #[derive(serde::Deserialize)]
+        struct Wrap {
+            fade: crate::config::FadeConfig,
+        }
+        let wrap: Wrap = ::config::Config::builder()
+            .add_source(::config::File::from_str(
+                &format!("fade: {yaml}"),
+                ::config::FileFormat::Yaml,
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        wrap.fade.parse("fade_out", true).unwrap()
+    }
+
+    #[test]
+    fn a_fade_out_counts_on_the_incoming_songs_grid() -> Result<(), Box<dyn Error>> {
+        use std::time::Duration;
+        let close =
+            |a: Option<Duration>, b: f64| a.is_some_and(|a| (a.as_secs_f64() - b).abs() < 1e-6);
+        let length = |f: Option<super::ResolvedFade>| f.map(|f| f.length);
+        // A prelude with no grid of its own, handing over to a 12/8 song at
+        // 169: one bar is six quarter beats.
+        let prelude = song_with("loop_playback: true\nloop_crossfade_cut: [t]\n")?;
+        let song = song_with("tempo:\n  bpm: 169\n  time_signature: 12/8\n")?;
+        let bar = fade("1measure");
+        let out = length(prelude.fade_out_into(&bar, Some(&song)));
+        assert!(close(out, 6.0 * 60.0 / 169.0), "{out:?}");
+
+        // From the first bar: a lead-in before it is part of the fade.
+        let late = song_with("tempo:\n  bpm: 120\n  time_signature: 4/4\n  start: 0.5\n")?;
+        assert!(close(
+            length(prelude.fade_out_into(&fade("2beats"), Some(&late))),
+            1.5
+        ));
+
+        // Seconds need no grid; zero is no fade.
+        assert_eq!(
+            length(prelude.fade_out_into(&fade("3s"), None)),
+            Some(Duration::from_secs(3))
+        );
+        assert!(prelude.fade_out_into(&fade("0s"), None).is_none());
+
+        // Musical with no grid anywhere: cut, as without the setting.
+        assert!(prelude.fade_out_into(&bar, None).is_none());
+
+        // The excluded tracks default to the loop crossfade's cut ones, and
+        // the lights to the fade's length.
+        let resolved = prelude.fade_out_into(&fade("3s"), None).unwrap();
+        assert_eq!(resolved.exclude, ["t".to_string()]);
+        assert_eq!(resolved.lights, Duration::from_secs(3));
+        let resolved = prelude
+            .fade_out_into(
+                &fade("{length: 3s, curve: linear, exclude: [], lights: 1s}"),
+                None,
+            )
+            .unwrap();
+        assert!(resolved.exclude.is_empty());
+        assert_eq!(resolved.lights, Duration::from_secs(1));
+        assert_eq!(
+            resolved.curve,
+            crate::audio::crossfade::CrossfadeCurve::Linear
+        );
+
+        // A fade-in counts on the song's own grid.
+        assert!(close(length(song.fade_in(&bar)), 6.0 * 60.0 / 169.0));
+        assert!(prelude.fade_in(&bar).is_none());
         Ok(())
     }
 

@@ -63,7 +63,10 @@ pub use self::midi::MidiTransformer;
 pub use self::midi::ToMidiEvent;
 pub use self::pilot::PilotConfig;
 pub use self::player::{MetronomeDefaults, Player};
-pub use self::playlist::Playlist;
+#[allow(unused_imports)]
+pub use self::playlist::{
+    ConfiguredEntry, EntryTransitions, Fade, FadeConfig, FadeCurve, Playlist, PlaylistEntry,
+};
 // Sample types are exported for external configuration
 pub use self::hostname::resolve_hostname;
 pub use self::notification::{NotificationConfig, SongNotificationConfig};

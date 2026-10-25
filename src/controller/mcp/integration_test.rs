@@ -3817,6 +3817,70 @@ async fn mcp_patch_playlist_triggers_reload() -> Result<(), Box<dyn Error>> {
 }
 
 // ---------------------------------------------------------------------------
+// Test 3k2: write_playlist checks transitions as the player will
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_write_playlist_checks_transitions() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+    let path = fixture.root.join("playlist.yaml");
+    let before = std::fs::read_to_string(&path)?;
+
+    let refused = |response: &serde_json::Value| {
+        response.get("error").is_some() || response["result"]["isError"].as_bool() == Some(true)
+    };
+    for (id, bad) in [
+        (1600, "songs:\n- song: DSL Light Show Song\n  fade_out: {length: 2s, curve: wobbly}\n"),
+        (1601, "songs:\n- song: DSL Light Show Song\n  fade_out: {length: 2s, exclude: [no such track]}\n"),
+        (1602, "songs:\n- song: DSL Light Show Song\n  fade_in: {length: 2s, lights: 1s}\n"),
+    ] {
+        let response =
+            call_tool(&client, &url, &session, id, "write_playlist", json!({"yaml": bad})).await;
+        assert!(refused(&response), "{bad} should be refused; got {response}");
+        assert_eq!(std::fs::read_to_string(&path)?, before, "nothing written");
+    }
+
+    let good = "kind: playlist\nsongs:\n- song: DSL Light Show Song\n  fade_out: {length: 1measure, curve: linear, lights: 0s}\n  fade_in: 2s\n";
+    let response = call_tool(
+        &client,
+        &url,
+        &session,
+        1603,
+        "write_playlist",
+        json!({"yaml": good}),
+    )
+    .await;
+    assert!(!refused(&response), "{response}");
+    assert_eq!(std::fs::read_to_string(&path)?, good);
+
+    // The status reports them for the song the playlist sits on.
+    let status = tool_json(&call_tool(&client, &url, &session, 1604, "status", json!({})).await);
+    let transitions = &status["transitions"];
+    assert_eq!(transitions["fade_out"]["length"], "1measure", "{status}");
+    assert_eq!(transitions["fade_out"]["curve"], "linear");
+    assert_eq!(transitions["fade_out"]["lights"], "0s");
+    assert!(transitions["fade_out"]["exclude"].is_null(), "the default");
+    assert_eq!(transitions["next"]["song"], "DSL Light Show Song");
+    assert_eq!(transitions["next"]["fade_in"]["length"], "2s");
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3l: song_details returns the structured metadata + computed BPM
 // ---------------------------------------------------------------------------
 

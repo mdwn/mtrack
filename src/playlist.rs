@@ -24,6 +24,19 @@ use std::sync::Arc;
 pub enum PlaylistError {
     #[error("Song not in registry: {0}")]
     SongNotFound(String),
+    #[error("Invalid transition: {0}")]
+    InvalidTransition(String),
+}
+
+/// What a loop break hands over to: the song it moves to, and the fades the
+/// playlist sets for the handover.
+pub struct LoopBreak {
+    /// The song the break moves to.
+    pub target: Option<Arc<Song>>,
+    /// How the looping song fades out under it.
+    pub fade_out: Option<config::Fade>,
+    /// How it fades in under the looping song.
+    pub fade_in: Option<config::Fade>,
 }
 
 /// Playlist is a playlist for use by a player.
@@ -32,6 +45,8 @@ pub struct Playlist {
     name: String,
     /// The songs that this playlist will play.
     songs: Vec<String>,
+    /// How each entry hands over to the next.
+    transitions: Vec<config::EntryTransitions>,
     /// The current position of the playlist.
     position: Arc<RwLock<usize>>,
     /// The song registry.
@@ -69,9 +84,12 @@ impl Playlist {
                 .map_err(|_| PlaylistError::SongNotFound(song_name.clone()))?;
         }
 
+        let transitions = validate_transitions(config, &registry)?;
+
         Ok(Arc::new(Playlist {
             name: name.to_string(),
-            songs: song_names.to_vec(),
+            songs: song_names,
+            transitions,
             position: Arc::new(RwLock::new(0)),
             registry: Arc::clone(&registry),
             span: span!(Level::INFO, "playlist"),
@@ -161,6 +179,31 @@ impl Playlist {
         self.registry.get(&self.songs[position]).ok()
     }
 
+    /// What breaking the current song's loop hands over to, moving back
+    /// (previous) or on (play, next): the song it lands on and the fades for
+    /// the handover -- the current entry's `fade_out` and the target's
+    /// `fade_in`.
+    pub fn loop_break(&self, back: bool) -> LoopBreak {
+        if self.songs.is_empty() {
+            return LoopBreak {
+                target: None,
+                fade_out: None,
+                fade_in: None,
+            };
+        }
+        let position = *self.position.read();
+        let to = if back {
+            position.saturating_sub(1)
+        } else {
+            (position + 1).min(self.songs.len() - 1)
+        };
+        LoopBreak {
+            target: self.registry.get(&self.songs[to]).ok(),
+            fade_out: self.transitions[position].fade_out.clone(),
+            fade_in: self.transitions[to].fade_in.clone(),
+        }
+    }
+
     /// Sets the playlist position to the song matching the given name.
     /// Returns the song if found, None otherwise.
     pub fn navigate_to(&self, name: &str) -> Option<Arc<Song>> {
@@ -189,6 +232,36 @@ impl Playlist {
         let position = self.position.read();
         self.registry.get(&self.songs[*position]).ok()
     }
+}
+
+/// Parses a playlist's transitions and checks each entry's `exclude` names
+/// tracks its song has. A song not in `registry` is not checked.
+pub fn validate_transitions(
+    config: &config::Playlist,
+    registry: &Songs,
+) -> Result<Vec<config::EntryTransitions>, PlaylistError> {
+    let transitions = config
+        .entry_transitions()
+        .map_err(PlaylistError::InvalidTransition)?;
+    for (song_name, entry) in config.songs().iter().zip(&transitions) {
+        let Ok(song) = registry.get(song_name) else {
+            continue;
+        };
+        let fades = [
+            ("fade_out", entry.fade_out.as_ref()),
+            ("fade_in", entry.fade_in.as_ref()),
+        ];
+        for (field, fade) in fades {
+            let tracks = fade.and_then(|f| f.exclude.as_deref()).unwrap_or_default();
+            if let Some(track) = tracks.iter().find(|t| !song.has_track(t)) {
+                return Err(PlaylistError::InvalidTransition(format!(
+                    "song {song_name}: {field}.exclude names track {track:?}, \
+                     which the song does not have"
+                )));
+            }
+        }
+    }
+    Ok(transitions)
 }
 
 /// Creates an alphabetized playlist from all available songs.
@@ -268,6 +341,7 @@ mod test {
         let playlist = super::Playlist {
             name: "empty".to_string(),
             songs: vec![],
+            transitions: vec![],
             position: Arc::new(parking_lot::RwLock::new(0)),
             registry,
             span: tracing::span!(tracing::Level::INFO, "test"),
@@ -394,6 +468,7 @@ mod test {
         let playlist = super::Playlist {
             name: "broken".to_string(),
             songs: vec!["Song 1".to_string(), "Ghost Song".to_string()],
+            transitions: vec![Default::default(); 2],
             position: Arc::new(parking_lot::RwLock::new(0)),
             registry,
             span: tracing::span!(tracing::Level::INFO, "test"),
@@ -405,5 +480,51 @@ mod test {
             display
         );
         assert!(display.contains("Ghost Song"));
+    }
+
+    /// A playlist of songs with one track, `t`, written as `yaml`.
+    fn playlist_from(yaml: &str) -> Result<Arc<super::Playlist>, super::PlaylistError> {
+        let mut map = std::collections::HashMap::new();
+        for name in ["A", "B", "C"] {
+            map.insert(
+                name.to_string(),
+                Arc::new(songs::Song::new_for_test(name, &["t"])),
+            );
+        }
+        let config: config::Playlist = ::config::Config::builder()
+            .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        super::Playlist::new("p", &config, Arc::new(Songs::new(map)))
+    }
+
+    #[test]
+    fn a_loop_break_hands_over_with_the_entries_fades() {
+        let playlist = playlist_from(
+            "songs:\n- song: A\n  fade_in: 1s\n- song: B\n  fade_out: 2s\n- song: C\n  fade_in: 3s\n",
+        )
+        .unwrap();
+        let length = |f: Option<config::Fade>| f.map(|f| f.length.to_string());
+        playlist.navigate_to("B");
+        let on = playlist.loop_break(false);
+        assert_eq!(on.target.unwrap().name(), "C");
+        assert_eq!(length(on.fade_out), Some("2s".to_string()));
+        assert_eq!(length(on.fade_in), Some("3s".to_string()));
+        let back = playlist.loop_break(true);
+        assert_eq!(back.target.unwrap().name(), "A");
+        assert_eq!(length(back.fade_in), Some("1s".to_string()));
+        // Breaking doesn't move: the cleanup does.
+        assert_eq!(playlist.current().unwrap().name(), "B");
+    }
+
+    #[test]
+    fn transitions_must_name_the_songs_tracks() {
+        let err = playlist_from("songs:\n- song: A\n  fade_out: {length: 2s, exclude: [click]}\n")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("song A") && err.contains("click"), "{err}");
     }
 }

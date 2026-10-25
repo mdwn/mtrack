@@ -59,6 +59,26 @@ pub struct PlaybackSync {
     pub loop_control: LoopControl,
 }
 
+/// How the song a loop break moves to fades in under the one fading out.
+#[derive(Clone, Debug)]
+pub struct StartFade {
+    /// The song it is for: another song started instead does not fade in.
+    pub song: String,
+    pub fade: crate::songs::ResolvedFade,
+}
+
+/// A loop break's fade-out in progress (a playlist `fade_out`).
+#[derive(Clone, Debug)]
+pub struct BreakFade {
+    /// When the break came.
+    pub started: std::time::Instant,
+    /// How long the audio fades.
+    pub length: Duration,
+    pub curve: crate::audio::crossfade::CrossfadeCurve,
+    /// Tracks that cut at once instead.
+    pub exclude: Vec<String>,
+}
+
 /// Bundles the shared loop-control state threaded through audio, MIDI, and DMX
 /// `play_from` / `play` methods.
 #[derive(Clone)]
@@ -71,6 +91,15 @@ pub struct LoopControl {
     pub section_loop_break: Arc<AtomicBool>,
     /// Accumulated time consumed by section loop iterations.
     pub loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
+    /// A loop break's fade-out (a playlist `fade_out`), set by the player as it
+    /// breaks the loop.
+    pub break_fade: Arc<parking_lot::Mutex<Option<BreakFade>>>,
+    /// The sources fading out after a loop break, which a stop cuts.
+    pub break_fade_ids: Arc<parking_lot::Mutex<Vec<u64>>>,
+    /// How the song fades in under a song a loop break is fading out (a
+    /// playlist `fade_in`), set by the player as it breaks the loop and taken
+    /// by the audio device as the song starts.
+    pub start_fade: Arc<parking_lot::Mutex<Option<StartFade>>>,
 }
 
 impl LoopControl {
@@ -81,6 +110,9 @@ impl LoopControl {
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
             loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
+            break_fade: Arc::new(parking_lot::Mutex::new(None)),
+            break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            start_fade: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 }
@@ -138,6 +170,11 @@ impl CancelHandle {
     /// cleanup cares about the difference.
     pub fn is_cancelled(&self) -> bool {
         *self.cancelled.lock() != CancelState::Untouched
+    }
+
+    /// Whether `other` is a clone of this handle: the same playback.
+    pub fn same_as(&self, other: &CancelHandle) -> bool {
+        Arc::ptr_eq(&self.cancelled, &other.cancelled)
     }
 
     /// Waits for the cancel handle to be cancelled or for finished to be set to true.

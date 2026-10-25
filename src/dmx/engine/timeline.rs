@@ -27,11 +27,50 @@ use super::Engine;
 pub(crate) struct OutgoingPass {
     pub(super) effect_engine: crate::lighting::EffectEngine,
     pub(super) timeline: Option<crate::lighting::timeline::LightingTimeline>,
-    /// How far ahead of the incoming pass it is in song time: a pass's length
-    /// less the overlap.
-    pub(super) lead: Duration,
+    /// What the outgoing pass's time and the crossfade's progress run on.
+    pub(super) clock: PassClock,
     /// How long the passes overlap.
     pub(super) overlap: Duration,
+}
+
+/// What an [`OutgoingPass`] keeps time by.
+pub(crate) enum PassClock {
+    /// The incoming pass's song time: a crossfade between passes of one
+    /// looping song, the outgoing pass `lead` (a pass's length less the
+    /// overlap) ahead.
+    Song { lead: Duration },
+    /// The wall clock from a loop break (a playlist `fade_out`): the looping song
+    /// fades out over the next song's start, whose song time is not running
+    /// yet and has nothing to do with it. The outgoing pass plays on from
+    /// `from`, its song time at the break.
+    Wall {
+        started: std::time::Instant,
+        from: Duration,
+    },
+}
+
+impl OutgoingPass {
+    /// How far through the crossfade it is (0.0 to 1.0 and beyond), and the
+    /// outgoing pass's own song time, given the incoming pass's.
+    pub(super) fn timing(&self, song_time: Duration) -> (f64, Duration) {
+        let (into, time) = match self.clock {
+            PassClock::Song { lead } => (song_time, song_time + lead),
+            PassClock::Wall { started, from } => {
+                let elapsed = started.elapsed();
+                (elapsed, from + elapsed)
+            }
+        };
+        (
+            into.as_secs_f64() / self.overlap.as_secs_f64().max(f64::EPSILON),
+            time,
+        )
+    }
+
+    /// Whether this pass fades a loop break out, which outlives the playback
+    /// it came from: only a stop or seek ends it early.
+    fn is_break_fade(&self) -> bool {
+        matches!(self.clock, PassClock::Wall { .. })
+    }
 }
 
 /// The lighting timeline for a song's DSL shows, ready to start; `None` for a
@@ -80,7 +119,7 @@ impl Engine {
             *self.outgoing_pass.lock() = Some(OutgoingPass {
                 effect_engine: outgoing_engine,
                 timeline: None,
-                lead,
+                clock: PassClock::Song { lead },
                 overlap,
             });
         }
@@ -101,6 +140,53 @@ impl Engine {
         }
     }
 
+    /// Begins fading a looping song's lights out after a loop break, over
+    /// `fade` (its playlist `fade_out`): the running effects engine and timeline
+    /// play on as the outgoing pass, on the wall clock from now, while a fresh
+    /// engine for the same rig waits for the next song's show. That pass
+    /// outlives this playback -- its cleanup and the next song's timeline
+    /// start leave it be -- and ends when the fade does, or with a stop or
+    /// seek ([`Engine::end_break_fade`]). A pass crossfade in progress gives
+    /// way: its older pass goes at once.
+    pub fn begin_break_fade(&self, fade: Duration) {
+        let from = self.to_delayed_song_time(self.get_song_time());
+        {
+            let mut effect_engine = self.effect_engine.lock();
+            let fresh = effect_engine.sibling();
+            let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
+            *self.outgoing_pass.lock() = Some(OutgoingPass {
+                effect_engine: outgoing_engine,
+                timeline: None,
+                clock: PassClock::Wall {
+                    started: std::time::Instant::now(),
+                    from,
+                },
+                overlap: fade,
+            });
+        }
+        let outgoing_timeline = self.current_song_timeline.lock().take();
+        if let Some(pass) = self.outgoing_pass.lock().as_mut() {
+            pass.timeline = outgoing_timeline;
+        }
+    }
+
+    /// Ends a loop break's fade early, for a stop or seek.
+    pub fn end_break_fade(&self) {
+        let mut outgoing = self.outgoing_pass.lock();
+        if outgoing.as_ref().is_some_and(OutgoingPass::is_break_fade) {
+            *outgoing = None;
+        }
+    }
+
+    /// Drops a crossfade between passes of the playback being replaced or
+    /// stopped. A loop break's fade outlives it.
+    fn drop_pass_crossfade(&self) {
+        let mut outgoing = self.outgoing_pass.lock();
+        if outgoing.as_ref().is_some_and(|pass| !pass.is_break_fade()) {
+            *outgoing = None;
+        }
+    }
+
     /// Advances the outgoing pass's timeline to `song_time` (the incoming
     /// pass's) and starts what it fires in the outgoing pass's engine.
     fn update_outgoing_pass(&self, song_time: Duration) {
@@ -109,9 +195,9 @@ impl Engine {
             let Some(pass) = outgoing.as_mut() else {
                 return;
             };
-            let lead = pass.lead;
+            let (_, time) = pass.timing(song_time);
             match pass.timeline.as_mut() {
-                Some(timeline) => timeline.update(song_time + lead),
+                Some(timeline) => timeline.update(time),
                 None => return,
             }
         };
@@ -196,8 +282,9 @@ impl Engine {
     /// base so the reconstructed state matches what the live loop advances from.
     pub fn start_lighting_timeline_at(&self, start_time: Duration) {
         let start_time = self.to_delayed_song_time(start_time);
-        // A crossfade in progress belongs to the playback being replaced.
-        *self.outgoing_pass.lock() = None;
+        // A crossfade in progress belongs to the playback being replaced; a
+        // loop break's fade carries on over this song's start.
+        self.drop_pass_crossfade();
         // Clear effects from previous song before starting new timeline
         {
             let mut effect_engine = self.effect_engine.lock();
@@ -319,8 +406,9 @@ impl Engine {
     /// Stops the lighting timeline
     pub fn stop_lighting_timeline(&self) {
         // A pass being faded out stops with the playback; the song time that
-        // drives the fade does too.
-        *self.outgoing_pass.lock() = None;
+        // drives the fade does too. A loop break's fade, on its own clock,
+        // outlives the playback it came from.
+        self.drop_pass_crossfade();
         let mut current_timeline = self.current_song_timeline.lock();
         if let Some(timeline) = current_timeline.as_mut() {
             timeline.stop();

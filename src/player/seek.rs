@@ -88,6 +88,7 @@ impl Player {
         // when cancelled, so this ordering keeps it from writing the pre-seek
         // position back after we clear it.
         self.fade_out_current_audio();
+        self.cut_break_fade();
         {
             let mut play_start_time = self.play_start_time.lock().await;
             handles.cancel.cancel();

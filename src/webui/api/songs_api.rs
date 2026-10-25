@@ -980,7 +980,7 @@ fn remove_song_from_playlists(
         }
         // Rebuild without the deleted song
         let filtered: Vec<String> = songs.iter().filter(|s| *s != song_name).cloned().collect();
-        let updated = config::Playlist::new(&filtered);
+        let updated = playlist_config.with_songs(&filtered);
         if let Ok(yaml) = crate::util::to_yaml_string(&updated) {
             let _ = std::fs::write(path, yaml);
         }
