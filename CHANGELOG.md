@@ -42,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   past the length is cut when the next pass starts. A cue starting at or past the length is a
   parse error. The web UI's lighting editor keeps the length when it saves the file.
 
+### Fixed
+
+- **A looping song's MIDI keeps to the song's length**: each pass of a looping song's MIDI
+  restarted the moment its last event played, so a MIDI file ending before the audio drifted
+  ahead of the audio and lights a little more every pass. Passes now start on the song's own
+  grid, every song length (less any `loop_crossfade`). A song with no audio still loops on its
+  MIDI, having no other length.
+
 ## [0.17.2] - 2026-10-25
 
 Upgrade note: a lighting show with an invalid `color:` or level value now fails to parse instead

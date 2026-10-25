@@ -286,9 +286,12 @@ impl super::Device for Device {
                         exclude_channels: &exclude_midi_channels,
                         clock: &clock,
                         loop_playback: song.loop_playback(),
-                        loop_crossfade: song
-                            .loop_crossfade()
-                            .map(|overlap| (song.duration(), overlap)),
+                        // Passes on the song's own grid, as the audio and
+                        // lights loop: every song length, less the crossfade.
+                        // A song without audio has no length to loop on and
+                        // restarts when its MIDI runs out, as it always has.
+                        loop_passes: (song.loop_playback() && !song.duration().is_zero())
+                            .then(|| (song.duration(), song.loop_crossfade().unwrap_or_default())),
                         loop_break: loop_break.clone(),
                         active_section: active_section.clone(),
                         section_loop_break: section_loop_break.clone(),
@@ -650,9 +653,12 @@ struct PlaybackContext<'a> {
     exclude_channels: &'a HashSet<u8>,
     clock: &'a PlaybackClock,
     loop_playback: bool,
-    /// For a song looping with a `loop_crossfade`: its length and the
-    /// overlap, each pass starting that long before the last ends.
-    loop_crossfade: Option<(Duration, Duration)>,
+    /// For a looping song with audio: its length and its `loop_crossfade`
+    /// (zero without one), each pass starting that long before the last
+    /// ends. Passes then follow the song's length, not its MIDI's: a MIDI
+    /// file ending before the audio used to restart early and drift ahead
+    /// every pass.
+    loop_passes: Option<(Duration, Duration)>,
     loop_break: Arc<AtomicBool>,
     active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
     section_loop_break: Arc<AtomicBool>,
@@ -697,15 +703,15 @@ fn run_playback(sender: &mut dyn MidiSender, mut ctx: PlaybackContext<'_>) {
         }
     }
 
-    // A crossfading loop's first pass plays to the first boundary here; the
-    // passes from there on overlap (`play_crossfading_passes`).
+    // A looping song's first pass plays to the first boundary here; the
+    // passes from there on follow the song's grid (`play_looping_passes`).
     let first_clock_base = ctx.clock.elapsed();
     play_precomputed(
         &MidiPlaybackParams {
             precomputed: ctx.precomputed,
             start_time: ctx.start_time,
             end_time: ctx
-                .loop_crossfade
+                .loop_passes
                 .map(|(length, overlap)| length.saturating_sub(overlap)),
             clock_base: first_clock_base,
             cancel_handle: ctx.cancel_handle,
@@ -761,15 +767,15 @@ fn run_playback(sender: &mut dyn MidiSender, mut ctx: PlaybackContext<'_>) {
         }
 
         // Whole-song loop check.
-        if let Some((length, overlap)) = ctx.loop_crossfade {
+        if let Some((length, overlap)) = ctx.loop_passes {
             if ctx.loop_playback
                 && !ctx.cancel_handle.is_cancelled()
                 && !ctx.loop_break.load(Ordering::Relaxed)
                 && ctx.active_section.read().is_none()
             {
-                info!("MIDI loop: overlapping passes");
-                play_crossfading_passes(
-                    &CrossfadingPasses {
+                info!("MIDI loop: passes every song length less its crossfade");
+                play_looping_passes(
+                    &LoopingPasses {
                         precomputed: ctx.precomputed,
                         // Song time 0 of the first pass on the clock.
                         first_origin: first_clock_base.as_secs_f64() - ctx.start_time.as_secs_f64(),
@@ -1307,9 +1313,8 @@ struct MidiPlaybackParams<'a> {
     active_section: Option<&'a Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>>,
 }
 
-/// The passes of a song looping with a crossfade, for
-/// [`play_crossfading_passes`].
-struct CrossfadingPasses<'a> {
+/// The passes of a looping song, for [`play_looping_passes`].
+struct LoopingPasses<'a> {
     precomputed: &'a super::playback::PrecomputedMidi,
     /// When the first pass's song time 0 falls on the clock, in seconds
     /// (negative for a playback that began part way in).
@@ -1325,11 +1330,12 @@ struct CrossfadingPasses<'a> {
     clock: &'a PlaybackClock,
 }
 
-/// Plays a crossfading loop from its first boundary on: the first pass's
-/// events from `length - overlap`, and each later pass from its start, a
-/// pass's length less the overlap after the last. Through each overlap both
-/// passes play, their events in time order. Returns on cancel or loop break.
-fn play_crossfading_passes(params: &CrossfadingPasses<'_>, sender: &mut dyn MidiSender) {
+/// Plays a looping song from its first boundary on: the first pass's events
+/// from `length - overlap`, and each later pass from its start, a pass's
+/// length less the overlap after the last -- so passes keep to the song's
+/// grid however early or late its MIDI ends. Through an overlap both passes
+/// play, their events in time order. Returns on cancel or loop break.
+fn play_looping_passes(params: &LoopingPasses<'_>, sender: &mut dyn MidiSender) {
     let events = params.precomputed.events();
     let period = params.length.saturating_sub(params.overlap).as_secs_f64();
     if period <= 0.0 {
@@ -2492,7 +2498,7 @@ mod test {
                     exclude_channels: &exclude,
                     clock: &clock,
                     loop_playback: true,
-                    loop_crossfade: Some((Duration::from_secs(1), Duration::from_millis(400))),
+                    loop_passes: Some((Duration::from_secs(1), Duration::from_millis(400))),
                     loop_break: loop_break.clone(),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
@@ -2511,6 +2517,69 @@ mod test {
                 (1.2, 60),
                 (1.5, 62),
                 (1.5, 61),
+            ];
+            let sent = &sender.sent;
+            assert_eq!(sent.len(), expected.len(), "{sent:?}");
+            for ((at, note), (want_at, want_note)) in sent.iter().zip(expected) {
+                assert!((at - want_at).abs() < 0.03, "{sent:?}");
+                assert_eq!(*note, want_note, "{sent:?}");
+            }
+        }
+
+        #[test]
+        fn a_loop_restarts_on_the_songs_length_not_its_midis() {
+            // A 0.5 s song whose MIDI is done by 0.1 s: each pass starts on
+            // the half second, as the audio's does, rather than as soon as
+            // the last note has played.
+            let midi = make_events(&[0, 100]);
+            let cancel = CancelHandle::new();
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let exclude = HashSet::new();
+            let clock = PlaybackClock::wall();
+            clock.start();
+            let mut sender = TimedSender {
+                clock: clock.clone(),
+                sent: Vec::new(),
+            };
+            let loop_break = Arc::new(AtomicBool::new(false));
+            let breaker = {
+                let loop_break = loop_break.clone();
+                let clock = clock.clone();
+                std::thread::spawn(move || {
+                    while clock.elapsed() < Duration::from_millis(1_250) {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    loop_break.store(true, Ordering::Relaxed);
+                })
+            };
+
+            run_playback(
+                &mut sender,
+                PlaybackContext {
+                    precomputed: &midi,
+                    start_time: Duration::ZERO,
+                    playback_delay: Duration::ZERO,
+                    cancel_handle: &cancel,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    finished: Arc::new(AtomicBool::new(false)),
+                    exclude_channels: &exclude,
+                    clock: &clock,
+                    loop_playback: true,
+                    loop_passes: Some((Duration::from_millis(500), Duration::ZERO)),
+                    loop_break: loop_break.clone(),
+                    active_section: Arc::new(parking_lot::RwLock::new(None)),
+                    section_loop_break: Arc::new(AtomicBool::new(false)),
+                },
+            );
+            breaker.join().unwrap();
+
+            let expected = [
+                (0.0, 60),
+                (0.1, 61),
+                (0.5, 60),
+                (0.6, 61),
+                (1.0, 60),
+                (1.1, 61),
             ];
             let sent = &sender.sent;
             assert_eq!(sent.len(), expected.len(), "{sent:?}");
@@ -2543,7 +2612,7 @@ mod test {
                     exclude_channels: &exclude,
                     clock: &clock,
                     loop_playback: false,
-                    loop_crossfade: None,
+                    loop_passes: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
@@ -2578,7 +2647,7 @@ mod test {
                     exclude_channels: &exclude,
                     clock: &clock,
                     loop_playback: false,
-                    loop_crossfade: None,
+                    loop_passes: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
@@ -2620,7 +2689,7 @@ mod test {
                     exclude_channels: &exclude,
                     clock: &clock,
                     loop_playback: false,
-                    loop_crossfade: None,
+                    loop_passes: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
@@ -2656,7 +2725,7 @@ mod test {
                     exclude_channels: &exclude,
                     clock: &clock,
                     loop_playback: false,
-                    loop_crossfade: None,
+                    loop_passes: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
@@ -2709,7 +2778,7 @@ mod test {
                     exclude_channels: &exclude,
                     clock: &clock,
                     loop_playback: false,
-                    loop_crossfade: None,
+                    loop_passes: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
@@ -2748,7 +2817,7 @@ mod test {
                         exclude_channels: &exclude,
                         clock: &clock_clone,
                         loop_playback: false,
-                        loop_crossfade: None,
+                        loop_passes: None,
                         loop_break: Arc::new(AtomicBool::new(false)),
                         active_section: Arc::new(parking_lot::RwLock::new(None)),
                         section_loop_break: Arc::new(AtomicBool::new(false)),
