@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An effect lasts to its own end, not a microsecond short (#536)**: an effect was retired once
+  it was within a microsecond of its end, so one ending on the downbeat the next cue starts on left
+  the rig dark for that microsecond, and `evaluate_show` reported dark there while the effect's own
+  duration said it was still running. Effects now end exactly at their end.
 - **Back-to-back steps meet exactly; no nanosecond dark windows (#534)**: an effect lasting to
   the next downbeat ended at its rounded start plus its rounded length, a nanosecond off the next
   cue, and looped sequences crept a nanosecond later every pass. `analyze_show` reported each gap

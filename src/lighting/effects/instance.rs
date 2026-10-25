@@ -170,13 +170,14 @@ impl EffectInstance {
 
     /// Determine if the effect has reached its intended terminal state for the given elapsed time.
     pub fn has_reached_terminal_state(&self, elapsed: Duration) -> bool {
-        let eps = Duration::from_micros(1);
+        // Exactly at its end, not a margin before it. A microsecond's grace
+        // used to retire every effect early, so one ending on the downbeat
+        // the next cue starts on left the rig dark for that microsecond
+        // (#536). Cued effects are judged on score time, which is exact, and
+        // an expired effect is removed, so there is nothing to flap.
         match &self.effect_type {
-            EffectType::Dimmer { duration, .. } => elapsed + eps >= *duration,
-            _ => {
-                let d = self.total_duration();
-                elapsed + eps >= d
-            }
+            EffectType::Dimmer { duration, .. } => elapsed >= *duration,
+            _ => elapsed >= self.total_duration(),
         }
     }
 }
