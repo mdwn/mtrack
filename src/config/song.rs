@@ -57,6 +57,18 @@ pub struct Song {
     /// Whether this song should loop when it finishes playing.
     #[serde(default)]
     loop_playback: bool,
+    /// How long consecutive passes of a looping song overlap: the next pass
+    /// starts this long before the song ends, fading in over the end of the
+    /// last. `"6s"`, `"500ms"`, `"8beats"` or `"2measures"`; beats and
+    /// measures count back from the end of the song. Omitted, a pass starts
+    /// when the last one ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    loop_crossfade: Option<String>,
+    /// Tracks that switch over halfway through the loop crossfade instead of
+    /// fading, such as a click or cue track, which would be heard twice
+    /// through the overlap.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    loop_crossfade_cut: Vec<String>,
     /// Named sections of the song, defined by measure boundaries.
     /// Used for section looping during playback.
     #[serde(default)]
@@ -76,6 +88,62 @@ pub struct Song {
     /// Per-song notification audio overrides.
     #[serde(default)]
     notification_audio: Option<SongNotificationConfig>,
+}
+
+/// How long consecutive passes of a looping song overlap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LoopCrossfade {
+    /// A fixed length of time.
+    Time(std::time::Duration),
+    /// A number of beats, counted back from the end of the song.
+    Beats(f64),
+    /// A number of measures, counted back from the end of the song.
+    Measures(f64),
+}
+
+impl LoopCrossfade {
+    /// Parses `"6s"`, `"500ms"`, `"8beats"` or `"2measures"` (singular units
+    /// too). The length must be greater than zero.
+    pub fn parse(value: &str) -> Result<LoopCrossfade, String> {
+        let value = value.trim();
+        let invalid = || {
+            format!(
+                "loop_crossfade: invalid length {value:?} (expected e.g. \"6s\", \"500ms\", \
+                 \"8beats\" or \"2measures\")"
+            )
+        };
+        let number = |n: &str| -> Result<f64, String> {
+            let n: f64 = n.trim().parse().map_err(|_| invalid())?;
+            if n.is_finite() && n > 0.0 {
+                Ok(n)
+            } else {
+                Err(format!(
+                    "loop_crossfade: {value:?} must be greater than zero"
+                ))
+            }
+        };
+        if let Some(n) = value
+            .strip_suffix("measures")
+            .or_else(|| value.strip_suffix("measure"))
+        {
+            Ok(LoopCrossfade::Measures(number(n)?))
+        } else if let Some(n) = value
+            .strip_suffix("beats")
+            .or_else(|| value.strip_suffix("beat"))
+        {
+            Ok(LoopCrossfade::Beats(number(n)?))
+        } else if let Some(n) = value.strip_suffix("ms") {
+            Ok(LoopCrossfade::Time(std::time::Duration::from_secs_f64(
+                number(n)? / 1000.0,
+            )))
+        } else if let Some(n) = value.strip_suffix('s') {
+            Ok(LoopCrossfade::Time(std::time::Duration::from_secs_f64(
+                number(n)?,
+            )))
+        } else {
+            Err(invalid())
+        }
+    }
 }
 
 /// A named section of a song defined by measure boundaries.
@@ -127,6 +195,8 @@ impl Song {
             samples,
             sample_triggers,
             loop_playback: false,
+            loop_crossfade: None,
+            loop_crossfade_cut: Vec::new(),
             sections: Vec::new(),
             tempo: None,
             metronome: None,
@@ -309,6 +379,10 @@ impl Song {
             }
         }
 
+        if let Err(e) = self.loop_crossfade() {
+            errors.push(e);
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -366,6 +440,19 @@ impl Song {
     /// Returns whether this song should loop when it finishes playing.
     pub fn loop_playback(&self) -> bool {
         self.loop_playback
+    }
+
+    /// How long consecutive passes of a looping song overlap, as configured.
+    pub fn loop_crossfade(&self) -> Result<Option<LoopCrossfade>, String> {
+        self.loop_crossfade
+            .as_deref()
+            .map(LoopCrossfade::parse)
+            .transpose()
+    }
+
+    /// Tracks that switch over halfway through the loop crossfade.
+    pub fn loop_crossfade_cut(&self) -> &[String] {
+        &self.loop_crossfade_cut
     }
 
     /// Gets the named sections of this song.
@@ -1128,5 +1215,53 @@ mod tests {
         .unwrap();
         let song = Song::deserialize(&path).unwrap();
         assert!(song.loop_playback());
+    }
+
+    #[test]
+    fn loop_crossfade_deserializes_and_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.yaml");
+        std::fs::write(
+            &path,
+            "name: test\ntracks:\n  - name: t1\n    file: t1.wav\nloop_playback: true\n\
+             loop_crossfade: 2measures\nloop_crossfade_cut: [click]\n",
+        )
+        .unwrap();
+        let song = Song::deserialize(&path).unwrap();
+        assert_eq!(
+            song.loop_crossfade(),
+            Ok(Some(LoopCrossfade::Measures(2.0)))
+        );
+        assert_eq!(song.loop_crossfade_cut(), ["click".to_string()]);
+        assert!(song.validate().is_ok());
+    }
+
+    #[test]
+    fn loop_crossfade_units() {
+        use std::time::Duration;
+        assert_eq!(
+            LoopCrossfade::parse("6s"),
+            Ok(LoopCrossfade::Time(Duration::from_secs(6)))
+        );
+        assert_eq!(
+            LoopCrossfade::parse("500ms"),
+            Ok(LoopCrossfade::Time(Duration::from_millis(500)))
+        );
+        assert_eq!(
+            LoopCrossfade::parse("1 beat"),
+            Ok(LoopCrossfade::Beats(1.0))
+        );
+        assert_eq!(
+            LoopCrossfade::parse("8beats"),
+            Ok(LoopCrossfade::Beats(8.0))
+        );
+        assert_eq!(
+            LoopCrossfade::parse("0.5measure"),
+            Ok(LoopCrossfade::Measures(0.5))
+        );
+        assert!(LoopCrossfade::parse("0s").is_err());
+        assert!(LoopCrossfade::parse("-2beats").is_err());
+        assert!(LoopCrossfade::parse("6").is_err());
+        assert!(LoopCrossfade::parse("lots").is_err());
     }
 }
