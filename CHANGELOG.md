@@ -57,17 +57,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The web UI and `get_fixture_state` show a crossfade as it goes out (#555)**: during a loop
+  crossfade or a loop break's fade, the rig gets a blend of the two shows, but the web UI's
+  lighting view and the MCP `get_fixture_state` showed the incoming show alone -- at Next, black
+  until its first cue, then a snap to it. They now show the blend, crossed channel by channel by
+  the same rules as the DMX.
+
+## [0.17.4] - 2026-10-26
+
+### Fixed
+
 - **A channel a new show drives to 0 no longer keeps the last song's value (#557)**: a universe
   skipped an effect write equal to its cache of the last one written, and a song change reset
   that cache to 0 while the channel still held the last song's byte -- so a new show's 0 never
   reached the wire, and an orange with no blue came out pink after a song that left blue up.
   The web UI, `get_fixture_state` and `evaluate_show` all said 0. A universe now compares an
   effect's value with the channel itself, which MIDI DMX writes too.
-- **The web UI and `get_fixture_state` show a crossfade as it goes out (#555)**: during a loop
-  crossfade or a loop break's fade, the rig gets a blend of the two shows, but the web UI's
-  lighting view and the MCP `get_fixture_state` showed the incoming show alone -- at Next, black
-  until its first cue, then a snap to it. They now show the blend, crossed channel by channel by
-  the same rules as the DMX.
 
 ## [0.17.3] - 2026-10-26
 
