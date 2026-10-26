@@ -1696,7 +1696,7 @@ show "Mixed Times" {
     @0:01.500
     wash: static, color: "green", duration: 5s
 
-    @2.5s
+    @2.500
     wash: static, color: "blue", duration: 5s
 }
 "#;
@@ -1711,6 +1711,13 @@ show "Mixed Times" {
     let shows = result.unwrap();
     let show = shows.get("Mixed Times").unwrap();
     assert_eq!(show.cues.len(), 3);
+    // Every effect on `wash`: a stray `s` after a time used to run into the
+    // next line's group name as `s wash` (#549).
+    for cue in &show.cues {
+        for effect in &cue.effects {
+            assert_eq!(effect.groups, ["wash".to_string()]);
+        }
+    }
 }
 
 // ===================================================================
