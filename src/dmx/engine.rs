@@ -2843,6 +2843,74 @@ mod test {
         }
 
         #[test]
+        fn sequence_hand_overs_on_the_live_clock_have_no_black_frame() -> Result<(), Box<dyn Error>>
+        {
+            // #551, the half the first fix left: an effect rendered on engine
+            // time, which runs up to a frame ahead of the score time it
+            // expires on, went dark on the last tick before its hand-over.
+            // So tick as the live loop does -- every 1/44 s of engine time --
+            // with song time from a 48 kHz sample clock read in 1024-frame
+            // audio callbacks, through sequences trading colours every bar
+            // and every half bar at 190.
+            let (engine, _cancel_handle) = create_engine()?;
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+            let step = |at: &str, color: &str, length: &str| {
+                format!(
+                    "    @{at}\n    wash: static, color: \"{color}\", duration: {length}, \
+                     layer: background, blend_mode: replace\n"
+                )
+            };
+            *engine.current_song_timeline.lock() = Some(timeline(&format!(
+                "tempo {{\n    start: 0ms\n    bpm: 190\n    time_signature: 4/4\n}}\n\
+                 sequence \"bar\" {{\n{}{}}}\n\
+                 sequence \"half\" {{\n{}{}}}\n\
+                 show \"a\" {{\n    @1/1\n    wash: static, color: \"#000000\", duration: 60s, \
+                 layer: foreground, blend_mode: screen\n    offset 1 measures\n\
+                 \x20   @1/1\n    sequence \"bar\", loop: 4\n\
+                 \x20   @9/1\n    sequence \"half\", loop: 8\n}}\n",
+                step("1/1", "red", "1measure"),
+                step("2/1", "blue", "1measure"),
+                step("1/1", "red", "2beats"),
+                step("1/3", "blue", "2beats"),
+            )));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+
+            let mut black = Vec::new();
+            for tick in 0..(23 * 44) {
+                let frames = (tick as f64 / 44.0 * 48_000.0) as u64 / 1024 * 1024;
+                let song_time = Duration::from_secs_f64(frames as f64 / 48_000.0);
+                engine.update_song_time(song_time);
+                engine.effects_loop_tick();
+                let universe = engine.get_universe(5).unwrap();
+                let frame = (
+                    universe.get_target_value(0),
+                    universe.get_target_value(1),
+                    universe.get_target_value(2),
+                );
+                // While the sequences run, the wash is always lit.
+                let lit = Duration::from_millis(1_400)..Duration::from_secs(21);
+                if lit.contains(&song_time) && frame == (0.0, 0.0, 0.0) {
+                    black.push(song_time.as_secs_f64());
+                }
+            }
+            assert!(black.is_empty(), "black frames at {black:?}");
+            Ok(())
+        }
+
+        #[test]
         fn a_loop_breaks_fade_crosses_into_the_next_songs_show() -> Result<(), Box<dyn Error>> {
             let (engine, _cancel_handle) = create_engine()?;
             let mut channels = std::collections::HashMap::new();
