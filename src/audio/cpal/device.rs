@@ -2008,13 +2008,17 @@ impl AudioDevice for Device {
             };
 
             let mut new_finish_flags = Vec::new();
-            let fade_in_envelope = Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
-                crossfade_samples,
-                crate::audio::crossfade::CrossfadeCurve::Linear,
-            )));
             for source in new_sources {
+                // Each source gets its own envelope: a shared GainEnvelope's
+                // position advances once per source per batch, so the fade
+                // would finish N times too fast.
+                let fade_in_envelope =
+                    Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                        crossfade_samples,
+                        crate::audio::crossfade::CrossfadeCurve::Linear,
+                    )));
                 let (active_source, flag) =
-                    build_active_source(source, mappings, &cancel_handle, fade_in_envelope.clone());
+                    build_active_source(source, mappings, &cancel_handle, fade_in_envelope);
                 new_finish_flags.push(flag);
                 if let Err(e) = self.output_manager.add_source(active_source) {
                     error!(err = %e, "Failed to add loop source to mixer");
