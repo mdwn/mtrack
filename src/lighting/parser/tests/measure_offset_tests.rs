@@ -1165,3 +1165,70 @@ show "Hold" {
         "ramp bar hold ends at {end:?}, next bar at {next:?}"
     );
 }
+
+/// Cue times, in seconds, and each cue's effects' groups, for `body` in a
+/// show at 120 BPM in 4/4 from zero: a bar is 2 s.
+fn cues_of(body: &str) -> Vec<(f64, Vec<String>)> {
+    let content = format!(
+        "tempo {{\n    start: 0ms\n    bpm: 120\n    time_signature: 4/4\n}}\nshow \"t\" {{\n{body}\n}}\n"
+    );
+    let shows = parse_light_shows(&content).expect("parses");
+    shows["t"]
+        .cues
+        .iter()
+        .map(|cue| {
+            let groups = cue.effects.iter().flat_map(|e| e.groups.clone()).collect();
+            ((cue.time.as_secs_f64() * 1000.0).round() / 1000.0, groups)
+        })
+        .collect()
+}
+
+#[test]
+fn an_effect_after_an_offset_in_the_same_cue_keeps_both() {
+    // #549: the effect used to swallow `offset 1 measures` into its group
+    // name, so the offset never applied.
+    let effect = r##"all_wash: static, color: "#0000FF", duration: 1measure"##;
+    for between in [
+        "\n",
+        "\n\n",
+        "\n    // the count-in\n",
+        "\n    # the count-in\n",
+    ] {
+        let cues = cues_of(&format!(
+            "@1/1\noffset 1 measures{between}{effect}\n@1/1\n{effect}\n@2/1\n{effect}"
+        ));
+        let times: Vec<f64> = cues.iter().map(|(t, _)| *t).collect();
+        assert_eq!(times, [0.0, 2.0, 4.0], "with {between:?} between");
+        for (_, groups) in &cues {
+            assert_eq!(
+                groups,
+                &["all_wash".to_string()],
+                "with {between:?} between"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_effect_after_reset_measures_in_the_same_cue_keeps_both() {
+    let effect = r##"all_wash: static, color: "#0000FF", duration: 1measure"##;
+    let cues = cues_of(&format!(
+        "@1/1\noffset 1 measures\n@1/1\nreset_measures\n{effect}\n@2/1\n{effect}"
+    ));
+    let times: Vec<f64> = cues.iter().map(|(t, _)| *t).collect();
+    // The reset applies after its own cue, which keeps the offset time.
+    assert_eq!(times, [0.0, 2.0, 2.0]);
+    assert_eq!(cues[1].1, ["all_wash".to_string()]);
+}
+
+#[test]
+fn group_names_do_not_run_across_lines() {
+    // A group list still takes spaces around its commas.
+    let cues = cues_of(
+        "@1/1\nfront_wash , back_wash: static, color: \"red\", duration: 1s\nall_wash: static, color: \"blue\", duration: 1s",
+    );
+    assert_eq!(
+        cues[0].1,
+        ["front_wash", "back_wash", "all_wash"].map(String::from)
+    );
+}

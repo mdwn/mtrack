@@ -57,6 +57,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An effect after `offset N measures` in the same cue (#549)**: an effect on the line after
+  `offset` or `reset_measures` ran into it as one long group name (`offset 1 measures
+  all_wash`), so the directive never applied, every later cue moved, and the effect matched no
+  fixtures -- a blank line or comment between them did not help. Group names can no longer
+  span whitespace, so the directive and the effect both stand. The same slip let a stray
+  character after a cue time join the next group name; it is now a parse error.
 - **Next and previous on a looping song name, and go to, the right song (#545)**: they break the
   loop and the player moves on a moment later, but the reply named the song still fading out,
   so a client driving the player took Next as having done nothing (the MCP `next`/`previous`
