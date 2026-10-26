@@ -1071,28 +1071,26 @@ impl AudioDevice for Device {
         // Create sources and track their finish flags (no locks needed for monitoring)
         let mut source_finish_flags = Vec::new();
 
-        let song_crossfade_envelope = if has_existing_sources {
-            let cs = crate::audio::crossfade::default_crossfade_samples(
+        let song_crossfade_samples = has_existing_sources.then(|| {
+            crate::audio::crossfade::default_crossfade_samples(
                 self.output_manager.mixer.sample_rate(),
-            );
-            // Linear is fine for ≤5ms crossfades — perceptual difference
-            // from EqualPower is inaudible at this duration, and Linear
-            // is cheaper (no trig).
-            Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
-                cs,
-                crate::audio::crossfade::CrossfadeCurve::Linear,
-            )))
-        } else {
-            None
-        };
+            )
+        });
 
         for source in channel_mapped_sources.into_iter() {
-            let (active_source, flag) = build_active_source(
-                source,
-                mappings,
-                &cancel_handle,
-                song_crossfade_envelope.clone(),
-            );
+            // Each source gets its own envelope: a shared GainEnvelope's
+            // position advances once per source per batch, so the fade would
+            // finish N times too fast. Linear is fine for ≤5ms crossfades —
+            // perceptual difference from EqualPower is inaudible at this
+            // duration, and Linear is cheaper (no trig).
+            let envelope = song_crossfade_samples.map(|cs| {
+                Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                    cs,
+                    crate::audio::crossfade::CrossfadeCurve::Linear,
+                ))
+            });
+            let (active_source, flag) =
+                build_active_source(source, mappings, &cancel_handle, envelope);
             source_finish_flags.push(flag);
             self.output_manager
                 .add_source(active_source)
@@ -1528,13 +1526,15 @@ impl AudioDevice for Device {
             };
 
             let mut new_finish_flags = Vec::new();
-            let fade_in_envelope = Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
-                crossfade_samples,
-                crate::audio::crossfade::CrossfadeCurve::Linear,
-            )));
             for source in new_sources {
+                // Each source gets its own envelope, as above.
+                let fade_in_envelope =
+                    Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                        crossfade_samples,
+                        crate::audio::crossfade::CrossfadeCurve::Linear,
+                    )));
                 let (active_source, flag) =
-                    build_active_source(source, mappings, &cancel_handle, fade_in_envelope.clone());
+                    build_active_source(source, mappings, &cancel_handle, fade_in_envelope);
                 new_finish_flags.push(flag);
                 if let Err(e) = self.output_manager.add_source(active_source) {
                     error!(err = %e, "Failed to add loop source to mixer");
