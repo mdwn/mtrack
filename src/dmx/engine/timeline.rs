@@ -114,7 +114,7 @@ impl Engine {
         // frame renders the fresh engine alone.
         {
             let mut effect_engine = self.effect_engine.lock();
-            let fresh = effect_engine.sibling();
+            let fresh = Self::fresh_engine_showing(&effect_engine);
             let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
             *self.outgoing_pass.lock() = Some(OutgoingPass {
                 effect_engine: outgoing_engine,
@@ -152,7 +152,7 @@ impl Engine {
         let from = self.to_delayed_song_time(self.get_song_time());
         {
             let mut effect_engine = self.effect_engine.lock();
-            let fresh = effect_engine.sibling();
+            let fresh = Self::fresh_engine_showing(&effect_engine);
             let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
             *self.outgoing_pass.lock() = Some(OutgoingPass {
                 effect_engine: outgoing_engine,
@@ -168,6 +168,21 @@ impl Engine {
         if let Some(pass) = self.outgoing_pass.lock().as_mut() {
             pass.timeline = outgoing_timeline;
         }
+    }
+
+    /// A fresh engine for the same rig to swap in at a loop pass or break,
+    /// showing what `current` shows until its first blended frame replaces
+    /// it: with nothing to show, a snapshot taken between the swap and that
+    /// frame -- the web UI's, `get_fixture_state`'s -- read black (#555).
+    fn fresh_engine_showing(
+        current: &crate::lighting::EffectEngine,
+    ) -> crate::lighting::EffectEngine {
+        let mut fresh = current.sibling();
+        fresh.set_shown(Some((
+            current.shown_fixture_states().clone(),
+            current.shown_poses().clone(),
+        )));
+        fresh
     }
 
     /// Ends a loop break's fade early, for a stop or seek.

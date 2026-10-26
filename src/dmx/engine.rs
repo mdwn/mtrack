@@ -2990,6 +2990,71 @@ mod test {
         }
 
         #[test]
+        fn the_view_holds_its_frame_across_an_engine_swap() -> Result<(), Box<dyn Error>> {
+            // #555, the tick left: a loop break or a loop pass swaps in a
+            // fresh engine with nothing to show, and a snapshot between the
+            // swap and the next frame read it as black.
+            let (engine, _cancel_handle) = create_engine()?;
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+            let view = |engine: &Engine| {
+                crate::state::engine_snapshot(
+                    &engine.effect_engine.lock(),
+                    None,
+                    &std::collections::HashMap::new(),
+                )
+            };
+            let red =
+                "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", duration: 60s\n}\n";
+
+            // A loop pass: the view before the swap is the view after it.
+            *engine.current_song_timeline.lock() = Some(timeline(red));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            frame_at(&engine, 5.0);
+            let before = view(&engine);
+            assert!(!before.fixtures.is_empty());
+            engine.begin_loop_crossfade(
+                Some(timeline(red)),
+                Duration::from_secs(6),
+                Duration::from_secs(2),
+            );
+            assert_eq!(
+                view(&engine).fixtures,
+                before.fixtures,
+                "after the pass swap"
+            );
+            frame_at(&engine, 2.5);
+
+            // A loop break, and the next song's start after it.
+            let before = view(&engine);
+            engine.begin_break_fade(Duration::from_millis(400));
+            assert_eq!(view(&engine).fixtures, before.fixtures, "after the break");
+            engine.stop_lighting_timeline();
+            *engine.current_song_timeline.lock() = Some(timeline(
+                "show \"b\" {\n    @1.000\n    wash: static, color: \"blue\", duration: 60s\n}\n",
+            ));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            assert_eq!(
+                view(&engine).fixtures,
+                before.fixtures,
+                "after the next song's start"
+            );
+            Ok(())
+        }
+
+        #[test]
         fn a_loop_breaks_fade_crosses_into_the_next_songs_show() -> Result<(), Box<dyn Error>> {
             let (engine, _cancel_handle) = create_engine()?;
             let mut channels = std::collections::HashMap::new();

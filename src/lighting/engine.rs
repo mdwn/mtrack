@@ -1262,7 +1262,8 @@ impl EffectEngine {
 
     /// Stop all active effects and reset per-song layer state
     pub fn stop_all_effects(&mut self) {
-        self.shown = None;
+        // `shown` is left be: a loop break's fade starts the next song's
+        // show under it, and the frame after sets or clears it anyway.
         // A clear releases pose memory: the next move starts from its target.
         self.poses.clear();
         self.goals.clear();
