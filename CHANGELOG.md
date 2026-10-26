@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   past the length is cut when the next pass starts. A cue starting at or past the length is a
   parse error. The web UI's lighting editor keeps the length when it saves the file.
 
+## [0.17.3] - 2026-10-26
+
+Upgrade note: a lighting show whose group names contain a space, or with a stray character after
+a cue time (`@2.5s`), now fails to parse instead of silently targeting no fixtures (#549). Run
+`validate_lighting` over your shows before upgrading.
+
 ### Fixed
 
 - **A black frame at every hand-over between effects (#551)**: each tick of the lighting loop
@@ -79,16 +85,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tools said so). They now return the song playback is moving to. And previous went forward:
   the loop-break cleanup always advanced the playlist, so previous on a looping song played the
   next song instead.
-
 - **A looping song's MIDI keeps to the song's length**: each pass of a looping song's MIDI
   restarted the moment its last event played, so a MIDI file ending before the audio drifted
-  ahead of the audio and lights a little more every pass. Passes now start on the song's own
-  grid, every song length (less any `loop_crossfade`). A song with no audio still loops on its
-  MIDI, having no other length.
+  ahead of the audio and lights a little more every pass. Passes now start every song length. A
+  song with no audio still loops on its MIDI, having no other length.
 - **MIDI keeps playing while an armed section waits to loop**: MIDI's first play stops at the
   first event past an armed section's end, often well before the clock gets there, and took
   that as the end of the song -- falling silent, or in a looping song restarting it. It now
   waits for the section to loop.
+- **The short fade-in at a song's start and a loop's restart runs its full length**: a song
+  starting over one still playing, and each pass of a looping song, fade their sources in over
+  a few milliseconds; the sources shared one envelope, which advanced once per source, so the
+  fade finished several times too fast. Each source now has its own.
 
 ## [0.17.2] - 2026-10-25
 
