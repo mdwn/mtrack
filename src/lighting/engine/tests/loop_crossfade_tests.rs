@@ -197,3 +197,114 @@ fn the_states_shown_cross_by_the_same_rules_as_the_dmx() {
         "gobo takes the new"
     );
 }
+
+/// The bytes the view would show for `states` -- the web UI's snapshot of
+/// them -- by DMX channel, for a fixture at universe 1 address 1.
+fn shown_bytes(
+    engine: &EffectEngine,
+    states: &HashMap<String, crate::lighting::effects::FixtureState>,
+) -> HashMap<u16, u8> {
+    let registry = engine.get_fixture_registry();
+    let has_dimmer: HashMap<String, bool> = registry
+        .iter()
+        .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
+        .collect();
+    let mut bytes = HashMap::new();
+    for snapshot in crate::state::fixture_snapshots_with_cells(states, &has_dimmer, registry) {
+        let info = &registry[&snapshot.name];
+        for (channel, &value) in &snapshot.channels {
+            if let Some(&offset) = info.channels.get(channel) {
+                bytes.insert(info.address + offset - 1, value);
+            }
+        }
+        for (cell, values) in &snapshot.cells {
+            let def = info.cells.iter().find(|c| &c.name == cell).unwrap();
+            for (channel, &value) in values {
+                bytes.insert(info.address + def.channels[channel].offset - 1, value);
+            }
+        }
+    }
+    bytes
+}
+
+/// Asserts the view of `incoming` crossing from `outgoing` at `t` shows the
+/// bytes the DMX blend sends, within rounding.
+fn view_matches_dmx(outgoing: &mut EffectEngine, incoming: &mut EffectEngine, t: f64) {
+    let dt = std::time::Duration::from_millis(25);
+    let old = outgoing.update(dt, None).unwrap().to_vec();
+    let new = incoming.update(dt, None).unwrap().to_vec();
+    let sent = incoming.crossfade_commands(&old, &new, t);
+    let (states, _) = incoming.crossfade_states(outgoing, t);
+    let shown = shown_bytes(incoming, &states);
+    for command in &sent {
+        let view = shown.get(&command.channel).copied().unwrap_or(0);
+        assert!(
+            (view as i16 - command.value as i16).abs() <= 1,
+            "channel {} at t {t}: view {view}, sent {}",
+            command.channel,
+            command.value
+        );
+    }
+}
+
+#[test]
+fn the_view_of_a_crossfade_is_what_goes_out() {
+    use crate::lighting::effects::{BlendMode, EffectInstance, EffectLayer, EffectType};
+    use crate::lighting::types::{Cell, ChannelDef};
+    // A three-cell RGB bar with no dimmer, so colour carries the layer
+    // multipliers, at address 1.
+    let cell = |n: &str, base: u16| Cell {
+        name: n.to_string(),
+        channels: HashMap::from([
+            ("red".to_string(), ChannelDef::at(base)),
+            ("green".to_string(), ChannelDef::at(base + 1)),
+            ("blue".to_string(), ChannelDef::at(base + 2)),
+        ]),
+        offset: [0.0, 0.0, 0.0],
+    };
+    let cells = vec![cell("1", 1), cell("2", 4), cell("3", 7)];
+    let defs = crate::lighting::types::ganged_from_cells(&cells).unwrap();
+    let channels = defs.iter().map(|(n, d)| (n.clone(), d.offset)).collect();
+    let mut info = FixtureInfo::new("bar".to_string(), 1, 1, "Bar".to_string(), channels, None);
+    info.channel_defs = defs;
+    info.cells = cells;
+    let mut outgoing = EffectEngine::new();
+    outgoing.register_fixture(info);
+    let mut incoming = outgoing.sibling();
+
+    let effect = |id: &str, parameters: &[(&str, f64)], per_cell: bool| {
+        let mut effect = EffectInstance::new(
+            id.to_string(),
+            EffectType::Static {
+                parameters: parameters
+                    .iter()
+                    .map(|&(n, v)| (n.to_string(), v))
+                    .collect(),
+                duration: std::time::Duration::from_secs(10),
+            },
+            vec!["bar".to_string()],
+            None,
+            None,
+            None,
+        );
+        effect.per_cell = per_cell;
+        effect
+    };
+    // Outgoing: the whole bar red. Incoming: each cell blue, under a
+    // dimmer multiplied to half on the mid layer -- per-cell state and a
+    // multiplier only one side has.
+    outgoing
+        .start_effect(effect("red", &[("red", 1.0)], false))
+        .unwrap();
+    incoming
+        .start_effect(effect("blue", &[("blue", 1.0)], true))
+        .unwrap();
+    let mut half = effect("half", &[("dimmer", 0.5)], false);
+    half.layer = EffectLayer::Midground;
+    half.blend_mode = BlendMode::Multiply;
+    incoming.start_effect(half).unwrap();
+
+    for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+        view_matches_dmx(&mut outgoing, &mut incoming, t);
+    }
+}

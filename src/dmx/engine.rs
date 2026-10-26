@@ -541,10 +541,7 @@ impl Engine {
                     }
                     std::borrow::Cow::Owned(blended)
                 }
-                None => {
-                    effect_engine.set_shown(None);
-                    std::borrow::Cow::Borrowed(effect_engine.update(dt, Some(song_time))?)
-                }
+                None => std::borrow::Cow::Borrowed(effect_engine.update(dt, Some(song_time))?),
             };
         drop(outgoing);
 
@@ -3051,6 +3048,24 @@ mod test {
                 before.fixtures,
                 "after the next song's start"
             );
+
+            // A plain start after a stop: the rig holds its last frame until
+            // the new song's first, and the view with it -- then that frame.
+            engine.end_break_fade();
+            frame_at(&engine, 2.0);
+            let before = view(&engine);
+            engine.stop_lighting_timeline();
+            *engine.current_song_timeline.lock() = Some(timeline(red));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            assert_eq!(
+                view(&engine).fixtures,
+                before.fixtures,
+                "after a plain start"
+            );
+            frame_at(&engine, 0.5);
+            let red_wash = view(&engine);
+            let wash = red_wash.fixtures.iter().find(|f| f.name == "wash").unwrap();
+            assert_eq!(wash.channels["red"], 255, "the new song's own frame");
             Ok(())
         }
 

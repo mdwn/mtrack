@@ -561,7 +561,14 @@ impl EffectEngine {
     ) -> (HashMap<String, FixtureState>, HashMap<String, Pose>) {
         let t = t.clamp(0.0, 1.0);
         let lerp = |a: f64, b: f64| a + (b - a) * t;
-        let (old_states, new_states) = (&outgoing.last_merged_states, &self.last_merged_states);
+        // Each side as it shows, multipliers applied and cells resolved, as
+        // the DMX of each frame is: a multiplier one side has and the other
+        // not is neutral there, not a level crossing from zero.
+        let (old_resolved, new_resolved) = (
+            self.resolved_states(&outgoing.last_merged_states),
+            self.resolved_states(&self.last_merged_states),
+        );
+        let (old_states, new_states) = (&old_resolved, &new_resolved);
         let names: HashSet<&String> = old_states.keys().chain(new_states.keys()).collect();
         let mut states = HashMap::new();
         for name in names {
@@ -614,9 +621,69 @@ impl EffectEngine {
         (states, poses)
     }
 
+    /// `states` as the rig shows them: each channel at its effective value
+    /// (layer multipliers applied, the multiplier channels gone), and every
+    /// cell of a pixel fixture resolved through its fixture as the DMX
+    /// path writes it. Every value is a plain replace, so the snapshot
+    /// built from it resolves it to itself.
+    fn resolved_states(
+        &self,
+        states: &HashMap<String, FixtureState>,
+    ) -> HashMap<String, FixtureState> {
+        let plain =
+            |value: f64| ChannelState::new(value, EffectLayer::Background, BlendMode::Replace);
+        let cell_state = |values: Vec<(String, f64)>| {
+            let mut state = FixtureState::new();
+            for (channel, value) in values {
+                state.channels.insert(channel, plain(value));
+            }
+            state
+        };
+        let mut out = HashMap::new();
+        for (name, state) in states {
+            let info = self.fixtures.get(name);
+            if let Some(parent) = info.and_then(|i| i.parent.as_ref()) {
+                // A cell comes with its fixture, below; on its own only when
+                // its fixture has no state of its own.
+                if states.contains_key(parent) {
+                    continue;
+                }
+                let cell_name = name.rsplit('/').next().unwrap_or(name);
+                let cell = self
+                    .fixtures
+                    .get(parent)
+                    .and_then(|p| p.cells.iter().find(|c| c.name == cell_name));
+                if let Some(cell) = cell {
+                    out.insert(
+                        name.clone(),
+                        cell_state(FixtureState::new().cell_values(cell, Some(state))),
+                    );
+                }
+                continue;
+            }
+            let has_dimmer = info.is_some_and(|i| i.channels.contains_key("dimmer"));
+            let mut resolved = FixtureState::new();
+            resolved.physical = state.physical.clone();
+            for (channel, channel_state) in &state.channels {
+                if is_multiplier_channel(channel) {
+                    continue;
+                }
+                let value = state.effective_channel_value(channel, channel_state, has_dimmer);
+                resolved.channels.insert(channel.clone(), plain(value));
+            }
+            out.insert(name.clone(), resolved);
+            for cell in info.map(|i| i.cells.as_slice()).unwrap_or_default() {
+                let cell_name = format!("{name}/{}", cell.name);
+                let own = states.get(&cell_name);
+                out.insert(cell_name, cell_state(state.cell_values(cell, own)));
+            }
+        }
+        out
+    }
+
     /// Sets what the rig shows while another engine's frame is crossed into
-    /// this one's (see [`Self::crossfade_states`]), or `None` once it shows
-    /// this engine's own frame again.
+    /// this one's (see [`Self::crossfade_states`]), until the next
+    /// [`Self::update`].
     pub fn set_shown(
         &mut self,
         shown: Option<(HashMap<String, FixtureState>, HashMap<String, Pose>)>,
@@ -869,6 +936,9 @@ impl EffectEngine {
         song_time: Option<Duration>,
     ) -> Result<&[DmxCommand], EffectError> {
         self.update_subphase.store(10, Ordering::Relaxed);
+        // What the rig shows is this frame from here, unless the caller
+        // crossing it with another engine's sets the blend after.
+        self.shown = None;
         self.current_time += dt;
         self.engine_elapsed += dt;
         self.last_song_time = song_time;
@@ -1262,8 +1332,13 @@ impl EffectEngine {
 
     /// Stop all active effects and reset per-song layer state
     pub fn stop_all_effects(&mut self) {
-        // `shown` is left be: a loop break's fade starts the next song's
-        // show under it, and the frame after sets or clears it anyway.
+        // The rig holds its last frame until the next one, so the view does
+        // too rather than going black: what it already shows (a loop
+        // break's fade starts the next song's show under it), else this
+        // engine's last frame, until the next frame's `update`.
+        if self.shown.is_none() {
+            self.shown = Some((self.last_merged_states.clone(), self.poses.clone()));
+        }
         // A clear releases pose memory: the next move starts from its target.
         self.poses.clear();
         self.goals.clear();
