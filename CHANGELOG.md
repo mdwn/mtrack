@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.3] - 2026-10-26
+
+Upgrade note: a lighting show whose group names contain a space, or with a stray character after
+a cue time (`@2.5s`), now fails to parse instead of silently targeting no fixtures (#549). Run
+`validate_lighting` over your shows before upgrading.
+
+### Fixed
+
+- **A black frame at every hand-over between effects (#551)**: each tick of the lighting loop
+  rendered its frame before starting the cues that had come due, so an effect reaching the end
+  of its `duration` was already gone while the one replacing it had not yet started. Fixtures
+  another layer kept writing went black for a frame (about 23 ms) on every hand-over -- on the
+  beat, in a sequence trading colours every bar. A song's first frame was lost the same way.
+  The tick now starts due cues first, then renders, both at one reading of the song time. And
+  a cued effect now renders on the song time it expires on: on engine time, which ran up to a
+  frame ahead, it could render past its end on the last frame before its hand-over and go dark
+  for that frame. An effect on a frozen layer, or one that has been through a freeze, keeps
+  engine time so it still resumes where it stopped.
+- **An effect after `offset N measures` in the same cue (#549)**: an effect on the line after
+  `offset` or `reset_measures` ran into it as one long group name (`offset 1 measures
+  all_wash`), so the directive never applied, every later cue moved, and the effect matched no
+  fixtures -- a blank line or comment between them did not help. Group names can no longer
+  span whitespace, so the directive and the effect both stand. The same slip let a stray
+  character after a cue time join the next group name; it is now a parse error.
+- **Next and previous on a looping song name, and go to, the right song (#545)**: they break the
+  loop and the player moves on a moment later, but the reply named the song still fading out,
+  so a client driving the player took Next as having done nothing (the MCP `next`/`previous`
+  tools said so). They now return the song playback is moving to. And previous went forward:
+  the loop-break cleanup always advanced the playlist, so previous on a looping song played the
+  next song instead.
+- **A looping song's MIDI keeps to the song's length**: each pass of a looping song's MIDI
+  restarted the moment its last event played, so a MIDI file ending before the audio drifted
+  ahead of the audio and lights a little more every pass. Passes now start every song length. A
+  song with no audio still loops on its MIDI, having no other length.
+- **MIDI keeps playing while an armed section waits to loop**: MIDI's first play stops at the
+  first event past an armed section's end, often well before the clock gets there, and took
+  that as the end of the song -- falling silent, or in a looping song restarting it. It now
+  waits for the section to loop.
+- **The short fade-in at a song's start and a loop's restart runs its full length**: a song
+  starting over one still playing, and each pass of a looping song, fade their sources in over
+  a few milliseconds; the sources shared one envelope, which advanced once per source, so the
+  fade finished several times too fast. Each source now has its own.
+
 ## [0.17.2] - 2026-10-25
 
 Upgrade note: a lighting show with an invalid `color:` or level value now fails to parse instead

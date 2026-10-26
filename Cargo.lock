@@ -2269,7 +2269,7 @@ dependencies = [
 
 [[package]]
 name = "mtrack"
-version = "0.17.2"
+version = "0.17.3"
 dependencies = [
  "axum",
  "clap",
