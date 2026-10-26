@@ -113,7 +113,12 @@ effect = { group_list ~ ":" ~ effect_type ~ (","? ~ parameters)? }
 
 group_list = { group_name ~ ("," ~ group_name)* }
 
-group_name = { param_ref | (ASCII_ALPHANUMERIC | "_" | "-")+ }
+// Compound-atomic for the same reason as `identifier`: without it pest
+// inserts implicit WHITESPACE between the characters, so a directive on
+// the line before an effect -- `offset 1 measures` then `all_wash: ...`
+// -- ran into it as one long group name (#549). `$` rather than `@` keeps
+// the `param_ref` pair inside.
+group_name = ${ param_ref | (ASCII_ALPHANUMERIC | "_" | "-")+ }
 
 effect_type = { "static" | "cycle" | "strobe" | "pulse" | "chase" | "dimmer" | "rainbow" | "move" }
 
