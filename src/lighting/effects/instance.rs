@@ -45,6 +45,11 @@ pub struct EffectInstance {
     /// tempo-aware speed or frequency is read against is shifted by it, as
     /// the cue times were (#525).
     pub tempo_offset_secs: f64,
+    /// Rendered on engine time even when the frame has a song time: the
+    /// effect has been through a layer freeze, whose unfreeze shifts its
+    /// `start_time` so it resumes where it stopped -- song time ran on
+    /// meanwhile, so rendering on it would jump.
+    pub engine_timed: bool,
 }
 
 impl EffectInstance {
@@ -90,6 +95,7 @@ impl EffectInstance {
             spread: 0.0,
             start_poses: std::collections::HashMap::new(),
             tempo_offset_secs: 0.0,
+            engine_timed: false,
         }
     }
 
