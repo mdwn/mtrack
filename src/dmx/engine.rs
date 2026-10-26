@@ -529,8 +529,8 @@ impl Engine {
                 Some(pass) => {
                     let incoming = effect_engine.update(dt, Some(song_time))?.to_vec();
                     let (t, time) = pass.timing(song_time);
-                    let old = pass.effect_engine.update(dt, Some(time))?;
-                    let blended = effect_engine.crossfade_commands(old, &incoming, t);
+                    let old = pass.render(dt, time)?;
+                    let blended = effect_engine.crossfade_commands(&old, &incoming, t);
                     // What goes out is the blend, so that is what the rig
                     // shows to the web UI and get_fixture_state too (#555).
                     let shown =
@@ -3112,6 +3112,93 @@ mod test {
                 assert_eq!(blue, 0.0, "blue at {at} s");
                 assert!(red > 200.0, "the orange is up at {at} s: {red}");
             }
+            Ok(())
+        }
+
+        #[test]
+        fn a_break_during_a_pass_crossfade_fades_the_blend() -> Result<(), Box<dyn Error>> {
+            // #560: Next during a loop crossfade dropped the older pass at
+            // once, so the lights jumped from the two passes' blend to the
+            // newer pass alone before the break's fade began.
+            let (engine, _cancel_handle) = create_engine()?;
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+            let view = |engine: &Engine| -> (u8, u8, u8) {
+                let snapshot = crate::state::engine_snapshot(
+                    &engine.effect_engine.lock(),
+                    None,
+                    &std::collections::HashMap::new(),
+                );
+                let wash = snapshot.fixtures.iter().find(|f| f.name == "wash");
+                let channel = |name: &str| {
+                    wash.and_then(|f| f.channels.get(name).copied())
+                        .unwrap_or(0)
+                };
+                (channel("red"), channel("green"), channel("blue"))
+            };
+
+            // Passes of a looping song crossing over 2 s: the older pass
+            // green by then, the newer one blue. Halfway, half of each.
+            *engine.current_song_timeline.lock() = Some(timeline(
+                "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", duration: 7s\n    \
+                 @7.000\n    wash: static, color: \"green\", duration: 0.5s\n    \
+                 @7.500\n    wash: static, color: \"yellow\", duration: 0.5s\n}\n",
+            ));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            frame_at(&engine, 5.5);
+            engine.begin_loop_crossfade(
+                Some(timeline(
+                    "show \"a\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 7s\n}\n",
+                )),
+                Duration::from_secs(6),
+                Duration::from_secs(2),
+            );
+            let before = frame_at(&engine, 1.0);
+            assert!((before.1 - 128.0).abs() <= 1.0 && (before.2 - 128.0).abs() <= 1.0);
+
+            // Next: a long fade into a song with nothing lit yet. The first
+            // frame after is the blend it broke out of, not blue alone.
+            engine.begin_break_fade(Duration::from_secs(4));
+            engine.stop_lighting_timeline();
+            *engine.current_song_timeline.lock() = Some(timeline(
+                "show \"b\" {\n    @1.000\n    wash: static, color: \"red\", duration: 60s\n}\n",
+            ));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            let after = frame_at(&engine, 0.0);
+            assert!(
+                (after.1 - before.1).abs() <= 3.0 && (after.2 - before.2).abs() <= 3.0,
+                "jumped from {before:?} to {after:?}"
+            );
+            let (_, green, blue) = view(&engine);
+            assert!(
+                (green as f64 - after.1).abs() <= 1.0 && (blue as f64 - after.2).abs() <= 1.0,
+                "the view ({green}, {blue}) against the DMX {after:?}"
+            );
+
+            // The older pass plays on inside the fade: its cue at 7.5 s,
+            // half a second after the break, still fires (yellow brings red).
+            std::thread::sleep(Duration::from_millis(600));
+            let mid = frame_at(&engine, 0.3);
+            assert!(mid.0 > 10.0, "the older pass's later cue fired: {mid:?}");
+
+            // It leaves once its own crossfade ends, a second after the
+            // break: blue alone, fading.
+            std::thread::sleep(Duration::from_millis(500));
+            let later = frame_at(&engine, 0.5);
+            assert!(later.1 < 1.0, "green gone: {later:?}");
+            assert!(later.2 > 100.0, "blue fading out: {later:?}");
             Ok(())
         }
 
