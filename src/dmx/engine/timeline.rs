@@ -305,10 +305,6 @@ impl Engine {
             let mut effect_engine = self.effect_engine.lock();
             effect_engine.stop_all_effects();
         }
-        // Clear effect deduplication caches so the new song's first frame is applied
-        for universe in self.universes.values() {
-            universe.clear_effect_cache();
-        }
 
         let timeline_update = {
             let mut current_timeline = self.current_song_timeline.lock();

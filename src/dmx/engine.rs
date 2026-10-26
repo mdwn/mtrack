@@ -3070,6 +3070,52 @@ mod test {
         }
 
         #[test]
+        fn a_new_show_driving_a_channel_to_zero_clears_the_last_songs_byte(
+        ) -> Result<(), Box<dyn Error>> {
+            // #557: the universe skipped a write equal to its cache of the
+            // last effect value, and a song change reset that cache to 0
+            // while the channel still held the last song's byte -- so a new
+            // show's 0 never reached the wire.
+            let (engine, _cancel_handle) = create_engine()?;
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+            // The last song leaves the wash lilac: blue 226.
+            *engine.current_song_timeline.lock() = Some(timeline(
+                "show \"a\" {\n    @0.000\n    wash: static, color: \"#8A2BE2\", duration: 60s\n}\n",
+            ));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            assert_eq!(frame_at(&engine, 5.0).2, 226.0);
+
+            // Stop, and the next song: an orange/amber cycle on the midground,
+            // replacing a green background -- blue 0 throughout.
+            engine.stop_lighting_timeline();
+            *engine.current_song_timeline.lock() = Some(timeline(
+                "show \"b\" {\n    @0.000\n    wash: static, color: \"#00FF00\", duration: 60s, \
+                 layer: background\n    wash: cycle, color: \"#FF7A00\", color: \"#FFB000\", \
+                 transition: fade, layer: midground, blend_mode: replace, duration: 60s\n}\n",
+            ));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            for at in [0.0, 0.5, 1.0, 2.0] {
+                let (red, _, blue) = frame_at(&engine, at);
+                assert_eq!(blue, 0.0, "blue at {at} s");
+                assert!(red > 200.0, "the orange is up at {at} s: {red}");
+            }
+            Ok(())
+        }
+
+        #[test]
         fn a_loop_breaks_fade_crosses_into_the_next_songs_show() -> Result<(), Box<dyn Error>> {
             let (engine, _cancel_handle) = create_engine()?;
             let mut channels = std::collections::HashMap::new();
