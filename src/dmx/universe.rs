@@ -55,9 +55,6 @@ pub(crate) struct Universe {
     cancel_handle: CancelHandle,
     /// Used to send data to the OLA client thread.
     ola_sender: Sender<DmxMessage>,
-    /// Last values written by effect commands. Used to skip redundant writes
-    /// so the Universe thread doesn't re-send unchanged buffers to OLA.
-    last_effect_values: RwLock<Vec<u8>>,
     /// A fixture test's channels (0-based index, value), laid over the frame
     /// last, as it goes out: it wins over effects and MIDI-DMX while set,
     /// and the moment it is cleared the frame underneath goes out again.
@@ -83,7 +80,6 @@ impl Universe {
             config,
             cancel_handle,
             ola_sender,
-            last_effect_values: RwLock::new(vec![0; UNIVERSE_SIZE]),
             test_override: Arc::new(RwLock::new(None)),
             test_generation: Arc::new(AtomicU64::new(0)),
         }
@@ -148,17 +144,14 @@ impl Universe {
                 });
     }
 
-    /// Clears the effect deduplication cache so the next batch is applied unconditionally.
-    /// Call this between songs to avoid stale state.
-    pub fn clear_effect_cache(&self) {
-        self.last_effect_values.write().fill(0);
-    }
-
     /// Updates the universe with effect commands (bypasses dimming).
-    /// Acquires locks once for the entire batch rather than per-command,
-    /// and deduplicates against last frame to avoid redundant OLA sends.
+    /// Acquires locks once for the entire batch rather than per-command, and
+    /// skips a channel already at the value (and not dimming toward
+    /// another). It compares with the channel itself rather than with the
+    /// last effect write: MIDI DMX writes channels too, and a cache cleared
+    /// to 0 between songs took a new show's 0 for the old value and left the
+    /// previous song's byte on the wire (#557).
     pub fn update_effect_commands(&self, commands: Vec<(u16, u8)>) {
-        let mut last = self.last_effect_values.write();
         let mut target = self.target.write();
         let mut rates = self.rates.write();
 
@@ -168,9 +161,9 @@ impl Universe {
             } else {
                 0
             };
-            if last[idx] != value {
-                last[idx] = value;
-                target[idx] = f64::from(value);
+            let value_f = f64::from(value);
+            if target[idx] != value_f || rates[idx] != 0.0 {
+                target[idx] = value_f;
                 rates[idx] = 0.0; // instant (no dimming for effect commands)
 
                 let _ = self.max_channels.fetch_update(
@@ -682,19 +675,26 @@ mod test {
     }
 
     #[test]
-    fn test_clear_effect_cache() {
+    fn an_effect_writes_zero_over_another_writers_value() {
+        // #557: a channel some other writer left lit -- the last song's
+        // effects, before a song change; MIDI DMX -- is set to 0 when an
+        // effect writes 0, not taken for unchanged.
         let (universe, _) = new_universe();
+        universe.update_effect_commands(vec![(3u16, 226u8)]);
+        universe.update_channel_data(4, 90, false);
+        universe.update_effect_commands(vec![(3u16, 0u8), (4, 0)]);
+        assert_eq!(universe.get_target_value(2), 0.0);
+        assert_eq!(universe.get_target_value(3), 0.0);
+    }
 
-        // Set some effect values
-        universe.update_effect_commands(vec![(1u16, 200u8)]);
-        assert_eq!(universe.get_target_value(0), 200.0);
-
-        // Clear cache
-        universe.clear_effect_cache();
-
-        // Same command should now apply again (not deduplicated)
-        universe.update_effect_commands(vec![(1u16, 200u8)]);
-        assert_eq!(universe.get_target_value(0), 200.0);
+    #[test]
+    fn an_effect_write_stops_a_dim_in_progress() {
+        // At the value but still dimming toward it: the effect snaps it.
+        let (universe, _) = new_universe();
+        universe.update_effect_commands(vec![(1u16, 100u8)]);
+        universe.update_channel_data(1, 100, true);
+        universe.update_effect_commands(vec![(1u16, 100u8)]);
+        assert_eq!(universe.rates.read()[0], 0.0);
     }
 
     #[test]
