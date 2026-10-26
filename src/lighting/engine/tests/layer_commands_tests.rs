@@ -287,6 +287,73 @@ fn test_unfreeze_layer_maintains_animation_continuity() {
 }
 
 #[test]
+fn unfreezing_a_cued_effect_resumes_it_while_song_time_ran_on() {
+    // A cued effect renders on score time (#551), but song time runs on
+    // while its layer is frozen: after the unfreeze it must resume where it
+    // stopped, as an uncued one does, not jump to where the song now is.
+    let mut engine = EffectEngine::new();
+    let mut channels = HashMap::new();
+    channels.insert("red".to_string(), 1);
+    channels.insert("green".to_string(), 2);
+    channels.insert("blue".to_string(), 3);
+    engine.register_fixture(FixtureInfo::new(
+        "rgb_fixture".to_string(),
+        1,
+        1,
+        "RGB".to_string(),
+        channels,
+        None,
+    ));
+    let mut effect = EffectInstance::new(
+        "rainbow".to_string(),
+        EffectType::Rainbow {
+            speed: TempoAwareSpeed::Fixed(1.0),
+            saturation: 1.0,
+            brightness: 1.0,
+            duration: Duration::from_secs(10),
+        },
+        vec!["rgb_fixture".to_string()],
+        None,
+        None,
+        None,
+    );
+    effect.cue_time = Some(Duration::ZERO);
+    engine.start_effect(effect).unwrap();
+
+    let mut song = Duration::ZERO;
+    let mut frame = |engine: &mut EffectEngine, dt: u64| -> Vec<u8> {
+        song += Duration::from_millis(dt);
+        let mut commands: Vec<_> = engine
+            .update(Duration::from_millis(dt), Some(song))
+            .unwrap()
+            .iter()
+            .map(|c| (c.channel, c.value))
+            .collect();
+        commands.sort_by_key(|(channel, _)| *channel);
+        commands.into_iter().map(|(_, value)| value).collect()
+    };
+    frame(&mut engine, 250);
+    let before = frame(&mut engine, 10);
+
+    // Half a cycle of song time passes frozen.
+    engine.freeze_layer(EffectLayer::Background);
+    frame(&mut engine, 500);
+    engine.unfreeze_layer(EffectLayer::Background);
+
+    let after = frame(&mut engine, 10);
+    let max_diff = before
+        .iter()
+        .zip(&after)
+        .map(|(a, b)| (*a as i16 - *b as i16).abs())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        max_diff < 30,
+        "jumped on unfreeze: {before:?} then {after:?}"
+    );
+}
+
+#[test]
 fn test_layer_intensity_master() {
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);

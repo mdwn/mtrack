@@ -57,6 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A black frame at every hand-over between effects (#551)**: each tick of the lighting loop
+  rendered its frame before starting the cues that had come due, so an effect reaching the end
+  of its `duration` was already gone while the one replacing it had not yet started. Fixtures
+  another layer kept writing went black for a frame (about 23 ms) on every hand-over -- on the
+  beat, in a sequence trading colours every bar. A song's first frame was lost the same way.
+  The tick now starts due cues first, then renders, both at one reading of the song time. And
+  a cued effect now renders on the song time it expires on: on engine time, which ran up to a
+  frame ahead, it could render past its end on the last frame before its hand-over and go dark
+  for that frame. An effect on a frozen layer, or one that has been through a freeze, keeps
+  engine time so it still resumes where it stopped.
 - **An effect after `offset N measures` in the same cue (#549)**: an effect on the line after
   `offset` or `reset_measures` ran into it as one long group name (`offset 1 measures
   all_wash`), so the directive never applied, every later cue moved, and the effect matched no

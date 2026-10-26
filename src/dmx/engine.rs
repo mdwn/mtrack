@@ -352,11 +352,12 @@ impl Engine {
     }
 
     /// Performs one tick of the effects loop: interpolation, MIDI dispatch,
-    /// effects update, timeline update, and finished-check.
+    /// timeline update, effects update, and finished-check.
     ///
-    /// Phase values (stored in `effects_loop_phase` for diagnostics):
-    ///   1 = MIDI DMX store tick, 2 = MIDI advance, 3 = update effects,
-    ///   4 = update song lighting, 5 = timeline finished check, 0 = idle.
+    /// Phase values (stored in `effects_loop_phase` for diagnostics), in the
+    /// order they run: 1 = MIDI DMX store tick, 2 = MIDI advance, 4 = update
+    /// song lighting, 3 = update effects, 5 = timeline finished check,
+    /// 0 = idle.
     fn effects_loop_tick(&self) {
         // Tick the MIDI DMX store to interpolate dimming values
         self.effects_loop_phase.store(1, Ordering::Relaxed);
@@ -366,21 +367,29 @@ impl Engine {
         self.effects_loop_phase.store(2, Ordering::Relaxed);
         self.advance_midi_dmx_playbacks();
 
-        // Update effects engine and apply to universes
-        self.effects_loop_phase.store(3, Ordering::Relaxed);
-        if let Err(e) = self.update_effects() {
-            error!("Error updating effects: {}", e);
-        }
+        // One reading of the clock for the whole tick, so the cues started
+        // and the frame rendered agree on the time.
+        let song_time = self.delayed_song_time();
 
-        // Update song lighting timeline with the delay-compensated song time. Holding
-        // off entirely inside the delay window matters: clamping to zero instead would
-        // fire the @00:00.000 cues at true zero, which is the early firing the delay
-        // exists to correct.
+        // Start the cues now due before rendering, so the frame that crosses
+        // a cue has its effects: rendering first ended an effect reaching its
+        // duration with nothing yet in its place, one black frame at every
+        // hand-over (#551). With the delay-compensated song time. Holding off
+        // entirely inside the delay window matters: clamping to zero instead
+        // would fire the @00:00.000 cues at true zero, which is the early
+        // firing the delay exists to correct.
         self.effects_loop_phase.store(4, Ordering::Relaxed);
-        if let Some(song_time) = self.delayed_song_time() {
+        if let Some(song_time) = song_time {
             if let Err(e) = self.update_song_lighting(song_time) {
                 error!("Error updating song lighting: {}", e);
             }
+        }
+
+        // Update effects engine and apply to universes. Clamped rather than
+        // skipped inside the delay window: see update_effects_at.
+        self.effects_loop_phase.store(3, Ordering::Relaxed);
+        if let Err(e) = self.update_effects_at(song_time.unwrap_or_default()) {
+            error!("Error updating effects: {}", e);
         }
 
         // Check if all lighting has finished (DSL timeline cues + MIDI DMX playbacks)
@@ -480,15 +489,20 @@ impl Engine {
 
     /// Updates the effects engine and applies any generated commands to universes
     pub fn update_effects(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // Subphase 1: reading the song time.
+        self.update_subphase.store(1, Ordering::Relaxed);
+        self.update_effects_at(self.to_delayed_song_time(self.get_song_time()))
+    }
+
+    /// Renders a frame at `song_time`, in the delayed lighting time base, and
+    /// applies it to the universes. Tempo-aware effects resolve their speeds
+    /// against it, so it has to sit in the same delayed time base as the cues
+    /// that started them. Clamped to zero rather than skipped inside the delay
+    /// window: the render also carries MIDI DMX store values, which do their
+    /// own delay handling in advance_midi_dmx_playbacks and must keep flowing.
+    fn update_effects_at(&self, song_time: Duration) -> Result<(), Box<dyn std::error::Error>> {
         // Update the effects engine with a frame time matching Universe TARGET_HZ
         let dt = Duration::from_secs_f64(1.0 / super::universe::TARGET_HZ);
-        // Subphase 1: about to acquire current_song_time lock.
-        // Tempo-aware effects resolve their speeds against this, so it has to sit in
-        // the same delayed time base as the cues that started them. Clamped rather
-        // than skipped: the render also carries MIDI DMX store values, which do their
-        // own delay handling in advance_midi_dmx_playbacks and must keep flowing.
-        self.update_subphase.store(1, Ordering::Relaxed);
-        let song_time = self.to_delayed_song_time(self.get_song_time());
         // Subphase 2: about to acquire effect_engine lock
         self.update_subphase.store(2, Ordering::Relaxed);
         let mut effect_engine = match self.effect_engine.try_lock_for(Duration::from_secs(2)) {
@@ -2768,6 +2782,131 @@ mod test {
             assert_eq!(frame_at(&engine, 2.0), (0.0, 0.0, 255.0));
             assert!(engine.outgoing_pass.lock().is_none());
             assert_eq!(frame_at(&engine, 3.0), (0.0, 0.0, 255.0));
+            Ok(())
+        }
+
+        #[test]
+        fn a_replace_hand_over_has_no_black_frame() -> Result<(), Box<dyn Error>> {
+            // #551: an effect with a duration ended in the frame that crossed
+            // its end, before the tick started the next cue, so the layer had
+            // nothing for one frame.
+            let (engine, _cancel_handle) = create_engine()?;
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+            let effect = |at: &str, color: &str| {
+                format!(
+                    "    @{at}\n    wash: static, color: \"{color}\", duration: 1s, \
+                     layer: background, blend_mode: replace\n"
+                )
+            };
+            // And, as on the rig in the issue, another layer writing the
+            // wash's colour all along -- a black `screen`, which leaves the
+            // wash as it is, and leaves the frame black where it is gone.
+            *engine.current_song_timeline.lock() = Some(timeline(&format!(
+                "show \"a\" {{\n    @0.000\n    wash: static, color: \"#000000\", \
+                 duration: 10s, layer: foreground, blend_mode: screen\n{}{}{}}}\n",
+                effect("0.000", "red"),
+                effect("1.000", "green"),
+                effect("2.000", "blue"),
+            )));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+
+            // Tick as the live loop does, across both hand-overs, landing
+            // on and just past each boundary.
+            let mut seen = Vec::new();
+            for ms in (0..2_400).step_by(23).chain([1_000, 1_001, 2_000, 2_001]) {
+                engine.update_song_time(Duration::from_millis(ms));
+                engine.effects_loop_tick();
+                let universe = engine.get_universe(5).unwrap();
+                let frame = (
+                    universe.get_target_value(0),
+                    universe.get_target_value(1),
+                    universe.get_target_value(2),
+                );
+                assert_ne!(frame, (0.0, 0.0, 0.0), "black at {ms} ms");
+                seen.push(frame);
+            }
+            assert!(seen.contains(&(0.0, 255.0, 0.0)) && seen.contains(&(0.0, 0.0, 255.0)));
+            Ok(())
+        }
+
+        #[test]
+        fn sequence_hand_overs_on_the_live_clock_have_no_black_frame() -> Result<(), Box<dyn Error>>
+        {
+            // #551, the half the first fix left: an effect rendered on engine
+            // time, which runs up to a frame ahead of the score time it
+            // expires on, went dark on the last tick before its hand-over.
+            // So tick as the live loop does -- every 1/44 s of engine time --
+            // with song time from a 48 kHz sample clock read in 1024-frame
+            // audio callbacks, through sequences trading colours every bar
+            // and every half bar at 190.
+            let (engine, _cancel_handle) = create_engine()?;
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+            let step = |at: &str, color: &str, length: &str| {
+                format!(
+                    "    @{at}\n    wash: static, color: \"{color}\", duration: {length}, \
+                     layer: background, blend_mode: replace\n"
+                )
+            };
+            *engine.current_song_timeline.lock() = Some(timeline(&format!(
+                "tempo {{\n    start: 0ms\n    bpm: 190\n    time_signature: 4/4\n}}\n\
+                 sequence \"bar\" {{\n{}{}}}\n\
+                 sequence \"half\" {{\n{}{}}}\n\
+                 show \"a\" {{\n    @1/1\n    wash: static, color: \"#000000\", duration: 60s, \
+                 layer: foreground, blend_mode: screen\n    offset 1 measures\n\
+                 \x20   @1/1\n    sequence \"bar\", loop: 4\n\
+                 \x20   @9/1\n    sequence \"half\", loop: 8\n}}\n",
+                step("1/1", "red", "1measure"),
+                step("2/1", "blue", "1measure"),
+                step("1/1", "red", "2beats"),
+                step("1/3", "blue", "2beats"),
+            )));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+
+            let mut black = Vec::new();
+            for tick in 0..(23 * 44) {
+                let frames = (tick as f64 / 44.0 * 48_000.0) as u64 / 1024 * 1024;
+                let song_time = Duration::from_secs_f64(frames as f64 / 48_000.0);
+                engine.update_song_time(song_time);
+                engine.effects_loop_tick();
+                let universe = engine.get_universe(5).unwrap();
+                let frame = (
+                    universe.get_target_value(0),
+                    universe.get_target_value(1),
+                    universe.get_target_value(2),
+                );
+                // While the sequences run, the wash is always lit.
+                let lit = Duration::from_millis(1_400)..Duration::from_secs(21);
+                if lit.contains(&song_time) && frame == (0.0, 0.0, 0.0) {
+                    black.push(song_time.as_secs_f64());
+                }
+            }
+            assert!(black.is_empty(), "black frames at {black:?}");
             Ok(())
         }
 

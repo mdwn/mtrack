@@ -67,6 +67,7 @@ pub(crate) fn unfreeze_layer(
                     // This makes it appear as if no time passed while frozen
                     effect.start_time = Some(start_time + frozen_duration);
                 }
+                effect.engine_timed = true;
             }
         }
     }

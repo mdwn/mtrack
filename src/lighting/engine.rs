@@ -951,13 +951,27 @@ impl EffectEngine {
                 // Get reference to effect to avoid unnecessary clone
                 let effect = self.active_effects.get(&effect_id).unwrap();
 
-                // Calculate base elapsed time
-                // If layer is frozen, use the frozen time instead of current time
+                // Calculate base elapsed time. A cued effect renders on score
+                // time, the elapsed it expires on below, so the two agree:
+                // engine time runs up to a frame ahead of it (the effect is
+                // stamped before this update adds `dt`, and its cue lands part
+                // way through a tick), and an effect rendered past its end on
+                // engine time before it expired on score time went dark for a
+                // frame at a hand-over (#551). A frozen layer, an effect that
+                // has been through a freeze, and one with no cue keep engine
+                // time; on a frozen layer, the frozen time instead of now.
                 let reference_time = frozen_at.unwrap_or(self.current_time);
-                let base_elapsed = effect
-                    .start_time
-                    .map(|start| reference_time.duration_since(start))
-                    .unwrap_or(Duration::ZERO);
+                let base_elapsed = match (effect.start_time, effect.cue_time, song_time) {
+                    (Some(_), Some(cue_time), Some(now))
+                        if frozen_at.is_none() && !effect.engine_timed =>
+                    {
+                        now.saturating_sub(cue_time)
+                    }
+                    _ => effect
+                        .start_time
+                        .map(|start| reference_time.duration_since(start))
+                        .unwrap_or(Duration::ZERO),
+                };
 
                 // Apply speed master to elapsed time
                 // Speed 0.0 triggers freeze_layer, and frozen_at provides the frozen reference time.
