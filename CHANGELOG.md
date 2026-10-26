@@ -55,6 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   past the length is cut when the next pass starts. A cue starting at or past the length is a
   parse error. The web UI's lighting editor keeps the length when it saves the file.
 
+### Fixed
+
+- **The web UI and `get_fixture_state` show a crossfade as it goes out (#555)**: during a loop
+  crossfade or a loop break's fade, the rig gets a blend of the two shows, but the web UI's
+  lighting view and the MCP `get_fixture_state` showed the incoming show alone -- at Next, black
+  until its first cue, then a snap to it. They now show the blend, crossed channel by channel by
+  the same rules as the DMX.
+
 ## [0.17.3] - 2026-10-26
 
 Upgrade note: a lighting show whose group names contain a space, or with a stray character after

@@ -531,12 +531,20 @@ impl Engine {
                     let (t, time) = pass.timing(song_time);
                     let old = pass.effect_engine.update(dt, Some(time))?;
                     let blended = effect_engine.crossfade_commands(old, &incoming, t);
+                    // What goes out is the blend, so that is what the rig
+                    // shows to the web UI and get_fixture_state too (#555).
+                    let shown =
+                        (t < 1.0).then(|| effect_engine.crossfade_states(&pass.effect_engine, t));
+                    effect_engine.set_shown(shown);
                     if t >= 1.0 {
                         *outgoing = None;
                     }
                     std::borrow::Cow::Owned(blended)
                 }
-                None => std::borrow::Cow::Borrowed(effect_engine.update(dt, Some(song_time))?),
+                None => {
+                    effect_engine.set_shown(None);
+                    std::borrow::Cow::Borrowed(effect_engine.update(dt, Some(song_time))?)
+                }
             };
         drop(outgoing);
 
@@ -2907,6 +2915,77 @@ mod test {
                 }
             }
             assert!(black.is_empty(), "black frames at {black:?}");
+            Ok(())
+        }
+
+        #[test]
+        fn the_shown_state_is_the_blend_going_out() -> Result<(), Box<dyn Error>> {
+            // #555: the web UI and get_fixture_state read the main engine's
+            // own states, so at Next they showed the incoming show before its
+            // first cue -- black -- and then snapped to it, while the rig
+            // crossed smoothly.
+            let (engine, _cancel_handle) = create_engine()?;
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+            let shown = |engine: &Engine| -> (u8, u8, u8) {
+                let effect_engine = engine.effect_engine.lock();
+                let snapshot = crate::state::engine_snapshot(
+                    &effect_engine,
+                    None,
+                    &std::collections::HashMap::new(),
+                );
+                let wash = snapshot.fixtures.iter().find(|f| f.name == "wash");
+                let channel = |name: &str| {
+                    wash.and_then(|f| f.channels.get(name).copied())
+                        .unwrap_or(0)
+                };
+                (channel("red"), channel("green"), channel("blue"))
+            };
+
+            // The prelude: red.
+            *engine.current_song_timeline.lock() = Some(timeline(
+                "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", duration: 60s\n}\n",
+            ));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            frame_at(&engine, 10.0);
+            assert_eq!(shown(&engine), (255, 0, 0));
+
+            // Next: a 400 ms fade into a song whose first cue (blue) is a
+            // second in, so on its own it shows nothing yet.
+            engine.begin_break_fade(Duration::from_millis(400));
+            engine.stop_lighting_timeline();
+            *engine.current_song_timeline.lock() = Some(timeline(
+                "show \"b\" {\n    @1.000\n    wash: static, color: \"blue\", duration: 60s\n}\n",
+            ));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+
+            // Part way: the view shows what goes out, the red going -- not
+            // the incoming show's black before its first cue.
+            std::thread::sleep(Duration::from_millis(150));
+            let out = frame_at(&engine, 0.01);
+            let (red, _, blue) = shown(&engine);
+            assert!(red > 50, "shown {red}, {blue}");
+            assert!(
+                (red as f64 - out.0).abs() <= 1.0 && (blue as f64 - out.2).abs() <= 1.0,
+                "shown ({red}, {blue}) against the DMX out {out:?}"
+            );
+
+            // Over: the next song alone, once its cue is in.
+            std::thread::sleep(Duration::from_millis(300));
+            frame_at(&engine, 1.5);
+            assert_eq!(shown(&engine), (0, 0, 255));
             Ok(())
         }
 

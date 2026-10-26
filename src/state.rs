@@ -323,14 +323,18 @@ pub(crate) fn engine_snapshot(
     // its own to the stream (design §17.4): its state folds into the
     // fixture's `cells`.
     let registry = engine.get_fixture_registry();
+    // What the rig shows: mid-crossfade, the blend going out (#555).
     let mut fixtures =
-        fixture_snapshots_with_cells(&engine.get_fixture_states(), has_dimmer_map, registry);
+        fixture_snapshots_with_cells(engine.shown_fixture_states(), has_dimmer_map, registry);
     let mut active_effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
     active_effects.sort();
     let (poses, under_test) = match overlay {
-        None => (compute_pose_snapshots(engine.poses(), registry), Vec::new()),
+        None => (
+            compute_pose_snapshots(engine.shown_poses(), registry),
+            Vec::new(),
+        ),
         Some(overlay) => {
-            let mut poses = engine.poses().clone();
+            let mut poses = engine.shown_poses().clone();
             let under_test = apply_test_overlay(&mut fixtures, &mut poses, overlay, registry);
             (compute_pose_snapshots(&poses, registry), under_test)
         }

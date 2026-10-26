@@ -140,3 +140,60 @@ fn a_sibling_drives_the_same_rig_from_a_clean_slate() {
     assert_eq!(value(&lit, 1), Some(255));
     assert_ne!(value(&dark, 1), Some(255));
 }
+
+/// `mover` lit by a `static` setting `levels`, a frame rendered.
+fn lit(engine: &mut EffectEngine, levels: &[(&str, f64)]) {
+    use crate::lighting::effects::{EffectInstance, EffectType};
+    let parameters = levels
+        .iter()
+        .map(|&(name, level)| (name.to_string(), level))
+        .collect();
+    engine
+        .start_effect(EffectInstance::new(
+            "look".to_string(),
+            EffectType::Static {
+                parameters,
+                duration: std::time::Duration::from_secs(10),
+            },
+            vec!["mover".to_string()],
+            None,
+            None,
+            None,
+        ))
+        .unwrap();
+    engine
+        .update(std::time::Duration::from_millis(25), None)
+        .unwrap();
+}
+
+#[test]
+fn the_states_shown_cross_by_the_same_rules_as_the_dmx() {
+    // What the web UI and get_fixture_state show mid-crossfade (#555).
+    let mut outgoing = engine();
+    lit(
+        &mut outgoing,
+        &[("dimmer", 0.8), ("red", 1.0), ("gobo", 0.2)],
+    );
+    let mut incoming = outgoing.sibling();
+    lit(&mut incoming, &[("dimmer", 0.4), ("gobo", 0.6)]);
+
+    let level = |states: &HashMap<String, crate::lighting::effects::FixtureState>, name: &str| {
+        states["mover"].channels.get(name).map(|c| c.value)
+    };
+    let (quarter, _) = incoming.crossfade_states(&outgoing, 0.25);
+    assert!(
+        (level(&quarter, "dimmer").unwrap() - 0.7).abs() < 1e-9,
+        "dimmer fades"
+    );
+    assert!(
+        (level(&quarter, "red").unwrap() - 0.75).abs() < 1e-9,
+        "red fades out, only the outgoing side driving it"
+    );
+    assert_eq!(level(&quarter, "gobo"), Some(0.2), "gobo holds the old");
+    let (three_quarters, _) = incoming.crossfade_states(&outgoing, 0.75);
+    assert_eq!(
+        level(&three_quarters, "gobo"),
+        Some(0.6),
+        "gobo takes the new"
+    );
+}
