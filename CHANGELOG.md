@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.4] - 2026-10-26
+
+### Fixed
+
+- **A channel a new show drives to 0 no longer keeps the last song's value (#557)**: a universe
+  skipped an effect write equal to its cache of the last one written, and a song change reset
+  that cache to 0 while the channel still held the last song's byte -- so a new show's 0 never
+  reached the wire, and an orange with no blue came out pink after a song that left blue up.
+  The web UI, `get_fixture_state` and `evaluate_show` all said 0. A universe now compares an
+  effect's value with the channel itself, which MIDI DMX writes too.
+
 ## [0.17.3] - 2026-10-26
 
 Upgrade note: a lighting show whose group names contain a space, or with a stray character after
