@@ -243,6 +243,11 @@ pub struct EffectEngine {
     layer_state: LayerState,
     /// Last computed merged fixture states (for preview/debugging)
     last_merged_states: HashMap<String, FixtureState>,
+    /// While another engine's frame is crossed into this one's (a loop
+    /// crossfade or a loop break's fade, #555): the blend of the two, which
+    /// is what the rig shows -- fixture states and poses -- rather than this
+    /// engine's own.
+    shown: Option<(HashMap<String, FixtureState>, HashMap<String, Pose>)>,
     /// Last known song time (score-time) for tempo-aware speed lookups.
     last_song_time: Option<Duration>,
     /// Reference to the MIDI DMX store for reading interpolated values each frame.
@@ -286,6 +291,7 @@ impl EffectEngine {
             tempo_map: None,
             layer_state: LayerState::new(),
             last_merged_states: HashMap::new(),
+            shown: None,
             last_song_time: None,
             midi_dmx_store: None,
             cache: EffectCache::new(),
@@ -544,6 +550,160 @@ impl EffectEngine {
         &self.poses
     }
 
+    /// The fixture states `t` of the way through a crossfade from
+    /// `outgoing`'s last frame to this engine's, and the poses likewise: the
+    /// states [`Self::crossfade_commands`] makes of the two frames' DMX, by
+    /// the same rules, for what shows the rig rather than drives it.
+    pub fn crossfade_states(
+        &self,
+        outgoing: &EffectEngine,
+        t: f64,
+    ) -> (HashMap<String, FixtureState>, HashMap<String, Pose>) {
+        let t = t.clamp(0.0, 1.0);
+        let lerp = |a: f64, b: f64| a + (b - a) * t;
+        // Each side as it shows, multipliers applied and cells resolved, as
+        // the DMX of each frame is: a multiplier one side has and the other
+        // not is neutral there, not a level crossing from zero.
+        let (old_resolved, new_resolved) = (
+            self.resolved_states(&outgoing.last_merged_states),
+            self.resolved_states(&self.last_merged_states),
+        );
+        let (old_states, new_states) = (&old_resolved, &new_resolved);
+        let names: HashSet<&String> = old_states.keys().chain(new_states.keys()).collect();
+        let mut states = HashMap::new();
+        for name in names {
+            let empty = FixtureState::new();
+            let old = old_states.get(name).unwrap_or(&empty);
+            let new = new_states.get(name).unwrap_or(&empty);
+            let mut state = FixtureState::new();
+            let channels: HashSet<&String> =
+                old.channels.keys().chain(new.channels.keys()).collect();
+            for channel in channels {
+                let (o, n) = (old.channels.get(channel), new.channels.get(channel));
+                let value = |c: Option<&ChannelState>| c.map_or(0.0, |c| c.value);
+                let blended = match CrossKind::of(channel) {
+                    CrossKind::Position => {
+                        let from = o.or(n).map_or(0.0, |c| c.value);
+                        lerp(from, n.map_or(from, |c| c.value))
+                    }
+                    CrossKind::Snap if t < 0.5 => value(o),
+                    CrossKind::Snap => value(n),
+                    CrossKind::Fade => lerp(value(o), value(n)),
+                };
+                let like = n.or(o).expect("a channel one side has");
+                state.channels.insert(
+                    channel.clone(),
+                    ChannelState::new(blended, like.layer, like.blend_mode),
+                );
+            }
+            let intent = |o: Option<Intent>, n: Option<Intent>| match (o, n) {
+                (Some(o), Some(n)) => Some(Intent {
+                    degrees: lerp(o.degrees, n.degrees),
+                    layer: n.layer,
+                }),
+                (o, n) => n.or(o),
+            };
+            state.physical.pan = intent(old.physical.pan, new.physical.pan);
+            state.physical.tilt = intent(old.physical.tilt, new.physical.tilt);
+            states.insert(name.clone(), state);
+        }
+        let mut poses = outgoing.poses.clone();
+        for (name, pose) in &self.poses {
+            let blended = match outgoing.poses.get(name) {
+                Some(old) => Pose {
+                    pan: lerp(old.pan, pose.pan),
+                    tilt: lerp(old.tilt, pose.tilt),
+                },
+                None => *pose,
+            };
+            poses.insert(name.clone(), blended);
+        }
+        (states, poses)
+    }
+
+    /// `states` as the rig shows them: each channel at its effective value
+    /// (layer multipliers applied, the multiplier channels gone), and every
+    /// cell of a pixel fixture resolved through its fixture as the DMX
+    /// path writes it. Every value is a plain replace, so the snapshot
+    /// built from it resolves it to itself.
+    fn resolved_states(
+        &self,
+        states: &HashMap<String, FixtureState>,
+    ) -> HashMap<String, FixtureState> {
+        let plain =
+            |value: f64| ChannelState::new(value, EffectLayer::Background, BlendMode::Replace);
+        let cell_state = |values: Vec<(String, f64)>| {
+            let mut state = FixtureState::new();
+            for (channel, value) in values {
+                state.channels.insert(channel, plain(value));
+            }
+            state
+        };
+        let mut out = HashMap::new();
+        for (name, state) in states {
+            let info = self.fixtures.get(name);
+            if let Some(parent) = info.and_then(|i| i.parent.as_ref()) {
+                // A cell comes with its fixture, below; on its own only when
+                // its fixture has no state of its own.
+                if states.contains_key(parent) {
+                    continue;
+                }
+                let cell_name = name.rsplit('/').next().unwrap_or(name);
+                let cell = self
+                    .fixtures
+                    .get(parent)
+                    .and_then(|p| p.cells.iter().find(|c| c.name == cell_name));
+                if let Some(cell) = cell {
+                    out.insert(
+                        name.clone(),
+                        cell_state(FixtureState::new().cell_values(cell, Some(state))),
+                    );
+                }
+                continue;
+            }
+            let has_dimmer = info.is_some_and(|i| i.channels.contains_key("dimmer"));
+            let mut resolved = FixtureState::new();
+            resolved.physical = state.physical.clone();
+            for (channel, channel_state) in &state.channels {
+                if is_multiplier_channel(channel) {
+                    continue;
+                }
+                let value = state.effective_channel_value(channel, channel_state, has_dimmer);
+                resolved.channels.insert(channel.clone(), plain(value));
+            }
+            out.insert(name.clone(), resolved);
+            for cell in info.map(|i| i.cells.as_slice()).unwrap_or_default() {
+                let cell_name = format!("{name}/{}", cell.name);
+                let own = states.get(&cell_name);
+                out.insert(cell_name, cell_state(state.cell_values(cell, own)));
+            }
+        }
+        out
+    }
+
+    /// Sets what the rig shows while another engine's frame is crossed into
+    /// this one's (see [`Self::crossfade_states`]), until the next
+    /// [`Self::update`].
+    pub fn set_shown(
+        &mut self,
+        shown: Option<(HashMap<String, FixtureState>, HashMap<String, Pose>)>,
+    ) {
+        self.shown = shown;
+    }
+
+    /// The fixture states the rig shows: this engine's, or mid-crossfade the
+    /// blend going out (#555).
+    pub fn shown_fixture_states(&self) -> &HashMap<String, FixtureState> {
+        self.shown
+            .as_ref()
+            .map_or(&self.last_merged_states, |(states, _)| states)
+    }
+
+    /// The poses the rig shows, likewise.
+    pub fn shown_poses(&self) -> &HashMap<String, Pose> {
+        self.shown.as_ref().map_or(&self.poses, |(_, poses)| poses)
+    }
+
     /// A `move` starts where the fixture is now unless `from` says
     /// otherwise: capture that from pose memory before the effect's first
     /// tick, for every move, since a `from` naming an unbound focus point
@@ -776,6 +936,9 @@ impl EffectEngine {
         song_time: Option<Duration>,
     ) -> Result<&[DmxCommand], EffectError> {
         self.update_subphase.store(10, Ordering::Relaxed);
+        // What the rig shows is this frame from here, unless the caller
+        // crossing it with another engine's sets the blend after.
+        self.shown = None;
         self.current_time += dt;
         self.engine_elapsed += dt;
         self.last_song_time = song_time;
@@ -1169,6 +1332,13 @@ impl EffectEngine {
 
     /// Stop all active effects and reset per-song layer state
     pub fn stop_all_effects(&mut self) {
+        // The rig holds its last frame until the next one, so the view does
+        // too rather than going black: what it already shows (a loop
+        // break's fade starts the next song's show under it), else this
+        // engine's last frame, until the next frame's `update`.
+        if self.shown.is_none() {
+            self.shown = Some((self.last_merged_states.clone(), self.poses.clone()));
+        }
         // A clear releases pose memory: the next move starts from its target.
         self.poses.clear();
         self.goals.clear();

@@ -403,14 +403,15 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
     });
 
     let registry = engine.get_fixture_registry();
+    // What the rig shows: mid-crossfade, the blend going out (#555).
     let mut fixtures = crate::state::fixture_snapshots_with_cells(
-        &engine.get_fixture_states(),
+        engine.shown_fixture_states(),
         &has_dimmer,
         registry,
     );
     fill_dark_fixtures(&mut fixtures, registry.values());
 
-    let poses = crate::state::compute_pose_snapshots(engine.poses(), registry);
+    let poses = crate::state::compute_pose_snapshots(engine.shown_poses(), registry);
     Evaluation {
         time: at,
         fixtures,
