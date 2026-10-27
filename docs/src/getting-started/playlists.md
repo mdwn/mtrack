@@ -105,6 +105,26 @@ at the break. Stop or a seek cuts everything, the fading song included.
 The web UI's playlist editor keeps a playlist's transitions when it saves, and will not overwrite
 a playlist file that does not read; transitions are edited in the file.
 
+## Ambient light
+
+The profile's ambient light -- the show the rig plays between songs, see
+[Lighting Configuration](../lighting/configuration.md#ambient-light) -- can be set per playlist
+with a top-level `ambient:`. Its settings override the profile's one by one, so a playlist
+can swap the show and keep the timings:
+
+```yaml
+kind: playlist
+ambient:
+  show: lighting/festival_ambient.light
+  fade_in: 6s
+songs:
+- Opener
+- The slow one
+```
+
+`ambient: false` turns it off for the playlist. Switching playlists while nothing plays crosses
+straight into the new playlist's ambient light, or fades the old one out.
+
 ## See also
 
 Playlists can also be switched from outside the web UI:

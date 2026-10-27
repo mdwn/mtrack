@@ -27,6 +27,10 @@ pub struct Playlist {
     kind: super::kind::ConfigKind,
     /// The songs that belong to this playlist.
     songs: Vec<PlaylistEntry>,
+    /// Ambient light with this playlist: `false` for none, or settings
+    /// overriding the player's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ambient: Option<super::ambient::PlaylistAmbient>,
 }
 
 /// A song in a playlist: its name alone, or with its transitions.
@@ -283,7 +287,13 @@ impl Playlist {
         Playlist {
             kind: super::kind::ConfigKind::Playlist,
             songs: songs.iter().cloned().map(PlaylistEntry::Song).collect(),
+            ambient: None,
         }
+    }
+
+    /// The playlist's ambient light, as written.
+    pub fn ambient(&self) -> Option<&super::ambient::PlaylistAmbient> {
+        self.ambient.as_ref()
     }
 
     /// Parse a playlist from a YAML file.
@@ -344,6 +354,7 @@ impl Playlist {
         Playlist {
             kind: self.kind.clone(),
             songs,
+            ambient: self.ambient.clone(),
         }
     }
 }

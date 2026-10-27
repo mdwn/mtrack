@@ -79,6 +79,11 @@ impl Engine {
         let has_lighting = !dsl_lighting_shows.is_empty();
 
         if light_shows.is_empty() && !has_lighting {
+            // A song with no lights of its own leaves ambient light playing.
+            if dmx_engine.ambient_playing() {
+                ready_tx.send();
+                return Ok(());
+            }
             // A song with no lighting at all still has to evict the previous
             // song's state, or `status.lighting` and `get_timeline_cues()` keep
             // answering with that song's cues.
@@ -99,6 +104,10 @@ impl Engine {
             duration = song.duration_string(),
             "Playing song DMX."
         );
+
+        // The song's lights take over from ambient light, fading it out
+        // under the song's show.
+        dmx_engine.leave_ambient();
 
         // Register fixtures with the effects engine if lighting system is available
         if let Err(_e) = dmx_engine.register_venue_fixtures_safe() {

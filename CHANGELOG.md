@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Ambient light between songs**: `dmx.lighting.ambient` names a `.light` show the rig plays
+  while no song is -- at startup, and once a song ends or is stopped, after an optional `delay`
+  that holds the song's last frame. It fades in from whatever is lit over `fade_in` (2 s by
+  default), starts again from the top when its last effect ends, and fades out under the next
+  song's show over `fade_out` (1 s); a song with no lights leaves it playing, and a pause holds
+  the song's lights. A playlist's top-level `ambient:` overrides the settings one by one, or
+  `ambient: false` turns it off. The MCP `status` tool reports it as `ambient`.
 - **Playlist transitions: fading a looping song out under the next one (#546)**: a playlist
   entry's `fade_out: 1measure` (or `3s`, `6beats`) makes Play, Next or Previous on a looping song start the next song at once
   while the looping song plays on and fades out underneath it, instead of cutting in 10 ms. The
