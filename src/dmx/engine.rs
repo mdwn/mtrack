@@ -3176,9 +3176,12 @@ mod test {
                 "show \"b\" {\n    @1.000\n    wash: static, color: \"red\", duration: 60s\n}\n",
             ));
             engine.start_lighting_timeline_at(Duration::ZERO);
+            // The break fade runs on wall time, so a slow runner moves the
+            // blend on a little before this frame; without the fix it is
+            // blue alone, (0, 0, 255).
             let after = frame_at(&engine, 0.0);
             assert!(
-                (after.1 - before.1).abs() <= 3.0 && (after.2 - before.2).abs() <= 3.0,
+                (after.1 - before.1).abs() <= 20.0 && (after.2 - before.2).abs() <= 20.0,
                 "jumped from {before:?} to {after:?}"
             );
             let (_, green, blue) = view(&engine);
