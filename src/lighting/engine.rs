@@ -565,7 +565,9 @@ impl EffectEngine {
         // the DMX of each frame is: a multiplier one side has and the other
         // not is neutral there, not a level crossing from zero.
         let (old_resolved, new_resolved) = (
-            self.resolved_states(&outgoing.last_merged_states),
+            // What the outgoing engine shows: mid-crossfade itself (a loop
+            // break during a pass crossfade, #560), its own blend.
+            self.resolved_states(outgoing.shown_fixture_states()),
             self.resolved_states(&self.last_merged_states),
         );
         let (old_states, new_states) = (&old_resolved, &new_resolved);
@@ -607,9 +609,9 @@ impl EffectEngine {
             state.physical.tilt = intent(old.physical.tilt, new.physical.tilt);
             states.insert(name.clone(), state);
         }
-        let mut poses = outgoing.poses.clone();
+        let mut poses = outgoing.shown_poses().clone();
         for (name, pose) in &self.poses {
-            let blended = match outgoing.poses.get(name) {
+            let blended = match outgoing.shown_poses().get(name) {
                 Some(old) => Pose {
                     pan: lerp(old.pan, pose.pan),
                     tilt: lerp(old.tilt, pose.tilt),

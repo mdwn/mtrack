@@ -57,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Next during a loop crossfade fades the blend out, without a jump (#560)**: a loop break
+  started its fade from the newer loop pass alone, dropping the older pass mid-crossfade, so the
+  lights stepped once (74 of 255 on the rig) before fading. The older pass now carries on inside
+  the break's fade, crossing into the newer one as before -- its cues still firing -- until its
+  own crossfade ends. The web UI and `get_fixture_state` show the same.
 - **The web UI and `get_fixture_state` show a crossfade as it goes out (#555)**: during a loop
   crossfade or a loop break's fade, the rig gets a blend of the two shows, but the web UI's
   lighting view and the MCP `get_fixture_state` showed the incoming show alone -- at Next, black
