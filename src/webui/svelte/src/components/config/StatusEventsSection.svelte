@@ -38,6 +38,11 @@
       "statusEvents.playingEvents",
       "tooltips.statusEvents.playingEvents",
     ],
+    [
+      "auto_play_events",
+      "statusEvents.autoPlayEvents",
+      "tooltips.statusEvents.autoPlayEvents",
+    ],
   ];
 
   function defaultEvent(): MidiEvent {

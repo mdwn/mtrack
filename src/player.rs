@@ -388,6 +388,9 @@ pub struct Player {
     loop_break_to_prev: Arc<AtomicBool>,
     /// A playlist entry's `auto_play` waiting out its gap, if one is.
     auto_play: Arc<parking_lot::Mutex<AutoPlayState>>,
+    /// Ambient light's mode, kept here so an engine a reload brings in
+    /// takes it up.
+    ambient_mode: Arc<parking_lot::Mutex<dmx::engine::AmbientMode>>,
     /// A looping song fading out after a loop break (a playlist `fade_out`):
     /// when the break came and how long the fade lasts. The audio monitor
     /// reads it to carry the fade across a loop boundary.
@@ -643,6 +646,7 @@ impl Player {
             loop_break: Arc::new(AtomicBool::new(false)),
             loop_break_to_prev: Arc::new(AtomicBool::new(false)),
             auto_play: Arc::new(parking_lot::Mutex::new(AutoPlayState::default())),
+            ambient_mode: Arc::new(parking_lot::Mutex::new(Default::default())),
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
@@ -1041,6 +1045,9 @@ pub struct StatusEvents {
     idling_events: Vec<LiveEvent<'static>>,
     /// The events to emit to indicate that the player is currently playing.
     playing_events: Vec<LiveEvent<'static>>,
+    /// The events to emit, in place of the idling events, while an auto
+    /// play waits; empty for the idling events.
+    auto_play_events: Vec<LiveEvent<'static>>,
 }
 
 impl StatusEvents {
@@ -1053,9 +1060,22 @@ impl StatusEvents {
                 off_events: config.off_events()?,
                 idling_events: config.idling_events()?,
                 playing_events: config.playing_events()?,
+                auto_play_events: config.auto_play_events()?,
             }),
             None => None,
         })
+    }
+
+    /// The events that report the player's state: playing, an auto play
+    /// waiting to start (when it has events of its own), or idling.
+    fn current(&self, playing: bool, auto_play_waiting: bool) -> &[LiveEvent<'static>] {
+        if playing {
+            &self.playing_events
+        } else if auto_play_waiting && !self.auto_play_events.is_empty() {
+            &self.auto_play_events
+        } else {
+            &self.idling_events
+        }
     }
 }
 
@@ -2190,8 +2210,9 @@ mod test {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn ambient_light_plays_while_no_song_does() -> Result<(), Box<dyn Error>> {
+    /// A player whose one song, "Lit", has a red show of its own and whose
+    /// ambient light is blue, with the directory holding them.
+    async fn ambient_player() -> Result<(tempfile::TempDir, Arc<Player>), Box<dyn Error>> {
         // A song with a show of its own, long enough to pause and stop.
         let dir = tempfile::tempdir()?;
         let song_dir = dir.path().join("songs").join("lit");
@@ -2250,6 +2271,12 @@ mod test {
             None,
         )?;
         player.await_hardware_ready().await;
+        Ok((dir, player))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ambient_light_plays_while_no_song_does() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = ambient_player().await?;
         let engine = player.dmx_engine().expect("DMX engine should be present");
         let state = || engine.ambient_status().map(|s| s.state);
 
@@ -2271,6 +2298,42 @@ mod test {
         // A stop is between songs.
         player.stop().await;
         eventually(|| state() == Some("playing"), "ambient after a stop");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_ambient_mode_holds_it_over_a_song_or_keeps_it_off() -> Result<(), Box<dyn Error>> {
+        use crate::dmx::engine::AmbientMode;
+        let (_dir, player) = ambient_player().await?;
+        let engine = player.dmx_engine().expect("DMX engine should be present");
+        let report = || {
+            let report = engine.ambient_report();
+            (report.mode, report.state)
+        };
+        assert_eq!(player.ambient_mode(), AmbientMode::Auto, "starts in auto");
+        eventually(
+            || report() == (AmbientMode::Auto, "playing"),
+            "ambient at startup",
+        );
+
+        // On: ambient holds over the song.
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        player.set_ambient_mode(AmbientMode::On);
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(report(), (AmbientMode::On, "playing"), "on wins");
+
+        // Auto, mid-song: back to the song's lights.
+        player.set_ambient_mode(AmbientMode::Auto);
+        assert_eq!(report(), (AmbientMode::Auto, "off"));
+
+        // Off: a stop leaves the stage dark.
+        player.set_ambient_mode(AmbientMode::Off);
+        player.stop().await;
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(report(), (AmbientMode::Off, "off"));
+        assert_eq!(player.ambient_mode(), AmbientMode::Off);
         Ok(())
     }
 
@@ -2454,6 +2517,60 @@ mod test {
         assert!(!player.is_playing().await, "moving on calls it off");
         assert_eq!(current_name(&player).await, "Song 5");
         Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancelling_a_waiting_auto_play_stops_on_its_song() -> Result<(), Box<dyn Error>> {
+        let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 500ms\n- Song 5\n";
+        let player = make_test_player_with_playlist(yaml).await?;
+        assert!(!player.cancel_waiting_auto_play(), "nothing waiting");
+
+        player.next().await;
+        assert!(player.auto_play_status().is_some(), "waiting");
+        assert!(player.cancel_waiting_auto_play());
+        assert!(player.auto_play_status().is_none());
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(!player.is_playing().await, "called off");
+        assert_eq!(current_name(&player).await, "Song 3");
+        Ok(())
+    }
+
+    #[test]
+    fn status_events_show_a_waiting_auto_play_when_they_have_its_events() {
+        let parse = |yaml: &str| -> StatusEvents {
+            let config: config::StatusEvents = ::config::Config::builder()
+                .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+                .build()
+                .unwrap()
+                .try_deserialize()
+                .unwrap();
+            StatusEvents::new(Some(config)).unwrap().unwrap()
+        };
+        let cc = |value: u8| {
+            format!("[{{ type: control_change, channel: 16, controller: 2, value: {value} }}]")
+        };
+        let base = format!(
+            "off_events: {}\nidling_events: {}\nplaying_events: {}\n",
+            cc(0),
+            cc(1),
+            cc(2)
+        );
+        let value = |events: &[LiveEvent<'static>]| match events[0] {
+            LiveEvent::Midi {
+                message: midly::MidiMessage::Controller { value, .. },
+                ..
+            } => u8::from(value),
+            _ => panic!("a control change"),
+        };
+
+        let events = parse(&format!("{base}auto_play_events: {}\n", cc(3)));
+        assert_eq!(value(events.current(false, false)), 1, "idling");
+        assert_eq!(value(events.current(false, true)), 3, "auto play waiting");
+        assert_eq!(value(events.current(true, false)), 2, "playing");
+
+        // Without events of its own, a waiting auto play idles.
+        let events = parse(&base);
+        assert_eq!(value(events.current(false, true)), 1);
     }
 
     // --- resolve_playback_outcome tests ---

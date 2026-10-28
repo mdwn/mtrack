@@ -131,8 +131,14 @@ songs:
 - **The end of the list.** Next on the last song does not move, so does not start it again.
 - A song that failed does not lead into one that auto plays.
 - **Seeing it coming.** While a gap runs, the dashboard's playback card counts it down
-  ("Opener starts in 2s"), and the MCP `status` tool reports the song and how long until it
-  starts, as `auto_play: {song, starts_in_seconds}`.
+  ("Opener starts in 2s"), the MCP `status` tool reports the song and how long until it
+  starts, as `auto_play: {song, starts_in_seconds}`, and the gRPC `Status` as `auto_play`. A
+  MIDI controller's LED can show it too, with the profile's `status_events.auto_play_events`
+  (see [Hardware Profiles](../configuration/hardware-profiles.md)).
+- **Calling it off from a controller.** Cancel auto play calls off the wait and nothing else:
+  the player stays stopped on the song, and ambient light comes up as after a stop. It is the
+  gRPC `CancelAutoPlay` RPC, the OSC address `/mtrack/auto_play/cancel`, a MIDI controller's
+  `cancel_auto_play` event, and the MCP `cancel_auto_play` tool.
 - **In the web UI.** The playlist editor has an **Auto play** box on each song, with a gap field
   beside it once ticked: empty starts the song at once.
 
@@ -158,6 +164,11 @@ songs:
 
 `ambient: false` turns it off for the playlist. Switching playlists while nothing plays crosses
 straight into the new playlist's ambient light, or fades the old one out.
+
+The ambient **mode** -- `auto`, `on` (hold it now, over any song) or `off` -- is set while the
+player runs, from the dashboard or a controller; see
+[Ambient mode](../lighting/configuration.md#ambient-mode). `on` with a playlist that has
+`ambient: false` lights nothing.
 
 In the web UI's playlist editor, **Ambient light** picks the profile's, none, or the playlist's
 own; its own shows the show and timing fields, each left empty to keep the profile's.

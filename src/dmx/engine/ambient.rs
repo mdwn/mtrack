@@ -16,13 +16,17 @@
 //!
 //! The player says when it goes idle ([`Engine::idle_ambient`]); once the
 //! delay is up the effects loop fades from whatever is lit into the ambient
-//! show, on the wall clock, and keeps its time moving. A song with lights of
-//! its own fades out of it ([`Engine::leave_ambient`]); a song without
-//! leaves it playing.
+//! show, on the wall clock. A song with lights of its own fades out of it
+//! ([`Engine::leave_ambient`]); a song without leaves it playing.
+//!
+//! Ambient plays in an engine of its own, an overlay over the main one
+//! crossed with its frame at the overlay's level. So it can hold over a song
+//! whose show runs on underneath ([`AmbientMode::On`]), and fade back to
+//! that show at the point it has reached.
 
 use std::{
+    borrow::Cow,
     path::{Path, PathBuf},
-    sync::atomic::Ordering,
     time::{Duration, Instant},
 };
 
@@ -31,8 +35,48 @@ use tracing::{error, info};
 use super::Engine;
 use crate::{
     config::ambient::{PlaylistAmbient, ResolvedAmbient},
-    lighting::{parser::LightShow, timeline::LightingTimeline},
+    lighting::{
+        effects::{DmxCommand, EffectError},
+        parser::LightShow,
+        timeline::{LightingTimeline, TimelineUpdate},
+        EffectEngine,
+    },
 };
+
+/// What the operator asks of ambient light. Set at run time and not kept:
+/// every start is [`AmbientMode::Auto`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AmbientMode {
+    /// Between songs and under a song without lights, after its delay.
+    #[default]
+    Auto,
+    /// Now, over whatever plays -- a song's own show included -- until the
+    /// mode goes back to `Auto`.
+    On,
+    /// None: ambient playing fades out to dark. Songs light as ever.
+    Off,
+}
+
+impl AmbientMode {
+    /// The mode's name: `auto`, `on` or `off`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AmbientMode::Auto => "auto",
+            AmbientMode::On => "on",
+            AmbientMode::Off => "off",
+        }
+    }
+
+    /// The mode named `name` (`auto`, `on` or `off`, any case).
+    pub fn parse(name: &str) -> Option<AmbientMode> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(AmbientMode::Auto),
+            "on" => Some(AmbientMode::On),
+            "off" => Some(AmbientMode::Off),
+            _ => None,
+        }
+    }
+}
 
 /// Ambient light ready to play: its settings and its parsed shows.
 #[derive(Clone)]
@@ -44,30 +88,29 @@ pub(super) struct LoadedAmbient {
     shows: Vec<LightShow>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Phase {
-    /// Not playing, nor waiting to.
+    /// Not playing, nor waiting to (though it may still be fading out).
+    #[default]
     Off,
     /// Waiting to fade in at `at`.
     Pending { at: Instant },
-    /// Playing, its time counted from `started`, the start of this pass of
-    /// a show `length` long (zero for one that does not loop).
-    Playing { started: Instant, length: Duration },
+    /// Playing, or fading in.
+    Playing,
 }
 
 /// What the engine's ambient light is doing.
+#[derive(Default)]
 pub(super) struct AmbientState {
+    /// The ambient light the player's settings and the playlist's give.
     ambient: Option<LoadedAmbient>,
     phase: Phase,
-}
-
-impl Default for AmbientState {
-    fn default() -> Self {
-        AmbientState {
-            ambient: None,
-            phase: Phase::Off,
-        }
-    }
+    mode: AmbientMode,
+    /// A song with lights of its own is playing (or paused) under ambient.
+    song_lit: bool,
+    /// Between songs, what ambient covers -- the last song's frame -- is
+    /// gone, so ambient fading out leaves the stage dark.
+    under_dark: bool,
 }
 
 /// What ambient light is doing, for status.
@@ -79,37 +122,246 @@ pub struct AmbientStatus {
     pub state: &'static str,
 }
 
+/// Ambient light's mode and what it is doing, for status: present whatever
+/// the mode, so a surface can show it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmbientReport {
+    pub mode: AmbientMode,
+    /// The show file, when there is one to play.
+    pub show: Option<PathBuf>,
+    /// `playing`, `pending` (waiting out its delay), `off`, or
+    /// `unavailable` (on, with no show to play: none configured, or it does
+    /// not load).
+    pub state: &'static str,
+}
+
+/// An ambient level fading from `from` to `to` over `over`, from `started`.
+#[derive(Clone, Copy, Debug)]
+struct Level {
+    from: f64,
+    to: f64,
+    started: Instant,
+    over: Duration,
+}
+
+impl Level {
+    /// The level at `now`, 0.0 to 1.0.
+    fn at(&self, now: Instant) -> f64 {
+        if self.over.is_zero() {
+            return self.to;
+        }
+        let progress = (now.saturating_duration_since(self.started).as_secs_f64()
+            / self.over.as_secs_f64())
+        .min(1.0);
+        self.from + (self.to - self.from) * progress
+    }
+
+    /// Fades on from where it is now to `to`, at the pace of a whole fade
+    /// lasting `full`: a fade turned back part way takes as long to return
+    /// as it had run.
+    fn toward(&mut self, now: Instant, to: f64, full: Duration) {
+        let from = self.at(now);
+        *self = Level {
+            from,
+            to,
+            started: now,
+            over: full.mul_f64((to - from).abs()),
+        };
+    }
+}
+
+/// Ambient light playing over the main engine: its own engine and timeline
+/// on the wall clock, crossed with what is under it at its level.
+pub(super) struct Overlay {
+    ambient: LoadedAmbient,
+    engine: EffectEngine,
+    timeline: LightingTimeline,
+    /// The start of this pass of the show.
+    started: Instant,
+    /// How long one pass lasts (zero for a show that does not loop).
+    length: Duration,
+    level: Level,
+    /// The ambient show this one replaced, still under it while it fades in.
+    inner: Option<Box<Overlay>>,
+}
+
+/// What one overlay's timeline fired in a tick: a restart's state (the show
+/// starting again) and the cues now due.
+struct OverlayUpdate {
+    restart: Option<TimelineUpdate>,
+    update: TimelineUpdate,
+}
+
+impl Overlay {
+    fn new(ambient: LoadedAmbient, mut engine: EffectEngine, now: Instant) -> Overlay {
+        let mut timeline = LightingTimeline::new(ambient.shows.clone());
+        let length = timeline.show_end();
+        timeline.start();
+        engine.set_tempo_map(timeline.tempo_map().cloned());
+        let level = Level {
+            from: 0.0,
+            to: 1.0,
+            started: now,
+            over: ambient.settings.fade_in,
+        };
+        Overlay {
+            ambient,
+            engine,
+            timeline,
+            started: now,
+            length,
+            level,
+            inner: None,
+        }
+    }
+
+    /// Moves this overlay's time to `now` -- starting the show again at its
+    /// end, as a looping song does -- and an inner one's, collecting what
+    /// they fire: this one's first.
+    fn advance(&mut self, now: Instant, out: &mut Vec<OverlayUpdate>) {
+        let mut elapsed = now.saturating_duration_since(self.started);
+        let mut restart = None;
+        if !self.length.is_zero() && elapsed >= self.length {
+            let passes = (elapsed.as_nanos() / self.length.as_nanos()) as u32;
+            self.started += self.length * passes;
+            elapsed = now.saturating_duration_since(self.started);
+            // Its first cues fire before this frame renders.
+            restart = Some(if elapsed.is_zero() {
+                self.timeline.start();
+                TimelineUpdate::default()
+            } else {
+                self.timeline.start_at(elapsed)
+            });
+        }
+        let update = self.timeline.update(elapsed);
+        out.push(OverlayUpdate { restart, update });
+        if let Some(inner) = self.inner.as_mut() {
+            inner.advance(now, out);
+        }
+    }
+
+    /// Applies what [`Self::advance`] collected, its groups resolved, in
+    /// the same order.
+    fn apply(&mut self, updates: &mut impl Iterator<Item = OverlayUpdate>) {
+        if let Some(OverlayUpdate { restart, update }) = updates.next() {
+            if let Some(restart) = restart {
+                self.engine.stop_all_effects();
+                apply_update(&mut self.engine, restart);
+            }
+            apply_update(&mut self.engine, update);
+        }
+        if let Some(inner) = self.inner.as_mut() {
+            inner.apply(updates);
+        }
+    }
+
+    /// This overlay's frame crossed over `under` (the commands below it and
+    /// the engine showing them) at its level, with an inner overlay crossed
+    /// in between; what the rig shows is left as this engine's shown state.
+    /// The inner overlay goes once this one is all the way in.
+    fn render_over(
+        &mut self,
+        dt: Duration,
+        now: Instant,
+        under: &[DmxCommand],
+        under_engine: &EffectEngine,
+    ) -> Result<Vec<DmxCommand>, EffectError> {
+        let Overlay {
+            engine,
+            inner,
+            level,
+            started,
+            ..
+        } = self;
+        let (base, base_engine): (Cow<[DmxCommand]>, &EffectEngine) = match inner.as_deref_mut() {
+            Some(inner) => {
+                let commands = inner.render_over(dt, now, under, under_engine)?;
+                (Cow::Owned(commands), &inner.engine)
+            }
+            None => (Cow::Borrowed(under), under_engine),
+        };
+        let t = level.at(now);
+        let own = engine
+            .update(dt, Some(now.saturating_duration_since(*started)))?
+            .to_vec();
+        let blended = engine.crossfade_commands(&base, &own, t);
+        let shown = engine.crossfade_states(base_engine, t);
+        engine.set_shown(Some(shown));
+        if t >= 1.0 {
+            self.inner = None;
+        }
+        Ok(blended)
+    }
+
+    /// Faded all the way out: its last frame is rendered, and it can go.
+    fn faded_out(&self, now: Instant) -> bool {
+        self.level.to <= 0.0 && self.level.at(now) <= 0.0
+    }
+
+    /// Takes the main engine's rig, as this one's inner overlay does.
+    fn adopt_rig(&mut self, main: &EffectEngine) {
+        self.engine.adopt_rig(main);
+        if let Some(inner) = self.inner.as_mut() {
+            inner.adopt_rig(main);
+        }
+    }
+}
+
+/// Applies a timeline update, its groups resolved, to `engine`, as
+/// [`Engine::apply_timeline_update`] does to the main one.
+fn apply_update(engine: &mut EffectEngine, update: TimelineUpdate) {
+    for cmd in &update.layer_commands {
+        engine.apply_layer_command(cmd);
+    }
+    for sequence_name in &update.stop_sequences {
+        engine.stop_sequence(sequence_name);
+    }
+    let mut with_elapsed: Vec<_> = update.effects_with_elapsed.into_values().collect();
+    with_elapsed.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
+    for (effect, elapsed) in with_elapsed {
+        if let Err(e) = engine.start_effect_with_elapsed(effect, elapsed) {
+            error!("Failed to start ambient effect with elapsed time: {}", e);
+        }
+    }
+    let mut effects = update.effects;
+    effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
+    for effect in effects {
+        if let Err(e) = engine.start_effect(effect) {
+            error!("Failed to start ambient effect: {}", e);
+        }
+    }
+}
+
 impl Engine {
     /// The player has gone idle: play the ambient light the player's
     /// settings and `playlist`'s give, once its delay is up -- or at once,
     /// with `hold` false (at startup, or on a playlist switch). Ambient
     /// already playing plays on if nothing about it changed, and crosses
     /// into the new show if it did. With no ambient light, any playing fades
-    /// out.
+    /// out. Mode `On` skips the delay; mode `Off` plays nothing.
     pub fn idle_ambient(&self, playlist: Option<&PlaylistAmbient>, hold: bool) {
         let loaded = self.load_ambient(playlist);
         let mut state = self.ambient.lock();
+        state.song_lit = false;
         let now = Instant::now();
-        match (state.phase, loaded) {
-            (Phase::Playing { .. }, Some(loaded))
-                if state.ambient.as_ref().is_some_and(|a| a.same_as(&loaded)) => {}
-            (Phase::Playing { .. }, Some(loaded)) => {
-                info!(show = %loaded.path.display(), "Ambient light changes show.");
-                state.phase = Phase::Pending { at: now };
+        match (state.mode, state.phase, loaded) {
+            (AmbientMode::Off, _, loaded) => {
+                state.phase = Phase::Off;
+                state.ambient = loaded;
+            }
+            (AmbientMode::On, _, Some(loaded)) | (_, Phase::Playing, Some(loaded)) => {
+                // The same show plays on; another crosses in.
+                self.raise_overlay(&loaded, now);
+                state.phase = Phase::Playing;
                 state.ambient = Some(loaded);
             }
-            (Phase::Playing { .. }, None) => {
-                let fade = state
-                    .ambient
-                    .as_ref()
-                    .map_or(Duration::ZERO, |a| a.settings.fade_out);
+            (_, Phase::Playing, None) | (AmbientMode::On, _, None) => {
                 info!("Ambient light fades out: none for this playlist.");
-                self.begin_break_fade(fade);
-                self.effect_engine.lock().set_tempo_map(None);
+                self.lower_overlay(&mut state, now);
                 state.phase = Phase::Off;
                 state.ambient = None;
             }
-            (_, Some(loaded)) => {
+            (AmbientMode::Auto, _, Some(loaded)) => {
                 let delay = if hold {
                     loaded.settings.delay
                 } else {
@@ -123,7 +375,7 @@ impl Engine {
                 state.phase = Phase::Pending { at };
                 state.ambient = Some(loaded);
             }
-            (_, None) => {
+            (AmbientMode::Auto, _, None) => {
                 state.phase = Phase::Off;
                 state.ambient = None;
             }
@@ -132,24 +384,65 @@ impl Engine {
 
     /// A song with lights of its own is starting: ambient light playing
     /// fades out under its show, over its `fade_out`, and any waiting is
-    /// called off. Returns whether ambient was playing.
+    /// called off -- unless the mode is `On`, which holds it over the song.
+    /// Returns whether ambient was playing.
     pub(super) fn leave_ambient(&self) -> bool {
         let mut state = self.ambient.lock();
-        let was_playing = matches!(state.phase, Phase::Playing { .. });
+        state.song_lit = true;
+        state.under_dark = false;
+        let was_playing = state.phase == Phase::Playing;
+        if state.mode == AmbientMode::On {
+            return was_playing;
+        }
         if was_playing {
-            let fade = state
-                .ambient
-                .as_ref()
-                .map_or(Duration::ZERO, |a| a.settings.fade_out);
-            self.begin_break_fade(fade);
+            self.lower_overlay(&mut state, Instant::now());
         }
         state.phase = Phase::Off;
         was_playing
     }
 
+    /// Sets ambient light's mode. `On` fades ambient in now, over its
+    /// `fade_in`, and holds it over any song; `Off` fades it out, over its
+    /// `fade_out`, to dark between songs and to the song's show during one;
+    /// `Auto` goes back to playing it between songs, crossing back to a
+    /// song playing under it.
+    pub fn set_ambient_mode(&self, mode: AmbientMode) {
+        let mut state = self.ambient.lock();
+        info!(mode = mode.as_str(), "Ambient light mode set.");
+        state.mode = mode;
+        let now = Instant::now();
+        match mode {
+            AmbientMode::On => {
+                if let Some(ambient) = state.ambient.clone() {
+                    self.raise_overlay(&ambient, now);
+                    state.phase = Phase::Playing;
+                }
+            }
+            AmbientMode::Off => {
+                self.lower_overlay(&mut state, now);
+                state.phase = Phase::Off;
+            }
+            AmbientMode::Auto if state.song_lit => {
+                self.lower_overlay(&mut state, now);
+                state.phase = Phase::Off;
+            }
+            AmbientMode::Auto => {
+                // Between songs: ambient, as when the player goes idle.
+                if state.phase == Phase::Off && state.ambient.is_some() {
+                    state.phase = Phase::Pending { at: now };
+                }
+            }
+        }
+    }
+
+    /// Ambient light's mode.
+    pub fn ambient_mode(&self) -> AmbientMode {
+        self.ambient.lock().mode
+    }
+
     /// Whether ambient light is playing.
     pub(super) fn ambient_playing(&self) -> bool {
-        matches!(self.ambient.lock().phase, Phase::Playing { .. })
+        self.ambient.lock().phase == Phase::Playing
     }
 
     /// What ambient light is doing, if anything.
@@ -158,7 +451,7 @@ impl Engine {
         let state_name = match state.phase {
             Phase::Off => return None,
             Phase::Pending { .. } => "pending",
-            Phase::Playing { .. } => "playing",
+            Phase::Playing => "playing",
         };
         state.ambient.as_ref().map(|a| AmbientStatus {
             show: a.path.clone(),
@@ -166,68 +459,172 @@ impl Engine {
         })
     }
 
-    /// One effects-loop tick of ambient light, before the song time is
-    /// read: start it once its delay is up, and move its time on.
-    pub(super) fn tick_ambient(&self) {
-        let mut state = self.ambient.lock();
-        let now = Instant::now();
-        match state.phase {
-            Phase::Pending { at } if now >= at => {
-                let Some(ambient) = state.ambient.clone() else {
-                    state.phase = Phase::Off;
-                    return;
-                };
-                let length = self.start_ambient(&ambient);
-                state.phase = Phase::Playing {
-                    started: now,
-                    length,
-                };
-            }
-            Phase::Playing { started, length } => {
-                // Ambient has no audio to wait for: its time is the delayed
-                // time base's from the moment it starts.
-                let mut elapsed = now.duration_since(started);
-                if !length.is_zero() && elapsed >= length {
-                    // The show is over: it starts again, as a looping
-                    // song's does, its first cues firing before this
-                    // frame renders.
-                    let passes = (elapsed.as_nanos() / length.as_nanos()) as u32;
-                    let started = started + length * passes;
-                    elapsed = now.duration_since(started);
-                    state.phase = Phase::Playing { started, length };
-                    self.update_song_time(elapsed + self.playback_delay);
-                    self.start_lighting_timeline_at(elapsed + self.playback_delay);
-                } else {
-                    self.update_song_time(elapsed + self.playback_delay);
-                }
-            }
-            _ => {}
+    /// Ambient light's mode and what it is doing.
+    pub fn ambient_report(&self) -> AmbientReport {
+        let state = self.ambient.lock();
+        let state_name = match state.phase {
+            // On, and still off: there is no show to play.
+            Phase::Off if state.mode == AmbientMode::On => "unavailable",
+            Phase::Off => "off",
+            Phase::Pending { .. } => "pending",
+            Phase::Playing => "playing",
+        };
+        AmbientReport {
+            mode: state.mode,
+            show: state.ambient.as_ref().map(|a| a.path.clone()),
+            state: state_name,
         }
     }
 
-    /// Fades from whatever is lit into `ambient`'s show, over its `fade_in`.
-    /// Returns how long one pass of the show lasts: when its last effect
-    /// ends, after which it starts again.
-    fn start_ambient(&self, ambient: &LoadedAmbient) -> Duration {
+    /// One effects-loop tick of ambient light, before the frame renders:
+    /// start it once its delay is up, move its time on, and once it is all
+    /// that shows between songs, clear what it covers.
+    pub(super) fn tick_ambient(&self) {
+        let mut state = self.ambient.lock();
+        let now = Instant::now();
+        if let Phase::Pending { at } = state.phase {
+            if now >= at {
+                match state.ambient.clone() {
+                    Some(ambient) => {
+                        self.raise_overlay(&ambient, now);
+                        state.phase = Phase::Playing;
+                    }
+                    None => state.phase = Phase::Off,
+                }
+            }
+        }
+        self.advance_overlay(now);
+        if state.phase == Phase::Playing && !state.song_lit && !state.under_dark {
+            let full = self
+                .ambient_overlay
+                .lock()
+                .as_ref()
+                .is_some_and(|o| o.level.at(now) >= 1.0);
+            if full {
+                self.darken_under(Duration::ZERO);
+                state.under_dark = true;
+            }
+        }
+    }
+
+    /// Renders ambient light over the main engine's frame `under`, when it
+    /// is playing or fading, and leaves what the rig shows -- the blend --
+    /// on the main engine for the web UI and `get_fixture_state`. `None`
+    /// when there is no ambient to cross in.
+    pub(super) fn render_ambient(
+        &self,
+        effect_engine: &mut EffectEngine,
+        dt: Duration,
+        under: &[DmxCommand],
+    ) -> Result<Option<Vec<DmxCommand>>, EffectError> {
+        let mut overlay = self.ambient_overlay.lock();
+        let Some(o) = overlay.as_mut() else {
+            return Ok(None);
+        };
+        let now = Instant::now();
+        let blended = o.render_over(dt, now, under, effect_engine)?;
+        effect_engine.set_shown(Some((
+            o.engine.shown_fixture_states().clone(),
+            o.engine.shown_poses().clone(),
+        )));
+        if o.faded_out(now) {
+            *overlay = None;
+        }
+        Ok(Some(blended))
+    }
+
+    /// The main engine's rig changed (a venue registration): ambient's
+    /// engine follows it.
+    pub(super) fn ambient_follows_rig(&self, main: &EffectEngine) {
+        if let Some(o) = self.ambient_overlay.lock().as_mut() {
+            o.adopt_rig(main);
+        }
+    }
+
+    /// Fades ambient in to `ambient`: the overlay playing it rises from
+    /// where it is, or a new one crosses in over whatever plays, over its
+    /// `fade_in`.
+    fn raise_overlay(&self, ambient: &LoadedAmbient, now: Instant) {
+        if let Some(o) = self
+            .ambient_overlay
+            .lock()
+            .as_mut()
+            .filter(|o| o.ambient.same_as(ambient))
+        {
+            o.level.toward(now, 1.0, ambient.settings.fade_in);
+            return;
+        }
         info!(show = %ambient.path.display(), "Ambient light fades in.");
-        self.begin_break_fade(ambient.settings.fade_in);
-        // Whatever the last song left -- its file watcher, its MIDI DMX, its
-        // song-time writers -- is done with.
+        // Locked in the effects loop's order: the engine, then the overlay.
+        let engine = self.effect_engine.lock().sibling();
+        let mut fresh = Overlay::new(ambient.clone(), engine, now);
+        let mut overlay = self.ambient_overlay.lock();
+        fresh.inner = overlay.take().map(Box::new);
+        *overlay = Some(fresh);
+    }
+
+    /// Fades ambient out from where it is, over its `fade_out`. Between
+    /// songs, a last song's frame still under it fades to dark with it.
+    fn lower_overlay(&self, state: &mut AmbientState, now: Instant) {
+        let fade = {
+            let mut overlay = self.ambient_overlay.lock();
+            let Some(o) = overlay.as_mut() else {
+                return;
+            };
+            let fade = o.ambient.settings.fade_out;
+            o.level.toward(now, 0.0, fade);
+            fade
+        };
+        if !state.song_lit && !state.under_dark {
+            self.darken_under(fade);
+            state.under_dark = true;
+        }
+    }
+
+    /// Fades the main engine to dark over `fade`: whatever the last song
+    /// left -- its show, file watcher, MIDI DMX and tempo -- is done with.
+    fn darken_under(&self, fade: Duration) {
+        self.begin_break_fade(fade);
         self.watcher_handle.lock().take();
         self.midi_dmx_playbacks.lock().clear();
-        self.begin_playback_generation();
-        *self.timeline_cancel_handle.lock() = None;
-        self.timeline_finished.store(true, Ordering::Relaxed);
+        self.effect_engine.lock().set_tempo_map(None);
+    }
 
-        let timeline = LightingTimeline::new(ambient.shows.clone());
-        let length = timeline.show_end();
-        self.effect_engine
-            .lock()
-            .set_tempo_map(timeline.tempo_map().cloned());
-        *self.current_song_timeline.lock() = Some(timeline);
-        self.update_song_time(self.playback_delay);
-        self.start_lighting_timeline_at(self.playback_delay);
-        length
+    /// Moves the overlay's time on and starts what its timeline fires, its
+    /// groups resolved with no overlay lock held, as for the outgoing pass.
+    fn advance_overlay(&self, now: Instant) {
+        let mut updates = Vec::new();
+        {
+            let mut overlay = self.ambient_overlay.lock();
+            let Some(o) = overlay.as_mut() else {
+                return;
+            };
+            o.advance(now, &mut updates);
+        }
+        let mut resolved = updates
+            .into_iter()
+            .map(|mut u| {
+                if let Some(restart) = u.restart.as_mut() {
+                    self.resolve_update_groups(restart);
+                }
+                self.resolve_update_groups(&mut u.update);
+                u
+            })
+            .collect::<Vec<_>>()
+            .into_iter();
+        if let Some(o) = self.ambient_overlay.lock().as_mut() {
+            o.apply(&mut resolved);
+        }
+    }
+
+    fn resolve_update_groups(&self, update: &mut TimelineUpdate) {
+        update.effects = std::mem::take(&mut update.effects)
+            .into_iter()
+            .map(|effect| self.resolve_effect_groups(effect))
+            .collect();
+        for (effect, _) in update.effects_with_elapsed.values_mut() {
+            *effect = self.resolve_effect_groups(effect.clone());
+        }
     }
 
     /// Resolves and reads the ambient light for `playlist`, `None` when there
@@ -548,5 +945,183 @@ mod tests {
         assert_eq!(engine.ambient_status().unwrap().state, "playing");
         assert_eq!(tick(&engine), (0.0, 0.0, 255.0));
         Ok(())
+    }
+
+    /// The wash as the rig shows it to the web UI: (red, green, blue), 0-1.
+    fn shown(engine: &Engine) -> (f64, f64, f64) {
+        let effect_engine = engine.effect_engine.lock();
+        let state = effect_engine.shown_fixture_states().get("wash").cloned();
+        let value = |channel: &str| {
+            state
+                .as_ref()
+                .and_then(|s| s.channels.get(channel))
+                .map_or(0.0, |c| c.value)
+        };
+        (value("red"), value("green"), value("blue"))
+    }
+
+    /// Red for a second, then green.
+    const RED_THEN_GREEN: &str =
+        "show \"song\" {\n    @0.000\n    wash: static, color: \"red\", duration: 1s\n    \
+                                  @1.000\n    wash: static, color: \"green\", duration: 60s\n}\n";
+
+    #[test]
+    fn on_holds_over_a_song_and_auto_crosses_back_where_it_is() -> Result<(), Box<dyn Error>> {
+        let (_dir, engine) = ambient_engine(BLUE, ("5s", "200ms", "200ms"))?;
+        // Idle at startup, its delay still to run when the song starts.
+        engine.idle_ambient(None, true);
+        start_song(&engine, RED_THEN_GREEN);
+        assert_eq!(song_frame(&engine, 0.1), (255.0, 0.0, 0.0));
+
+        // On: ambient fades up over the song, with no delay.
+        engine.set_ambient_mode(AmbientMode::On);
+        let first = song_frame(&engine, 0.1);
+        assert!(first.0 > 200.0, "fades from the song: {first:?}");
+        sleep(Duration::from_millis(250));
+        assert_eq!(song_frame(&engine, 0.35), (0.0, 0.0, 255.0));
+        let view = shown(&engine);
+        assert!(
+            view.2 > 0.99 && view.0 < 0.01,
+            "the view shows ambient: {view:?}"
+        );
+        assert_eq!(engine.ambient_report().state, "playing");
+
+        // The song's show runs on underneath: back to Auto, it crosses to
+        // where the song is now, green.
+        assert_eq!(song_frame(&engine, 1.5), (0.0, 0.0, 255.0));
+        engine.set_ambient_mode(AmbientMode::Auto);
+        assert_eq!(engine.ambient_report().state, "off");
+        let first = song_frame(&engine, 1.5);
+        assert!(first.2 > 200.0, "fades from ambient: {first:?}");
+        sleep(Duration::from_millis(250));
+        assert_eq!(song_frame(&engine, 1.75), (0.0, 255.0, 0.0));
+        let view = shown(&engine);
+        assert!(
+            view.1 > 0.99 && view.2 < 0.01,
+            "the view shows the song: {view:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn on_wins_over_a_song_that_starts() -> Result<(), Box<dyn Error>> {
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "0s"))?;
+        engine.set_ambient_mode(AmbientMode::On);
+        engine.idle_ambient(None, true);
+        assert_eq!(tick(&engine), (0.0, 0.0, 255.0));
+        start_song(&engine, RED);
+        assert_eq!(engine.ambient_report().state, "playing");
+        assert_eq!(song_frame(&engine, 0.5), (0.0, 0.0, 255.0));
+
+        // The song ends with ambient still on; the next idle keeps it.
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        assert_eq!(tick(&engine), (0.0, 0.0, 255.0));
+        Ok(())
+    }
+
+    #[test]
+    fn off_fades_ambient_out_to_dark_and_keeps_it_off() -> Result<(), Box<dyn Error>> {
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "300ms"))?;
+        start_song(&engine, RED);
+        song_frame(&engine, 0.5);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        assert_eq!(tick(&engine), (0.0, 0.0, 255.0));
+
+        engine.set_ambient_mode(AmbientMode::Off);
+        let report = engine.ambient_report();
+        assert_eq!((report.mode, report.state), (AmbientMode::Off, "off"));
+        let first = tick(&engine);
+        assert!(first.2 > 200.0, "fades from ambient: {first:?}");
+        sleep(Duration::from_millis(350));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0), "dark, not the last song");
+
+        // Going idle again plays nothing.
+        engine.idle_ambient(None, true);
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
+
+        // A song lights as ever.
+        start_song(&engine, GREEN);
+        assert_eq!(song_frame(&engine, 0.1), (0.0, 255.0, 0.0));
+
+        // Back to Auto between songs: ambient comes up.
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        engine.set_ambient_mode(AmbientMode::Auto);
+        assert_eq!(tick(&engine), (0.0, 0.0, 255.0));
+        Ok(())
+    }
+
+    #[test]
+    fn off_while_fading_in_takes_the_last_songs_frame_dark_too() -> Result<(), Box<dyn Error>> {
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "2s", "200ms"))?;
+        start_song(&engine, RED);
+        song_frame(&engine, 0.5);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        tick(&engine);
+        sleep(Duration::from_millis(200));
+        let mid = tick(&engine);
+        assert!(mid.0 > 100.0 && mid.2 > 0.0, "part way in: {mid:?}");
+
+        engine.set_ambient_mode(AmbientMode::Off);
+        sleep(Duration::from_millis(300));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn on_with_no_show_to_play_says_so() -> Result<(), Box<dyn Error>> {
+        let (_dir, engine) = ambient_engine("show \"ambient\" {", ("0s", "0s", "0s"))?;
+        engine.idle_ambient(None, false);
+        assert_eq!(engine.ambient_report().state, "off");
+        engine.set_ambient_mode(AmbientMode::On);
+        let report = engine.ambient_report();
+        assert_eq!(
+            (report.mode, report.state),
+            (AmbientMode::On, "unavailable")
+        );
+        assert_eq!(report.show, None);
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn ambient_follows_a_venue_reregistration() -> Result<(), Box<dyn Error>> {
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "0s"))?;
+        engine.idle_ambient(None, false);
+        assert_eq!(tick(&engine), (0.0, 0.0, 255.0));
+
+        // The wash moves to channels 4-6.
+        let mut channels = std::collections::HashMap::new();
+        for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+            channels.insert(name.to_string(), offset);
+        }
+        {
+            let mut main = engine.effect_engine.lock();
+            main.replace_fixtures(vec![crate::lighting::effects::FixtureInfo::new(
+                "wash".to_string(),
+                5,
+                4,
+                "Generic".to_string(),
+                channels,
+                None,
+            )]);
+            engine.ambient_follows_rig(&main);
+        }
+        engine.effects_loop_tick();
+        let universe = engine.get_universe(5).unwrap();
+        assert_eq!(universe.get_target_value(5), 255.0);
+        Ok(())
+    }
+
+    #[test]
+    fn modes_parse_and_name_themselves() {
+        for mode in [AmbientMode::Auto, AmbientMode::On, AmbientMode::Off] {
+            assert_eq!(AmbientMode::parse(mode.as_str()), Some(mode));
+        }
+        assert_eq!(AmbientMode::parse(" ON "), Some(AmbientMode::On));
+        assert_eq!(AmbientMode::parse("dim"), None);
     }
 }

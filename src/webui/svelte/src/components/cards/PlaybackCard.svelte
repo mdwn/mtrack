@@ -14,7 +14,7 @@
      * -->
 <script lang="ts">
   import { Code, ConnectError } from "@connectrpc/connect";
-  import { playbackStore } from "../../lib/ws/stores";
+  import { playbackStore, type AmbientMode } from "../../lib/ws/stores";
   import { playerClient } from "../../lib/grpc/client";
   import { sectionColor } from "../../lib/sectionColors";
   import BeatIndicator from "./BeatIndicator.svelte";
@@ -90,6 +90,16 @@
       }
     } finally {
       loading = false;
+    }
+  }
+
+  // Ambient mode is a show control, like transport: open while locked.
+  async function setAmbientMode(mode: AmbientMode) {
+    try {
+      await playerClient.setAmbientMode({ mode });
+    } catch (e) {
+      console.error("set ambient mode failed:", e);
+      showError(get(t)("playback.error.ambientMode"));
     }
   }
 
@@ -405,15 +415,38 @@
       {#if $playbackStore.looping}
         <span class="badge badge--ctrl">LOOP</span>
       {/if}
-      {#if $playbackStore.ambient}
+      {#if $playbackStore.ambient && $playbackStore.ambient.state !== "off"}
         <span
           class="badge"
           data-testid="ambient-badge"
-          title={$playbackStore.ambient.show}
+          title={$playbackStore.ambient.show ?? ""}
           >{$playbackStore.ambient.state === "playing"
             ? $t("playback.ambientPlaying")
-            : $t("playback.ambientPending")}</span
+            : $playbackStore.ambient.state === "pending"
+              ? $t("playback.ambientPending")
+              : $t("playback.ambientUnavailable")}</span
         >
+      {/if}
+      {#if $playbackStore.ambient}
+        <div
+          class="playback-card__ambient-mode"
+          role="group"
+          aria-label={$t("playback.ambientMode")}
+          title={$t("playback.ambientModeHint")}
+          data-testid="ambient-mode"
+        >
+          {#each ["auto", "on", "off"] as const as mode (mode)}
+            <button
+              type="button"
+              class="playback-card__ambient-btn"
+              class:active={$playbackStore.ambient.mode === mode}
+              aria-pressed={$playbackStore.ambient.mode === mode}
+              data-testid={`ambient-mode-${mode}`}
+              onclick={() => setAmbientMode(mode)}
+              >{$t(`playback.ambientModes.${mode}`)}</button
+            >
+          {/each}
+        </div>
       {/if}
     </div>
 
@@ -710,6 +743,31 @@
   .playback-card__auto-play-hint {
     margin-left: 8px;
     color: var(--nc-fg-3);
+  }
+  .playback-card__ambient-mode {
+    display: inline-flex;
+    border: 1px solid var(--nc-border-2);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .playback-card__ambient-btn {
+    border: none;
+    background: var(--card-bg);
+    color: var(--nc-fg-3);
+    font-family: var(--nc-font-sans);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 4px 8px;
+    cursor: pointer;
+  }
+  .playback-card__ambient-btn + .playback-card__ambient-btn {
+    border-left: 1px solid var(--nc-border-2);
+  }
+  .playback-card__ambient-btn.active {
+    background: var(--nc-cyan-600);
+    color: var(--card-bg);
   }
   :global(.nc--dark) .playback-card__state--playing {
     color: var(--nc-pink-300);

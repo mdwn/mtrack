@@ -328,9 +328,11 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 "song": song,
                 "starts_in_ms": starts_in.as_millis() as u64,
             })),
-            "ambient": player.dmx_engine().and_then(|dmx| dmx.ambient_status()).map(|status| json!({
-                "show": status.show.display().to_string(),
-                "state": status.state,
+            // With a DMX engine, whatever the mode, so the card can show it.
+            "ambient": player.dmx_engine().map(|dmx| dmx.ambient_report()).map(|report| json!({
+                "mode": report.mode.as_str(),
+                "show": report.show.map(|show| show.display().to_string()),
+                "state": report.state,
             })),
         });
 
@@ -1202,6 +1204,75 @@ metronome: {}
         let system = crate::lighting::system::LightingSystem::new();
         let tags = get_venue_fixture_tags(&system);
         assert!(tags.is_empty());
+    }
+
+    #[tokio::test]
+    async fn playback_poller_reports_the_ambient_mode_whatever_it_is() {
+        let engine = crate::dmx::engine::Engine::new(
+            &crate::config::Dmx::new(
+                None,
+                None,
+                Some(9010),
+                vec![crate::config::Universe::new(1, "u".to_string())],
+                None,
+            ),
+            None,
+            None,
+            crate::dmx::ola_client::OlaClientFactory::create_mock_client(),
+        )
+        .unwrap();
+        let songs = Arc::new(Songs::new(HashMap::from([(
+            "Song A".to_string(),
+            Arc::new(Song::new_for_test("Song A", &["track1"])),
+        )])));
+        let pl = playlist::Playlist::new(
+            "test",
+            &crate::config::Playlist::new(&["Song A".to_string()]),
+            songs,
+        )
+        .unwrap();
+        let devices = PlayerDevices {
+            audio: None,
+            mappings: None,
+            midi: None,
+            dmx_engine: Some(Arc::new(engine)),
+            sample_engine: None,
+            trigger_engine: None,
+        };
+        let player = Arc::new(
+            crate::player::Player::new_with_devices(
+                devices,
+                HashMap::from([("test".to_string(), pl)]),
+                "test".to_string(),
+                None,
+            )
+            .unwrap(),
+        );
+        let (tx, mut rx) = broadcast::channel(16);
+        let handle = tokio::spawn(playback_poller(player.clone(), tx));
+        let mut next = async || -> serde_json::Value {
+            let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("timed out waiting for playback message")
+                .expect("recv error");
+            serde_json::from_str(&msg).unwrap()
+        };
+
+        // Off and idle with no show: still there, for the mode.
+        let parsed = next().await;
+        assert_eq!(parsed["ambient"]["mode"], "auto", "{parsed}");
+        assert_eq!(parsed["ambient"]["state"], "off");
+        assert!(parsed["ambient"]["show"].is_null());
+
+        player.set_ambient_mode(crate::dmx::engine::AmbientMode::On);
+        let parsed = loop {
+            let parsed = next().await;
+            if parsed["ambient"]["mode"] == "on" {
+                break parsed;
+            }
+        };
+        assert_eq!(parsed["ambient"]["state"], "unavailable", "{parsed}");
+        handle.abort();
     }
 
     #[tokio::test]

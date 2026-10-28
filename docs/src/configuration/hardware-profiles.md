@@ -281,6 +281,27 @@ controllers:
       value: 7
 ```
 
+### Ambient Light and Auto Play
+
+MIDI controllers can also set the [ambient mode](../lighting/configuration.md#ambient-mode) and
+call off a song waiting to [auto play](../getting-started/playlists.md#auto-play). Each event is
+optional:
+
+```yaml
+controllers:
+  - kind: midi
+    play: { type: control_change, channel: 16, controller: 100, value: 0 }
+    # ... other events ...
+    ambient_on: { type: control_change, channel: 16, controller: 100, value: 8 }
+    ambient_off: { type: control_change, channel: 16, controller: 100, value: 9 }
+    ambient_auto: { type: control_change, channel: 16, controller: 100, value: 10 }
+    cancel_auto_play: { type: control_change, channel: 16, controller: 100, value: 11 }
+```
+
+`ambient_on` holds ambient light up now, over any song; `ambient_off` fades it out and plays
+none; `ambient_auto` gives it back to the player. `cancel_auto_play` leaves the player stopped
+on the waiting song, with ambient light up as after a stop.
+
 ## Status Events
 
 Status events are MIDI events emitted periodically to indicate the player's state. This is
@@ -288,6 +309,10 @@ useful for driving LEDs on MIDI controllers. The statuses are emitted in a repea
 the **on** events (`idling_events` while stopped, `playing_events` while a song plays), held for
 1 second; then the `off_events`, held for 250 ms; then on again. They need a `midi` device in
 the same profile.
+
+`auto_play_events` (optional) are sent in place of `idling_events` while a song waits out its
+[auto play](../getting-started/playlists.md#auto-play) gap, so an LED can show that the next
+song is about to start by itself. Without them, a waiting auto play shows as idling.
 
 ```yaml
 profiles:
@@ -314,6 +339,11 @@ profiles:
           channel: 16
           controller: 2
           value: 2
+      auto_play_events:
+        - type: control_change
+          channel: 16
+          controller: 2
+          value: 64
 ```
 
 A top-level `status_events` block in `mtrack.yaml` is the [legacy

@@ -42,7 +42,7 @@ The [command-line reference](../reference/cli.md) lists these alongside the othe
 
 ## RPCs
 
-The service has 27 RPCs. The "CLI" column names the `mtrack` subcommand that calls it; an
+The service has 29 RPCs. The "CLI" column names the `mtrack` subcommand that calls it; an
 empty cell means the RPC is available to gRPC clients only.
 
 | RPC | Purpose | CLI |
@@ -56,7 +56,7 @@ empty cell means the RPC is available to gRPC clients only.
 | `Next` | Moves the playlist to the next song. | `next` |
 | `Stop` | Stops the playing song. | `stop` |
 | `SwitchToPlaylist` | Switches the active playlist. | `switch-to-playlist` |
-| `Status` | Returns the player's current status. | `status` |
+| `Status` | Returns the player's current status: the playlist and song, whether it plays and how far in, the audio output's health, the [ambient light](../lighting/configuration.md#ambient-mode)'s `mode`, `state` and `show`, and a song waiting to [auto play](../getting-started/playlists.md#auto-play) (`auto_play`: its `song` and `starts_in`). | `status` |
 | `GetCues` | Lists the cues in the current song's lighting timeline. | `cues` |
 | `GetActiveEffects` | Returns the running lighting effects as a formatted string. | `active-effects` |
 | `StopSamples` | Stops all triggered samples that are playing. | |
@@ -66,6 +66,8 @@ empty cell means the RPC is available to gRPC clients only.
 | `SetTrackGain` | Sets the gain of one output track, in dB. | |
 | `SetTrackMute` | Mutes or unmutes an output track without changing its gain. Mute state is not persisted. | |
 | `GetTrackGains` | Returns the gains of all output tracks, in dB. | |
+| `SetAmbientMode` | Sets the [ambient mode](../lighting/configuration.md#ambient-mode): `auto`, `on` or `off`. Another name is `INVALID_ARGUMENT`. Returns the ambient status after the change. | |
+| `CancelAutoPlay` | Calls off a song waiting to [auto play](../getting-started/playlists.md#auto-play), leaving the player stopped on it with ambient light up. `cancelled` is false when none was waiting. | |
 | `GetConfig` | Returns the current configuration as YAML with a checksum. | |
 | `UpdateAudio` | Updates the audio configuration section. | |
 | `UpdateMidi` | Updates the MIDI configuration section. | |

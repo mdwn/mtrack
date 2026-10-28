@@ -142,6 +142,61 @@ message StatusResponse {
     // playing, so "playing = true, writing_signal = false" is the diagnostic,
     // and splitting them would make a remote monitor correlate two calls.
     optional AudioHealth audio_health = 5;
+
+    // Ambient is ambient light's mode and what it is doing. Absent without
+    // a DMX engine.
+    optional AmbientStatus ambient = 6;
+
+    // AutoPlay is the song waiting to start by itself (its playlist entry's
+    // auto_play gap running). Absent when none is.
+    optional AutoPlayStatus auto_play = 7;
+}
+
+// AmbientStatus is ambient light's mode and what it is doing.
+message AmbientStatus {
+    // Mode is "auto", "on" or "off".
+    string mode = 1;
+
+    // State is "playing", "pending" (waiting out its delay), "off", or
+    // "unavailable" (mode on with no show to play: none configured, or it
+    // does not load).
+    string state = 2;
+
+    // Show is the ambient show file, when there is one to play.
+    optional string show = 3;
+}
+
+// AutoPlayStatus is a song waiting to start by itself.
+message AutoPlayStatus {
+    // Song is the name of the song waiting.
+    string song = 1;
+
+    // StartsIn is how long until it starts.
+    google.protobuf.Duration starts_in = 2;
+}
+
+// SetAmbientModeRequest sets ambient light's mode. The mode is not saved:
+// the player starts in "auto".
+message SetAmbientModeRequest {
+    // Mode is "auto" (between songs, after its delay), "on" (now, over any
+    // song, until auto again) or "off" (none; ambient playing fades out).
+    string mode = 1;
+}
+
+// SetAmbientModeResponse is returned after setting the ambient mode.
+message SetAmbientModeResponse {
+    // Ambient is ambient light's mode and state after the change. Absent
+    // without a DMX engine.
+    optional AmbientStatus ambient = 1;
+}
+
+// CancelAutoPlayRequest calls off an auto play waiting to start.
+message CancelAutoPlayRequest {}
+
+// CancelAutoPlayResponse is returned after cancelling an auto play.
+message CancelAutoPlayResponse {
+    // Cancelled is true when an auto play was waiting and is now called off.
+    bool cancelled = 1;
 }
 
 // AudioHealth reports what the audio output callback is doing, as distinct from
@@ -475,4 +530,11 @@ service PlayerService {
 
     // GetTrackGains returns the gains of all output tracks in dB.
     rpc GetTrackGains(GetTrackGainsRequest) returns (GetTrackGainsResponse);
+
+    // SetAmbientMode sets ambient light's mode: auto, on or off.
+    rpc SetAmbientMode(SetAmbientModeRequest) returns (SetAmbientModeResponse);
+
+    // CancelAutoPlay calls off an auto play waiting to start, leaving the
+    // player stopped on its song with ambient light up, as after a stop.
+    rpc CancelAutoPlay(CancelAutoPlayRequest) returns (CancelAutoPlayResponse);
 }

@@ -46,7 +46,7 @@ mod playback;
 mod test_output;
 mod timeline;
 
-pub use ambient::AmbientStatus;
+pub use ambient::{AmbientMode, AmbientReport, AmbientStatus};
 pub use test_output::{TestOutput, TestOutputStatus, EXPIRY_ENV, TEST_OUTPUT_EXPIRY};
 
 /// The result of classifying a MIDI message for DMX purposes.
@@ -162,6 +162,9 @@ pub struct Engine {
     base_path: Option<std::path::PathBuf>,
     /// The show the rig plays while no song is (see `ambient`).
     ambient: Mutex<ambient::AmbientState>,
+    /// Ambient light playing or fading, over the main engine. Locked after
+    /// `effect_engine` and `outgoing_pass`, never before.
+    ambient_overlay: Mutex<Option<ambient::Overlay>>,
 }
 
 /// A MIDI DMX light show being played back from the effects loop.
@@ -282,6 +285,7 @@ impl Engine {
             test_expiry: test_output::expiry_from_env(),
             base_path: base_path.map(std::path::Path::to_path_buf),
             ambient: Mutex::new(ambient::AmbientState::default()),
+            ambient_overlay: Mutex::new(None),
         })
     }
 
@@ -556,6 +560,20 @@ impl Engine {
             };
         drop(outgoing);
 
+        // Ambient light crosses over it at its level: over a song's show
+        // with ambient on, or over the last song's frame as it fades in.
+        let has_ambient = self.ambient_overlay.lock().is_some();
+        let ambient_frame;
+        let commands: &[crate::lighting::effects::DmxCommand] = if has_ambient {
+            let under = commands.into_owned();
+            ambient_frame = self
+                .render_ambient(&mut effect_engine, dt, &under)?
+                .unwrap_or(under);
+            &ambient_frame
+        } else {
+            &commands
+        };
+
         // Group commands by universe
         let mut universe_commands: std::collections::HashMap<u16, Vec<(u16, u8)>> =
             std::collections::HashMap::new();
@@ -680,6 +698,7 @@ impl Engine {
         self.midi_dmx_store.write().retain_channels(|_, _| false);
         effect_engine.replace_fixtures(Vec::new());
         effect_engine.set_focus_points(HashMap::new());
+        self.ambient_follows_rig(&effect_engine);
     }
 
     /// Registers all fixtures from the current venue (thread-safe version).
@@ -782,6 +801,8 @@ impl Engine {
                     })
                     .unwrap_or_default(),
             );
+            drop(midi_dmx_store);
+            self.ambient_follows_rig(&effect_engine);
         }
         Ok(())
     }

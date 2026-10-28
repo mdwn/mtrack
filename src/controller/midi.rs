@@ -30,6 +30,8 @@ enum MidiAction {
     Playlist,
     SectionAck,
     StopSectionLoop,
+    AmbientMode(crate::dmx::engine::AmbientMode),
+    CancelAutoPlay,
     Unrecognized,
 }
 
@@ -43,6 +45,10 @@ struct MidiEvents {
     playlist: LiveEvent<'static>,
     section_ack: Option<LiveEvent<'static>>,
     stop_section_loop: Option<LiveEvent<'static>>,
+    ambient_on: Option<LiveEvent<'static>>,
+    ambient_off: Option<LiveEvent<'static>>,
+    ambient_auto: Option<LiveEvent<'static>>,
+    cancel_auto_play: Option<LiveEvent<'static>>,
 }
 
 /// Classifies a parsed MIDI event against the known controller events.
@@ -63,6 +69,14 @@ fn classify_midi_event(events: &MidiEvents, event: &LiveEvent<'_>) -> MidiAction
         MidiAction::SectionAck
     } else if events.stop_section_loop.as_ref() == Some(event) {
         MidiAction::StopSectionLoop
+    } else if events.ambient_on.as_ref() == Some(event) {
+        MidiAction::AmbientMode(crate::dmx::engine::AmbientMode::On)
+    } else if events.ambient_off.as_ref() == Some(event) {
+        MidiAction::AmbientMode(crate::dmx::engine::AmbientMode::Off)
+    } else if events.ambient_auto.as_ref() == Some(event) {
+        MidiAction::AmbientMode(crate::dmx::engine::AmbientMode::Auto)
+    } else if events.cancel_auto_play.as_ref() == Some(event) {
+        MidiAction::CancelAutoPlay
     } else {
         MidiAction::Unrecognized
     }
@@ -104,6 +118,10 @@ impl Driver {
                         playlist: config.playlist()?,
                         section_ack: config.section_ack()?,
                         stop_section_loop: config.stop_section_loop()?,
+                        ambient_on: config.ambient_on()?,
+                        ambient_off: config.ambient_off()?,
+                        ambient_auto: config.ambient_auto()?,
+                        cancel_auto_play: config.cancel_auto_play()?,
                     },
                 }))
             }
@@ -129,6 +147,10 @@ impl super::Driver for Driver {
             playlist: self.events.playlist,
             section_ack: self.events.section_ack,
             stop_section_loop: self.events.stop_section_loop,
+            ambient_on: self.events.ambient_on,
+            ambient_off: self.events.ambient_off,
+            ambient_auto: self.events.ambient_auto,
+            cancel_auto_play: self.events.cancel_auto_play,
         };
 
         tokio::task::spawn_blocking(move || {
@@ -206,6 +228,10 @@ impl super::Driver for Driver {
                     }
                     MidiAction::StopSectionLoop => {
                         player.stop_section_loop();
+                    }
+                    MidiAction::AmbientMode(mode) => player.set_ambient_mode(mode),
+                    MidiAction::CancelAutoPlay => {
+                        player.cancel_waiting_auto_play();
                     }
                     MidiAction::Unrecognized => {}
                 }
@@ -295,6 +321,22 @@ mod test {
         let binding = player.midi_device().expect("MIDI device not found");
         let midi_device = binding.to_mock()?;
 
+        let ambient_on_event = config::midi::note_on(16, 8, 127);
+        let ambient_off_event = config::midi::note_on(16, 9, 127);
+        let ambient_auto_event = config::midi::note_on(16, 10, 127);
+        let mut ambient_on_buf: Vec<u8> = Vec::with_capacity(8);
+        let mut ambient_off_buf: Vec<u8> = Vec::with_capacity(8);
+        let mut ambient_auto_buf: Vec<u8> = Vec::with_capacity(8);
+        ambient_on_event
+            .to_midi_event()?
+            .write(&mut ambient_on_buf)?;
+        ambient_off_event
+            .to_midi_event()?
+            .write(&mut ambient_off_buf)?;
+        ambient_auto_event
+            .to_midi_event()?
+            .write(&mut ambient_auto_buf)?;
+
         let driver = super::Driver::new(
             MidiController::new(
                 play_event,
@@ -303,7 +345,8 @@ mod test {
                 stop_event,
                 all_songs_event,
                 playlist_event,
-            ),
+            )
+            .with_ambient(ambient_on_event, ambient_off_event, ambient_auto_event),
             player.clone(),
         )?;
 
@@ -436,6 +479,18 @@ mod test {
         midi_device.mock_event(&stop_buf);
         eventually(|| !device.is_playing(), "Song never stopped playing");
 
+        // The ambient mode events.
+        use crate::dmx::engine::AmbientMode;
+        midi_device.mock_event(&ambient_on_buf);
+        eventually(|| player.ambient_mode() == AmbientMode::On, "ambient on");
+        midi_device.mock_event(&ambient_off_buf);
+        eventually(|| player.ambient_mode() == AmbientMode::Off, "ambient off");
+        midi_device.mock_event(&ambient_auto_buf);
+        eventually(
+            || player.ambient_mode() == AmbientMode::Auto,
+            "ambient auto",
+        );
+
         midi_device.stop_watch_events();
 
         Ok(())
@@ -456,6 +511,25 @@ mod test {
                 playlist: note_on(16, 5, 127).to_midi_event().unwrap(),
                 section_ack: Some(note_on(16, 6, 127).to_midi_event().unwrap()),
                 stop_section_loop: Some(note_on(16, 7, 127).to_midi_event().unwrap()),
+                ambient_on: Some(note_on(16, 8, 127).to_midi_event().unwrap()),
+                ambient_off: Some(note_on(16, 9, 127).to_midi_event().unwrap()),
+                ambient_auto: Some(note_on(16, 10, 127).to_midi_event().unwrap()),
+                cancel_auto_play: Some(note_on(16, 11, 127).to_midi_event().unwrap()),
+            }
+        }
+
+        #[test]
+        fn recognizes_ambient_modes_and_cancel_auto_play() {
+            use crate::dmx::engine::AmbientMode;
+            let events = make_test_events();
+            for (key, action) in [
+                (8, MidiAction::AmbientMode(AmbientMode::On)),
+                (9, MidiAction::AmbientMode(AmbientMode::Off)),
+                (10, MidiAction::AmbientMode(AmbientMode::Auto)),
+                (11, MidiAction::CancelAutoPlay),
+            ] {
+                let event = note_on(16, key, 127).to_midi_event().unwrap();
+                assert_eq!(classify_midi_event(&events, &event), action, "key {key}");
             }
         }
 

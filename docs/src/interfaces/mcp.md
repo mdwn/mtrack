@@ -61,14 +61,18 @@ About 60 tools are available. They fall into a few groups:
 
 - **Status & discovery** — current playback status, host/runtime info, and listings of songs,
   playlists, groups, venues, and fixture types. `status` also reports the
-  [ambient light](../lighting/configuration.md#ambient-light) (`ambient: {show, state}`, where
-  `state` is `pending` while its delay runs or `playing`) and a song about to
-  [auto play](../getting-started/playlists.md#auto-play) (`auto_play: {song, starts_in_seconds}`),
-  each `null` when there is none.
+  [ambient light](../lighting/configuration.md#ambient-light) (`ambient: {mode, show, state}`,
+  where `mode` is `auto`, `on` or `off` and `state` is `pending` while its delay runs,
+  `playing`, `off`, or `unavailable` when `on` has no show to play; `null` without a DMX
+  engine) and a song about to [auto play](../getting-started/playlists.md#auto-play)
+  (`auto_play: {song, starts_in_seconds}`, `null` when there is none).
 - **Playback control** — play, stop, next/previous, play-from-a-time, play-a-named-song-from-a-time,
   seek within the current song (to a time or a named section), switch playlist, stop triggered
   samples, and section-loop control (loop a section, stop the loop, acknowledge the current
-  section in reactive looping).
+  section in reactive looping). `set_ambient_mode` sets the
+  [ambient mode](../lighting/configuration.md#ambient-mode) (`{"mode": "on"}`), and
+  `cancel_auto_play` calls off a song waiting to auto play, answering `cancelled: false` when
+  none was.
 - **Configuration editing** — read the full config and update the `audio`, `midi`, `dmx`, and
   `controllers` subsections, plus add / update / remove hardware profiles.
 - **Song & playlist authoring** — read, write, and patch `song.yaml` and playlist files, plus

@@ -102,13 +102,21 @@ export interface PlaybackState {
   /** A song about to start by itself, its playlist entry's auto-play gap
    *  running. */
   auto_play?: { song: string; starts_in_ms: number } | null;
-  /** The show the rig plays while no song is, when one is playing or about
-   *  to (`pending`, waiting out its delay). */
-  ambient?: { show: string; state: "pending" | "playing" } | null;
+  /** The show the rig plays while no song is: its mode, its show (null for
+   *  none) and what it is doing (`pending` while its delay runs;
+   *  `unavailable` when on with no show to play). Null without DMX. */
+  ambient?: {
+    mode: AmbientMode;
+    show: string | null;
+    state: "pending" | "playing" | "off" | "unavailable";
+  } | null;
   /** performance.now() when this frame was received; lets consumers
    *  extrapolate elapsed_ms smoothly between the 5Hz frames. */
   received_at: number;
 }
+
+/** Ambient light's mode: between songs, held on, or none. */
+export type AmbientMode = "auto" | "on" | "off";
 
 export interface FixtureChannels {
   [channel: string]: number;

@@ -94,7 +94,11 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   (for a song with no audio, the total is when its last lighting effect ends).
   While a song waits out its playlist entry's [auto play](../getting-started/playlists.md#auto-play)
   gap, the card counts it down ("Opener starts in 2s"); Stop cancels it. An **Ambient light**
-  badge shows while the [ambient show](../lighting/configuration.md#ambient-light) plays.
+  badge shows while the [ambient show](../lighting/configuration.md#ambient-light) plays, and
+  **No ambient show** when the mode is On with none to play. With a DMX engine, an
+  **Auto / On / Off** switch beside it sets the
+  [ambient mode](../lighting/configuration.md#ambient-mode): On holds ambient up now, over any
+  song; Off fades it out. Like the transport, it works while the player is locked.
 
   ![The playback card counting down to a song's auto play, with the Ambient light
   badge](../images/playback-auto-play.png)
