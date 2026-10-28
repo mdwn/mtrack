@@ -859,6 +859,7 @@ impl Player {
             }
         };
         let join = self.join.clone();
+        let auto_play = self.auto_play.clone();
 
         // This thread will run until the process is terminated.
         let _join_handle = tokio::spawn(async move {
@@ -866,17 +867,11 @@ impl Player {
                 {
                     let join = join.lock().await;
 
-                    let emit_result: Result<(), Box<dyn Error>> = if join.is_none() {
-                        status_events
-                            .idling_events
-                            .iter()
-                            .try_for_each(|event| midi_device.emit(Some(*event)))
-                    } else {
-                        status_events
-                            .playing_events
-                            .iter()
-                            .try_for_each(|event| midi_device.emit(Some(*event)))
-                    };
+                    let auto_play_waiting = auto_play.lock().waiting.is_some();
+                    let emit_result: Result<(), Box<dyn Error>> = status_events
+                        .current(join.is_some(), auto_play_waiting)
+                        .iter()
+                        .try_for_each(|event| midi_device.emit(Some(*event)));
 
                     if let Err(err) = emit_result {
                         error!(err = err.as_ref(), "error emitting status event")

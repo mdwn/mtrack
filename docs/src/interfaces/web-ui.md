@@ -96,7 +96,11 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   gap, the card counts it down ("Opener starts in 2s"); Stop cancels it. While a looping song
   [ends over its fade-out](../getting-started/playlists.md#ending-a-looping-song) the card says
   so ("Walk-in loop is fading out (4s)"); Stop again cuts it. An **Ambient light**
-  badge shows while the [ambient show](../lighting/configuration.md#ambient-light) plays.
+  badge shows while the [ambient show](../lighting/configuration.md#ambient-light) plays, and
+  **No ambient show** when the mode is On with none to play. With a DMX engine, an
+  **Auto / On / Off** switch beside it sets the
+  [ambient mode](../lighting/configuration.md#ambient-mode): On holds ambient up now, over any
+  song; Off fades it out. Like the transport, it works while the player is locked.
   Under the song name a quiet line says what comes next and how it will arrive: "Next: Opener —
   starts by itself after 2s", "Next: The Slow One — waits for Play", or, while a looping song
   plays, "Next breaks the loop: fades out over 1 measure into Opener" (from the playlist's

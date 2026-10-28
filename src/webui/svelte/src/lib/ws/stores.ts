@@ -125,9 +125,14 @@ export interface PlaybackState {
   /** A looping song fading out after a stop, with nothing after it; a
    *  second stop cuts it. */
   ending?: { song: string; remaining_ms: number } | null;
-  /** The show the rig plays while no song is, when one is playing or about
-   *  to (`pending`, waiting out its delay). */
-  ambient?: { show: string; state: "pending" | "playing" } | null;
+  /** The show the rig plays while no song is: its mode, its show (null for
+   *  none) and what it is doing (`pending` while its delay runs;
+   *  `unavailable` when on with no show to play). Null without DMX. */
+  ambient?: {
+    mode: AmbientMode;
+    show: string | null;
+    state: "pending" | "playing" | "off" | "unavailable";
+  } | null;
   /** What comes after the current song and how it arrives; `song` is null
    *  at the end of the playlist. */
   next?: NextUp | null;
@@ -135,6 +140,9 @@ export interface PlaybackState {
    *  extrapolate elapsed_ms smoothly between the 5Hz frames. */
   received_at: number;
 }
+
+/** Ambient light's mode: between songs, held on, or none. */
+export type AmbientMode = "auto" | "on" | "off";
 
 export interface FixtureChannels {
   [channel: string]: number;

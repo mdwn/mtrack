@@ -692,8 +692,42 @@ impl Player {
     pub(super) fn idle_ambient(&self, hold: bool) {
         let dmx_engine = self.hardware.read().dmx_engine.clone();
         if let Some(dmx_engine) = dmx_engine {
+            // An engine new since the mode was set (a hardware reload) takes
+            // it up.
+            let mode = *self.ambient_mode.lock();
+            if dmx_engine.ambient_mode() != mode {
+                dmx_engine.set_ambient_mode(mode);
+            }
             dmx_engine.idle_ambient(self.get_playlist().ambient(), hold);
         }
+    }
+
+    /// Sets ambient light's mode: `On` holds it up now, over any song;
+    /// `Off` fades it out; `Auto` plays it between songs. Not saved: the
+    /// player starts in `Auto`.
+    pub fn set_ambient_mode(&self, mode: crate::dmx::engine::AmbientMode) {
+        *self.ambient_mode.lock() = mode;
+        let dmx_engine = self.hardware.read().dmx_engine.clone();
+        if let Some(dmx_engine) = dmx_engine {
+            dmx_engine.set_ambient_mode(mode);
+        }
+    }
+
+    /// Ambient light's mode.
+    pub fn ambient_mode(&self) -> crate::dmx::engine::AmbientMode {
+        *self.ambient_mode.lock()
+    }
+
+    /// Calls off an auto play waiting out its gap, and nothing else: the
+    /// player stays stopped on its song, and ambient light comes up as
+    /// after a stop. Returns whether one was waiting.
+    pub fn cancel_waiting_auto_play(&self) -> bool {
+        let called_off = self.cancel_auto_play();
+        if called_off {
+            info!("Auto play called off.");
+            self.idle_ambient(true);
+        }
+        called_off
     }
 
     async fn stop_locked(&self, join: &mut Option<PlayHandles>) -> Option<Arc<Song>> {

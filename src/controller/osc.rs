@@ -75,6 +75,8 @@ enum OscAction {
     Seek,
     SeekToSection,
     SetTrackGain,
+    AmbientMode(crate::dmx::engine::AmbientMode),
+    CancelAutoPlay,
     Unrecognized,
 }
 
@@ -117,6 +119,12 @@ pub(super) struct OscEvents {
     seek: Matcher,
     /// The OSC address to seek to the start of a named section.
     seek_section: Matcher,
+    /// The OSC addresses to set ambient light's mode.
+    ambient_on: Matcher,
+    ambient_off: Matcher,
+    ambient_auto: Matcher,
+    /// The OSC address to call off an auto play waiting to start.
+    cancel_auto_play: Matcher,
     /// The OSC address pattern to set an output track's gain in dB.
     track_gain: Matcher,
     /// The raw track gain pattern; the `*` segment carries the track name and
@@ -167,6 +175,10 @@ impl Driver {
                 loop_section: Matcher::new(config.loop_section())?,
                 seek: Matcher::new(config.seek())?,
                 seek_section: Matcher::new(config.seek_section())?,
+                ambient_on: Matcher::new(config.ambient_on())?,
+                ambient_off: Matcher::new(config.ambient_off())?,
+                ambient_auto: Matcher::new(config.ambient_auto())?,
+                cancel_auto_play: Matcher::new(config.cancel_auto_play())?,
                 track_gain: Matcher::new(config.track_gain())?,
                 track_gain_pattern: config.track_gain().to_string(),
                 status: config.status().to_string(),
@@ -545,6 +557,10 @@ impl Driver {
                     }
                 }
             }
+            OscAction::AmbientMode(mode) => player.set_ambient_mode(mode),
+            OscAction::CancelAutoPlay => {
+                player.cancel_waiting_auto_play();
+            }
             OscAction::Unrecognized => return Ok(false),
         }
         Ok(true)
@@ -580,6 +596,16 @@ fn classify_message(osc_events: &OscEvents, addr: &str) -> Result<OscAction, Box
         Ok(OscAction::Seek)
     } else if osc_events.seek_section.match_address(&address) {
         Ok(OscAction::SeekToSection)
+    } else if osc_events.ambient_on.match_address(&address) {
+        Ok(OscAction::AmbientMode(crate::dmx::engine::AmbientMode::On))
+    } else if osc_events.ambient_off.match_address(&address) {
+        Ok(OscAction::AmbientMode(crate::dmx::engine::AmbientMode::Off))
+    } else if osc_events.ambient_auto.match_address(&address) {
+        Ok(OscAction::AmbientMode(
+            crate::dmx::engine::AmbientMode::Auto,
+        ))
+    } else if osc_events.cancel_auto_play.match_address(&address) {
+        Ok(OscAction::CancelAutoPlay)
     } else if osc_events.track_gain.match_address(&address) {
         Ok(OscAction::SetTrackGain)
     } else {
@@ -1195,6 +1221,10 @@ mod test {
             loop_section: Matcher::new(config.loop_section()).unwrap(),
             seek: Matcher::new(config.seek()).unwrap(),
             seek_section: Matcher::new(config.seek_section()).unwrap(),
+            ambient_on: Matcher::new(config.ambient_on()).unwrap(),
+            ambient_off: Matcher::new(config.ambient_off()).unwrap(),
+            ambient_auto: Matcher::new(config.ambient_auto()).unwrap(),
+            cancel_auto_play: Matcher::new(config.cancel_auto_play()).unwrap(),
             track_gain: Matcher::new(config.track_gain()).unwrap(),
             track_gain_pattern: config.track_gain().to_string(),
             status: config.status().to_string(),
@@ -1297,6 +1327,29 @@ mod test {
                 classify_message(&events, "/mtrack/samples/stop").unwrap(),
                 OscAction::StopSamples
             );
+        }
+
+        #[test]
+        fn recognizes_ambient_modes_and_cancel_auto_play() {
+            use crate::dmx::engine::AmbientMode;
+            let events = make_default_osc_events();
+            for (addr, action) in [
+                (
+                    "/mtrack/ambient/on",
+                    OscAction::AmbientMode(AmbientMode::On),
+                ),
+                (
+                    "/mtrack/ambient/off",
+                    OscAction::AmbientMode(AmbientMode::Off),
+                ),
+                (
+                    "/mtrack/ambient/auto",
+                    OscAction::AmbientMode(AmbientMode::Auto),
+                ),
+                ("/mtrack/auto_play/cancel", OscAction::CancelAutoPlay),
+            ] {
+                assert_eq!(classify_message(&events, addr).unwrap(), action, "{addr}");
+            }
         }
 
         #[test]
@@ -1549,6 +1602,74 @@ mod test {
 
             let result = Driver::handle_packet(&player, &events, &packet).await;
             assert!(result.unwrap(), "stop_samples should return true");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn handle_message_sets_the_ambient_mode() {
+            use crate::dmx::engine::AmbientMode;
+            let player = make_player().await;
+            let events = Arc::new(make_default_osc_events());
+            for (addr, mode) in [
+                ("/mtrack/ambient/on", AmbientMode::On),
+                ("/mtrack/ambient/off", AmbientMode::Off),
+                ("/mtrack/ambient/auto", AmbientMode::Auto),
+            ] {
+                let packet = OscPacket::Message(OscMessage {
+                    addr: addr.to_string(),
+                    args: vec![],
+                });
+                let result = Driver::handle_packet(&player, &events, &packet).await;
+                assert!(result.unwrap(), "{addr} is recognized");
+                assert_eq!(player.ambient_mode(), mode, "{addr}");
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn handle_message_cancels_a_waiting_auto_play() {
+            let songs = songs::get_all_songs(Path::new("assets/songs")).unwrap();
+            let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 2s\n";
+            let playlist_config: config::Playlist = ::config::Config::builder()
+                .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+                .build()
+                .unwrap()
+                .try_deserialize()
+                .unwrap();
+            let mut playlists = HashMap::new();
+            playlists.insert(
+                "all_songs".to_string(),
+                playlist::from_songs(songs.clone()).unwrap(),
+            );
+            playlists.insert(
+                "playlist".to_string(),
+                Playlist::new("playlist", &playlist_config, songs).unwrap(),
+            );
+            let player = Player::new(
+                playlists,
+                "playlist".to_string(),
+                &config::Player::new(
+                    vec![],
+                    Some(config::Audio::new("mock-device")),
+                    None,
+                    None,
+                    HashMap::new(),
+                    "assets/songs",
+                ),
+                None,
+            )
+            .unwrap();
+            player.await_hardware_ready().await;
+            let events = Arc::new(make_default_osc_events());
+
+            player.next().await;
+            assert!(player.auto_play_status().is_some(), "waiting");
+            let packet = OscPacket::Message(OscMessage {
+                addr: "/mtrack/auto_play/cancel".to_string(),
+                args: vec![],
+            });
+            let result = Driver::handle_packet(&player, &events, &packet).await;
+            assert!(result.unwrap(), "cancel_auto_play should return true");
+            assert!(player.auto_play_status().is_none(), "called off");
+            assert!(!player.is_playing().await);
         }
 
         #[tokio::test(flavor = "multi_thread")]

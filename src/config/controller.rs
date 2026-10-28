@@ -56,6 +56,18 @@ fn default_osc_stop_section_loop() -> String {
 fn default_osc_loop_section() -> String {
     "/mtrack/loop_section".to_string()
 }
+fn default_osc_ambient_on() -> String {
+    "/mtrack/ambient/on".to_string()
+}
+fn default_osc_ambient_off() -> String {
+    "/mtrack/ambient/off".to_string()
+}
+fn default_osc_ambient_auto() -> String {
+    "/mtrack/ambient/auto".to_string()
+}
+fn default_osc_cancel_auto_play() -> String {
+    "/mtrack/auto_play/cancel".to_string()
+}
 fn default_osc_seek() -> String {
     "/mtrack/seek".to_string()
 }
@@ -116,6 +128,19 @@ pub struct MidiController {
     /// The MIDI event to break out of the current section loop.
     #[serde(default)]
     stop_section_loop: Option<midi::Event>,
+    /// The MIDI event to hold ambient light up (ambient mode `on`).
+    #[serde(default)]
+    ambient_on: Option<midi::Event>,
+    /// The MIDI event to turn ambient light off (ambient mode `off`).
+    #[serde(default)]
+    ambient_off: Option<midi::Event>,
+    /// The MIDI event to give ambient light back to the player (ambient
+    /// mode `auto`).
+    #[serde(default)]
+    ambient_auto: Option<midi::Event>,
+    /// The MIDI event to call off an auto play waiting to start.
+    #[serde(default)]
+    cancel_auto_play: Option<midi::Event>,
     /// Optional Morningstar controller integration for automatic preset naming.
     #[serde(default)]
     morningstar: Option<MorningstarConfig>,
@@ -140,8 +165,33 @@ impl MidiController {
             playlist,
             section_ack: None,
             stop_section_loop: None,
+            ambient_on: None,
+            ambient_off: None,
+            ambient_auto: None,
+            cancel_auto_play: None,
             morningstar: None,
         }
+    }
+
+    /// Sets the ambient on, off and auto events.
+    #[cfg(test)]
+    pub fn with_ambient(
+        mut self,
+        on: midi::Event,
+        off: midi::Event,
+        auto: midi::Event,
+    ) -> MidiController {
+        self.ambient_on = Some(on);
+        self.ambient_off = Some(off);
+        self.ambient_auto = Some(auto);
+        self
+    }
+
+    /// Sets the cancel auto play event.
+    #[cfg(test)]
+    pub fn with_cancel_auto_play(mut self, event: midi::Event) -> MidiController {
+        self.cancel_auto_play = Some(event);
+        self
     }
     /// Gets the play event.
     pub fn play(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
@@ -189,10 +239,36 @@ impl MidiController {
             .transpose()
     }
 
+    /// Gets the ambient on event, if configured.
+    pub fn ambient_on(&self) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+        optional_event(&self.ambient_on)
+    }
+
+    /// Gets the ambient off event, if configured.
+    pub fn ambient_off(&self) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+        optional_event(&self.ambient_off)
+    }
+
+    /// Gets the ambient auto event, if configured.
+    pub fn ambient_auto(&self) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+        optional_event(&self.ambient_auto)
+    }
+
+    /// Gets the cancel auto play event, if configured.
+    pub fn cancel_auto_play(&self) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+        optional_event(&self.cancel_auto_play)
+    }
+
     /// Gets the optional Morningstar configuration.
     pub fn morningstar(&self) -> Option<&MorningstarConfig> {
         self.morningstar.as_ref()
     }
+}
+
+fn optional_event(
+    event: &Option<midi::Event>,
+) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+    event.as_ref().map(|e| e.to_midi_event()).transpose()
 }
 
 /// The configuration for the multitrack player gRPC server.
@@ -399,6 +475,19 @@ pub struct OscController {
     /// string arg).
     #[serde(default = "default_osc_seek_section")]
     seek_section: String,
+    /// The OSC address to hold ambient light up (ambient mode `on`).
+    #[serde(default = "default_osc_ambient_on")]
+    ambient_on: String,
+    /// The OSC address to turn ambient light off (ambient mode `off`).
+    #[serde(default = "default_osc_ambient_off")]
+    ambient_off: String,
+    /// The OSC address to give ambient light back to the player (ambient
+    /// mode `auto`).
+    #[serde(default = "default_osc_ambient_auto")]
+    ambient_auto: String,
+    /// The OSC address to call off an auto play waiting to start.
+    #[serde(default = "default_osc_cancel_auto_play")]
+    cancel_auto_play: String,
     /// The OSC address pattern to set an output track's gain in dB (takes a
     /// float arg). The `*` segment is the track name; the same pattern (with
     /// the name substituted) is used for gain feedback broadcasts.
@@ -452,6 +541,10 @@ impl Default for OscController {
             loop_section: default_osc_loop_section(),
             seek: default_osc_seek(),
             seek_section: default_osc_seek_section(),
+            ambient_on: default_osc_ambient_on(),
+            ambient_off: default_osc_ambient_off(),
+            ambient_auto: default_osc_ambient_auto(),
+            cancel_auto_play: default_osc_cancel_auto_play(),
             track_gain: default_osc_track_gain(),
             status: default_osc_status(),
             audio_health: default_osc_audio_health(),
@@ -542,6 +635,26 @@ impl OscController {
     /// Gets the seek-to-section OSC address.
     pub fn seek_section(&self) -> &str {
         &self.seek_section
+    }
+
+    /// Gets the ambient on OSC address.
+    pub fn ambient_on(&self) -> &str {
+        &self.ambient_on
+    }
+
+    /// Gets the ambient off OSC address.
+    pub fn ambient_off(&self) -> &str {
+        &self.ambient_off
+    }
+
+    /// Gets the ambient auto OSC address.
+    pub fn ambient_auto(&self) -> &str {
+        &self.ambient_auto
+    }
+
+    /// Gets the cancel auto play OSC address.
+    pub fn cancel_auto_play(&self) -> &str {
+        &self.cancel_auto_play
     }
 
     /// Gets the OSC address pattern for setting an output track's gain.
@@ -724,6 +837,10 @@ mod test {
             "/mtrack/playlist/current_song/elapsed"
         );
         assert_eq!(osc.timeline(), "/mtrack/timeline");
+        assert_eq!(osc.ambient_on(), "/mtrack/ambient/on");
+        assert_eq!(osc.ambient_off(), "/mtrack/ambient/off");
+        assert_eq!(osc.ambient_auto(), "/mtrack/ambient/auto");
+        assert_eq!(osc.cancel_auto_play(), "/mtrack/auto_play/cancel");
     }
 
     #[test]
@@ -771,6 +888,49 @@ mod test {
         mc.stop()?;
         mc.all_songs()?;
         mc.playlist()?;
+        // The ambient and auto play events are optional.
+        assert!(mc.ambient_on()?.is_none());
+        assert!(mc.cancel_auto_play()?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn midi_controller_ambient_and_auto_play_events_deserialize() -> Result<(), Box<dyn Error>> {
+        let note = |key: u8| format!("{{ type: note_on, channel: 16, key: {key}, velocity: 127 }}");
+        let yaml = format!(
+            "play: {}\nprev: {}\nnext: {}\nstop: {}\nall_songs: {}\nplaylist: {}\n\
+             ambient_on: {}\nambient_off: {}\nambient_auto: {}\ncancel_auto_play: {}\n",
+            note(0),
+            note(1),
+            note(2),
+            note(3),
+            note(4),
+            note(5),
+            note(10),
+            note(11),
+            note(12),
+            note(13),
+        );
+        let mc: MidiController = Config::builder()
+            .add_source(File::from_str(&yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(
+            mc.ambient_on()?,
+            Some(midi::note_on(16, 10, 127).to_midi_event()?)
+        );
+        assert_eq!(
+            mc.ambient_off()?,
+            Some(midi::note_on(16, 11, 127).to_midi_event()?)
+        );
+        assert_eq!(
+            mc.ambient_auto()?,
+            Some(midi::note_on(16, 12, 127).to_midi_event()?)
+        );
+        assert_eq!(
+            mc.cancel_auto_play()?,
+            Some(midi::note_on(16, 13, 127).to_midi_event()?)
+        );
         Ok(())
     }
 

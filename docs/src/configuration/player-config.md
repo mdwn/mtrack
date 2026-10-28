@@ -338,6 +338,12 @@ controllers:
   seek: /mtrack/seek
   seek_section: /mtrack/seek_section
 
+  # Ambient light's mode (on, off, auto) and calling off a waiting auto play.
+  ambient_on: /mtrack/ambient/on
+  ambient_off: /mtrack/ambient/off
+  ambient_auto: /mtrack/ambient/auto
+  cancel_auto_play: /mtrack/auto_play/cancel
+
   # Per-track gain in dB (float argument). The `*` segment is the track name; the same
   # pattern, with the name filled in, is used for gain feedback broadcasts.
   track_gain: /mtrack/track/*/gain
@@ -405,6 +411,31 @@ controllers:
     channel: 16
     controller: 100
     value: 7
+
+  # (Optional) Set ambient light's mode: on holds it up now, over any song; off fades it
+  # out; auto plays it between songs.
+  ambient_on:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 8
+  ambient_off:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 9
+  ambient_auto:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 10
+
+  # (Optional) Call off a song waiting to auto play, leaving the player stopped on it.
+  cancel_auto_play:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 11
 
   # Optional: Morningstar controller integration. When configured, mtrack will
   # automatically update the current bank name on the controller via SysEx
