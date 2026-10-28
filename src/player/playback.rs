@@ -94,8 +94,10 @@ impl Player {
             }
         };
 
-        // Any explicit playback start supersedes a pending seek position.
+        // Any explicit playback start supersedes a pending seek position, and
+        // an auto play waiting to start.
         self.clear_pending_start();
+        self.cancel_auto_play();
 
         // Load samples for this song (if not already loaded)
         self.load_song_samples(&song);
@@ -202,6 +204,7 @@ impl Player {
                     Err(_e) => PlaybackResult::SenderDropped,
                 };
 
+                let succeeded = matches!(result, PlaybackResult::Success);
                 let cancelled = cancel_handle_for_cleanup.is_cancelled();
                 // Playback that ended itself, as distinct from one that stop()
                 // or a seek ended: only the former has nobody to clean up after
@@ -228,6 +231,7 @@ impl Player {
                 // Natural finish or loop break: advance playlist and clean up.
                 // A loop broken by previous goes back instead.
                 let mut join = player.join.lock().await;
+                let from = playlist.position();
                 let moved = if loop_broken && back {
                     playlist.prev()
                 } else {
@@ -248,8 +252,17 @@ impl Player {
                 if !should_auto_play {
                     // Nothing starts under the fade-out: no fade-in waits.
                     *player.start_fade.lock() = None;
-                    // Between songs: ambient light, after its delay.
-                    player.idle_ambient(true);
+                    // A song that ended by itself moves the playlist on: the
+                    // song it reaches may start by itself (its `auto_play`).
+                    // Otherwise, between songs: ambient light, after its delay.
+                    let auto_play = (succeeded && playlist.position() != from)
+                        .then(|| playlist.auto_play())
+                        .flatten();
+
+                    match auto_play {
+                        Some(gap) => player.schedule_auto_play(gap),
+                        None => player.idle_ambient(true),
+                    }
                 }
                 drop(join);
 
@@ -486,6 +499,44 @@ impl Player {
         self.stop_locked(&mut join).await
     }
 
+    /// Starts the song at the playlist's position by itself after `gap`,
+    /// unless a play, stop, navigation or playlist switch comes first.
+    pub(super) fn schedule_auto_play(&self, gap: Duration) {
+        let generation = {
+            let mut state = self.auto_play.lock();
+            state.generation += 1;
+            state.pending = true;
+            state.generation
+        };
+        info!(gap = ?gap, "Auto play: the song starts by itself.");
+        let player = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(gap).await;
+            {
+                let mut state = player.auto_play.lock();
+                if state.generation != generation || !state.pending {
+                    return;
+                }
+                state.pending = false;
+            }
+            // As the loop-break auto-play does: play's future holds tokio
+            // mutex guards that are not Send.
+            tokio::task::spawn_blocking(move || {
+                let rt = tokio::runtime::Handle::current();
+                if let Err(e) = rt.block_on(player.play()) {
+                    error!(err = %e, "Auto play failed to start the song");
+                }
+            });
+        });
+    }
+
+    /// Calls off an auto play waiting out its gap. Returns whether one was.
+    pub(super) fn cancel_auto_play(&self) -> bool {
+        let mut state = self.auto_play.lock();
+        state.generation += 1;
+        std::mem::replace(&mut state.pending, false)
+    }
+
     /// The player has gone idle: ambient light, if there is any, once its
     /// delay is up (`hold`) or at once.
     pub(super) fn idle_ambient(&self, hold: bool) {
@@ -496,6 +547,8 @@ impl Player {
     }
 
     async fn stop_locked(&self, join: &mut Option<PlayHandles>) -> Option<Arc<Song>> {
+        // A stop calls off an auto play waiting out its gap.
+        self.cancel_auto_play();
         let play_handles = match join.take() {
             Some(handles) => handles,
             None => {

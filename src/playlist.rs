@@ -18,6 +18,7 @@ use crate::songs::{Song, Songs};
 use core::fmt;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Typed error for playlist creation so callers can distinguish e.g. missing song in registry.
 #[derive(Debug, thiserror::Error)]
@@ -212,6 +213,14 @@ impl Playlist {
             fade_out: self.transitions[position].fade_out.clone(),
             fade_in: self.transitions[to].fade_in.clone(),
         }
+    }
+
+    /// The gap before the song at the current position starts by itself,
+    /// reached by the song before it ending or by next/previous while
+    /// stopped; `None` when it waits for play.
+    pub fn auto_play(&self) -> Option<Duration> {
+        let position = *self.position.read();
+        self.transitions.get(position).and_then(|t| t.auto_play)
     }
 
     /// Sets the playlist position to the song matching the given name.

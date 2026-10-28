@@ -1194,7 +1194,10 @@ impl McpServer {
         length (`3s`, `500ms`, `6beats`, `1measure`; `0s` for none) or a map \
         with `length`, `curve` (`equal_power` or `linear`), `exclude` (track \
         names that do not fade) and, for `fade_out` only, `lights` (how long \
-        the lights cross into the next song's show). A top-level `ambient:` \
+        the lights cross into the next song's show). An entry's `auto_play` \
+        (`true`, `false`, or a gap such as `2s`) starts its song by itself when \
+        the song before it ends or next/previous lands on it while stopped. \
+        A top-level `ambient:` \
         sets the playlist's ambient light, played while no song is: `false` \
         for none, or a map of `show` (a `.light` file, relative to the \
         project), `delay`, `fade_in` and `fade_out`, each overriding the \

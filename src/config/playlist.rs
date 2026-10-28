@@ -56,6 +56,77 @@ pub struct ConfiguredEntry {
     /// How the song fades in when it starts under a song fading out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_in: Option<FadeConfig>,
+    /// Whether the song starts by itself when the playlist reaches it -- the
+    /// song before it ending, or next/previous while stopped -- and after
+    /// how long a gap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_play: Option<AutoPlayConfig>,
+}
+
+/// An entry's `auto_play` as written: `true` (at once), `false`, or the gap
+/// before it starts (`2s`, `500ms`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum AutoPlayConfig {
+    On(bool),
+    Gap(String),
+}
+
+impl Serialize for AutoPlayConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            AutoPlayConfig::On(on) => serializer.serialize_bool(*on),
+            AutoPlayConfig::Gap(gap) => serializer.serialize_str(gap),
+        }
+    }
+}
+
+/// By hand: a bool or a gap, a bare number being seconds.
+impl<'de> Deserialize<'de> for AutoPlayConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct AutoPlayVisitor;
+        impl<'de> serde::de::Visitor<'de> for AutoPlayVisitor {
+            type Value = AutoPlayConfig;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("true, false, or the gap before the song starts (e.g. 2s)")
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(AutoPlayConfig::On(v))
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(match v.trim() {
+                    "true" => AutoPlayConfig::On(true),
+                    "false" => AutoPlayConfig::On(false),
+                    _ => AutoPlayConfig::Gap(v.to_string()),
+                })
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(AutoPlayConfig::Gap(format!("{v}s")))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(AutoPlayConfig::Gap(format!("{v}s")))
+            }
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
+                Ok(AutoPlayConfig::Gap(format!("{}ms", (v * 1000.0).round())))
+            }
+        }
+        deserializer.deserialize_any(AutoPlayVisitor)
+    }
+}
+
+impl AutoPlayConfig {
+    /// The gap before the song starts, `None` for no auto play.
+    pub fn parse(&self) -> Result<Option<std::time::Duration>, String> {
+        match self {
+            AutoPlayConfig::On(false) => Ok(None),
+            AutoPlayConfig::On(true) => Ok(Some(std::time::Duration::ZERO)),
+            AutoPlayConfig::Gap(gap) => duration_string::DurationString::from_string(gap.clone())
+                .map(|d| Some(d.into()))
+                .map_err(|_| {
+                    format!("auto_play: '{gap}' is not true, false or a gap (e.g. 2s, 500ms)")
+                }),
+        }
+    }
 }
 
 /// By hand rather than untagged: a song called `1999` reaches us as a
@@ -113,6 +184,9 @@ pub struct EntryTransitions {
     pub fade_out: Option<Fade>,
     /// How the song fades in under a song fading out.
     pub fade_in: Option<Fade>,
+    /// The gap before the song starts by itself when the playlist reaches
+    /// it; `None` when it waits for play.
+    pub auto_play: Option<std::time::Duration>,
 }
 
 /// A fade as written in a playlist: a length alone, or with its settings.
@@ -331,6 +405,13 @@ impl Playlist {
                 Ok(EntryTransitions {
                     fade_out: parse(&entry.fade_out, "fade_out", true)?,
                     fade_in: parse(&entry.fade_in, "fade_in", false)?,
+                    auto_play: entry
+                        .auto_play
+                        .as_ref()
+                        .map(AutoPlayConfig::parse)
+                        .transpose()
+                        .map_err(|e| format!("song {}: {e}", entry.song))?
+                        .flatten(),
                 })
             })
             .collect()
@@ -413,6 +494,43 @@ songs: []
             .try_deserialize()
             .unwrap();
         assert!(p.songs().is_empty());
+    }
+
+    #[test]
+    fn auto_play_reads_true_false_or_a_gap_and_writes_back() {
+        let yaml = "songs:\n- song: A\n  auto_play: true\n- song: B\n  auto_play: 2s\n\
+                    - song: C\n  auto_play: false\n- song: D\n  auto_play: 3\n- E\n";
+        let read = |text: &str| -> Playlist {
+            Config::builder()
+                .add_source(File::from_str(text, FileFormat::Yaml))
+                .build()
+                .unwrap()
+                .try_deserialize()
+                .unwrap()
+        };
+        let p = read(yaml);
+        let gaps: Vec<_> = p
+            .entry_transitions()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.auto_play)
+            .collect();
+        use std::time::Duration;
+        assert_eq!(
+            gaps,
+            vec![
+                Some(Duration::ZERO),
+                Some(Duration::from_secs(2)),
+                None,
+                Some(Duration::from_secs(3)),
+                None
+            ]
+        );
+        let written = crate::util::to_yaml_string(&p).unwrap();
+        assert_eq!(read(&written), p, "{written}");
+
+        let bad = read("songs:\n- song: A\n  auto_play: soon\n");
+        assert!(bad.entry_transitions().unwrap_err().contains("auto_play"));
     }
 
     #[test]

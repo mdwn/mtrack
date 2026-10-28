@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Auto play (#40)**: a playlist entry's `auto_play: true` starts its song by itself when the
+  playlist reaches it -- the song before it ending, or Next/Previous while stopped -- and
+  `auto_play: 2s` waits that long first, holding the last song's lights as a segue. Play, Stop,
+  navigation or a playlist switch during the gap calls it off.
 - **Ambient light between songs**: `dmx.lighting.ambient` names a `.light` show the rig plays
   while no song is -- at startup, and once a song ends or is stopped, after an optional `delay`
   that holds the song's last frame. It fades in from whatever is lit over `fade_in` (2 s by

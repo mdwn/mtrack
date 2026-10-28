@@ -103,12 +103,22 @@ impl Player {
             return current;
         }
         let playlist = self.get_playlist();
+        let from = playlist.position();
         let song = match direction {
             PlaylistDirection::Next => playlist.next()?,
             PlaylistDirection::Prev => playlist.prev()?,
         };
         self.clear_pending_start();
         self.emit_song_change(&song);
+        // Navigating onto a song with `auto_play` starts it; navigating away
+        // from one waiting to start calls it off, and the lights go to
+        // ambient as at any stop.
+        let called_off = self.cancel_auto_play();
+        match playlist.auto_play().filter(|_| playlist.position() != from) {
+            Some(gap) => self.schedule_auto_play(gap),
+            None if called_off => self.idle_ambient(true),
+            None => {}
+        }
         drop(join);
         self.load_song_samples(&song);
         Some(song)
@@ -151,6 +161,7 @@ impl Player {
 
         *self.active_playlist.write() = name.to_string();
         self.clear_pending_start();
+        self.cancel_auto_play();
 
         // Persist the choice to the config store, unless it's "all_songs" (session-only).
         if name != "all_songs" {
