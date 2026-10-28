@@ -105,6 +105,33 @@ at the break. Stop or a seek cuts everything, the fading song included.
 The web UI's playlist editor keeps a playlist's transitions when it saves, and will not overwrite
 a playlist file that does not read; transitions are edited in the file.
 
+## Auto play
+
+An entry with `auto_play` starts by itself when the playlist reaches it, rather than waiting
+for Play: an intro tape after the line check, a song segued from the one before.
+
+```yaml
+kind: playlist
+songs:
+- Line check
+- song: Walk-on tape
+  auto_play: true      # starts as soon as it is reached
+- song: Opener
+  auto_play: 2s        # waits two seconds first
+- The slow one
+```
+
+- **What reaches it.** The song before it ending by itself, or Next or Previous while stopped.
+  Stop never moves the playlist, so it never starts one; nor does switching playlists or
+  starting the player.
+- **The gap.** `true` starts the song at once; a length (`2s`, `500ms`, or a bare number of
+  seconds) waits that long first. The song before it holds its lights through the gap, as a
+  segue. Play, Stop, Next, Previous or a playlist switch during the gap calls it off.
+- **The end of the list.** Next on the last song does not move, so does not start it again.
+- A song that failed does not lead into one that auto plays.
+- **Seeing it coming.** While a gap runs, the MCP `status` tool reports the song and how long
+  until it starts, as `auto_play: {song, starts_in_seconds}`.
+
 ## Ambient light
 
 The profile's ambient light -- the show the rig plays between songs, see

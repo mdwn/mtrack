@@ -111,9 +111,9 @@ impl crate::audio::Device for Device {
         // This ensures tests can check is_playing immediately after stop() without races
         self.is_playing.store(false, Ordering::Relaxed);
 
-        sleep_tx
-            .send(())
-            .map_err(|e| crate::audio::AudioError::Playback(e.to_string()))?;
+        // Wakes a playback cut short; one that ran to its end has already
+        // dropped the receiver, and is no error.
+        let _ = sleep_tx.send(());
         let join_result = join_handle.join();
 
         if join_result.is_err() {

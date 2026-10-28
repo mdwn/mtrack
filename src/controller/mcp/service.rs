@@ -469,7 +469,9 @@ impl McpServer {
         `next` and `previous` would move to with its `fade_in` (each `null` \
         for none). `ambient` is the show the rig plays while no song is: its \
         `show` file and `state` (`pending` while its delay runs, or \
-        `playing`), `null` when none is.")]
+        `playing`), `null` when none is. `auto_play` is a song about to start \
+        by itself (its playlist entry's `auto_play` gap running): its `song` \
+        and `starts_in_seconds`, `null` when none is.")]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         Ok(ok_json(self.status_snapshot().await?))
     }
@@ -1194,7 +1196,10 @@ impl McpServer {
         length (`3s`, `500ms`, `6beats`, `1measure`; `0s` for none) or a map \
         with `length`, `curve` (`equal_power` or `linear`), `exclude` (track \
         names that do not fade) and, for `fade_out` only, `lights` (how long \
-        the lights cross into the next song's show). A top-level `ambient:` \
+        the lights cross into the next song's show). An entry's `auto_play` \
+        (`true`, `false`, or a gap such as `2s`) starts its song by itself when \
+        the song before it ends or next/previous lands on it while stopped. \
+        A top-level `ambient:` \
         sets the playlist's ambient light, played while no song is: `false` \
         for none, or a map of `show` (a `.light` file, relative to the \
         project), `delay`, `fade_in` and `fade_out`, each overriding the \
@@ -3503,6 +3508,10 @@ async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
         "elapsed": format_duration(elapsed),
         "lighting": lighting,
         "ambient": ambient,
+        "auto_play": player.auto_play_status().map(|(song, starts_in)| json!({
+            "song": song,
+            "starts_in_seconds": starts_in.as_secs_f64(),
+        })),
         "transitions": transitions_json(&playlist),
     }))
 }

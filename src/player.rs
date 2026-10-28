@@ -386,6 +386,8 @@ pub struct Player {
     /// Set with `loop_break` when the break came from previous rather than
     /// next or play, so the cleanup moves the playlist back, not on.
     loop_break_to_prev: Arc<AtomicBool>,
+    /// A playlist entry's `auto_play` waiting out its gap, if one is.
+    auto_play: Arc<parking_lot::Mutex<AutoPlayState>>,
     /// A looping song fading out after a loop break (a playlist `fade_out`):
     /// when the break came and how long the fade lasts. The audio monitor
     /// reads it to carry the fade across a loop boundary.
@@ -640,6 +642,7 @@ impl Player {
             controller_config: Arc::new(parking_lot::Mutex::new(None)),
             loop_break: Arc::new(AtomicBool::new(false)),
             loop_break_to_prev: Arc::new(AtomicBool::new(false)),
+            auto_play: Arc::new(parking_lot::Mutex::new(AutoPlayState::default())),
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
@@ -1054,6 +1057,17 @@ impl StatusEvents {
             None => None,
         })
     }
+}
+
+/// A playlist entry's `auto_play`, waiting out its gap: each schedule takes
+/// the next generation, and a wait whose generation has moved on, or that
+/// was called off, plays nothing.
+#[derive(Default)]
+struct AutoPlayState {
+    generation: u64,
+    pending: bool,
+    /// The song waiting and when it starts, while one is.
+    waiting: Option<(String, std::time::Instant)>,
 }
 
 /// The result of receiving a playback completion signal.
@@ -2315,6 +2329,130 @@ mod test {
         // Playlist should still be at Song 9 (clamped, no wrap).
         assert_eq!(player.get_playlist().current().unwrap().name(), "Song 9");
 
+        Ok(())
+    }
+
+    /// A test player on the assets' songs, with the playlist `yaml`.
+    async fn make_test_player_with_playlist(yaml: &str) -> Result<Arc<Player>, Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let config: config::Playlist = ::config::Config::builder()
+            .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        let playlist = Playlist::new("playlist", &config, songs.clone())?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        Ok(player)
+    }
+
+    async fn current_name(player: &Player) -> String {
+        player.get_playlist().current().unwrap().name().to_string()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auto_play_starts_a_song_the_one_before_leads_into() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player_with_playlist(
+            "songs:\n- Song 1\n- song: Song 3\n  auto_play: true\n- Song 5\n",
+        )
+        .await?;
+        // Song 1 ends by itself; Song 3 starts by itself and plays to its end;
+        // Song 5 waits for play.
+        player.play().await?;
+        eventually_async(
+            || async { current_name(&player).await == "Song 5" },
+            "Song 3 never played through",
+        )
+        .await;
+        eventually_async(
+            || async { !player.is_playing().await },
+            "the player never stopped",
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!player.is_playing().await, "Song 5 waits for play");
+        assert_eq!(current_name(&player).await, "Song 5");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auto_play_starts_a_song_navigated_onto() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player_with_playlist(
+            "songs:\n- Song 1\n- song: Song 3\n  auto_play: true\n- Song 5\n",
+        )
+        .await?;
+        player.next().await;
+        eventually_async(
+            || async { player.is_playing().await },
+            "Song 3 never started",
+        )
+        .await;
+        assert_eq!(current_name(&player).await, "Song 3");
+        player.stop().await;
+
+        // Next at the end of the list does not move, and does not replay it.
+        let player =
+            make_test_player_with_playlist("songs:\n- Song 1\n- song: Song 3\n  auto_play: true\n")
+                .await?;
+        player.next().await;
+        eventually_async(
+            || async { player.is_playing().await },
+            "Song 3 never started",
+        )
+        .await;
+        player.stop().await;
+        player.next().await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!player.is_playing().await, "a clamped next starts nothing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_or_navigation_in_the_gap_calls_auto_play_off() -> Result<(), Box<dyn Error>> {
+        let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 500ms\n- Song 5\n";
+        let player = make_test_player_with_playlist(yaml).await?;
+
+        // The gap runs, then the song starts; status shows it waiting.
+        player.next().await;
+        let (song, starts_in) = player.auto_play_status().expect("waiting");
+        assert_eq!(song, "Song 3");
+        assert!(starts_in <= Duration::from_millis(500), "{starts_in:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!player.is_playing().await, "waits out the gap");
+        eventually_async(
+            || async { player.is_playing().await },
+            "Song 3 never started",
+        )
+        .await;
+        assert!(player.auto_play_status().is_none(), "started, not waiting");
+        player.stop().await;
+
+        // A stop inside the gap calls it off.
+        player.prev().await;
+        player.next().await;
+        player.stop().await;
+        assert!(player.auto_play_status().is_none(), "nothing waiting");
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(!player.is_playing().await, "a stop calls it off");
+
+        // So does moving on.
+        player.prev().await;
+        player.next().await;
+        player.next().await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(!player.is_playing().await, "moving on calls it off");
+        assert_eq!(current_name(&player).await, "Song 5");
         Ok(())
     }
 
