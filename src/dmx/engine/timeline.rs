@@ -152,7 +152,7 @@ impl OutgoingPass {
 
     /// Whether this pass fades a loop break out, which outlives the playback
     /// it came from: only a stop or seek ends it early.
-    fn is_break_fade(&self) -> bool {
+    pub(super) fn is_break_fade(&self) -> bool {
         matches!(self.clock, PassClock::Wall { .. })
     }
 }

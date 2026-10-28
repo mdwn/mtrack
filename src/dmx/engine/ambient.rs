@@ -347,7 +347,17 @@ impl Engine {
         match (state.mode, state.phase, loaded) {
             (AmbientMode::Off, _, loaded) => {
                 // Off is dark between songs: what the last song left fades
-                // out rather than holding (#570).
+                // out rather than holding (#570) -- unless a fade is already
+                // taking it to dark, as a graceful ending's does, which goes
+                // on at its own length (#571).
+                let fading = self
+                    .outgoing_pass
+                    .lock()
+                    .as_ref()
+                    .is_some_and(|pass| pass.is_break_fade());
+                if fading {
+                    state.under_dark = true;
+                }
                 if !state.under_dark {
                     let fade = loaded
                         .as_ref()
@@ -1080,6 +1090,26 @@ mod tests {
         // Going idle again changes nothing.
         engine.idle_ambient(None, true);
         assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn an_ending_while_off_fades_at_its_own_length() -> Result<(), Box<dyn Error>> {
+        // #571: ambient's short fade_out cut across a graceful ending's.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        start_song(&engine, RED);
+        assert_eq!(song_frame(&engine, 0.5), (255.0, 0.0, 0.0));
+        // The ending's lights cross to dark over a second, as Stop on a
+        // looping song does, and the player goes idle at once.
+        engine.begin_break_fade(Duration::from_secs(1));
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        sleep(Duration::from_millis(400));
+        let mid = tick(&engine);
+        assert!(mid.0 > 60.0, "still fading at the ending's pace: {mid:?}");
+        sleep(Duration::from_millis(800));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0), "dark once it is over");
         Ok(())
     }
 
