@@ -111,6 +111,11 @@ Then build:
 $ make build
 ```
 
+The web UI is built into the binary from `src/webui/svelte/dist`, which `make build` refreshes
+(with the gRPC bindings in `src/webui/svelte/src/gen`) whenever the UI sources change. Both are
+generated and ignored by git, so a plain `cargo build` or `cross build` embeds whatever UI was
+last built: run `make build-ui` first after pulling.
+
 Other useful targets: `make test`, `make lint`, `make fmt`, `make docs`, `make docs-serve`. The Makefile lists the rest, including the web UI journey tests.
 
 ## Get support!

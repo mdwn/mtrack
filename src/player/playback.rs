@@ -558,10 +558,14 @@ impl Player {
         }
         let playlist = self.get_playlist();
         let song = playlist.current()?;
-        let fade = playlist
-            .loop_break(false)
+        // Beats and measures count on the grid of the song Next would go to,
+        // as a loop break's do: a prelude often has none of its own (#569).
+        // At the end of the list there is none, and the song's own counts.
+        let handover = playlist.loop_break(false);
+        let next = handover.target.filter(|next| next.name() != song.name());
+        let fade = handover
             .fade_out
-            .and_then(|fade| song.fade_out_into(&fade, None))?;
+            .and_then(|fade| song.fade_out_into(&fade, next.as_deref()))?;
         *self.start_fade.lock() = None;
         self.fade_out_playback(&handles.cancel, Some(&fade));
         let over = fade.length.max(fade.lights);
@@ -579,8 +583,9 @@ impl Player {
         Some(song)
     }
 
-    /// Notes the song ending over `over`, and brings ambient light up once
-    /// it has, unless a stop, play, navigation or playlist switch comes first.
+    /// Notes the song ending over `over`, and brings ambient light up: its
+    /// delay counts from now, so it can come in over the fade's tail rather
+    /// than after a dark gap once the song is out.
     fn begin_ending(&self, song: &str, over: Duration) {
         let generation = {
             let mut state = self.ending.lock();
@@ -588,16 +593,13 @@ impl Player {
             state.fading = Some((song.to_string(), std::time::Instant::now() + over));
             state.generation
         };
+        self.idle_ambient(true);
         let player = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(over).await;
-            let done = {
-                let mut state = player.ending.lock();
-                state.generation == generation && state.fading.take().is_some()
-            };
-            if done {
+            let mut state = player.ending.lock();
+            if state.generation == generation && state.fading.take().is_some() {
                 info!("The looping song has ended.");
-                player.idle_ambient(true);
             }
         });
     }

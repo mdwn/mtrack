@@ -106,10 +106,11 @@ at the break. A seek cuts everything, the fading song included.
 
 Stop on a looping song whose entry has a `fade_out` ends it over that fade, as a loop break
 would -- the same length, curve, `exclude` and `lights` -- with nothing after it. The player
-stops at once and the playlist stays where it is; the lights cross toward dark (the length
-counts on the song's own grid, there being no next song), and ambient light follows once the
-fade is over, after its delay. Without a `fade_out`, Stop cuts at once, as it does any song that
-is not looping.
+stops at once and the playlist stays where it is, and the lights cross toward dark. Beats and
+measures count on the grid of the song Next would go to, as for a loop break, so a prelude with
+no grid of its own still fades; on the last entry they count on the song's own. Ambient light's
+delay counts from the Stop, so it comes in over the tail of the fade rather than after a dark
+gap. Without a `fade_out`, Stop cuts at once, as it does any song that is not looping.
 
 - **Stop again** while the song fades out cuts everything at once.
 - **Play** while it fades out starts the song again from the top, the fade playing on under it;

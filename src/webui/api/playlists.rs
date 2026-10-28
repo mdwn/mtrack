@@ -210,7 +210,9 @@ pub(super) async fn put_playlist_by_name(
             .into_response());
     }
     let yaml = match crate::util::to_yaml_string(&playlist_config) {
-        Ok(y) => y,
+        // A text file ends with a newline.
+        Ok(y) if y.ends_with('\n') => y,
+        Ok(y) => y + "\n",
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -392,7 +394,8 @@ mod test {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(playlists_dir.join("mylist.yaml").exists());
+        let written = std::fs::read_to_string(playlists_dir.join("mylist.yaml")).unwrap();
+        assert!(written.ends_with('\n'), "{written:?}");
     }
 
     /// PUTs `songs` (JSON) to the playlist `mylist`, whose file holds

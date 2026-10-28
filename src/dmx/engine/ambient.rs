@@ -346,6 +346,17 @@ impl Engine {
         let now = Instant::now();
         match (state.mode, state.phase, loaded) {
             (AmbientMode::Off, _, loaded) => {
+                // Off is dark between songs: what the last song left fades
+                // out rather than holding (#570).
+                if !state.under_dark {
+                    let fade = loaded
+                        .as_ref()
+                        .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
+                            a.settings.fade_out
+                        });
+                    self.darken_under(fade);
+                    state.under_dark = true;
+                }
                 state.phase = Phase::Off;
                 state.ambient = loaded;
             }
@@ -1050,6 +1061,25 @@ mod tests {
         engine.idle_ambient(None, true);
         engine.set_ambient_mode(AmbientMode::Auto);
         assert_eq!(tick(&engine), (0.0, 0.0, 255.0));
+        Ok(())
+    }
+
+    #[test]
+    fn a_song_stopped_while_off_fades_to_dark() -> Result<(), Box<dyn Error>> {
+        // #570: with the mode Off, the song's last frame held for good.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "300ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        start_song(&engine, RED);
+        assert_eq!(song_frame(&engine, 0.5), (255.0, 0.0, 0.0));
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        let first = tick(&engine);
+        assert!(first.0 > 200.0, "fades from the song: {first:?}");
+        sleep(Duration::from_millis(350));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
+        // Going idle again changes nothing.
+        engine.idle_ambient(None, true);
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
         Ok(())
     }
 

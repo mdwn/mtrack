@@ -11,13 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Ending a looping song gracefully**: Stop on a looping song whose playlist entry has a
   `fade_out` now fades it out over that fade, lights included, instead of cutting; the playlist
-  stays put, nothing starts after it, and ambient light follows once the fade is over. A second
+  stays put, nothing starts after it, and ambient light comes in over the fade's tail (its delay
+  counts from the Stop). Beats and measures count on the next song's grid, as for a loop break,
+  so a prelude with no grid of its own fades too. A second
   Stop cuts at once. Next on the last entry (or Previous on the first) while it loops ends the
   song the same way instead of restarting it. The dashboard shows "… is fading out — Stop again
   to cut", and the MCP `status` tool reports it as `ending`.
 - **Ambient mode: Auto / On / Off**: On brings ambient light up now and holds it over any song,
   crossing back to the song's show where it has got to when set back to Auto; Off fades ambient
-  out to dark. Set it from the dashboard's playback card, gRPC (`SetAmbientMode`), OSC
+  out to dark, and a song that ends or is stopped while Off fades to dark too. Set it from the dashboard's playback card, gRPC (`SetAmbientMode`), OSC
   (`/mtrack/ambient/on|off|auto`), a MIDI controller (`ambient_on`, `ambient_off`,
   `ambient_auto`) or MCP (`set_ambient_mode`); it shows in `status` and the playback feed.
 - **Auto-play controls**: a song waiting to auto play can be called off without stopping
@@ -99,9 +101,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The live MIDI to DMX pass-through** (`midi.midi_to_dmx`, with its `note_mapper` and
   `control_change_mapper` transformers) and its web UI editor. Ambient light and its Auto / On /
-  Off mode replace it. A profile that still has `midi_to_dmx` loads, and the key is ignored
-  (and dropped when the profile is next saved). MIDI-file light shows (`dmx_file`) are
-  unaffected.
+  Off mode replace it. A profile that still has `midi_to_dmx` loads, and the key is ignored;
+  the next save from the web UI drops it, so a profile kept in git shows that as a diff.
+  MIDI-file light shows (`dmx_file`) are unaffected.
 
 ### Fixed
 

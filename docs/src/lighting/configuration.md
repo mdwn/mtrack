@@ -955,8 +955,8 @@ The operator can take ambient light in hand while the player runs, with its **mo
   crosses back to the song where it has got to, over `fade_out`. A pause holds whichever is
   showing.
 - **Off between songs.** The stage goes dark once ambient has faded out, and stays dark until a
-  song plays or the mode changes. A song ending while the mode is `off` holds its last frame,
-  as with no ambient light configured.
+  song plays or the mode changes. A song that ends or is stopped while the mode is `off` fades
+  to dark over `fade_out` (1 s with no ambient light configured).
 - **Back to auto.** Between songs, ambient fades in at once; during a song with lights, it
   waits for the song to end.
 - **No show.** With no ambient light configured, or a show that does not load, `on` lights

@@ -3569,7 +3569,9 @@ mod test {
             std::fs::write(
                 song_dir.join("song.yaml"),
                 format!(
-                    "name: {name}\ntracks:\n  - name: t\n    file: t.wav\nloop_playback: {looping}\n"
+                    "name: {name}\ntracks:\n  - name: t\n    file: t.wav\nloop_playback: {looping}\n{}",
+                    // Only C has a grid: one measure is 2 s.
+                    if name == "C" { "tempo:\n  bpm: 120\n  time_signature: 4/4\n" } else { "" }
                 ),
             )?;
         }
@@ -3716,6 +3718,18 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_counts_measures_on_the_next_songs_grid() -> Result<(), Box<dyn Error>> {
+        // #569: B has no grid of its own, so a fade in measures cut.
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 1measure\n- C\n").await?;
+        player.stop().await;
+        let fade = player.break_fade.lock().clone().expect("a fade");
+        assert_eq!(fade.length, Duration::from_secs(2));
+        assert!(player.ending_status().is_some());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_second_stop_cuts_the_ending() -> Result<(), Box<dyn Error>> {
         let (player, _dir) =
             player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 10s\n- C\n").await?;
@@ -3836,7 +3850,8 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn ambient_light_comes_up_once_an_ending_is_over() -> Result<(), Box<dyn Error>> {
+    async fn ambient_light_counts_its_delay_from_the_start_of_an_ending(
+    ) -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let song_dir = dir.path().join("songs").join("vamp");
         fs::create_dir_all(&song_dir)?;
@@ -3860,7 +3875,7 @@ mod test {
         let lighting = config::Lighting::new(None, Some(groups), None).with_ambient(Some(
             config::ambient::Ambient::new(
                 Some(ambient_show.display().to_string()),
-                Some("0s".to_string()),
+                Some("500ms".to_string()),
                 None,
                 None,
             ),
@@ -3876,7 +3891,7 @@ mod test {
         assert!(songs.failures().is_empty(), "{:?}", songs.failures());
         let config: config::Playlist = ::config::Config::builder()
             .add_source(::config::File::from_str(
-                "songs:\n- song: Vamp\n  fade_out: 1s\n",
+                "songs:\n- song: Vamp\n  fade_out: 3s\n",
                 ::config::FileFormat::Yaml,
             ))
             .build()?
@@ -3903,13 +3918,14 @@ mod test {
         playing_eventually(&player, "Vamp").await?;
         eventually(|| state().is_none(), "ambient leaves for the song");
 
-        // The song fades out first: ambient light waits for it, even with
-        // no delay of its own.
+        // Ambient's delay counts from the Stop, not from the end of the fade,
+        // so it comes in over the fade's tail rather than after a dark gap.
         player.stop().await;
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(!player.is_playing().await);
-        assert_eq!(state(), None, "ambient waits out the fade");
-        eventually(|| state() == Some("playing"), "ambient after the ending");
+        assert_eq!(state(), Some("pending"), "ambient waits out its delay");
+        eventually(|| state() == Some("playing"), "ambient during the ending");
+        assert!(player.ending_status().is_some(), "the fade still runs");
         Ok(())
     }
 
