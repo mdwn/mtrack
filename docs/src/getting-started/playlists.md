@@ -120,9 +120,11 @@ is not looping.
 - While it fades out, the dashboard's playback card says so ("Walk-in loop is fading out (4s)")
   with Stop left live, and the MCP `status` tool reports `ending: {song, remaining_seconds}`.
 
-The web UI's playlist editor keeps a playlist's transitions when it saves, and will not overwrite
-a playlist file that does not read; fades are edited in the file. Auto play and ambient light
-(below) can be set in the editor too.
+Fades can also be set in the web UI's playlist editor, under each song's **Transitions**; it
+refuses what the player would refuse, writes an entry left with no settings as its name alone,
+and will not overwrite a playlist file that does not read. Auto play and ambient light (below)
+can be set in the editor too. The dashboard's playback card says what a loop break will do
+("Next breaks the loop: fades out over 1 measure into Opener").
 
 ## Auto play
 

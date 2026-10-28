@@ -1331,6 +1331,14 @@ impl Song {
         }
     }
 
+    /// Test helper: a looping song with the given track names.
+    #[cfg(test)]
+    pub fn new_for_test_looping(name: &str, track_names: &[&str]) -> Song {
+        let mut song = Self::new_for_test(name, track_names);
+        song.loop_playback = true;
+        song
+    }
+
     /// Test helper: a song with a beat grid and named sections, for exercising
     /// section resolution and playhead-section lookup.
     #[cfg(test)]

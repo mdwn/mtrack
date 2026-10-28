@@ -336,10 +336,48 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 "show": status.show.display().to_string(),
                 "state": status.state,
             })),
+            "next": next_json(&playlist, is_playing),
         });
 
         let _ = tx.send(msg.to_string());
     }
+}
+
+/// What comes after the current song and how it arrives, for the
+/// dashboard: `null` with no current song, a `null` song at the end of the
+/// playlist. A looping song that is playing goes on only by a loop break
+/// (Play or Next), which takes the playlist's fades; otherwise the next song
+/// starts by itself after its auto-play gap, or waits for Play.
+fn next_json(playlist: &crate::playlist::Playlist, is_playing: bool) -> serde_json::Value {
+    let Some(current) = playlist.current() else {
+        return serde_json::Value::Null;
+    };
+    let position = playlist.position();
+    let Some(song) = playlist.songs().get(position + 1) else {
+        return json!({"song": null});
+    };
+    if is_playing && current.loop_playback() {
+        let handover = playlist.loop_break(false);
+        return json!({
+            "song": handover.target.as_ref().map(|s| s.name().to_string()),
+            "breaks_loop": true,
+            "fade_out": handover.fade_out.as_ref().map(crate::config::Fade::to_json),
+            "fade_in": handover.fade_in.as_ref().map(crate::config::Fade::to_json),
+            "auto_play_ms": null,
+        });
+    }
+    let gap = playlist
+        .entry_auto_play()
+        .get(position + 1)
+        .copied()
+        .flatten();
+    json!({
+        "song": song,
+        "breaks_loop": false,
+        "fade_out": null,
+        "fade_in": null,
+        "auto_play_ms": gap.map(|gap| gap.as_millis() as u64),
+    })
 }
 
 /// Watches the shared state snapshot (fixtures + active effects) and broadcasts changes.
@@ -1234,6 +1272,52 @@ metronome: {}
         }
 
         handle.abort();
+    }
+
+    #[test]
+    fn next_says_what_follows_and_how_it_arrives() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "Walk-in".to_string(),
+            Arc::new(Song::new_for_test_looping("Walk-in", &["pad"])),
+        );
+        for name in ["Opener", "Slow One"] {
+            map.insert(
+                name.to_string(),
+                Arc::new(Song::new_for_test(name, &["kick"])),
+            );
+        }
+        let songs = Arc::new(Songs::new(map));
+        let text = "songs:\n- song: Walk-in\n  fade_out: {length: 1measure, lights: 0s}\n\
+                    - song: Opener\n  fade_in: 4beats\n  auto_play: 2s\n- Slow One\n";
+        let config: crate::config::Playlist = ::config::Config::builder()
+            .add_source(::config::File::from_str(text, ::config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        let pl = playlist::Playlist::new("show", &config, songs).unwrap();
+
+        // Looping and playing: only a loop break goes on, with its fades.
+        let next = next_json(&pl, true);
+        assert_eq!(next["song"], "Opener");
+        assert_eq!(next["breaks_loop"], true);
+        assert_eq!(next["fade_out"]["length"], "1measure");
+        assert_eq!(next["fade_out"]["lights"], "0s");
+        assert_eq!(next["fade_in"]["length"], "4beats");
+        // Stopped, Next reaches the song, which starts after its gap.
+        let next = next_json(&pl, false);
+        assert_eq!(next["breaks_loop"], false);
+        assert_eq!(next["auto_play_ms"], 2000);
+
+        pl.next();
+        let next = next_json(&pl, true);
+        assert_eq!(next["song"], "Slow One");
+        assert_eq!(next["breaks_loop"], false);
+        assert!(next["auto_play_ms"].is_null(), "waits for play: {next}");
+
+        pl.next();
+        assert_eq!(next_json(&pl, true), json!({"song": null}));
     }
 
     #[test]

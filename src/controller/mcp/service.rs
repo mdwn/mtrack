@@ -3552,18 +3552,7 @@ fn transitions_json(playlist: &crate::playlist::Playlist) -> Value {
 /// is the default (a fade-out's `loop_crossfade_cut`, a fade-in's none),
 /// as is a `null` `lights` (the length).
 fn fade_json(fade: Option<&crate::config::Fade>) -> Value {
-    let Some(fade) = fade else {
-        return Value::Null;
-    };
-    json!({
-        "length": fade.length.to_string(),
-        "curve": match fade.curve {
-            crate::config::FadeCurve::EqualPower => "equal_power",
-            crate::config::FadeCurve::Linear => "linear",
-        },
-        "exclude": fade.exclude,
-        "lights": fade.lights.map(|l| l.to_string()),
-    })
+    fade.map_or(Value::Null, crate::config::Fade::to_json)
 }
 
 impl McpServer {

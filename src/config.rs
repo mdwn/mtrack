@@ -65,8 +65,8 @@ pub use self::pilot::PilotConfig;
 pub use self::player::{MetronomeDefaults, Player};
 #[allow(unused_imports)]
 pub use self::playlist::{
-    AutoPlayConfig, ConfiguredEntry, EntryTransitions, Fade, FadeConfig, FadeCurve, Playlist,
-    PlaylistEntry,
+    AutoPlayConfig, ConfiguredEntry, EntryFades, EntryTransitions, Fade, FadeConfig, FadeCurve,
+    Playlist, PlaylistEntry,
 };
 // Sample types are exported for external configuration
 pub use self::hostname::resolve_hostname;

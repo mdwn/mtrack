@@ -50,6 +50,8 @@ pub struct Playlist {
     songs: Vec<String>,
     /// How each entry hands over to the next.
     transitions: Vec<config::EntryTransitions>,
+    /// Each entry's fades as written, for an editor.
+    fades: Vec<config::EntryFades>,
     /// Its ambient light, as written: overriding the player's.
     ambient: Option<config::ambient::PlaylistAmbient>,
     /// The current position of the playlist.
@@ -95,6 +97,7 @@ impl Playlist {
             name: name.to_string(),
             songs: song_names,
             transitions,
+            fades: config.entry_fades(),
             ambient: config.ambient().cloned(),
             position: Arc::new(RwLock::new(0)),
             registry: Arc::clone(&registry),
@@ -240,6 +243,11 @@ impl Playlist {
         self.transitions.iter().map(|t| t.auto_play).collect()
     }
 
+    /// Each entry's fades as written, in order.
+    pub fn entry_fades(&self) -> &[config::EntryFades] {
+        &self.fades
+    }
+
     /// Sets the playlist position to the song matching the given name.
     /// Returns the song if found, None otherwise.
     pub fn navigate_to(&self, name: &str) -> Option<Arc<Song>> {
@@ -381,6 +389,7 @@ mod test {
             name: "empty".to_string(),
             songs: vec![],
             transitions: vec![],
+            fades: vec![],
             ambient: None,
             position: Arc::new(parking_lot::RwLock::new(0)),
             registry,
@@ -509,6 +518,7 @@ mod test {
             name: "broken".to_string(),
             songs: vec!["Song 1".to_string(), "Ghost Song".to_string()],
             transitions: vec![Default::default(); 2],
+            fades: vec![Default::default(); 2],
             ambient: None,
             position: Arc::new(parking_lot::RwLock::new(0)),
             registry,
