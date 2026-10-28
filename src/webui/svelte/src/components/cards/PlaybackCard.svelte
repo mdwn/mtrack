@@ -543,7 +543,9 @@
           class="btn-icon-circle"
           onclick={stop}
           disabled={loading ||
-            (!$playbackStore.is_playing && !$playbackStore.ending)}
+            (!$playbackStore.is_playing &&
+              !$playbackStore.ending &&
+              !$playbackStore.auto_play)}
           title={$t("playback.stopTooltip")}
           aria-label={$t("playback.stop")}
         >

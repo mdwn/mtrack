@@ -236,6 +236,10 @@ test.describe("Dashboard: auto play and ambient light", () => {
     await expect(page.getByTestId("auto-play-countdown")).toContainText(
       "Test Song Beta starts in 3s",
     );
+    // "Stop cancels it": the button is there to press while nothing plays.
+    await expect(
+      page.getByRole("button", { name: "Stop", exact: true }),
+    ).toBeEnabled();
     await expect(page.getByTestId("ambient-badge")).toContainText(
       "Ambient light",
     );
