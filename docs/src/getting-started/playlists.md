@@ -103,7 +103,8 @@ song's `loop_crossfade` as its loop does. MIDI from the looping song stops
 at the break. Stop or a seek cuts everything, the fading song included.
 
 The web UI's playlist editor keeps a playlist's transitions when it saves, and will not overwrite
-a playlist file that does not read; transitions are edited in the file.
+a playlist file that does not read; fades are edited in the file. Auto play and ambient light
+(below) can be set in the editor too.
 
 ## Auto play
 
@@ -129,8 +130,11 @@ songs:
   segue. Play, Stop, Next, Previous or a playlist switch during the gap calls it off.
 - **The end of the list.** Next on the last song does not move, so does not start it again.
 - A song that failed does not lead into one that auto plays.
-- **Seeing it coming.** While a gap runs, the MCP `status` tool reports the song and how long
-  until it starts, as `auto_play: {song, starts_in_seconds}`.
+- **Seeing it coming.** While a gap runs, the dashboard's playback card counts it down
+  ("Opener starts in 2s"), and the MCP `status` tool reports the song and how long until it
+  starts, as `auto_play: {song, starts_in_seconds}`.
+- **In the web UI.** The playlist editor has an **Auto play** box on each song, with a gap field
+  beside it once ticked: empty starts the song at once.
 
 ## Ambient light
 
@@ -151,6 +155,9 @@ songs:
 
 `ambient: false` turns it off for the playlist. Switching playlists while nothing plays crosses
 straight into the new playlist's ambient light, or fades the old one out.
+
+In the web UI's playlist editor, **Ambient light** picks the profile's, none, or the playlist's
+own; its own shows the show and timing fields, each left empty to keep the profile's.
 
 ## See also
 

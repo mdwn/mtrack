@@ -85,6 +85,39 @@
     onchange();
   }
 
+  /** Sets one of the ambient light's settings, dropping the block when it
+   *  is left with none. */
+  function setAmbient(key: string, value: string) {
+    if (value) {
+      if (!lighting.ambient) lighting.ambient = {};
+      lighting.ambient[key] = value;
+    } else if (lighting.ambient) {
+      delete lighting.ambient[key];
+      if (Object.keys(lighting.ambient).length === 0) {
+        delete lighting.ambient;
+      }
+    }
+    onchange();
+  }
+
+  const ambientTimings = [
+    {
+      key: "delay",
+      label: "lighting.ambientDelay",
+      placeholder: "lighting.ambientDelayPlaceholder",
+    },
+    {
+      key: "fade_in",
+      label: "lighting.ambientFadeIn",
+      placeholder: "lighting.ambientFadeInPlaceholder",
+    },
+    {
+      key: "fade_out",
+      label: "lighting.ambientFadeOut",
+      placeholder: "lighting.ambientFadeOutPlaceholder",
+    },
+  ];
+
   /** Why the last rename was refused, by the field it was typed in. */
   let renameError = $state<Record<string, string>>({});
 
@@ -312,6 +345,46 @@
         />
       {/if}
       <span class="field-hint">{$t("lighting.venueHintField")}</span>
+    </div>
+
+    <!-- Ambient light -->
+    <div class="subsection" data-testid="lighting-ambient">
+      <h4 class="subsection-title">{$t("lighting.ambient")}</h4>
+      <span class="field-hint">{$t("lighting.ambientHint")}</span>
+      <div class="field">
+        <label for="lighting-ambient-show">{$t("lighting.ambientShow")}</label>
+        <input
+          id="lighting-ambient-show"
+          class="input"
+          type="text"
+          placeholder={$t("lighting.ambientShowPlaceholder")}
+          value={lighting.ambient?.show ?? ""}
+          onchange={(e) =>
+            setAmbient("show", (e.target as HTMLInputElement).value.trim())}
+        />
+      </div>
+      <div class="field-row-3">
+        {#each ambientTimings as timing (timing.key)}
+          <div class="field">
+            <label for={`lighting-ambient-${timing.key}`}
+              >{$t(timing.label)}</label
+            >
+            <input
+              id={`lighting-ambient-${timing.key}`}
+              class="input"
+              type="text"
+              placeholder={$t(timing.placeholder)}
+              value={lighting.ambient?.[timing.key] ?? ""}
+              onchange={(e) =>
+                setAmbient(
+                  timing.key,
+                  (e.target as HTMLInputElement).value.trim(),
+                )}
+            />
+          </div>
+        {/each}
+      </div>
+      <span class="field-hint">{$t("lighting.ambientTimingHint")}</span>
     </div>
 
     <!-- Logical Groups -->

@@ -77,20 +77,61 @@ pub(super) async fn get_playlist_by_name(
         .iter()
         .map(|s| s.name().to_string())
         .collect();
+    // Each entry's auto play as the editor writes it: `true` for at once,
+    // a gap, or null for none.
+    let auto_play: Vec<serde_json::Value> = pl
+        .entry_auto_play()
+        .into_iter()
+        .map(|gap| match gap {
+            None => serde_json::Value::Null,
+            Some(gap) if gap.is_zero() => json!(true),
+            Some(gap) => json!(format_gap(gap)),
+        })
+        .collect();
     (
         StatusCode::OK,
         Json(json!({
             "name": name,
             "songs": pl.songs(),
+            "auto_play": auto_play,
+            "ambient": pl.ambient(),
             "available_songs": all_songs,
         })),
     )
         .into_response()
 }
 
+/// A gap as written in a playlist: whole seconds as `2s`, else `1500ms`.
+fn format_gap(gap: std::time::Duration) -> String {
+    let ms = gap.as_millis();
+    if ms.is_multiple_of(1000) {
+        format!("{}s", ms / 1000)
+    } else {
+        format!("{ms}ms")
+    }
+}
+
 #[derive(serde::Deserialize)]
 pub(super) struct PlaylistBody {
     songs: Vec<String>,
+    /// Each song's auto play, in the order of `songs`; absent keeps each
+    /// entry's as it was.
+    #[serde(default)]
+    auto_play: Option<Vec<Option<config::AutoPlayConfig>>>,
+    /// The playlist's ambient light: absent keeps it, null removes it (the
+    /// profile's plays), `false` turns it off, a map overrides settings.
+    #[serde(default, deserialize_with = "present")]
+    ambient: Option<Option<config::ambient::PlaylistAmbient>>,
+}
+
+/// A field that is there, null or not: `Some(None)` for null, against the
+/// `None` of a field left out.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
 /// PUT /api/playlists/:name — create or update a playlist.
@@ -135,6 +176,24 @@ pub(super) async fn put_playlist_by_name(
     } else {
         config::Playlist::new(&body.songs)
     };
+    let playlist_config = match &body.auto_play {
+        Some(auto_play) => playlist_config.with_auto_play(auto_play),
+        None => playlist_config,
+    };
+    let playlist_config = match body.ambient {
+        Some(ambient) => playlist_config.with_ambient(ambient),
+        None => playlist_config,
+    };
+    // What the player would refuse to load is refused here, before the file
+    // is written.
+    let invalid = playlist_config.entry_transitions().err().or_else(|| {
+        playlist_config
+            .ambient()
+            .and_then(|ambient| ambient.validate().err())
+    });
+    if let Some(e) = invalid {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": e}))).into_response());
+    }
     let yaml = match crate::util::to_yaml_string(&playlist_config) {
         Ok(y) => y,
         Err(e) => {
@@ -241,6 +300,8 @@ pub(super) async fn activate_playlist(
 mod test {
     use super::super::router;
     use super::super::test_helpers::*;
+    use super::format_gap;
+    use crate::config;
     use axum::body::Body;
     use axum::http::StatusCode;
     use tower::ServiceExt;
@@ -322,6 +383,12 @@ mod test {
     /// PUTs `songs` (JSON) to the playlist `mylist`, whose file holds
     /// `existing`; returns the status and the file after.
     async fn put_over(existing: &str, songs: &str) -> (StatusCode, String) {
+        put_body_over(existing, &format!(r#"{{"songs": {songs}}}"#)).await
+    }
+
+    /// PUTs `body` to the playlist `mylist`, whose file holds `existing`;
+    /// returns the status and the file after.
+    async fn put_body_over(existing: &str, body: &str) -> (StatusCode, String) {
         let (state, _dir) = test_state();
         let path = state.playlists_dir.clone().unwrap().join("mylist.yaml");
         std::fs::write(&path, existing).unwrap();
@@ -332,12 +399,90 @@ mod test {
                     .method("PUT")
                     .uri("/playlists/mylist")
                     .header("content-type", "application/json")
-                    .body(Body::from(format!(r#"{{"songs": {songs}}}"#)))
+                    .body(Body::from(body.to_string()))
                     .unwrap(),
             )
             .await
             .unwrap();
         (response.status(), std::fs::read_to_string(&path).unwrap())
+    }
+
+    /// The playlist file `text` reads as.
+    fn read(text: &str) -> config::Playlist {
+        ::config::Config::builder()
+            .add_source(::config::File::from_str(text, ::config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn put_playlist_sets_auto_play_and_ambient() {
+        let (status, after) = put_body_over(
+            "songs:\n- song: Song A\n  fade_out: 2s\n- Song B\n",
+            r#"{"songs": ["Song B", "Song A", "Song C"],
+                "auto_play": [true, null, "1500ms"],
+                "ambient": {"show": "lighting/walk_in.light", "fade_in": "6s"}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{after}");
+        let gaps: Vec<_> = read(&after)
+            .entry_transitions()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.auto_play)
+            .collect();
+        use std::time::Duration;
+        assert_eq!(
+            gaps,
+            vec![
+                Some(Duration::ZERO),
+                None,
+                Some(Duration::from_millis(1500))
+            ]
+        );
+        // Song A keeps its fade, and turning auto play off leaves no setting.
+        assert!(after.contains("fade_out: 2s"), "{after}");
+        assert!(!after.contains("auto_play: false"), "{after}");
+        assert!(after.contains("show: lighting/walk_in.light"), "{after}");
+        assert!(after.contains("fade_in: 6s"), "{after}");
+    }
+
+    #[tokio::test]
+    async fn put_playlist_keeps_or_clears_ambient() {
+        let existing = "ambient: false\nsongs:\n- song: Song A\n  auto_play: 2s\n";
+        // Left out: kept, and each entry's auto play with it.
+        let (status, after) = put_body_over(existing, r#"{"songs": ["Song A"]}"#).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(after.contains("ambient: false"), "{after}");
+        assert!(after.contains("auto_play: 2s"), "{after}");
+        // Null: removed, so the profile's plays.
+        let (status, after) =
+            put_body_over(existing, r#"{"songs": ["Song A"], "ambient": null}"#).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!after.contains("ambient"), "{after}");
+    }
+
+    #[tokio::test]
+    async fn put_playlist_refuses_a_bad_gap_or_ambient() {
+        let existing = "songs:\n- Song A\n";
+        for body in [
+            r#"{"songs": ["Song A"], "auto_play": ["soon"]}"#,
+            r#"{"songs": ["Song A"], "ambient": {"show": "a.light", "delay": "later"}}"#,
+            r#"{"songs": ["Song A"], "ambient": {"shw": "a.light"}}"#,
+        ] {
+            let (status, after) = put_body_over(existing, body).await;
+            assert!(status.is_client_error(), "{body}: {status}");
+            assert_eq!(after, existing, "{body}");
+        }
+    }
+
+    #[test]
+    fn gaps_are_written_as_a_playlist_would() {
+        use std::time::Duration;
+        assert_eq!(format_gap(Duration::from_secs(2)), "2s");
+        assert_eq!(format_gap(Duration::from_millis(1500)), "1500ms");
     }
 
     #[tokio::test]
@@ -546,7 +691,41 @@ mod test {
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["name"], "testlist");
         assert!(parsed["songs"].is_array());
+        assert!(parsed["auto_play"].is_array());
+        assert!(parsed["ambient"].is_null());
         assert!(parsed["available_songs"].is_array());
+    }
+
+    #[tokio::test]
+    async fn get_playlist_reports_its_ambient() {
+        let (state, _dir) = test_state();
+        let playlists_dir = state.playlists_dir.clone().unwrap();
+        std::fs::write(
+            playlists_dir.join("testlist.yaml"),
+            "songs: []\nambient:\n  show: a.light\n  delay: 3s\n",
+        )
+        .unwrap();
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/playlists/testlist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(
+            parsed["ambient"],
+            serde_json::json!({"show": "a.light", "delay": "3s"})
+        );
     }
 
     #[tokio::test]

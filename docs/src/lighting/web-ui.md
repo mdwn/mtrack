@@ -455,6 +455,13 @@ one open with its constraints](../images/lighting-groups.png)
 The **current venue** is the one the engine lights; shows play on it, and the live stage views
 draw it. Choosing another one here is how you move the rig from one place to another.
 
+**Ambient light** is the show the rig plays while no song is: at startup, and after a song ends
+or is stopped. Name the `.light` file (relative to the project) under **Show**; **Delay** holds
+the song's last frame first, **Fade in** comes up from whatever is lit, and **Fade out** crosses
+into the next song's show (`3s`, `500ms`; empty for the defaults of `0s`, `2s` and `1s`). Clear
+the show and the timings to have none. A playlist can override it in the playlist editor. See
+[Ambient light](configuration.md#ambient-light).
+
 A profile that still carries inline fixtures (`dmx.lighting.fixtures`) is refused at load;
 fixtures are patched in venue files, and `mtrack migrate --apply` moves inline ones into one (see
 the [command-line reference](../reference/cli.md#mtrack-migrate)).

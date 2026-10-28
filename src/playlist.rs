@@ -223,6 +223,12 @@ impl Playlist {
         self.transitions.get(position).and_then(|t| t.auto_play)
     }
 
+    /// Each entry's `auto_play` gap, in order: `None` where it waits for
+    /// play.
+    pub fn entry_auto_play(&self) -> Vec<Option<Duration>> {
+        self.transitions.iter().map(|t| t.auto_play).collect()
+    }
+
     /// Sets the playlist position to the song matching the given name.
     /// Returns the song if found, None otherwise.
     pub fn navigate_to(&self, name: &str) -> Option<Arc<Song>> {
