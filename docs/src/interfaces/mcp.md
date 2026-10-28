@@ -60,7 +60,11 @@ client's MCP server settings.
 About 60 tools are available. They fall into a few groups:
 
 - **Status & discovery** — current playback status, host/runtime info, and listings of songs,
-  playlists, groups, venues, and fixture types.
+  playlists, groups, venues, and fixture types. `status` also reports the
+  [ambient light](../lighting/configuration.md#ambient-light) (`ambient: {show, state}`, where
+  `state` is `pending` while its delay runs or `playing`) and a song about to
+  [auto play](../getting-started/playlists.md#auto-play) (`auto_play: {song, starts_in_seconds}`),
+  each `null` when there is none.
 - **Playback control** — play, stop, next/previous, play-from-a-time, play-a-named-song-from-a-time,
   seek within the current song (to a time or a named section), switch playlist, stop triggered
   samples, and section-loop control (loop a section, stop the loop, acknowledge the current
@@ -68,7 +72,8 @@ About 60 tools are available. They fall into a few groups:
 - **Configuration editing** — read the full config and update the `audio`, `midi`, `dmx`, and
   `controllers` subsections, plus add / update / remove hardware profiles.
 - **Song & playlist authoring** — read, write, and patch `song.yaml` and playlist files, plus
-  detailed song metadata and beat-grid queries.
+  detailed song metadata and beat-grid queries. A playlist write is checked as the player would
+  load it: each entry's `fade_out`, `fade_in` and `auto_play`, and the playlist's `ambient`.
 - **Lighting authoring** — read, write, validate, patch, and delete `.light` DSL files for songs,
   venues, and fixture types (venue tools also take `.venue` files, fixture-type tools `.fixture`),
   list the lighting cues and active effects, and fetch a DSL reference primer. Manufacturer and

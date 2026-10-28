@@ -77,6 +77,12 @@ profiles:
       universes:
         - universe: 1
           name: light-show
+      lighting:
+        current_venue: main_stage
+        # The show the rig plays between songs (see Lighting Configuration).
+        ambient:
+          show: lighting/ambient.light
+          delay: 3s
 
   # Fallback: minimal audio setup for any host (no MIDI/DMX)
   - audio:
