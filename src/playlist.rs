@@ -26,6 +26,8 @@ pub enum PlaylistError {
     SongNotFound(String),
     #[error("Invalid transition: {0}")]
     InvalidTransition(String),
+    #[error("Invalid ambient: {0}")]
+    InvalidAmbient(String),
 }
 
 /// What a loop break hands over to: the song it moves to, and the fades the
@@ -47,6 +49,8 @@ pub struct Playlist {
     songs: Vec<String>,
     /// How each entry hands over to the next.
     transitions: Vec<config::EntryTransitions>,
+    /// Its ambient light, as written: overriding the player's.
+    ambient: Option<config::ambient::PlaylistAmbient>,
     /// The current position of the playlist.
     position: Arc<RwLock<usize>>,
     /// The song registry.
@@ -90,6 +94,7 @@ impl Playlist {
             name: name.to_string(),
             songs: song_names,
             transitions,
+            ambient: config.ambient().cloned(),
             position: Arc::new(RwLock::new(0)),
             registry: Arc::clone(&registry),
             span: span!(Level::INFO, "playlist"),
@@ -99,6 +104,11 @@ impl Playlist {
     /// Returns the name of this playlist.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Its ambient light, as written: overriding the player's.
+    pub fn ambient(&self) -> Option<&config::ambient::PlaylistAmbient> {
+        self.ambient.as_ref()
     }
 
     /// Returns the current position in the playlist (0-indexed).
@@ -240,6 +250,9 @@ pub fn validate_transitions(
     config: &config::Playlist,
     registry: &Songs,
 ) -> Result<Vec<config::EntryTransitions>, PlaylistError> {
+    if let Some(ambient) = config.ambient() {
+        ambient.validate().map_err(PlaylistError::InvalidAmbient)?;
+    }
     let transitions = config
         .entry_transitions()
         .map_err(PlaylistError::InvalidTransition)?;
@@ -342,6 +355,7 @@ mod test {
             name: "empty".to_string(),
             songs: vec![],
             transitions: vec![],
+            ambient: None,
             position: Arc::new(parking_lot::RwLock::new(0)),
             registry,
             span: tracing::span!(tracing::Level::INFO, "test"),
@@ -469,6 +483,7 @@ mod test {
             name: "broken".to_string(),
             songs: vec!["Song 1".to_string(), "Ghost Song".to_string()],
             transitions: vec![Default::default(); 2],
+            ambient: None,
             position: Arc::new(parking_lot::RwLock::new(0)),
             registry,
             span: tracing::span!(tracing::Level::INFO, "test"),

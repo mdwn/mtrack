@@ -248,6 +248,8 @@ impl Player {
                 if !should_auto_play {
                     // Nothing starts under the fade-out: no fade-in waits.
                     *player.start_fade.lock() = None;
+                    // Between songs: ambient light, after its delay.
+                    player.idle_ambient(true);
                 }
                 drop(join);
 
@@ -467,10 +469,33 @@ impl Player {
         }
     }
 
-    /// Stop will stop a song if a song is playing.
+    /// Stop will stop a song if a song is playing. Ambient light follows,
+    /// after its delay.
     pub async fn stop(&self) -> Option<Arc<Song>> {
         let mut join = self.join.lock().await;
+        let song = self.stop_locked(&mut join).await;
+        // Stopped, or a stop after a pause: between songs either way.
+        self.idle_ambient(true);
+        song
+    }
 
+    /// Stops the song playing, if one is, for a pause: the lights hold
+    /// rather than go to ambient.
+    pub(super) async fn stop_for_pause(&self) -> Option<Arc<Song>> {
+        let mut join = self.join.lock().await;
+        self.stop_locked(&mut join).await
+    }
+
+    /// The player has gone idle: ambient light, if there is any, once its
+    /// delay is up (`hold`) or at once.
+    pub(super) fn idle_ambient(&self, hold: bool) {
+        let dmx_engine = self.hardware.read().dmx_engine.clone();
+        if let Some(dmx_engine) = dmx_engine {
+            dmx_engine.idle_ambient(self.get_playlist().ambient(), hold);
+        }
+    }
+
+    async fn stop_locked(&self, join: &mut Option<PlayHandles>) -> Option<Arc<Song>> {
         let play_handles = match join.take() {
             Some(handles) => handles,
             None => {
@@ -505,7 +530,6 @@ impl Player {
         }
 
         drop(play_handles.join);
-        drop(join);
 
         Some(song)
     }

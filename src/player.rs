@@ -2177,6 +2177,90 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn ambient_light_plays_while_no_song_does() -> Result<(), Box<dyn Error>> {
+        // A song with a show of its own, long enough to pause and stop.
+        let dir = tempfile::tempdir()?;
+        let song_dir = dir.path().join("songs").join("lit");
+        fs::create_dir_all(&song_dir)?;
+        fs::copy("assets/20-sec-long.wav", song_dir.join("track.wav"))?;
+        let wash = |color: &str| {
+            format!(
+                "show \"s\" {{\n    @0.000\n    wash: static, color: \"{color}\", duration: 30s\n}}\n"
+            )
+        };
+        fs::write(song_dir.join("show.light"), wash("red"))?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            "name: Lit\ntracks:\n- name: track\n  file: track.wav\n  file_channel: 1\nlighting:\n- file: show.light\n",
+        )?;
+        let ambient_show = dir.path().join("ambient.light");
+        fs::write(&ambient_show, wash("blue"))?;
+
+        let groups = HashMap::from([(
+            "wash".to_string(),
+            config::lighting::LogicalGroup::new("wash".to_string(), vec![]),
+        )]);
+        let lighting = config::Lighting::new(None, Some(groups), None).with_ambient(Some(
+            config::ambient::Ambient::new(
+                Some(ambient_show.display().to_string()),
+                None,
+                None,
+                None,
+            ),
+        ));
+        let dmx = config::Dmx::new(
+            None,
+            None,
+            Some(9090),
+            vec![config::Universe::new(1, "test".to_string())],
+            Some(lighting),
+        );
+        let songs = songs::get_all_songs(&dir.path().join("songs"))?;
+        assert!(songs.failures().is_empty(), "{:?}", songs.failures());
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::new(&["Lit".into()]),
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                Some(dmx),
+                HashMap::new(),
+                "songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let engine = player.dmx_engine().expect("DMX engine should be present");
+        let state = || engine.ambient_status().map(|s| s.state);
+
+        // Nothing has played yet: ambient at once.
+        eventually(|| state() == Some("playing"), "ambient at startup");
+
+        // A song with lights: ambient fades out under its show.
+        let device = player.audio_device().expect("audio device");
+        let device = device.to_mock()?;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        eventually(|| state().is_none(), "ambient leaves for the song");
+
+        // A pause holds the song's lights.
+        player.pause().await?;
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(state(), None, "a pause holds");
+
+        // A stop is between songs.
+        player.stop().await;
+        eventually(|| state() == Some("playing"), "ambient after a stop");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_switch_playlist_while_playing_stays() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
         let binding = player

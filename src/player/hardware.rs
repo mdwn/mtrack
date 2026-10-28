@@ -404,6 +404,8 @@ impl Player {
         }
         self.init_done_tx.send_modify(|v| *v = true);
         info!("Hardware initialization complete");
+        // Nothing is playing yet: ambient light, at once.
+        self.idle_ambient(false);
     }
 
     /// Unwraps an init outcome, recording a terminal failure so status can

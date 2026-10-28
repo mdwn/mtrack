@@ -893,6 +893,51 @@ show "Main Show" {
 
 See [Light Show Verification](verification.md) for checking a `.light` file.
 
+## Ambient light
+
+Between songs the rig can play an ambient look -- house light, a slow wash for the walk-in --
+instead of holding whatever the last song left lit. It is an ordinary `.light` file, named in
+the profile's lighting configuration:
+
+```yaml
+# profiles/01-house.yaml
+dmx:
+  lighting:
+    current_venue: "main_stage"
+    ambient:
+      show: lighting/ambient.light  # relative to the project
+      delay: 3s                     # hold the song's last frame first (default 0s)
+      fade_in: 4s                   # default 2s
+      fade_out: 1s                  # into the next song's show (default 1s)
+```
+
+```light
+# lighting/ambient.light
+show "Ambient" {
+    @00:00.000
+    all_lights: static color: "#FFB46B", dimmer: 35%, duration: 30s
+}
+```
+
+- **When it plays.** When the player starts, at once; when a song ends by itself or is
+  stopped, once `delay` is up. A pause holds the song's lights, and a loop break goes straight
+  into the next song, so neither brings it up.
+- **How it comes and goes.** It fades in from whatever is lit over `fade_in`, and when a song
+  with lights of its own starts, fades out under that song's show over `fade_out`. A song with
+  no lights at all leaves it playing.
+- **How long it lasts.** Every effect has a finite duration, so the show starts again from the
+  top once its last effect ends -- it loops for as long as nothing else plays. A
+  `sequence ..., loop: loop` runs on rather than restarting.
+- **Its clock.** It runs on the wall clock, from when it starts. A show with `@bar` cues needs a
+  `tempo` block of its own, since there is no song for it to take one from.
+- **Playlists.** A playlist can have its own: a top-level `ambient:` whose settings override
+  the profile's one by one, or `ambient: false` for none (see
+  [Playlists](../getting-started/playlists.md#ambient-light)).
+
+The show is read each time the player goes idle, so an edit to it is picked up between songs.
+A show that does not read or names a group the profile does not have is reported in the log,
+and nothing plays. The MCP `status` tool reports what is playing as `ambient`.
+
 ## Lint warnings
 
 Syntax is only the first check. A show can be legal DSL and still do nothing on the rig, so

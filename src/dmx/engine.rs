@@ -40,11 +40,13 @@ use crate::{
 
 use super::universe::Universe;
 
+mod ambient;
 mod midi_playback;
 mod playback;
 mod test_output;
 mod timeline;
 
+pub use ambient::AmbientStatus;
 pub use test_output::{TestOutput, TestOutputStatus, EXPIRY_ENV, TEST_OUTPUT_EXPIRY};
 
 /// The result of classifying a MIDI message for DMX purposes.
@@ -156,6 +158,10 @@ pub struct Engine {
     test_overlay: crate::state::TestOverlayHandle,
     /// How long a test holds after its last update.
     test_expiry: Duration,
+    /// The project directory, which an ambient show's path is relative to.
+    base_path: Option<std::path::PathBuf>,
+    /// The show the rig plays while no song is (see `ambient`).
+    ambient: Mutex<ambient::AmbientState>,
 }
 
 /// A MIDI DMX light show being played back from the effects loop.
@@ -274,6 +280,8 @@ impl Engine {
             test_output: Mutex::new(None),
             test_overlay: Default::default(),
             test_expiry: test_output::expiry_from_env(),
+            base_path: base_path.map(std::path::Path::to_path_buf),
+            ambient: Mutex::new(ambient::AmbientState::default()),
         })
     }
 
@@ -366,6 +374,9 @@ impl Engine {
         // Advance MIDI DMX playback cursors and dispatch events
         self.effects_loop_phase.store(2, Ordering::Relaxed);
         self.advance_midi_dmx_playbacks();
+
+        // Ambient light starts, or moves its time on, before the time is read.
+        self.tick_ambient();
 
         // One reading of the clock for the whole tick, so the cues started
         // and the frame rendered agree on the time.

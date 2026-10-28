@@ -35,7 +35,7 @@ impl Player {
         let Some(position) = self.elapsed().await? else {
             return Ok(None);
         };
-        self.stop().await;
+        self.stop_for_pause().await;
         self.seek_to(position).await?;
         Ok(Some(position))
     }

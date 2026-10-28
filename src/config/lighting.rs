@@ -109,6 +109,10 @@ pub struct Lighting {
     /// ([`DEFAULT_FIXTURE_TYPES_DIR`], [`DEFAULT_VENUES_DIR`]). Each is
     /// independent: naming one leaves the other at its default.
     directories: Option<Directories>,
+
+    /// The show the rig plays while no song is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ambient: Option<super::ambient::Ambient>,
 }
 
 /// Directory configuration for loading fixture types and venues.
@@ -134,7 +138,19 @@ impl Lighting {
             retired_fixtures: None,
             groups,
             directories,
+            ambient: None,
         }
+    }
+
+    /// This configuration with `ambient` as its ambient light.
+    pub fn with_ambient(mut self, ambient: Option<super::ambient::Ambient>) -> Lighting {
+        self.ambient = ambient;
+        self
+    }
+
+    /// The ambient light: the show the rig plays while no song is.
+    pub fn ambient(&self) -> Option<&super::ambient::Ambient> {
+        self.ambient.as_ref()
     }
 
     /// Gets the current venue.

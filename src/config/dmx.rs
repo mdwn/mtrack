@@ -131,6 +131,14 @@ impl Dmx {
         if let Some(retired) = self.lighting.as_ref().and_then(|l| l.retired_field_error()) {
             errors.push(retired.to_string());
         }
+        if let Some(Err(e)) = self
+            .lighting
+            .as_ref()
+            .and_then(|l| l.ambient())
+            .map(|a| a.validate())
+        {
+            errors.push(format!("dmx lighting {e}"));
+        }
 
         if let Some(modifier) = self.dim_speed_modifier {
             if modifier <= 0.0 {

@@ -467,7 +467,9 @@ impl McpServer {
         playback. `transitions` says what breaking a looping song's loop would \
         do, by the playlist: the current entry's `fade_out`, and the song \
         `next` and `previous` would move to with its `fade_in` (each `null` \
-        for none).")]
+        for none). `ambient` is the show the rig plays while no song is: its \
+        `show` file and `state` (`pending` while its delay runs, or \
+        `playing`), `null` when none is.")]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         Ok(ok_json(self.status_snapshot().await?))
     }
@@ -1192,7 +1194,11 @@ impl McpServer {
         length (`3s`, `500ms`, `6beats`, `1measure`; `0s` for none) or a map \
         with `length`, `curve` (`equal_power` or `linear`), `exclude` (track \
         names that do not fade) and, for `fade_out` only, `lights` (how long \
-        the lights cross into the next song's show)."
+        the lights cross into the next song's show). A top-level `ambient:` \
+        sets the playlist's ambient light, played while no song is: `false` \
+        for none, or a map of `show` (a `.light` file, relative to the \
+        project), `delay`, `fade_in` and `fade_out`, each overriding the \
+        profile's `dmx.lighting.ambient`."
     )]
     async fn write_playlist(
         &self,
@@ -3469,6 +3475,26 @@ async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
         }
         None => None,
     };
+    // Bounded on the blocking pool too: the effects loop holds the ambient
+    // lock while it starts the show.
+    let ambient = match player.dmx_engine() {
+        Some(dmx) => {
+            let read = tokio::task::spawn_blocking(move || dmx.ambient_status());
+            match tokio::time::timeout(std::time::Duration::from_millis(500), read).await {
+                Ok(Ok(status)) => status.map(|status| {
+                    json!({
+                        "show": status.show.display().to_string(),
+                        "state": status.state,
+                    })
+                }),
+                _ => Some(json!({
+                    "available": false,
+                    "reason": "could not read the ambient light's state",
+                })),
+            }
+        }
+        None => None,
+    };
 
     Ok(json!({
         "playlist_name": playlist.name(),
@@ -3476,6 +3502,7 @@ async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
         "playing": playing,
         "elapsed": format_duration(elapsed),
         "lighting": lighting,
+        "ambient": ambient,
         "transitions": transitions_json(&playlist),
     }))
 }

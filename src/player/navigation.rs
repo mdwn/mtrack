@@ -165,6 +165,8 @@ impl Player {
         if let Some(song) = self.get_playlist().current() {
             self.emit_song_change(&song);
         }
+        // The new playlist's ambient light, if it has its own.
+        self.idle_ambient(false);
 
         Ok(())
     }
