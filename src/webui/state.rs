@@ -328,6 +328,10 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 "song": song,
                 "starts_in_ms": starts_in.as_millis() as u64,
             })),
+            "ending": player.ending_status().map(|(song, remaining)| json!({
+                "song": song,
+                "remaining_ms": remaining.as_millis() as u64,
+            })),
             "ambient": player.dmx_engine().and_then(|dmx| dmx.ambient_status()).map(|status| json!({
                 "show": status.show.display().to_string(),
                 "state": status.state,

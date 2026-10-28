@@ -208,6 +208,11 @@
     Math.ceil(($playbackStore.auto_play?.starts_in_ms ?? 0) / 1000),
   );
 
+  /** Whole seconds until an ending song's fade is over, rounded up. */
+  let endingSeconds = $derived(
+    Math.ceil(($playbackStore.ending?.remaining_ms ?? 0) / 1000),
+  );
+
   let pendingStartPct = $derived(
     !$playbackStore.is_playing &&
       $playbackStore.pending_start_ms != null &&
@@ -441,6 +446,24 @@
       </div>
     {/if}
 
+    {#if !$playbackStore.is_playing && $playbackStore.ending}
+      <div
+        class="playback-card__auto-play"
+        role="status"
+        data-testid="ending-fade"
+      >
+        {$t("playback.endingFade", {
+          values: {
+            song: $playbackStore.ending.song,
+            seconds: endingSeconds,
+          },
+        })}
+        <span class="playback-card__auto-play-hint"
+          >{$t("playback.endingCutHint")}</span
+        >
+      </div>
+    {/if}
+
     <div class="playback-card__head">
       <div class="playback-card__heading">
         <h2 class="playback-card__title">
@@ -477,7 +500,8 @@
         <button
           class="btn-icon-circle"
           onclick={stop}
-          disabled={loading || !$playbackStore.is_playing}
+          disabled={loading ||
+            (!$playbackStore.is_playing && !$playbackStore.ending)}
           title={$t("playback.stopTooltip")}
           aria-label={$t("playback.stop")}
         >

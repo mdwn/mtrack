@@ -215,6 +215,17 @@ impl Playlist {
         }
     }
 
+    /// Whether there is an entry before the current one (`back`) or after
+    /// it: false at either end of the list, where next and previous clamp.
+    pub fn can_move(&self, back: bool) -> bool {
+        let position = *self.position.read();
+        if back {
+            position > 0
+        } else {
+            position + 1 < self.songs.len()
+        }
+    }
+
     /// The gap before the song at the current position starts by itself,
     /// reached by the song before it ending or by next/previous while
     /// stopped; `None` when it waits for play.
@@ -547,6 +558,16 @@ mod test {
         assert_eq!(length(back.fade_in), Some("1s".to_string()));
         // Breaking doesn't move: the cleanup does.
         assert_eq!(playlist.current().unwrap().name(), "B");
+    }
+
+    #[test]
+    fn can_move_is_false_at_either_end() {
+        let playlist = playlist_from("songs:\n- A\n- B\n").unwrap();
+        assert!(!playlist.can_move(true));
+        assert!(playlist.can_move(false));
+        playlist.navigate_to("B");
+        assert!(playlist.can_move(true));
+        assert!(!playlist.can_move(false));
     }
 
     #[test]

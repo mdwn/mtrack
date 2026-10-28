@@ -102,6 +102,9 @@ export interface PlaybackState {
   /** A song about to start by itself, its playlist entry's auto-play gap
    *  running. */
   auto_play?: { song: string; starts_in_ms: number } | null;
+  /** A looping song fading out after a stop, with nothing after it; a
+   *  second stop cuts it. */
+  ending?: { song: string; remaining_ms: number } | null;
   /** The show the rig plays while no song is, when one is playing or about
    *  to (`pending`, waiting out its delay). */
   ambient?: { show: string; state: "pending" | "playing" } | null;
@@ -204,6 +207,7 @@ export const playbackStore = writable<PlaybackState>({
   pilot_hints: [],
   tempo: null,
   auto_play: null,
+  ending: null,
   ambient: null,
   received_at: 0,
 });
@@ -275,6 +279,7 @@ on("playback", (msg) => {
     pilot_hints: m.pilot_hints ?? [],
     tempo: m.tempo ?? null,
     auto_play: m.auto_play ?? null,
+    ending: m.ending ?? null,
     ambient: m.ambient ?? null,
     received_at: performance.now(),
   });

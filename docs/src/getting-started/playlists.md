@@ -100,7 +100,25 @@ Either can be a length alone or a map:
 A source part way through a loop crossfade fades out from where it is. A fade that outlasts the
 pass it began in carries on into as many more passes as it takes, crossing pass to pass over the
 song's `loop_crossfade` as its loop does. MIDI from the looping song stops
-at the break. Stop or a seek cuts everything, the fading song included.
+at the break. A seek cuts everything, the fading song included.
+
+### Ending a looping song
+
+Stop on a looping song whose entry has a `fade_out` ends it over that fade, as a loop break
+would -- the same length, curve, `exclude` and `lights` -- with nothing after it. The player
+stops at once and the playlist stays where it is; the lights cross toward dark (the length
+counts on the song's own grid, there being no next song), and ambient light follows once the
+fade is over, after its delay. Without a `fade_out`, Stop cuts at once, as it does any song that
+is not looping.
+
+- **Stop again** while the song fades out cuts everything at once.
+- **Play** while it fades out starts the song again from the top, the fade playing on under it;
+  **Next** and **Previous** move the playlist as on a stopped player, and the fade plays out.
+- **The end of the list.** Next on the last entry, or Previous on the first, has no song to
+  break into: it ends the looping song as Stop does, rather than starting it over. Play still
+  breaks the loop and starts the song again.
+- While it fades out, the dashboard's playback card says so ("Walk-in loop is fading out (4s)")
+  with Stop left live, and the MCP `status` tool reports `ending: {song, remaining_seconds}`.
 
 The web UI's playlist editor keeps a playlist's transitions when it saves, and will not overwrite
 a playlist file that does not read; fades are edited in the file. Auto play and ambient light

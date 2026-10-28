@@ -64,6 +64,12 @@ impl Player {
             .into());
         }
 
+        // A looping song ending: stopped a moment from now, and nothing to
+        // restart.
+        if join.is_some() && self.loop_end.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Cannot seek: the song is ending".into());
+        }
+
         let handles = match join.take() {
             None => {
                 // Not playing: remember the position for the next play().
