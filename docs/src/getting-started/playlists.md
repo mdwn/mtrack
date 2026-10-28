@@ -112,7 +112,9 @@ no grid of its own still fades; on the last entry they count on the song's own. 
 delay counts from the Stop, so it comes in over the tail of the fade rather than after a dark
 gap. Without a `fade_out`, Stop cuts at once, as it does any song that is not looping.
 
-- **Stop again** while the song fades out cuts everything at once.
+- **Stop again** while the song fades out cuts the audio at once. Its lights go the rest of the
+  way to dark over the ambient light's `fade_out` (1 s by default), unless they were already
+  closer to dark than that.
 - **Play** while it fades out starts the song again from the top, the fade playing on under it;
   **Next** and **Previous** move the playlist as on a stopped player, and the fade plays out.
 - **The end of the list.** Next on the last entry, or Previous on the first, has no song to

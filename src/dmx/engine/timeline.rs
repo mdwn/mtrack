@@ -36,6 +36,10 @@ pub(crate) struct OutgoingPass {
     /// one's time, as it was before the break (#560). It goes when its own
     /// crossfade does.
     pub(super) inner: Option<Box<OutgoingPass>>,
+    /// A loop break's fade cut short by a stop: from how far through it
+    /// was, at the instant of the stop, it goes the rest of the way over
+    /// the duration given (#572).
+    pub(super) hurry: Option<(std::time::Instant, f64, Duration)>,
 }
 
 /// What an [`OutgoingPass`] keeps time by.
@@ -65,10 +69,15 @@ impl OutgoingPass {
                 (elapsed, from + elapsed)
             }
         };
-        (
-            into.as_secs_f64() / self.overlap.as_secs_f64().max(f64::EPSILON),
-            time,
-        )
+        let t = into.as_secs_f64() / self.overlap.as_secs_f64().max(f64::EPSILON);
+        let t = match self.hurry {
+            Some((at, from, over)) => {
+                from + (1.0 - from) * at.elapsed().as_secs_f64()
+                    / over.as_secs_f64().max(f64::EPSILON)
+            }
+            None => t,
+        };
+        (t, time)
     }
 
     /// Renders this pass's frame at its own song time `time`: its engine's,
@@ -206,6 +215,7 @@ impl Engine {
                 clock: PassClock::Song { lead },
                 overlap,
                 inner: None,
+                hurry: None,
             });
         }
         // Then the timelines. Until the old one joins its pass, that pass's
@@ -251,6 +261,7 @@ impl Engine {
                 },
                 overlap: fade,
                 inner,
+                hurry: None,
             });
         }
         let outgoing_timeline = self.current_song_timeline.lock().take();
@@ -279,6 +290,28 @@ impl Engine {
         let mut outgoing = self.outgoing_pass.lock();
         if outgoing.as_ref().is_some_and(OutgoingPass::is_break_fade) {
             *outgoing = None;
+        }
+    }
+
+    /// Hurries a loop break's fade to dark, for a stop that cuts its
+    /// ending: rather than ending it, which would hold the frame it had
+    /// reached (#572), it goes the rest of the way over `fade` from now --
+    /// sooner, never later, than it would have.
+    pub fn hurry_break_fade(&self, fade: Duration) {
+        let mut outgoing = self.outgoing_pass.lock();
+        let Some(pass) = outgoing.as_mut().filter(|pass| pass.is_break_fade()) else {
+            return;
+        };
+        let (t, _) = pass.timing(Duration::ZERO);
+        if t >= 1.0 {
+            return;
+        }
+        let left = match pass.hurry {
+            Some((at, _, over)) => over.saturating_sub(at.elapsed()),
+            None => pass.overlap.mul_f64(1.0 - t),
+        };
+        if fade < left {
+            pass.hurry = Some((std::time::Instant::now(), t, fade));
         }
     }
 

@@ -403,6 +403,20 @@ impl Engine {
         }
     }
 
+    /// A stop cuts an ending short: its lights go the rest of the way to
+    /// dark over ambient's `fade_out`, if that is sooner (#572).
+    pub fn cut_ending_lights(&self) {
+        let fade = self
+            .ambient
+            .lock()
+            .ambient
+            .as_ref()
+            .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
+                a.settings.fade_out
+            });
+        self.hurry_break_fade(fade);
+    }
+
     /// A song with lights of its own is starting: ambient light playing
     /// fades out under its show, over its `fade_out`, and any waiting is
     /// called off -- unless the mode is `On`, which holds it over the song.
@@ -1110,6 +1124,30 @@ mod tests {
         assert!(mid.0 > 60.0, "still fading at the ending's pace: {mid:?}");
         sleep(Duration::from_millis(800));
         assert_eq!(tick(&engine), (0.0, 0.0, 0.0), "dark once it is over");
+        Ok(())
+    }
+
+    #[test]
+    fn an_ending_cut_while_off_still_goes_dark() -> Result<(), Box<dyn Error>> {
+        // #572: a second Stop cut the ending's fade and froze its frame.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        start_song(&engine, RED);
+        assert_eq!(song_frame(&engine, 0.5), (255.0, 0.0, 0.0));
+        engine.begin_break_fade(Duration::from_secs(10));
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        sleep(Duration::from_millis(200));
+        let mid = tick(&engine);
+        assert!(mid.0 > 200.0, "still fading at the ending's pace: {mid:?}");
+        // The cut: the ending's lights hurry to dark, and the player goes
+        // idle again.
+        engine.cut_ending_lights();
+        engine.idle_ambient(None, true);
+        let cut = tick(&engine);
+        assert!(cut.0 > 200.0, "no jump at the cut: {cut:?}");
+        sleep(Duration::from_millis(300));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0), "dark over fade_out");
         Ok(())
     }
 
