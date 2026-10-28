@@ -71,8 +71,24 @@ impl Player {
     /// `play_from()` from starting between the is-playing check and the
     /// playlist position advance.
     pub(super) async fn navigate(&self, direction: PlaylistDirection) -> Option<Arc<Song>> {
-        let join = self.join.lock().await;
+        let mut join = self.join.lock().await;
         if join.is_some() {
+            // A looping song ending: stopped a moment from now.
+            if self.loop_end.load(Ordering::Relaxed) {
+                info!("The song is ending; {} once it has.", direction);
+                return self.get_playlist().current();
+            }
+            // A looping song at the end of the list has nowhere to move to:
+            // it ends as a stop ends it, rather than starting over.
+            let back = direction == PlaylistDirection::Prev;
+            if self.is_current_song_looping() && !self.get_playlist().can_move(back) {
+                info!("Nothing to go to {}: ending the looping song.", direction);
+                if let Some(song) = self.end_looping_song(&join) {
+                    return Some(song);
+                }
+                self.cut_locked(&mut join).await;
+                return self.get_playlist().current();
+            }
             // If the current song is looping, break out immediately with crossfade.
             // The cleanup task moves the playlist in this direction and plays
             // what it lands on a moment later; that song is the answer, not the
@@ -114,9 +130,12 @@ impl Player {
         // from one waiting to start calls it off, and the lights go to
         // ambient as at any stop.
         let called_off = self.cancel_auto_play();
+        // A song ending fades on out; the ambient light following it, now
+        // this navigation's to bring.
+        let ending = self.end_ending();
         match playlist.auto_play().filter(|_| playlist.position() != from) {
             Some(gap) => self.schedule_auto_play(gap),
-            None if called_off => self.idle_ambient(true),
+            None if called_off || ending => self.idle_ambient(true),
             None => {}
         }
         drop(join);
@@ -162,6 +181,7 @@ impl Player {
         *self.active_playlist.write() = name.to_string();
         self.clear_pending_start();
         self.cancel_auto_play();
+        self.end_ending();
 
         // Persist the choice to the config store, unless it's "all_songs" (session-only).
         if name != "all_songs" {

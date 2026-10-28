@@ -238,4 +238,44 @@ test.describe("Dashboard: auto play and ambient light", () => {
     await expect(page.getByTestId("auto-play-countdown")).toHaveCount(0);
     await expect(page.getByTestId("ambient-badge")).toHaveCount(0);
   });
+
+  test("a looping song ending shows its fade, and Stop stays live", async ({
+    page,
+  }) => {
+    const wsId = `ending-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/`);
+    await expect(page.locator(".playback-card__title")).toBeVisible();
+    await expect(page.getByTestId("ending-fade")).toHaveCount(0);
+
+    const frame = {
+      type: "playback",
+      is_playing: false,
+      elapsed_ms: 0,
+      song_name: "Test Song Beta",
+      song_duration_ms: 180000,
+      playlist_name: "setlist",
+      playlist_position: 1,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+    };
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      ending: { song: "Test Song Beta", remaining_ms: 3600 },
+    });
+    await expect(page.getByTestId("ending-fade")).toContainText(
+      "Test Song Beta is fading out (4s)",
+    );
+    await expect(page.getByTestId("ending-fade")).toContainText(
+      "Stop again to cut.",
+    );
+    await expect(
+      page.getByRole("button", { name: "Stop", exact: true }),
+    ).toBeEnabled();
+
+    await sendWsMessage(page, wsId, { ...frame, ending: null });
+    await expect(page.getByTestId("ending-fade")).toHaveCount(0);
+  });
 });

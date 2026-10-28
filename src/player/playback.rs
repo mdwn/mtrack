@@ -54,6 +54,11 @@ impl Player {
 
         let mut join = self.join.lock().await;
         if join.is_some() {
+            // A looping song ending: stopped a moment from now.
+            if self.loop_end.load(Ordering::Relaxed) {
+                info!("The song is ending; play again once it has.");
+                return Ok(None);
+            }
             // If the current song is looping, break out immediately with crossfade.
             // Fade out current audio, then cancel so subsystems exit. The cleanup
             // task sees loop_broken and auto-plays the next song.
@@ -98,6 +103,9 @@ impl Player {
         // an auto play waiting to start.
         self.clear_pending_start();
         self.cancel_auto_play();
+        // A song ending fades on out under this one, as under the song a
+        // loop break moves to; ambient light no longer follows it.
+        self.end_ending();
 
         // Load samples for this song (if not already loaded)
         self.load_song_samples(&song);
@@ -210,6 +218,10 @@ impl Player {
                 // or a seek ended: only the former has nobody to clean up after
                 // it. See decide_cleanup_action.
                 let self_cancelled = cancel_handle_for_cleanup.cancelled_due_to_failure();
+                // `loop_end` before `loop_break`, the reverse of the order a
+                // stop's cut clears them in: a break caught between the two
+                // reads as no break at all, never as one to move on from.
+                let ended = player.loop_end.swap(false, Ordering::Relaxed);
                 let loop_broken = player.loop_break.swap(false, Ordering::Relaxed);
                 let back = player.loop_break_to_prev.swap(false, Ordering::Relaxed);
 
@@ -219,6 +231,24 @@ impl Player {
                     loop_broken = loop_broken,
                     "Song finished playing."
                 );
+
+                if loop_broken && ended {
+                    // A looping song ending: stopped where it is, as a stop
+                    // leaves it, while its fade plays out. Unless a stop has
+                    // cut it since, and cleaned up itself.
+                    let mut join = player.join.lock().await;
+                    if !join
+                        .as_ref()
+                        .is_some_and(|handles| handles.cancel.same_as(&cancel_handle_for_cleanup))
+                    {
+                        return;
+                    }
+                    *player.play_start_time.lock().await = None;
+                    *join = None;
+                    player.stop_run.store(false, Ordering::Relaxed);
+                    *player.start_fade.lock() = None;
+                    return;
+                }
 
                 let action = decide_cleanup_action(result, cancelled, loop_broken, self_cancelled);
                 if action == CleanupAction::StopCancelled {
@@ -484,12 +514,112 @@ impl Player {
 
     /// Stop will stop a song if a song is playing. Ambient light follows,
     /// after its delay.
+    ///
+    /// A looping song whose playlist entry has a `fade_out` ends over it
+    /// instead ([`Player::end_looping_song`]); a stop while it does cuts it.
     pub async fn stop(&self) -> Option<Arc<Song>> {
         let mut join = self.join.lock().await;
-        let song = self.stop_locked(&mut join).await;
+        if let Some(song) = self.end_looping_song(&join) {
+            return Some(song);
+        }
+        self.cut_locked(&mut join).await
+    }
+
+    /// Stops at once, whatever is playing or fading out: a stop's cut, and
+    /// the end of the list without a `fade_out` to end on.
+    pub(super) async fn cut_locked(&self, join: &mut Option<PlayHandles>) -> Option<Arc<Song>> {
+        let ending = self.end_ending();
+        // A song still winding down from its ending: it is stopped now, and
+        // a song played next must not read its break as its own. See the
+        // cleanup in `play_from_locked` for the order.
+        if self.loop_end.load(Ordering::Relaxed) {
+            self.loop_break.store(false, Ordering::Relaxed);
+            self.loop_end.store(false, Ordering::Relaxed);
+        }
+        let song = self.stop_locked(join).await;
+        if ending {
+            self.cut_break_fade();
+        }
         // Stopped, or a stop after a pause: between songs either way.
         self.idle_ambient(true);
         song
+    }
+
+    /// Ends the looping song playing, if one is and its playlist entry has
+    /// a `fade_out`: it fades out over it, as a loop break's does, lights
+    /// and all, with nothing after it. The playlist stays where it is, the
+    /// player stops at once, and ambient light follows once the fade is
+    /// over. Returns the song, or `None`, having done nothing, when it does
+    /// not end this way.
+    pub(super) fn end_looping_song(&self, join: &Option<PlayHandles>) -> Option<Arc<Song>> {
+        let handles = join.as_ref()?;
+        if self.loop_end.load(Ordering::Relaxed) || !self.is_current_song_looping() {
+            return None;
+        }
+        let playlist = self.get_playlist();
+        let song = playlist.current()?;
+        let fade = playlist
+            .loop_break(false)
+            .fade_out
+            .and_then(|fade| song.fade_out_into(&fade, None))?;
+        *self.start_fade.lock() = None;
+        self.fade_out_playback(&handles.cancel, Some(&fade));
+        let over = fade.length.max(fade.lights);
+        info!(
+            song = song.name(),
+            fade_ms = fade.length.as_millis() as u64,
+            lights_ms = fade.lights.as_millis() as u64,
+            "Ending the looping song: fading out"
+        );
+        self.begin_ending(song.name(), over);
+        self.loop_break_to_prev.store(false, Ordering::Relaxed);
+        self.loop_end.store(true, Ordering::Relaxed);
+        self.loop_break.store(true, Ordering::Relaxed);
+        handles.cancel.cancel();
+        Some(song)
+    }
+
+    /// Notes the song ending over `over`, and brings ambient light up once
+    /// it has, unless a stop, play, navigation or playlist switch comes first.
+    fn begin_ending(&self, song: &str, over: Duration) {
+        let generation = {
+            let mut state = self.ending.lock();
+            state.generation += 1;
+            state.fading = Some((song.to_string(), std::time::Instant::now() + over));
+            state.generation
+        };
+        let player = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(over).await;
+            let done = {
+                let mut state = player.ending.lock();
+                state.generation == generation && state.fading.take().is_some()
+            };
+            if done {
+                info!("The looping song has ended.");
+                player.idle_ambient(true);
+            }
+        });
+    }
+
+    /// Forgets a song ending, its fade left to play out unless the caller
+    /// cuts it. Returns whether one was.
+    pub(super) fn end_ending(&self) -> bool {
+        let mut state = self.ending.lock();
+        state.generation += 1;
+        state.fading.take().is_some()
+    }
+
+    /// The looping song ending, and how long until its fade is over, while
+    /// one is.
+    pub fn ending_status(&self) -> Option<(String, Duration)> {
+        let state = self.ending.lock();
+        state.fading.as_ref().map(|(song, at)| {
+            (
+                song.clone(),
+                at.saturating_duration_since(std::time::Instant::now()),
+            )
+        })
     }
 
     /// Stops the song playing, if one is, for a pause: the lights hold
@@ -941,6 +1071,32 @@ impl Player {
             }
             _ => None,
         };
+        self.fade_out_playback(playback, fade.as_ref());
+        if let Some(fade) = &fade {
+            info!(
+                song = song.name(),
+                fade_ms = fade.length.as_millis() as u64,
+                lights_ms = fade.lights.as_millis() as u64,
+                fade_in_ms = self
+                    .start_fade
+                    .lock()
+                    .as_ref()
+                    .map_or(0, |f| f.fade.length.as_millis() as u64),
+                "Loop break: fading out under the next song"
+            );
+        }
+        target
+    }
+
+    /// Fades out `playback`'s sources over `fade`, from the gain each has
+    /// now, its excluded tracks cut at once -- or, without one, all of it
+    /// over the short default crossfade -- and the lights out of its show
+    /// over the fade's `lights`.
+    fn fade_out_playback(
+        &self,
+        playback: &CancelHandle,
+        fade: Option<&crate::songs::ResolvedFade>,
+    ) {
         let hw = self.hardware.read();
         if let Some(mixer) = hw.device.as_ref().and_then(|device| device.mixer()) {
             let rate = mixer.sample_rate();
@@ -952,10 +1108,7 @@ impl Player {
                 ),
                 None => (cut_samples, crate::audio::crossfade::CrossfadeCurve::Linear),
             };
-            let exclude = fade
-                .as_ref()
-                .map(|f| f.exclude.as_slice())
-                .unwrap_or_default();
+            let exclude = fade.map(|f| f.exclude.as_slice()).unwrap_or_default();
             let ids =
                 mixer.fade_out_playback(playback, fade_samples, curve, cut_samples, |labels| {
                     crate::audio::song_loop::only_tracks_in(labels, exclude)
@@ -973,33 +1126,19 @@ impl Player {
                 fading.extend(ids);
             }
         }
-        *self.break_fade.lock() = fade.as_ref().map(|f| crate::playsync::BreakFade {
+        *self.break_fade.lock() = fade.map(|f| crate::playsync::BreakFade {
             started: std::time::Instant::now(),
             length: f.length,
             curve: f.curve,
             exclude: f.exclude.clone(),
         });
-        if let (Some(dmx), Some(fade)) = (hw.dmx_engine.as_ref(), fade.as_ref()) {
+        if let (Some(dmx), Some(fade)) = (hw.dmx_engine.as_ref(), fade) {
             // Lights of zero switch at once: the next song's show takes over
             // as it starts, as without a fade.
             if !fade.lights.is_zero() {
                 dmx.begin_break_fade(fade.lights);
             }
         }
-        if let Some(fade) = &fade {
-            info!(
-                song = song.name(),
-                fade_ms = fade.length.as_millis() as u64,
-                lights_ms = fade.lights.as_millis() as u64,
-                fade_in_ms = self
-                    .start_fade
-                    .lock()
-                    .as_ref()
-                    .map_or(0, |f| f.fade.length.as_millis() as u64),
-                "Loop break: fading out under the next song"
-            );
-        }
-        target
     }
 
     /// Cuts a looping song still fading out after a loop break, for a stop or

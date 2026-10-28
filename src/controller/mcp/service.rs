@@ -471,7 +471,11 @@ impl McpServer {
         `show` file and `state` (`pending` while its delay runs, or \
         `playing`), `null` when none is. `auto_play` is a song about to start \
         by itself (its playlist entry's `auto_play` gap running): its `song` \
-        and `starts_in_seconds`, `null` when none is.")]
+        and `starts_in_seconds`, `null` when none is. `ending` is a looping \
+        song fading out after a stop (or next or previous at the end of the \
+        list) over its entry's `fade_out`, the player stopped under it: its \
+        `song` and `remaining_seconds`, `null` when none is; a second `stop` \
+        cuts it.")]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         Ok(ok_json(self.status_snapshot().await?))
     }
@@ -722,7 +726,10 @@ impl McpServer {
         Ok(ok_json(json!({ "section": args.section_name })))
     }
 
-    #[tool(description = "Stop playback of the currently playing song.")]
+    #[tool(description = "Stop playback of the currently playing song. A \
+        looping song whose playlist entry has a `fade_out` fades out over it \
+        first, the player stopped under it (see `ending` in `status`); a \
+        second stop cuts it at once.")]
     async fn stop(&self) -> Result<CallToolResult, McpError> {
         let song = self.player.stop().await;
         Ok(ok_json(json!({
@@ -733,7 +740,8 @@ impl McpServer {
     #[tool(
         description = "Advance the active playlist to the next song. Returns the \
         new current song. On a looping song this breaks the loop and returns the \
-        song playback moves on to, which starts a moment later."
+        song playback moves on to, which starts a moment later; on the last \
+        song it ends the loop as `stop` does instead."
     )]
     async fn next(&self) -> Result<CallToolResult, McpError> {
         let song = self.player.next().await;
@@ -745,7 +753,8 @@ impl McpServer {
     #[tool(
         description = "Move the active playlist to the previous song. Returns the \
         new current song. On a looping song this breaks the loop and returns the \
-        song playback moves back to, which starts a moment later."
+        song playback moves back to, which starts a moment later; on the \
+        first song it ends the loop as `stop` does instead."
     )]
     async fn previous(&self) -> Result<CallToolResult, McpError> {
         let song = self.player.prev().await;
@@ -3511,6 +3520,10 @@ async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
         "auto_play": player.auto_play_status().map(|(song, starts_in)| json!({
             "song": song,
             "starts_in_seconds": starts_in.as_secs_f64(),
+        })),
+        "ending": player.ending_status().map(|(song, remaining)| json!({
+            "song": song,
+            "remaining_seconds": remaining.as_secs_f64(),
         })),
         "transitions": transitions_json(&playlist),
     }))

@@ -93,7 +93,9 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
 - **Playback card** — Play/stop/next/prev with a progress bar showing elapsed and total time
   (for a song with no audio, the total is when its last lighting effect ends).
   While a song waits out its playlist entry's [auto play](../getting-started/playlists.md#auto-play)
-  gap, the card counts it down ("Opener starts in 2s"); Stop cancels it. An **Ambient light**
+  gap, the card counts it down ("Opener starts in 2s"); Stop cancels it. While a looping song
+  [ends over its fade-out](../getting-started/playlists.md#ending-a-looping-song) the card says
+  so ("Walk-in loop is fading out (4s)"); Stop again cuts it. An **Ambient light**
   badge shows while the [ambient show](../lighting/configuration.md#ambient-light) plays.
 
   ![The playback card counting down to a song's auto play, with the Ambient light
@@ -679,7 +681,9 @@ mtrack supports two levels of looping:
 Songs with `loop_playback: true` in their `song.yaml` loop indefinitely. Audio crossfades
 seamlessly at loop boundaries (a 10 ms crossfade), MIDI restarts from the beginning, and
 lighting/DMX timelines reset cleanly. During a looping song, pressing Play or Next breaks out
-of the loop, advances the playlist, and auto-plays the next song.
+of the loop, advances the playlist, and auto-plays the next song. Next on the last song, or
+Stop when its playlist entry has a `fade_out`, ends it instead (see
+[Ending a looping song](../getting-started/playlists.md#ending-a-looping-song)).
 
 With `loop_crossfade` set, consecutive passes overlap instead: the audio, lights and MIDI cross
 from one pass to the next over seconds or measures. See

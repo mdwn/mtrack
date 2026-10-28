@@ -94,6 +94,8 @@
   "playback.autoPlayStarting": "{song} starts in {seconds}s",
   "playback.autoPlayStartingNow": "{song} is starting",
   "playback.autoPlayCancelHint": "Stop cancels it.",
+  "playback.endingFade": "{song} is fading out ({seconds}s)",
+  "playback.endingCutHint": "Stop again to cut.",
   "playback.ambientPlaying": "Ambient light",
   "playback.ambientPending": "Ambient light soon",
   "playlist.title": "Playlist",
