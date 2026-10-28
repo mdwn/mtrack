@@ -14,9 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays put, nothing starts after it, and ambient light comes in over the fade's tail (its delay
   counts from the Stop). Beats and measures count on the next song's grid, as for a loop break,
   so a prelude with no grid of its own fades too. A second Stop cuts the audio at once, and the
-  lights go to dark over the ambient `fade_out`. Next on the last entry (or Previous on the
-  first) while it loops ends the song the same way instead of restarting it. The dashboard shows "… is fading out — Stop again
-  to cut", and the MCP `status` tool reports it as `ending`.
+  lights go to dark over the ambient `fade_out` as ambient light comes in without waiting. Next
+  on the last entry (or Previous on the first) while it loops ends the song the same way instead
+  of restarting it. The dashboard shows "… is fading out — Stop again to cut", and the MCP
+  `status` tool reports it as `ending`.
 - **Ambient mode: Auto / On / Off**: On brings ambient light up now and holds it over any song,
   crossing back to the song's show where it has got to when set back to Auto; Off fades ambient
   out to dark, and a song that ends or is stopped while Off fades to dark too. Set it from the dashboard's playback card, gRPC (`SetAmbientMode`), OSC

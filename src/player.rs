@@ -3849,9 +3849,11 @@ mod test {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn ambient_light_counts_its_delay_from_the_start_of_an_ending(
-    ) -> Result<(), Box<dyn Error>> {
+    /// A player on a looping Vamp whose entry fades out over 3s, red under
+    /// a blue ambient light with `delay`, the ambient up at startup.
+    async fn ending_ambient_player(
+        delay: &str,
+    ) -> Result<(tempfile::TempDir, Arc<Player>), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let song_dir = dir.path().join("songs").join("vamp");
         fs::create_dir_all(&song_dir)?;
@@ -3875,7 +3877,7 @@ mod test {
         let lighting = config::Lighting::new(None, Some(groups), None).with_ambient(Some(
             config::ambient::Ambient::new(
                 Some(ambient_show.display().to_string()),
-                Some("500ms".to_string()),
+                Some(delay.to_string()),
                 None,
                 None,
             ),
@@ -3911,6 +3913,13 @@ mod test {
             None,
         )?;
         player.await_hardware_ready().await;
+        Ok((dir, player))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ambient_light_counts_its_delay_from_the_start_of_an_ending(
+    ) -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = ending_ambient_player("500ms").await?;
         let engine = player.dmx_engine().expect("DMX engine should be present");
         let state = || engine.ambient_status().map(|s| s.state);
         eventually(|| state() == Some("playing"), "ambient at startup");
@@ -3926,6 +3935,27 @@ mod test {
         assert_eq!(state(), Some("pending"), "ambient waits out its delay");
         eventually(|| state() == Some("playing"), "ambient during the ending");
         assert!(player.ending_status().is_some(), "the fade still runs");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cut_ending_brings_ambient_in_at_once() -> Result<(), Box<dyn Error>> {
+        // A second Stop is "now": ambient doesn't wait out the rest of its
+        // delay over lights hurrying to dark, which left a dark gap.
+        let (_dir, player) = ending_ambient_player("30s").await?;
+        let engine = player.dmx_engine().expect("DMX engine should be present");
+        let state = || engine.ambient_status().map(|s| s.state);
+        eventually(|| state() == Some("playing"), "ambient at startup");
+        player.play().await?;
+        playing_eventually(&player, "Vamp").await?;
+        eventually(|| state().is_none(), "ambient leaves for the song");
+
+        player.stop().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(state(), Some("pending"), "ambient waits out its delay");
+        player.stop().await;
+        assert!(player.ending_status().is_none(), "the cut ends the ending");
+        eventually(|| state() == Some("playing"), "ambient at the cut");
         Ok(())
     }
 

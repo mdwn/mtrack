@@ -540,8 +540,10 @@ impl Player {
         if ending {
             self.cut_break_fade(true);
         }
-        // Stopped, or a stop after a pause: between songs either way.
-        self.idle_ambient(true);
+        // Stopped, or a stop after a pause: between songs either way. A cut
+        // ending is "now": ambient comes in at once, over its lights going
+        // dark, rather than after the rest of its delay.
+        self.idle_ambient(!ending);
         song
     }
 

@@ -114,7 +114,8 @@ gap. Without a `fade_out`, Stop cuts at once, as it does any song that is not lo
 
 - **Stop again** while the song fades out cuts the audio at once. Its lights go the rest of the
   way to dark over the ambient light's `fade_out` (1 s by default), unless they were already
-  closer to dark than that.
+  closer to dark than that, and ambient light comes in at once rather than after the rest of its
+  `delay`.
 - **Play** while it fades out starts the song again from the top, the fade playing on under it;
   **Next** and **Previous** move the playlist as on a stopped player, and the fade plays out.
 - **The end of the list.** Next on the last entry, or Previous on the first, has no song to
