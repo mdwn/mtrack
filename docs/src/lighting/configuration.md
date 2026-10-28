@@ -934,7 +934,9 @@ show "Ambient" {
   the profile's one by one, or `ambient: false` for none (see
   [Playlists](../getting-started/playlists.md#ambient-light)).
 
-The show is read each time the player goes idle, so an edit to it is picked up between songs.
+The same settings are on the web UI's **Lighting › Groups** page, under **Ambient light**, for the
+profile picked there; the dashboard's playback card shows an **Ambient light** badge while it
+plays. The show is read each time the player goes idle, so an edit to it is picked up between songs.
 A show that does not read or names a group the profile does not have is reported in the log,
 and nothing plays. The MCP `status` tool reports what is playing as `ambient`.
 

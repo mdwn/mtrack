@@ -22,6 +22,9 @@
     activatePlaylist,
     type PlaylistInfo,
     type PlaylistData,
+    type AutoPlay,
+    type AmbientSettings,
+    type PlaylistAmbient,
   } from "../lib/api/config";
   import { playbackStore } from "../lib/ws/stores";
   import { registerDirtyGuard } from "../lib/dirtyGuard";
@@ -47,6 +50,9 @@
   let selected = $state<string | null>(null);
   let detail = $state<PlaylistData | null>(null);
   let editSongs = $state<string[]>([]);
+  /** Each song's auto play, kept in step with `editSongs`. */
+  let editAutoPlay = $state<AutoPlay[]>([]);
+  let editAmbient = $state<PlaylistAmbient>(null);
   let loading = $state(true);
   let error = $state("");
   let saving = $state(false);
@@ -109,6 +115,10 @@
       if (selected !== name) return;
       detail = fetched;
       editSongs = [...fetched.songs];
+      editAutoPlay = fetched.songs.map(
+        (_, i) => fetched.auto_play?.[i] ?? null,
+      );
+      editAmbient = fetched.ambient ?? null;
       assignSlotIds(editSongs);
       dirty = false;
     } catch (e: any) {
@@ -120,6 +130,8 @@
         error = e.message;
         detail = null;
         editSongs = [];
+        editAutoPlay = [];
+        editAmbient = null;
         dirty = false;
       }
     }
@@ -134,7 +146,10 @@
     try {
       saving = true;
       error = "";
-      await savePlaylist(selected, editSongs);
+      await savePlaylist(selected, editSongs, {
+        auto_play: editAutoPlay,
+        ambient: editAmbient,
+      });
       dirty = false;
       await loadPlaylists();
       // Re-fetch to get updated available_songs
@@ -168,6 +183,7 @@
         selected = null;
         detail = null;
         editSongs = [];
+        editAutoPlay = [];
         editSlotIds = [];
       }
       confirmDelete = null;
@@ -198,12 +214,14 @@
 
   function addSong(song: string) {
     editSongs = [...editSongs, song];
+    editAutoPlay = [...editAutoPlay, null];
     editSlotIds = [...editSlotIds, slotIdCounter++];
     dirty = true;
   }
 
   function removeSong(index: number) {
     editSongs = editSongs.filter((_, i) => i !== index);
+    editAutoPlay = editAutoPlay.filter((_, i) => i !== index);
     editSlotIds = editSlotIds.filter((_, i) => i !== index);
     dirty = true;
   }
@@ -212,14 +230,53 @@
     if (to < 0 || to >= editSongs.length) return;
     const songs = [...editSongs];
     const ids = [...editSlotIds];
+    const autoPlay = [...editAutoPlay];
     const [item] = songs.splice(from, 1);
     const [id] = ids.splice(from, 1);
+    const [ap] = autoPlay.splice(from, 1);
     songs.splice(to, 0, item);
     ids.splice(to, 0, id);
+    autoPlay.splice(to, 0, ap);
     editSongs = songs;
     editSlotIds = ids;
+    editAutoPlay = autoPlay;
     dirty = true;
   }
+
+  function setAutoPlay(index: number, value: AutoPlay) {
+    editAutoPlay = editAutoPlay.map((ap, i) => (i === index ? value : ap));
+    dirty = true;
+  }
+
+  /** A gap typed in: empty starts the song at once. */
+  function setAutoPlayGap(index: number, gap: string) {
+    setAutoPlay(index, gap ? gap : true);
+  }
+
+  type AmbientMode = "profile" | "off" | "custom";
+
+  let ambientMode = $derived<AmbientMode>(
+    editAmbient === null ? "profile" : editAmbient === false ? "off" : "custom",
+  );
+
+  function setAmbientMode(mode: AmbientMode) {
+    editAmbient = mode === "profile" ? null : mode === "off" ? false : {};
+    dirty = true;
+  }
+
+  function setAmbientField(key: keyof AmbientSettings, value: string) {
+    const settings: AmbientSettings = { ...(editAmbient || {}) };
+    if (value) settings[key] = value;
+    else delete settings[key];
+    editAmbient = settings;
+    dirty = true;
+  }
+
+  const ambientTimings: { key: keyof AmbientSettings; label: string }[] = [
+    { key: "delay", label: "lighting.ambientDelay" },
+    { key: "fade_in", label: "lighting.ambientFadeIn" },
+    { key: "fade_out", label: "lighting.ambientFadeOut" },
+  ];
 
   function handleDragStart(e: DragEvent, index: number) {
     dragIndex = index;
@@ -241,12 +298,16 @@
 
     const songs = [...editSongs];
     const ids = [...editSlotIds];
+    const autoPlay = [...editAutoPlay];
     const [moved] = songs.splice(dragIndex, 1);
     const [movedId] = ids.splice(dragIndex, 1);
+    const [movedAp] = autoPlay.splice(dragIndex, 1);
     songs.splice(targetIndex, 0, moved);
     ids.splice(targetIndex, 0, movedId);
+    autoPlay.splice(targetIndex, 0, movedAp);
     editSongs = songs;
     editSlotIds = ids;
+    editAutoPlay = autoPlay;
     dirty = true;
     dragIndex = null;
     dragOverIndex = null;
@@ -421,6 +482,69 @@
         </div>
       </div>
 
+      <div class="ambient-settings" data-testid="playlist-ambient">
+        <div class="field">
+          <label for="playlist-ambient-mode">{$t("playlists.ambient")}</label>
+          <select
+            id="playlist-ambient-mode"
+            class="input"
+            value={ambientMode}
+            disabled={$playbackStore.locked}
+            onchange={(e) =>
+              setAmbientMode(
+                (e.target as HTMLSelectElement).value as AmbientMode,
+              )}
+          >
+            <option value="profile">{$t("playlists.ambientProfile")}</option>
+            <option value="off">{$t("playlists.ambientOff")}</option>
+            <option value="custom">{$t("playlists.ambientCustom")}</option>
+          </select>
+          <span class="field-hint">{$t("playlists.ambientHint")}</span>
+        </div>
+        {#if editAmbient}
+          <div class="field">
+            <label for="playlist-ambient-show"
+              >{$t("lighting.ambientShow")}</label
+            >
+            <input
+              id="playlist-ambient-show"
+              class="input"
+              type="text"
+              placeholder={$t("playlists.ambientInherit")}
+              value={editAmbient.show ?? ""}
+              disabled={$playbackStore.locked}
+              onchange={(e) =>
+                setAmbientField(
+                  "show",
+                  (e.target as HTMLInputElement).value.trim(),
+                )}
+            />
+          </div>
+          <div class="field-row-3">
+            {#each ambientTimings as timing (timing.key)}
+              <div class="field">
+                <label for={`playlist-ambient-${timing.key}`}
+                  >{$t(timing.label)}</label
+                >
+                <input
+                  id={`playlist-ambient-${timing.key}`}
+                  class="input"
+                  type="text"
+                  placeholder={$t("playlists.ambientInherit")}
+                  value={editAmbient[timing.key] ?? ""}
+                  disabled={$playbackStore.locked}
+                  onchange={(e) =>
+                    setAmbientField(
+                      timing.key,
+                      (e.target as HTMLInputElement).value.trim(),
+                    )}
+                />
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
       <div class="song-columns">
         <div class="song-col">
           <h4>
@@ -460,6 +584,43 @@
                     >
                   </div>
                   <span class="song-name">{song}</span>
+                  <label
+                    class="auto-play"
+                    title={$t("playlists.autoPlayTooltip")}
+                  >
+                    <input
+                      type="checkbox"
+                      data-testid="auto-play-toggle"
+                      checked={editAutoPlay[i] !== null}
+                      disabled={$playbackStore.locked}
+                      onchange={(e) =>
+                        setAutoPlay(
+                          i,
+                          (e.target as HTMLInputElement).checked ? true : null,
+                        )}
+                    />
+                    {$t("playlists.autoPlay")}
+                  </label>
+                  {#if editAutoPlay[i] !== null}
+                    <input
+                      class="input auto-play-gap"
+                      type="text"
+                      data-testid="auto-play-gap"
+                      aria-label={$t("playlists.autoPlayGapLabel", {
+                        values: { song },
+                      })}
+                      placeholder={$t("playlists.autoPlayGapPlaceholder")}
+                      value={typeof editAutoPlay[i] === "string"
+                        ? editAutoPlay[i]
+                        : ""}
+                      disabled={$playbackStore.locked}
+                      onchange={(e) =>
+                        setAutoPlayGap(
+                          i,
+                          (e.target as HTMLInputElement).value.trim(),
+                        )}
+                    />
+                  {/if}
                   <button
                     class="btn-icon"
                     title={$playbackStore.locked
@@ -536,6 +697,24 @@
     color: var(--nc-fg-1);
   }
   .panel-header .btn-sm {
+    flex-shrink: 0;
+  }
+  .ambient-settings {
+    padding-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .auto-play {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--nc-fg-3);
+    white-space: nowrap;
+  }
+  .auto-play-gap {
+    width: 80px;
     flex-shrink: 0;
   }
   .panel-header__actions {

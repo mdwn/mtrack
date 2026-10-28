@@ -203,6 +203,11 @@
     }));
   });
 
+  /** Whole seconds until an auto-play song starts, rounded up. */
+  let autoPlaySeconds = $derived(
+    Math.ceil(($playbackStore.auto_play?.starts_in_ms ?? 0) / 1000),
+  );
+
   let pendingStartPct = $derived(
     !$playbackStore.is_playing &&
       $playbackStore.pending_start_ms != null &&
@@ -400,7 +405,41 @@
       {#if $playbackStore.looping}
         <span class="badge badge--ctrl">LOOP</span>
       {/if}
+      {#if $playbackStore.ambient}
+        <span
+          class="badge"
+          data-testid="ambient-badge"
+          title={$playbackStore.ambient.show}
+          >{$playbackStore.ambient.state === "playing"
+            ? $t("playback.ambientPlaying")
+            : $t("playback.ambientPending")}</span
+        >
+      {/if}
     </div>
+
+    {#if !$playbackStore.is_playing && $playbackStore.auto_play}
+      <div
+        class="playback-card__auto-play"
+        role="status"
+        data-testid="auto-play-countdown"
+      >
+        {#if autoPlaySeconds > 0}
+          {$t("playback.autoPlayStarting", {
+            values: {
+              song: $playbackStore.auto_play.song,
+              seconds: autoPlaySeconds,
+            },
+          })}
+        {:else}
+          {$t("playback.autoPlayStartingNow", {
+            values: { song: $playbackStore.auto_play.song },
+          })}
+        {/if}
+        <span class="playback-card__auto-play-hint"
+          >{$t("playback.autoPlayCancelHint")}</span
+        >
+      </div>
+    {/if}
 
     <div class="playback-card__head">
       <div class="playback-card__heading">
@@ -658,6 +697,19 @@
   }
   .playback-card__state--playing {
     color: var(--nc-pink-600);
+  }
+  .playback-card__auto-play {
+    margin-top: 6px;
+    font-family: var(--nc-font-mono);
+    font-size: 13px;
+    color: var(--nc-cyan-600);
+  }
+  :global(.nc--dark) .playback-card__auto-play {
+    color: var(--nc-cyan-300);
+  }
+  .playback-card__auto-play-hint {
+    margin-left: 8px;
+    color: var(--nc-fg-3);
   }
   :global(.nc--dark) .playback-card__state--playing {
     color: var(--nc-pink-300);

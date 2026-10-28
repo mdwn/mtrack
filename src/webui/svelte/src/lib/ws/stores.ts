@@ -99,6 +99,12 @@ export interface PlaybackState {
   pilot_hints: PilotHintInfo[];
   /** Current tempo/meter from the song's tempo map, sampled at the playhead. */
   tempo: { bpm: number; time_signature: [number, number] } | null;
+  /** A song about to start by itself, its playlist entry's auto-play gap
+   *  running. */
+  auto_play?: { song: string; starts_in_ms: number } | null;
+  /** The show the rig plays while no song is, when one is playing or about
+   *  to (`pending`, waiting out its delay). */
+  ambient?: { show: string; state: "pending" | "playing" } | null;
   /** performance.now() when this frame was received; lets consumers
    *  extrapolate elapsed_ms smoothly between the 5Hz frames. */
   received_at: number;
@@ -197,6 +203,8 @@ export const playbackStore = writable<PlaybackState>({
   reactive_loop_state: null,
   pilot_hints: [],
   tempo: null,
+  auto_play: null,
+  ambient: null,
   received_at: 0,
 });
 
@@ -266,6 +274,8 @@ on("playback", (msg) => {
     reactive_loop_state: m.reactive_loop_state ?? null,
     pilot_hints: m.pilot_hints ?? [],
     tempo: m.tempo ?? null,
+    auto_play: m.auto_play ?? null,
+    ambient: m.ambient ?? null,
     received_at: performance.now(),
   });
 });

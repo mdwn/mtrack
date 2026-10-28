@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Auto play and ambient light in the web UI**: the playlist editor sets each song's auto play
+  and gap, and the playlist's ambient light (the profile's, none, or its own); Lighting › Groups
+  sets the profile's ambient show and timings; and the dashboard's playback card counts down a
+  song about to start by itself and shows when ambient light plays. The playlist API carries
+  `auto_play` and `ambient`, refusing a gap or setting the player would not load.
 - **Auto play (#40)**: a playlist entry's `auto_play: true` starts its song by itself when the
   playlist reaches it -- the song before it ending, or Next/Previous while stopped -- and
   `auto_play: 2s` waits that long first, holding the last song's lights as a segue. Play, Stop,

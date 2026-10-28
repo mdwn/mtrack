@@ -92,6 +92,9 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
 
 - **Playback card** — Play/stop/next/prev with a progress bar showing elapsed and total time
   (for a song with no audio, the total is when its last lighting effect ends).
+  While a song waits out its playlist entry's [auto play](../getting-started/playlists.md#auto-play)
+  gap, the card counts it down ("Opener starts in 2s"); Stop cancels it. An **Ambient light**
+  badge shows while the [ambient show](../lighting/configuration.md#ambient-light) plays.
   Displays the currently playing song name. The progress bar is clickable: click anywhere to
   seek — while playing everything (audio, MIDI, lighting) restarts in sync at that position;
   while stopped the position is remembered and used by the next Play (shown as a marker on the
@@ -543,7 +546,9 @@ checks the syntax without saving. Switching back to the Timeline tab re-parses t
 
 The playlist editor provides a left panel for browsing, creating, and deleting playlists,
 and a right panel for editing song order (reorder, add, remove) with a searchable
-available-songs list.
+available-songs list. Each song has an **Auto play** box (and a gap once ticked), and the
+playlist an **Ambient light** setting: the profile's, none, or its own. See
+[Playlists](../getting-started/playlists.md#auto-play).
 
 ![Playlist editor](../images/playlist-editor.png)
 

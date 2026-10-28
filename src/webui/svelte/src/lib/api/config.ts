@@ -1211,10 +1211,35 @@ export interface PlaylistInfo {
   is_active: boolean;
 }
 
+/** An entry's auto play: `true` for at once, a gap (`"2s"`), or `null` for
+ *  none. */
+export type AutoPlay = true | string | null;
+
+/** A playlist's ambient light settings, each overriding the profile's. */
+export interface AmbientSettings {
+  show?: string;
+  delay?: string;
+  fade_in?: string;
+  fade_out?: string;
+}
+
+/** A playlist's ambient light: `null` for the profile's, `false` for none,
+ *  or settings of its own. */
+export type PlaylistAmbient = null | false | AmbientSettings;
+
 export interface PlaylistData {
   name: string;
   songs: string[];
+  /** Each song's auto play, in the order of `songs`. */
+  auto_play?: AutoPlay[];
+  ambient?: PlaylistAmbient;
   available_songs: string[];
+}
+
+/** What a save sets beyond the songs; each left out is kept as it is. */
+export interface PlaylistSettings {
+  auto_play?: AutoPlay[];
+  ambient?: PlaylistAmbient;
 }
 
 export async function fetchPlaylists(): Promise<PlaylistInfo[]> {
@@ -1232,10 +1257,11 @@ export async function fetchPlaylist(name: string): Promise<PlaylistData> {
 export async function savePlaylist(
   name: string,
   songs: string[],
+  settings: PlaylistSettings = {},
 ): Promise<void> {
   const res = await put(
     `/playlists/${encodeURIComponent(name)}`,
-    JSON.stringify({ songs }),
+    JSON.stringify({ songs, ...settings }),
   );
   if (!res.ok) throw await apiError(res, "Failed to save playlist");
 }

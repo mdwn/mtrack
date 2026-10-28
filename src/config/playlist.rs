@@ -438,6 +438,44 @@ impl Playlist {
             ambient: self.ambient.clone(),
         }
     }
+
+    /// This playlist with each entry's `auto_play` set from `auto_play`, in
+    /// entry order, for an editor that sets it per entry. An entry left with
+    /// no settings is written as its name alone.
+    pub fn with_auto_play(mut self, auto_play: &[Option<AutoPlayConfig>]) -> Playlist {
+        for (entry, auto_play) in self.songs.iter_mut().zip(auto_play) {
+            let auto_play = auto_play
+                .clone()
+                .filter(|a| *a != AutoPlayConfig::On(false));
+            let mut configured = match std::mem::replace(entry, PlaylistEntry::Song(String::new()))
+            {
+                PlaylistEntry::Song(song) => ConfiguredEntry {
+                    song,
+                    fade_out: None,
+                    fade_in: None,
+                    auto_play: None,
+                },
+                PlaylistEntry::Configured(configured) => configured,
+            };
+            configured.auto_play = auto_play;
+            *entry = if configured.fade_out.is_none()
+                && configured.fade_in.is_none()
+                && configured.auto_play.is_none()
+            {
+                PlaylistEntry::Song(configured.song)
+            } else {
+                PlaylistEntry::Configured(configured)
+            };
+        }
+        self
+    }
+
+    /// This playlist with `ambient` as its ambient light (`None` for the
+    /// profile's).
+    pub fn with_ambient(mut self, ambient: Option<super::ambient::PlaylistAmbient>) -> Playlist {
+        self.ambient = ambient;
+        self
+    }
 }
 
 fn default_playlist_kind() -> super::kind::ConfigKind {
