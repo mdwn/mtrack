@@ -102,9 +102,11 @@ pass it began in carries on into as many more passes as it takes, crossing pass 
 song's `loop_crossfade` as its loop does. MIDI from the looping song stops
 at the break. Stop or a seek cuts everything, the fading song included.
 
-The web UI's playlist editor keeps a playlist's transitions when it saves, and will not overwrite
-a playlist file that does not read; fades are edited in the file. Auto play and ambient light
-(below) can be set in the editor too.
+Fades can also be set in the web UI's playlist editor, under each song's **Transitions**; it
+refuses what the player would refuse, writes an entry left with no settings as its name alone,
+and will not overwrite a playlist file that does not read. Auto play and ambient light (below)
+can be set in the editor too. The dashboard's playback card says what a loop break will do
+("Next breaks the loop: fades out over 1 measure into Opener").
 
 ## Auto play
 

@@ -121,9 +121,19 @@ export const PLAYLISTS = [
   { name: "rehearsal", song_count: 2, is_active: false },
 ];
 
+const SONG_TRACKS: Record<string, string[]> = {
+  "Test Song Alpha": ["kick", "snare", "bass"],
+  "Test Song Beta": ["guitar", "vocals"],
+};
+
 export const PLAYLIST_DETAILS: Record<
   string,
-  { name: string; songs: string[]; available_songs: string[] }
+  {
+    name: string;
+    songs: string[];
+    available_songs: string[];
+    song_tracks?: Record<string, string[]>;
+  }
 > = {
   all_songs: {
     name: "all_songs",
@@ -134,6 +144,7 @@ export const PLAYLIST_DETAILS: Record<
     name: "setlist",
     songs: ["Test Song Alpha"],
     available_songs: ["Test Song Beta"],
+    song_tracks: SONG_TRACKS,
   },
   rehearsal: {
     name: "rehearsal",

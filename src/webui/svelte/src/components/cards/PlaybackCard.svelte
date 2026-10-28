@@ -19,6 +19,7 @@
   import { sectionColor } from "../../lib/sectionColors";
   import BeatIndicator from "./BeatIndicator.svelte";
   import { formatMs } from "../../lib/util/format";
+  import { describeNext } from "../../lib/nextUp";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -202,6 +203,9 @@
       live: elapsed >= w.liveFrom && elapsed <= w.liveTo,
     }));
   });
+
+  /** What comes after this song and how it will arrive. */
+  let nextUp = $derived(describeNext($playbackStore.next, $t));
 
   /** Whole seconds until an auto-play song starts, rounded up. */
   let autoPlaySeconds = $derived(
@@ -459,6 +463,11 @@
           {/if}
           <BeatIndicator />
         </div>
+        {#if nextUp}
+          <div class="playback-card__next" data-testid="next-up">
+            {nextUp}
+          </div>
+        {/if}
       </div>
       <div class="playback-card__transport">
         <button
@@ -706,6 +715,14 @@
   }
   :global(.nc--dark) .playback-card__auto-play {
     color: var(--nc-cyan-300);
+  }
+  .playback-card__next {
+    margin-top: 4px;
+    font-size: 13px;
+    color: var(--nc-fg-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .playback-card__auto-play-hint {
     margin-left: 8px;

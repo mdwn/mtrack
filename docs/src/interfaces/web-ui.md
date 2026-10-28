@@ -95,6 +95,11 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   While a song waits out its playlist entry's [auto play](../getting-started/playlists.md#auto-play)
   gap, the card counts it down ("Opener starts in 2s"); Stop cancels it. An **Ambient light**
   badge shows while the [ambient show](../lighting/configuration.md#ambient-light) plays.
+  Under the song name a quiet line says what comes next and how it will arrive: "Next: Opener —
+  starts by itself after 2s", "Next: The Slow One — waits for Play", or, while a looping song
+  plays, "Next breaks the loop: fades out over 1 measure into Opener" (from the playlist's
+  [transitions](../getting-started/playlists.md#transitions)). At the last song it reads "End of
+  playlist".
 
   ![The playback card counting down to a song's auto play, with the Ambient light
   badge](../images/playback-auto-play.png)
@@ -553,6 +558,14 @@ and a right panel for editing song order (reorder, add, remove) with a searchabl
 available-songs list. Each song has an **Auto play** box (and a gap once ticked), and the
 playlist an **Ambient light** setting: the profile's, none, or its own. See
 [Playlists](../getting-started/playlists.md#auto-play).
+
+Each song's **Transitions** button opens a panel under it for its fade out and fade in: a length
+(`3s`, `500ms`, `6beats`, `1measure`; empty for none), the curve, the song's tracks that do not
+fade, and for the fade out how long the lights take to cross. Closed, the button sums the fades
+up ("fade out 1 measure · fade in 4 beats"). The fade out applies only to loop breaks of a
+looping song. A save the player would not load (a bad length or curve, or a track the song does
+not have) is refused and nothing is written. See
+[Transitions](../getting-started/playlists.md#transitions).
 
 ![The playlist editor: two songs set to auto play, one after a 2s gap, and the playlist's own
 ambient show](../images/playlist-auto-play.png)

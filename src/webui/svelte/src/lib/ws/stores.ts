@@ -75,6 +75,26 @@ export interface ReactiveLoopState {
   section_name?: string;
 }
 
+/** A transition's fade as configured: `exclude` and `lights` null for the
+ *  defaults. */
+export interface FadeInfo {
+  length: string;
+  curve: "equal_power" | "linear";
+  exclude: string[] | null;
+  lights: string | null;
+}
+
+/** The song after the current one. A looping song that is playing goes on
+ *  only by a loop break, with the playlist's fades; otherwise the next song
+ *  starts by itself after `auto_play_ms`, or (null) waits for Play. */
+export interface NextUp {
+  song: string | null;
+  breaks_loop?: boolean;
+  fade_out?: FadeInfo | null;
+  fade_in?: FadeInfo | null;
+  auto_play_ms?: number | null;
+}
+
 export interface PlaybackState {
   is_playing: boolean;
   elapsed_ms: number;
@@ -105,6 +125,9 @@ export interface PlaybackState {
   /** The show the rig plays while no song is, when one is playing or about
    *  to (`pending`, waiting out its delay). */
   ambient?: { show: string; state: "pending" | "playing" } | null;
+  /** What comes after the current song and how it arrives; `song` is null
+   *  at the end of the playlist. */
+  next?: NextUp | null;
   /** performance.now() when this frame was received; lets consumers
    *  extrapolate elapsed_ms smoothly between the 5Hz frames. */
   received_at: number;
@@ -205,6 +228,7 @@ export const playbackStore = writable<PlaybackState>({
   tempo: null,
   auto_play: null,
   ambient: null,
+  next: null,
   received_at: 0,
 });
 
@@ -276,6 +300,7 @@ on("playback", (msg) => {
     tempo: m.tempo ?? null,
     auto_play: m.auto_play ?? null,
     ambient: m.ambient ?? null,
+    next: m.next ?? null,
     received_at: performance.now(),
   });
 });
