@@ -480,6 +480,10 @@ profiles:
           name: truss
       lighting:
         current_venue: house
+        ambient:
+          show: lighting/ambient.light
+          delay: 3s
+          fade_in: 4s
         groups:
           front_wash:
             name: front_wash
@@ -712,7 +716,7 @@ test("lighting-fixture-types", async ({ page }) => {
 });
 
 test("lighting-fixture-page", async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 1250 });
+  await page.setViewportSize({ width: 1280, height: 1300 });
   await rig(page);
   await open(page, `#/lighting/fixtures/${encodeURIComponent(BRICK)}`);
   await expect(page.getByTestId("ft-title")).toHaveText(BRICK);
@@ -946,7 +950,7 @@ test("stage-3d-cells", async ({ page }) => {
 // --- Groups, Overview, Fit, MVR ---------------------------------------------
 
 test("lighting-groups", async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 1000 });
+  await page.setViewportSize({ width: 1280, height: 1300 });
   await rig(page);
   await open(page, "#/lighting/groups");
   await expect(page.getByText("front_wash").first()).toBeVisible();
