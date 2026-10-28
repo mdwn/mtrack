@@ -21,7 +21,6 @@ here. Both can be used independently or together in the same project.
 - You need precise per-channel DMX control
 - You're integrating with existing MIDI workflows or DAWs
 - You prefer programming lights as MIDI data
-- You want to use live MIDI controllers for real-time DMX control
 
 ## Basic DMX Information
 
@@ -78,34 +77,6 @@ tracks:
 
 A light show whose `universe_name` matches no universe in the active profile is not sent
 anywhere.
-
-### Live MIDI to DMX mapping
-
-mtrack can also feed live MIDI events into the DMX engine, so a MIDI controller drives lights
-in real time. The mapping is in the profile's `midi` section: a MIDI channel (1–16) to listen
-on and the universe to drive, with optional transformers that turn one incoming message into
-several:
-
-```yaml
-midi:
-  device: "My MIDI Interface"
-  midi_to_dmx:
-    - midi_channel: 15
-      universe: light-show
-      transformers:
-        - type: note_mapper
-          input_note: 60
-          convert_to_notes: [60, 61, 62]
-        - type: control_change_mapper
-          input_controller: 1
-          convert_to_controllers: [1, 2, 3]
-```
-
-- `note_mapper`: maps one note to several, all with the incoming velocity, for both note on and
-  note off.
-- `control_change_mapper`: maps one control change to several, all with the incoming value.
-
-Collision behaviour between transformers is undefined.
 
 ## MIDI format
 

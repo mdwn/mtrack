@@ -60,7 +60,6 @@ pub use self::error::ConfigError;
 pub use self::lighting::Lighting;
 pub use self::metronome::MetronomeConfig;
 pub use self::midi::Midi;
-pub use self::midi::MidiTransformer;
 pub use self::midi::ToMidiEvent;
 pub use self::pilot::PilotConfig;
 pub use self::player::{MetronomeDefaults, Player};

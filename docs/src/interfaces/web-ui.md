@@ -588,8 +588,7 @@ top-level sections that belong to the whole project rather than one profile: **S
 Opening a profile shows its settings in tabs:
 
 - **Audio** — Device selection, sample rate, format, buffer size, track mappings
-- **MIDI** — Device selection, beat clock, MIDI-to-DMX passthrough mappings with Note Mapper
-  and CC Mapper transformer editors
+- **MIDI** — Device selection, playback delay, beat clock
 - **Lighting** — The DMX hardware: the olad port and universe mappings. Below it, a summary of
   the profile's current venue and group count, with an **Edit in Lighting** link. Fixture types,
   venues and groups are edited in the [Lighting area](../lighting/web-ui.md)

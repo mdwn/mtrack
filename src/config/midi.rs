@@ -38,9 +38,6 @@ pub struct Midi {
     /// stops, until the next song starts. Only meaningful when `beat_clock` is
     /// enabled.
     persist_tempo: Option<bool>,
-
-    /// MIDI to DMX passthrough configurations.
-    midi_to_dmx: Option<Vec<MidiToDmx>>,
 }
 
 impl Midi {
@@ -51,7 +48,6 @@ impl Midi {
             playback_delay,
             beat_clock: None,
             persist_tempo: None,
-            midi_to_dmx: None,
         }
     }
 
@@ -74,11 +70,6 @@ impl Midi {
     /// tempo once a song stops, until the next song starts.
     pub fn persist_tempo(&self) -> bool {
         self.persist_tempo.unwrap_or(false)
-    }
-
-    /// Returns the MIDI to DMX configuration.
-    pub fn midi_to_dmx(&self) -> &[MidiToDmx] {
-        self.midi_to_dmx.as_deref().unwrap_or_default()
     }
 
     /// Validates the MIDI configuration for semantic issues.
@@ -105,94 +96,10 @@ impl Midi {
     }
 }
 
-/// A YAML representation of the MIDI configuration.
-#[derive(Deserialize, Serialize, Clone)]
-pub struct MidiToDmx {
-    /// The MIDI channel to pass through to DMX.
-    midi_channel: u8,
-
-    /// The DMX universe to target.
-    universe: String,
-
-    /// Transformations to apply to the input to this mapping.
-    transformers: Option<Vec<MidiTransformer>>,
-}
-
-impl MidiToDmx {
-    /// The MIDI channel associated with this mapping.
-    pub fn midi_channel(&self) -> Result<u7, Box<dyn Error>> {
-        u7::try_from(self.midi_channel - 1).ok_or("error parsing MIDI channel".into())
-    }
-
-    /// The DMX universe to map the MIDI channel to.
-    pub fn universe(&self) -> &str {
-        &self.universe
-    }
-
-    /// The transformers to apply to the input MIDI.
-    pub fn transformers(&self) -> &[MidiTransformer] {
-        self.transformers.as_deref().unwrap_or_default()
-    }
-}
-
 /// Implementers must convert to a MIDI live event.
 pub trait ToMidiEvent {
     /// Converts the implementer to a MIDI live event.
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>>;
-}
-
-#[derive(Deserialize, Serialize, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum MidiTransformer {
-    NoteMapper(NoteMapper),
-    ControlChangeMapper(ControlChangeMapper),
-}
-
-/// A YAML representation of the note mapper MIDI transformation.
-#[derive(Deserialize, Serialize, Clone)]
-pub struct NoteMapper {
-    input_note: u8,
-    convert_to_notes: Vec<u8>,
-}
-
-impl NoteMapper {
-    /// Gets the input note.
-    pub fn input_note(&self) -> Result<u7, Box<dyn Error>> {
-        u7::try_from(self.input_note).ok_or("input note cannot be converted to a u7".into())
-    }
-
-    /// Gets the notes to convert the input to.
-    pub fn convert_to_notes(&self) -> Result<Vec<u7>, Box<dyn Error>> {
-        self.convert_to_notes
-            .iter()
-            .map(|note| u7::try_from(*note).ok_or("unable to convert note to u7".into()))
-            .collect()
-    }
-}
-
-/// A YAML representation of the control change mapper MIDI transformation.
-#[derive(Deserialize, Serialize, Clone)]
-pub struct ControlChangeMapper {
-    input_controller: u8,
-    convert_to_controllers: Vec<u8>,
-}
-
-impl ControlChangeMapper {
-    /// Gets the input controller.
-    pub fn input_controller(&self) -> Result<u7, Box<dyn Error>> {
-        u7::try_from(self.input_controller)
-            .ok_or("input controller cannot be converted to a u7".into())
-    }
-
-    /// Gets the controllers to convert the input to.
-    pub fn convert_to_notes(&self) -> Result<Vec<u7>, Box<dyn Error>> {
-        self.convert_to_controllers
-            .iter()
-            .map(|controller| {
-                u7::try_from(*controller).ok_or("unable to convert controller to u7".into())
-            })
-            .collect()
-    }
 }
 
 /// MIDI events that can be parsed from YAML.
@@ -573,12 +480,6 @@ mod test {
     }
 
     #[test]
-    fn midi_to_dmx_empty_default() {
-        let midi = super::Midi::new("dev", None);
-        assert!(midi.midi_to_dmx().is_empty());
-    }
-
-    #[test]
     fn beat_clock_default_is_false() {
         let midi = super::Midi::new("dev", None);
         assert!(!midi.beat_clock());
@@ -620,26 +521,22 @@ mod test {
     }
 
     #[test]
-    fn midi_to_dmx_deserialization() -> Result<(), Box<dyn Error>> {
+    fn retired_midi_to_dmx_key_is_ignored() -> Result<(), Box<dyn Error>> {
+        // The live MIDI to DMX pass-through is gone. A profile that still
+        // carries its key loads, and the key has no effect.
         let yaml = r#"
             device: test
             midi_to_dmx:
               - midi_channel: 10
                 universe: "main"
-                transformers:
-                  - type: note_mapper
-                    input_note: 60
-                    convert_to_notes: [61, 62]
         "#;
         let midi: super::Midi = Config::builder()
             .add_source(File::from_str(yaml, FileFormat::Yaml))
             .build()?
             .try_deserialize()?;
-        let mappings = midi.midi_to_dmx();
-        assert_eq!(mappings.len(), 1);
-        assert_eq!(mappings[0].universe(), "main");
-        assert_eq!(u8::from(mappings[0].midi_channel()?), 9); // 10 - 1
-        assert_eq!(mappings[0].transformers().len(), 1);
+        assert_eq!(midi.device(), "test");
+        let yaml = crate::util::to_yaml_string(&midi)?;
+        assert!(!yaml.contains("midi_to_dmx"));
         Ok(())
     }
 

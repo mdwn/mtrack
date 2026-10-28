@@ -100,7 +100,7 @@ impl Player {
     /// written to `HardwareState` as they become available, so playback can
     /// use whatever hardware is ready. Respects dependency ordering:
     ///   Phase 1: Audio + DMX (parallel)
-    ///   Phase 2: MIDI (needs DMX), Sample engine (needs Audio) — parallel
+    ///   Phase 2: MIDI, Sample engine (needs Audio) — parallel
     ///   Phase 3: Trigger engine (needs Sample engine), status reporting
     /// `cancel` is captured by the *spawner*, not read here.
     ///
@@ -278,17 +278,15 @@ impl Player {
             return;
         }
 
-        // Phase 2: MIDI (needs DMX) + Sample engine (needs Audio) — parallel.
+        // Phase 2: MIDI + Sample engine (needs Audio) — parallel.
         let midi_config = profile.midi().cloned();
         let cancel3 = cancel.clone();
-        let dmx_engine_for_midi = dmx_result.clone();
 
         let (midi_result, sample_engine) = tokio::join!(
             async {
                 if let Some(midi_config) = midi_config {
                     let outcome = Self::retry_until_ready("midi device", cancel3, move || {
-                        midi::get_device(Some(midi_config.clone()), dmx_engine_for_midi.clone())
-                            .map_err(|e| e.to_string())
+                        midi::get_device(Some(midi_config.clone())).map_err(|e| e.to_string())
                     })
                     .await;
                     self.record_init_outcome("midi", outcome, &cancel).flatten()

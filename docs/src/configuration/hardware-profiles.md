@@ -46,9 +46,6 @@ profiles:
     midi:
       device: "Behringer WING"
       playback_delay: 500ms
-      midi_to_dmx:
-        - midi_channel: 15
-          universe: light-show
     dmx:
       dim_speed_modifier: 0.25
       universes:

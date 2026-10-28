@@ -40,4 +40,10 @@ test.describe("Profile Editor - MIDI Section", () => {
   test("MIDI tab shows Refresh button", async ({ page }) => {
     await expect(page.getByRole("button", { name: "Refresh" })).toBeVisible();
   });
+
+  test("MIDI tab has no MIDI to DMX editor", async ({ page }) => {
+    // The live MIDI to DMX pass-through was removed.
+    await expect(page.locator("#midi-device")).toBeVisible();
+    await expect(page.getByText("MIDI to DMX")).toHaveCount(0);
+  });
 });

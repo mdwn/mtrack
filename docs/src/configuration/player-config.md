@@ -186,28 +186,6 @@ midi:
   # stops.
   persist_tempo: true
 
-  # (Optional) You can route live MIDI events into the DMX engine with this configuration.
-  midi_to_dmx:
-
-  # Watch for each MIDI event in channel 15.
-  - midi_channel: 15
-    # Route these events to the light-show universe.
-    universe: light-show
-
-    # Transform the MIDI events into multiple
-    transformers:
-    # Maps the input note into the given list of notes. The velocity will be copied to each
-    # new note.
-    - type: note_mapper
-      input_note: 0
-      convert_to_notes: [0, 1, 2, 4, 5, 6]
-
-    # Maps the input controller into the given list of controllers. The controller value will
-    # be mapped to each new controller.
-    - type: control_change_mapper
-      input_controller: 0
-      convert_to_controllers: [0, 1, 2, 4, 5, 6]
-
 # The DMX configuration. This maps OLA universes to light show names defined within
 # song files. Omit the section on a host without lighting.
 dmx:
@@ -492,7 +470,6 @@ controllers:
 | `midi.playback_delay` | duration | `0` | no |
 | `midi.beat_clock` | bool | `false` | no |
 | `midi.persist_tempo` | bool | `false` | no |
-| `midi.midi_to_dmx` | list | `[]` | no |
 | `dmx.dim_speed_modifier` | float > 0 | `1.0` | no |
 | `dmx.playback_delay` | duration | `0` | no |
 | `dmx.ola_port` | integer | `9010` | no |
