@@ -129,6 +129,8 @@ songs:
   segue. Play, Stop, Next, Previous or a playlist switch during the gap calls it off.
 - **The end of the list.** Next on the last song does not move, so does not start it again.
 - A song that failed does not lead into one that auto plays.
+- **Seeing it coming.** While a gap runs, the MCP `status` tool reports the song and how long
+  until it starts, as `auto_play: {song, starts_in_seconds}`.
 
 ## Ambient light
 

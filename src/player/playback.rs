@@ -502,10 +502,16 @@ impl Player {
     /// Starts the song at the playlist's position by itself after `gap`,
     /// unless a play, stop, navigation or playlist switch comes first.
     pub(super) fn schedule_auto_play(&self, gap: Duration) {
+        let song = self
+            .get_playlist()
+            .current()
+            .map(|song| song.name().to_string())
+            .unwrap_or_default();
         let generation = {
             let mut state = self.auto_play.lock();
             state.generation += 1;
             state.pending = true;
+            state.waiting = Some((song, std::time::Instant::now() + gap));
             state.generation
         };
         info!(gap = ?gap, "Auto play: the song starts by itself.");
@@ -518,6 +524,7 @@ impl Player {
                     return;
                 }
                 state.pending = false;
+                state.waiting = None;
             }
             // As the loop-break auto-play does: play's future holds tokio
             // mutex guards that are not Send.
@@ -534,7 +541,20 @@ impl Player {
     pub(super) fn cancel_auto_play(&self) -> bool {
         let mut state = self.auto_play.lock();
         state.generation += 1;
+        state.waiting = None;
         std::mem::replace(&mut state.pending, false)
+    }
+
+    /// The song an auto play is waiting to start, and how long until it
+    /// does, while one is.
+    pub fn auto_play_status(&self) -> Option<(String, Duration)> {
+        let state = self.auto_play.lock();
+        state.waiting.as_ref().map(|(song, at)| {
+            (
+                song.clone(),
+                at.saturating_duration_since(std::time::Instant::now()),
+            )
+        })
     }
 
     /// The player has gone idle: ambient light, if there is any, once its

@@ -1066,6 +1066,8 @@ impl StatusEvents {
 struct AutoPlayState {
     generation: u64,
     pending: bool,
+    /// The song waiting and when it starts, while one is.
+    waiting: Option<(String, std::time::Instant)>,
 }
 
 /// The result of receiving a playback completion signal.
@@ -2421,8 +2423,11 @@ mod test {
         let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 500ms\n- Song 5\n";
         let player = make_test_player_with_playlist(yaml).await?;
 
-        // The gap runs, then the song starts.
+        // The gap runs, then the song starts; status shows it waiting.
         player.next().await;
+        let (song, starts_in) = player.auto_play_status().expect("waiting");
+        assert_eq!(song, "Song 3");
+        assert!(starts_in <= Duration::from_millis(500), "{starts_in:?}");
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(!player.is_playing().await, "waits out the gap");
         eventually_async(
@@ -2430,12 +2435,14 @@ mod test {
             "Song 3 never started",
         )
         .await;
+        assert!(player.auto_play_status().is_none(), "started, not waiting");
         player.stop().await;
 
         // A stop inside the gap calls it off.
         player.prev().await;
         player.next().await;
         player.stop().await;
+        assert!(player.auto_play_status().is_none(), "nothing waiting");
         tokio::time::sleep(Duration::from_millis(800)).await;
         assert!(!player.is_playing().await, "a stop calls it off");
 
