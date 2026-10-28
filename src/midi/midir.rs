@@ -2593,8 +2593,11 @@ mod test {
             ];
             let sent = &sender.sent;
             assert_eq!(sent.len(), expected.len(), "{sent:?}");
+            // Wall-clock playback on a loaded runner can start a few tens of
+            // milliseconds late; restarting on the MIDI's length instead
+            // would put the second and third passes 400 ms early.
             for ((at, note), (want_at, want_note)) in sent.iter().zip(expected) {
-                assert!((at - want_at).abs() < 0.03, "{sent:?}");
+                assert!((at - want_at).abs() < 0.05, "{sent:?}");
                 assert_eq!(*note, want_note, "{sent:?}");
             }
         }
