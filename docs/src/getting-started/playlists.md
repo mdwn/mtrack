@@ -136,6 +136,9 @@ songs:
 - **In the web UI.** The playlist editor has an **Auto play** box on each song, with a gap field
   beside it once ticked: empty starts the song at once.
 
+![The playlist editor: two songs set to auto play, one after a 2s gap, and the playlist's own
+ambient show](../images/playlist-auto-play.png)
+
 ## Ambient light
 
 The profile's ambient light -- the show the rig plays between songs, see

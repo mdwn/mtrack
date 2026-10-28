@@ -146,6 +146,58 @@ test("dashboard", async ({ page }) => {
   await page.screenshot({ path: path.join(DOCS_IMAGES, "dashboard.png") });
 });
 
+test("playback-auto-play", async ({ page }) => {
+  // The playback card while a song waits out its playlist entry's auto-play
+  // gap, with ambient light playing between songs.
+  const wsId = freshWsId("auto-play");
+  await page.goto(`/?wsId=${wsId}#/`);
+  await page.waitForTimeout(300);
+  await pushWs(page, wsId, {
+    ...DEFAULT_PLAYBACK,
+    song_name: "Death is a Fine Companion",
+    song_duration_ms: 254000,
+    playlist_position: 1,
+    auto_play: { song: "Death is a Fine Companion", starts_in_ms: 1600 },
+    ambient: { show: "lighting/ambient.light", state: "playing" },
+  });
+  await expect(page.getByTestId("auto-play-countdown")).toBeVisible();
+  await page.waitForTimeout(200);
+  await page
+    .locator(".playback-card")
+    .screenshot({ path: path.join(DOCS_IMAGES, "playback-auto-play.png") });
+});
+
+test("playlist-auto-play", async ({ page }) => {
+  // The playlist editor with an intro that leads into the opener, the
+  // opener after a gap, and the playlist's own ambient show.
+  await page.route("**/api/playlists/setlist", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        name: "setlist",
+        songs: [
+          "Line Check",
+          "Walk-on Tape",
+          "Death is a Fine Companion",
+          "The Slow One",
+        ],
+        auto_play: [null, true, "2s", null],
+        ambient: { show: "lighting/walk_in.light", fade_in: "6s" },
+        available_songs: ["Encore", "Outro Tape"],
+      }),
+    });
+  });
+  await page.goto("/#/playlists/setlist");
+  await expect(page.getByTestId("playlist-ambient")).toBeVisible();
+  await expect(page.getByTestId("auto-play-gap").first()).toBeVisible();
+  await page.waitForTimeout(300);
+  await page
+    .locator(".detail-panel")
+    .screenshot({ path: path.join(DOCS_IMAGES, "playlist-auto-play.png") });
+});
+
 test("nav-unlocked", async ({ page }) => {
   const wsId = freshWsId("unlocked");
   await page.goto(`/?wsId=${wsId}#/`);

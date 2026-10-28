@@ -95,6 +95,10 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   While a song waits out its playlist entry's [auto play](../getting-started/playlists.md#auto-play)
   gap, the card counts it down ("Opener starts in 2s"); Stop cancels it. An **Ambient light**
   badge shows while the [ambient show](../lighting/configuration.md#ambient-light) plays.
+
+  ![The playback card counting down to a song's auto play, with the Ambient light
+  badge](../images/playback-auto-play.png)
+
   Displays the currently playing song name. The progress bar is clickable: click anywhere to
   seek — while playing everything (audio, MIDI, lighting) restarts in sync at that position;
   while stopped the position is remembered and used by the next Play (shown as a marker on the
@@ -549,6 +553,9 @@ and a right panel for editing song order (reorder, add, remove) with a searchabl
 available-songs list. Each song has an **Auto play** box (and a gap once ticked), and the
 playlist an **Ambient light** setting: the profile's, none, or its own. See
 [Playlists](../getting-started/playlists.md#auto-play).
+
+![The playlist editor: two songs set to auto play, one after a 2s gap, and the playlist's own
+ambient show](../images/playlist-auto-play.png)
 
 ![Playlist editor](../images/playlist-editor.png)
 

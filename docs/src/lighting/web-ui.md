@@ -449,8 +449,8 @@ Directories, the current venue and logical groups with their constraints. Pick
 the profile at the top. **Save** writes that profile; leaving the page with unsaved edits asks
 first.
 
-![The Groups page: the running profile, the directories, the current venue and the logical groups,
-one open with its constraints](../images/lighting-groups.png)
+![The Groups page: the running profile, the directories, the current venue, the ambient light and
+the logical groups, one open with its constraints](../images/lighting-groups.png)
 
 The **current venue** is the one the engine lights; shows play on it, and the live stage views
 draw it. Choosing another one here is how you move the rig from one place to another.
