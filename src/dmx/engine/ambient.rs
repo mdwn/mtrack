@@ -1458,14 +1458,14 @@ mod tests {
         add_mover(&engine);
         start_song(&engine, &pan_show("80%"));
         song_frame(&engine, 0.5);
-        engine.begin_break_fade(Duration::from_secs(3));
+        engine.begin_break_fade(Duration::from_secs(6));
         engine.stop_lighting_timeline();
         start_song(&engine, b);
         song_frame(&engine, 0.1);
         engine.begin_break_fade(Duration::from_millis(300));
         engine.stop_lighting_timeline();
         start_song(&engine, GREEN);
-        // Past B's fade and its cue: only A's 3 s fade moves the pan.
+        // Past B's fade and its cue: only A's 6 s fade moves the pan.
         assert_pan_glides(&engine, 1.5, 100.0);
         let fades = engine.break_fades.lock();
         assert_eq!(fades.len(), 2);
