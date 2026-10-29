@@ -49,6 +49,12 @@ impl Player {
             return Ok(None);
         }
 
+        // A start the song cannot play from is turned down before the
+        // playlist moves to it (#584).
+        if let Some(song) = self.get_playlist().get_song(song_name) {
+            super::seek::check_start_position(&song, start_time, "play from")?;
+        }
+
         if self.get_playlist().navigate_to(song_name).is_none() {
             let all_songs = self
                 .get_all_songs_playlist()

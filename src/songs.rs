@@ -43,7 +43,7 @@ pub fn is_supported_audio_extension(ext: &str) -> bool {
 /// A resolved DSL lighting show with absolute file path and cached parsed shows.
 ///
 /// The parse is kept until the file changes on disk: [`Self::shows`] parses
-/// it again once its modified time moves, so an edit made outside mtrack (an
+/// it again once its modified time or size moves, so an edit made outside mtrack (an
 /// editor, `git pull`), or one the engine's hot reload picked up during a
 /// playback, is what the song plays next rather than the show it was loaded
 /// with (#585).
@@ -52,14 +52,14 @@ pub struct DslLightingShow {
     file_path: PathBuf,
     /// The tempo the show inherits, to parse it again against.
     tempo_map: Option<crate::tempo::TempoMap>,
-    /// The latest parse, and the file's modified time when it was read.
+    /// The latest parse, and the file's stamp when it was read.
     parsed: parking_lot::Mutex<ParsedFile>,
 }
 
 /// One parse of a DSL file.
 struct ParsedFile {
     shows: Arc<HashMap<String, ParsedLightShow>>,
-    modified: Option<std::time::SystemTime>,
+    modified: Option<FileStamp>,
     /// Bumped by every parse after the first, for what is worked out from
     /// the shows to tell it is stale.
     version: u64,
@@ -89,9 +89,14 @@ impl Clone for DslLightingShow {
     }
 }
 
-/// The modified time of `path`, if it can be read.
-fn modified_time(path: &Path) -> Option<std::time::SystemTime> {
-    fs::metadata(path).and_then(|m| m.modified()).ok()
+/// What tells a file has changed: its modified time, and its size, for two
+/// saves within one tick of the clock -- a truncate, then the write.
+type FileStamp = (std::time::SystemTime, u64);
+
+/// The [`FileStamp`] of `path`, if it can be read.
+fn modified_time(path: &Path) -> Option<FileStamp> {
+    let metadata = fs::metadata(path).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
 }
 
 /// Reads and parses a DSL file.
@@ -154,13 +159,13 @@ impl DslLightingShow {
         Ok(Self::with_shows(file_path, shows, tempo_map, modified))
     }
 
-    /// A show already parsed from `file_path`, with the file's modified
-    /// time when it was read (`None`: never parsed again).
+    /// A show already parsed from `file_path`, with the file's stamp when
+    /// it was read (`None`: never parsed again).
     fn with_shows(
         file_path: PathBuf,
         shows: HashMap<String, ParsedLightShow>,
         tempo_map: Option<&crate::tempo::TempoMap>,
-        modified: Option<std::time::SystemTime>,
+        modified: Option<FileStamp>,
     ) -> Self {
         Self {
             file_path,
@@ -895,6 +900,17 @@ impl Song {
     pub fn loop_period(&self) -> Duration {
         self.length()
             .saturating_sub(self.loop_crossfade().unwrap_or_default())
+    }
+
+    /// Where `elapsed` (from the song's start, over every pass) is in the
+    /// pass it is on: elapsed itself for a song that does not loop.
+    pub fn position_in_pass(&self, elapsed: Duration) -> Duration {
+        let period = self.loop_period();
+        if self.loop_playback && !period.is_zero() {
+            Duration::from_nanos((elapsed.as_nanos() % period.as_nanos()) as u64)
+        } else {
+            elapsed
+        }
     }
 
     /// Tracks that switch over halfway through the loop crossfade instead of
@@ -4089,10 +4105,15 @@ pilot:
             "a show-only song's length"
         );
 
+        // A second save in the same tick of the clock, of another size.
+        write_at(&path, &show("same_tick", "12s"), 2_000)?;
+        assert_eq!(names(&song), ["same_tick"], "a same-tick save was missed");
+        assert_eq!(song.length(), std::time::Duration::from_secs(12));
+
         // An edit that does not parse keeps the last good show.
         write_at(&path, "show \"broken\" {", 3_000)?;
-        assert_eq!(names(&song), ["after"]);
-        assert_eq!(song.length(), std::time::Duration::from_secs(8));
+        assert_eq!(names(&song), ["same_tick"]);
+        assert_eq!(song.length(), std::time::Duration::from_secs(12));
 
         // Fixed again, it is picked up again.
         write_at(&path, &show("fixed", "3s"), 4_000)?;
@@ -4639,6 +4660,28 @@ pilot:
         let proto = song.to_proto().unwrap();
         assert_eq!(proto.sections[0].start_beat, None);
         assert_eq!(proto.sections[0].end_beat, None);
+    }
+
+    #[test]
+    fn a_position_on_a_later_pass_is_its_place_in_the_pass() {
+        use std::time::Duration;
+        let looping = super::Song {
+            duration: Duration::from_secs(10),
+            loop_playback: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            looping.position_in_pass(Duration::from_secs(23)),
+            Duration::from_secs(3)
+        );
+        let once = super::Song {
+            duration: Duration::from_secs(10),
+            ..Default::default()
+        };
+        assert_eq!(
+            once.position_in_pass(Duration::from_secs(23)),
+            Duration::from_secs(23)
+        );
     }
 
     /// A song with no audio is as long as its lighting: the last effect's

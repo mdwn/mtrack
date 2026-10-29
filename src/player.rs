@@ -2038,6 +2038,22 @@ mod test {
             "the playlist moved on"
         );
 
+        // Nor does picking another song with a start past its end move the
+        // playlist to it.
+        let other = player.get_playlist().songs()[1].clone();
+        assert!(player
+            .play_song_from(&other, Duration::from_secs(3600))
+            .await
+            .is_err());
+        assert_eq!(
+            player
+                .get_playlist()
+                .current()
+                .map(|s| s.name().to_string()),
+            Some(song.name().to_string()),
+            "play_song_from moved the playlist"
+        );
+
         // Just before the end is still a start.
         player.seek_to(end - Duration::from_millis(1)).await?;
         assert_eq!(player.pending_start(), Some(end - Duration::from_millis(1)));
