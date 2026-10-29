@@ -28,7 +28,6 @@ use tracing::{error, info, span, warn, Level};
 use crate::{playsync::CancelHandle, songs::Song};
 
 use super::{Engine, MidiDmxPlayback};
-use crate::midi::playback::PrecomputedMidi;
 
 /// Song time to write while resuming after a section-loop break.
 ///
@@ -182,43 +181,37 @@ impl Engine {
             }
         }
 
-        // Build MIDI DMX playbacks and store them for effects-loop dispatch.
-        // Drain the map to take ownership of MidiSheets (avoids cloning event vecs).
-        // This must happen BEFORE resetting timeline_finished to avoid a race where
-        // the effects loop sees empty playbacks + no timeline and sets finished=true.
-        // The events run on delayed song time, as the DSL timeline starts
-        // from: those up to the start point are skipped, and the state they
-        // built up put back as the start clears the store (#583).
-        let from = dmx_engine.to_delayed_song_time(start_time);
-        let mut restores = Vec::new();
-        {
-            let mut playbacks = dmx_engine.midi_dmx_playbacks.lock();
-            playbacks.clear();
-            for (universe_name, (midi_sheet, channels)) in dmx_midi_sheets.drain() {
-                let midi_channels = HashSet::from_iter(channels);
-                let universe_id = match dmx_engine.universe_name_to_id.get(&universe_name) {
-                    Some(&id) => id,
-                    None => continue,
-                };
-                let events = midi_sheet.precomputed.into_events();
-                let cursor = super::midi_playback::midi_dmx_cursor(&events, from);
-                restores.extend(dmx_engine.midi_dmx_restore(
-                    universe_id,
-                    &events[..cursor],
-                    &midi_channels,
-                    from,
-                ));
-                playbacks.push(MidiDmxPlayback {
-                    precomputed: PrecomputedMidi::from_events(events),
-                    cursor,
-                    universe_id,
-                    midi_channels,
-                });
-            }
+        // Build MIDI DMX playbacks for effects-loop dispatch, installed by
+        // the timeline start below. Drain the map to take ownership of
+        // MidiSheets (avoids cloning event vecs). They must be in BEFORE
+        // resetting timeline_finished to avoid a race where the effects loop
+        // sees empty playbacks + no timeline and sets finished=true. The
+        // events run on delayed song time, as the DSL timeline starts from:
+        // those up to the start point are skipped, and the state they built
+        // up put back as the start clears the store (#583).
+        let mut midi_dmx_playbacks = Vec::new();
+        for (universe_name, (midi_sheet, channels)) in dmx_midi_sheets.drain() {
+            let Some(&universe_id) = dmx_engine.universe_name_to_id.get(&universe_name) else {
+                continue;
+            };
+            midi_dmx_playbacks.push(MidiDmxPlayback {
+                precomputed: midi_sheet.precomputed,
+                cursor: 0,
+                universe_id,
+                midi_channels: HashSet::from_iter(channels),
+                start_dim_rate: dmx_engine
+                    .universes
+                    .get(&universe_id)
+                    .map_or(1.0, |universe| universe.dim_rate()),
+            });
         }
+        let has_midi_dmx = !midi_dmx_playbacks.is_empty();
 
         // Start the lighting timeline at the specified time
-        dmx_engine.start_lighting_timeline_restoring(start_time, &restores);
+        dmx_engine.start_lighting_timeline_with(
+            start_time,
+            super::timeline::MidiDmxStart::Install(midi_dmx_playbacks),
+        );
 
         // Start file watcher for hot-reload if broadcast channel is available
         {
@@ -252,7 +245,7 @@ impl Engine {
 
         // Note: Effects loop is now persistent and started in Engine::new()
 
-        if dmx_midi_sheets.is_empty() && !has_lighting {
+        if !has_midi_dmx && !has_lighting {
             info!(song = song.name(), "Song has no matching light shows.");
             // The `!has_lighting` branch above already dropped the previous
             // song's timeline and tempo map.
@@ -396,10 +389,10 @@ impl Engine {
                             dmx_engine.update_song_time(current_pos);
                             // The restart clears the MIDI DMX store: what the
                             // events up to here set goes back with it (#583).
-                            let restores = dmx_engine.seek_midi_dmx_playbacks(
-                                dmx_engine.to_delayed_song_time(current_pos),
+                            dmx_engine.start_lighting_timeline_with(
+                                current_pos,
+                                super::timeline::MidiDmxStart::Seek,
                             );
-                            dmx_engine.start_lighting_timeline_restoring(current_pos, &restores);
                             continue_from = Some((current_pos, elapsed));
                         } else {
                             // No cached section — just hand back to tracker.
@@ -443,11 +436,10 @@ impl Engine {
                             // The restart clears the MIDI DMX store: what the
                             // events before the section set goes back with
                             // it (#583).
-                            let restores = dmx_engine.seek_midi_dmx_playbacks(
-                                dmx_engine.to_delayed_song_time(section.start_time),
+                            dmx_engine.start_lighting_timeline_with(
+                                section.start_time,
+                                super::timeline::MidiDmxStart::Seek,
                             );
-                            dmx_engine
-                                .start_lighting_timeline_restoring(section.start_time, &restores);
                             iteration_start = Some(elapsed);
                         }
                         crate::section_loop::LoopPoll::SectionCleared => {

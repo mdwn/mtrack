@@ -104,6 +104,11 @@ impl Universe {
         *self.global_dim_rate.read()
     }
 
+    /// Sets the dim rate, in ticks for a full transition.
+    pub fn set_dim_rate(&self, ticks: f64) {
+        *self.global_dim_rate.write() = ticks;
+    }
+
     #[cfg(test)]
     pub fn get_dim_speed(&self) -> f64 {
         *self.global_dim_rate.read()

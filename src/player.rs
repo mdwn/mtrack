@@ -2495,6 +2495,21 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn play_song_from_past_the_end_of_a_song_off_the_playlist_stays_put(
+    ) -> Result<(), Box<dyn Error>> {
+        // #584: a song only in all_songs must not switch the player to
+        // all_songs when its start is turned down.
+        let player = make_test_player_with_playlist("songs:\n- Song 1\n").await?;
+        assert!(player
+            .play_song_from("Song 3", Duration::from_secs(3600))
+            .await
+            .is_err());
+        assert_eq!(*player.active_playlist.read(), "playlist");
+        assert_eq!(current_name(&player).await, "Song 1");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn auto_play_starts_a_song_the_one_before_leads_into() -> Result<(), Box<dyn Error>> {
         let player = make_test_player_with_playlist(
             "songs:\n- Song 1\n- song: Song 3\n  auto_play: true\n- Song 5\n",

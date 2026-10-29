@@ -182,6 +182,9 @@ pub(super) struct MidiDmxPlayback {
     pub(super) cursor: usize,
     pub(super) universe_id: u16,
     pub(super) midi_channels: HashSet<u8>,
+    /// The universe's dim rate (ticks) when the playback started, which a
+    /// seek replays the events before it from.
+    pub(super) start_dim_rate: f64,
 }
 
 /// DmxMessage is a message that can be passed around between senders and receivers.
@@ -1454,6 +1457,7 @@ mod test {
                 cursor: 0,
                 universe_id: 5,
                 midi_channels,
+                start_dim_rate: 1.0,
             });
         }
 
@@ -2427,6 +2431,7 @@ mod test {
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
             }
             assert!(!engine.midi_dmx_playbacks_finished());
@@ -2452,6 +2457,7 @@ mod test {
                     cursor: len,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
             }
             assert!(engine.midi_dmx_playbacks_finished());
@@ -2477,6 +2483,7 @@ mod test {
                     cursor: 1,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
                 // Unfinished playback
                 playbacks.push(super::super::MidiDmxPlayback {
@@ -2484,6 +2491,7 @@ mod test {
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
             }
             assert!(!engine.midi_dmx_playbacks_finished());
@@ -2522,6 +2530,7 @@ mod test {
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
             }
 
@@ -2562,6 +2571,7 @@ mod test {
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
             }
 
@@ -2603,6 +2613,7 @@ mod test {
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
             }
 
@@ -2647,6 +2658,7 @@ mod test {
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(), // empty = accept all
+                    start_dim_rate: 1.0,
                 });
             }
 
@@ -5304,6 +5316,12 @@ mod test {
         /// A MIDI file that sets CC0 to 127 (DMX 1 to 254) at 0 and nothing
         /// else on it, with one more CC at 8 s to keep the show running.
         fn create_cc_held_midi_file(path: &std::path::Path) {
+            create_cc_midi_file(path, 0);
+        }
+
+        /// As [`create_cc_held_midi_file`], with the CC `delta` ticks (960 a
+        /// second) in.
+        fn create_cc_midi_file(path: &std::path::Path, delta: u32) {
             use midly::num::{u15, u28, u4, u7};
             use midly::{Format, Header, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
             let cc = |delta: u32, controller: u8, value: u8| TrackEvent {
@@ -5319,9 +5337,9 @@ mod test {
             let smf = Smf {
                 header: Header::new(Format::SingleTrack, Timing::Metrical(u15::new(480))),
                 tracks: vec![vec![
-                    cc(0, 0, 127),
+                    cc(delta, 0, 127),
                     // 120 bpm at 480 ticks a beat: 960 ticks a second.
-                    cc(960 * 8, 9, 1),
+                    cc(960 * 8 - delta, 9, 1),
                     TrackEvent {
                         delta: u28::new(0),
                         kind: TrackEventKind::Meta(midly::MetaMessage::EndOfTrack),
@@ -5377,13 +5395,17 @@ mod test {
                     cursor: 2,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
-            // Played on to 6 s: red at 20.
+            // Played on to 6 s: red at 20, and a later dimming change in.
             engine.midi_dmx_store.read().write(5, 1, 20, false);
+            engine.get_universe(5).unwrap().set_dim_rate(88.0);
 
             // The section starts at 2 s.
-            let restores = engine.seek_midi_dmx_playbacks(Duration::from_secs(2));
-            engine.start_lighting_timeline_restoring(Duration::from_secs(2), &restores);
+            engine.start_lighting_timeline_with(
+                Duration::from_secs(2),
+                crate::dmx::engine::timeline::MidiDmxStart::Seek,
+            );
             engine.midi_dmx_store.read().tick();
             let red: Vec<_> = engine.midi_dmx_store.read().iter_active().collect();
             assert_eq!(
@@ -5393,7 +5415,74 @@ mod test {
             );
             assert!((red[0].1 * 255.0 - 254.0).abs() < 1e-6, "{red:?}");
             assert_eq!(engine.midi_dmx_playbacks.lock()[0].cursor, 1);
+            assert_eq!(
+                engine.get_universe(5).unwrap().dim_rate(),
+                1.0,
+                "dims at the rate the playback started with"
+            );
             engine.midi_dmx_playbacks.lock().clear();
+            Ok(())
+        }
+
+        #[test]
+        fn a_midi_dmx_only_song_plays_its_show() -> Result<(), Box<dyn Error>> {
+            // A song with no DSL show returned from its setup without
+            // starting song time, so nothing after the start went out.
+            let (engine, cancel_handle) = create_engine()?;
+            Engine::start_persistent_effects_loop(engine.clone());
+            let tmp_dir = tempfile::tempdir()?;
+            // The CC 300 ms in.
+            create_cc_midi_file(&tmp_dir.path().join("light.mid"), 288);
+            let song_config = crate::config::Song::new(
+                "MIDI DMX Only",
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightShow::new(
+                    "universe1".to_string(),
+                    "light.mid".to_string(),
+                    None,
+                )]),
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
+            let play = {
+                let engine = engine.clone();
+                let cancel_handle = cancel_handle.clone();
+                std::thread::spawn(move || {
+                    Engine::play(
+                        engine,
+                        song,
+                        crate::playsync::PlaybackSync {
+                            cancel_handle,
+                            ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                            clock,
+                            start_time: Duration::ZERO,
+                            loop_control: crate::playsync::LoopControl::new(),
+                        },
+                    )
+                    .map_err(|e| e.to_string())
+                })
+            };
+            ready_rx.recv_timeout(Duration::from_secs(5))?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            let mut red = 0.0;
+            while std::time::Instant::now() < deadline {
+                red = engine.get_universe(5).unwrap().get_target_value(0);
+                if red == 254.0 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            cancel_handle.cancel();
+            play.join().unwrap()?;
+            assert_eq!(red, 254.0, "the CC 300 ms in never went out");
             Ok(())
         }
 

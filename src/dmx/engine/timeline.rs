@@ -74,6 +74,19 @@ fn free(
     timeline
 }
 
+/// What a lighting start does with the MIDI DMX playbacks, as it clears the
+/// store: put in under the engine's lock with the clear, they can neither
+/// dispatch an event ahead of it, which it would wipe, nor leave a frame
+/// rendering the store empty.
+pub(super) enum MidiDmxStart {
+    /// Leaves them as they are.
+    Leave,
+    /// Installs a playback's, from the start point.
+    Install(Vec<super::MidiDmxPlayback>),
+    /// Moves the ones there to the start point (a section loop's restart).
+    Seek,
+}
+
 /// A new pass's id.
 fn next_pass_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -565,16 +578,12 @@ impl Engine {
     /// `start_time` is song-absolute; it is shifted into the delayed lighting time
     /// base so the reconstructed state matches what the live loop advances from.
     pub fn start_lighting_timeline_at(&self, start_time: Duration) {
-        self.start_lighting_timeline_restoring(start_time, &[]);
+        self.start_lighting_timeline_with(start_time, MidiDmxStart::Leave);
     }
 
-    /// [`Self::start_lighting_timeline_at`], putting back the MIDI DMX state
-    /// `restores` holds as it clears the store.
-    pub(super) fn start_lighting_timeline_restoring(
-        &self,
-        start_time: Duration,
-        restores: &[super::midi_playback::MidiDmxRestore],
-    ) {
+    /// [`Self::start_lighting_timeline_at`], starting the MIDI DMX
+    /// playbacks at the same point as it clears the store (#583).
+    pub(super) fn start_lighting_timeline_with(&self, start_time: Duration, midi: MidiDmxStart) {
         let start_time = self.to_delayed_song_time(start_time);
         // A crossfade in progress belongs to the playback being replaced; a
         // loop break's fade carries on over this song's start.
@@ -632,8 +641,13 @@ impl Engine {
             .collect();
         let mut effect_engine = self.effect_engine.lock();
         effect_engine.stop_all_effects();
-        for restore in restores {
-            self.apply_midi_dmx_restore(restore);
+        match midi {
+            MidiDmxStart::Leave => {}
+            MidiDmxStart::Install(playbacks) => {
+                *self.midi_dmx_playbacks.lock() = playbacks;
+                self.seek_midi_dmx_playbacks(start_time);
+            }
+            MidiDmxStart::Seek => self.seek_midi_dmx_playbacks(start_time),
         }
         if start_time > Duration::ZERO {
             for cmd in &timeline_update.layer_commands {

@@ -29,25 +29,16 @@ pub(super) struct MidiDmxChannelState {
 }
 
 /// Where a MIDI DMX playback starting at `from` (delayed song time) picks
-/// up: at the first event, starting at 0, else past every event up to and
-/// including `from`, which [`replay_midi_dmx`] puts back -- the live loop
-/// dispatches an event once its time is reached, so one at `from` could
-/// otherwise go out ahead of the store's clear and be lost to it.
+/// up: at the first event, starting at 0 -- inside the playback delay too,
+/// where the live loop holds them back -- else past every event up to and
+/// including `from`, which [`replay_midi_dmx`] puts back, as the live loop
+/// would have dispatched them by then.
 pub(super) fn midi_dmx_cursor(events: &[TimedMidiEvent], from: Duration) -> usize {
     if from.is_zero() {
         0
     } else {
         events.partition_point(|e| e.time <= from)
     }
-}
-
-/// What a playback's start puts back on one universe (see
-/// [`Engine::midi_dmx_restore`]).
-pub(super) struct MidiDmxRestore {
-    universe_id: u16,
-    states: BTreeMap<u16, MidiDmxChannelState>,
-    /// The last dimming speed the events set.
-    dimming: Option<Duration>,
 }
 
 /// A channel as the last write left it, `since` the time of that write.
@@ -81,17 +72,17 @@ impl Written {
 /// (#581), a look a MIDI show set once and held stayed dark after a seek
 /// (#583). Notes and CCs land with their values, a dim at the level it has
 /// reached by `until` and still on its way if it has not finished.
-/// `dim_rate` is the dim rate (ticks) the replay starts from; also returns
-/// the last dimming speed the events set, for the playback to carry on with.
+/// `dim_rate` is the dim rate (ticks for a full transition) the replay
+/// starts from; also returns the one the events leave, for the playback to
+/// carry on with.
 pub(super) fn replay_midi_dmx(
     events: &[TimedMidiEvent],
     midi_channels: &HashSet<u8>,
     until: Duration,
     dimming_speed_modifier: f64,
     mut dim_rate: f64,
-) -> (BTreeMap<u16, MidiDmxChannelState>, Option<Duration>) {
+) -> (BTreeMap<u16, MidiDmxChannelState>, f64) {
     let mut channels: BTreeMap<u16, Written> = BTreeMap::new();
-    let mut dimming = None;
     for event in events.iter().take_while(|e| e.time <= until) {
         if !midi_channels.is_empty() && !midi_channels.contains(&event.channel) {
             continue;
@@ -106,7 +97,6 @@ pub(super) fn replay_midi_dmx(
                     } else {
                         duration.as_secs_f64() * TARGET_HZ
                     };
-                    dimming = Some(duration);
                     continue;
                 }
                 MidiDmxAction::Unrecognized => continue,
@@ -147,7 +137,7 @@ pub(super) fn replay_midi_dmx(
             )
         })
         .collect();
-    (states, dimming)
+    (states, dim_rate)
 }
 
 impl Engine {
@@ -173,50 +163,46 @@ impl Engine {
         }
     }
 
-    /// Where the events before a playback's start point leave a
-    /// universe's MIDI DMX channels (see [`replay_midi_dmx`]), to put them
-    /// back with [`Self::apply_midi_dmx_restore`]. Nothing for a start at 0.
-    pub(super) fn midi_dmx_restore(
-        &self,
-        universe_id: u16,
-        events: &[TimedMidiEvent],
-        midi_channels: &HashSet<u8>,
-        until: Duration,
-    ) -> Option<MidiDmxRestore> {
-        if until.is_zero() {
-            return None;
+    /// Moves every MIDI DMX playback's cursor to `from` (delayed song time)
+    /// and puts the channels back where the events before it leave them
+    /// (see [`replay_midi_dmx`]), the dim rate with them: as it was when the
+    /// playback started, for a section loop back to before the first
+    /// dimming change. Run under the engine's lock, once a start has cleared
+    /// the store: no frame renders the store empty in between (a black flash
+    /// at every seek, #581), and the live loop dispatches nothing ahead of
+    /// the clear for it to wipe.
+    pub(super) fn seek_midi_dmx_playbacks(&self, from: Duration) {
+        let mut playbacks = self.midi_dmx_playbacks.lock();
+        for playback in playbacks.iter_mut() {
+            let events = playback.precomputed.events();
+            let cursor = midi_dmx_cursor(events, from);
+            let (states, dim_rate) = replay_midi_dmx(
+                &events[..cursor],
+                &playback.midi_channels,
+                from,
+                self.dimming_speed_modifier,
+                playback.start_dim_rate,
+            );
+            self.restore_midi_dmx(playback.universe_id, &states, dim_rate);
+            playback.cursor = cursor;
         }
-        // The rate the universe dims at now, which is the store's too where
-        // it has the universe: both are set together.
-        let dim_rate = self
-            .universes
-            .get(&universe_id)
-            .map_or(1.0, |universe| universe.dim_rate());
-        let (states, dimming) = replay_midi_dmx(
-            events,
-            midi_channels,
-            until,
-            self.dimming_speed_modifier,
-            dim_rate,
-        );
-        Some(MidiDmxRestore {
-            universe_id,
-            states,
-            dimming,
-        })
     }
 
-    /// Puts a universe's MIDI DMX channels back as [`Self::midi_dmx_restore`]
-    /// found them. Run once the start has cleared the store, under the
-    /// engine's lock that clear was made under, so no frame renders the
-    /// store empty in between: a black flash at every seek (#581).
-    pub(super) fn apply_midi_dmx_restore(&self, restore: &MidiDmxRestore) {
-        let universe_id = restore.universe_id;
-        if let Some(duration) = restore.dimming {
-            self.update_dimming_by_id(universe_id, duration);
+    /// Puts a universe's MIDI DMX channels and dim rate back as
+    /// [`replay_midi_dmx`] found them.
+    fn restore_midi_dmx(
+        &self,
+        universe_id: u16,
+        states: &BTreeMap<u16, MidiDmxChannelState>,
+        dim_rate: f64,
+    ) {
+        let universe = self.universes.get(&universe_id);
+        if let Some(universe) = universe {
+            universe.set_dim_rate(dim_rate);
         }
         let store = self.midi_dmx_store.read();
-        for (&channel, state) in &restore.states {
+        store.set_dim_rate(universe_id, dim_rate);
+        for (&channel, state) in states {
             if store.lookup(universe_id, channel).is_some() {
                 store.restore(
                     universe_id,
@@ -225,32 +211,10 @@ impl Engine {
                     state.target,
                     state.rate,
                 );
-            } else if let Some(universe) = self.universes.get(&universe_id) {
+            } else if let Some(universe) = universe {
                 universe.restore_channel_data(channel, state.current, state.target, state.rate);
             }
         }
-    }
-
-    /// Moves every MIDI DMX playback's cursor to `time` (in the delayed
-    /// lighting time base) and returns what the events before it leave the
-    /// channels at, for the start that clears the store to put back.
-    pub(super) fn seek_midi_dmx_playbacks(&self, time: Duration) -> Vec<MidiDmxRestore> {
-        let mut playbacks = self.midi_dmx_playbacks.lock();
-        playbacks
-            .iter_mut()
-            .filter_map(|playback| {
-                let events = playback.precomputed.events();
-                let cursor = midi_dmx_cursor(events, time);
-                let restore = self.midi_dmx_restore(
-                    playback.universe_id,
-                    &events[..cursor],
-                    &playback.midi_channels,
-                    time,
-                );
-                playback.cursor = cursor;
-                restore
-            })
-            .collect()
     }
 
     /// Returns true if all MIDI DMX playbacks have finished.
@@ -312,7 +276,7 @@ mod tests {
             "a note's velocity"
         );
         assert_eq!(state(3), None, "an event after the start");
-        assert_eq!(dimming, None);
+        assert_eq!(dimming, 1.0, "the rate it started from");
     }
 
     #[test]
@@ -326,7 +290,7 @@ mod tests {
         assert!((state.current - 100.0).abs() < 1e-6, "{state:?}");
         assert_eq!(state.target, 200.0);
         assert!((state.rate - 200.0 / (2.0 * TARGET_HZ)).abs() < 1e-9);
-        assert_eq!(dimming, Some(Duration::from_secs(2)));
+        assert_eq!(dimming, 2.0 * TARGET_HZ);
 
         // Past its end, it is there and still.
         let (states, _) =
