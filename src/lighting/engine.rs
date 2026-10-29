@@ -557,6 +557,11 @@ impl EffectEngine {
             .collect()
     }
 
+    /// The frame this engine last rendered.
+    pub fn last_commands(&self) -> &[DmxCommand] {
+        self.cache.get_cached()
+    }
+
     /// The pose memory: where each mover was last driven to.
     pub fn poses(&self) -> &HashMap<String, Pose> {
         &self.poses

@@ -216,6 +216,16 @@ impl OutgoingPass {
         self.last
             .retain(|c| !theirs.contains(&(c.universe, c.channel)));
         self.last.extend(newer.last);
+        // What the rig shows likewise: the newer pass's over this one's.
+        let shown = self.effect_engine.crossfade_states_onto(
+            &self.effect_engine,
+            (
+                newer.effect_engine.shown_fixture_states(),
+                newer.effect_engine.shown_poses(),
+            ),
+            1.0,
+        );
+        self.effect_engine.set_shown(Some(shown));
     }
 
     /// Hurries this pass to the end of its crossfade over `fade` from now,
@@ -278,6 +288,9 @@ impl Engine {
             let mut effect_engine = self.effect_engine.lock();
             let fresh = Self::fresh_engine_showing(&effect_engine);
             let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
+            // What it drove the rig with until now: held as it is, should it
+            // go before its first frame as a pass.
+            let last = outgoing_engine.last_commands().to_vec();
             let mut outgoing = self.outgoing_pass.lock();
             if let Some(pass) = outgoing.take() {
                 self.retire_pass(pass);
@@ -290,7 +303,7 @@ impl Engine {
                 inner: None,
                 hurry: None,
                 id: next_pass_id(),
-                last: Vec::new(),
+                last,
                 held: false,
             });
         }
@@ -327,6 +340,7 @@ impl Engine {
             let mut effect_engine = self.effect_engine.lock();
             let fresh = Self::fresh_engine_showing(&effect_engine);
             let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
+            let last = outgoing_engine.last_commands().to_vec();
             // The timeline goes with its engine, taken under the same lock
             // (engine, then timeline, as nothing takes them the other way).
             let timeline = self.current_song_timeline.lock().take();
@@ -342,7 +356,7 @@ impl Engine {
                 inner,
                 hurry: None,
                 id: next_pass_id(),
-                last: Vec::new(),
+                last,
                 held: false,
             });
         }

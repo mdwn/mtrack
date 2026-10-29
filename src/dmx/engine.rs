@@ -3280,8 +3280,8 @@ mod test {
             let mid = frame_at(&engine, 0.3);
             assert!(mid.0 > 10.0, "the older pass's later cue fired: {mid:?}");
 
-            // It leaves once its own crossfade ends, a second after the
-            // break: blue alone, fading.
+            // Its own crossfade over, a second after the break, it is held
+            // with nothing of its own left showing: blue alone, fading.
             std::thread::sleep(Duration::from_millis(500));
             let later = frame_at(&engine, 0.5);
             assert!(later.1 < 1.0, "green gone: {later:?}");

@@ -1336,8 +1336,115 @@ mod tests {
                 }
             }
             assert_pan_glides(&engine, 0.8, 100.0);
-            assert!(pan(&engine) > 100.0, "{next}: no cue of B's fired");
+            // B's 0% cue would leave it near 70; the fade alone, past 100.
+            assert!(pan(&engine) > 85.0, "{next}: no cue of B's fired");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_loop_pass_going_before_its_first_frame_does_not_jump_a_mover() -> Result<(), Box<dyn Error>>
+    {
+        // A pass set aside before it had rendered held an empty frame, and
+        // the pan it drove fell through to the older fade's.
+        for next in ["pass", "stop"] {
+            let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+            add_mover(&engine);
+            start_song(&engine, &pan_show("80%"));
+            song_frame(&engine, 0.5);
+            engine.begin_break_fade(Duration::from_secs(3));
+            engine.stop_lighting_timeline();
+            start_song(&engine, &pan_show("20%"));
+            song_frame(&engine, 0.1);
+            sleep(Duration::from_millis(1000));
+            song_frame(&engine, 1.1);
+            let before = pan(&engine);
+            engine.begin_loop_crossfade(
+                Some(timeline(GREEN)),
+                Duration::from_secs(1),
+                Duration::from_millis(500),
+            );
+            match next {
+                "pass" => engine.begin_loop_crossfade(
+                    Some(timeline(GREEN)),
+                    Duration::from_secs(1),
+                    Duration::from_millis(500),
+                ),
+                _ => engine.stop_lighting_timeline(),
+            }
+            song_frame(&engine, 0.02);
+            let after = pan(&engine);
+            assert!((after - before).abs() < 10.0, "{next}: {before} -> {after}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_inner_pass_over_inside_a_fade_is_held() -> Result<(), Box<dyn Error>> {
+        // A loop break during a crossfade between passes keeps the older
+        // pass crossing inside the fade (#560); its crossfade over, it
+        // stops rendering and holds its last frame.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        start_song(&engine, RED);
+        song_frame(&engine, 0.5);
+        engine.begin_loop_crossfade(
+            Some(timeline(GREEN)),
+            Duration::from_secs(1),
+            Duration::from_millis(200),
+        );
+        song_frame(&engine, 0.05);
+        engine.begin_break_fade(Duration::from_secs(5));
+        engine.stop_lighting_timeline();
+        start_song(&engine, BLUE);
+        let inner_held = |engine: &Engine| {
+            engine.break_fades.lock()[0]
+                .inner
+                .as_ref()
+                .map(|inner| inner.held)
+        };
+        song_frame(&engine, 0.01);
+        assert_eq!(inner_held(&engine), Some(false), "still crossing");
+        sleep(Duration::from_millis(400));
+        song_frame(&engine, 0.4);
+        assert_eq!(inner_held(&engine), Some(true), "over, and held");
+        Ok(())
+    }
+
+    #[test]
+    fn a_merged_held_pass_shows_what_it_sends() -> Result<(), Box<dyn Error>> {
+        // Two held passes merged into one showed the older one's pan while
+        // the rig got the newer one's.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_mover(&engine);
+        start_song(&engine, &pan_show("80%"));
+        song_frame(&engine, 0.5);
+        engine.begin_break_fade(Duration::from_secs(2));
+        engine.stop_lighting_timeline();
+        start_song(&engine, &pan_show("20%"));
+        song_frame(&engine, 0.1);
+        // B's pass (20%) goes into one at 50%, which goes into GREEN.
+        for next in [pan_show("50%"), GREEN.to_string()] {
+            engine.begin_loop_crossfade(
+                Some(timeline(&next)),
+                Duration::from_secs(1),
+                Duration::from_millis(50),
+            );
+            song_frame(&engine, 0.01);
+            song_frame(&engine, 0.2);
+        }
+        assert_eq!(engine.break_fades.lock().len(), 2);
+        // Half way out, the held pan (50%) shows through A's (80%).
+        sleep(Duration::from_millis(800));
+        song_frame(&engine, 1.0);
+        let sent = pan(&engine);
+        assert!(sent < 190.0, "the held pass shows through: {sent}");
+        let shown =
+            engine.effect_engine.lock().shown_fixture_states()["mover"].channels["pan"].value;
+        assert!(
+            (shown * 255.0 - sent).abs() < 3.0,
+            "shows {} but sends {sent}",
+            shown * 255.0
+        );
         Ok(())
     }
 
