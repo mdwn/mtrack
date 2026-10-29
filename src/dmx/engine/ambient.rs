@@ -245,7 +245,8 @@ impl Overlay {
     fn apply(&mut self, updates: &mut impl Iterator<Item = OverlayUpdate>) {
         if let Some(OverlayUpdate { restart, update }) = updates.next() {
             if let Some(restart) = restart {
-                self.engine.stop_all_effects();
+                // Its own show only: the MIDI DMX store is every engine's.
+                self.engine.stop_show_effects();
                 apply_update(&mut self.engine, restart);
             }
             apply_update(&mut self.engine, update);
@@ -644,7 +645,8 @@ impl Engine {
         // write -- left by effects that ended, which nothing writes again --
         // fades out with the rest (#573). Under ambient at full it stays as
         // it was, what ambient does not light still in view.
-        // MIDI DMX stops first, so nothing it writes after lands unfloored.
+        // MIDI DMX playback stops first, so nothing it writes after
+        // relights what fades.
         self.watcher_handle.lock().take();
         self.midi_dmx_playbacks.lock().clear();
         let floor = if to_dark {
@@ -1988,6 +1990,106 @@ mod tests {
             sleep(Duration::from_millis(20));
         }
         assert_eq!(wash_red(&engine), 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn midi_dmx_fading_out_finishes_under_the_next_song() -> Result<(), Box<dyn Error>> {
+        // The next song's start clears the store: a slot still fading out
+        // went inactive, nothing wrote it again, and the rig held it.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "1s"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        add_spot(&engine);
+        midi_red_200(&engine);
+        start_song(&engine, SPOT_ONLY);
+        send_red_200(&engine);
+        song_frame(&engine, 0.5);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        for _ in 0..20 {
+            tick(&engine);
+        }
+        let mid = wash_red(&engine);
+        assert!(mid > 0.0 && mid < 200.0, "part way: {mid}");
+        start_song(&engine, SPOT_ONLY);
+        for i in 0..60 {
+            song_frame(&engine, 0.02 * f64::from(i));
+        }
+        assert_eq!(wash_red(&engine), 0.0, "on down to dark");
+        Ok(())
+    }
+
+    #[test]
+    fn ambient_starting_over_leaves_midi_dmx_be() -> Result<(), Box<dyn Error>> {
+        // Ambient's show starting over at its loop cleared the store every
+        // engine shares: MIDI DMX went, and a fade of it under way stuck.
+        let short = "show \"ambient\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 250ms\n    @0.250\n    wash: static, color: \"blue\", duration: 250ms\n}\n";
+        let (_dir, engine) = ambient_engine(short, ("0s", "50ms", "1s"))?;
+        add_spot(&engine);
+        {
+            let mut store = engine.midi_dmx_store.write();
+            for (channel, name) in [(4, "red"), (5, "green"), (6, "blue")] {
+                store.register_slot(5, channel, "spot", name);
+            }
+            store.register_universe(5);
+        }
+        engine
+            .effect_engine
+            .lock()
+            .set_midi_dmx_store(engine.midi_dmx_store.clone());
+        engine.idle_ambient(None, false);
+        engine.handle_midi_event_by_id(
+            5,
+            midly::MidiMessage::NoteOn {
+                key: 3.into(),
+                vel: 100.into(),
+            },
+        );
+        // Through more than one of ambient's loops, MIDI DMX holds.
+        for _ in 0..40 {
+            tick(&engine);
+            sleep(Duration::from_millis(20));
+        }
+        assert_eq!(engine.ambient_report().state, "playing");
+        assert_eq!(spot_red(&engine), 200.0, "held through ambient's loops");
+        assert_eq!(
+            engine.midi_dmx_store.read().iter_active().count(),
+            1,
+            "still MIDI's, not left behind"
+        );
+        // Off: it fades out over a second, through more of them.
+        engine.set_ambient_mode(AmbientMode::Off);
+        for _ in 0..80 {
+            tick(&engine);
+            sleep(Duration::from_millis(20));
+        }
+        assert_eq!(spot_red(&engine), 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn going_idle_again_does_not_slow_a_midi_dmx_fade() -> Result<(), Box<dyn Error>> {
+        // Each idle restarted the store's fade from where it was, over the
+        // whole fade again: pressed often, it crawled.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "1s"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        add_spot(&engine);
+        midi_red_200(&engine);
+        start_song(&engine, SPOT_ONLY);
+        send_red_200(&engine);
+        song_frame(&engine, 0.5);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        // A second is 44 frames; idle again every 10.
+        let mut frames = 0;
+        while wash_red(&engine) > 0.0 && frames < 200 {
+            if frames % 10 == 9 {
+                engine.idle_ambient(None, true);
+            }
+            tick(&engine);
+            frames += 1;
+        }
+        assert!(frames <= 50, "dark in {frames} frames");
         Ok(())
     }
 

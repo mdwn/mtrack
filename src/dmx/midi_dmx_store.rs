@@ -52,6 +52,13 @@ impl Slot {
 /// Lockless store for MIDI DMX values. MIDI events write atomically;
 /// the effects loop calls `tick()` each frame to interpolate, then reads
 /// interpolated values for injection into the EffectEngine.
+/// Whether `slot` is on its way to 0 from [`MidiDmxStore::fade_out`].
+fn fading_out(slot: &Slot) -> bool {
+    load_f64(&slot.target) == 0.0
+        && load_f64(&slot.rate) < -f64::EPSILON
+        && load_f64(&slot.current) > 0.0
+}
+
 impl Default for MidiDmxStore {
     fn default() -> Self {
         Self::new()
@@ -273,7 +280,8 @@ impl MidiDmxStore {
     pub fn fade_out(&self, ticks: f64) {
         let mut any = false;
         for slot in &self.slots {
-            if !slot.active.load(Ordering::Acquire) {
+            if !slot.active.load(Ordering::Acquire) || fading_out(slot) {
+                // A fade under way goes on as it is, not restarted slower.
                 continue;
             }
             let current = load_f64(&slot.current);
@@ -286,9 +294,15 @@ impl MidiDmxStore {
         }
     }
 
-    /// Resets all slots to inactive (called on song transition).
+    /// Resets all slots to inactive (called on song transition) -- but for
+    /// one fading out (see [`Self::fade_out`]), which goes on to 0: cleared,
+    /// nothing would write its channel again, and the rig would hold it
+    /// where the fade had got to.
     pub fn clear(&self) {
         for slot in &self.slots {
+            if fading_out(slot) {
+                continue;
+            }
             store_f64(&slot.current, 0.0);
             store_f64(&slot.target, 0.0);
             store_f64(&slot.rate, 0.0);

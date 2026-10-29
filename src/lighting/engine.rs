@@ -1380,6 +1380,19 @@ impl EffectEngine {
 
     /// Stop all active effects and reset per-song layer state
     pub fn stop_all_effects(&mut self) {
+        self.stop_show_effects();
+        // Clear MIDI DMX values so they don't bleed into the next song.
+        // Uses a read lock because MidiDmxStore uses interior mutability
+        // (atomics) — no write lock needed.
+        if let Some(ref store) = self.midi_dmx_store {
+            store.read().clear();
+        }
+    }
+
+    /// [`Self::stop_all_effects`] but for the MIDI DMX store, which every
+    /// engine shares: for one engine's show starting over (ambient's, at
+    /// its loop) while the others -- and MIDI -- go on.
+    pub fn stop_show_effects(&mut self) {
         // The rig holds its last frame until the next one, so the view does
         // too rather than going black: what it already shows (a loop
         // break's fade starts the next song's show under it), else this
@@ -1398,12 +1411,6 @@ impl EffectEngine {
         // replay the new song's layer commands from the timeline afterwards, so a seek
         // rebuilds masters from show history rather than inheriting them.
         self.layer_state.reset();
-        // Clear MIDI DMX values so they don't bleed into the next song.
-        // Uses a read lock because MidiDmxStore uses interior mutability
-        // (atomics) — no write lock needed.
-        if let Some(ref store) = self.midi_dmx_store {
-            store.read().clear();
-        }
         self.cache.invalidate();
     }
 
