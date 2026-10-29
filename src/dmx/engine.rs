@@ -132,6 +132,11 @@ pub struct Engine {
     pub(super) current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
     /// The pass a crossfading song loop is fading out of, while it does.
     pub(super) outgoing_pass: Mutex<Option<timeline::OutgoingPass>>,
+    /// Loop breaks' fades still going out, oldest first: each crosses out
+    /// over everything after it at its own length, so nothing that comes
+    /// later -- another pass's crossfade, another break, a stop's dark --
+    /// cuts it short or drops it. Locked after `outgoing_pass`.
+    pub(super) break_fades: Mutex<Vec<timeline::OutgoingPass>>,
     pub(super) current_song_time: Arc<AtomicU64>,
     /// Which playback the song-time writers belong to.
     ///
@@ -163,7 +168,7 @@ pub struct Engine {
     /// The show the rig plays while no song is (see `ambient`).
     ambient: Mutex<ambient::AmbientState>,
     /// Ambient light playing or fading, over the main engine. Locked after
-    /// `effect_engine` and `outgoing_pass`, never before.
+    /// `effect_engine`, `outgoing_pass` and `break_fades`, never before.
     ambient_overlay: Mutex<Option<ambient::Overlay>>,
 }
 
@@ -269,6 +274,7 @@ impl Engine {
             ola_http_port: config.ola_http_port(),
             current_song_timeline,
             outgoing_pass: Mutex::new(None),
+            break_fades: Mutex::new(Vec::new()),
             playback_generation,
             current_song_time,
             timeline_finished,
@@ -552,6 +558,39 @@ impl Engine {
                 None => std::borrow::Cow::Borrowed(effect_engine.update(dt, Some(song_time))?),
             };
         drop(outgoing);
+
+        // Loop breaks' fades go out over all of that, each at its own
+        // length: the newest first, so the oldest crosses outermost.
+        let mut fades = self.break_fades.lock();
+        let commands: std::borrow::Cow<[crate::lighting::effects::DmxCommand]> = if fades.is_empty()
+        {
+            commands
+        } else {
+            let mut blended = commands.into_owned();
+            let mut shown = (
+                effect_engine.shown_fixture_states().clone(),
+                effect_engine.shown_poses().clone(),
+            );
+            let mut over = Vec::with_capacity(fades.len());
+            for fade in fades.iter_mut().rev() {
+                let (t, time) = fade.timing(song_time);
+                let old = fade.render(dt, time)?;
+                blended = effect_engine.crossfade_commands(&old, &blended, t);
+                shown = effect_engine.crossfade_states_onto(
+                    &fade.effect_engine,
+                    (&shown.0, &shown.1),
+                    t,
+                );
+                over.push(t >= 1.0);
+            }
+            // What goes out is the blend, so that is what the rig shows
+            // too (#555).
+            effect_engine.set_shown(Some(shown));
+            let mut over = over.into_iter().rev();
+            fades.retain(|_| !over.next().unwrap_or(false));
+            std::borrow::Cow::Owned(blended)
+        };
+        drop(fades);
 
         // Ambient light crosses over it at its level: over a song's show
         // with ambient on, or over the last song's frame as it fades in.
@@ -3245,7 +3284,7 @@ mod test {
                 "show \"b\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 60s\n}\n",
             ));
             engine.start_lighting_timeline_at(Duration::ZERO);
-            assert!(engine.outgoing_pass.lock().is_some());
+            assert!(!engine.break_fades.lock().is_empty());
 
             // Part way: red going, blue coming, on the wall clock -- the next
             // song's own time has barely moved.
@@ -3258,7 +3297,7 @@ mod test {
             // Over: the next song alone.
             std::thread::sleep(Duration::from_millis(300));
             assert_eq!(frame_at(&engine, 0.5), (0.0, 0.0, 255.0));
-            assert!(engine.outgoing_pass.lock().is_none());
+            assert!(engine.break_fades.lock().is_empty());
 
             // A stop or seek hurries one to its end, over ambient's
             // fade_out (1s with none set).
@@ -3266,7 +3305,7 @@ mod test {
             engine.cut_break_fade_lights();
             std::thread::sleep(Duration::from_millis(1100));
             frame_at(&engine, 0.6);
-            assert!(engine.outgoing_pass.lock().is_none());
+            assert!(engine.break_fades.lock().is_empty());
             Ok(())
         }
 

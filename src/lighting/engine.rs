@@ -571,6 +571,18 @@ impl EffectEngine {
         outgoing: &EffectEngine,
         t: f64,
     ) -> (HashMap<String, FixtureState>, HashMap<String, Pose>) {
+        self.crossfade_states_onto(outgoing, (&self.last_merged_states, &self.poses), t)
+    }
+
+    /// The same, crossing `outgoing` onto `onto` -- states and poses that
+    /// another crossfade already blended -- rather than this engine's own.
+    pub fn crossfade_states_onto(
+        &self,
+        outgoing: &EffectEngine,
+        onto: (&HashMap<String, FixtureState>, &HashMap<String, Pose>),
+        t: f64,
+    ) -> (HashMap<String, FixtureState>, HashMap<String, Pose>) {
+        let (onto_states, onto_poses) = onto;
         let t = t.clamp(0.0, 1.0);
         let lerp = |a: f64, b: f64| a + (b - a) * t;
         // Each side as it shows, multipliers applied and cells resolved, as
@@ -580,7 +592,7 @@ impl EffectEngine {
             // What the outgoing engine shows: mid-crossfade itself (a loop
             // break during a pass crossfade, #560), its own blend.
             self.resolved_states(outgoing.shown_fixture_states()),
-            self.resolved_states(&self.last_merged_states),
+            self.resolved_states(onto_states),
         );
         let (old_states, new_states) = (&old_resolved, &new_resolved);
         let names: HashSet<&String> = old_states.keys().chain(new_states.keys()).collect();
@@ -622,7 +634,7 @@ impl EffectEngine {
             states.insert(name.clone(), state);
         }
         let mut poses = outgoing.shown_poses().clone();
-        for (name, pose) in &self.poses {
+        for (name, pose) in onto_poses {
             let blended = match outgoing.shown_poses().get(name) {
                 Some(old) => Pose {
                     pan: lerp(old.pan, pose.pan),
@@ -1526,6 +1538,7 @@ impl EffectEngine {
     }
 
     /// Get the number of active effects
+    #[cfg(test)]
     pub fn active_effects_count(&self) -> usize {
         self.active_effects.len()
     }

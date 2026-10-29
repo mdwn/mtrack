@@ -100,9 +100,10 @@ Either can be a length alone or a map:
 A source part way through a loop crossfade fades out from where it is. A fade that outlasts the
 pass it began in carries on into as many more passes as it takes, crossing pass to pass over the
 song's `loop_crossfade` as its loop does. MIDI from the looping song stops
-at the break. A Stop, pause or seek cuts the fading song's audio at once; its lights go the rest
-of the way out over the ambient light's `fade_out` (1 s by default), so nothing it lit is left
-holding.
+at the break. The fading song's lights cross out over whatever plays after them at their own
+length, whatever that does meanwhile -- loops, ends, or breaks out again. A Stop, pause or seek
+cuts the fading song's audio at once; its lights go the rest of the way out over the ambient
+light's `fade_out` (1 s by default), so nothing it lit is left holding.
 
 ### Ending a looping song
 

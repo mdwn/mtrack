@@ -347,19 +347,10 @@ impl Engine {
         match (state.mode, state.phase, loaded) {
             (AmbientMode::Off, _, loaded) => {
                 // Off is dark between songs: what the last song left fades
-                // out rather than holding (#570) -- unless a fade is already
-                // taking it to dark, as a graceful ending's does, which goes
-                // on at its own length (#571).
-                // A song still lit over that fade is not: it goes dark.
-                let fading = self
-                    .outgoing_pass
-                    .lock()
-                    .as_ref()
-                    .is_some_and(|pass| pass.is_break_fade());
-                let lit = self.effect_engine.lock().active_effects_count() > 0;
-                if fading && !lit {
-                    state.under_dark = true;
-                }
+                // out rather than holding (#570). A loop break's fade going
+                // out over it -- a graceful ending's, or a vamp's under the
+                // song stopped -- goes on at its own length (#571), since it
+                // crosses out over everything after it.
                 if !state.under_dark {
                     let fade = loaded
                         .as_ref()
@@ -1140,6 +1131,12 @@ mod tests {
         // fade: the spot, which the next song does not light, held.
         let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
         engine.set_ambient_mode(AmbientMode::Off);
+        // Ambient's settings loaded, as at the player's startup, and its
+        // dark fade over.
+        engine.idle_ambient(None, false);
+        tick(&engine);
+        sleep(Duration::from_millis(150));
+        tick(&engine);
         vamp_into_green(&engine);
         engine.stop_lighting_timeline();
         engine.cut_break_fade_lights();
@@ -1169,6 +1166,53 @@ mod tests {
             "the song plays"
         );
         assert_eq!(spot_red(&engine), 0.0, "the vamp gone");
+        Ok(())
+    }
+
+    #[test]
+    fn a_song_ending_under_a_break_fade_lets_that_fade_run_its_length() -> Result<(), Box<dyn Error>>
+    {
+        // With the mode Off, the song going dark as it ended took the vamp's
+        // fade under it dark at the same short pace.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        vamp_into_green(&engine);
+        // GREEN ends by itself, the vamp still 10 s from out.
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        tick(&engine);
+        sleep(Duration::from_millis(400));
+        let (_, green, _) = tick(&engine);
+        assert_eq!(green, 0.0, "the song gone dark");
+        assert!(spot_red(&engine) > 200.0, "the vamp still at its own pace");
+        Ok(())
+    }
+
+    #[test]
+    fn a_loop_crossfade_under_a_break_fade_keeps_it() -> Result<(), Box<dyn Error>> {
+        // The next song looping with a crossfade dropped the vamp's fade
+        // under it, and what only the vamp lit held.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        vamp_into_green(&engine);
+        let before = spot_red(&engine);
+        engine.begin_loop_crossfade(
+            Some(timeline(GREEN)),
+            Duration::from_secs(1),
+            Duration::from_millis(100),
+        );
+        song_frame(&engine, 0.05);
+        song_frame(&engine, 0.3);
+        sleep(Duration::from_millis(300));
+        song_frame(&engine, 0.6);
+        let after = spot_red(&engine);
+        assert!(
+            after < before && after > 150.0,
+            "fading on: {before} -> {after}"
+        );
+        assert!(
+            engine.get_universe(5).unwrap().get_target_value(1) > 0.0,
+            "the song plays"
+        );
         Ok(())
     }
 
