@@ -213,6 +213,16 @@ impl MidiDmxStore {
             let current = load_f64(&slot.current);
             let target = load_f64(&slot.target);
             let rate = load_f64(&slot.rate);
+            // A fade to dark that reached 0 a frame ago, its 0 out: the slot
+            // is MIDI's no more, as a clear leaves it -- held at 0, it would
+            // be a base under the next song's effects (a multiply over it
+            // black).
+            if slot.store_fade.load(Ordering::Acquire) && current == 0.0 && target == 0.0 {
+                slot.store_fade.store(false, Ordering::Release);
+                slot.active.store(false, Ordering::Release);
+                any_changed = true;
+                continue;
+            }
 
             let new_current = if rate > f64::EPSILON {
                 (current + rate).min(target)
@@ -360,6 +370,24 @@ mod tests {
         store.tick();
         store.clear();
         assert_eq!(store.iter_active().count(), 0, "a song start cuts it");
+    }
+
+    #[test]
+    fn a_fade_to_dark_lets_its_slot_go_once_out() {
+        // Held at 0 after a fade to dark that ran through a song start, the
+        // slot stayed MIDI's: a base of 0 under the next song's effects.
+        let store = one_slot(1.0);
+        store.write(1, 1, 200, false);
+        store.tick();
+        store.fade_out(10.0);
+        store.clear();
+        for _ in 0..10 {
+            store.tick();
+        }
+        assert_eq!(store.iter_active().count(), 1, "its 0 goes out once");
+        assert_eq!(value(&store), 0.0);
+        store.tick();
+        assert_eq!(store.iter_active().count(), 0, "then it is let go");
     }
 
     #[test]
