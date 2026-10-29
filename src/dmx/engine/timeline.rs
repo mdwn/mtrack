@@ -467,6 +467,14 @@ impl Engine {
             if outgoing.is_none() && fades.is_empty() {
                 return;
             }
+            // A loop break's fade that is over fires nothing more: held now,
+            // before its cues are looked at, so one due in the very frame it
+            // ends cannot move what it holds (a mover's position).
+            for fade in fades.iter_mut().filter(|f| !f.held) {
+                if fade.timing(song_time).0 >= 1.0 {
+                    fade.hold();
+                }
+            }
             for pass in outgoing.iter_mut().chain(fades.iter_mut()) {
                 let (_, time) = pass.timing(song_time);
                 pass.advance_timelines(time, &mut updates);

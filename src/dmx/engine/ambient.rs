@@ -1563,6 +1563,38 @@ mod tests {
     }
 
     #[test]
+    fn a_fade_ending_in_the_frame_its_cue_is_due_fires_it_not() -> Result<(), Box<dyn Error>> {
+        // A frame late enough to find B's fade over and its cue at 1 s due
+        // fired the cue first: what the fade held moved (CI saw the pan
+        // step).
+        let b = "show \"song\" {\n    @0.000\n    mover: static, pan: 20%, duration: 60s\n    @1.000\n    mover: static, pan: 0%, duration: 60s\n}\n";
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_mover(&engine);
+        start_song(&engine, &pan_show("80%"));
+        song_frame(&engine, 0.5);
+        engine.begin_break_fade(Duration::from_secs(6));
+        engine.stop_lighting_timeline();
+        start_song(&engine, b);
+        song_frame(&engine, 0.1);
+        engine.begin_break_fade(Duration::from_millis(300));
+        engine.stop_lighting_timeline();
+        start_song(&engine, GREEN);
+        // No frame until both B's fade is over and its cue is due.
+        sleep(Duration::from_millis(1100));
+        song_frame(&engine, 1.2);
+        let fades = engine.break_fades.lock();
+        assert_eq!(fades.len(), 2);
+        assert!(fades[1].held, "B's fade, over, is held");
+        let pan = fades[1]
+            .last
+            .iter()
+            .find(|c| c.channel == 7)
+            .map(|c| c.value);
+        assert_eq!(pan, Some(51), "held at 20%, its 0% cue not fired");
+        Ok(())
+    }
+
+    #[test]
     fn a_song_looping_under_a_long_fade_adds_one_held_layer() -> Result<(), Box<dyn Error>> {
         // Each pass that went under the fade stacked another layer, every
         // one rendering a whole engine each frame until the fade was out.
