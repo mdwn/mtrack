@@ -56,6 +56,15 @@ pub(crate) fn fades_to_dark(channel: &str) -> bool {
 
 /// A channel's name without its section (`dimmer:background`, as GDTF
 /// profiles with several emitters name theirs) or its fine byte.
+/// `elapsed` at a layer speed master: 1 and 0 (a freeze) leave it be.
+fn scale_by_speed(elapsed: Duration, speed: f64) -> Duration {
+    if (speed - 1.0).abs() < f64::EPSILON || speed == 0.0 {
+        elapsed
+    } else {
+        Duration::try_from_secs_f64(elapsed.as_secs_f64() * speed).unwrap_or(Duration::MAX)
+    }
+}
+
 fn base_channel(channel: &str) -> &str {
     let base = channel.split(':').next().unwrap_or(channel);
     base.strip_suffix("_fine").unwrap_or(base)
@@ -979,8 +988,11 @@ impl EffectEngine {
         // head is committed there and the effect never runs. Done here,
         // one effect at a time, so a later move's turn is chosen from where
         // the earlier one ended, exactly as it would have been live.
+        // At its layer's speed, as it would run: a move on a slowed layer
+        // is part way at a base elapsed past its length.
         if matches!(effect.effect_type, EffectType::Move { .. })
-            && elapsed_time >= effect.total_duration()
+            && scale_by_speed(elapsed_time, self.get_layer_speed_master(effect.layer))
+                >= effect.total_duration()
         {
             for (name, pose) in
                 processing::move_final_poses(self.fixtures.as_map(), &self.focus_points, &effect)
@@ -1199,53 +1211,12 @@ impl EffectEngine {
         for (layer, effect_ids) in effects_by_layer {
             // Get layer masters
             let layer_intensity = self.get_layer_intensity_master(layer);
-            let layer_speed = self.get_layer_speed_master(layer);
-            let frozen_at = self.layer_state.frozen.get(&layer).cloned();
-            let frozen_song = self.layer_state.frozen_song.get(&layer).copied();
 
             for effect_id in effect_ids {
                 // Get reference to effect to avoid unnecessary clone
                 let effect = self.active_effects.get(&effect_id).unwrap();
 
-                // Calculate base elapsed time. A cued effect renders on score
-                // time, the elapsed it expires on below, so the two agree:
-                // engine time runs up to a frame ahead of it (the effect is
-                // stamped before this update adds `dt`, and its cue lands part
-                // way through a tick), and an effect rendered past its end on
-                // engine time before it expired on score time went dark for a
-                // frame at a hand-over (#551). Less the song time it has spent
-                // frozen, and on a frozen layer at the song time it froze at:
-                // engine time, which steps a fixed frame a tick, falls behind
-                // the song where frames run long, and an effect timed on it
-                // after an unfreeze ended late. One with no cue, or frozen
-                // with no song time to go by, keeps engine time; on a frozen
-                // layer, the frozen time instead of now.
-                let reference_time = frozen_at.unwrap_or(self.current_time);
-                let base_elapsed = match (effect.start_time, effect.cue_time, song_time) {
-                    (Some(_), Some(cue_time), Some(now))
-                        if !effect.engine_timed
-                            && (frozen_at.is_none() || frozen_song.is_some()) =>
-                    {
-                        frozen_song
-                            .unwrap_or(now)
-                            .saturating_sub(cue_time)
-                            .saturating_sub(effect.score_frozen)
-                    }
-                    _ => effect
-                        .start_time
-                        .map(|start| reference_time.duration_since(start))
-                        .unwrap_or(Duration::ZERO),
-                };
-
-                // Apply speed master to elapsed time
-                // Speed 0.0 triggers freeze_layer, and frozen_at provides the frozen reference time.
-                // We use base_elapsed directly for both 0.0 and 1.0 (no multiplication needed).
-                let elapsed = if (layer_speed - 1.0).abs() < f64::EPSILON || layer_speed == 0.0 {
-                    base_elapsed
-                } else {
-                    // Multiply duration by speed factor
-                    Duration::from_secs_f64(base_elapsed.as_secs_f64() * layer_speed)
-                };
+                let elapsed = self.elapsed_at(effect, song_time);
 
                 // Expire on the time the effect renders on: score time, less
                 // its time frozen, for a cued effect at normal speed, so it
@@ -1522,6 +1493,41 @@ impl EffectEngine {
         self.cache.invalidate();
     }
 
+    /// How far into itself `effect` is at `song_time`: what it renders and
+    /// expires on. A cued effect renders on score time, the elapsed it
+    /// expires on, so the two agree: engine time runs up to a frame ahead
+    /// of it (the effect is stamped before an update adds `dt`, and its cue
+    /// lands part way through a tick), and an effect rendered past its end
+    /// on engine time before it expired on score time went dark for a frame
+    /// at a hand-over (#551). Less the song time it has spent frozen, and on
+    /// a frozen layer at the song time it froze at: engine time, which steps
+    /// a fixed frame a tick, falls behind the song where frames run long,
+    /// and an effect timed on it after an unfreeze ended late. One with no
+    /// cue, or frozen with no song time to go by, keeps engine time; on a
+    /// frozen layer, the frozen time instead of now. Then scaled by the
+    /// layer's speed master (0 freezes the layer, and is not a scale).
+    pub fn elapsed_at(&self, effect: &EffectInstance, song_time: Option<Duration>) -> Duration {
+        let layer = effect.layer;
+        let frozen_at = self.layer_state.frozen.get(&layer).cloned();
+        let frozen_song = self.layer_state.frozen_song.get(&layer).copied();
+        let reference_time = frozen_at.unwrap_or(self.current_time);
+        let base_elapsed = match (effect.start_time, effect.cue_time, song_time) {
+            (Some(_), Some(cue_time), Some(now))
+                if !effect.engine_timed && (frozen_at.is_none() || frozen_song.is_some()) =>
+            {
+                frozen_song
+                    .unwrap_or(now)
+                    .saturating_sub(cue_time)
+                    .saturating_sub(effect.score_frozen)
+            }
+            _ => effect
+                .start_time
+                .map(|start| reference_time.duration_since(start))
+                .unwrap_or(Duration::ZERO),
+        };
+        scale_by_speed(base_elapsed, self.get_layer_speed_master(layer))
+    }
+
     /// Sets the song time a layer command applied before the next frame
     /// takes as now: a start's, before its history is replayed. Without
     /// it, a freeze in the history of a seek took the last frame rendered
@@ -1685,13 +1691,11 @@ impl EffectEngine {
         self.fixtures.as_map()
     }
 
-    /// How long an effect has been running, by the engine's own clock.
-    /// Zero for an effect that has not started.
+    /// How far into itself an effect was at the last frame, as it rendered
+    /// it (see [`Self::elapsed_at`]). Zero for an effect that has not
+    /// started.
     pub fn effect_elapsed(&self, effect: &EffectInstance) -> Duration {
-        effect
-            .start_time
-            .map(|start| self.current_time.duration_since(start))
-            .unwrap_or(Duration::ZERO)
+        self.elapsed_at(effect, self.last_song_time)
     }
 
     /// Get a formatted string listing all active effects

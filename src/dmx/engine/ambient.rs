@@ -188,7 +188,8 @@ pub(super) struct Overlay {
 /// What one overlay's timeline fired in a tick: a restart's state (the show
 /// starting again) and the cues now due.
 struct OverlayUpdate {
-    restart: Option<TimelineUpdate>,
+    /// A new pass's history, and where in the show it starts.
+    restart: Option<(TimelineUpdate, Duration)>,
     update: TimelineUpdate,
 }
 
@@ -226,12 +227,15 @@ impl Overlay {
             self.started += self.length * passes;
             elapsed = now.saturating_duration_since(self.started);
             // Its first cues fire before this frame renders.
-            restart = Some(if elapsed.is_zero() {
-                self.timeline.start();
-                TimelineUpdate::default()
-            } else {
-                self.timeline.start_at(elapsed)
-            });
+            restart = Some((
+                if elapsed.is_zero() {
+                    self.timeline.start();
+                    TimelineUpdate::default()
+                } else {
+                    self.timeline.start_at(elapsed)
+                },
+                elapsed,
+            ));
         }
         let update = self.timeline.update(elapsed);
         out.push(OverlayUpdate { restart, update });
@@ -244,9 +248,12 @@ impl Overlay {
     /// the same order.
     fn apply(&mut self, updates: &mut impl Iterator<Item = OverlayUpdate>) {
         if let Some(OverlayUpdate { restart, update }) = updates.next() {
-            if let Some(restart) = restart {
+            if let Some((restart, at)) = restart {
                 // Its own show only: the MIDI DMX store is every engine's.
                 self.engine.stop_show_effects();
+                // A freeze in the history holds where the pass starts from,
+                // not where the last one ended.
+                self.engine.set_song_time(at);
                 apply_update(&mut self.engine, restart);
             }
             apply_update(&mut self.engine, update);
@@ -724,7 +731,7 @@ impl Engine {
         let mut resolved = updates
             .into_iter()
             .map(|mut u| {
-                if let Some(restart) = u.restart.as_mut() {
+                if let Some((restart, _)) = u.restart.as_mut() {
                     self.resolve_update_groups(restart);
                 }
                 self.resolve_update_groups(&mut u.update);

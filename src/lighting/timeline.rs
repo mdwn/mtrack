@@ -88,20 +88,27 @@ fn own_elapsed(
 }
 
 /// Takes the effects on `layer` that have run their course by `time` out
-/// of the replay -- but for moves, which stay for their pose.
+/// of the replay -- but for moves, which stay for their pose, marked as
+/// `arrived`.
 fn settle_layer(
     layer: EffectLayer,
     time: Duration,
     layers: &HashMap<EffectLayer, ReplayLayer>,
+    arrived: &mut HashSet<String>,
     effects: &mut HashMap<String, (EffectInstance, Duration)>,
 ) {
-    effects.retain(|_, (effect, _)| {
-        effect.layer != layer
-            || matches!(
-                effect.effect_type,
-                crate::lighting::effects::EffectType::Move { .. }
-            )
-            || own_elapsed(effect, layers, time) < effect.total_duration()
+    effects.retain(|id, (effect, _)| {
+        if effect.layer != layer || own_elapsed(effect, layers, time) < effect.total_duration() {
+            return true;
+        }
+        let is_move = matches!(
+            effect.effect_type,
+            crate::lighting::effects::EffectType::Move { .. }
+        );
+        if is_move {
+            arrived.insert(id.clone());
+        }
+        is_move
     });
 }
 
@@ -113,9 +120,10 @@ fn replay_layer_command(
     layer: EffectLayer,
     time: Duration,
     layers: &mut HashMap<EffectLayer, ReplayLayer>,
+    arrived: &mut HashSet<String>,
     effects: &mut HashMap<String, (EffectInstance, Duration)>,
 ) {
-    settle_layer(layer, time, layers, effects);
+    settle_layer(layer, time, layers, arrived, effects);
     let freeze = |layers: &mut HashMap<EffectLayer, ReplayLayer>| {
         let state = layers.entry(layer).or_default();
         state.frozen_since.get_or_insert(time);
@@ -323,6 +331,9 @@ impl LightingTimeline {
         // it is that, not score time, which says whether it is still running
         // and where it picks up (#589).
         let mut layers: HashMap<EffectLayer, ReplayLayer> = HashMap::new();
+        // Moves that have arrived: at the speed they ran at, which a later
+        // change of speed or a clear must not take back.
+        let mut arrived: HashSet<String> = HashSet::new();
 
         for i in 0..self.next_cue_index {
             let cue = &self.cues[i];
@@ -347,17 +358,21 @@ impl LightingTimeline {
                 match cmd.command_type {
                     LayerCommandType::Clear => {
                         if let Some(layer) = cmd.layer {
-                            result.effects_with_elapsed.retain(|_, (effect, _)| {
-                                effect.layer != layer
-                                    || Self::is_finished_move(
-                                        effect,
-                                        own_elapsed(effect, &layers, cue.time),
-                                    )
+                            settle_layer(
+                                layer,
+                                cue.time,
+                                &layers,
+                                &mut arrived,
+                                &mut result.effects_with_elapsed,
+                            );
+                            result.effects_with_elapsed.retain(|id, (effect, _)| {
+                                effect.layer != layer || arrived.contains(id)
                             });
                             layers.remove(&layer);
                         } else {
                             result.effects_with_elapsed.clear();
                             layers.clear();
+                            arrived.clear();
                         }
                     }
                     _ => {
@@ -367,6 +382,7 @@ impl LightingTimeline {
                                 layer,
                                 cue.time,
                                 &mut layers,
+                                &mut arrived,
                                 &mut result.effects_with_elapsed,
                             );
                         }
@@ -381,10 +397,24 @@ impl LightingTimeline {
             // Stopping a sequence does not release pose memory either.
             for seq_name in &cue.stop_sequences {
                 let prefix = format!("seq_{}_", seq_name);
-                result.effects_with_elapsed.retain(|id, (effect, _)| {
-                    !id.starts_with(&prefix)
-                        || Self::is_finished_move(effect, own_elapsed(effect, &layers, cue.time))
-                });
+                let stopped: Vec<EffectLayer> = result
+                    .effects_with_elapsed
+                    .iter()
+                    .filter(|(id, _)| id.starts_with(&prefix))
+                    .map(|(_, (effect, _))| effect.layer)
+                    .collect();
+                for layer in stopped.into_iter().collect::<HashSet<_>>() {
+                    settle_layer(
+                        layer,
+                        cue.time,
+                        &layers,
+                        &mut arrived,
+                        &mut result.effects_with_elapsed,
+                    );
+                }
+                result
+                    .effects_with_elapsed
+                    .retain(|id, _| !id.starts_with(&prefix) || arrived.contains(id));
             }
 
             // Every effect cued before start_time goes in; the ones over by
@@ -418,10 +448,24 @@ impl LightingTimeline {
             .map(|(effect, _)| effect.layer)
             .collect();
         for layer in all {
-            settle_layer(layer, start_time, &layers, &mut result.effects_with_elapsed);
+            settle_layer(
+                layer,
+                start_time,
+                &layers,
+                &mut arrived,
+                &mut result.effects_with_elapsed,
+            );
         }
-        for (effect, elapsed) in result.effects_with_elapsed.values_mut() {
+        for (id, (effect, elapsed)) in result.effects_with_elapsed.iter_mut() {
             *elapsed = base_elapsed(effect, &layers, start_time);
+            if arrived.contains(id)
+                && own_elapsed(effect, &layers, start_time) < effect.total_duration()
+            {
+                // There at the speed it ran at, which has slowed (or been
+                // cleared) since: the engine commits it to its destination.
+                *elapsed = Duration::MAX;
+                continue;
+            }
             // On a layer still frozen, the engine holds it at the start
             // point (where it is told the layer froze) less its time frozen:
             // counted up to the start point, that is where it froze.
@@ -442,15 +486,6 @@ impl LightingTimeline {
         }
 
         result
-    }
-
-    /// A move that had already arrived by the seek point: replayed for its
-    /// pose, whatever later cleared its layer or stopped its sequence.
-    fn is_finished_move(effect: &EffectInstance, elapsed: Duration) -> bool {
-        matches!(
-            effect.effect_type,
-            crate::lighting::effects::EffectType::Move { .. }
-        ) && elapsed >= effect.total_duration()
     }
 
     /// Finds the index of the first cue that should trigger at or after the given time.
@@ -1379,6 +1414,49 @@ mod tests {
             kinds,
             vec![("Move", Duration::from_secs(8))],
             "only the move survives the seek, carrying its elapsed time"
+        );
+    }
+
+    /// The seek's history judges a move arrived at the speed it ran at
+    /// (#589): on a slowed layer it is still on its way past its length in
+    /// score time, and one that arrived at double speed stays arrived after
+    /// a layer clear puts the speed back.
+    #[test]
+    fn start_at_judges_a_move_at_its_layers_speed() {
+        let elapsed = |src: &str, millis: u64| -> Vec<Duration> {
+            let shows = crate::lighting::parser::parse_light_shows(src)
+                .unwrap()
+                .into_values()
+                .collect();
+            let mut timeline = LightingTimeline::new(shows);
+            timeline
+                .start_at(Duration::from_millis(millis))
+                .effects_with_elapsed
+                .values()
+                .map(|(_, elapsed)| *elapsed)
+                .collect()
+        };
+        // Half speed: 4 s of move, 6 s in, is 3 s along.
+        assert_eq!(
+            elapsed(
+                "show \"s\" {\n    @00:00.000\n    master(layer: background, speed: 0.5)\n    \
+                 spots: move pan: 45deg, tilt: -20deg, duration: 4s\n}\n",
+                6_000
+            ),
+            vec![Duration::from_secs(6)],
+            "the engine scales it to 3 s of 4"
+        );
+        // Double speed: arrived at 2 s; cleared at 3 s, which puts the
+        // speed back, and still there at 3.5 s.
+        assert_eq!(
+            elapsed(
+                "show \"s\" {\n    @00:00.000\n    master(layer: background, speed: 2)\n    \
+                 spots: move pan: 45deg, tilt: -20deg, duration: 4s\n    @00:03.000\n    \
+                 clear(layer: background)\n}\n",
+                3_500
+            ),
+            vec![Duration::MAX],
+            "the move ran again after it had arrived"
         );
     }
 

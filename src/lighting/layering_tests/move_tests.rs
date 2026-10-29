@@ -625,3 +625,29 @@ fn a_pitched_lens_does_not_mistake_an_ordinary_target_for_the_pan_axis() {
     assert!((pose.pan - 90.0).abs() < 1e-6, "{pose:?}");
     assert!((pose.tilt - (14.04 - 30.0)).abs() < 0.01, "{pose:?}");
 }
+
+/// A move started part way on a slowed layer is judged at that speed (#589):
+/// 2 s of base time on a half-speed layer is 1 s of a 1.5 s move, still on
+/// its way, not arrived.
+#[test]
+fn a_move_started_part_way_on_a_slowed_layer_still_runs() {
+    let mut engine = engine_with(mover("m", [0.0; 3], [0.0; 3]), &[]);
+    engine.set_layer_speed_master(EffectLayer::Background, 0.5);
+    let mut effect = move_to(
+        "slow",
+        MoveTarget::Angles {
+            pan: Some(170.0),
+            tilt: Some(90.0),
+        },
+        None,
+        1.5,
+    );
+    effect.layer = EffectLayer::Background;
+    engine
+        .start_effect_with_elapsed(effect, Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        !engine.get_active_effects().is_empty(),
+        "committed as arrived on a half-speed layer"
+    );
+}

@@ -168,10 +168,9 @@ where
                         id: effect.id.clone(),
                         effect_type: effect.effect_type.name(),
                         layer: effect.layer,
-                        elapsed: effect
-                            .cue_time
-                            .map(|cue| time.saturating_sub(cue))
-                            .unwrap_or(Duration::ZERO),
+                        // As the engine renders it: less its time frozen,
+                        // at its layer's speed (#589).
+                        elapsed: engine.elapsed_at(effect, Some(time)),
                         duration: effect.total_duration(),
                         fixtures,
                     }
@@ -586,6 +585,28 @@ show "t" {
         assert_eq!(results[0].active_effects[0].elapsed, Duration::ZERO);
         assert_eq!(results[1].active_effects[0].elapsed, Duration::from_secs(2));
         assert_eq!(results[2].active_effects[0].elapsed, Duration::from_secs(4));
+    }
+
+    #[test]
+    fn elapsed_counts_a_freeze_and_the_speed_master() {
+        // #589: elapsed is how far into itself the effect is, as the engine
+        // renders it, not score time since its cue -- a frozen effect is
+        // still where it froze, a slowed one half way along.
+        let fixtures = vec![rgb_fixture("wash", 1)];
+        let frozen = eval(
+            "show \"s\" {\n    @00:00.000\n    wash: static, color: \"blue\", duration: 12s\n    \
+             @00:08.000\n    freeze(layer: background)\n}\n",
+            &fixtures,
+            &[20.0],
+        );
+        assert_eq!(frozen[0].active_effects[0].elapsed, Duration::from_secs(8));
+        let slowed = eval(
+            "show \"s\" {\n    @00:00.000\n    master(layer: background, speed: 0.5)\n    \
+             wash: static, color: \"blue\", duration: 12s\n}\n",
+            &fixtures,
+            &[6.0],
+        );
+        assert_eq!(slowed[0].active_effects[0].elapsed, Duration::from_secs(3));
     }
 
     #[test]
