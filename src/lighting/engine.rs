@@ -1526,7 +1526,6 @@ impl EffectEngine {
     }
 
     /// Get the number of active effects
-    #[cfg(test)]
     pub fn active_effects_count(&self) -> usize {
         self.active_effects.len()
     }
