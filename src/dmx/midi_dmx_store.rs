@@ -205,12 +205,6 @@ impl MidiDmxStore {
         }
     }
 
-    /// The dim rate for a universe (ticks for a full transition), 1.0 --
-    /// instant -- for one never set.
-    pub fn dim_rate(&self, universe: u16) -> f64 {
-        self.dim_rates.get(&universe).map(load_f64).unwrap_or(1.0)
-    }
-
     /// Puts a channel back where the MIDI writes before a playback's start
     /// point left it: at `current`, still moving toward `target` by `rate`
     /// a tick if a dim had not finished (#583). Counts as a MIDI write.

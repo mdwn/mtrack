@@ -5331,6 +5331,72 @@ mod test {
             smf.save(path).unwrap();
         }
 
+        /// Patches DMX 1 on universe 5 as a fixture's red, which MIDI DMX
+        /// drives through the store.
+        fn patch_wash_red(engine: &Engine) {
+            {
+                let mut store = engine.midi_dmx_store.write();
+                store.register_slot(5, 1, "wash", "red");
+                store.register_universe(5);
+            }
+            let mut main = engine.effect_engine.lock();
+            main.set_midi_dmx_store(engine.midi_dmx_store.clone());
+            main.register_fixture(crate::lighting::effects::FixtureInfo::new(
+                "wash".to_string(),
+                5,
+                1,
+                "Generic".to_string(),
+                std::collections::HashMap::from([("red".to_string(), 1)]),
+                None,
+            ));
+        }
+
+        #[test]
+        fn a_section_restart_puts_back_the_midi_dmx_state_before_it() -> Result<(), Box<dyn Error>>
+        {
+            // #583, on a section loop: each restart clears the store, and
+            // the cursor went back to the section start with nothing put
+            // back, so a look MIDI set before the section went dark from the
+            // second time round.
+            use crate::midi::playback::{PrecomputedMidi, TimedMidiEvent};
+            let (engine, _cancel_handle) = create_engine()?;
+            patch_wash_red(&engine);
+            let cc = |secs: u64, value: u8| TimedMidiEvent {
+                time: Duration::from_secs(secs),
+                channel: 0,
+                message: midly::MidiMessage::Controller {
+                    controller: 0.into(),
+                    value: value.into(),
+                },
+            };
+            engine
+                .midi_dmx_playbacks
+                .lock()
+                .push(crate::dmx::engine::MidiDmxPlayback {
+                    precomputed: PrecomputedMidi::from_events(vec![cc(0, 127), cc(5, 10)]),
+                    cursor: 2,
+                    universe_id: 5,
+                    midi_channels: HashSet::new(),
+                });
+            // Played on to 6 s: red at 20.
+            engine.midi_dmx_store.read().write(5, 1, 20, false);
+
+            // The section starts at 2 s.
+            let restores = engine.seek_midi_dmx_playbacks(Duration::from_secs(2));
+            engine.start_lighting_timeline_restoring(Duration::from_secs(2), &restores);
+            engine.midi_dmx_store.read().tick();
+            let red: Vec<_> = engine.midi_dmx_store.read().iter_active().collect();
+            assert_eq!(
+                red.len(),
+                1,
+                "the store lost the value set before the section"
+            );
+            assert!((red[0].1 * 255.0 - 254.0).abs() < 1e-6, "{red:?}");
+            assert_eq!(engine.midi_dmx_playbacks.lock()[0].cursor, 1);
+            engine.midi_dmx_playbacks.lock().clear();
+            Ok(())
+        }
+
         #[test]
         fn a_value_set_before_the_start_point_holds_after_it() -> Result<(), Box<dyn Error>> {
             held_after_a_start_part_way(false)
@@ -5348,21 +5414,7 @@ mod test {
         fn held_after_a_start_part_way(fixture: bool) -> Result<(), Box<dyn Error>> {
             let (engine, cancel_handle) = create_engine()?;
             if fixture {
-                {
-                    let mut store = engine.midi_dmx_store.write();
-                    store.register_slot(5, 1, "wash", "red");
-                    store.register_universe(5);
-                }
-                let mut main = engine.effect_engine.lock();
-                main.set_midi_dmx_store(engine.midi_dmx_store.clone());
-                main.register_fixture(crate::lighting::effects::FixtureInfo::new(
-                    "wash".to_string(),
-                    5,
-                    1,
-                    "Generic".to_string(),
-                    std::collections::HashMap::from([("red".to_string(), 1)]),
-                    None,
-                ));
+                patch_wash_red(&engine);
             }
             Engine::start_persistent_effects_loop(engine.clone());
 

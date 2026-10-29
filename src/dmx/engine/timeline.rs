@@ -565,6 +565,16 @@ impl Engine {
     /// `start_time` is song-absolute; it is shifted into the delayed lighting time
     /// base so the reconstructed state matches what the live loop advances from.
     pub fn start_lighting_timeline_at(&self, start_time: Duration) {
+        self.start_lighting_timeline_restoring(start_time, &[]);
+    }
+
+    /// [`Self::start_lighting_timeline_at`], putting back the MIDI DMX state
+    /// `restores` holds as it clears the store.
+    pub(super) fn start_lighting_timeline_restoring(
+        &self,
+        start_time: Duration,
+        restores: &[super::midi_playback::MidiDmxRestore],
+    ) {
         let start_time = self.to_delayed_song_time(start_time);
         // A crossfade in progress belongs to the playback being replaced; a
         // loop break's fade carries on over this song's start.
@@ -622,6 +632,9 @@ impl Engine {
             .collect();
         let mut effect_engine = self.effect_engine.lock();
         effect_engine.stop_all_effects();
+        for restore in restores {
+            self.apply_midi_dmx_restore(restore);
+        }
         if start_time > Duration::ZERO {
             for cmd in &timeline_update.layer_commands {
                 effect_engine.apply_layer_command(cmd);

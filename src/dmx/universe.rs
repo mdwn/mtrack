@@ -99,6 +99,11 @@ impl Universe {
         self.test_generation.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// The dim rate: ticks for a full transition.
+    pub fn dim_rate(&self) -> f64 {
+        *self.global_dim_rate.read()
+    }
+
     #[cfg(test)]
     pub fn get_dim_speed(&self) -> f64 {
         *self.global_dim_rate.read()
@@ -172,12 +177,16 @@ impl Universe {
     /// Puts a channel back where the MIDI writes before a playback's start
     /// point left it: at `current`, still moving toward `target` by `rate`
     /// a tick if a dim had not finished (#583). Takes the locks in the
-    /// universe thread's order (target, rates, current).
+    /// universe thread's order (target, rates, current). A value already
+    /// reached leaves `current` to the thread, which sends a channel only
+    /// as it moves: set there too, it would never go out.
     pub fn restore_channel_data(&self, channel: u16, current: f64, target: f64, rate: f64) {
         let channel_index = usize::from(channel.max(1) - 1);
         self.target.write()[channel_index] = target;
         self.rates.write()[channel_index] = rate;
-        self.current.write()[channel_index] = current;
+        if rate != 0.0 {
+            self.current.write()[channel_index] = current;
+        }
         let _ =
             self.max_channels
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current_channel| {
@@ -370,6 +379,33 @@ mod test {
         // is 200.
         universe.update_channel_data(10, 200, true);
         assert_eq!(universe.lit_channels(), vec![(3, 200)]);
+    }
+
+    #[test]
+    fn a_restored_channel_goes_out() -> Result<(), Box<dyn Error>> {
+        // #583: a value the MIDI before a seek point had reached was
+        // written as reached, so the thread, which sends what moves, never
+        // sent it.
+        let (universe, receiver) = new_universe();
+        let handle = universe.start_thread();
+        universe.restore_channel_data(1, 254.0, 254.0, 0.0);
+        // And a dim on its way, half there.
+        universe.restore_channel_data(2, 100.0, 200.0, 1.0);
+        let mut frame = Vec::new();
+        for _ in 0..50 {
+            let message = receiver.recv_timeout(Duration::from_secs(2))?;
+            frame = message.buffer.as_slice()[0..2].to_vec();
+            if frame[0] == 254 && frame[1] > 100 {
+                break;
+            }
+        }
+        universe.cancel_handle.cancel();
+        handle
+            .join()
+            .map_err(|_| "Error waiting for join".to_string())?;
+        assert_eq!(frame[0], 254, "the restored value never went out");
+        assert!(frame[1] > 100 && frame[1] < 200, "the dim: {frame:?}");
+        Ok(())
     }
 
     #[test]

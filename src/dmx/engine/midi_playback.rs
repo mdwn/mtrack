@@ -28,6 +28,28 @@ pub(super) struct MidiDmxChannelState {
     pub(super) rate: f64,
 }
 
+/// Where a MIDI DMX playback starting at `from` (delayed song time) picks
+/// up: at the first event, starting at 0, else past every event up to and
+/// including `from`, which [`replay_midi_dmx`] puts back -- the live loop
+/// dispatches an event once its time is reached, so one at `from` could
+/// otherwise go out ahead of the store's clear and be lost to it.
+pub(super) fn midi_dmx_cursor(events: &[TimedMidiEvent], from: Duration) -> usize {
+    if from.is_zero() {
+        0
+    } else {
+        events.partition_point(|e| e.time <= from)
+    }
+}
+
+/// What a playback's start puts back on one universe (see
+/// [`Engine::midi_dmx_restore`]).
+pub(super) struct MidiDmxRestore {
+    universe_id: u16,
+    states: BTreeMap<u16, MidiDmxChannelState>,
+    /// The last dimming speed the events set.
+    dimming: Option<Duration>,
+}
+
 /// A channel as the last write left it, `since` the time of that write.
 struct Written {
     from: f64,
@@ -53,7 +75,7 @@ impl Written {
     }
 }
 
-/// The state the MIDI DMX events before `until` leave each DMX channel in,
+/// The state the MIDI DMX events up to `until` leave each DMX channel in,
 /// replayed without their timing: a playback starting part way through a
 /// song skips them, and since nothing holds a channel no frame writes
 /// (#581), a look a MIDI show set once and held stayed dark after a seek
@@ -70,7 +92,7 @@ pub(super) fn replay_midi_dmx(
 ) -> (BTreeMap<u16, MidiDmxChannelState>, Option<Duration>) {
     let mut channels: BTreeMap<u16, Written> = BTreeMap::new();
     let mut dimming = None;
-    for event in events.iter().take_while(|e| e.time < until) {
+    for event in events.iter().take_while(|e| e.time <= until) {
         if !midi_channels.is_empty() && !midi_channels.contains(&event.channel) {
             continue;
         }
@@ -151,21 +173,25 @@ impl Engine {
         }
     }
 
-    /// Puts a universe's MIDI DMX channels where the events before a
-    /// playback's start point left them (see [`replay_midi_dmx`]). Run once
-    /// the song start has cleared the store, before the playback's cursor
-    /// goes live.
-    pub(super) fn restore_midi_dmx(
+    /// Where the events before a playback's start point leave a
+    /// universe's MIDI DMX channels (see [`replay_midi_dmx`]), to put them
+    /// back with [`Self::apply_midi_dmx_restore`]. Nothing for a start at 0.
+    pub(super) fn midi_dmx_restore(
         &self,
         universe_id: u16,
         events: &[TimedMidiEvent],
         midi_channels: &HashSet<u8>,
         until: Duration,
-    ) {
+    ) -> Option<MidiDmxRestore> {
         if until.is_zero() {
-            return;
+            return None;
         }
-        let dim_rate = self.midi_dmx_store.read().dim_rate(universe_id);
+        // The rate the universe dims at now, which is the store's too where
+        // it has the universe: both are set together.
+        let dim_rate = self
+            .universes
+            .get(&universe_id)
+            .map_or(1.0, |universe| universe.dim_rate());
         let (states, dimming) = replay_midi_dmx(
             events,
             midi_channels,
@@ -173,11 +199,24 @@ impl Engine {
             self.dimming_speed_modifier,
             dim_rate,
         );
-        if let Some(duration) = dimming {
+        Some(MidiDmxRestore {
+            universe_id,
+            states,
+            dimming,
+        })
+    }
+
+    /// Puts a universe's MIDI DMX channels back as [`Self::midi_dmx_restore`]
+    /// found them. Run once the start has cleared the store, under the
+    /// engine's lock that clear was made under, so no frame renders the
+    /// store empty in between: a black flash at every seek (#581).
+    pub(super) fn apply_midi_dmx_restore(&self, restore: &MidiDmxRestore) {
+        let universe_id = restore.universe_id;
+        if let Some(duration) = restore.dimming {
             self.update_dimming_by_id(universe_id, duration);
         }
         let store = self.midi_dmx_store.read();
-        for (channel, state) in states {
+        for (&channel, state) in &restore.states {
             if store.lookup(universe_id, channel).is_some() {
                 store.restore(
                     universe_id,
@@ -190,6 +229,28 @@ impl Engine {
                 universe.restore_channel_data(channel, state.current, state.target, state.rate);
             }
         }
+    }
+
+    /// Moves every MIDI DMX playback's cursor to `time` (in the delayed
+    /// lighting time base) and returns what the events before it leave the
+    /// channels at, for the start that clears the store to put back.
+    pub(super) fn seek_midi_dmx_playbacks(&self, time: Duration) -> Vec<MidiDmxRestore> {
+        let mut playbacks = self.midi_dmx_playbacks.lock();
+        playbacks
+            .iter_mut()
+            .filter_map(|playback| {
+                let events = playback.precomputed.events();
+                let cursor = midi_dmx_cursor(events, time);
+                let restore = self.midi_dmx_restore(
+                    playback.universe_id,
+                    &events[..cursor],
+                    &playback.midi_channels,
+                    time,
+                );
+                playback.cursor = cursor;
+                restore
+            })
+            .collect()
     }
 
     /// Returns true if all MIDI DMX playbacks have finished.
