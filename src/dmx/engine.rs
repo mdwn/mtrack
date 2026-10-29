@@ -2861,6 +2861,104 @@ mod test {
             )
         }
 
+        /// A wash engine running `source` from 0, with a frame at 1 s.
+        fn wash_running(source: &str) -> Result<(Arc<Engine>, CancelHandle), Box<dyn Error>> {
+            let (engine, cancel_handle) = create_engine()?;
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+            *engine.current_song_timeline.lock() = Some(timeline(source));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            frame_at(&engine, 1.0);
+            Ok((engine, cancel_handle))
+        }
+
+        /// What the effects loop takes from the timeline at `secs`, as it
+        /// does before it applies it.
+        fn fire_at(engine: &Engine, secs: f64) -> (crate::lighting::timeline::TimelineUpdate, u64) {
+            let mut timeline = engine.current_song_timeline.lock();
+            let timeline = timeline.as_mut().unwrap();
+            (
+                timeline.update(Duration::from_secs_f64(secs)),
+                timeline.epoch(),
+            )
+        }
+
+        fn cued_at(engine: &crate::lighting::EffectEngine, secs: f64) -> bool {
+            engine
+                .get_active_effects()
+                .values()
+                .any(|e| e.cue_time == Some(Duration::from_secs_f64(secs)))
+        }
+
+        const RED_THEN_GREEN: &str = "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", \
+             duration: 10s\n    @2.000\n    wash: static, color: \"green\", duration: 1s\n}\n";
+
+        #[test]
+        fn a_cue_taken_before_a_restart_does_not_land_after_it() -> Result<(), Box<dyn Error>> {
+            // A cue the effects loop took from the timeline just before a
+            // section loop restarted it was applied on top of the state the
+            // restart put in.
+            let (engine, _cancel_handle) = wash_running(RED_THEN_GREEN)?;
+            let (green, epoch) = fire_at(&engine, 2.0);
+            assert!(!green.effects.is_empty(), "the green cue fired");
+
+            engine.update_song_time(Duration::from_millis(500));
+            engine.start_lighting_timeline_at(Duration::from_millis(500));
+            engine.apply_timeline_update(green, epoch)?;
+            assert!(
+                !cued_at(&engine.effect_engine.lock(), 2.0),
+                "the 2 s cue landed at 0.5 s"
+            );
+            engine.update_effects()?;
+            let universe = engine.get_universe(5).unwrap();
+            assert_eq!(
+                (universe.get_target_value(0), universe.get_target_value(1)),
+                (255.0, 0.0),
+                "not red at 0.5 s"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_cue_taken_before_a_pass_swap_lands_on_its_own_pass() -> Result<(), Box<dyn Error>> {
+            // A cue the effects loop took from the timeline just before a
+            // loop pass swap went to the fresh engine, the next pass's,
+            // rather than the outgoing pass it belongs to.
+            let (engine, _cancel_handle) = wash_running(RED_THEN_GREEN)?;
+            let (green, epoch) = fire_at(&engine, 2.0);
+
+            engine.begin_loop_crossfade(
+                Some(timeline(
+                    "show \"a\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 7s\n}\n",
+                )),
+                Duration::from_secs(6),
+                Duration::from_secs(2),
+            );
+            engine.apply_timeline_update(green, epoch)?;
+            assert!(
+                !cued_at(&engine.effect_engine.lock(), 2.0),
+                "the old pass's cue landed on the new pass"
+            );
+            let outgoing = engine.outgoing_pass.lock();
+            assert!(
+                cued_at(&outgoing.as_ref().unwrap().effect_engine, 2.0),
+                "the old pass lost its cue"
+            );
+            Ok(())
+        }
+
         #[test]
         fn passes_cross_over_the_overlap() -> Result<(), Box<dyn Error>> {
             let (engine, _cancel_handle) = create_engine()?;
@@ -4536,6 +4634,14 @@ mod test {
 
     mod apply_timeline_update_tests {
         use super::*;
+
+        /// Installs an empty timeline, whose update the tests apply.
+        fn armed(engine: &Engine) -> u64 {
+            let timeline = crate::lighting::timeline::LightingTimeline::new(Vec::new());
+            let epoch = timeline.epoch();
+            *engine.current_song_timeline.lock() = Some(timeline);
+            epoch
+        }
         use crate::lighting::parser::{LayerCommand, LayerCommandType};
 
         #[test]
@@ -4554,7 +4660,7 @@ mod test {
                 stop_sequences: vec![],
             };
 
-            assert!(engine.apply_timeline_update(update).is_ok());
+            assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
             Ok(())
         }
 
@@ -4569,7 +4675,7 @@ mod test {
                 stop_sequences: vec!["test_seq".to_string()],
             };
 
-            assert!(engine.apply_timeline_update(update).is_ok());
+            assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
             Ok(())
         }
 
@@ -4622,7 +4728,7 @@ mod test {
                 stop_sequences: vec![],
             };
 
-            assert!(engine.apply_timeline_update(update).is_ok());
+            assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
             Ok(())
         }
 
@@ -4668,7 +4774,7 @@ mod test {
                 stop_sequences: vec![],
             };
 
-            assert!(engine.apply_timeline_update(update).is_ok());
+            assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
             Ok(())
         }
     }

@@ -14,7 +14,7 @@
 
 use std::{error::Error, time::Duration};
 
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use crate::songs::Song;
 
@@ -193,6 +193,15 @@ impl OutgoingPass {
             let (_, inner_time) = inner.timing(time);
             inner.advance_timelines(inner_time, updates);
         }
+    }
+
+    /// The engine of the pass, this one or an inner one, whose timeline is
+    /// armed as `epoch`.
+    fn engine_of(&mut self, epoch: u64) -> Option<&mut crate::lighting::EffectEngine> {
+        if self.timeline.as_ref().map(|t| t.epoch()) == Some(epoch) {
+            return Some(&mut self.effect_engine);
+        }
+        self.inner.as_mut().and_then(|inner| inner.engine_of(epoch))
     }
 
     /// Applies what [`Self::advance_timelines`] collected, its groups
@@ -538,17 +547,17 @@ impl Engine {
         &self,
         song_time: std::time::Duration,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let timeline_update = {
-            let mut current_timeline = self.current_song_timeline.lock();
-            if let Some(timeline) = current_timeline.as_mut() {
-                timeline.update(song_time)
-            } else {
-                crate::lighting::timeline::TimelineUpdate::default()
-            }
-        };
+        let fired = self
+            .current_song_timeline
+            .lock()
+            .as_mut()
+            .map(|timeline| (timeline.update(song_time), timeline.epoch()));
 
         self.update_outgoing_pass(song_time);
-        self.apply_timeline_update(timeline_update)
+        match fired {
+            Some((timeline_update, epoch)) => self.apply_timeline_update(timeline_update, epoch),
+            None => Ok(()),
+        }
     }
 
     /// Starts the lighting timeline at a specific time
@@ -638,55 +647,99 @@ impl Engine {
         }
     }
 
-    /// Applies a timeline update (effects and layer commands)
+    /// Applies what the timeline armed as `epoch` fired (effects and layer
+    /// commands) to the engine that timeline drives. The update is taken
+    /// from the timeline under its lock and applied under the engine's, and
+    /// a seek, a section loop's restart or a hand-over of the timeline to a
+    /// pass can come in between: a cue taken before a restart then landed
+    /// on top of the state the restart put in, and one taken before a pass
+    /// swap on the fresh engine rather than its own. So it goes to whichever
+    /// engine that arming of the timeline drives now -- the current one, or
+    /// a pass's -- and nowhere if it is gone.
     pub(super) fn apply_timeline_update(
         &self,
         timeline_update: crate::lighting::timeline::TimelineUpdate,
+        epoch: u64,
     ) -> Result<(), Box<dyn Error>> {
-        // Process layer commands first (they affect subsequent effects)
-        if !timeline_update.layer_commands.is_empty() {
-            let mut effects_engine = self.effect_engine.lock();
-            for cmd in &timeline_update.layer_commands {
-                effects_engine.apply_layer_command(cmd);
-            }
+        let crate::lighting::timeline::TimelineUpdate {
+            effects,
+            effects_with_elapsed,
+            layer_commands,
+            stop_sequences,
+        } = timeline_update;
+        if effects.is_empty()
+            && effects_with_elapsed.is_empty()
+            && layer_commands.is_empty()
+            && stop_sequences.is_empty()
+        {
+            return Ok(());
         }
 
-        // Process stop sequence commands
-        if !timeline_update.stop_sequences.is_empty() {
-            let mut effects_engine = self.effect_engine.lock();
-            for sequence_name in &timeline_update.stop_sequences {
-                effects_engine.stop_sequence(sequence_name);
-            }
-        }
-
-        // Start effects with pre-calculated elapsed time (from seeking)
-        // Sort by cue_time to ensure chronological order — later effects properly
-        // conflict with and stop earlier ones
-        let mut effects_sorted: Vec<_> = timeline_update.effects_with_elapsed.values().collect();
-        effects_sorted.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
-
-        for (effect, elapsed_time) in effects_sorted {
-            let resolved = self.resolve_effect_groups(effect.clone());
-            let mut effect_engine = self.effect_engine.lock();
-            if let Err(e) = effect_engine.start_effect_with_elapsed(resolved, *elapsed_time) {
-                error!("Failed to start lighting effect with elapsed time: {}", e);
-            }
-        }
-
-        // Handle regular effects (from normal timeline updates).
-        // Sort so sequence effects start before song effects. When a sequence's
-        // last cue (timing anchor) fires at the same time as the next show cue,
-        // starting sequence effects first ensures show-level effects win any
-        // Replace-blend conflicts via the conflict resolution in start_effect().
-        let mut effects = timeline_update.effects;
+        // Groups resolved first: never under the engine's lock.
+        // Effects with pre-calculated elapsed time (from seeking) go in by
+        // cue time, so later effects properly conflict with and stop earlier
+        // ones.
+        let mut with_elapsed: Vec<_> = effects_with_elapsed.into_values().collect();
+        with_elapsed.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
+        let with_elapsed: Vec<_> = with_elapsed
+            .into_iter()
+            .map(|(effect, elapsed)| (self.resolve_effect_groups(effect), elapsed))
+            .collect();
+        // Sequence effects start before song effects. When a sequence's
+        // last cue (timing anchor) fires at the same time as the next show
+        // cue, starting sequence effects first ensures show-level effects win
+        // any Replace-blend conflicts via the conflict resolution in
+        // start_effect().
+        let mut effects = effects;
         effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
-        for effect in effects {
-            let resolved = self.resolve_effect_groups(effect);
-            if let Err(e) = self.start_effect(resolved) {
-                error!("Failed to start lighting effect: {}", e);
-            }
-        }
+        let effects: Vec<_> = effects
+            .into_iter()
+            .map(|effect| self.resolve_effect_groups(effect))
+            .collect();
 
+        let apply = |engine: &mut crate::lighting::EffectEngine| {
+            // Layer commands first: they affect the effects after them.
+            for cmd in &layer_commands {
+                engine.apply_layer_command(cmd);
+            }
+            for sequence_name in &stop_sequences {
+                engine.stop_sequence(sequence_name);
+            }
+            for (effect, elapsed) in with_elapsed {
+                if let Err(e) = engine.start_effect_with_elapsed(effect, elapsed) {
+                    error!("Failed to start lighting effect with elapsed time: {}", e);
+                }
+            }
+            for effect in effects {
+                if let Err(e) = engine.start_effect(effect) {
+                    error!("Failed to start lighting effect: {}", e);
+                }
+            }
+        };
+
+        // The engine's lock, then the timeline's, as everything takes them:
+        // a swap, which moves both under the engine's, cannot come between
+        // the check and the apply.
+        let mut effect_engine = self.effect_engine.lock();
+        let current = self
+            .current_song_timeline
+            .lock()
+            .as_ref()
+            .map(|timeline| timeline.epoch());
+        if current == Some(epoch) {
+            apply(&mut effect_engine);
+            return Ok(());
+        }
+        let mut outgoing = self.outgoing_pass.lock();
+        let mut fades = self.break_fades.lock();
+        match outgoing
+            .iter_mut()
+            .chain(fades.iter_mut())
+            .find_map(|pass| pass.engine_of(epoch))
+        {
+            Some(engine) => apply(engine),
+            None => debug!("Dropping lighting cues from a timeline since restarted or replaced"),
+        }
         Ok(())
     }
 
