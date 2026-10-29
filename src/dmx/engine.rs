@@ -137,6 +137,12 @@ pub struct Engine {
     /// later -- another pass's crossfade, another break, a stop's dark --
     /// cuts it short or drops it. Locked after `outgoing_pass`.
     pub(super) break_fades: Mutex<Vec<timeline::OutgoingPass>>,
+    /// The id the main engine and timeline go by as a pass once a loop pass
+    /// or break swaps them aside, so what the timeline fired just before the
+    /// swap finds the pass it fired in. Changed only with `effect_engine`
+    /// and `current_song_timeline` both held, so either lock reads it
+    /// consistent with what it guards.
+    pub(super) main_pass_id: AtomicU64,
     /// The channels (universe, 1-based channel) the last frame wrote. A
     /// channel lit but not among them is held by the universe from an
     /// effect long gone, which nothing will write again (#573).
@@ -279,6 +285,7 @@ impl Engine {
             current_song_timeline,
             outgoing_pass: Mutex::new(None),
             break_fades: Mutex::new(Vec::new()),
+            main_pass_id: AtomicU64::new(timeline::next_pass_id()),
             last_written: Mutex::new(HashSet::new()),
             playback_generation,
             current_song_time,

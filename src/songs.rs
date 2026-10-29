@@ -2039,6 +2039,24 @@ mod test {
         Ok(())
     }
 
+    #[test]
+    fn loop_crossfade_over_half_the_song_is_rejected() -> Result<(), Box<dyn Error>> {
+        use std::time::Duration;
+        // Half the 8 s song is the most: no more than two passes overlap.
+        let song = looping_song("loop_crossfade: 2measures\n")?;
+        assert_eq!(song.loop_crossfade(), Some(Duration::from_secs(4)));
+        for over in ["loop_crossfade: 4001ms\n", "loop_crossfade: 3measures\n"] {
+            let Err(e) = looping_song(over) else {
+                panic!("{over} loaded");
+            };
+            assert!(
+                e.to_string().contains("can be at most half the song"),
+                "{over}: {e}"
+            );
+        }
+        Ok(())
+    }
+
     /// A 4-second song with the song.yaml lines given, loaded.
     fn song_with(yaml: &str) -> Result<super::Song, Box<dyn Error>> {
         let dir = tempfile::tempdir()?;

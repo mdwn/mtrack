@@ -65,7 +65,7 @@ type PassUpdates = std::collections::HashMap<
 >;
 
 /// A new pass's id.
-fn next_pass_id() -> u64 {
+pub(super) fn next_pass_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
@@ -291,10 +291,32 @@ impl Engine {
         lead: Duration,
         overlap: Duration,
     ) {
+        self.begin_loop_crossfade_then(next, lead, overlap, || {});
+    }
+
+    /// [`Self::begin_loop_crossfade`], calling `between` after the song time
+    /// is reset and before the engines swap, where a frame may render.
+    pub(super) fn begin_loop_crossfade_then(
+        &self,
+        next: Option<crate::lighting::timeline::LightingTimeline>,
+        lead: Duration,
+        overlap: Duration,
+        between: impl FnOnce(),
+    ) {
+        // The pass before goes first. With an overlap of half the song its
+        // crossfade ends just as this one begins, and the frame that ends it
+        // may not have come yet. Left in place, a frame between the reset
+        // below and the swap would render it from the start of its
+        // crossfade, flashing the pass before last back up.
+        let previous = self.outgoing_pass.lock().take();
+        if let Some(pass) = previous {
+            self.retire_pass(pass);
+        }
         // Song time first: a frame rendered between the swap and the reset
         // would read the old pass's time as the new one's, and end the
         // crossfade before it began.
         self.update_song_time(Duration::ZERO);
+        between();
         // The engines swap, the timelines with them, and the outgoing pass
         // is put aside, all under the engine's lock (taken in the effects
         // loop's order: engine, timeline, pass), so no frame renders the
@@ -306,15 +328,16 @@ impl Engine {
         // What it drove the rig with until now: held as it is, should it go
         // before its first frame as a pass.
         let last = outgoing_engine.last_commands().to_vec();
-        let timeline = {
+        let (timeline, id) = {
             let mut current = self.current_song_timeline.lock();
-            std::mem::replace(
+            let timeline = std::mem::replace(
                 &mut *current,
                 next.map(|mut timeline| {
                     timeline.start();
                     timeline
                 }),
-            )
+            );
+            (timeline, self.swap_main_pass_id())
         };
         let mut outgoing = self.outgoing_pass.lock();
         if let Some(pass) = outgoing.take() {
@@ -327,7 +350,7 @@ impl Engine {
             overlap,
             inner: None,
             hurry: None,
-            id: next_pass_id(),
+            id,
             last,
             held: false,
             floor: Vec::new(),
@@ -363,7 +386,10 @@ impl Engine {
             let last = outgoing_engine.last_commands().to_vec();
             // The timeline goes with its engine, taken under the same lock
             // (engine, then timeline, as nothing takes them the other way).
-            let timeline = self.current_song_timeline.lock().take();
+            let (timeline, id) = {
+                let mut current = self.current_song_timeline.lock();
+                (current.take(), self.swap_main_pass_id())
+            };
             let inner = self.outgoing_pass.lock().take().map(Box::new);
             self.break_fades.lock().push(OutgoingPass {
                 effect_engine: outgoing_engine,
@@ -375,12 +401,20 @@ impl Engine {
                 overlap: fade,
                 inner,
                 hurry: None,
-                id: next_pass_id(),
+                id,
                 last,
                 held: false,
                 floor,
             });
         }
+    }
+
+    /// The id the main engine and timeline went by, now theirs as a pass,
+    /// and a new one for those swapped in. Call it with `effect_engine` and
+    /// `current_song_timeline` both held.
+    fn swap_main_pass_id(&self) -> u64 {
+        self.main_pass_id
+            .swap(next_pass_id(), std::sync::atomic::Ordering::Relaxed)
     }
 
     /// A fresh engine for the same rig to swap in at a loop pass or break,
@@ -519,17 +553,24 @@ impl Engine {
         &self,
         song_time: std::time::Duration,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let timeline_update = {
-            let mut current_timeline = self.current_song_timeline.lock();
-            if let Some(timeline) = current_timeline.as_mut() {
-                timeline.update(song_time)
-            } else {
-                crate::lighting::timeline::TimelineUpdate::default()
-            }
-        };
-
+        let (pass, timeline_update) = self.fire_song_lighting(song_time);
         self.update_outgoing_pass(song_time);
-        self.apply_timeline_update(timeline_update)
+        self.apply_pass_update(Some(pass), timeline_update)
+    }
+
+    /// Advances the main timeline to `song_time`: what it fires, and the id
+    /// of the pass that fired it, read under the same lock.
+    pub(super) fn fire_song_lighting(
+        &self,
+        song_time: Duration,
+    ) -> (u64, crate::lighting::timeline::TimelineUpdate) {
+        let mut current_timeline = self.current_song_timeline.lock();
+        let pass = self.main_pass_id.load(std::sync::atomic::Ordering::Relaxed);
+        let update = current_timeline
+            .as_mut()
+            .map(|timeline| timeline.update(song_time))
+            .unwrap_or_default();
+        (pass, update)
     }
 
     /// Starts the lighting timeline at a specific time
@@ -593,46 +634,77 @@ impl Engine {
         &self,
         timeline_update: crate::lighting::timeline::TimelineUpdate,
     ) -> Result<(), Box<dyn Error>> {
-        // Process layer commands first (they affect subsequent effects)
-        if !timeline_update.layer_commands.is_empty() {
-            let mut effects_engine = self.effect_engine.lock();
-            for cmd in &timeline_update.layer_commands {
-                effects_engine.apply_layer_command(cmd);
+        self.apply_pass_update(None, timeline_update)
+    }
+
+    /// Applies a timeline update to the main engine, or, given the `pass`
+    /// whose timeline fired it, to that pass wherever it is now: a loop pass
+    /// or break that swapped it aside since leaves the update to follow it,
+    /// not start in the fresh engine. Dropped if that pass has gone.
+    pub(super) fn apply_pass_update(
+        &self,
+        pass: Option<u64>,
+        mut timeline_update: crate::lighting::timeline::TimelineUpdate,
+    ) -> Result<(), Box<dyn Error>> {
+        // Groups resolve against the lighting system before the engine is
+        // locked, which it must not be under.
+        //
+        // Effects with pre-calculated elapsed time (from seeking) are sorted
+        // by cue_time to ensure chronological order — later effects properly
+        // conflict with and stop earlier ones
+        let mut with_elapsed: Vec<_> = std::mem::take(&mut timeline_update.effects_with_elapsed)
+            .into_values()
+            .collect();
+        with_elapsed.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
+        let with_elapsed: Vec<_> = with_elapsed
+            .into_iter()
+            .map(|(effect, elapsed)| (self.resolve_effect_groups(effect), elapsed))
+            .collect();
+        // Regular effects (from normal timeline updates) are sorted so
+        // sequence effects start before song effects. When a sequence's last
+        // cue (timing anchor) fires at the same time as the next show cue,
+        // starting sequence effects first ensures show-level effects win any
+        // Replace-blend conflicts via the conflict resolution in start_effect().
+        let mut effects = std::mem::take(&mut timeline_update.effects);
+        effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
+        let effects: Vec<_> = effects
+            .into_iter()
+            .map(|effect| self.resolve_effect_groups(effect))
+            .collect();
+
+        // Held throughout: no swap can come between the check and the apply.
+        let mut effect_engine = self.effect_engine.lock();
+        if let Some(pass) = pass
+            .filter(|&pass| pass != self.main_pass_id.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            let mut updates: PassUpdates =
+                std::iter::once((pass, (timeline_update, effects))).collect();
+            let mut outgoing = self.outgoing_pass.lock();
+            let mut fades = self.break_fades.lock();
+            for pass in outgoing.iter_mut().chain(fades.iter_mut()) {
+                pass.apply_updates(&mut updates);
             }
+            return Ok(());
+        }
+
+        // Process layer commands first (they affect subsequent effects)
+        for cmd in &timeline_update.layer_commands {
+            effect_engine.apply_layer_command(cmd);
         }
 
         // Process stop sequence commands
-        if !timeline_update.stop_sequences.is_empty() {
-            let mut effects_engine = self.effect_engine.lock();
-            for sequence_name in &timeline_update.stop_sequences {
-                effects_engine.stop_sequence(sequence_name);
-            }
+        for sequence_name in &timeline_update.stop_sequences {
+            effect_engine.stop_sequence(sequence_name);
         }
 
-        // Start effects with pre-calculated elapsed time (from seeking)
-        // Sort by cue_time to ensure chronological order — later effects properly
-        // conflict with and stop earlier ones
-        let mut effects_sorted: Vec<_> = timeline_update.effects_with_elapsed.values().collect();
-        effects_sorted.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
-
-        for (effect, elapsed_time) in effects_sorted {
-            let resolved = self.resolve_effect_groups(effect.clone());
-            let mut effect_engine = self.effect_engine.lock();
-            if let Err(e) = effect_engine.start_effect_with_elapsed(resolved, *elapsed_time) {
+        for (effect, elapsed_time) in with_elapsed {
+            if let Err(e) = effect_engine.start_effect_with_elapsed(effect, elapsed_time) {
                 error!("Failed to start lighting effect with elapsed time: {}", e);
             }
         }
 
-        // Handle regular effects (from normal timeline updates).
-        // Sort so sequence effects start before song effects. When a sequence's
-        // last cue (timing anchor) fires at the same time as the next show cue,
-        // starting sequence effects first ensures show-level effects win any
-        // Replace-blend conflicts via the conflict resolution in start_effect().
-        let mut effects = timeline_update.effects;
-        effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
         for effect in effects {
-            let resolved = self.resolve_effect_groups(effect);
-            if let Err(e) = self.start_effect(resolved) {
+            if let Err(e) = effect_engine.start_effect(effect) {
                 error!("Failed to start lighting effect: {}", e);
             }
         }

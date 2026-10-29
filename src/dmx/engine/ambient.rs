@@ -2243,6 +2243,74 @@ mod tests {
         Ok(())
     }
 
+    /// Green, turning red at 1 s.
+    const GREEN_THEN_RED: &str = "show \"song\" {\n    @0.000\n    wash: static, color: \"green\", duration: 60s\n    @1.000\n    wash: static, color: \"red\", duration: 60s\n}\n";
+
+    #[test]
+    fn a_cue_fired_as_the_passes_swap_follows_its_pass() -> Result<(), Box<dyn Error>> {
+        // The effects loop fires the timeline's cues, then starts them in
+        // the engine. A loop pass or break swapping the engines in between
+        // started them in the fresh engine, and the pass that fired them
+        // never had them.
+        for swap in ["pass", "break"] {
+            let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "0s"))?;
+            start_song(&engine, GREEN_THEN_RED);
+            assert_eq!(song_frame(&engine, 0.5), (0.0, 255.0, 0.0));
+            let (pass, fired) = engine.fire_song_lighting(Duration::from_secs(1));
+            assert!(!fired.effects.is_empty(), "the red cue fires");
+            match swap {
+                "pass" => engine.begin_loop_crossfade(
+                    Some(timeline(GREEN)),
+                    Duration::from_secs(1),
+                    Duration::from_millis(200),
+                ),
+                _ => {
+                    engine.begin_break_fade(Duration::from_millis(200));
+                    engine.stop_lighting_timeline();
+                    start_song(&engine, GREEN);
+                }
+            }
+            engine.apply_pass_update(Some(pass), fired)?;
+            // The pass going out turned red (a break's fade a few ms on)...
+            let (red, green, _) = song_frame(&engine, 0.0);
+            assert!(red > 240.0 && green < 15.0, "{swap}: {red}, {green}");
+            // ... and the one coming in stays green.
+            sleep(Duration::from_millis(300));
+            assert_eq!(song_frame(&engine, 0.3), (0.0, 255.0, 0.0), "{swap}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_pass_still_crossing_at_the_next_does_not_flash_back() -> Result<(), Box<dyn Error>> {
+        // With an overlap of half the song, a pass's crossfade ends just as
+        // the next begins, and its last frame can fall short of the end. A
+        // frame between the next pass's song time reset and its swap then
+        // rendered the pass before last from the start of its crossfade.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "0s"))?;
+        start_song(&engine, RED);
+        song_frame(&engine, 0.5);
+        // A 2 s song crossing over 1 s: GREEN's pass begins...
+        engine.begin_loop_crossfade(
+            Some(timeline(GREEN)),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        // ... and the last frame before the next is just short of the end.
+        let (_, green, _) = song_frame(&engine, 0.99);
+        assert!(green > 240.0, "nearly across: {green}");
+        let mut between = None;
+        engine.begin_loop_crossfade_then(
+            Some(timeline(GREEN)),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            || between = Some(tick(&engine)),
+        );
+        let (red, green, _) = between.unwrap();
+        assert!(red < 10.0 && green > 240.0, "flashed back: {red}, {green}");
+        Ok(())
+    }
+
     #[test]
     fn modes_parse_and_name_themselves() {
         for mode in [AmbientMode::Auto, AmbientMode::On, AmbientMode::Off] {

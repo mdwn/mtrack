@@ -237,6 +237,7 @@ loop_crossfade_cut: [click, cues]
 - **Length**: `6s`, `500ms`, `8beats` or `2measures`. Beats and measures need a beat grid (a
   `tempo:` block or a click track) and count back from the end of the song, through any tempo
   or meter changes. It can be at most half the song, so no more than two passes overlap.
+  A longer one is not clamped: the song fails to load, with an error naming both lengths.
 - **Audio** fades over the whole overlap on an equal-power curve, so the level holds through
   the middle. Tracks in `loop_crossfade_cut` instead switch over at the midpoint with the
   short 10 ms crossfade: a click heard twice for several seconds is no use to anyone.

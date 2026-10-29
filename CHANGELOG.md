@@ -108,6 +108,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A cue fired as a looping song's lights swap passes stays with its pass**: the effects loop
+  fires a timeline's cues and then starts them, and a loop pass or loop break swapping the engines
+  in between started them in the incoming pass instead of the one that fired them. They now go to
+  the pass that fired them, wherever it has gone, or are dropped if it has ended.
+- **No flash of the pass before last with a long loop crossfade**: with a `loop_crossfade` of half
+  the song, the longest allowed, a pass's crossfade ends just as the next pass begins. If its last
+  frame fell short of the end, a frame rendered as the next pass began could show the pass before
+  last at full. That pass now goes before the next one starts. A `loop_crossfade` over half the
+  song is still refused when the song loads.
 - **Ambient Off takes a show that has finished to dark too (#573)**: with ambient Off, a show whose
   effects had all ended by the time its song did -- at the very end or earlier -- left their last
   frame on the rig, since nothing writes a channel no effect drives and the engine darkened had
