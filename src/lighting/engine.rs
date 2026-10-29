@@ -1232,19 +1232,23 @@ impl EffectEngine {
                     Duration::from_secs_f64(base_elapsed.as_secs_f64() * layer_speed)
                 };
 
-                // Check if effect has reached terminal state (value-based where applicable)
-                // For effects with cue_time, use score-time elapsed instead of real-time elapsed
-                // because hold_time/up_time/down_time are calculated in score-time
+                // Expire on the time the effect renders on. A cued effect on a
+                // layer at normal speed that has never been frozen renders on
+                // score time, so it ends exactly on its musical end (#536).
+                // Song time runs on through a freeze and ignores the speed
+                // master, so a frozen, slowed or once-frozen effect ends on its
+                // own elapsed instead: on score time a frozen look went dark
+                // at its normal end, and a slowed one was cut off at its
+                // full-speed end (#586).
+                let on_score_time = frozen_at.is_none()
+                    && !effect.engine_timed
+                    && (layer_speed - 1.0).abs() < f64::EPSILON;
                 let is_expired = if effect.start_time.is_some() {
-                    if let (Some(cue_time), Some(current_song_time)) = (effect.cue_time, song_time)
-                    {
-                        // Use score-time elapsed for tempo-aware completion
-                        // This ensures effects complete at the correct musical time, not real-time
-                        let score_elapsed = current_song_time.saturating_sub(cue_time);
-                        effect.has_reached_terminal_state(score_elapsed)
-                    } else {
-                        // Fall back to real-time elapsed for effects without cue_time
-                        effect.has_reached_terminal_state(elapsed)
+                    match (effect.cue_time, song_time) {
+                        (Some(cue_time), Some(now)) if on_score_time => {
+                            effect.has_reached_terminal_state(now.saturating_sub(cue_time))
+                        }
+                        _ => effect.has_reached_terminal_state(elapsed),
                     }
                 } else {
                     false
