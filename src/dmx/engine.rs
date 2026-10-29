@@ -2917,6 +2917,97 @@ mod test {
         const RED_THEN_GREEN: &str = "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", \
              duration: 10s\n    @2.000\n    wash: static, color: \"green\", duration: 1s\n}\n";
 
+        /// The wash's (red, green, blue) after a seek to `secs` in `source`.
+        fn seek_frame(source: &str, secs: f64) -> Result<(f64, f64, f64), Box<dyn Error>> {
+            let (engine, _cancel_handle) = wash_running(source)?;
+            let at = Duration::from_secs_f64(secs);
+            engine.update_song_time(at);
+            engine.start_lighting_timeline_at(at);
+            engine.update_effects()?;
+            let universe = engine.get_universe(5).unwrap();
+            Ok((
+                universe.get_target_value(0),
+                universe.get_target_value(1),
+                universe.get_target_value(2),
+            ))
+        }
+
+        /// The wash's (red, green, blue) at `secs` in `source`, played
+        /// through to it in 10 ms frames.
+        fn played_frame(source: &str, secs: f64) -> Result<(f64, f64, f64), Box<dyn Error>> {
+            let (engine, _cancel_handle) = wash_running(source)?;
+            let mut at = 1.0;
+            let mut frame = frame_at(&engine, at);
+            while at + 0.01 <= secs + 1e-9 {
+                at += 0.01;
+                frame = frame_at(&engine, at);
+            }
+            Ok(frame)
+        }
+
+        const GREEN: (f64, f64, f64) = (0.0, 255.0, 0.0);
+        const DARK: (f64, f64, f64) = (0.0, 0.0, 0.0);
+
+        #[test]
+        fn a_seek_past_a_freeze_never_undone_keeps_the_look() -> Result<(), Box<dyn Error>> {
+            // #589 A: a seek kept a history effect only while its score
+            // time was short of its duration, so a look frozen for good
+            // went dark after a seek past its normal end.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 12s, layer: midground, blend_mode: replace\n    @8.000\n    \
+                freeze(layer: midground)\n}\n";
+            assert_eq!(played_frame(show, 20.0)?, GREEN);
+            assert_eq!(seek_frame(show, 20.0)?, GREEN, "seek to 20 s");
+            assert_eq!(seek_frame(show, 30.0)?, GREEN, "seek to 30 s");
+            Ok(())
+        }
+
+        #[test]
+        fn a_seek_counts_a_freeze_and_unfreeze_before_it() -> Result<(), Box<dyn Error>> {
+            // #589 B: frozen 2-7 s, a 4 s look ends at 9 s.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @2.000\n    \
+                freeze(layer: midground)\n    @7.000\n    unfreeze(layer: midground)\n}\n";
+            assert_eq!(seek_frame(show, 5.0)?, GREEN, "seek into the freeze");
+            assert_eq!(seek_frame(show, 8.5)?, GREEN, "seek after the unfreeze");
+            assert_eq!(seek_frame(show, 9.5)?, DARK, "seek past its end");
+            Ok(())
+        }
+
+        #[test]
+        fn a_seek_counts_the_speed_master_before_it() -> Result<(), Box<dyn Error>> {
+            // #589 C: at half speed a 4 s look lasts 8 s.
+            let show = "show \"a\" {\n    @0.000\n    master(layer: midground, speed: 0.5)\n    \
+                wash: static, color: \"green\", duration: 4s, layer: midground, \
+                blend_mode: replace\n}\n";
+            assert_eq!(played_frame(show, 6.0)?, GREEN);
+            assert_eq!(seek_frame(show, 6.0)?, GREEN, "seek to 6 s");
+            assert_eq!(seek_frame(show, 8.5)?, DARK, "seek past its slowed end");
+            Ok(())
+        }
+
+        #[test]
+        fn a_seek_into_a_freeze_holds_what_it_froze_on() -> Result<(), Box<dyn Error>> {
+            // #589 D: a rainbow frozen 3-6 s held the colour at the seek
+            // point, not the one it froze on.
+            let show = "show \"a\" {\n    @0.000\n    wash: rainbow, speed: 0.2, \
+                duration: 20s, layer: midground\n    @3.000\n    freeze(layer: midground)\n    \
+                @6.000\n    unfreeze(layer: midground)\n}\n";
+            for secs in [5.0, 8.0] {
+                let played = played_frame(show, secs)?;
+                let sought = seek_frame(show, secs)?;
+                let diff = (played.0 - sought.0)
+                    .abs()
+                    .max((played.1 - sought.1).abs())
+                    .max((played.2 - sought.2).abs());
+                assert!(
+                    diff <= 8.0,
+                    "at {secs} s: played {played:?}, sought {sought:?}"
+                );
+            }
+            Ok(())
+        }
+
         #[test]
         fn a_freeze_in_a_seeks_history_holds_at_the_seek_point() -> Result<(), Box<dyn Error>> {
             // A freeze replayed from a seek's history took the song time of

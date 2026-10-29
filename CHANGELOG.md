@@ -128,6 +128,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layer was cut off at its full-speed end. Both now end on the time they play on. An effect cued
   during a freeze now starts from its beginning at the unfreeze, without waiting out the freeze
   again.
+- **A seek counts freezes and the speed master before it (#589)**: a seek, play-from or section
+  loop rebuilt the show from its history on score time alone, so a look frozen for good went dark
+  after a seek past its normal end, a seek into a freeze or into a slowed effect dropped it, and a
+  frozen rainbow held the colour at the seek point rather than the one it froze on. The history now
+  plays its freezes, unfreezes and speed masters as the engine does live.
 - **An effect that has been frozen keeps to the song afterwards**: once unfrozen, a cued effect was
   timed on the lighting engine's own clock, which steps a fixed frame each tick and falls behind
   the song where frames run long, so it ended late -- 100-140 ms after a 5 s freeze on a Pi, and
