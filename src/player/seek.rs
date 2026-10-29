@@ -18,6 +18,7 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use super::{Player, ReactiveLoopState};
+use crate::songs::Song;
 
 /// How long a seek waits for the previous playback to wind down before
 /// abandoning it. Normal wind-down is well under a second; this only fires
@@ -36,6 +37,15 @@ impl Player {
             return Ok(None);
         };
         self.stop_for_pause().await;
+        // Paused on the song's very end: there is nothing left to resume,
+        // so the next play starts it over.
+        if self
+            .get_playlist()
+            .current()
+            .is_some_and(|song| check_start_position(&song, position, "").is_err())
+        {
+            return Ok(Some(position));
+        }
         self.seek_to(position).await?;
         Ok(Some(position))
     }
@@ -55,14 +65,7 @@ impl Player {
             .get_playlist()
             .current()
             .ok_or("Cannot seek: playlist is empty")?;
-        if position > song.length() {
-            return Err(format!(
-                "Cannot seek to {:?}: beyond song length {:?}",
-                position,
-                song.length()
-            )
-            .into());
-        }
+        check_start_position(&song, position, "seek to")?;
 
         // A looping song ending: stopped a moment from now, and nothing to
         // restart.
@@ -164,4 +167,23 @@ impl Player {
     pub(super) fn clear_pending_start(&self) {
         *self.pending_start.lock() = None;
     }
+}
+
+/// Turns down a start position at or past the song's end: audio has nothing
+/// to play there, so playback would fail and the playlist skip the song
+/// (#584). The start of a zero-length song is allowed.
+pub(super) fn check_start_position(
+    song: &Song,
+    position: Duration,
+    action: &str,
+) -> Result<(), String> {
+    if position > Duration::ZERO && position >= song.length() {
+        return Err(format!(
+            "Cannot {} {:?}: at or beyond song length {:?}",
+            action,
+            position,
+            song.length()
+        ));
+    }
+    Ok(())
 }

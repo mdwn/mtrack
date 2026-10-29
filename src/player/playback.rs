@@ -98,6 +98,7 @@ impl Player {
                 return Ok(None);
             }
         };
+        super::seek::check_start_position(&song, start_time, "play from")?;
 
         // Any explicit playback start supersedes a pending seek position, and
         // an auto play waiting to start.

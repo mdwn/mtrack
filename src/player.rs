@@ -2009,6 +2009,42 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn seek_and_play_from_at_or_past_the_end_are_turned_down() -> Result<(), Box<dyn Error>> {
+        // #584: audio has nothing to play at the end, so a start there
+        // failed and the playlist skipped the song.
+        let player = make_test_player().await?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+        let song = player.get_playlist().current().expect("a song");
+        let end = song.length();
+
+        assert!(player.seek_to(end).await.is_err(), "seek to the very end");
+        assert!(player.pending_start().is_none());
+        for start in [end, end + Duration::from_secs(20)] {
+            assert!(
+                player.play_from(start).await.is_err(),
+                "play_from {start:?} on a {end:?} song"
+            );
+        }
+        assert!(!device.is_playing(), "a start past the end played");
+        assert_eq!(
+            player
+                .get_playlist()
+                .current()
+                .map(|s| s.name().to_string()),
+            Some(song.name().to_string()),
+            "the playlist moved on"
+        );
+
+        // Just before the end is still a start.
+        player.seek_to(end - Duration::from_millis(1)).await?;
+        assert_eq!(player.pending_start(), Some(end - Duration::from_millis(1)));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_seek_to_section_unknown_errors() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
 
