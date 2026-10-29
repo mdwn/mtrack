@@ -100,7 +100,10 @@ Either can be a length alone or a map:
 A source part way through a loop crossfade fades out from where it is. A fade that outlasts the
 pass it began in carries on into as many more passes as it takes, crossing pass to pass over the
 song's `loop_crossfade` as its loop does. MIDI from the looping song stops
-at the break. A seek cuts everything, the fading song included.
+at the break. The fading song's lights cross out over whatever plays after them at their own
+length, whatever that does meanwhile -- loops, ends, or breaks out again. A Stop, pause or seek
+cuts the fading song's audio at once; its lights go the rest of the way out over the ambient
+light's `fade_out` (1 s by default), so nothing it lit is left holding.
 
 ### Ending a looping song
 
@@ -151,7 +154,10 @@ songs:
   starting the player.
 - **The gap.** `true` starts the song at once; a length (`2s`, `500ms`, or a bare number of
   seconds) waits that long first. The song before it holds its lights through the gap, as a
-  segue. Play, Stop, Next, Previous or a playlist switch during the gap calls it off.
+  segue -- unless ambient light is Off, which is dark between songs: then they fade to dark over
+  its `fade_out`, as at any other end (with no gap, the song crosses in from them over it, as
+  after a Stop), and setting Off during a gap takes them dark too. Play,
+  Stop, Next, Previous or a playlist switch during the gap calls it off.
 - **The end of the list.** Next on the last song does not move, so does not start it again.
 - A song that failed does not lead into one that auto plays.
 - **Seeing it coming.** While a gap runs, the dashboard's playback card counts it down

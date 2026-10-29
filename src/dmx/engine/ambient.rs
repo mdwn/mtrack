@@ -245,7 +245,8 @@ impl Overlay {
     fn apply(&mut self, updates: &mut impl Iterator<Item = OverlayUpdate>) {
         if let Some(OverlayUpdate { restart, update }) = updates.next() {
             if let Some(restart) = restart {
-                self.engine.stop_all_effects();
+                // Its own show only: the MIDI DMX store is every engine's.
+                self.engine.stop_show_effects();
                 apply_update(&mut self.engine, restart);
             }
             apply_update(&mut self.engine, update);
@@ -347,24 +348,21 @@ impl Engine {
         match (state.mode, state.phase, loaded) {
             (AmbientMode::Off, _, loaded) => {
                 // Off is dark between songs: what the last song left fades
-                // out rather than holding (#570) -- unless a fade is already
-                // taking it to dark, as a graceful ending's does, which goes
-                // on at its own length (#571).
-                let fading = self
-                    .outgoing_pass
-                    .lock()
+                // out rather than holding (#570). A loop break's fade going
+                // out over it -- a graceful ending's, or a vamp's under the
+                // song stopped -- goes on at its own length (#571), since it
+                // crosses out over everything after it.
+                let fade = loaded
                     .as_ref()
-                    .is_some_and(|pass| pass.is_break_fade());
-                if fading {
-                    state.under_dark = true;
-                }
-                if !state.under_dark {
-                    let fade = loaded
-                        .as_ref()
-                        .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
-                            a.settings.fade_out
-                        });
-                    self.darken_under(fade);
+                    .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
+                        a.settings.fade_out
+                    });
+                if state.under_dark {
+                    // Already dark under: what ambient at full left as it
+                    // was, if anything, goes now.
+                    self.fade_out_stale(fade);
+                } else {
+                    self.darken_under(fade, true);
                     state.under_dark = true;
                 }
                 state.phase = Phase::Off;
@@ -403,9 +401,11 @@ impl Engine {
         }
     }
 
-    /// A stop cuts an ending short: its lights go the rest of the way to
-    /// dark over ambient's `fade_out`, if that is sooner (#572).
-    pub fn cut_ending_lights(&self) {
+    /// A stop, pause or seek cuts a loop break's fade short: the looping
+    /// song's lights go the rest of the way out over ambient's `fade_out`,
+    /// if that is sooner, rather than holding what they lit that nothing
+    /// after them does (#572).
+    pub fn cut_break_fade_lights(&self) {
         let fade = self
             .ambient
             .lock()
@@ -455,6 +455,19 @@ impl Engine {
             }
             AmbientMode::Off => {
                 self.lower_overlay(&mut state, now);
+                // Between songs with no ambient up -- still waiting out its
+                // delay, or none to play -- the last song's frame goes dark
+                // too, as Off is.
+                if !state.song_lit && !state.under_dark {
+                    let fade = state
+                        .ambient
+                        .as_ref()
+                        .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
+                            a.settings.fade_out
+                        });
+                    self.darken_under(fade, true);
+                    state.under_dark = true;
+                }
                 state.phase = Phase::Off;
             }
             AmbientMode::Auto if state.song_lit => {
@@ -468,6 +481,12 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// Whether the stage has gone dark between songs.
+    #[cfg(test)]
+    pub(crate) fn gone_dark(&self) -> bool {
+        self.ambient.lock().under_dark
     }
 
     /// Ambient light's mode.
@@ -536,7 +555,10 @@ impl Engine {
                 .as_ref()
                 .is_some_and(|o| o.level.at(now) >= 1.0);
             if full {
-                self.darken_under(Duration::ZERO);
+                // A loop break's fade going out goes on at its own length:
+                // ambient covers only what it lights, and what it does not
+                // is still fading in view.
+                self.darken_under(Duration::ZERO, false);
                 state.under_dark = true;
             }
         }
@@ -610,19 +632,82 @@ impl Engine {
             o.level.toward(now, 0.0, fade);
             fade
         };
-        if !state.song_lit && !state.under_dark {
-            self.darken_under(fade);
-            state.under_dark = true;
+        if !state.song_lit {
+            if state.under_dark {
+                // Ambient at full left what it does not light as it was;
+                // with ambient going, that goes too.
+                self.fade_out_stale(fade);
+            } else {
+                self.darken_under(fade, true);
+                state.under_dark = true;
+            }
         }
     }
 
     /// Fades the main engine to dark over `fade`: whatever the last song
     /// left -- its show, file watcher, MIDI DMX and tempo -- is done with.
-    fn darken_under(&self, fade: Duration) {
-        self.begin_break_fade(fade);
+    fn darken_under(&self, fade: Duration, to_dark: bool) {
+        // Going dark, what the rig holds lit that the last frame did not
+        // write -- left by effects that ended, which nothing writes again --
+        // fades out with the rest (#573). Under ambient at full it stays as
+        // it was, what ambient does not light still in view.
+        // MIDI DMX playback stops first, so nothing it writes after
+        // relights what fades.
         self.watcher_handle.lock().take();
         self.midi_dmx_playbacks.lock().clear();
+        let floor = if to_dark {
+            self.dark_floor(fade)
+        } else {
+            Vec::new()
+        };
+        // Nothing lit, nothing to fade: a fade over nothing would only cross
+        // the next song in from black.
+        let lit = !self.effect_engine.lock().last_commands().is_empty();
+        if lit || !floor.is_empty() {
+            self.begin_break_fade_over(fade, floor);
+        }
         self.effect_engine.lock().set_tempo_map(None);
+    }
+
+    /// Fades out over `fade` what the rig holds lit that nothing writes any
+    /// more, under a stage already dark otherwise.
+    fn fade_out_stale(&self, fade: Duration) {
+        let floor = self.dark_floor(fade);
+        if !floor.is_empty() {
+            self.begin_break_fade_over(fade, floor);
+        }
+    }
+
+    /// What going dark has to fade out besides the engine's own effects:
+    /// channels the rig holds lit that the last frame did not write, as it
+    /// shows them. A position (pan, tilt) is left out: a fade holds it
+    /// rather than taking it dark, so it would only come back as stale
+    /// again. What MIDI DMX holds through the store fades in the store
+    /// itself, over the same `fade`.
+    fn dark_floor(&self, fade: Duration) -> Vec<crate::lighting::effects::DmxCommand> {
+        let written = self.last_written.lock().clone();
+        let positions = self.effect_engine.lock().position_channels();
+        let floor = self
+            .universes
+            .iter()
+            .flat_map(|(&universe, u)| {
+                u.lit_channels().into_iter().map(move |(channel, value)| {
+                    crate::lighting::effects::DmxCommand {
+                        universe,
+                        channel,
+                        value,
+                    }
+                })
+            })
+            .filter(|c| {
+                let at = (c.universe, c.channel);
+                !positions.contains(&at) && !written.contains(&at)
+            })
+            .collect();
+        self.midi_dmx_store
+            .read()
+            .fade_out(fade.as_secs_f64() * crate::dmx::universe::TARGET_HZ);
+        floor
     }
 
     /// Moves the overlay's time on and starts what its timeline fires, its
@@ -819,6 +904,8 @@ mod tests {
         "show \"ambient\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 60s\n}\n";
     const RED: &str =
         "show \"song\" {\n    @0.000\n    wash: static, color: \"red\", duration: 60s\n}\n";
+    const SPOT_ONLY: &str =
+        "show \"song\" {\n    @0.000\n    spot: static, color: \"blue\", duration: 60s\n}\n";
     const GREEN: &str =
         "show \"song\" {\n    @0.000\n    wash: static, color: \"green\", duration: 60s\n}\n";
 
@@ -1088,6 +1175,948 @@ mod tests {
         Ok(())
     }
 
+    /// Patches a spot at channels 4-6 of universe 5, beside the wash.
+    fn add_spot(engine: &Engine) {
+        let mut channels = std::collections::HashMap::new();
+        for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+            channels.insert(name.to_string(), offset);
+        }
+        engine
+            .effect_engine
+            .lock()
+            .register_fixture(crate::lighting::effects::FixtureInfo::new(
+                "spot".to_string(),
+                5,
+                4,
+                "Generic".to_string(),
+                channels,
+                None,
+            ));
+    }
+
+    /// The spot's red, which only the vamp lights.
+    fn spot_red(engine: &Engine) -> f64 {
+        engine.get_universe(5).unwrap().get_target_value(3)
+    }
+
+    const VAMP: &str = "show \"song\" {\n    @0.000\n    wash: static, color: \"red\", duration: 60s\n    spot: static, color: \"red\", duration: 60s\n}\n";
+
+    /// A vamp lighting wash and spot breaks out into GREEN, which lights
+    /// only the wash, its fade still running at `secs` into GREEN.
+    fn vamp_into_green(engine: &Engine) {
+        add_spot(engine);
+        start_song(engine, VAMP);
+        song_frame(engine, 0.5);
+        assert_eq!(spot_red(engine), 255.0);
+        engine.begin_break_fade(Duration::from_secs(10));
+        engine.stop_lighting_timeline();
+        start_song(engine, GREEN);
+        song_frame(engine, 0.5);
+        sleep(Duration::from_millis(200));
+        song_frame(engine, 0.7);
+        assert!(spot_red(engine) > 200.0, "the vamp still fading");
+    }
+
+    #[test]
+    fn a_stop_under_a_break_fade_leaves_nothing_lit() -> Result<(), Box<dyn Error>> {
+        // A Stop while the vamp still faded under the next song dropped its
+        // fade: the spot, which the next song does not light, held.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        // Ambient's settings loaded, as at the player's startup, and its
+        // dark fade over.
+        engine.idle_ambient(None, false);
+        tick(&engine);
+        sleep(Duration::from_millis(150));
+        tick(&engine);
+        vamp_into_green(&engine);
+        engine.stop_lighting_timeline();
+        engine.cut_break_fade_lights();
+        engine.idle_ambient(None, true);
+        tick(&engine);
+        sleep(Duration::from_millis(300));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0), "the wash dark");
+        assert_eq!(spot_red(&engine), 0.0, "the spot dark too");
+        Ok(())
+    }
+
+    #[test]
+    fn a_seek_under_a_break_fade_lets_the_vamp_go() -> Result<(), Box<dyn Error>> {
+        // The same for a seek in the next song: it plays on, the vamp's
+        // spot must not hold.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        vamp_into_green(&engine);
+        engine.stop_lighting_timeline();
+        engine.cut_break_fade_lights();
+        start_song(&engine, GREEN);
+        song_frame(&engine, 2.0);
+        // Ambient's settings unloaded: the default fade_out, a second.
+        sleep(Duration::from_millis(1100));
+        assert_eq!(
+            song_frame(&engine, 3.1),
+            (0.0, 255.0, 0.0),
+            "the song plays"
+        );
+        assert_eq!(spot_red(&engine), 0.0, "the vamp gone");
+        Ok(())
+    }
+
+    #[test]
+    fn a_song_ending_under_a_break_fade_lets_that_fade_run_its_length() -> Result<(), Box<dyn Error>>
+    {
+        // With the mode Off, the song going dark as it ended took the vamp's
+        // fade under it dark at the same short pace.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        vamp_into_green(&engine);
+        // GREEN ends by itself, the vamp still 10 s from out.
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        tick(&engine);
+        sleep(Duration::from_millis(400));
+        let (_, green, _) = tick(&engine);
+        assert_eq!(green, 0.0, "the song gone dark");
+        assert!(spot_red(&engine) > 200.0, "the vamp still at its own pace");
+        Ok(())
+    }
+
+    #[test]
+    fn a_loop_crossfade_under_a_break_fade_keeps_it() -> Result<(), Box<dyn Error>> {
+        // The next song looping with a crossfade dropped the vamp's fade
+        // under it, and what only the vamp lit held.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        vamp_into_green(&engine);
+        let before = spot_red(&engine);
+        engine.begin_loop_crossfade(
+            Some(timeline(GREEN)),
+            Duration::from_secs(1),
+            Duration::from_millis(100),
+        );
+        song_frame(&engine, 0.05);
+        song_frame(&engine, 0.3);
+        sleep(Duration::from_millis(300));
+        song_frame(&engine, 0.6);
+        let after = spot_red(&engine);
+        assert!(
+            after < before && after > 150.0,
+            "fading on: {before} -> {after}"
+        );
+        assert!(
+            engine.get_universe(5).unwrap().get_target_value(1) > 0.0,
+            "the song plays"
+        );
+        Ok(())
+    }
+
+    /// Patches a mover with a pan channel at channel 7 of universe 5.
+    fn add_mover(engine: &Engine) {
+        engine
+            .effect_engine
+            .lock()
+            .register_fixture(crate::lighting::effects::FixtureInfo::new(
+                "mover".to_string(),
+                5,
+                7,
+                "Generic".to_string(),
+                std::collections::HashMap::from([("pan".to_string(), 1)]),
+                None,
+            ));
+    }
+
+    fn pan(engine: &Engine) -> f64 {
+        engine.get_universe(5).unwrap().get_target_value(6)
+    }
+
+    /// A show that pans the mover to `value`.
+    fn pan_show(value: &str) -> String {
+        format!(
+            "show \"song\" {{\n    @0.000\n    mover: static, pan: {value}, duration: 60s\n}}\n"
+        )
+    }
+
+    /// Renders frames for `secs`, asserting the mover's pan never steps
+    /// further than its slowest fade could carry it in the time between
+    /// two frames (`per_sec`), plus a little: a stalled machine waits
+    /// longer between frames, not a jump.
+    fn assert_pan_glides(engine: &Engine, secs: f64, per_sec: f64) {
+        let started = std::time::Instant::now();
+        let mut last = (pan(engine), std::time::Instant::now());
+        let mut song = engine.get_song_time().as_secs_f64();
+        while started.elapsed().as_secs_f64() < secs {
+            sleep(Duration::from_millis(20));
+            song += 0.02;
+            song_frame(engine, song);
+            let now = (pan(engine), std::time::Instant::now());
+            let step = (now.0 - last.0).abs();
+            let allowed = 6.0 + per_sec * now.1.duration_since(last.1).as_secs_f64();
+            assert!(step <= allowed, "pan stepped {} to {}", last.0, now.0);
+            last = now;
+        }
+    }
+
+    #[test]
+    fn a_shorter_fade_ending_first_does_not_jump_a_mover() -> Result<(), Box<dyn Error>> {
+        // A mover's pan, held by a newer fade that ended before an older
+        // one, jumped as that newer fade went.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_mover(&engine);
+        // A pans to 80%, then breaks into B (20%) over 2 s; B breaks into
+        // GREEN, which does not drive the mover, over 300 ms.
+        start_song(&engine, &pan_show("80%"));
+        song_frame(&engine, 0.5);
+        assert_eq!(pan(&engine), 204.0);
+        engine.begin_break_fade(Duration::from_secs(2));
+        engine.stop_lighting_timeline();
+        start_song(&engine, &pan_show("20%"));
+        song_frame(&engine, 0.1);
+        sleep(Duration::from_millis(200));
+        song_frame(&engine, 0.3);
+        engine.begin_break_fade(Duration::from_millis(300));
+        engine.stop_lighting_timeline();
+        start_song(&engine, GREEN);
+        // The 300 ms fade moves it fastest: 153 over 0.3 s.
+        assert_pan_glides(&engine, 0.8, 520.0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_loop_pass_going_under_a_fade_does_not_jump_a_mover() -> Result<(), Box<dyn Error>> {
+        // A looping song's pass going under an older fade -- its crossfade
+        // over, or cut short by another break, the next pass, a stop or a
+        // seek -- jumped the pan it held. Held, it fires no more cues: B's
+        // at 5 s would pan the mover to 0.
+        let b = "show \"song\" {\n    @0.000\n    mover: static, pan: 20%, duration: 60s\n    @5.000\n    mover: static, pan: 0%, duration: 60s\n}\n";
+        for next in ["end", "break", "pass", "stop", "seek"] {
+            let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+            add_mover(&engine);
+            start_song(&engine, &pan_show("80%"));
+            song_frame(&engine, 0.5);
+            engine.begin_break_fade(Duration::from_secs(3));
+            engine.stop_lighting_timeline();
+            start_song(&engine, b);
+            song_frame(&engine, 0.1);
+            // A third of the way out, A and B are well apart.
+            sleep(Duration::from_millis(1000));
+            song_frame(&engine, 1.1);
+            // B loops into a pass that does not drive the mover, over 500 ms;
+            // only the 3 s fade moves the pan meanwhile (153 over 3 s).
+            engine.begin_loop_crossfade(
+                Some(timeline(GREEN)),
+                Duration::from_secs(1),
+                Duration::from_millis(500),
+            );
+            assert_pan_glides(&engine, 0.15, 100.0);
+            match next {
+                "end" => {}
+                "break" => {
+                    engine.begin_break_fade(Duration::from_millis(300));
+                    engine.stop_lighting_timeline();
+                    start_song(&engine, GREEN);
+                }
+                "pass" => engine.begin_loop_crossfade(
+                    Some(timeline(GREEN)),
+                    Duration::from_secs(1),
+                    Duration::from_millis(500),
+                ),
+                "stop" => engine.stop_lighting_timeline(),
+                _ => {
+                    engine.update_song_time(Duration::from_secs(10));
+                    engine.start_lighting_timeline_at(Duration::from_secs(10));
+                }
+            }
+            assert_pan_glides(&engine, 0.8, 100.0);
+            // B's 0% cue would leave it near 70; the fade alone, past 100.
+            assert!(pan(&engine) > 85.0, "{next}: no cue of B's fired");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_loop_pass_going_before_its_first_frame_does_not_jump_a_mover() -> Result<(), Box<dyn Error>>
+    {
+        // A pass set aside before it had rendered held an empty frame, and
+        // the pan it drove fell through to the older fade's.
+        for next in ["pass", "stop"] {
+            let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+            add_mover(&engine);
+            start_song(&engine, &pan_show("80%"));
+            song_frame(&engine, 0.5);
+            engine.begin_break_fade(Duration::from_secs(3));
+            engine.stop_lighting_timeline();
+            start_song(&engine, &pan_show("20%"));
+            song_frame(&engine, 0.1);
+            sleep(Duration::from_millis(1000));
+            song_frame(&engine, 1.1);
+            let before = pan(&engine);
+            engine.begin_loop_crossfade(
+                Some(timeline(GREEN)),
+                Duration::from_secs(1),
+                Duration::from_millis(500),
+            );
+            match next {
+                "pass" => engine.begin_loop_crossfade(
+                    Some(timeline(GREEN)),
+                    Duration::from_secs(1),
+                    Duration::from_millis(500),
+                ),
+                _ => engine.stop_lighting_timeline(),
+            }
+            song_frame(&engine, 0.02);
+            let after = pan(&engine);
+            assert!((after - before).abs() < 10.0, "{next}: {before} -> {after}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_inner_pass_over_inside_a_fade_is_held() -> Result<(), Box<dyn Error>> {
+        // A loop break during a crossfade between passes keeps the older
+        // pass crossing inside the fade (#560); its crossfade over, it
+        // stops rendering and holds its last frame.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        start_song(&engine, RED);
+        song_frame(&engine, 0.5);
+        engine.begin_loop_crossfade(
+            Some(timeline(GREEN)),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        song_frame(&engine, 0.05);
+        engine.begin_break_fade(Duration::from_secs(5));
+        engine.stop_lighting_timeline();
+        start_song(&engine, BLUE);
+        let inner_held = |engine: &Engine| {
+            engine.break_fades.lock()[0]
+                .inner
+                .as_ref()
+                .map(|inner| inner.held)
+        };
+        song_frame(&engine, 0.01);
+        assert_eq!(inner_held(&engine), Some(false), "still crossing");
+        sleep(Duration::from_millis(1200));
+        song_frame(&engine, 1.2);
+        assert_eq!(inner_held(&engine), Some(true), "over, and held");
+        Ok(())
+    }
+
+    #[test]
+    fn a_merged_held_pass_shows_what_it_sends() -> Result<(), Box<dyn Error>> {
+        // Two held passes merged into one showed the older one's pan while
+        // the rig got the newer one's.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_mover(&engine);
+        start_song(&engine, &pan_show("80%"));
+        song_frame(&engine, 0.5);
+        engine.begin_break_fade(Duration::from_secs(2));
+        engine.stop_lighting_timeline();
+        start_song(&engine, &pan_show("20%"));
+        song_frame(&engine, 0.1);
+        // B's pass (20%) goes into one at 50%, which goes into GREEN.
+        for next in [pan_show("50%"), GREEN.to_string()] {
+            engine.begin_loop_crossfade(
+                Some(timeline(&next)),
+                Duration::from_secs(1),
+                Duration::from_millis(50),
+            );
+            song_frame(&engine, 0.01);
+            song_frame(&engine, 0.2);
+        }
+        assert_eq!(engine.break_fades.lock().len(), 2);
+        // Half way out, the held pan (50%) shows through A's (80%).
+        sleep(Duration::from_millis(800));
+        song_frame(&engine, 1.0);
+        let sent = pan(&engine);
+        assert!(sent < 190.0, "the held pass shows through: {sent}");
+        let shown =
+            engine.effect_engine.lock().shown_fixture_states()["mover"].channels["pan"].value;
+        assert!(
+            (shown * 255.0 - sent).abs() < 3.0,
+            "shows {} but sends {sent}",
+            shown * 255.0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_fade_over_under_an_older_one_fires_no_more_cues() -> Result<(), Box<dyn Error>> {
+        // A fade that was over, kept for an older one still going out, went
+        // on playing its song's show: B's cue at 1 s moved the mover under
+        // A's fade long after B had faded out.
+        let b = "show \"song\" {\n    @0.000\n    mover: static, pan: 20%, duration: 60s\n    @1.000\n    mover: static, pan: 0%, duration: 60s\n}\n";
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_mover(&engine);
+        start_song(&engine, &pan_show("80%"));
+        song_frame(&engine, 0.5);
+        engine.begin_break_fade(Duration::from_secs(6));
+        engine.stop_lighting_timeline();
+        start_song(&engine, b);
+        song_frame(&engine, 0.1);
+        engine.begin_break_fade(Duration::from_millis(300));
+        engine.stop_lighting_timeline();
+        start_song(&engine, GREEN);
+        // Past B's fade and its cue: only A's 6 s fade moves the pan.
+        assert_pan_glides(&engine, 1.5, 100.0);
+        let fades = engine.break_fades.lock();
+        assert_eq!(fades.len(), 2);
+        assert!(fades[1].held, "B's fade, over, is held");
+        Ok(())
+    }
+
+    #[test]
+    fn a_song_looping_under_a_long_fade_adds_one_held_layer() -> Result<(), Box<dyn Error>> {
+        // Each pass that went under the fade stacked another layer, every
+        // one rendering a whole engine each frame until the fade was out.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_mover(&engine);
+        start_song(&engine, &pan_show("80%"));
+        song_frame(&engine, 0.5);
+        engine.begin_break_fade(Duration::from_secs(30));
+        engine.stop_lighting_timeline();
+        start_song(&engine, &pan_show("20%"));
+        song_frame(&engine, 0.1);
+        for _ in 0..10 {
+            engine.begin_loop_crossfade(
+                Some(timeline(GREEN)),
+                Duration::from_secs(1),
+                Duration::from_millis(50),
+            );
+            song_frame(&engine, 0.01);
+            song_frame(&engine, 0.2);
+        }
+        let fades = engine.break_fades.lock();
+        assert_eq!(fades.len(), 2, "the fade, and one held pass");
+        assert!(fades[1].held);
+        Ok(())
+    }
+
+    #[test]
+    fn a_show_over_before_its_song_still_goes_dark_while_off() -> Result<(), Box<dyn Error>> {
+        // #573: a show whose effects had all ended left their last frame on
+        // the rig -- nothing writes a channel no effect drives, and the
+        // engine darkened had nothing left to fade.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        engine.idle_ambient(None, false);
+        tick(&engine);
+        sleep(Duration::from_millis(150));
+        tick(&engine);
+        start_song(
+            &engine,
+            "show \"song\" {\n    @0.000\n    wash: static, color: \"red\", duration: 200ms\n}\n",
+        );
+        assert_eq!(song_frame(&engine, 0.1), (255.0, 0.0, 0.0));
+        // The effect is over; the rig holds its frame, as it does between
+        // cues.
+        assert_eq!(song_frame(&engine, 0.5), (255.0, 0.0, 0.0));
+        // The song ends.
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        tick(&engine);
+        sleep(Duration::from_millis(300));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0), "dark over fade_out");
+        Ok(())
+    }
+
+    #[test]
+    fn what_ambient_left_unlit_goes_dark_when_it_leaves() -> Result<(), Box<dyn Error>> {
+        // Ambient at full leaves what it does not light as it was; when it
+        // then went (the mode set Off), that stayed lit for good.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "100ms", "100ms"))?;
+        add_spot(&engine);
+        start_song(
+            &engine,
+            "show \"song\" {\n    @0.000\n    spot: static, color: \"red\", duration: 200ms\n}\n",
+        );
+        song_frame(&engine, 0.1);
+        song_frame(&engine, 0.5);
+        assert_eq!(spot_red(&engine), 255.0, "held after its effect");
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        for _ in 0..3 {
+            tick(&engine);
+            sleep(Duration::from_millis(100));
+        }
+        tick(&engine);
+        assert_eq!(engine.ambient_report().state, "playing");
+        assert_eq!(spot_red(&engine), 255.0, "left as it was under ambient");
+        engine.set_ambient_mode(AmbientMode::Off);
+        tick(&engine);
+        sleep(Duration::from_millis(300));
+        tick(&engine);
+        assert_eq!(spot_red(&engine), 0.0, "dark once ambient has gone");
+        Ok(())
+    }
+
+    #[test]
+    fn a_held_position_does_not_stack_dark_fades() -> Result<(), Box<dyn Error>> {
+        // A mover's pan the rig held with nothing writing it read as stale
+        // at every idle; no fade takes a position dark, so each pushed a
+        // fade that crossed the next song in from black.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        add_mover(&engine);
+        engine.idle_ambient(None, false);
+        tick(&engine);
+        sleep(Duration::from_millis(150));
+        tick(&engine);
+        assert!(engine.break_fades.lock().is_empty());
+        // The pan held, nothing writing it.
+        engine
+            .get_universe(5)
+            .unwrap()
+            .update_effect_commands(vec![(7, 127)]);
+        tick(&engine);
+        assert_eq!(pan(&engine), 127.0);
+        // Idle again, as a Stop while stopped is.
+        engine.idle_ambient(None, true);
+        assert!(engine.break_fades.lock().is_empty(), "nothing to fade");
+        start_song(&engine, RED);
+        assert_eq!(
+            song_frame(&engine, 0.1),
+            (255.0, 0.0, 0.0),
+            "no fade in from black"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn midi_dmx_through_the_store_goes_dark_while_off() -> Result<(), Box<dyn Error>> {
+        // A patched channel MIDI DMX held went on being written from the
+        // store after the stage went dark.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        {
+            let mut store = engine.midi_dmx_store.write();
+            store.register_slot(5, 1, "wash", "red");
+            store.register_universe(5);
+        }
+        {
+            let mut main = engine.effect_engine.lock();
+            main.set_midi_dmx_store(engine.midi_dmx_store.clone());
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            main.register_fixture(crate::lighting::effects::FixtureInfo::new(
+                "wash".to_string(),
+                5,
+                1,
+                "Generic".to_string(),
+                channels,
+                None,
+            ));
+        }
+        // A song lighting only the spot: the wash is MIDI DMX's alone.
+        add_spot(&engine);
+        start_song(
+            &engine,
+            "show \"song\" {\n    @0.000\n    spot: static, color: \"blue\", duration: 60s\n}\n",
+        );
+        // NoteOn key 0 is DMX channel 1, the wash's red; velocity 127, 254.
+        engine.handle_midi_event_by_id(
+            5,
+            midly::MidiMessage::NoteOn {
+                key: 0.into(),
+                vel: 127.into(),
+            },
+        );
+        engine.midi_dmx_store.read().tick();
+        assert_eq!(song_frame(&engine, 0.1).0, 254.0);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        // The store fades frame by frame: 100 ms is under five.
+        for _ in 0..8 {
+            tick(&engine);
+            sleep(Duration::from_millis(25));
+        }
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0), "dark over fade_out");
+        Ok(())
+    }
+
+    #[test]
+    fn off_during_ambients_delay_goes_dark() -> Result<(), Box<dyn Error>> {
+        // Off set while ambient still waited out its delay left the last
+        // song's frame on, there being no ambient yet to take down.
+        let (_dir, engine) = ambient_engine(BLUE, ("10s", "100ms", "100ms"))?;
+        start_song(&engine, RED);
+        song_frame(&engine, 0.5);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        tick(&engine);
+        assert_eq!(engine.ambient_report().state, "pending");
+        engine.set_ambient_mode(AmbientMode::Off);
+        tick(&engine);
+        sleep(Duration::from_millis(300));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn a_patched_channel_under_an_older_fade_is_not_floored() -> Result<(), Box<dyn Error>> {
+        // Every patched channel has a MIDI DMX store slot, MIDI or not;
+        // going dark floored them all at their value, and one an older fade
+        // was still taking out came back up under it.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        {
+            let mut store = engine.midi_dmx_store.write();
+            for (channel, name) in [(4, "red"), (5, "green"), (6, "blue")] {
+                store.register_slot(5, channel, "spot", name);
+            }
+            store.register_universe(5);
+        }
+        engine
+            .effect_engine
+            .lock()
+            .set_midi_dmx_store(engine.midi_dmx_store.clone());
+        add_spot(&engine);
+        start_song(&engine, VAMP);
+        song_frame(&engine, 0.5);
+        engine.begin_break_fade(Duration::from_secs(2));
+        engine.stop_lighting_timeline();
+        start_song(&engine, GREEN);
+        song_frame(&engine, 0.1);
+        sleep(Duration::from_millis(1000));
+        song_frame(&engine, 1.1);
+        let before = spot_red(&engine);
+        // GREEN ends, the vamp's spot half way out. Through the dark fade
+        // (100 ms), the spot only goes on down.
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        let mut last = before;
+        for _ in 0..6 {
+            tick(&engine);
+            let now = spot_red(&engine);
+            assert!(now <= last, "the spot went on down: {last} -> {now}");
+            last = now;
+            sleep(Duration::from_millis(25));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_midi_held_channel_under_an_older_fade_does_not_jump() -> Result<(), Box<dyn Error>> {
+        // A channel MIDI DMX drove, under an older fade still taking it
+        // out, was floored at what the rig showed -- the fade's blend
+        // already -- and that fade crossed over it again: it jumped up.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        {
+            let mut store = engine.midi_dmx_store.write();
+            for (channel, name) in [(4, "red"), (5, "green"), (6, "blue")] {
+                store.register_slot(5, channel, "spot", name);
+            }
+            store.register_universe(5);
+        }
+        engine
+            .effect_engine
+            .lock()
+            .set_midi_dmx_store(engine.midi_dmx_store.clone());
+        add_spot(&engine);
+        start_song(&engine, VAMP);
+        song_frame(&engine, 0.5);
+        engine.begin_break_fade(Duration::from_secs(2));
+        engine.stop_lighting_timeline();
+        start_song(&engine, GREEN);
+        song_frame(&engine, 0.1);
+        sleep(Duration::from_millis(1000));
+        // MIDI DMX sets the spot's red to 20 (NoteOn key 3 is channel 4).
+        engine.handle_midi_event_by_id(
+            5,
+            midly::MidiMessage::NoteOn {
+                key: 3.into(),
+                vel: 10.into(),
+            },
+        );
+        engine.midi_dmx_store.read().tick();
+        song_frame(&engine, 1.1);
+        let before = spot_red(&engine);
+        // GREEN ends: through the dark fade the spot only goes on down.
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        let mut last = before;
+        for _ in 0..6 {
+            tick(&engine);
+            let now = spot_red(&engine);
+            assert!(now <= last + 1.0, "the spot went on down: {last} -> {now}");
+            last = now;
+            sleep(Duration::from_millis(25));
+        }
+        Ok(())
+    }
+
+    /// MIDI DMX on the wash's red through the store, held at 200.
+    fn midi_red_200(engine: &Engine) {
+        {
+            let mut store = engine.midi_dmx_store.write();
+            for (channel, name) in [(1, "red"), (2, "green"), (3, "blue")] {
+                store.register_slot(5, channel, "wash", name);
+            }
+            store.register_universe(5);
+        }
+        let mut main = engine.effect_engine.lock();
+        main.set_midi_dmx_store(engine.midi_dmx_store.clone());
+        let mut channels = std::collections::HashMap::new();
+        for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+            channels.insert(name.to_string(), offset);
+        }
+        main.register_fixture(crate::lighting::effects::FixtureInfo::new(
+            "wash".to_string(),
+            5,
+            1,
+            "Generic".to_string(),
+            channels,
+            None,
+        ));
+    }
+
+    fn send_red_200(engine: &Engine) {
+        engine.handle_midi_event_by_id(
+            5,
+            midly::MidiMessage::NoteOn {
+                key: 0.into(),
+                vel: 100.into(),
+            },
+        );
+        engine.midi_dmx_store.read().tick();
+    }
+
+    fn wash_red(engine: &Engine) -> f64 {
+        engine.get_universe(5).unwrap().get_target_value(0)
+    }
+
+    /// Renders frames 20 ms apart for `frames`, asserting the wash's red
+    /// only goes down, by no more than a 500 ms fade would in a frame.
+    fn assert_red_fades(engine: &Engine, frames: usize) {
+        let mut last = wash_red(engine);
+        for _ in 0..frames {
+            sleep(Duration::from_millis(20));
+            tick(engine);
+            let now = wash_red(engine);
+            assert!(
+                now <= last + 1.0 && last - now < 30.0,
+                "red {last} -> {now}"
+            );
+            last = now;
+        }
+    }
+
+    #[test]
+    fn midi_dmx_under_ambient_fades_as_ambient_goes() -> Result<(), Box<dyn Error>> {
+        // Ambient's engine renders the store too: clearing it cut the MIDI
+        // DMX ambient was showing -- the spot's, which ambient does not
+        // light -- to black at once.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "50ms", "500ms"))?;
+        add_spot(&engine);
+        {
+            let mut store = engine.midi_dmx_store.write();
+            for (channel, name) in [(4, "red"), (5, "green"), (6, "blue")] {
+                store.register_slot(5, channel, "spot", name);
+            }
+            store.register_universe(5);
+        }
+        engine
+            .effect_engine
+            .lock()
+            .set_midi_dmx_store(engine.midi_dmx_store.clone());
+        engine.idle_ambient(None, false);
+        // NoteOn key 3 is channel 4, the spot's red; velocity 100, 200.
+        engine.handle_midi_event_by_id(
+            5,
+            midly::MidiMessage::NoteOn {
+                key: 3.into(),
+                vel: 100.into(),
+            },
+        );
+        for _ in 0..6 {
+            tick(&engine);
+            sleep(Duration::from_millis(20));
+        }
+        assert_eq!(engine.ambient_report().state, "playing");
+        assert_eq!(spot_red(&engine), 200.0);
+        engine.set_ambient_mode(AmbientMode::Off);
+        let mut last = spot_red(&engine);
+        for _ in 0..40 {
+            sleep(Duration::from_millis(20));
+            tick(&engine);
+            let now = spot_red(&engine);
+            assert!(
+                now <= last + 1.0 && last - now < 30.0,
+                "red {last} -> {now}"
+            );
+            last = now;
+        }
+        assert_eq!(spot_red(&engine), 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn midi_dmx_under_an_older_fade_fades_without_a_step() -> Result<(), Box<dyn Error>> {
+        // An older fade's engine renders the store too: clearing it took
+        // that side of its crossfade away at once, and the channel stepped.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "500ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        add_spot(&engine);
+        midi_red_200(&engine);
+        start_song(&engine, SPOT_ONLY);
+        send_red_200(&engine);
+        song_frame(&engine, 0.5);
+        engine.begin_break_fade(Duration::from_secs(2));
+        engine.stop_lighting_timeline();
+        start_song(&engine, SPOT_ONLY);
+        send_red_200(&engine);
+        song_frame(&engine, 0.1);
+        sleep(Duration::from_millis(500));
+        song_frame(&engine, 0.6);
+        assert_eq!(wash_red(&engine), 200.0);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        assert_red_fades(&engine, 40);
+        assert_eq!(wash_red(&engine), 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn midi_dmx_goes_dark_when_the_stage_darkens_before_a_frame() -> Result<(), Box<dyn Error>> {
+        // Gone dark before the engine swapped in had rendered, the channel
+        // MIDI DMX held was left out and stayed lit.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        add_spot(&engine);
+        midi_red_200(&engine);
+        start_song(&engine, SPOT_ONLY);
+        send_red_200(&engine);
+        song_frame(&engine, 0.5);
+        assert_eq!(wash_red(&engine), 200.0);
+        engine.begin_break_fade(Duration::from_millis(100));
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        for _ in 0..30 {
+            tick(&engine);
+            sleep(Duration::from_millis(20));
+        }
+        assert_eq!(wash_red(&engine), 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn midi_dmx_fading_out_finishes_under_the_next_song() -> Result<(), Box<dyn Error>> {
+        // The next song's start clears the store: a slot still fading out
+        // went inactive, nothing wrote it again, and the rig held it.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "1s"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        add_spot(&engine);
+        midi_red_200(&engine);
+        start_song(&engine, SPOT_ONLY);
+        send_red_200(&engine);
+        song_frame(&engine, 0.5);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        for _ in 0..20 {
+            tick(&engine);
+        }
+        let mid = wash_red(&engine);
+        assert!(mid > 0.0 && mid < 200.0, "part way: {mid}");
+        start_song(&engine, SPOT_ONLY);
+        for i in 0..60 {
+            song_frame(&engine, 0.02 * f64::from(i));
+        }
+        assert_eq!(wash_red(&engine), 0.0, "on down to dark");
+        Ok(())
+    }
+
+    #[test]
+    fn ambient_starting_over_leaves_midi_dmx_be() -> Result<(), Box<dyn Error>> {
+        // Ambient's show starting over at its loop cleared the store every
+        // engine shares: MIDI DMX went, and a fade of it under way stuck.
+        let short = "show \"ambient\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 250ms\n    @0.250\n    wash: static, color: \"blue\", duration: 250ms\n}\n";
+        let (_dir, engine) = ambient_engine(short, ("0s", "50ms", "1s"))?;
+        add_spot(&engine);
+        {
+            let mut store = engine.midi_dmx_store.write();
+            for (channel, name) in [(4, "red"), (5, "green"), (6, "blue")] {
+                store.register_slot(5, channel, "spot", name);
+            }
+            store.register_universe(5);
+        }
+        engine
+            .effect_engine
+            .lock()
+            .set_midi_dmx_store(engine.midi_dmx_store.clone());
+        engine.idle_ambient(None, false);
+        engine.handle_midi_event_by_id(
+            5,
+            midly::MidiMessage::NoteOn {
+                key: 3.into(),
+                vel: 100.into(),
+            },
+        );
+        // Through more than one of ambient's loops, MIDI DMX holds.
+        for _ in 0..40 {
+            tick(&engine);
+            sleep(Duration::from_millis(20));
+        }
+        assert_eq!(engine.ambient_report().state, "playing");
+        assert_eq!(spot_red(&engine), 200.0, "held through ambient's loops");
+        assert_eq!(
+            engine.midi_dmx_store.read().iter_active().count(),
+            1,
+            "still MIDI's, not left behind"
+        );
+        // Off: it fades out over a second, through more of them.
+        engine.set_ambient_mode(AmbientMode::Off);
+        for _ in 0..80 {
+            tick(&engine);
+            sleep(Duration::from_millis(20));
+        }
+        assert_eq!(spot_red(&engine), 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn going_idle_again_does_not_slow_a_midi_dmx_fade() -> Result<(), Box<dyn Error>> {
+        // Each idle restarted the store's fade from where it was, over the
+        // whole fade again: pressed often, it crawled.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "1s"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        add_spot(&engine);
+        midi_red_200(&engine);
+        start_song(&engine, SPOT_ONLY);
+        send_red_200(&engine);
+        song_frame(&engine, 0.5);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        // A second is 44 frames; idle again every 10.
+        let mut frames = 0;
+        while wash_red(&engine) > 0.0 && frames < 200 {
+            if frames % 10 == 9 {
+                engine.idle_ambient(None, true);
+            }
+            tick(&engine);
+            frames += 1;
+        }
+        assert!(frames <= 50, "dark in {frames} frames");
+        Ok(())
+    }
+
+    #[test]
+    fn off_after_ambient_with_no_show_goes_dark() -> Result<(), Box<dyn Error>> {
+        // Auto with no show for the playlist held the last song's frame, and
+        // Off set after left it there.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "100ms", "100ms"))?;
+        start_song(&engine, RED);
+        song_frame(&engine, 0.5);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(Some(&crate::config::ambient::PlaylistAmbient::Off), true);
+        tick(&engine);
+        assert_eq!(tick(&engine), (255.0, 0.0, 0.0), "held, no ambient");
+        engine.set_ambient_mode(AmbientMode::Off);
+        tick(&engine);
+        sleep(Duration::from_millis(1200));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
+        Ok(())
+    }
+
     #[test]
     fn a_song_stopped_while_off_fades_to_dark() -> Result<(), Box<dyn Error>> {
         // #570: with the mode Off, the song's last frame held for good.
@@ -1142,7 +2171,7 @@ mod tests {
         assert!(mid.0 > 200.0, "still fading at the ending's pace: {mid:?}");
         // The cut: the ending's lights hurry to dark, and the player goes
         // idle again.
-        engine.cut_ending_lights();
+        engine.cut_break_fade_lights();
         engine.idle_ambient(None, true);
         let cut = tick(&engine);
         assert!(cut.0 > 200.0, "no jump at the cut: {cut:?}");

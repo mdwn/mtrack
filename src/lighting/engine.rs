@@ -46,14 +46,34 @@ enum CrossKind {
     Snap,
 }
 
+/// Whether a channel named `channel` is a level or a colour, which going
+/// dark takes to 0 -- not a position, an optic (zoom, focus, iris, frost)
+/// or a setting, which it leaves as they are.
+pub(crate) fn fades_to_dark(channel: &str) -> bool {
+    matches!(CrossKind::of(channel), CrossKind::Fade)
+        && !matches!(base_channel(channel), "zoom" | "focus" | "iris" | "frost")
+}
+
+/// A channel's name without its section (`dimmer:background`, as GDTF
+/// profiles with several emitters name theirs) or its fine byte.
+fn base_channel(channel: &str) -> &str {
+    let base = channel.split(':').next().unwrap_or(channel);
+    base.strip_suffix("_fine").unwrap_or(base)
+}
+
 impl CrossKind {
     fn of(channel: &str) -> CrossKind {
-        let base = channel.strip_suffix("_fine").unwrap_or(channel);
-        match base {
+        match base_channel(channel) {
             "pan" | "tilt" => CrossKind::Position,
             "dimmer" | "red" | "green" | "blue" | "white" | "warm_white" | "cool_white" | "uv"
-            | "amber" | "lime" | "cyan" | "magenta" | "yellow" | "zoom" | "focus" | "iris"
-            | "frost" | "ct" | "cto" | "ctb" => CrossKind::Fade,
+            | "amber" | "lime" | "cyan" | "magenta" | "yellow" | "indigo" | "zoom" | "focus"
+            | "iris" | "frost" | "ct" | "cto" | "ctb" | "color_temp"
+            // GDTF's amber and lime, as their attributes come through.
+            | "coloradd_ry" | "coloradd_gy" => CrossKind::Fade,
+            // GDTF's other additive and RGB colour attributes, likewise.
+            base if base.starts_with("coloradd_") || base.starts_with("colorrgb_") => {
+                CrossKind::Fade
+            }
             _ => CrossKind::Snap,
         }
     }
@@ -557,6 +577,28 @@ impl EffectEngine {
             .collect()
     }
 
+    /// The channels (universe, DMX channel) of the patched fixtures that
+    /// carry a position (pan, tilt): a crossfade holds those rather than
+    /// fading them, so no fade takes one dark.
+    pub fn position_channels(&self) -> HashSet<(u16, u16)> {
+        self.fixtures
+            .as_map()
+            .values()
+            .flat_map(|fixture| {
+                fixture
+                    .channels
+                    .iter()
+                    .filter(|(name, _)| matches!(CrossKind::of(name), CrossKind::Position))
+                    .map(move |(_, &offset)| (fixture.universe, fixture.address + offset - 1))
+            })
+            .collect()
+    }
+
+    /// The frame this engine last rendered.
+    pub fn last_commands(&self) -> &[DmxCommand] {
+        self.cache.get_cached()
+    }
+
     /// The pose memory: where each mover was last driven to.
     pub fn poses(&self) -> &HashMap<String, Pose> {
         &self.poses
@@ -571,6 +613,18 @@ impl EffectEngine {
         outgoing: &EffectEngine,
         t: f64,
     ) -> (HashMap<String, FixtureState>, HashMap<String, Pose>) {
+        self.crossfade_states_onto(outgoing, (&self.last_merged_states, &self.poses), t)
+    }
+
+    /// The same, crossing `outgoing` onto `onto` -- states and poses that
+    /// another crossfade already blended -- rather than this engine's own.
+    pub fn crossfade_states_onto(
+        &self,
+        outgoing: &EffectEngine,
+        onto: (&HashMap<String, FixtureState>, &HashMap<String, Pose>),
+        t: f64,
+    ) -> (HashMap<String, FixtureState>, HashMap<String, Pose>) {
+        let (onto_states, onto_poses) = onto;
         let t = t.clamp(0.0, 1.0);
         let lerp = |a: f64, b: f64| a + (b - a) * t;
         // Each side as it shows, multipliers applied and cells resolved, as
@@ -580,7 +634,7 @@ impl EffectEngine {
             // What the outgoing engine shows: mid-crossfade itself (a loop
             // break during a pass crossfade, #560), its own blend.
             self.resolved_states(outgoing.shown_fixture_states()),
-            self.resolved_states(&self.last_merged_states),
+            self.resolved_states(onto_states),
         );
         let (old_states, new_states) = (&old_resolved, &new_resolved);
         let names: HashSet<&String> = old_states.keys().chain(new_states.keys()).collect();
@@ -622,7 +676,7 @@ impl EffectEngine {
             states.insert(name.clone(), state);
         }
         let mut poses = outgoing.shown_poses().clone();
-        for (name, pose) in &self.poses {
+        for (name, pose) in onto_poses {
             let blended = match outgoing.shown_poses().get(name) {
                 Some(old) => Pose {
                     pan: lerp(old.pan, pose.pan),
@@ -1346,6 +1400,19 @@ impl EffectEngine {
 
     /// Stop all active effects and reset per-song layer state
     pub fn stop_all_effects(&mut self) {
+        self.stop_show_effects();
+        // Clear MIDI DMX values so they don't bleed into the next song.
+        // Uses a read lock because MidiDmxStore uses interior mutability
+        // (atomics) — no write lock needed.
+        if let Some(ref store) = self.midi_dmx_store {
+            store.read().clear();
+        }
+    }
+
+    /// [`Self::stop_all_effects`] but for the MIDI DMX store, which every
+    /// engine shares: for one engine's show starting over (ambient's, at
+    /// its loop) while the others -- and MIDI -- go on.
+    pub fn stop_show_effects(&mut self) {
         // The rig holds its last frame until the next one, so the view does
         // too rather than going black: what it already shows (a loop
         // break's fade starts the next song's show under it), else this
@@ -1364,12 +1431,6 @@ impl EffectEngine {
         // replay the new song's layer commands from the timeline afterwards, so a seek
         // rebuilds masters from show history rather than inheriting them.
         self.layer_state.reset();
-        // Clear MIDI DMX values so they don't bleed into the next song.
-        // Uses a read lock because MidiDmxStore uses interior mutability
-        // (atomics) — no write lock needed.
-        if let Some(ref store) = self.midi_dmx_store {
-            store.read().clear();
-        }
         self.cache.invalidate();
     }
 

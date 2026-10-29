@@ -109,6 +109,26 @@ impl Universe {
         self.target.read()[channel_index]
     }
 
+    /// Every channel lit (1-based DMX channel, value) as the universe puts
+    /// it out: where a dim has got to, else its value -- whoever wrote it.
+    pub fn lit_channels(&self) -> Vec<(u16, u8)> {
+        let target = self.target.read();
+        let rates = self.rates.read();
+        let current = self.current.read();
+        (0..UNIVERSE_SIZE)
+            .map(|idx| {
+                let value = if rates[idx] != 0.0 {
+                    current[idx]
+                } else {
+                    target[idx]
+                };
+                (idx, value.round().clamp(0.0, 255.0) as u8)
+            })
+            .filter(|&(_, value)| value > 0)
+            .map(|(idx, value)| (idx as u16 + 1, value))
+            .collect()
+    }
+
     /// Updates the dim speed.
     pub fn update_dim_speed(&self, dim_rate: Duration) {
         let mut global_dim_rate = self.global_dim_rate.write();
@@ -127,12 +147,17 @@ impl Universe {
             0 // Handle channel 0 case - map to index 0
         };
         let value = f64::from(value);
-        self.target.write()[channel_index] = value;
-        self.rates.write()[channel_index] = if dim {
+        // The rate first, with no other lock held: an assignment evaluates
+        // its value before its place, so reading `current` inside it held
+        // that read while waiting for `rates`, against the order the
+        // universe thread takes them in (target, rates, current).
+        let rate = if dim {
             (value - self.current.read()[channel_index]) / *self.global_dim_rate.read()
         } else {
             0.0
         };
+        self.target.write()[channel_index] = value;
+        self.rates.write()[channel_index] = rate;
 
         let _ =
             self.max_channels
@@ -315,6 +340,17 @@ mod test {
             ),
             receiver,
         )
+    }
+
+    #[test]
+    fn lit_channels_reads_a_dim_where_it_has_got_to() {
+        let (universe, _receiver) = new_universe();
+        universe.update_effect_commands(vec![(3, 200)]);
+        universe.update_dim_speed(Duration::from_secs(1));
+        // Dimming up from 0, not yet on its way: not lit, though its target
+        // is 200.
+        universe.update_channel_data(10, 200, true);
+        assert_eq!(universe.lit_channels(), vec![(3, 200)]);
     }
 
     #[test]

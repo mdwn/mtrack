@@ -108,6 +108,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Ambient Off takes a show that has finished to dark too (#573)**: with ambient Off, a show whose
+  effects had all ended by the time its song did -- at the very end or earlier -- left their last
+  frame on the rig, since nothing writes a channel no effect drives and the engine darkened had
+  nothing left to fade. Going dark now fades out whatever the rig still holds lit that nothing
+  writes any more, and what MIDI DMX holds, over the ambient `fade_out` -- including what ambient
+  at full had left as it was, once ambient goes. Setting Off between songs takes the last song's
+  frame dark too, while ambient is still waiting out its delay or has no show to play, and so does
+  the gap before a song that auto plays: in Off, the song before no longer holds its lights through
+  it. MIDI DMX on patched channels is no longer wiped each time an ambient show loops.
+- **A loop break's fade no longer leaves lights stuck on, or ends early**: a Stop, pause or seek
+  while the looping song still faded out under the next one dropped its fade, and so did the next
+  song looping with a `loop_crossfade`. Whatever only the looping song lit then held where the
+  fade had got to until a later song lit it. With ambient Off, the next song ending by itself
+  instead cut the fade short at ambient's `fade_out`, and a Stop left that song lit. A loop
+  break's fade now crosses out over everything after it at its own length, the oldest outermost;
+  a Stop, pause or seek hurries it the rest of the way out over the ambient `fade_out`.
 - **Next during a loop crossfade fades the blend out, without a jump (#560)**: a loop break
   started its fade from the newer loop pass alone, dropping the older pass mid-crossfade, so the
   lights stepped once (74 of 255 on the rig) before fading. The older pass now carries on inside

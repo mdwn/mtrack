@@ -132,6 +132,15 @@ pub struct Engine {
     pub(super) current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
     /// The pass a crossfading song loop is fading out of, while it does.
     pub(super) outgoing_pass: Mutex<Option<timeline::OutgoingPass>>,
+    /// Loop breaks' fades still going out, oldest first: each crosses out
+    /// over everything after it at its own length, so nothing that comes
+    /// later -- another pass's crossfade, another break, a stop's dark --
+    /// cuts it short or drops it. Locked after `outgoing_pass`.
+    pub(super) break_fades: Mutex<Vec<timeline::OutgoingPass>>,
+    /// The channels (universe, 1-based channel) the last frame wrote. A
+    /// channel lit but not among them is held by the universe from an
+    /// effect long gone, which nothing will write again (#573).
+    pub(super) last_written: Mutex<HashSet<(u16, u16)>>,
     pub(super) current_song_time: Arc<AtomicU64>,
     /// Which playback the song-time writers belong to.
     ///
@@ -163,7 +172,7 @@ pub struct Engine {
     /// The show the rig plays while no song is (see `ambient`).
     ambient: Mutex<ambient::AmbientState>,
     /// Ambient light playing or fading, over the main engine. Locked after
-    /// `effect_engine` and `outgoing_pass`, never before.
+    /// `effect_engine`, `outgoing_pass` and `break_fades`, never before.
     ambient_overlay: Mutex<Option<ambient::Overlay>>,
 }
 
@@ -269,6 +278,8 @@ impl Engine {
             ola_http_port: config.ola_http_port(),
             current_song_timeline,
             outgoing_pass: Mutex::new(None),
+            break_fades: Mutex::new(Vec::new()),
+            last_written: Mutex::new(HashSet::new()),
             playback_generation,
             current_song_time,
             timeline_finished,
@@ -530,28 +541,107 @@ impl Engine {
         };
         // Mid-crossfade between passes of a looping song: render the outgoing
         // pass too, a pass ahead in song time, and cross the two frames over
-        // the overlap. The outgoing pass goes once the overlap is over.
+        // the overlap. The outgoing pass goes once the overlap is over (among
+        // the loop breaks' fades, if one crosses over it), or at once if it
+        // fails to render, rather than stopping every frame after it.
         let mut outgoing = self.outgoing_pass.lock();
+        let mut done = false;
         let commands: std::borrow::Cow<[crate::lighting::effects::DmxCommand]> =
             match outgoing.as_mut() {
                 Some(pass) => {
                     let incoming = effect_engine.update(dt, Some(song_time))?.to_vec();
                     let (t, time) = pass.timing(song_time);
-                    let old = pass.render(dt, time)?;
-                    let blended = effect_engine.crossfade_commands(&old, &incoming, t);
-                    // What goes out is the blend, so that is what the rig
-                    // shows to the web UI and get_fixture_state too (#555).
-                    let shown =
-                        (t < 1.0).then(|| effect_engine.crossfade_states(&pass.effect_engine, t));
-                    effect_engine.set_shown(shown);
-                    if t >= 1.0 {
-                        *outgoing = None;
+                    match pass.render(dt, time) {
+                        Ok(old) => {
+                            let blended = effect_engine.crossfade_commands(&old, &incoming, t);
+                            // What goes out is the blend, so that is what the
+                            // rig shows to the web UI and get_fixture_state
+                            // too (#555).
+                            let shown = (t < 1.0)
+                                .then(|| effect_engine.crossfade_states(&pass.effect_engine, t));
+                            effect_engine.set_shown(shown);
+                            done = t >= 1.0;
+                            std::borrow::Cow::Owned(blended)
+                        }
+                        Err(e) => {
+                            error!("A loop pass's crossfade failed to render, and goes: {e}");
+                            *outgoing = None;
+                            std::borrow::Cow::Owned(incoming)
+                        }
                     }
-                    std::borrow::Cow::Owned(blended)
                 }
                 None => std::borrow::Cow::Borrowed(effect_engine.update(dt, Some(song_time))?),
             };
+        if done {
+            if let Some(pass) = outgoing.take() {
+                self.retire_pass(pass);
+            }
+        }
         drop(outgoing);
+
+        // Loop breaks' fades go out over all of that, each at its own
+        // length: the newest first, so the oldest crosses outermost. One
+        // that is over goes only once every older one has: what it holds of
+        // a mover's position is what the older ones cross onto. One that
+        // fails to render goes at once, rather than stopping every frame
+        // after it.
+        let mut fades = self.break_fades.lock();
+        let commands: std::borrow::Cow<[crate::lighting::effects::DmxCommand]> = if fades.is_empty()
+        {
+            commands
+        } else {
+            let mut blended = commands.into_owned();
+            let mut shown = (
+                effect_engine.shown_fixture_states().clone(),
+                effect_engine.shown_poses().clone(),
+            );
+            // Newest first: (over, failed) for each.
+            let mut ends = Vec::with_capacity(fades.len());
+            for fade in fades.iter_mut().rev() {
+                let (t, time) = fade.timing(song_time);
+                let old = match fade.render(dt, time) {
+                    Ok(old) => old,
+                    Err(e) => {
+                        error!("A loop break's fade failed to render, and goes: {e}");
+                        ends.push((true, true));
+                        continue;
+                    }
+                };
+                blended = effect_engine.crossfade_commands(&old, &blended, t);
+                shown = effect_engine.crossfade_states_onto(
+                    &fade.effect_engine,
+                    (&shown.0, &shown.1),
+                    t,
+                );
+                ends.push((t >= 1.0, false));
+            }
+            // What goes out is the blend, so that is what the rig shows
+            // too (#555).
+            effect_engine.set_shown(Some(shown));
+            // Oldest first: the over ones until the first still going, and
+            // any that failed.
+            let mut still_older = false;
+            let keep: Vec<bool> = ends
+                .into_iter()
+                .rev()
+                .map(|(over, failed)| {
+                    let keep = !failed && (still_older || !over);
+                    still_older |= keep;
+                    keep
+                })
+                .collect();
+            let mut keep = keep.into_iter();
+            fades.retain(|_| keep.next().unwrap_or(true));
+            // One over but kept for an older one is held: its song's show
+            // has faded out, and must not go on firing cues under it.
+            for fade in fades.iter_mut().filter(|f| !f.held) {
+                if fade.timing(song_time).0 >= 1.0 {
+                    fade.hold();
+                }
+            }
+            std::borrow::Cow::Owned(blended)
+        };
+        drop(fades);
 
         // Ambient light crosses over it at its level: over a song's show
         // with ambient on, or over the last song's frame as it fades in.
@@ -566,6 +656,8 @@ impl Engine {
         } else {
             &commands
         };
+
+        *self.last_written.lock() = commands.iter().map(|c| (c.universe, c.channel)).collect();
 
         // Group commands by universe
         let mut universe_commands: std::collections::HashMap<u16, Vec<(u16, u8)>> =
@@ -3202,8 +3294,8 @@ mod test {
             let mid = frame_at(&engine, 0.3);
             assert!(mid.0 > 10.0, "the older pass's later cue fired: {mid:?}");
 
-            // It leaves once its own crossfade ends, a second after the
-            // break: blue alone, fading.
+            // Its own crossfade over, a second after the break, it is held
+            // with nothing of its own left showing: blue alone, fading.
             std::thread::sleep(Duration::from_millis(500));
             let later = frame_at(&engine, 0.5);
             assert!(later.1 < 1.0, "green gone: {later:?}");
@@ -3245,7 +3337,7 @@ mod test {
                 "show \"b\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 60s\n}\n",
             ));
             engine.start_lighting_timeline_at(Duration::ZERO);
-            assert!(engine.outgoing_pass.lock().is_some());
+            assert!(!engine.break_fades.lock().is_empty());
 
             // Part way: red going, blue coming, on the wall clock -- the next
             // song's own time has barely moved.
@@ -3258,12 +3350,15 @@ mod test {
             // Over: the next song alone.
             std::thread::sleep(Duration::from_millis(300));
             assert_eq!(frame_at(&engine, 0.5), (0.0, 0.0, 255.0));
-            assert!(engine.outgoing_pass.lock().is_none());
+            assert!(engine.break_fades.lock().is_empty());
 
-            // A stop or seek ends one early.
+            // A stop or seek hurries one to its end, over ambient's
+            // fade_out (1s with none set).
             engine.begin_break_fade(Duration::from_secs(5));
-            engine.end_break_fade();
-            assert!(engine.outgoing_pass.lock().is_none());
+            engine.cut_break_fade_lights();
+            std::thread::sleep(Duration::from_millis(1100));
+            frame_at(&engine, 0.6);
+            assert!(engine.break_fades.lock().is_empty());
             Ok(())
         }
 

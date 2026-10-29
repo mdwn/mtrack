@@ -36,6 +36,13 @@ struct Slot {
     rate: AtomicU64,
     /// Whether this slot has been written to at least once.
     active: AtomicBool,
+    /// On its way to 0 from [`MidiDmxStore::fade_out`] -- not from a dim
+    /// MIDI asked for, which a value alone cannot tell apart. A write ends it.
+    store_fade: AtomicBool,
+    /// Bumped by every MIDI write, before it marks the slot active: a
+    /// slot let go once its fade to dark is out stays MIDI's if this moved
+    /// meanwhile.
+    writes: AtomicU64,
 }
 
 impl Slot {
@@ -45,19 +52,26 @@ impl Slot {
             current: AtomicU64::new(0f64.to_bits()),
             rate: AtomicU64::new(0f64.to_bits()),
             active: AtomicBool::new(false),
+            store_fade: AtomicBool::new(false),
+            writes: AtomicU64::new(0),
         }
     }
 }
 
-/// Lockless store for MIDI DMX values. MIDI events write atomically;
-/// the effects loop calls `tick()` each frame to interpolate, then reads
-/// interpolated values for injection into the EffectEngine.
+/// Whether `slot` is still on its way to 0 from [`MidiDmxStore::fade_out`].
+fn fading_out(slot: &Slot) -> bool {
+    slot.store_fade.load(Ordering::Acquire) && load_f64(&slot.current) > 0.0
+}
+
 impl Default for MidiDmxStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Lockless store for MIDI DMX values. MIDI events write atomically;
+/// the effects loop calls `tick()` each frame to interpolate, then reads
+/// interpolated values for injection into the EffectEngine.
 pub struct MidiDmxStore {
     /// Pre-allocated slots indexed by position.
     slots: Vec<Slot>,
@@ -160,6 +174,8 @@ impl MidiDmxStore {
             let slot = &self.slots[slot_index];
             let value_f64 = f64::from(value);
             store_f64(&slot.target, value_f64);
+            // MIDI's again, whatever a fade to dark was doing.
+            slot.store_fade.store(false, Ordering::Release);
 
             if dim {
                 let current = load_f64(&slot.current);
@@ -174,9 +190,10 @@ impl MidiDmxStore {
                 store_f64(&slot.rate, 0.0); // instant
             }
 
-            // Release: ensures target/rate writes are visible to readers
-            // that Acquire on active or generation.
-            slot.active.store(true, Ordering::Release);
+            // Counted before it is active: a release that let the slot go
+            // in between sees the count move, and takes it back.
+            slot.writes.fetch_add(1, Ordering::SeqCst);
+            slot.active.store(true, Ordering::SeqCst);
             self.generation.fetch_add(1, Ordering::Release);
         }
     }
@@ -199,9 +216,25 @@ impl MidiDmxStore {
             if !slot.active.load(Ordering::Acquire) {
                 continue;
             }
+            let writes = slot.writes.load(Ordering::SeqCst);
             let current = load_f64(&slot.current);
             let target = load_f64(&slot.target);
             let rate = load_f64(&slot.rate);
+            // A fade to dark that reached 0 a frame ago, its 0 out: the slot
+            // is MIDI's no more, as a clear leaves it -- held at 0, it would
+            // be a base under the next song's effects (a multiply over it
+            // black).
+            if slot.store_fade.load(Ordering::Acquire) && current == 0.0 && target == 0.0 {
+                slot.store_fade.store(false, Ordering::Release);
+                slot.active.store(false, Ordering::SeqCst);
+                // A MIDI write that landed meanwhile -- of 0 too, a
+                // blackout cue -- keeps its slot.
+                if slot.writes.load(Ordering::SeqCst) != writes {
+                    slot.active.store(true, Ordering::SeqCst);
+                }
+                any_changed = true;
+                continue;
+            }
 
             let new_current = if rate > f64::EPSILON {
                 (current + rate).min(target)
@@ -266,12 +299,47 @@ impl MidiDmxStore {
         self.channel_to_slot.get(&(universe, channel)).copied()
     }
 
-    /// Resets all slots to inactive (called on song transition).
+    /// Fades every slot MIDI holds to 0 over `ticks` frames, from where it
+    /// is: every engine renders the store, so each sees the same value go
+    /// down -- nothing cut, nothing crossed twice. A MIDI write after takes
+    /// its channel back.
+    pub fn fade_out(&self, ticks: f64) {
+        let mut any = false;
+        for (slot, (_, channel)) in self.slots.iter().zip(&self.slot_to_fixture) {
+            if !slot.active.load(Ordering::Acquire) || fading_out(slot) {
+                // A fade under way goes on as it is, not restarted slower.
+                continue;
+            }
+            if !crate::lighting::engine::fades_to_dark(channel) {
+                // A position, gobo, wheel or mode stays as MIDI set it: run
+                // down to 0 it would swing, step through every slot, or pass
+                // a lamp-off or reset on the way.
+                continue;
+            }
+            let current = load_f64(&slot.current);
+            store_f64(&slot.target, 0.0);
+            store_f64(&slot.rate, -current / ticks.max(1.0));
+            slot.store_fade.store(true, Ordering::Release);
+            any = true;
+        }
+        if any {
+            self.generation.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    /// Resets all slots to inactive (called on song transition) -- but for
+    /// one fading out (see [`Self::fade_out`]), which goes on to 0: cleared,
+    /// nothing would write its channel again, and the rig would hold it
+    /// where the fade had got to.
     pub fn clear(&self) {
         for slot in &self.slots {
+            if fading_out(slot) {
+                continue;
+            }
             store_f64(&slot.current, 0.0);
             store_f64(&slot.target, 0.0);
             store_f64(&slot.rate, 0.0);
+            slot.store_fade.store(false, Ordering::Release);
             // Release: ensures zeroed values are visible before active is seen as false.
             slot.active.store(false, Ordering::Release);
         }
@@ -282,6 +350,148 @@ impl MidiDmxStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A store with one slot at (1, 1), dimming over `ticks` frames.
+    fn one_slot(ticks: f64) -> MidiDmxStore {
+        let mut store = MidiDmxStore::new();
+        store.register_slot(1, 1, "par", "dimmer");
+        store.register_universe(1);
+        store.set_dim_rate(1, ticks);
+        store
+    }
+
+    fn value(store: &MidiDmxStore) -> f64 {
+        store.iter_active().next().map_or(0.0, |(_, v)| v * 255.0)
+    }
+
+    #[test]
+    fn a_dim_midi_asked_for_is_not_taken_for_a_fade_to_dark() {
+        // A slow dim to 0 from MIDI looked like the store's own fade: a
+        // song start let it run on under the next song, and a fade to dark
+        // left it to its own pace.
+        let store = one_slot(1.0);
+        store.write(1, 1, 200, false);
+        store.tick();
+        store.set_dim_rate(1, 440.0);
+        store.write(1, 1, 0, true);
+        store.tick();
+        assert!(value(&store) > 150.0, "dimming down slowly");
+        store.fade_out(44.0);
+        for _ in 0..45 {
+            store.tick();
+        }
+        assert_eq!(value(&store), 0.0, "dark in the fade's time");
+
+        store.write(1, 1, 200, false);
+        store.tick();
+        store.write(1, 1, 0, true);
+        store.tick();
+        store.clear();
+        assert_eq!(store.iter_active().count(), 0, "a song start cuts it");
+    }
+
+    #[test]
+    fn a_fade_to_dark_takes_levels_down_and_leaves_the_rest() {
+        // Run down to 0, a mover's pan swung and a mode channel passed
+        // whatever its low values do.
+        let mut store = MidiDmxStore::new();
+        store.register_slot(1, 1, "mover", "dimmer");
+        store.register_slot(1, 2, "mover", "pan");
+        store.register_slot(1, 3, "mover", "mode");
+        store.register_universe(1);
+        for channel in 1..=3 {
+            store.write(1, channel, 200, false);
+        }
+        store.tick();
+        store.fade_out(10.0);
+        for _ in 0..20 {
+            store.tick();
+        }
+        let values: Vec<f64> = store.iter_active().map(|(_, v)| v * 255.0).collect();
+        assert_eq!(values, vec![200.0, 200.0], "pan and mode as they were");
+    }
+
+    #[test]
+    fn a_fade_to_dark_knows_levels_by_any_name_they_come_in() {
+        // Section-suffixed GDTF channels, GDTF's amber and lime as their
+        // attributes come through, and colour temperature were not taken
+        // for levels, and stayed lit.
+        let names = [
+            "dimmer:background",
+            "red:ring",
+            "coloradd_ry",
+            "coloradd_gy",
+            "coloradd_c",
+            "colorrgb_red",
+            "color_temp",
+            "indigo",
+            "zoom",
+        ];
+        let mut store = MidiDmxStore::new();
+        for (i, name) in names.iter().enumerate() {
+            store.register_slot(1, i as u16 + 1, "fixture", name);
+        }
+        store.register_universe(1);
+        for i in 0..names.len() {
+            store.write(1, i as u16 + 1, 200, false);
+        }
+        store.tick();
+        store.fade_out(10.0);
+        for _ in 0..20 {
+            store.tick();
+        }
+        let left: Vec<&str> = store
+            .iter_active()
+            .map(|(slot, _)| store.fixture_info(slot).1.as_str())
+            .collect();
+        assert_eq!(left, vec!["zoom"], "only the optic left as it was");
+    }
+
+    #[test]
+    fn a_fade_to_dark_lets_its_slot_go_once_out() {
+        // Held at 0 after a fade to dark that ran through a song start, the
+        // slot stayed MIDI's: a base of 0 under the next song's effects.
+        let store = one_slot(1.0);
+        store.write(1, 1, 200, false);
+        store.tick();
+        store.fade_out(10.0);
+        store.clear();
+        for _ in 0..10 {
+            store.tick();
+        }
+        assert_eq!(store.iter_active().count(), 1, "its 0 goes out once");
+        assert_eq!(value(&store), 0.0);
+        store.tick();
+        assert_eq!(store.iter_active().count(), 0, "then it is let go");
+    }
+
+    #[test]
+    fn a_fade_to_dark_runs_through_a_clear_and_a_write_takes_it_back() {
+        let store = one_slot(1.0);
+        store.write(1, 1, 200, false);
+        store.tick();
+        store.fade_out(44.0);
+        for _ in 0..10 {
+            store.tick();
+        }
+        store.clear();
+        assert!(value(&store) > 0.0, "still on its way down");
+        for _ in 0..40 {
+            store.tick();
+        }
+        assert_eq!(value(&store), 0.0);
+
+        store.write(1, 1, 200, false);
+        store.tick();
+        store.fade_out(44.0);
+        store.tick();
+        store.write(1, 1, 120, false);
+        store.tick();
+        for _ in 0..50 {
+            store.tick();
+        }
+        assert_eq!(value(&store), 120.0, "MIDI's again");
+    }
 
     #[test]
     fn re_registering_a_channel_reuses_its_slot_and_keeps_its_value() {
