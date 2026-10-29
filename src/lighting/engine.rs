@@ -46,6 +46,12 @@ enum CrossKind {
     Snap,
 }
 
+/// Whether a channel named `channel` fades -- a level or colour, that a
+/// fade takes dark -- rather than holding a position or snapping a setting.
+pub(crate) fn fades_to_dark(channel: &str) -> bool {
+    matches!(CrossKind::of(channel), CrossKind::Fade)
+}
+
 impl CrossKind {
     fn of(channel: &str) -> CrossKind {
         let base = channel.strip_suffix("_fine").unwrap_or(channel);

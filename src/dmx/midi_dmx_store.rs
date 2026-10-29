@@ -220,6 +220,10 @@ impl MidiDmxStore {
             if slot.store_fade.load(Ordering::Acquire) && current == 0.0 && target == 0.0 {
                 slot.store_fade.store(false, Ordering::Release);
                 slot.active.store(false, Ordering::Release);
+                // A MIDI write that landed meanwhile keeps its slot.
+                if load_f64(&slot.target) != 0.0 {
+                    slot.active.store(true, Ordering::Release);
+                }
                 any_changed = true;
                 continue;
             }
@@ -293,9 +297,15 @@ impl MidiDmxStore {
     /// its channel back.
     pub fn fade_out(&self, ticks: f64) {
         let mut any = false;
-        for slot in &self.slots {
+        for (slot, (_, channel)) in self.slots.iter().zip(&self.slot_to_fixture) {
             if !slot.active.load(Ordering::Acquire) || fading_out(slot) {
                 // A fade under way goes on as it is, not restarted slower.
+                continue;
+            }
+            if !crate::lighting::engine::fades_to_dark(channel) {
+                // A position, gobo, wheel or mode stays as MIDI set it: run
+                // down to 0 it would swing, step through every slot, or pass
+                // a lamp-off or reset on the way.
                 continue;
             }
             let current = load_f64(&slot.current);
@@ -370,6 +380,27 @@ mod tests {
         store.tick();
         store.clear();
         assert_eq!(store.iter_active().count(), 0, "a song start cuts it");
+    }
+
+    #[test]
+    fn a_fade_to_dark_takes_levels_down_and_leaves_the_rest() {
+        // Run down to 0, a mover's pan swung and a mode channel passed
+        // whatever its low values do.
+        let mut store = MidiDmxStore::new();
+        store.register_slot(1, 1, "mover", "dimmer");
+        store.register_slot(1, 2, "mover", "pan");
+        store.register_slot(1, 3, "mover", "mode");
+        store.register_universe(1);
+        for channel in 1..=3 {
+            store.write(1, channel, 200, false);
+        }
+        store.tick();
+        store.fade_out(10.0);
+        for _ in 0..20 {
+            store.tick();
+        }
+        let values: Vec<f64> = store.iter_active().map(|(_, v)| v * 255.0).collect();
+        assert_eq!(values, vec![200.0, 200.0], "pan and mode as they were");
     }
 
     #[test]

@@ -722,8 +722,13 @@ impl Player {
         }
         // Off in an auto play's gap: the song before was holding its lights
         // as a segue, and goes dark now.
-        if mode == crate::dmx::engine::AmbientMode::Off && self.auto_play.lock().waiting.is_some() {
-            self.idle_ambient(true);
+        if mode == crate::dmx::engine::AmbientMode::Off {
+            // Held through, so the gap cannot end -- and the next song's
+            // lights start -- between the look and the dark.
+            let auto_play = self.auto_play.lock();
+            if auto_play.waiting.is_some() {
+                self.idle_ambient(true);
+            }
         }
     }
 

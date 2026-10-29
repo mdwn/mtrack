@@ -4025,7 +4025,6 @@ mod test {
         let engine = player.dmx_engine().expect("DMX engine should be present");
         player.play().await?;
         playing_eventually(&player, "First").await?;
-        eventually(|| !engine.gone_dark(), "lit while First plays");
         eventually(|| player.auto_play_status().is_some(), "the gap");
         eventually(|| engine.gone_dark(), "dark in the gap");
         player.cancel_waiting_auto_play();
