@@ -109,6 +109,18 @@ impl Universe {
         self.target.read()[channel_index]
     }
 
+    /// Every channel lit (1-based DMX channel, value) as the universe holds
+    /// it, whoever wrote it.
+    pub fn lit_channels(&self) -> Vec<(u16, u8)> {
+        self.target
+            .read()
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| **value > 0.0)
+            .map(|(idx, value)| (idx as u16 + 1, value.round().clamp(0.0, 255.0) as u8))
+            .collect()
+    }
+
     /// Updates the dim speed.
     pub fn update_dim_speed(&self, dim_rate: Duration) {
         let mut global_dim_rate = self.global_dim_rate.write();

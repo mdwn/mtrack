@@ -137,6 +137,10 @@ pub struct Engine {
     /// later -- another pass's crossfade, another break, a stop's dark --
     /// cuts it short or drops it. Locked after `outgoing_pass`.
     pub(super) break_fades: Mutex<Vec<timeline::OutgoingPass>>,
+    /// The channels (universe, 1-based channel) the last frame wrote. A
+    /// channel lit but not among them is held by the universe from an
+    /// effect long gone, which nothing will write again (#573).
+    pub(super) last_written: Mutex<HashSet<(u16, u16)>>,
     pub(super) current_song_time: Arc<AtomicU64>,
     /// Which playback the song-time writers belong to.
     ///
@@ -275,6 +279,7 @@ impl Engine {
             current_song_timeline,
             outgoing_pass: Mutex::new(None),
             break_fades: Mutex::new(Vec::new()),
+            last_written: Mutex::new(HashSet::new()),
             playback_generation,
             current_song_time,
             timeline_finished,
@@ -651,6 +656,8 @@ impl Engine {
         } else {
             &commands
         };
+
+        *self.last_written.lock() = commands.iter().map(|c| (c.universe, c.channel)).collect();
 
         // Group commands by universe
         let mut universe_commands: std::collections::HashMap<u16, Vec<(u16, u8)>> =

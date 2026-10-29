@@ -49,6 +49,10 @@ pub(crate) struct OutgoingPass {
     /// and timeline stopped -- for what it holds that nothing under it
     /// drives (a mover's position), until the fades older than it go.
     pub(super) held: bool,
+    /// Channels the rig holds lit that no engine writes any more, from
+    /// effects that ended: rendered where this pass's engine does not drive
+    /// them, so they fade out with it rather than staying on (#573).
+    pub(super) floor: Vec<crate::lighting::effects::DmxCommand>,
 }
 
 /// What a pass's timeline fired, by the pass's id, its groups resolved.
@@ -121,7 +125,17 @@ impl OutgoingPass {
         if self.held {
             return Ok(self.last.clone());
         }
-        let own = self.effect_engine.update(dt, Some(time))?.to_vec();
+        let mut own = self.effect_engine.update(dt, Some(time))?.to_vec();
+        if !self.floor.is_empty() {
+            let driven: std::collections::HashSet<(u16, u16)> =
+                own.iter().map(|c| (c.universe, c.channel)).collect();
+            own.extend(
+                self.floor
+                    .iter()
+                    .filter(|c| !driven.contains(&(c.universe, c.channel)))
+                    .cloned(),
+            );
+        }
         let frame = match self.inner.as_mut() {
             None => own,
             Some(inner) => {
@@ -316,6 +330,7 @@ impl Engine {
             id: next_pass_id(),
             last,
             held: false,
+            floor: Vec::new(),
         });
     }
 
@@ -330,6 +345,16 @@ impl Engine {
     /// crossed into before (#560); an earlier break's fade goes on over it,
     /// at its own length.
     pub fn begin_break_fade(&self, fade: Duration) {
+        self.begin_break_fade_over(fade, Vec::new());
+    }
+
+    /// [`Self::begin_break_fade`], fading `floor` -- channels the rig holds
+    /// lit that nothing writes any more -- out with it.
+    pub(super) fn begin_break_fade_over(
+        &self,
+        fade: Duration,
+        floor: Vec<crate::lighting::effects::DmxCommand>,
+    ) {
         let from = self.to_delayed_song_time(self.get_song_time());
         {
             let mut effect_engine = self.effect_engine.lock();
@@ -353,6 +378,7 @@ impl Engine {
                 id: next_pass_id(),
                 last,
                 held: false,
+                floor,
             });
         }
     }

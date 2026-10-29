@@ -357,7 +357,7 @@ impl Engine {
                         .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
                             a.settings.fade_out
                         });
-                    self.darken_under(fade);
+                    self.darken_under(fade, true);
                     state.under_dark = true;
                 }
                 state.phase = Phase::Off;
@@ -534,7 +534,7 @@ impl Engine {
                 // A loop break's fade going out goes on at its own length:
                 // ambient covers only what it lights, and what it does not
                 // is still fading in view.
-                self.darken_under(Duration::ZERO);
+                self.darken_under(Duration::ZERO, false);
                 state.under_dark = true;
             }
         }
@@ -609,18 +609,45 @@ impl Engine {
             fade
         };
         if !state.song_lit && !state.under_dark {
-            self.darken_under(fade);
+            self.darken_under(fade, true);
             state.under_dark = true;
         }
     }
 
     /// Fades the main engine to dark over `fade`: whatever the last song
     /// left -- its show, file watcher, MIDI DMX and tempo -- is done with.
-    fn darken_under(&self, fade: Duration) {
-        self.begin_break_fade(fade);
+    fn darken_under(&self, fade: Duration, to_dark: bool) {
+        // Going dark, what the rig holds lit that the last frame did not
+        // write -- left by effects that ended, which nothing writes again --
+        // fades out with the rest (#573). Under ambient at full it stays as
+        // it was, what ambient does not light still in view.
+        let floor = if to_dark {
+            self.stale_lit_channels()
+        } else {
+            Vec::new()
+        };
+        self.begin_break_fade_over(fade, floor);
         self.watcher_handle.lock().take();
         self.midi_dmx_playbacks.lock().clear();
         self.effect_engine.lock().set_tempo_map(None);
+    }
+
+    /// The channels the rig holds lit that the last frame did not write.
+    fn stale_lit_channels(&self) -> Vec<crate::lighting::effects::DmxCommand> {
+        let written = self.last_written.lock().clone();
+        self.universes
+            .iter()
+            .flat_map(|(&universe, u)| {
+                u.lit_channels().into_iter().map(move |(channel, value)| {
+                    crate::lighting::effects::DmxCommand {
+                        universe,
+                        channel,
+                        value,
+                    }
+                })
+            })
+            .filter(|c| !written.contains(&(c.universe, c.channel)))
+            .collect()
     }
 
     /// Moves the overlay's time on and starts what its timeline fires, its
@@ -1497,6 +1524,34 @@ mod tests {
         let fades = engine.break_fades.lock();
         assert_eq!(fades.len(), 2, "the fade, and one held pass");
         assert!(fades[1].held);
+        Ok(())
+    }
+
+    #[test]
+    fn a_show_over_before_its_song_still_goes_dark_while_off() -> Result<(), Box<dyn Error>> {
+        // #573: a show whose effects had all ended left their last frame on
+        // the rig -- nothing writes a channel no effect drives, and the
+        // engine darkened had nothing left to fade.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        engine.idle_ambient(None, false);
+        tick(&engine);
+        sleep(Duration::from_millis(150));
+        tick(&engine);
+        start_song(
+            &engine,
+            "show \"song\" {\n    @0.000\n    wash: static, color: \"red\", duration: 200ms\n}\n",
+        );
+        assert_eq!(song_frame(&engine, 0.1), (255.0, 0.0, 0.0));
+        // The effect is over; the rig holds its frame, as it does between
+        // cues.
+        assert_eq!(song_frame(&engine, 0.5), (255.0, 0.0, 0.0));
+        // The song ends.
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        tick(&engine);
+        sleep(Duration::from_millis(300));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0), "dark over fade_out");
         Ok(())
     }
 

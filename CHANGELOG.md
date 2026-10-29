@@ -108,6 +108,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Ambient Off takes a show that has finished to dark too (#573)**: with ambient Off, a show whose
+  effects had all ended by the time its song did -- at the very end or earlier -- left their last
+  frame on the rig, since nothing writes a channel no effect drives and the engine darkened had
+  nothing left to fade. Going dark now fades out whatever the rig still holds lit that nothing
+  writes any more, over the ambient `fade_out`.
 - **A loop break's fade no longer leaves lights stuck on, or ends early**: a Stop, pause or seek
   while the looping song still faded out under the next one dropped its fade, and so did the next
   song looping with a `loop_crossfade`. Whatever only the looping song lit then held where the
