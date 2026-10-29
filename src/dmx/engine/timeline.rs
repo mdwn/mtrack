@@ -64,6 +64,16 @@ type PassUpdates = std::collections::HashMap<
     ),
 >;
 
+/// A timeline going into a pass, its hold let go: a start held it while
+/// its state went in, and whatever would have let it go now finds the
+/// next song's timeline in its place.
+fn free(
+    mut timeline: crate::lighting::timeline::LightingTimeline,
+) -> crate::lighting::timeline::LightingTimeline {
+    timeline.hold(false);
+    timeline
+}
+
 /// A new pass's id.
 fn next_pass_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -315,6 +325,7 @@ impl Engine {
                     timeline
                 }),
             )
+            .map(free)
         };
         let mut outgoing = self.outgoing_pass.lock();
         if let Some(pass) = outgoing.take() {
@@ -363,7 +374,7 @@ impl Engine {
             let last = outgoing_engine.last_commands().to_vec();
             // The timeline goes with its engine, taken under the same lock
             // (engine, then timeline, as nothing takes them the other way).
-            let timeline = self.current_song_timeline.lock().take();
+            let timeline = self.current_song_timeline.lock().take().map(free);
             let inner = self.outgoing_pass.lock().take().map(Box::new);
             self.break_fades.lock().push(OutgoingPass {
                 effect_engine: outgoing_engine,

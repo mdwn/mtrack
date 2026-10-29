@@ -2233,6 +2233,30 @@ mod tests {
     }
 
     #[test]
+    fn a_held_timeline_taken_into_a_fade_plays_on_there() -> Result<(), Box<dyn Error>> {
+        // A loop break taking the song's timeline while a start held it
+        // left it held in the fade: none of its cues fired there.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_spot(&engine);
+        start_song(
+            &engine,
+            "show \"song\" {\n    @0.000\n    wash: static, color: \"red\", duration: 60s\n    @0.200\n    spot: static, color: \"red\", duration: 60s\n}\n",
+        );
+        song_frame(&engine, 0.1);
+        engine
+            .current_song_timeline
+            .lock()
+            .as_mut()
+            .unwrap()
+            .hold(true);
+        engine.begin_break_fade(Duration::from_secs(10));
+        sleep(Duration::from_millis(300));
+        song_frame(&engine, 0.3);
+        assert!(spot_red(&engine) > 200.0, "the fade's cue at 200 ms fired");
+        Ok(())
+    }
+
+    #[test]
     fn midi_dmx_held_goes_when_the_next_song_starts() -> Result<(), Box<dyn Error>> {
         // A song start clears the store: what MIDI DMX held, steady, went
         // unwritten and the rig held it through the next song.
