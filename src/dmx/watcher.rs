@@ -309,9 +309,10 @@ fn reload_timeline(
         engine.set_song_time(song_time);
 
         if song_time > Duration::ZERO {
-            for cmd in &timeline_update.layer_commands {
-                engine.apply_layer_command(cmd);
-            }
+            engine.apply_layer_commands(
+                &timeline_update.layer_commands,
+                &timeline_update.layer_command_times,
+            );
             for seq_name in &timeline_update.stop_sequences {
                 engine.stop_sequence(seq_name);
             }

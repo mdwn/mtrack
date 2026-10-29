@@ -221,9 +221,8 @@ impl OutgoingPass {
     /// resolved, to this pass's engine and each inner one's.
     fn apply_updates(&mut self, updates: &mut PassUpdates) {
         if let Some((update, effects)) = updates.remove(&self.id) {
-            for cmd in &update.layer_commands {
-                self.effect_engine.apply_layer_command(cmd);
-            }
+            self.effect_engine
+                .apply_layer_commands(&update.layer_commands, &update.layer_command_times);
             for sequence_name in &update.stop_sequences {
                 self.effect_engine.stop_sequence(sequence_name);
             }
@@ -697,6 +696,7 @@ impl Engine {
             effects,
             effects_with_elapsed,
             layer_commands,
+            layer_command_times,
             stop_sequences,
         } = timeline_update;
         if effects.is_empty()
@@ -731,9 +731,7 @@ impl Engine {
 
         let apply = |engine: &mut crate::lighting::EffectEngine| {
             // Layer commands first: they affect the effects after them.
-            for cmd in &layer_commands {
-                engine.apply_layer_command(cmd);
-            }
+            engine.apply_layer_commands(&layer_commands, &layer_command_times);
             for sequence_name in &stop_sequences {
                 engine.stop_sequence(sequence_name);
             }

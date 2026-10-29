@@ -34,6 +34,11 @@ pub struct TimelineUpdate {
     pub effects_with_elapsed: HashMap<String, (EffectInstance, Duration)>,
     /// Layer commands to be executed
     pub layer_commands: Vec<LayerCommand>,
+    /// The song time of each layer command's cue, for cues fired as the
+    /// song plays: a freeze holds, and an unfreeze resumes, from its cue's
+    /// own time, not the frame it lands in. Empty for a seek's history,
+    /// which holds a freeze at the start point.
+    pub layer_command_times: Vec<Duration>,
     /// Names of sequences to stop
     pub stop_sequences: Vec<String>,
 }
@@ -97,8 +102,29 @@ fn settle_layer(
     arrived: &mut HashSet<String>,
     effects: &mut HashMap<String, (EffectInstance, Duration)>,
 ) {
+    settle_layer_past(layer, time, layers, arrived, effects, false);
+}
+
+/// [`settle_layer`], keeping an effect that ends exactly at `time` when
+/// `keep_ending` is set: live, a cue fires before the frame it lands in
+/// expires anything, so a freeze or speed change on the very instant an
+/// effect ends still catches it.
+fn settle_layer_past(
+    layer: EffectLayer,
+    time: Duration,
+    layers: &HashMap<EffectLayer, ReplayLayer>,
+    arrived: &mut HashSet<String>,
+    effects: &mut HashMap<String, (EffectInstance, Duration)>,
+    keep_ending: bool,
+) {
     effects.retain(|id, (effect, _)| {
-        if effect.layer != layer || own_elapsed(effect, layers, time) < effect.total_duration() {
+        let elapsed = own_elapsed(effect, layers, time);
+        let running = if keep_ending {
+            elapsed <= effect.total_duration()
+        } else {
+            elapsed < effect.total_duration()
+        };
+        if effect.layer != layer || running {
             return true;
         }
         let is_move = matches!(
@@ -123,7 +149,7 @@ fn replay_layer_command(
     arrived: &mut HashSet<String>,
     effects: &mut HashMap<String, (EffectInstance, Duration)>,
 ) {
-    settle_layer(layer, time, layers, arrived, effects);
+    settle_layer_past(layer, time, layers, arrived, effects, true);
     let freeze = |layers: &mut HashMap<EffectLayer, ReplayLayer>| {
         let state = layers.entry(layer).or_default();
         state.frozen_since.get_or_insert(time);
@@ -190,11 +216,24 @@ fn replay(cues: &[Cue]) -> Replay {
     // starts at the same time.
     for group in cues.chunk_by(|a, b| a.time == b.time) {
         let time = group[0].time;
+        // Cue by cue, as the timeline fires them live: a cue's sequence
+        // starts clear its stopped status, its effects are taken unless their
+        // sequence is stopped by then, and its stops then count for the cues
+        // after it. The effects start below, after the group's stops.
+        let mut fired = Vec::new();
         for cue in group {
-            // Process start_sequences first: clear stopped status for new invocations
             for seq_name in &cue.start_sequences {
                 stopped_sequences.remove(seq_name);
             }
+            for effect in &cue.effects {
+                if let Some(ref seq_name) = effect.sequence_name {
+                    if stopped_sequences.contains(seq_name) {
+                        continue;
+                    }
+                }
+                fired.push(LightingTimeline::create_effect_instance(effect, cue.time));
+            }
+            process_stop_sequences(stopped_sequences, cue, result);
         }
 
         for cue in group {
@@ -247,8 +286,6 @@ fn replay(cues: &[Cue]) -> Replay {
         }
 
         for cue in group {
-            process_stop_sequences(stopped_sequences, cue, result);
-
             // Purge already-accumulated effects from stopped sequences,
             // mirroring what EffectEngine::stop_sequence() does at runtime.
             // Stopping a sequence does not release pose memory either.
@@ -277,21 +314,11 @@ fn replay(cues: &[Cue]) -> Replay {
 
         // Every effect cued goes in; the ones over by a given time come
         // out once their layers' history up to it is known.
-        for cue in group {
-            for effect in &cue.effects {
-                // Skip effects from stopped sequences
-                if let Some(ref seq_name) = effect.sequence_name {
-                    if stopped_sequences.contains(seq_name) {
-                        continue;
-                    }
-                }
-
-                let effect_instance = LightingTimeline::create_effect_instance(effect, cue.time);
-                result.effects_with_elapsed.insert(
-                    effect_instance.id.clone(),
-                    (effect_instance, Duration::ZERO),
-                );
-            }
+        for effect_instance in fired {
+            result.effects_with_elapsed.insert(
+                effect_instance.id.clone(),
+                (effect_instance, Duration::ZERO),
+            );
         }
     }
     replay
@@ -490,7 +517,11 @@ impl LightingTimeline {
             let last = timeline.cues.last().map_or(Duration::ZERO, |cue| cue.time);
             let ended = timeline.show_end.min(last);
             let (end, open_ended) = running_end(&timeline.cues);
-            timeline.show_end = ended.max(end);
+            // A look held for good has no end to wait for. Without audio
+            // to run to, the show keeps the end it was written with: an
+            // ambient show loops then, the frozen look up until it does.
+            let floor = if open_ended { timeline.show_end } else { ended };
+            timeline.show_end = floor.max(end);
             timeline.open_ended = open_ended;
         }
         timeline
@@ -711,6 +742,9 @@ impl LightingTimeline {
                 result
                     .layer_commands
                     .extend(cue.layer_commands.iter().cloned());
+                result
+                    .layer_command_times
+                    .extend(cue.layer_commands.iter().map(|_| cue.time));
 
                 process_stop_sequences(&mut self.stopped_sequences, cue, &mut result);
 
@@ -996,9 +1030,9 @@ mod tests {
         );
 
         // Frozen for good: with audio the show runs to its end; with none,
-        // it is over at the last cue, the look held.
+        // it keeps the end it was written with, the look held.
         let mut held = end("    @00:02.000\n    freeze(layer: midground)\n");
-        assert_eq!(held.show_end(), secs(2.0));
+        assert_eq!(held.show_end(), secs(4.0));
         held.set_end_cap(Some(secs(60.0)));
         assert_eq!(held.show_end(), secs(60.0));
         held.start();
@@ -1033,7 +1067,7 @@ mod tests {
         assert_eq!(fast.show_end(), secs(1.0), "over at once");
 
         let mut slow = end("    master(layer: midground, speed: 0.00000000000000000001)\n");
-        assert_eq!(slow.show_end(), secs(1.0), "no audio: over at the last cue");
+        assert_eq!(slow.show_end(), secs(4.0), "no audio: its written end");
         slow.set_end_cap(Some(secs(60.0)));
         assert_eq!(slow.show_end(), secs(60.0), "with audio: held to its end");
     }
@@ -2097,3 +2131,7 @@ mod tests {
         assert_eq!(surviving.1, Duration::from_secs(2)); // 7s - 5s = 2s elapsed
     }
 }
+
+#[cfg(test)]
+#[path = "timeline_replay_tests.rs"]
+mod replay_tests;

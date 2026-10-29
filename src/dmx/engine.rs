@@ -3134,6 +3134,108 @@ mod test {
             Ok(())
         }
 
+        fn timeline_finished(engine: &Engine) -> bool {
+            engine
+                .current_song_timeline
+                .lock()
+                .as_ref()
+                .is_none_or(|timeline| timeline.is_finished())
+        }
+
+        #[test]
+        fn a_slow_down_on_a_looks_last_instant_plays_it_on() -> Result<(), Box<dyn Error>> {
+            // A 4 s look, slowed to half at 4 s, the instant it ends: live,
+            // the cue lands before the frame expires anything, so the look
+            // is 2 s into 4 and runs to 8 s. A seek has to agree.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
+                master(layer: midground, speed: 0.5)\n}\n";
+            let played = played_frame(show, 6.0)?;
+            let sought = seek_frame(show, 6.0)?;
+            assert_eq!(played, GREEN);
+            assert_eq!(played, sought, "played {played:?} vs sought {sought:?}");
+            Ok(())
+        }
+
+        #[test]
+        fn the_timeline_waits_for_a_look_slowed_on_its_last_instant() -> Result<(), Box<dyn Error>>
+        {
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
+                master(layer: midground, speed: 0.5)\n}\n";
+            let (engine, _cancel_handle) = wash_running(show)?;
+            let mut at = 1.0;
+            while at < 4.5 {
+                at += 0.01;
+                frame_at(&engine, at);
+            }
+            let lit = frame_at(&engine, 4.5);
+            assert!(
+                !(timeline_finished(&engine) && lit != DARK),
+                "timeline finished (song time stops) with the look still up: {lit:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_sequence_started_and_stopped_at_once_by_two_shows() -> Result<(), Box<dyn Error>> {
+            // Show "b" starts sequence "x" at 5 s; show "a" stops "x" at 5 s.
+            // Live, the stop lands before the start, so "x" plays; a seek
+            // took the stop for the whole time and dropped it.
+            let cues_of = |src: &str| {
+                crate::lighting::parser::parse_light_shows(src)
+                    .unwrap()
+                    .into_values()
+                    .next()
+                    .unwrap()
+                    .cues
+            };
+            let mut cues = cues_of(
+                "sequence \"x\" {\n    @00:00.000\n    wash: static, color: \"green\", \
+                 duration: 10s, layer: midground, blend_mode: replace\n}\n\n\
+                 show \"b\" {\n    @00:05.000\n    sequence \"x\"\n}\n",
+            );
+            cues.extend(cues_of(
+                "show \"a\" {\n    @00:05.000\n    stop sequence \"x\"\n}\n",
+            ));
+            let run = |seek: Option<f64>, until: f64| -> (f64, f64, f64) {
+                let (engine, _c) = wash_running("show \"z\" {\n}\n").unwrap();
+                *engine.current_song_timeline.lock() = Some(
+                    crate::lighting::timeline::LightingTimeline::new_with_cues(cues.clone()),
+                );
+                let start = seek.unwrap_or(1.0);
+                engine.update_song_time(Duration::from_secs_f64(start));
+                engine.start_lighting_timeline_at(Duration::from_secs_f64(start));
+                let mut at = start;
+                let mut frame = frame_at(&engine, at);
+                while at + 0.01 <= until + 1e-9 {
+                    at += 0.01;
+                    frame = frame_at(&engine, at);
+                }
+                frame
+            };
+            let played = run(None, 7.0);
+            let sought = run(Some(7.0), 7.0);
+            assert_eq!(played, GREEN);
+            assert_eq!(played, sought, "played {played:?} vs sought {sought:?}");
+            Ok(())
+        }
+
+        #[test]
+        fn a_freeze_on_a_looks_last_instant_agrees_with_a_seek() -> Result<(), Box<dyn Error>> {
+            // A freeze holds from its cue's time: on the instant a 4 s look
+            // ends, it is over, played or sought. Live used to freeze at the
+            // frame before, and held it for good.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
+                freeze(layer: midground)\n}\n";
+            let played = played_frame(show, 10.0)?;
+            let sought = seek_frame(show, 10.0)?;
+            assert_eq!(played, DARK);
+            assert_eq!(played, sought, "played {played:?} vs sought {sought:?}");
+            Ok(())
+        }
+
         #[test]
         fn a_cue_taken_before_a_restart_does_not_land_after_it() -> Result<(), Box<dyn Error>> {
             // A cue the effects loop took from the timeline just before a
@@ -4887,6 +4989,7 @@ mod test {
                     speed: None,
                 }],
                 stop_sequences: vec![],
+                layer_command_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -4902,6 +5005,7 @@ mod test {
                 effects_with_elapsed: std::collections::HashMap::new(),
                 layer_commands: vec![],
                 stop_sequences: vec!["test_seq".to_string()],
+                layer_command_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -4955,6 +5059,7 @@ mod test {
                 effects_with_elapsed,
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                layer_command_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -5001,6 +5106,7 @@ mod test {
                 effects_with_elapsed: std::collections::HashMap::new(),
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                layer_command_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());

@@ -429,9 +429,7 @@ pub(crate) fn apply_timeline_update<F>(
 ) where
     F: FnMut(EffectInstance) -> EffectInstance,
 {
-    for cmd in &update.layer_commands {
-        engine.apply_layer_command(cmd);
-    }
+    engine.apply_layer_commands(&update.layer_commands, &update.layer_command_times);
 
     for sequence_name in &update.stop_sequences {
         engine.stop_sequence(sequence_name);
@@ -585,6 +583,24 @@ show "t" {
         assert_eq!(results[0].active_effects[0].elapsed, Duration::ZERO);
         assert_eq!(results[1].active_effects[0].elapsed, Duration::from_secs(2));
         assert_eq!(results[2].active_effects[0].elapsed, Duration::from_secs(4));
+    }
+
+    #[test]
+    fn evaluate_keeps_a_look_slowed_on_its_last_instant() {
+        // Live, the cue at 4 s fires before the frame that would end the
+        // look, so it plays on at half speed (elapsed 2 s of 4) until 8 s.
+        let fixtures = vec![rgb_fixture("wash", 1)];
+        let results = eval(
+            "show \"s\" {\n    @00:00.000\n    wash: static, color: \"blue\", duration: 4s\n    \
+             @00:04.000\n    master(layer: background, speed: 0.5)\n}\n",
+            &fixtures,
+            &[6.0],
+        );
+        assert_eq!(
+            results[0].active_effects.len(),
+            1,
+            "evaluate drops a look the live engine still plays"
+        );
     }
 
     #[test]

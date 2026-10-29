@@ -1625,6 +1625,29 @@ impl EffectEngine {
         self.layer_state.speed_master(&layer)
     }
 
+    /// Applies a cue's layer commands, each at its cue's song time when
+    /// `times` gives one (see `TimelineUpdate::layer_command_times`): a
+    /// freeze holds from its cue, and an unfreeze resumes from its, rather
+    /// than from the frame before the one they land in -- which held a look
+    /// frozen on the very instant it ended, and timed a freeze up to a frame
+    /// off its cue. With no times, at the song time already set.
+    pub fn apply_layer_commands(
+        &mut self,
+        commands: &[crate::lighting::parser::LayerCommand],
+        times: &[Duration],
+    ) {
+        let frame = self.last_song_time;
+        for (i, cmd) in commands.iter().enumerate() {
+            if let Some(time) = times.get(i) {
+                self.last_song_time = Some(*time);
+            }
+            self.apply_layer_command(cmd);
+        }
+        if !times.is_empty() {
+            self.last_song_time = frame;
+        }
+    }
+
     /// Dispatch a single layer command to the appropriate engine method.
     pub fn apply_layer_command(&mut self, cmd: &crate::lighting::parser::LayerCommand) {
         use crate::lighting::parser::LayerCommandType;
