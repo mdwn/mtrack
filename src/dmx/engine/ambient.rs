@@ -1605,9 +1605,15 @@ mod tests {
             "show \"song\" {\n    @0.000\n    wash: static, color: \"red\", duration: 200ms\n}\n",
         );
         assert_eq!(song_frame(&engine, 0.1), (255.0, 0.0, 0.0));
-        // The effect is over; the rig holds its frame, as it does between
-        // cues.
-        assert_eq!(song_frame(&engine, 0.5), (255.0, 0.0, 0.0));
+        // The effect is over: its channels go as it does (#581).
+        assert_eq!(song_frame(&engine, 0.5), (0.0, 0.0, 0.0));
+        // Something no frame writes -- MIDI DMX on an unpatched channel,
+        // straight to the universe -- the rig holds lit.
+        engine
+            .get_universe(5)
+            .unwrap()
+            .update_effect_commands(vec![(1, 255)]);
+        assert_eq!(tick(&engine), (255.0, 0.0, 0.0));
         // The song ends.
         engine.stop_lighting_timeline();
         engine.idle_ambient(None, true);
@@ -1623,13 +1629,16 @@ mod tests {
         // then went (the mode set Off), that stayed lit for good.
         let (_dir, engine) = ambient_engine(BLUE, ("0s", "100ms", "100ms"))?;
         add_spot(&engine);
-        start_song(
-            &engine,
-            "show \"song\" {\n    @0.000\n    spot: static, color: \"red\", duration: 200ms\n}\n",
-        );
+        start_song(&engine, GREEN);
         song_frame(&engine, 0.1);
+        // The spot lit by what no frame writes: MIDI DMX on an unpatched
+        // channel, straight to the universe.
+        engine
+            .get_universe(5)
+            .unwrap()
+            .update_effect_commands(vec![(4, 255)]);
         song_frame(&engine, 0.5);
-        assert_eq!(spot_red(&engine), 255.0, "held after its effect");
+        assert_eq!(spot_red(&engine), 255.0, "held, nothing writing it");
         engine.stop_lighting_timeline();
         engine.idle_ambient(None, true);
         for _ in 0..3 {
@@ -2114,6 +2123,50 @@ mod tests {
         tick(&engine);
         sleep(Duration::from_millis(1200));
         assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn an_effect_ending_mid_song_lets_its_channels_go() -> Result<(), Box<dyn Error>> {
+        // #581: an effect that ended mid-song left its last value on the
+        // rig -- nothing wrote the channel again -- while the view showed
+        // it dark.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_spot(&engine);
+        start_song(
+            &engine,
+            "show \"song\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 10s\n    spot: static, color: \"green\", duration: 300ms\n}\n",
+        );
+        song_frame(&engine, 0.1);
+        let green = |engine: &Engine| engine.get_universe(5).unwrap().get_target_value(4);
+        assert_eq!(green(&engine), 255.0);
+        song_frame(&engine, 0.5);
+        song_frame(&engine, 0.6);
+        assert_eq!(green(&engine), 0.0, "the spot's effect is over");
+        assert_eq!(
+            song_frame(&engine, 0.7),
+            (0.0, 0.0, 255.0),
+            "the wash plays on"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn midi_dmx_held_goes_when_the_next_song_starts() -> Result<(), Box<dyn Error>> {
+        // A song start clears the store: what MIDI DMX held, steady, went
+        // unwritten and the rig held it through the next song.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_spot(&engine);
+        midi_red_200(&engine);
+        start_song(&engine, SPOT_ONLY);
+        send_red_200(&engine);
+        song_frame(&engine, 0.5);
+        assert_eq!(wash_red(&engine), 200.0);
+        engine.stop_lighting_timeline();
+        start_song(&engine, SPOT_ONLY);
+        song_frame(&engine, 0.1);
+        song_frame(&engine, 0.2);
+        assert_eq!(wash_red(&engine), 0.0, "the next song's, not the last's");
         Ok(())
     }
 

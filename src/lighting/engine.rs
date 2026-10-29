@@ -594,6 +594,22 @@ impl EffectEngine {
             .collect()
     }
 
+    /// The channels (universe, DMX channel) of the patched fixtures that
+    /// carry a level or colour ([`fades_to_dark`]).
+    pub fn level_channels(&self) -> HashSet<(u16, u16)> {
+        self.fixtures
+            .as_map()
+            .values()
+            .flat_map(|fixture| {
+                fixture
+                    .channels
+                    .iter()
+                    .filter(|(name, _)| fades_to_dark(name))
+                    .map(move |(_, &offset)| (fixture.universe, fixture.address + offset - 1))
+            })
+            .collect()
+    }
+
     /// The frame this engine last rendered.
     pub fn last_commands(&self) -> &[DmxCommand] {
         self.cache.get_cached()
