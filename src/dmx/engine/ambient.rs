@@ -351,12 +351,16 @@ impl Engine {
                 // out over it -- a graceful ending's, or a vamp's under the
                 // song stopped -- goes on at its own length (#571), since it
                 // crosses out over everything after it.
-                if !state.under_dark {
-                    let fade = loaded
-                        .as_ref()
-                        .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
-                            a.settings.fade_out
-                        });
+                let fade = loaded
+                    .as_ref()
+                    .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
+                        a.settings.fade_out
+                    });
+                if state.under_dark {
+                    // Already dark under: what ambient at full left as it
+                    // was, if anything, goes now.
+                    self.fade_out_stale(fade);
+                } else {
                     self.darken_under(fade, true);
                     state.under_dark = true;
                 }
@@ -608,9 +612,15 @@ impl Engine {
             o.level.toward(now, 0.0, fade);
             fade
         };
-        if !state.song_lit && !state.under_dark {
-            self.darken_under(fade, true);
-            state.under_dark = true;
+        if !state.song_lit {
+            if state.under_dark {
+                // Ambient at full left what it does not light as it was;
+                // with ambient going, that goes too.
+                self.fade_out_stale(fade);
+            } else {
+                self.darken_under(fade, true);
+                state.under_dark = true;
+            }
         }
     }
 
@@ -621,15 +631,25 @@ impl Engine {
         // write -- left by effects that ended, which nothing writes again --
         // fades out with the rest (#573). Under ambient at full it stays as
         // it was, what ambient does not light still in view.
+        // MIDI DMX stops first, so nothing it writes after lands unfloored.
+        self.watcher_handle.lock().take();
+        self.midi_dmx_playbacks.lock().clear();
         let floor = if to_dark {
             self.stale_lit_channels()
         } else {
             Vec::new()
         };
         self.begin_break_fade_over(fade, floor);
-        self.watcher_handle.lock().take();
-        self.midi_dmx_playbacks.lock().clear();
         self.effect_engine.lock().set_tempo_map(None);
+    }
+
+    /// Fades out over `fade` what the rig holds lit that nothing writes any
+    /// more, under a stage already dark otherwise.
+    fn fade_out_stale(&self, fade: Duration) {
+        let floor = self.stale_lit_channels();
+        if !floor.is_empty() {
+            self.begin_break_fade_over(fade, floor);
+        }
     }
 
     /// The channels the rig holds lit that the last frame did not write.
@@ -1552,6 +1572,36 @@ mod tests {
         tick(&engine);
         sleep(Duration::from_millis(300));
         assert_eq!(tick(&engine), (0.0, 0.0, 0.0), "dark over fade_out");
+        Ok(())
+    }
+
+    #[test]
+    fn what_ambient_left_unlit_goes_dark_when_it_leaves() -> Result<(), Box<dyn Error>> {
+        // Ambient at full leaves what it does not light as it was; when it
+        // then went (the mode set Off), that stayed lit for good.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "100ms", "100ms"))?;
+        add_spot(&engine);
+        start_song(
+            &engine,
+            "show \"song\" {\n    @0.000\n    spot: static, color: \"red\", duration: 200ms\n}\n",
+        );
+        song_frame(&engine, 0.1);
+        song_frame(&engine, 0.5);
+        assert_eq!(spot_red(&engine), 255.0, "held after its effect");
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        for _ in 0..3 {
+            tick(&engine);
+            sleep(Duration::from_millis(100));
+        }
+        tick(&engine);
+        assert_eq!(engine.ambient_report().state, "playing");
+        assert_eq!(spot_red(&engine), 255.0, "left as it was under ambient");
+        engine.set_ambient_mode(AmbientMode::Off);
+        tick(&engine);
+        sleep(Duration::from_millis(300));
+        tick(&engine);
+        assert_eq!(spot_red(&engine), 0.0, "dark once ambient has gone");
         Ok(())
     }
 

@@ -109,15 +109,23 @@ impl Universe {
         self.target.read()[channel_index]
     }
 
-    /// Every channel lit (1-based DMX channel, value) as the universe holds
-    /// it, whoever wrote it.
+    /// Every channel lit (1-based DMX channel, value) as the universe puts
+    /// it out: where a dim has got to, else its value -- whoever wrote it.
     pub fn lit_channels(&self) -> Vec<(u16, u8)> {
-        self.target
-            .read()
-            .iter()
-            .enumerate()
-            .filter(|(_, value)| **value > 0.0)
-            .map(|(idx, value)| (idx as u16 + 1, value.round().clamp(0.0, 255.0) as u8))
+        let target = self.target.read();
+        let rates = self.rates.read();
+        let current = self.current.read();
+        (0..UNIVERSE_SIZE)
+            .map(|idx| {
+                let value = if rates[idx] != 0.0 {
+                    current[idx]
+                } else {
+                    target[idx]
+                };
+                (idx, value.round().clamp(0.0, 255.0) as u8)
+            })
+            .filter(|&(_, value)| value > 0)
+            .map(|(idx, value)| (idx as u16 + 1, value))
             .collect()
     }
 
@@ -327,6 +335,17 @@ mod test {
             ),
             receiver,
         )
+    }
+
+    #[test]
+    fn lit_channels_reads_a_dim_where_it_has_got_to() {
+        let (universe, _receiver) = new_universe();
+        universe.update_effect_commands(vec![(3, 200)]);
+        universe.update_dim_speed(Duration::from_secs(1));
+        // Dimming up from 0, not yet on its way: not lit, though its target
+        // is 200.
+        universe.update_channel_data(10, 200, true);
+        assert_eq!(universe.lit_channels(), vec![(3, 200)]);
     }
 
     #[test]
