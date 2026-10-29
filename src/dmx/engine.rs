@@ -627,6 +627,13 @@ impl Engine {
                 .collect();
             let mut keep = keep.into_iter();
             fades.retain(|_| keep.next().unwrap_or(true));
+            // One over but kept for an older one is held: its song's show
+            // has faded out, and must not go on firing cues under it.
+            for fade in fades.iter_mut().filter(|f| !f.held) {
+                if fade.timing(song_time).0 >= 1.0 {
+                    fade.hold();
+                }
+            }
             std::borrow::Cow::Owned(blended)
         };
         drop(fades);

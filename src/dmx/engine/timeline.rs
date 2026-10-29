@@ -145,7 +145,7 @@ impl OutgoingPass {
     }
 
     /// Stops this pass where it is: it renders its last frame from now on.
-    fn hold(&mut self) {
+    pub(super) fn hold(&mut self) {
         self.held = true;
         self.timeline = None;
         self.inner = None;
@@ -281,47 +281,42 @@ impl Engine {
         // would read the old pass's time as the new one's, and end the
         // crossfade before it began.
         self.update_song_time(Duration::ZERO);
-        // The engines swap and the outgoing one is put aside under the one
-        // lock (taken in the effects loop's order: engine, then pass), so no
-        // frame renders the fresh engine alone.
-        {
-            let mut effect_engine = self.effect_engine.lock();
-            let fresh = Self::fresh_engine_showing(&effect_engine);
-            let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
-            // What it drove the rig with until now: held as it is, should it
-            // go before its first frame as a pass.
-            let last = outgoing_engine.last_commands().to_vec();
-            let mut outgoing = self.outgoing_pass.lock();
-            if let Some(pass) = outgoing.take() {
-                self.retire_pass(pass);
-            }
-            *outgoing = Some(OutgoingPass {
-                effect_engine: outgoing_engine,
-                timeline: None,
-                clock: PassClock::Song { lead },
-                overlap,
-                inner: None,
-                hurry: None,
-                id: next_pass_id(),
-                last,
-                held: false,
-            });
-        }
-        // Then the timelines. Until the old one joins its pass, that pass's
-        // cues wait a frame; none are lost, since a timeline fires every cue
-        // up to the time it is given.
-        let outgoing_timeline = {
+        // The engines swap, the timelines with them, and the outgoing pass
+        // is put aside, all under the engine's lock (taken in the effects
+        // loop's order: engine, timeline, pass), so no frame renders the
+        // fresh engine alone and a loop break begun meanwhile cannot take
+        // one pass's engine with the other's timeline.
+        let mut effect_engine = self.effect_engine.lock();
+        let fresh = Self::fresh_engine_showing(&effect_engine);
+        let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
+        // What it drove the rig with until now: held as it is, should it go
+        // before its first frame as a pass.
+        let last = outgoing_engine.last_commands().to_vec();
+        let timeline = {
             let mut current = self.current_song_timeline.lock();
-            let outgoing = current.take();
-            *current = next.map(|mut timeline| {
-                timeline.start();
-                timeline
-            });
-            outgoing
+            std::mem::replace(
+                &mut *current,
+                next.map(|mut timeline| {
+                    timeline.start();
+                    timeline
+                }),
+            )
         };
-        if let Some(pass) = self.outgoing_pass.lock().as_mut() {
-            pass.timeline = outgoing_timeline;
+        let mut outgoing = self.outgoing_pass.lock();
+        if let Some(pass) = outgoing.take() {
+            self.retire_pass(pass);
         }
+        *outgoing = Some(OutgoingPass {
+            effect_engine: outgoing_engine,
+            timeline,
+            clock: PassClock::Song { lead },
+            overlap,
+            inner: None,
+            hurry: None,
+            id: next_pass_id(),
+            last,
+            held: false,
+        });
     }
 
     /// Begins fading a looping song's lights out after a loop break, over

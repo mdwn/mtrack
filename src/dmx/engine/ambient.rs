@@ -1390,7 +1390,7 @@ mod tests {
         engine.begin_loop_crossfade(
             Some(timeline(GREEN)),
             Duration::from_secs(1),
-            Duration::from_millis(200),
+            Duration::from_secs(1),
         );
         song_frame(&engine, 0.05);
         engine.begin_break_fade(Duration::from_secs(5));
@@ -1404,8 +1404,8 @@ mod tests {
         };
         song_frame(&engine, 0.01);
         assert_eq!(inner_held(&engine), Some(false), "still crossing");
-        sleep(Duration::from_millis(400));
-        song_frame(&engine, 0.4);
+        sleep(Duration::from_millis(1200));
+        song_frame(&engine, 1.2);
         assert_eq!(inner_held(&engine), Some(true), "over, and held");
         Ok(())
     }
@@ -1445,6 +1445,31 @@ mod tests {
             "shows {} but sends {sent}",
             shown * 255.0
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_fade_over_under_an_older_one_fires_no_more_cues() -> Result<(), Box<dyn Error>> {
+        // A fade that was over, kept for an older one still going out, went
+        // on playing its song's show: B's cue at 1 s moved the mover under
+        // A's fade long after B had faded out.
+        let b = "show \"song\" {\n    @0.000\n    mover: static, pan: 20%, duration: 60s\n    @1.000\n    mover: static, pan: 0%, duration: 60s\n}\n";
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_mover(&engine);
+        start_song(&engine, &pan_show("80%"));
+        song_frame(&engine, 0.5);
+        engine.begin_break_fade(Duration::from_secs(3));
+        engine.stop_lighting_timeline();
+        start_song(&engine, b);
+        song_frame(&engine, 0.1);
+        engine.begin_break_fade(Duration::from_millis(300));
+        engine.stop_lighting_timeline();
+        start_song(&engine, GREEN);
+        // Past B's fade and its cue: only A's 3 s fade moves the pan.
+        assert_pan_glides(&engine, 1.5, 100.0);
+        let fades = engine.break_fades.lock();
+        assert_eq!(fades.len(), 2);
+        assert!(fades[1].held, "B's fade, over, is held");
         Ok(())
     }
 
