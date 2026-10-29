@@ -454,13 +454,10 @@ impl Engine {
             }
             AmbientMode::Off => {
                 self.lower_overlay(&mut state, now);
-                // Between songs with no ambient up yet -- still waiting out
-                // its delay over the last song's frame -- that frame goes
-                // dark too, as Off is.
-                if matches!(state.phase, Phase::Pending { .. })
-                    && !state.song_lit
-                    && !state.under_dark
-                {
+                // Between songs with no ambient up -- still waiting out its
+                // delay, or none to play -- the last song's frame goes dark
+                // too, as Off is.
+                if !state.song_lit && !state.under_dark {
                     let fade = state
                         .ambient
                         .as_ref()
@@ -655,7 +652,12 @@ impl Engine {
         } else {
             Vec::new()
         };
-        self.begin_break_fade_over(fade, floor);
+        // Nothing lit, nothing to fade: a fade over nothing would only cross
+        // the next song in from black.
+        let lit = !self.effect_engine.lock().last_commands().is_empty();
+        if lit || !floor.is_empty() {
+            self.begin_break_fade_over(fade, floor);
+        }
         self.effect_engine.lock().set_tempo_map(None);
     }
 
@@ -693,7 +695,7 @@ impl Engine {
             .filter(|c| {
                 let at = (c.universe, c.channel);
                 !positions.contains(&at)
-                    && (!written.contains(&at) || store.lookup(c.universe, c.channel).is_some())
+                    && (!written.contains(&at) || store.holds(c.universe, c.channel))
             })
             .collect();
         store.clear();
@@ -1732,6 +1734,67 @@ mod tests {
         engine.set_ambient_mode(AmbientMode::Off);
         tick(&engine);
         sleep(Duration::from_millis(300));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn a_patched_channel_under_an_older_fade_is_not_floored() -> Result<(), Box<dyn Error>> {
+        // Every patched channel has a MIDI DMX store slot, MIDI or not;
+        // going dark floored them all at their value, and one an older fade
+        // was still taking out came back up under it.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        {
+            let mut store = engine.midi_dmx_store.write();
+            for (channel, name) in [(4, "red"), (5, "green"), (6, "blue")] {
+                store.register_slot(5, channel, "spot", name);
+            }
+            store.register_universe(5);
+        }
+        engine
+            .effect_engine
+            .lock()
+            .set_midi_dmx_store(engine.midi_dmx_store.clone());
+        add_spot(&engine);
+        start_song(&engine, VAMP);
+        song_frame(&engine, 0.5);
+        engine.begin_break_fade(Duration::from_secs(2));
+        engine.stop_lighting_timeline();
+        start_song(&engine, GREEN);
+        song_frame(&engine, 0.1);
+        sleep(Duration::from_millis(1000));
+        song_frame(&engine, 1.1);
+        let before = spot_red(&engine);
+        // GREEN ends, the vamp's spot half way out. Through the dark fade
+        // (100 ms), the spot only goes on down.
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        let mut last = before;
+        for _ in 0..6 {
+            tick(&engine);
+            let now = spot_red(&engine);
+            assert!(now <= last, "the spot went on down: {last} -> {now}");
+            last = now;
+            sleep(Duration::from_millis(25));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn off_after_ambient_with_no_show_goes_dark() -> Result<(), Box<dyn Error>> {
+        // Auto with no show for the playlist held the last song's frame, and
+        // Off set after left it there.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "100ms", "100ms"))?;
+        start_song(&engine, RED);
+        song_frame(&engine, 0.5);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(Some(&crate::config::ambient::PlaylistAmbient::Off), true);
+        tick(&engine);
+        assert_eq!(tick(&engine), (255.0, 0.0, 0.0), "held, no ambient");
+        engine.set_ambient_mode(AmbientMode::Off);
+        tick(&engine);
+        sleep(Duration::from_millis(1200));
         assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
         Ok(())
     }

@@ -266,6 +266,14 @@ impl MidiDmxStore {
         self.channel_to_slot.get(&(universe, channel)).copied()
     }
 
+    /// Whether MIDI DMX holds (universe, channel): a slot of it written to
+    /// since the last clear. Every patched channel has a slot; this is the
+    /// ones MIDI is driving.
+    pub fn holds(&self, universe: u16, channel: u16) -> bool {
+        self.lookup(universe, channel)
+            .is_some_and(|slot| self.slots[slot].active.load(Ordering::Acquire))
+    }
+
     /// Resets all slots to inactive (called on song transition).
     pub fn clear(&self) {
         for slot in &self.slots {
