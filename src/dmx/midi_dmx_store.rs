@@ -39,6 +39,10 @@ struct Slot {
     /// On its way to 0 from [`MidiDmxStore::fade_out`] -- not from a dim
     /// MIDI asked for, which a value alone cannot tell apart. A write ends it.
     store_fade: AtomicBool,
+    /// Bumped by every MIDI write, before it marks the slot active: a
+    /// slot let go once its fade to dark is out stays MIDI's if this moved
+    /// meanwhile.
+    writes: AtomicU64,
 }
 
 impl Slot {
@@ -49,6 +53,7 @@ impl Slot {
             rate: AtomicU64::new(0f64.to_bits()),
             active: AtomicBool::new(false),
             store_fade: AtomicBool::new(false),
+            writes: AtomicU64::new(0),
         }
     }
 }
@@ -185,9 +190,10 @@ impl MidiDmxStore {
                 store_f64(&slot.rate, 0.0); // instant
             }
 
-            // Release: ensures target/rate writes are visible to readers
-            // that Acquire on active or generation.
-            slot.active.store(true, Ordering::Release);
+            // Counted before it is active: a release that let the slot go
+            // in between sees the count move, and takes it back.
+            slot.writes.fetch_add(1, Ordering::SeqCst);
+            slot.active.store(true, Ordering::SeqCst);
             self.generation.fetch_add(1, Ordering::Release);
         }
     }
@@ -210,6 +216,7 @@ impl MidiDmxStore {
             if !slot.active.load(Ordering::Acquire) {
                 continue;
             }
+            let writes = slot.writes.load(Ordering::SeqCst);
             let current = load_f64(&slot.current);
             let target = load_f64(&slot.target);
             let rate = load_f64(&slot.rate);
@@ -219,10 +226,11 @@ impl MidiDmxStore {
             // black).
             if slot.store_fade.load(Ordering::Acquire) && current == 0.0 && target == 0.0 {
                 slot.store_fade.store(false, Ordering::Release);
-                slot.active.store(false, Ordering::Release);
-                // A MIDI write that landed meanwhile keeps its slot.
-                if load_f64(&slot.target) != 0.0 {
-                    slot.active.store(true, Ordering::Release);
+                slot.active.store(false, Ordering::SeqCst);
+                // A MIDI write that landed meanwhile -- of 0 too, a
+                // blackout cue -- keeps its slot.
+                if slot.writes.load(Ordering::SeqCst) != writes {
+                    slot.active.store(true, Ordering::SeqCst);
                 }
                 any_changed = true;
                 continue;
@@ -401,6 +409,40 @@ mod tests {
         }
         let values: Vec<f64> = store.iter_active().map(|(_, v)| v * 255.0).collect();
         assert_eq!(values, vec![200.0, 200.0], "pan and mode as they were");
+    }
+
+    #[test]
+    fn a_fade_to_dark_knows_levels_by_any_name_they_come_in() {
+        // Section-suffixed GDTF channels, GDTF's amber and lime as their
+        // attributes come through, and colour temperature were not taken
+        // for levels, and stayed lit.
+        let names = [
+            "dimmer:background",
+            "red:ring",
+            "coloradd_ry",
+            "coloradd_gy",
+            "color_temp",
+            "indigo",
+            "zoom",
+        ];
+        let mut store = MidiDmxStore::new();
+        for (i, name) in names.iter().enumerate() {
+            store.register_slot(1, i as u16 + 1, "fixture", name);
+        }
+        store.register_universe(1);
+        for i in 0..names.len() {
+            store.write(1, i as u16 + 1, 200, false);
+        }
+        store.tick();
+        store.fade_out(10.0);
+        for _ in 0..20 {
+            store.tick();
+        }
+        let left: Vec<&str> = store
+            .iter_active()
+            .map(|(slot, _)| store.fixture_info(slot).1.as_str())
+            .collect();
+        assert_eq!(left, vec!["zoom"], "only the optic left as it was");
     }
 
     #[test]

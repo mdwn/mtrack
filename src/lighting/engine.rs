@@ -46,20 +46,30 @@ enum CrossKind {
     Snap,
 }
 
-/// Whether a channel named `channel` fades -- a level or colour, that a
-/// fade takes dark -- rather than holding a position or snapping a setting.
+/// Whether a channel named `channel` is a level or a colour, which going
+/// dark takes to 0 -- not a position, an optic (zoom, focus, iris, frost)
+/// or a setting, which it leaves as they are.
 pub(crate) fn fades_to_dark(channel: &str) -> bool {
     matches!(CrossKind::of(channel), CrossKind::Fade)
+        && !matches!(base_channel(channel), "zoom" | "focus" | "iris" | "frost")
+}
+
+/// A channel's name without its section (`dimmer:background`, as GDTF
+/// profiles with several emitters name theirs) or its fine byte.
+fn base_channel(channel: &str) -> &str {
+    let base = channel.split(':').next().unwrap_or(channel);
+    base.strip_suffix("_fine").unwrap_or(base)
 }
 
 impl CrossKind {
     fn of(channel: &str) -> CrossKind {
-        let base = channel.strip_suffix("_fine").unwrap_or(channel);
-        match base {
+        match base_channel(channel) {
             "pan" | "tilt" => CrossKind::Position,
             "dimmer" | "red" | "green" | "blue" | "white" | "warm_white" | "cool_white" | "uv"
-            | "amber" | "lime" | "cyan" | "magenta" | "yellow" | "zoom" | "focus" | "iris"
-            | "frost" | "ct" | "cto" | "ctb" => CrossKind::Fade,
+            | "amber" | "lime" | "cyan" | "magenta" | "yellow" | "indigo" | "zoom" | "focus"
+            | "iris" | "frost" | "ct" | "cto" | "ctb" | "color_temp"
+            // GDTF's amber and lime, as their attributes come through.
+            | "coloradd_ry" | "coloradd_gy" => CrossKind::Fade,
             _ => CrossKind::Snap,
         }
     }
