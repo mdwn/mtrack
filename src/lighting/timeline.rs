@@ -37,6 +37,13 @@ pub struct TimelineUpdate {
     pub stop_sequences: Vec<String>,
 }
 
+/// A timeline arming's [`LightingTimeline::epoch`]: unique across every
+/// timeline.
+fn next_epoch() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Timeline processor for lighting cues during song playback
 pub struct LightingTimeline {
     /// Cues sorted by time (now using DSL Cue directly)
@@ -55,6 +62,12 @@ pub struct LightingTimeline {
     tempo_map: Option<crate::lighting::tempo::TempoMap>,
     /// Sequences that have been stopped — future cues from these sequences are suppressed
     stopped_sequences: HashSet<String>,
+    /// Which arming of which timeline this is: new for every timeline, and
+    /// at every start, seek and stop. What it fired is applied only while it
+    /// is still the same, so a cue taken from it just before a seek, a
+    /// section loop's restart or a hand-over to another engine does not land
+    /// on what came after.
+    epoch: u64,
     /// When the last effect of the last cue has run its course: the show's
     /// end, as opposed to its last cue's time.
     show_end: Duration,
@@ -133,6 +146,7 @@ impl LightingTimeline {
             held: false,
             tempo_map: None,
             stopped_sequences: HashSet::new(),
+            epoch: next_epoch(),
             show_end,
             end_cap: None,
         };
@@ -170,6 +184,7 @@ impl LightingTimeline {
 
     /// Starts the timeline
     pub fn start(&mut self) {
+        self.epoch = next_epoch();
         self.is_playing = true;
         self.current_time = Duration::ZERO;
         self.next_cue_index = 0;
@@ -179,6 +194,7 @@ impl LightingTimeline {
     /// Starts the timeline at a specific time (for seeking)
     /// This processes all cues before start_time to ensure deterministic state
     pub fn start_at(&mut self, start_time: Duration) -> TimelineUpdate {
+        self.epoch = next_epoch();
         self.is_playing = true;
         self.current_time = start_time;
         self.stopped_sequences.clear();
@@ -297,6 +313,11 @@ impl LightingTimeline {
         self.cues.partition_point(|cue| cue.time < time)
     }
 
+    /// Which arming of which timeline this is (see the field).
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
     /// Holds an armed timeline from firing cues (`true`), or lets it go on
     /// from where it was armed (`false`).
     pub fn hold(&mut self, held: bool) {
@@ -305,6 +326,7 @@ impl LightingTimeline {
 
     /// Stops the timeline
     pub fn stop(&mut self) {
+        self.epoch = next_epoch();
         self.is_playing = false;
         self.current_time = Duration::ZERO;
         self.next_cue_index = 0;

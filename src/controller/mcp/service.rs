@@ -564,7 +564,7 @@ impl McpServer {
             let mut shows: Vec<_> = song
                 .dsl_lighting_shows()
                 .iter()
-                .flat_map(|dsl| dsl.shows().values().cloned())
+                .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
                 .collect();
             sort_shows(&mut shows);
 
@@ -1131,7 +1131,8 @@ impl McpServer {
             .dsl_lighting_shows()
             .iter()
             .map(|s| {
-                let show_names: Vec<&String> = s.shows().keys().collect();
+                let shows = s.shows();
+                let show_names: Vec<&String> = shows.keys().collect();
                 json!({
                     "file": s.file_path().display().to_string(),
                     "shows": show_names,
@@ -3206,8 +3207,7 @@ fn declared_meter(song: &crate::songs::Song) -> Option<crate::tempo::TempoMap> {
     song.tempo_map().cloned().or_else(|| {
         song.dsl_lighting_shows()
             .iter()
-            .flat_map(|s| s.shows().values())
-            .find_map(|show| show.tempo_map.clone())
+            .find_map(|s| s.shows().values().find_map(|show| show.tempo_map.clone()))
     })
 }
 

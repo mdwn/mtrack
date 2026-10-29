@@ -57,7 +57,7 @@ pub fn songs_with_lighting(songs: &crate::songs::Songs) -> Vec<(Arc<Song>, Vec<L
         let mut shows: Vec<LightShow> = song
             .dsl_lighting_shows()
             .iter()
-            .flat_map(|dsl| dsl.shows().values().cloned())
+            .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
             .collect();
         shows.sort_by(|a, b| a.name.cmp(&b.name));
         out.push((song, shows));

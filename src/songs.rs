@@ -41,12 +41,85 @@ pub fn is_supported_audio_extension(ext: &str) -> bool {
 }
 
 /// A resolved DSL lighting show with absolute file path and cached parsed shows.
-#[derive(Debug, Clone)]
+///
+/// The parse is kept until the file changes on disk: [`Self::shows`] parses
+/// it again once its modified time or size moves, so an edit made outside mtrack (an
+/// editor, `git pull`), or one the engine's hot reload picked up during a
+/// playback, is what the song plays next rather than the show it was loaded
+/// with (#585).
 pub struct DslLightingShow {
     /// The absolute path to the DSL file
     file_path: PathBuf,
-    /// Cached parsed light shows from the DSL file
-    shows: HashMap<String, ParsedLightShow>,
+    /// The tempo the show inherits, to parse it again against.
+    tempo_map: Option<crate::tempo::TempoMap>,
+    /// The latest parse, and the file's stamp when it was read.
+    parsed: parking_lot::Mutex<ParsedFile>,
+}
+
+/// One parse of a DSL file.
+struct ParsedFile {
+    shows: Arc<HashMap<String, ParsedLightShow>>,
+    modified: Option<FileStamp>,
+    /// Bumped by every parse after the first, for what is worked out from
+    /// the shows to tell it is stale.
+    version: u64,
+}
+
+impl fmt::Debug for DslLightingShow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DslLightingShow")
+            .field("file_path", &self.file_path)
+            .field("shows", &self.parsed.lock().shows)
+            .finish()
+    }
+}
+
+impl Clone for DslLightingShow {
+    fn clone(&self) -> Self {
+        let parsed = self.parsed.lock();
+        Self {
+            file_path: self.file_path.clone(),
+            tempo_map: self.tempo_map.clone(),
+            parsed: parking_lot::Mutex::new(ParsedFile {
+                shows: parsed.shows.clone(),
+                modified: parsed.modified,
+                version: parsed.version,
+            }),
+        }
+    }
+}
+
+/// What tells a file has changed: its modified time, and its size, for two
+/// saves within one tick of the clock -- a truncate, then the write.
+type FileStamp = (std::time::SystemTime, u64);
+
+/// The [`FileStamp`] of `path`, if it can be read.
+fn modified_time(path: &Path) -> Option<FileStamp> {
+    let metadata = fs::metadata(path).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+/// Reads and parses a DSL file.
+fn parse_dsl_file(
+    file_path: &Path,
+    tempo_map: Option<&crate::tempo::TempoMap>,
+) -> Result<HashMap<String, ParsedLightShow>, Box<dyn Error>> {
+    let content = std::fs::read_to_string(file_path).map_err(|e| {
+        format!(
+            "Failed to read DSL lighting show {}: {}",
+            file_path.display(),
+            e
+        )
+    })?;
+    crate::lighting::parser::parse_light_file(&content, Some(file_path), tempo_map).map_err(|e| {
+        // Prepend the file path to the error, preserving newlines in the original error
+        format!(
+            "Failed to parse DSL lighting show {}:\n{}",
+            file_path.display(),
+            e
+        )
+        .into()
+    })
 }
 
 impl DslLightingShow {
@@ -71,27 +144,38 @@ impl DslLightingShow {
             .into());
         }
 
-        // Validate file can be read and parsed
-        let content = std::fs::read_to_string(&file_path).map_err(|e| {
-            format!(
-                "Failed to read DSL lighting show {}: {}",
-                file_path.display(),
-                e
-            )
-        })?;
+        Self::load(file_path, tempo_map)
+    }
 
-        let shows =
-            crate::lighting::parser::parse_light_file(&content, Some(&file_path), tempo_map)
-                .map_err(|e| {
-                    // Prepend the file path to the error, preserving newlines in the original error
-                    format!(
-                        "Failed to parse DSL lighting show {}:\n{}",
-                        file_path.display(),
-                        e
-                    )
-                })?;
+    /// Reads and parses the DSL file at `file_path`.
+    pub(crate) fn load(
+        file_path: PathBuf,
+        tempo_map: Option<&crate::tempo::TempoMap>,
+    ) -> Result<Self, Box<dyn Error>> {
+        // Read before parsing: an edit landing in between is newer than the
+        // time kept, and parsed again next time.
+        let modified = modified_time(&file_path);
+        let shows = parse_dsl_file(&file_path, tempo_map)?;
+        Ok(Self::with_shows(file_path, shows, tempo_map, modified))
+    }
 
-        Ok(DslLightingShow { file_path, shows })
+    /// A show already parsed from `file_path`, with the file's stamp when
+    /// it was read (`None`: never parsed again).
+    fn with_shows(
+        file_path: PathBuf,
+        shows: HashMap<String, ParsedLightShow>,
+        tempo_map: Option<&crate::tempo::TempoMap>,
+        modified: Option<FileStamp>,
+    ) -> Self {
+        Self {
+            file_path,
+            tempo_map: tempo_map.cloned(),
+            parsed: parking_lot::Mutex::new(ParsedFile {
+                shows: Arc::new(shows),
+                modified,
+                version: 0,
+            }),
+        }
     }
 
     /// Gets the absolute file path
@@ -99,9 +183,44 @@ impl DslLightingShow {
         &self.file_path
     }
 
-    /// Gets the cached parsed light shows
-    pub fn shows(&self) -> &HashMap<String, ParsedLightShow> {
-        &self.shows
+    /// Gets the parsed light shows, parsing the file again first if it has
+    /// changed on disk since. A file that no longer parses keeps the last
+    /// good parse (the error is logged once per change), as the engine's
+    /// hot reload does.
+    pub fn shows(&self) -> Arc<HashMap<String, ParsedLightShow>> {
+        self.refresh().0
+    }
+
+    /// The parse counter: it moves whenever [`Self::shows`] has parsed the
+    /// file again.
+    pub(crate) fn version(&self) -> u64 {
+        self.refresh().1
+    }
+
+    fn refresh(&self) -> (Arc<HashMap<String, ParsedLightShow>>, u64) {
+        let mut parsed = self.parsed.lock();
+        if parsed.modified.is_some() {
+            let modified = modified_time(&self.file_path);
+            if modified.is_some() && modified != parsed.modified {
+                parsed.modified = modified;
+                match parse_dsl_file(&self.file_path, self.tempo_map.as_ref()) {
+                    Ok(shows) => {
+                        info!(
+                            file = %self.file_path.display(),
+                            "Light show changed on disk; parsed again"
+                        );
+                        parsed.shows = Arc::new(shows);
+                        parsed.version += 1;
+                    }
+                    Err(e) => warn!(
+                        file = %self.file_path.display(),
+                        err = %e,
+                        "Light show changed on disk but does not parse; keeping the last good one"
+                    ),
+                }
+            }
+        }
+        (parsed.shows.clone(), parsed.version)
     }
 }
 
@@ -143,8 +262,10 @@ pub struct Song {
     /// The DSL lighting shows (resolved to absolute paths)
     dsl_lighting_shows: Vec<DslLightingShow>,
     /// When the song's lighting is over — the last effect's real end across
-    /// its shows — which is how long a song with no audio plays.
-    lighting_end: Duration,
+    /// its shows — which is how long a song with no audio plays; with the
+    /// sum of the shows' parse versions it was worked out for, to work it
+    /// out again once a show file is parsed again.
+    lighting_end: parking_lot::Mutex<(u64, Duration)>,
     /// The number of channels required to play this song.
     num_channels: u16,
     /// The sample rate of this song.
@@ -308,7 +429,7 @@ impl Song {
             midi_event: config.midi_event()?,
             midi_playback,
             light_shows,
-            lighting_end: lighting_end(&dsl_lighting_shows),
+            lighting_end: parking_lot::Mutex::new((0, lighting_end(&dsl_lighting_shows))),
             dsl_lighting_shows,
             num_channels,
             sample_rate,
@@ -530,25 +651,7 @@ impl Song {
         let beat_grid = Self::analyze_click_track(song_directory, &tracks);
         let lighting_tempo = beat_grid.as_ref().and_then(|grid| grid.to_tempo_map());
         for path in light_paths {
-            let content = std::fs::read_to_string(&path).map_err(|e| {
-                format!("Failed to read DSL lighting show {}: {}", path.display(), e)
-            })?;
-            let shows = crate::lighting::parser::parse_light_file(
-                &content,
-                Some(&path),
-                lighting_tempo.as_ref(),
-            )
-            .map_err(|e| {
-                format!(
-                    "Failed to parse DSL lighting show {}:\n{}",
-                    path.display(),
-                    e
-                )
-            })?;
-            dsl_lighting_shows.push(DslLightingShow {
-                file_path: path,
-                shows,
-            });
+            dsl_lighting_shows.push(DslLightingShow::load(path, lighting_tempo.as_ref())?);
         }
 
         let song = Self {
@@ -557,7 +660,7 @@ impl Song {
             config_path: Some(song_directory.join("song.yaml")),
             midi_playback,
             light_shows,
-            lighting_end: lighting_end(&dsl_lighting_shows),
+            lighting_end: parking_lot::Mutex::new((0, lighting_end(&dsl_lighting_shows))),
             dsl_lighting_shows,
             beat_grid,
             tracks,
@@ -661,7 +764,16 @@ impl Song {
     /// bound want; the audio pipeline keeps sizing itself by [`Self::duration`].
     pub fn length(&self) -> Duration {
         if self.duration.is_zero() {
-            self.lighting_end
+            let version = self
+                .dsl_lighting_shows
+                .iter()
+                .map(DslLightingShow::version)
+                .sum();
+            let mut end = self.lighting_end.lock();
+            if end.0 != version {
+                *end = (version, lighting_end(&self.dsl_lighting_shows));
+            }
+            end.1
         } else {
             self.duration
         }
@@ -788,6 +900,17 @@ impl Song {
     pub fn loop_period(&self) -> Duration {
         self.length()
             .saturating_sub(self.loop_crossfade().unwrap_or_default())
+    }
+
+    /// Where `elapsed` (from the song's start, over every pass) is in the
+    /// pass it is on: elapsed itself for a song that does not loop.
+    pub fn position_in_pass(&self, elapsed: Duration) -> Duration {
+        let period = self.loop_period();
+        if self.loop_playback && !period.is_zero() {
+            Duration::from_nanos((elapsed.as_nanos() % period.as_nanos()) as u64)
+        } else {
+            elapsed
+        }
     }
 
     /// Tracks that switch over halfway through the loop crossfade instead of
@@ -1264,13 +1387,12 @@ impl fmt::Display for Song {
 /// When the song's lighting ends, by the timeline's own reckoning: every
 /// show from every file merged into one timeline, exactly as the DMX
 /// engine plays them, so a `clear` in one file cuts an effect in another
-/// here as it does there. Computed when the song loads; a `.light` file
-/// edited while the song plays is picked up by the engine's hot reload,
-/// and by this on the next load of the song.
+/// here as it does there. Computed when the song loads, and again once a
+/// `.light` file has changed on disk (see [`Song::length`]).
 fn lighting_end(shows: &[DslLightingShow]) -> Duration {
     let all: Vec<ParsedLightShow> = shows
         .iter()
-        .flat_map(|dsl| dsl.shows().values().cloned())
+        .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
         .collect();
     if all.is_empty() {
         return Duration::ZERO;
@@ -1288,7 +1410,7 @@ impl Default for Song {
             midi_playback: Default::default(),
             light_shows: Vec::new(),
             dsl_lighting_shows: Vec::new(),
-            lighting_end: Duration::ZERO,
+            lighting_end: parking_lot::Mutex::new((0, Duration::ZERO)),
             num_channels: Default::default(),
             sample_rate: Default::default(),
             sample_format: SampleFormat::Int,
@@ -3927,6 +4049,79 @@ pilot:
         Ok(())
     }
 
+    /// Writes `content` to `path` with a modified time `secs` past the
+    /// epoch, so an edit is seen as one however fast the test runs.
+    fn write_at(path: &Path, content: &str, secs: u64) -> Result<(), Box<dyn Error>> {
+        fs::write(path, content)?;
+        fs::File::options()
+            .write(true)
+            .open(path)?
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_show_file_edited_on_disk_is_what_the_song_plays_next() -> Result<(), Box<dyn Error>> {
+        // #585: a show was parsed once, at load; an edit outside mtrack
+        // never took effect, and one hot-reloaded during a playback was
+        // gone at the next play.
+        let tempdir = tempfile::tempdir()?;
+        let path = tempdir.path().join("show.light");
+        let show = |name: &str, end: &str| {
+            format!(
+                "show \"{name}\" {{\n    @00:00.000\n    front: static color: \"blue\", duration: {end}\n}}\n"
+            )
+        };
+        write_at(&path, &show("before", "5s"), 1_000)?;
+        let song_config = crate::config::Song::new(
+            "Edited",
+            None,
+            None,
+            None,
+            None,
+            Some(vec![crate::config::LightingShow::new(
+                path.to_string_lossy().into_owned(),
+            )]),
+            vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let names = |song: &super::Song| -> Vec<String> {
+            song.dsl_lighting_shows()[0]
+                .shows()
+                .keys()
+                .cloned()
+                .collect()
+        };
+        assert_eq!(names(&song), ["before"]);
+        assert_eq!(song.length(), std::time::Duration::from_secs(5));
+
+        write_at(&path, &show("after", "8s"), 2_000)?;
+        assert_eq!(names(&song), ["after"], "the edit was not picked up");
+        assert_eq!(
+            song.length(),
+            std::time::Duration::from_secs(8),
+            "a show-only song's length"
+        );
+
+        // A second save in the same tick of the clock, of another size.
+        write_at(&path, &show("same_tick", "12s"), 2_000)?;
+        assert_eq!(names(&song), ["same_tick"], "a same-tick save was missed");
+        assert_eq!(song.length(), std::time::Duration::from_secs(12));
+
+        // An edit that does not parse keeps the last good show.
+        write_at(&path, "show \"broken\" {", 3_000)?;
+        assert_eq!(names(&song), ["same_tick"]);
+        assert_eq!(song.length(), std::time::Duration::from_secs(12));
+
+        // Fixed again, it is picked up again.
+        write_at(&path, &show("fixed", "3s"), 4_000)?;
+        assert_eq!(names(&song), ["fixed"]);
+        assert_eq!(song.length(), std::time::Duration::from_secs(3));
+        Ok(())
+    }
+
     #[test]
     fn initialize_with_light_file() -> Result<(), Box<dyn Error>> {
         let tempdir = tempfile::tempdir()?;
@@ -4467,6 +4662,28 @@ pilot:
         assert_eq!(proto.sections[0].end_beat, None);
     }
 
+    #[test]
+    fn a_position_on_a_later_pass_is_its_place_in_the_pass() {
+        use std::time::Duration;
+        let looping = super::Song {
+            duration: Duration::from_secs(10),
+            loop_playback: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            looping.position_in_pass(Duration::from_secs(23)),
+            Duration::from_secs(3)
+        );
+        let once = super::Song {
+            duration: Duration::from_secs(10),
+            ..Default::default()
+        };
+        assert_eq!(
+            once.position_in_pass(Duration::from_secs(23)),
+            Duration::from_secs(23)
+        );
+    }
+
     /// A song with no audio is as long as its lighting: the last effect's
     /// real end, a `clear` counted. With audio, the audio decides.
     #[test]
@@ -4477,12 +4694,14 @@ pilot:
              @00:12.000\n    clear()\n}\n",
         )
         .unwrap();
-        let dsls = vec![super::DslLightingShow {
-            file_path: PathBuf::from("show.light"),
+        let dsls = vec![super::DslLightingShow::with_shows(
+            PathBuf::from("show.light"),
             shows,
-        }];
+            None,
+            None,
+        )];
         let song = super::Song {
-            lighting_end: super::lighting_end(&dsls),
+            lighting_end: parking_lot::Mutex::new((0, super::lighting_end(&dsls))),
             dsl_lighting_shows: dsls,
             ..Default::default()
         };
@@ -4500,14 +4719,8 @@ pilot:
         )
         .unwrap();
         let two_files = vec![
-            super::DslLightingShow {
-                file_path: PathBuf::from("main.light"),
-                shows: main,
-            },
-            super::DslLightingShow {
-                file_path: PathBuf::from("outro.light"),
-                shows: outro,
-            },
+            super::DslLightingShow::with_shows(PathBuf::from("main.light"), main, None, None),
+            super::DslLightingShow::with_shows(PathBuf::from("outro.light"), outro, None, None),
         ];
         assert_eq!(super::lighting_end(&two_files), Duration::from_secs(10));
 

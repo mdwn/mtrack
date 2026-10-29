@@ -18,6 +18,7 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use super::{Player, ReactiveLoopState};
+use crate::songs::Song;
 
 /// How long a seek waits for the previous playback to wind down before
 /// abandoning it. Normal wind-down is well under a second; this only fires
@@ -36,6 +37,17 @@ impl Player {
             return Ok(None);
         };
         self.stop_for_pause().await;
+        let Some(song) = self.get_playlist().current() else {
+            return Ok(Some(position));
+        };
+        // A looping song's elapsed runs on over its passes: where it is in
+        // the pass it is on is what to resume from.
+        let position = song.position_in_pass(position);
+        // Paused on the song's very end: there is nothing left to resume,
+        // so the next play starts it over.
+        if check_start_position(&song, position, "").is_err() {
+            return Ok(Some(position));
+        }
         self.seek_to(position).await?;
         Ok(Some(position))
     }
@@ -55,14 +67,7 @@ impl Player {
             .get_playlist()
             .current()
             .ok_or("Cannot seek: playlist is empty")?;
-        if position > song.length() {
-            return Err(format!(
-                "Cannot seek to {:?}: beyond song length {:?}",
-                position,
-                song.length()
-            )
-            .into());
-        }
+        check_start_position(&song, position, "seek to")?;
 
         // A looping song ending: stopped a moment from now, and nothing to
         // restart.
@@ -163,5 +168,36 @@ impl Player {
     /// changes so a stale seek doesn't apply to a different song.
     pub(super) fn clear_pending_start(&self) {
         *self.pending_start.lock() = None;
+    }
+}
+
+/// Turns down a start position at or past the song's end: audio has nothing
+/// to play there, so playback would fail and the playlist skip the song
+/// (#584). A song with no length to go by -- no audio and no DSL show, a MIDI
+/// file or a MIDI DMX show alone -- takes any start, as it always has.
+pub(super) fn check_start_position(
+    song: &Song,
+    position: Duration,
+    action: &str,
+) -> Result<(), String> {
+    let length = song.length();
+    if !length.is_zero() && position >= length {
+        return Err(format!(
+            "Cannot {} {:?}: at or beyond song length {:?}",
+            action, position, length
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_song_with_no_length_takes_any_start() {
+        // A song with no audio and no DSL show has no length to go by.
+        let song = Song::default();
+        assert!(check_start_position(&song, Duration::from_secs(30), "play from").is_ok());
     }
 }

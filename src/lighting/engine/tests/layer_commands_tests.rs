@@ -14,6 +14,7 @@
 use crate::lighting::effects::*;
 use crate::lighting::engine::tests::common::create_test_fixture;
 use crate::lighting::engine::EffectEngine;
+use crate::lighting::engine::FixtureInfo;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -628,4 +629,89 @@ fn test_multiple_layers_independent() {
     assert_eq!(engine.active_effects_count(), 1);
     assert!(engine.has_effect("bg"));
     assert!(!engine.has_effect("mid"));
+}
+
+/// An engine running a green static cued at 0 for 4 s on the midground.
+fn cued_green_static() -> EffectEngine {
+    let mut engine = EffectEngine::new();
+    let mut channels = HashMap::new();
+    channels.insert("green".to_string(), 1);
+    engine.register_fixture(FixtureInfo::new(
+        "brick".to_string(),
+        1,
+        1,
+        "RGB".to_string(),
+        channels,
+        None,
+    ));
+    let mut effect = EffectInstance::new(
+        "green".to_string(),
+        EffectType::Static {
+            parameters: HashMap::from([("green".to_string(), 1.0)]),
+            duration: Duration::from_secs(4),
+        },
+        vec!["brick".to_string()],
+        None,
+        None,
+        None,
+    );
+    effect.layer = EffectLayer::Midground;
+    effect.cue_time = Some(Duration::ZERO);
+    engine.start_effect(effect).unwrap();
+    engine
+}
+
+/// Runs the engine on song time in 10 ms frames from `from` up to `to`.
+fn run_song(engine: &mut EffectEngine, from: &mut Duration, to: Duration) {
+    while *from < to {
+        *from += Duration::from_millis(10);
+        engine
+            .update(Duration::from_millis(10), Some(*from))
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_frozen_cued_effect_holds_past_its_end_and_resumes_after_unfreeze() {
+    // #586: a cued effect expired on score time, which runs on through a
+    // freeze, so a frozen look went dark at its normal end and was gone at
+    // the unfreeze. It must hold, then run its remaining 2 s.
+    let mut engine = cued_green_static();
+    let mut song = Duration::ZERO;
+    run_song(&mut engine, &mut song, Duration::from_secs(2));
+    engine.freeze_layer(EffectLayer::Midground);
+    run_song(&mut engine, &mut song, Duration::from_millis(6_500));
+    assert!(engine.has_effect("green"), "frozen effect expired at 4 s");
+    run_song(&mut engine, &mut song, Duration::from_secs(7));
+    engine.unfreeze_layer(EffectLayer::Midground);
+    run_song(&mut engine, &mut song, Duration::from_millis(8_800));
+    assert!(
+        engine.has_effect("green"),
+        "ended before its remaining 2 s ran"
+    );
+    run_song(&mut engine, &mut song, Duration::from_millis(9_200));
+    assert!(!engine.has_effect("green"), "ran past its remaining 2 s");
+}
+
+#[test]
+fn a_slowed_cued_effect_runs_its_slowed_length() {
+    // #586: at half speed a 4 s cued effect renders for 8 s, but it was cut
+    // off at its full-speed end, 4 s in.
+    let mut engine = cued_green_static();
+    engine.set_layer_speed_master(EffectLayer::Midground, 0.5);
+    let mut song = Duration::ZERO;
+    run_song(&mut engine, &mut song, Duration::from_millis(7_800));
+    assert!(engine.has_effect("green"), "slowed effect cut off at 4 s");
+    run_song(&mut engine, &mut song, Duration::from_millis(8_200));
+    assert!(!engine.has_effect("green"), "slowed effect ran past 8 s");
+}
+
+#[test]
+fn a_cued_effect_at_normal_speed_still_ends_on_score_time() {
+    let mut engine = cued_green_static();
+    let mut song = Duration::ZERO;
+    run_song(&mut engine, &mut song, Duration::from_millis(3_990));
+    assert!(engine.has_effect("green"));
+    run_song(&mut engine, &mut song, Duration::from_secs(4));
+    assert!(!engine.has_effect("green"), "did not end on its score end");
 }

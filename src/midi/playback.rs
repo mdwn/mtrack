@@ -252,13 +252,9 @@ impl PrecomputedMidi {
     }
 
     /// Creates a PrecomputedMidi by taking ownership of a Vec of events.
+    #[cfg(test)]
     pub fn from_events(events: Vec<TimedMidiEvent>) -> Self {
         PrecomputedMidi { events }
-    }
-
-    /// Consumes self and returns the underlying event Vec.
-    pub fn into_events(self) -> Vec<TimedMidiEvent> {
-        self.events
     }
 
     /// Returns the slice of events starting from the first event at or after `start_time`.
@@ -523,7 +519,7 @@ mod tests {
         assert_eq!(midi.events()[0].channel, 0);
         assert_eq!(midi.events()[1].channel, 1);
 
-        let recovered = midi.into_events();
+        let recovered = midi.events();
         assert_eq!(recovered.len(), 2);
         assert_eq!(recovered[0].time, Duration::from_millis(0));
         assert_eq!(recovered[1].time, Duration::from_millis(500));

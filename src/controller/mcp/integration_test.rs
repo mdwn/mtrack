@@ -2992,7 +2992,7 @@ async fn mcp_surface_consistency_fixes() -> Result<(), Box<dyn Error>> {
             &session,
             1203,
             "play_song_from",
-            json!({"song_name": song, "start_time": "0.5"}),
+            json!({"song_name": song, "start_time": "0.25"}),
         )
         .await,
     );

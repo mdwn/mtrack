@@ -302,7 +302,9 @@ fn reload_timeline(
         let mut engine = effect_engine.lock();
         info!("Watcher acquired effect_engine lock.");
         engine.set_tempo_map(tempo_map);
-        engine.stop_all_effects();
+        // The show's effects only: the MIDI DMX store goes on as MIDI set
+        // it, which nothing would put back mid-song (#583).
+        engine.stop_show_effects();
 
         if song_time > Duration::ZERO {
             for cmd in &timeline_update.layer_commands {
@@ -376,6 +378,47 @@ mod test {
         );
         assert!(result.is_ok());
         assert!(timeline.lock().is_some());
+    }
+
+    #[test]
+    fn a_reload_leaves_what_midi_dmx_holds() {
+        // A live edit's reload cleared the MIDI DMX store along with the
+        // show's effects, and nothing put it back mid-song (#583).
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("show.light");
+        std::fs::write(
+            &dsl_path,
+            "show \"test\" {\n    @00:00.000\n    front_wash: static color: \"blue\", duration: 5s\n}",
+        )
+        .unwrap();
+        let store = Arc::new(parking_lot::RwLock::new(
+            crate::dmx::midi_dmx_store::MidiDmxStore::new(),
+        ));
+        {
+            let mut store = store.write();
+            store.register_slot(1, 1, "par", "dimmer");
+            store.register_universe(1);
+        }
+        store.read().write(1, 1, 200, false);
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        effect_engine.lock().set_midi_dmx_store(store.clone());
+        let timeline = Arc::new(Mutex::new(None));
+        let song_time = Arc::new(AtomicU64::new(Duration::from_secs(3).as_nanos() as u64));
+
+        reload_timeline(
+            &[dsl_path],
+            &effect_engine,
+            &timeline,
+            &song_time,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            store.read().has_active_slots(),
+            "the reload cleared MIDI DMX"
+        );
     }
 
     #[test]

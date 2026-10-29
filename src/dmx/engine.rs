@@ -182,6 +182,9 @@ pub(super) struct MidiDmxPlayback {
     pub(super) cursor: usize,
     pub(super) universe_id: u16,
     pub(super) midi_channels: HashSet<u8>,
+    /// The universe's dim rate (ticks) when the playback started, which a
+    /// seek replays the events before it from.
+    pub(super) start_dim_rate: f64,
 }
 
 /// DmxMessage is a message that can be passed around between senders and receivers.
@@ -1454,6 +1457,7 @@ mod test {
                 cursor: 0,
                 universe_id: 5,
                 midi_channels,
+                start_dim_rate: 1.0,
             });
         }
 
@@ -2427,6 +2431,7 @@ mod test {
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
             }
             assert!(!engine.midi_dmx_playbacks_finished());
@@ -2452,6 +2457,7 @@ mod test {
                     cursor: len,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
             }
             assert!(engine.midi_dmx_playbacks_finished());
@@ -2477,6 +2483,7 @@ mod test {
                     cursor: 1,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
                 // Unfinished playback
                 playbacks.push(super::super::MidiDmxPlayback {
@@ -2484,6 +2491,7 @@ mod test {
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
             }
             assert!(!engine.midi_dmx_playbacks_finished());
@@ -2522,6 +2530,7 @@ mod test {
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
             }
 
@@ -2562,6 +2571,7 @@ mod test {
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
             }
 
@@ -2603,6 +2613,7 @@ mod test {
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
                 });
             }
 
@@ -2647,6 +2658,7 @@ mod test {
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(), // empty = accept all
+                    start_dim_rate: 1.0,
                 });
             }
 
@@ -2859,6 +2871,104 @@ mod test {
                 universe.get_target_value(1),
                 universe.get_target_value(2),
             )
+        }
+
+        /// A wash engine running `source` from 0, with a frame at 1 s.
+        fn wash_running(source: &str) -> Result<(Arc<Engine>, CancelHandle), Box<dyn Error>> {
+            let (engine, cancel_handle) = create_engine()?;
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+            *engine.current_song_timeline.lock() = Some(timeline(source));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            frame_at(&engine, 1.0);
+            Ok((engine, cancel_handle))
+        }
+
+        /// What the effects loop takes from the timeline at `secs`, as it
+        /// does before it applies it.
+        fn fire_at(engine: &Engine, secs: f64) -> (crate::lighting::timeline::TimelineUpdate, u64) {
+            let mut timeline = engine.current_song_timeline.lock();
+            let timeline = timeline.as_mut().unwrap();
+            (
+                timeline.update(Duration::from_secs_f64(secs)),
+                timeline.epoch(),
+            )
+        }
+
+        fn cued_at(engine: &crate::lighting::EffectEngine, secs: f64) -> bool {
+            engine
+                .get_active_effects()
+                .values()
+                .any(|e| e.cue_time == Some(Duration::from_secs_f64(secs)))
+        }
+
+        const RED_THEN_GREEN: &str = "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", \
+             duration: 10s\n    @2.000\n    wash: static, color: \"green\", duration: 1s\n}\n";
+
+        #[test]
+        fn a_cue_taken_before_a_restart_does_not_land_after_it() -> Result<(), Box<dyn Error>> {
+            // A cue the effects loop took from the timeline just before a
+            // section loop restarted it was applied on top of the state the
+            // restart put in.
+            let (engine, _cancel_handle) = wash_running(RED_THEN_GREEN)?;
+            let (green, epoch) = fire_at(&engine, 2.0);
+            assert!(!green.effects.is_empty(), "the green cue fired");
+
+            engine.update_song_time(Duration::from_millis(500));
+            engine.start_lighting_timeline_at(Duration::from_millis(500));
+            engine.apply_timeline_update(green, epoch)?;
+            assert!(
+                !cued_at(&engine.effect_engine.lock(), 2.0),
+                "the 2 s cue landed at 0.5 s"
+            );
+            engine.update_effects()?;
+            let universe = engine.get_universe(5).unwrap();
+            assert_eq!(
+                (universe.get_target_value(0), universe.get_target_value(1)),
+                (255.0, 0.0),
+                "not red at 0.5 s"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_cue_taken_before_a_pass_swap_lands_on_its_own_pass() -> Result<(), Box<dyn Error>> {
+            // A cue the effects loop took from the timeline just before a
+            // loop pass swap went to the fresh engine, the next pass's,
+            // rather than the outgoing pass it belongs to.
+            let (engine, _cancel_handle) = wash_running(RED_THEN_GREEN)?;
+            let (green, epoch) = fire_at(&engine, 2.0);
+
+            engine.begin_loop_crossfade(
+                Some(timeline(
+                    "show \"a\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 7s\n}\n",
+                )),
+                Duration::from_secs(6),
+                Duration::from_secs(2),
+            );
+            engine.apply_timeline_update(green, epoch)?;
+            assert!(
+                !cued_at(&engine.effect_engine.lock(), 2.0),
+                "the old pass's cue landed on the new pass"
+            );
+            let outgoing = engine.outgoing_pass.lock();
+            assert!(
+                cued_at(&outgoing.as_ref().unwrap().effect_engine, 2.0),
+                "the old pass lost its cue"
+            );
+            Ok(())
         }
 
         #[test]
@@ -4536,6 +4646,14 @@ mod test {
 
     mod apply_timeline_update_tests {
         use super::*;
+
+        /// Installs an empty timeline, whose update the tests apply.
+        fn armed(engine: &Engine) -> u64 {
+            let timeline = crate::lighting::timeline::LightingTimeline::new(Vec::new());
+            let epoch = timeline.epoch();
+            *engine.current_song_timeline.lock() = Some(timeline);
+            epoch
+        }
         use crate::lighting::parser::{LayerCommand, LayerCommandType};
 
         #[test]
@@ -4554,7 +4672,7 @@ mod test {
                 stop_sequences: vec![],
             };
 
-            assert!(engine.apply_timeline_update(update).is_ok());
+            assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
             Ok(())
         }
 
@@ -4569,7 +4687,7 @@ mod test {
                 stop_sequences: vec!["test_seq".to_string()],
             };
 
-            assert!(engine.apply_timeline_update(update).is_ok());
+            assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
             Ok(())
         }
 
@@ -4622,7 +4740,7 @@ mod test {
                 stop_sequences: vec![],
             };
 
-            assert!(engine.apply_timeline_update(update).is_ok());
+            assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
             Ok(())
         }
 
@@ -4668,7 +4786,7 @@ mod test {
                 stop_sequences: vec![],
             };
 
-            assert!(engine.apply_timeline_update(update).is_ok());
+            assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
             Ok(())
         }
     }
@@ -5192,6 +5310,277 @@ mod test {
                 },
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
+            Ok(())
+        }
+
+        /// A MIDI file that sets CC0 to 127 (DMX 1 to 254) at 0 and nothing
+        /// else on it, with one more CC at 8 s to keep the show running.
+        fn create_cc_held_midi_file(path: &std::path::Path) {
+            create_cc_midi_file(path, 0);
+        }
+
+        /// As [`create_cc_held_midi_file`], with the CC `delta` ticks (960 a
+        /// second) in.
+        fn create_cc_midi_file(path: &std::path::Path, delta: u32) {
+            use midly::num::{u15, u28, u4, u7};
+            use midly::{Format, Header, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
+            let cc = |delta: u32, controller: u8, value: u8| TrackEvent {
+                delta: u28::new(delta),
+                kind: TrackEventKind::Midi {
+                    channel: u4::new(0),
+                    message: MidiMessage::Controller {
+                        controller: u7::new(controller),
+                        value: u7::new(value),
+                    },
+                },
+            };
+            let smf = Smf {
+                header: Header::new(Format::SingleTrack, Timing::Metrical(u15::new(480))),
+                tracks: vec![vec![
+                    cc(delta, 0, 127),
+                    // 120 bpm at 480 ticks a beat: 960 ticks a second.
+                    cc(960 * 8 - delta, 9, 1),
+                    TrackEvent {
+                        delta: u28::new(0),
+                        kind: TrackEventKind::Meta(midly::MetaMessage::EndOfTrack),
+                    },
+                ]],
+            };
+            smf.save(path).unwrap();
+        }
+
+        /// Patches DMX 1 on universe 5 as a fixture's red, which MIDI DMX
+        /// drives through the store.
+        fn patch_wash_red(engine: &Engine) {
+            {
+                let mut store = engine.midi_dmx_store.write();
+                store.register_slot(5, 1, "wash", "red");
+                store.register_universe(5);
+            }
+            let mut main = engine.effect_engine.lock();
+            main.set_midi_dmx_store(engine.midi_dmx_store.clone());
+            main.register_fixture(crate::lighting::effects::FixtureInfo::new(
+                "wash".to_string(),
+                5,
+                1,
+                "Generic".to_string(),
+                std::collections::HashMap::from([("red".to_string(), 1)]),
+                None,
+            ));
+        }
+
+        #[test]
+        fn a_section_restart_puts_back_the_midi_dmx_state_before_it() -> Result<(), Box<dyn Error>>
+        {
+            // #583, on a section loop: each restart clears the store, and
+            // the cursor went back to the section start with nothing put
+            // back, so a look MIDI set before the section went dark from the
+            // second time round.
+            use crate::midi::playback::{PrecomputedMidi, TimedMidiEvent};
+            let (engine, _cancel_handle) = create_engine()?;
+            patch_wash_red(&engine);
+            let cc = |secs: u64, value: u8| TimedMidiEvent {
+                time: Duration::from_secs(secs),
+                channel: 0,
+                message: midly::MidiMessage::Controller {
+                    controller: 0.into(),
+                    value: value.into(),
+                },
+            };
+            engine
+                .midi_dmx_playbacks
+                .lock()
+                .push(crate::dmx::engine::MidiDmxPlayback {
+                    precomputed: PrecomputedMidi::from_events(vec![
+                        cc(0, 127),
+                        // DMX 2, which no fixture patches, first set 4 s in.
+                        TimedMidiEvent {
+                            time: Duration::from_secs(4),
+                            channel: 0,
+                            message: midly::MidiMessage::Controller {
+                                controller: 1.into(),
+                                value: 100.into(),
+                            },
+                        },
+                        cc(5, 10),
+                    ]),
+                    cursor: 3,
+                    universe_id: 5,
+                    midi_channels: HashSet::new(),
+                    start_dim_rate: 1.0,
+                });
+            // Played on to 6 s: red at 20, and a later dimming change in.
+            engine.midi_dmx_store.read().write(5, 1, 20, false);
+            engine.get_universe(5).unwrap().set_dim_rate(88.0);
+            engine
+                .get_universe(5)
+                .unwrap()
+                .update_channel_data(2, 200, false);
+
+            // The section starts at 2 s.
+            engine.start_lighting_timeline_with(
+                Duration::from_secs(2),
+                crate::dmx::engine::timeline::MidiDmxStart::Seek,
+            );
+            engine.midi_dmx_store.read().tick();
+            let red: Vec<_> = engine.midi_dmx_store.read().iter_active().collect();
+            assert_eq!(
+                red.len(),
+                1,
+                "the store lost the value set before the section"
+            );
+            assert!((red[0].1 * 255.0 - 254.0).abs() < 1e-6, "{red:?}");
+            assert_eq!(engine.midi_dmx_playbacks.lock()[0].cursor, 1);
+            assert_eq!(
+                engine.get_universe(5).unwrap().dim_rate(),
+                1.0,
+                "dims at the rate the playback started with"
+            );
+            assert_eq!(
+                engine.get_universe(5).unwrap().get_target_value(1),
+                0.0,
+                "an unpatched channel held what the section set later on"
+            );
+
+            // A whole-song loop's crossfade rewinds it, at its rate too.
+            engine.get_universe(5).unwrap().set_dim_rate(88.0);
+            engine.rewind_midi_dmx_playbacks();
+            assert_eq!(engine.midi_dmx_playbacks.lock()[0].cursor, 0);
+            assert_eq!(engine.get_universe(5).unwrap().dim_rate(), 1.0);
+            engine.midi_dmx_playbacks.lock().clear();
+            Ok(())
+        }
+
+        #[test]
+        fn a_midi_dmx_only_song_plays_its_show() -> Result<(), Box<dyn Error>> {
+            // A song with no DSL show returned from its setup without
+            // starting song time, so nothing after the start went out.
+            let (engine, cancel_handle) = create_engine()?;
+            Engine::start_persistent_effects_loop(engine.clone());
+            let tmp_dir = tempfile::tempdir()?;
+            // The CC 300 ms in.
+            create_cc_midi_file(&tmp_dir.path().join("light.mid"), 288);
+            let song_config = crate::config::Song::new(
+                "MIDI DMX Only",
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightShow::new(
+                    "universe1".to_string(),
+                    "light.mid".to_string(),
+                    None,
+                )]),
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
+            let play = {
+                let engine = engine.clone();
+                let cancel_handle = cancel_handle.clone();
+                std::thread::spawn(move || {
+                    Engine::play(
+                        engine,
+                        song,
+                        crate::playsync::PlaybackSync {
+                            cancel_handle,
+                            ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                            clock,
+                            start_time: Duration::ZERO,
+                            loop_control: crate::playsync::LoopControl::new(),
+                        },
+                    )
+                    .map_err(|e| e.to_string())
+                })
+            };
+            ready_rx.recv_timeout(Duration::from_secs(5))?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            let mut red = 0.0;
+            while std::time::Instant::now() < deadline {
+                red = engine.get_universe(5).unwrap().get_target_value(0);
+                if red == 254.0 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            cancel_handle.cancel();
+            play.join().unwrap()?;
+            assert_eq!(red, 254.0, "the CC 300 ms in never went out");
+            Ok(())
+        }
+
+        #[test]
+        fn a_value_set_before_the_start_point_holds_after_it() -> Result<(), Box<dyn Error>> {
+            held_after_a_start_part_way(false)
+        }
+
+        #[test]
+        fn a_fixture_value_set_before_the_start_point_holds_after_it() -> Result<(), Box<dyn Error>>
+        {
+            held_after_a_start_part_way(true)
+        }
+
+        /// #583: a playback from 3 s skipped the CC at 0, and since #581
+        /// nothing held the channel, so it stayed dark. `fixture` patches
+        /// DMX 1 as a fixture's red, which MIDI drives through the store.
+        fn held_after_a_start_part_way(fixture: bool) -> Result<(), Box<dyn Error>> {
+            let (engine, cancel_handle) = create_engine()?;
+            if fixture {
+                patch_wash_red(&engine);
+            }
+            Engine::start_persistent_effects_loop(engine.clone());
+
+            let tmp_dir = tempfile::tempdir()?;
+            create_cc_held_midi_file(&tmp_dir.path().join("light.mid"));
+            let song_config = crate::config::Song::new(
+                "MIDI DMX Held",
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightShow::new(
+                    "universe1".to_string(),
+                    "light.mid".to_string(),
+                    None,
+                )]),
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
+            let play = {
+                let engine = engine.clone();
+                let cancel_handle = cancel_handle.clone();
+                std::thread::spawn(move || {
+                    Engine::play(
+                        engine,
+                        song,
+                        crate::playsync::PlaybackSync {
+                            cancel_handle,
+                            ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                            clock,
+                            start_time: Duration::from_secs(3),
+                            loop_control: crate::playsync::LoopControl::new(),
+                        },
+                    )
+                    .map_err(|e| e.to_string())
+                })
+            };
+            ready_rx.recv_timeout(Duration::from_secs(5))?;
+            std::thread::sleep(Duration::from_millis(200));
+            let red = engine.get_universe(5).unwrap().get_target_value(0);
+            let through_store = engine.midi_dmx_store.read().has_active_slots();
+            cancel_handle.cancel();
+            play.join().unwrap()?;
+            assert_eq!(red, 254.0, "the CC at 0 was lost at a start from 3 s");
+            assert_eq!(through_store, fixture, "the store path is the fixture's");
             Ok(())
         }
 

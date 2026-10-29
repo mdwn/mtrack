@@ -2009,6 +2009,58 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn seek_and_play_from_at_or_past_the_end_are_turned_down() -> Result<(), Box<dyn Error>> {
+        // #584: audio has nothing to play at the end, so a start there
+        // failed and the playlist skipped the song.
+        let player = make_test_player().await?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+        let song = player.get_playlist().current().expect("a song");
+        let end = song.length();
+
+        assert!(player.seek_to(end).await.is_err(), "seek to the very end");
+        assert!(player.pending_start().is_none());
+        for start in [end, end + Duration::from_secs(20)] {
+            assert!(
+                player.play_from(start).await.is_err(),
+                "play_from {start:?} on a {end:?} song"
+            );
+        }
+        assert!(!device.is_playing(), "a start past the end played");
+        assert_eq!(
+            player
+                .get_playlist()
+                .current()
+                .map(|s| s.name().to_string()),
+            Some(song.name().to_string()),
+            "the playlist moved on"
+        );
+
+        // Nor does picking another song with a start past its end move the
+        // playlist to it.
+        let other = player.get_playlist().songs()[1].clone();
+        assert!(player
+            .play_song_from(&other, Duration::from_secs(3600))
+            .await
+            .is_err());
+        assert_eq!(
+            player
+                .get_playlist()
+                .current()
+                .map(|s| s.name().to_string()),
+            Some(song.name().to_string()),
+            "play_song_from moved the playlist"
+        );
+
+        // Just before the end is still a start.
+        player.seek_to(end - Duration::from_millis(1)).await?;
+        assert_eq!(player.pending_start(), Some(end - Duration::from_millis(1)));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_seek_to_section_unknown_errors() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
 
@@ -2440,6 +2492,21 @@ mod test {
 
     async fn current_name(player: &Player) -> String {
         player.get_playlist().current().unwrap().name().to_string()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn play_song_from_past_the_end_of_a_song_off_the_playlist_stays_put(
+    ) -> Result<(), Box<dyn Error>> {
+        // #584: a song only in all_songs must not switch the player to
+        // all_songs when its start is turned down.
+        let player = make_test_player_with_playlist("songs:\n- Song 1\n").await?;
+        assert!(player
+            .play_song_from("Song 3", Duration::from_secs(3600))
+            .await
+            .is_err());
+        assert_eq!(*player.active_playlist.read(), "playlist");
+        assert_eq!(current_name(&player).await, "Song 1");
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -1256,7 +1256,7 @@ mod test {
         // play_from with a start time should succeed and return the song.
         let start = prost_types::Duration {
             seconds: 0,
-            nanos: 500_000_000,
+            nanos: 250_000_000,
         };
         let resp = client
             .play_from(PlayFromRequest {

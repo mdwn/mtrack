@@ -57,15 +57,18 @@ pub(crate) fn unfreeze_layer(
 ) {
     // When unfreezing, we need to adjust effect start times to account for frozen duration
     if let Some(frozen_at) = frozen_layers.remove(&layer) {
-        let frozen_duration = current_time.duration_since(frozen_at);
-
         // Adjust start times for all effects on this layer
         for effect in active_effects.values_mut() {
             if effect.layer == layer {
                 if let Some(start_time) = effect.start_time {
-                    // Push the start time forward by the frozen duration
-                    // This makes it appear as if no time passed while frozen
-                    effect.start_time = Some(start_time + frozen_duration);
+                    // Push the start time forward by the time it spent
+                    // frozen, so it appears as if no time passed while
+                    // frozen: from the freeze, or from its own start for an
+                    // effect cued during it, which held its first frame
+                    // until now -- pushed by the whole freeze, it waited out
+                    // the part before its cue again after the unfreeze.
+                    let frozen_for = current_time.duration_since(start_time.max(frozen_at));
+                    effect.start_time = Some(start_time + frozen_for);
                 }
                 effect.engine_timed = true;
             }
@@ -259,5 +262,28 @@ mod tests {
         // Start time should be pushed forward by 2 seconds
         let new_start = active.get("a").unwrap().start_time.unwrap();
         assert_eq!(new_start, base + Duration::from_secs(2));
+    }
+
+    #[test]
+    fn unfreeze_starts_an_effect_cued_during_the_freeze_from_its_beginning() {
+        let mut frozen = HashMap::new();
+        let mut active = HashMap::new();
+        let base = Instant::now();
+        let mut effect = make_effect("a", vec!["f1"], EffectLayer::Background);
+        // Frozen at 0; cued 5 s in; unfrozen at 10 s.
+        effect.start_time = Some(base + Duration::from_secs(5));
+        active.insert("a".to_string(), effect);
+        frozen.insert(EffectLayer::Background, base);
+        unfreeze_layer(
+            &mut frozen,
+            &mut active,
+            EffectLayer::Background,
+            base + Duration::from_secs(10),
+        );
+        assert_eq!(
+            active.get("a").unwrap().start_time,
+            Some(base + Duration::from_secs(10)),
+            "it waits out the 5 s before its cue again"
+        );
     }
 }

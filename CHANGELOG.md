@@ -108,6 +108,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MIDI DMX looks come back after a seek (#583)**: a seek, play-from or section loop started a MIDI
+  DMX show past every event before its start point, and since #581 a channel nothing writes goes to
+  0, so a look the show set once and held stayed dark. Those events are now put back as playback
+  starts: notes and CCs with their values, a dim at the level it has reached and still on its way,
+  and the last dimming speed. This now happens at every section loop iteration too, with no dark
+  frame in between.
+- **A start at or past the song's end is turned down (#584)**: `play_from` (MCP, REST, gRPC) had no
+  length check, and `seek` accepted exactly the song length. Audio then had nothing to play, and
+  the playlist skipped the song. Both now refuse the position and leave the playlist where it is.
+  A pause on a later pass of a looping song resumes from its place in that pass.
+- **A show file edited on disk is what the song plays next (#585)**: a `.light` file was parsed
+  once, when the song loaded. An edit made outside mtrack (an editor, `git pull`) never took effect
+  until a restart, and one the hot reload picked up during a playback was gone at the next play. A
+  show file is now parsed again once it changes; one that no longer parses keeps the last good
+  show.
+- **`freeze` and the speed master hold cued effects (#586)**: a cued effect on a frozen layer still
+  ended at its normal end, so a frozen look went dark and was gone at the unfreeze. One on a slowed
+  layer was cut off at its full-speed end. Both now end on the time they play on. An effect cued
+  during a freeze now starts from its beginning at the unfreeze, without waiting out the freeze
+  again.
+- **A cue at a loop restart lands on the right pass**: a cue fired just as a section loop restarted
+  could also play on top of the restarted state. One fired just as a looping song started its next
+  pass could land on the new pass instead of the one fading out.
 - **An effect that ends mid-song no longer leaves its lights on (#581)**: a channel no effect drove
   any more -- its effect over, or MIDI DMX on it cleared at the next song's start -- kept its last
   value on the rig, while the web UI and `get_fixture_state` showed it dark. A level or colour
