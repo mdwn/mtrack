@@ -678,9 +678,13 @@ impl Engine {
     /// come back as stale again.
     fn dark_floor(&self) -> Vec<crate::lighting::effects::DmxCommand> {
         let written = self.last_written.lock().clone();
-        let positions = self.effect_engine.lock().position_channels();
+        let (positions, own) = {
+            let main = self.effect_engine.lock();
+            (main.position_channels(), main.last_commands().to_vec())
+        };
         let store = self.midi_dmx_store.read();
-        let floor = self
+        // Left lit by what nothing writes any more: as the rig shows it.
+        let mut floor: Vec<_> = self
             .universes
             .iter()
             .flat_map(|(&universe, u)| {
@@ -694,10 +698,17 @@ impl Engine {
             })
             .filter(|c| {
                 let at = (c.universe, c.channel);
-                !positions.contains(&at)
-                    && (!written.contains(&at) || store.holds(c.universe, c.channel))
+                !positions.contains(&at) && !written.contains(&at)
             })
             .collect();
+        // Held by MIDI DMX through the store: as the main engine drove it,
+        // not as the rig shows it -- an older fade crossing over it has
+        // blended that in already, and would cross it again.
+        floor.extend(own.into_iter().filter(|c| {
+            c.value > 0
+                && !positions.contains(&(c.universe, c.channel))
+                && store.holds(c.universe, c.channel)
+        }));
         store.clear();
         floor
     }
@@ -1775,6 +1786,57 @@ mod tests {
             tick(&engine);
             let now = spot_red(&engine);
             assert!(now <= last, "the spot went on down: {last} -> {now}");
+            last = now;
+            sleep(Duration::from_millis(25));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_midi_held_channel_under_an_older_fade_does_not_jump() -> Result<(), Box<dyn Error>> {
+        // A channel MIDI DMX drove, under an older fade still taking it
+        // out, was floored at what the rig showed -- the fade's blend
+        // already -- and that fade crossed over it again: it jumped up.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        {
+            let mut store = engine.midi_dmx_store.write();
+            for (channel, name) in [(4, "red"), (5, "green"), (6, "blue")] {
+                store.register_slot(5, channel, "spot", name);
+            }
+            store.register_universe(5);
+        }
+        engine
+            .effect_engine
+            .lock()
+            .set_midi_dmx_store(engine.midi_dmx_store.clone());
+        add_spot(&engine);
+        start_song(&engine, VAMP);
+        song_frame(&engine, 0.5);
+        engine.begin_break_fade(Duration::from_secs(2));
+        engine.stop_lighting_timeline();
+        start_song(&engine, GREEN);
+        song_frame(&engine, 0.1);
+        sleep(Duration::from_millis(1000));
+        // MIDI DMX sets the spot's red to 20 (NoteOn key 3 is channel 4).
+        engine.handle_midi_event_by_id(
+            5,
+            midly::MidiMessage::NoteOn {
+                key: 3.into(),
+                vel: 10.into(),
+            },
+        );
+        engine.midi_dmx_store.read().tick();
+        song_frame(&engine, 1.1);
+        let before = spot_red(&engine);
+        // GREEN ends: through the dark fade the spot only goes on down.
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        let mut last = before;
+        for _ in 0..6 {
+            tick(&engine);
+            let now = spot_red(&engine);
+            assert!(now <= last + 1.0, "the spot went on down: {last} -> {now}");
             last = now;
             sleep(Duration::from_millis(25));
         }
