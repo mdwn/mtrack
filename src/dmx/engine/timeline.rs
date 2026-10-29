@@ -541,11 +541,6 @@ impl Engine {
         // A crossfade in progress belongs to the playback being replaced; a
         // loop break's fade carries on over this song's start.
         self.drop_pass_crossfade();
-        // Clear effects from previous song before starting new timeline
-        {
-            let mut effect_engine = self.effect_engine.lock();
-            effect_engine.stop_all_effects();
-        }
 
         let timeline_update = {
             let mut current_timeline = self.current_song_timeline.lock();
@@ -579,11 +574,40 @@ impl Engine {
             }
         }
 
-        // Apply the historical timeline update to ensure deterministic state
-        // This must happen before the effects loop can process new cues to avoid conflicts
+        // The previous song's effects go and the historical state comes in
+        // under the one lock, groups resolved first: a frame between the two
+        // would find the channels unwritten and send them 0 -- a black flash
+        // at every seek and section loop (#581). As the watcher's reload.
+        let mut with_elapsed: Vec<_> = timeline_update.effects_with_elapsed.into_values().collect();
+        with_elapsed.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
+        let with_elapsed: Vec<_> = with_elapsed
+            .into_iter()
+            .map(|(effect, elapsed)| (self.resolve_effect_groups(effect), elapsed))
+            .collect();
+        let mut effects = timeline_update.effects;
+        effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
+        let effects: Vec<_> = effects
+            .into_iter()
+            .map(|effect| self.resolve_effect_groups(effect))
+            .collect();
+        let mut effect_engine = self.effect_engine.lock();
+        effect_engine.stop_all_effects();
         if start_time > Duration::ZERO {
-            if let Err(e) = self.apply_timeline_update(timeline_update) {
-                error!("Failed to apply historical timeline state: {}", e);
+            for cmd in &timeline_update.layer_commands {
+                effect_engine.apply_layer_command(cmd);
+            }
+            for sequence_name in &timeline_update.stop_sequences {
+                effect_engine.stop_sequence(sequence_name);
+            }
+            for (effect, elapsed) in with_elapsed {
+                if let Err(e) = effect_engine.start_effect_with_elapsed(effect, elapsed) {
+                    error!("Failed to start lighting effect with elapsed time: {}", e);
+                }
+            }
+            for effect in effects {
+                if let Err(e) = effect_engine.start_effect(effect) {
+                    error!("Failed to start lighting effect: {}", e);
+                }
             }
         }
     }

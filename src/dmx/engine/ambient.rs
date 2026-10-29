@@ -1607,8 +1607,8 @@ mod tests {
         assert_eq!(song_frame(&engine, 0.1), (255.0, 0.0, 0.0));
         // The effect is over: its channels go as it does (#581).
         assert_eq!(song_frame(&engine, 0.5), (0.0, 0.0, 0.0));
-        // Something no frame writes -- MIDI DMX on an unpatched channel,
-        // straight to the universe -- the rig holds lit.
+        // Something no frame writes -- written straight to the universe, as
+        // MIDI DMX on an unpatched channel is -- the rig holds lit.
         engine
             .get_universe(5)
             .unwrap()
@@ -2148,6 +2148,49 @@ mod tests {
             (0.0, 0.0, 255.0),
             "the wash plays on"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_ganged_bar_lets_every_section_go() -> Result<(), Box<dyn Error>> {
+        // A bar's sections ganged to its first, and a 16-bit dimmer's fine
+        // byte, were not let go as their effect ended: only the coarse byte
+        // of the first section was.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        let mut defs = std::collections::HashMap::new();
+        let mut red = crate::lighting::types::ChannelDef::at(1);
+        red.mirrors = vec![(4, None)];
+        defs.insert("red".to_string(), red);
+        let mut dimmer = crate::lighting::types::ChannelDef::at(2);
+        dimmer.fine = Some(3);
+        defs.insert("dimmer".to_string(), dimmer);
+        engine.effect_engine.lock().register_fixture(
+            crate::lighting::effects::FixtureInfo::new(
+                "bar".to_string(),
+                5,
+                10,
+                "Generic".to_string(),
+                std::collections::HashMap::from([
+                    ("red".to_string(), 1),
+                    ("dimmer".to_string(), 2),
+                ]),
+                None,
+            )
+            .with_channel_defs(defs),
+        );
+        start_song(
+            &engine,
+            "show \"song\" {\n    @0.000\n    bar: static, color: \"red\", dimmer: 100%, duration: 300ms\n}\n",
+        );
+        song_frame(&engine, 0.1);
+        let at = |engine: &Engine, ch: usize| engine.get_universe(5).unwrap().get_target_value(ch);
+        // Channels 10-13: red, dimmer, dimmer fine, red's mirror.
+        assert!(at(&engine, 9) > 0.0 && at(&engine, 12) > 0.0, "lit");
+        song_frame(&engine, 0.5);
+        song_frame(&engine, 0.6);
+        for ch in 9..13 {
+            assert_eq!(at(&engine, ch), 0.0, "channel {} let go", ch + 1);
+        }
         Ok(())
     }
 
