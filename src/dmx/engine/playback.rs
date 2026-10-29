@@ -518,16 +518,18 @@ impl Engine {
                 ),
                 None => {
                     dmx_engine.update_song_time(Duration::ZERO);
-                    dmx_engine.start_lighting_timeline_at(Duration::ZERO);
+                    // MIDI DMX starts over with it, at the dim rate the
+                    // playback started with, as a section loop does.
+                    dmx_engine.start_lighting_timeline_with(
+                        Duration::ZERO,
+                        super::timeline::MidiDmxStart::Seek,
+                    );
                 }
             }
-
-            // Reset MIDI DMX playback cursors to the beginning.
-            {
-                let mut playbacks = dmx_engine.midi_dmx_playbacks.lock();
-                for playback in playbacks.iter_mut() {
-                    playback.cursor = 0;
-                }
+            if crossfade.is_some() {
+                // The store carries the last pass's values into the
+                // crossfade; MIDI DMX starts over from the beginning.
+                dmx_engine.rewind_midi_dmx_playbacks();
             }
 
             dmx_engine.timeline_finished.store(false, Ordering::Relaxed);

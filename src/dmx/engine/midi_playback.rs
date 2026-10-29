@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Duration;
 
 use super::{classify_midi_dmx_action, Engine, MidiDmxAction};
@@ -39,6 +39,19 @@ pub(super) fn midi_dmx_cursor(events: &[TimedMidiEvent], from: Duration) -> usiz
     } else {
         events.partition_point(|e| e.time <= from)
     }
+}
+
+/// The DMX channels the notes and CCs among `events` write.
+fn midi_dmx_channels(events: &[TimedMidiEvent], midi_channels: &HashSet<u8>) -> BTreeSet<u16> {
+    events
+        .iter()
+        .filter(|e| midi_channels.is_empty() || midi_channels.contains(&e.channel))
+        .filter_map(|e| match classify_midi_dmx_action(e.message, 1.0) {
+            MidiDmxAction::KeyVelocity { channel, .. }
+            | MidiDmxAction::Controller { channel, .. } => Some(channel),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A channel as the last write left it, `since` the time of that write.
@@ -184,7 +197,37 @@ impl Engine {
                 playback.start_dim_rate,
             );
             self.restore_midi_dmx(playback.universe_id, &states, dim_rate);
+            // The clear before this let go of the store's channels; one
+            // straight on the universe holds whatever it was last sent, so
+            // one the events write but had not by `from` goes back to 0 too
+            // -- a section loop's second pass would otherwise start with
+            // what the first set later on.
+            if let Some(universe) = self.universes.get(&playback.universe_id) {
+                let store = self.midi_dmx_store.read();
+                for channel in midi_dmx_channels(events, &playback.midi_channels) {
+                    if !states.contains_key(&channel)
+                        && store.lookup(playback.universe_id, channel).is_none()
+                    {
+                        universe.restore_channel_data(channel, 0.0, 0.0, 0.0);
+                    }
+                }
+            }
             playback.cursor = cursor;
+        }
+    }
+
+    /// Moves every MIDI DMX playback back to its first event, at the dim
+    /// rate it started with, leaving the channels as they are: a loop
+    /// crossfade carries them into the next pass.
+    pub(super) fn rewind_midi_dmx_playbacks(&self) {
+        let mut playbacks = self.midi_dmx_playbacks.lock();
+        for playback in playbacks.iter_mut() {
+            playback.cursor = 0;
+            self.restore_midi_dmx(
+                playback.universe_id,
+                &BTreeMap::new(),
+                playback.start_dim_rate,
+            );
         }
     }
 

@@ -5391,8 +5391,20 @@ mod test {
                 .midi_dmx_playbacks
                 .lock()
                 .push(crate::dmx::engine::MidiDmxPlayback {
-                    precomputed: PrecomputedMidi::from_events(vec![cc(0, 127), cc(5, 10)]),
-                    cursor: 2,
+                    precomputed: PrecomputedMidi::from_events(vec![
+                        cc(0, 127),
+                        // DMX 2, which no fixture patches, first set 4 s in.
+                        TimedMidiEvent {
+                            time: Duration::from_secs(4),
+                            channel: 0,
+                            message: midly::MidiMessage::Controller {
+                                controller: 1.into(),
+                                value: 100.into(),
+                            },
+                        },
+                        cc(5, 10),
+                    ]),
+                    cursor: 3,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
                     start_dim_rate: 1.0,
@@ -5400,6 +5412,10 @@ mod test {
             // Played on to 6 s: red at 20, and a later dimming change in.
             engine.midi_dmx_store.read().write(5, 1, 20, false);
             engine.get_universe(5).unwrap().set_dim_rate(88.0);
+            engine
+                .get_universe(5)
+                .unwrap()
+                .update_channel_data(2, 200, false);
 
             // The section starts at 2 s.
             engine.start_lighting_timeline_with(
@@ -5420,6 +5436,17 @@ mod test {
                 1.0,
                 "dims at the rate the playback started with"
             );
+            assert_eq!(
+                engine.get_universe(5).unwrap().get_target_value(1),
+                0.0,
+                "an unpatched channel held what the section set later on"
+            );
+
+            // A whole-song loop's crossfade rewinds it, at its rate too.
+            engine.get_universe(5).unwrap().set_dim_rate(88.0);
+            engine.rewind_midi_dmx_playbacks();
+            assert_eq!(engine.midi_dmx_playbacks.lock()[0].cursor, 0);
+            assert_eq!(engine.get_universe(5).unwrap().dim_rate(), 1.0);
             engine.midi_dmx_playbacks.lock().clear();
             Ok(())
         }
