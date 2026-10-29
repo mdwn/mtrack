@@ -531,6 +531,9 @@ impl Engine {
                 .as_ref()
                 .is_some_and(|o| o.level.at(now) >= 1.0);
             if full {
+                // A loop break's fade going out goes on at its own length:
+                // ambient covers only what it lights, and what it does not
+                // is still fading in view.
                 self.darken_under(Duration::ZERO);
                 state.under_dark = true;
             }
@@ -1213,6 +1216,122 @@ mod tests {
             engine.get_universe(5).unwrap().get_target_value(1) > 0.0,
             "the song plays"
         );
+        Ok(())
+    }
+
+    /// Patches a mover with a pan channel at channel 7 of universe 5.
+    fn add_mover(engine: &Engine) {
+        engine
+            .effect_engine
+            .lock()
+            .register_fixture(crate::lighting::effects::FixtureInfo::new(
+                "mover".to_string(),
+                5,
+                7,
+                "Generic".to_string(),
+                std::collections::HashMap::from([("pan".to_string(), 1)]),
+                None,
+            ));
+    }
+
+    fn pan(engine: &Engine) -> f64 {
+        engine.get_universe(5).unwrap().get_target_value(6)
+    }
+
+    /// A show that pans the mover to `value`.
+    fn pan_show(value: &str) -> String {
+        format!(
+            "show \"song\" {{\n    @0.000\n    mover: static, pan: {value}, duration: 60s\n}}\n"
+        )
+    }
+
+    /// Renders frames for `secs`, asserting the mover's pan never steps
+    /// further than its slowest fade could carry it in the time between
+    /// two frames (`per_sec`), plus a little: a stalled machine waits
+    /// longer between frames, not a jump.
+    fn assert_pan_glides(engine: &Engine, secs: f64, per_sec: f64) {
+        let started = std::time::Instant::now();
+        let mut last = (pan(engine), std::time::Instant::now());
+        let mut song = 0.0;
+        while started.elapsed().as_secs_f64() < secs {
+            sleep(Duration::from_millis(20));
+            song += 0.02;
+            song_frame(engine, song);
+            let now = (pan(engine), std::time::Instant::now());
+            let step = (now.0 - last.0).abs();
+            let allowed = 6.0 + per_sec * now.1.duration_since(last.1).as_secs_f64();
+            assert!(step <= allowed, "pan stepped {} to {}", last.0, now.0);
+            last = now;
+        }
+    }
+
+    #[test]
+    fn a_shorter_fade_ending_first_does_not_jump_a_mover() -> Result<(), Box<dyn Error>> {
+        // A mover's pan, held by a newer fade that ended before an older
+        // one, jumped as that newer fade went.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_mover(&engine);
+        // A pans to 80%, then breaks into B (20%) over 2 s; B breaks into
+        // GREEN, which does not drive the mover, over 300 ms.
+        start_song(&engine, &pan_show("80%"));
+        song_frame(&engine, 0.5);
+        assert_eq!(pan(&engine), 204.0);
+        engine.begin_break_fade(Duration::from_secs(2));
+        engine.stop_lighting_timeline();
+        start_song(&engine, &pan_show("20%"));
+        song_frame(&engine, 0.1);
+        sleep(Duration::from_millis(200));
+        song_frame(&engine, 0.3);
+        engine.begin_break_fade(Duration::from_millis(300));
+        engine.stop_lighting_timeline();
+        start_song(&engine, GREEN);
+        // The 300 ms fade moves it fastest: 153 over 0.3 s.
+        assert_pan_glides(&engine, 0.8, 520.0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_loop_pass_ending_under_a_fade_does_not_jump_a_mover() -> Result<(), Box<dyn Error>> {
+        // The same for a looping song's pass whose crossfade ended under an
+        // older fade: what dropped it next -- another break, another pass,
+        // a stop -- jumped the pan it held.
+        for next in ["break", "pass", "stop"] {
+            let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+            add_mover(&engine);
+            start_song(&engine, &pan_show("80%"));
+            song_frame(&engine, 0.5);
+            engine.begin_break_fade(Duration::from_secs(3));
+            engine.stop_lighting_timeline();
+            start_song(&engine, &pan_show("20%"));
+            song_frame(&engine, 0.1);
+            // A third of the way out, A and B are well apart.
+            sleep(Duration::from_millis(1000));
+            song_frame(&engine, 1.1);
+            // B loops into a pass that does not drive the mover, over 100 ms,
+            // and that crossfade ends.
+            engine.begin_loop_crossfade(
+                Some(timeline(GREEN)),
+                Duration::from_secs(1),
+                Duration::from_millis(100),
+            );
+            // Only the 3 s fade moves the pan: the pass held it.
+            assert_pan_glides(&engine, 0.3, 100.0);
+            match next {
+                "break" => {
+                    engine.begin_break_fade(Duration::from_millis(300));
+                    engine.stop_lighting_timeline();
+                    start_song(&engine, GREEN);
+                }
+                "pass" => engine.begin_loop_crossfade(
+                    Some(timeline(GREEN)),
+                    Duration::from_secs(1),
+                    Duration::from_millis(100),
+                ),
+                _ => engine.stop_lighting_timeline(),
+            }
+            // The 3 s fade alone moves it now: 153 over 3 s.
+            assert_pan_glides(&engine, 0.6, 100.0);
+        }
         Ok(())
     }
 

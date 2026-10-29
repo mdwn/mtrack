@@ -536,31 +536,50 @@ impl Engine {
         };
         // Mid-crossfade between passes of a looping song: render the outgoing
         // pass too, a pass ahead in song time, and cross the two frames over
-        // the overlap. The outgoing pass goes once the overlap is over.
+        // the overlap. The outgoing pass goes once the overlap is over (among
+        // the loop breaks' fades, if one crosses over it), or at once if it
+        // fails to render, rather than stopping every frame after it.
         let mut outgoing = self.outgoing_pass.lock();
+        let mut done = false;
         let commands: std::borrow::Cow<[crate::lighting::effects::DmxCommand]> =
             match outgoing.as_mut() {
                 Some(pass) => {
                     let incoming = effect_engine.update(dt, Some(song_time))?.to_vec();
                     let (t, time) = pass.timing(song_time);
-                    let old = pass.render(dt, time)?;
-                    let blended = effect_engine.crossfade_commands(&old, &incoming, t);
-                    // What goes out is the blend, so that is what the rig
-                    // shows to the web UI and get_fixture_state too (#555).
-                    let shown =
-                        (t < 1.0).then(|| effect_engine.crossfade_states(&pass.effect_engine, t));
-                    effect_engine.set_shown(shown);
-                    if t >= 1.0 {
-                        *outgoing = None;
+                    match pass.render(dt, time) {
+                        Ok(old) => {
+                            let blended = effect_engine.crossfade_commands(&old, &incoming, t);
+                            // What goes out is the blend, so that is what the
+                            // rig shows to the web UI and get_fixture_state
+                            // too (#555).
+                            let shown = (t < 1.0)
+                                .then(|| effect_engine.crossfade_states(&pass.effect_engine, t));
+                            effect_engine.set_shown(shown);
+                            done = t >= 1.0;
+                            std::borrow::Cow::Owned(blended)
+                        }
+                        Err(e) => {
+                            error!("A loop pass's crossfade failed to render, and goes: {e}");
+                            *outgoing = None;
+                            std::borrow::Cow::Owned(incoming)
+                        }
                     }
-                    std::borrow::Cow::Owned(blended)
                 }
                 None => std::borrow::Cow::Borrowed(effect_engine.update(dt, Some(song_time))?),
             };
+        if done {
+            if let Some(pass) = outgoing.take() {
+                self.retire_pass(pass, song_time);
+            }
+        }
         drop(outgoing);
 
         // Loop breaks' fades go out over all of that, each at its own
-        // length: the newest first, so the oldest crosses outermost.
+        // length: the newest first, so the oldest crosses outermost. One
+        // that is over goes only once every older one has: what it holds of
+        // a mover's position is what the older ones cross onto. One that
+        // fails to render goes at once, rather than stopping every frame
+        // after it.
         let mut fades = self.break_fades.lock();
         let commands: std::borrow::Cow<[crate::lighting::effects::DmxCommand]> = if fades.is_empty()
         {
@@ -571,23 +590,43 @@ impl Engine {
                 effect_engine.shown_fixture_states().clone(),
                 effect_engine.shown_poses().clone(),
             );
-            let mut over = Vec::with_capacity(fades.len());
+            // Newest first: (over, failed) for each.
+            let mut ends = Vec::with_capacity(fades.len());
             for fade in fades.iter_mut().rev() {
                 let (t, time) = fade.timing(song_time);
-                let old = fade.render(dt, time)?;
+                let old = match fade.render(dt, time) {
+                    Ok(old) => old,
+                    Err(e) => {
+                        error!("A loop break's fade failed to render, and goes: {e}");
+                        ends.push((true, true));
+                        continue;
+                    }
+                };
                 blended = effect_engine.crossfade_commands(&old, &blended, t);
                 shown = effect_engine.crossfade_states_onto(
                     &fade.effect_engine,
                     (&shown.0, &shown.1),
                     t,
                 );
-                over.push(t >= 1.0);
+                ends.push((t >= 1.0, false));
             }
             // What goes out is the blend, so that is what the rig shows
             // too (#555).
             effect_engine.set_shown(Some(shown));
-            let mut over = over.into_iter().rev();
-            fades.retain(|_| !over.next().unwrap_or(false));
+            // Oldest first: the over ones until the first still going, and
+            // any that failed.
+            let mut still_older = false;
+            let keep: Vec<bool> = ends
+                .into_iter()
+                .rev()
+                .map(|(over, failed)| {
+                    let keep = !failed && (still_older || !over);
+                    still_older |= keep;
+                    keep
+                })
+                .collect();
+            let mut keep = keep.into_iter();
+            fades.retain(|_| keep.next().unwrap_or(true));
             std::borrow::Cow::Owned(blended)
         };
         drop(fades);
