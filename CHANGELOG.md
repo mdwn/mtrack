@@ -128,6 +128,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layer was cut off at its full-speed end. Both now end on the time they play on. An effect cued
   during a freeze now starts from its beginning at the unfreeze, without waiting out the freeze
   again.
+- **An effect that has been frozen keeps to the song afterwards**: once unfrozen, a cued effect was
+  timed on the lighting engine's own clock, which steps a fixed frame each tick and falls behind
+  the song where frames run long, so it ended late -- 100-140 ms after a 5 s freeze on a Pi, and
+  more the longer it ran. It now plays on song time less the time it spent frozen.
 - **A cue at a loop restart lands on the right pass**: a cue fired just as a section loop restarted
   could also play on top of the restarted state. One fired just as a looping song started its next
   pass could land on the new pass instead of the one fading out.

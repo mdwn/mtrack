@@ -715,3 +715,113 @@ fn a_cued_effect_at_normal_speed_still_ends_on_score_time() {
     run_song(&mut engine, &mut song, Duration::from_secs(4));
     assert!(!engine.has_effect("green"), "did not end on its score end");
 }
+
+/// As [`run_song`], with the engine stepping 9 ms a 10 ms frame: its clock
+/// falls behind the song's, as it does where frames run long.
+fn run_song_slow_engine(engine: &mut EffectEngine, from: &mut Duration, to: Duration) {
+    while *from < to {
+        *from += Duration::from_millis(10);
+        engine
+            .update(Duration::from_millis(9), Some(*from))
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_once_frozen_cued_effect_keeps_to_song_time() {
+    // An effect that had been through a freeze was timed on the engine's
+    // clock, which steps a fixed frame a tick: on the rig, where frames run
+    // long, it ended 100-140 ms late. Frozen 2-7 s, its remaining 2 s end
+    // at 9 s song time however the engine's clock runs.
+    let mut engine = cued_green_static();
+    let mut song = Duration::ZERO;
+    run_song_slow_engine(&mut engine, &mut song, Duration::from_secs(2));
+    engine.freeze_layer(EffectLayer::Midground);
+    run_song_slow_engine(&mut engine, &mut song, Duration::from_secs(7));
+    engine.unfreeze_layer(EffectLayer::Midground);
+    run_song_slow_engine(&mut engine, &mut song, Duration::from_millis(8_960));
+    assert!(engine.has_effect("green"), "ended early");
+    run_song_slow_engine(&mut engine, &mut song, Duration::from_millis(9_040));
+    assert!(
+        !engine.has_effect("green"),
+        "ran past 9 s on the engine's slow clock"
+    );
+}
+
+#[test]
+fn a_cued_effect_frozen_for_a_while_resumes_where_it_stopped() {
+    // A rainbow frozen part way holds its colour, and picks up from it at
+    // the unfreeze rather than from where the song has got to.
+    let mut engine = EffectEngine::new();
+    let mut channels = HashMap::new();
+    for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+        channels.insert(name.to_string(), offset);
+    }
+    engine.register_fixture(FixtureInfo::new(
+        "rgb".to_string(),
+        1,
+        1,
+        "RGB".to_string(),
+        channels,
+        None,
+    ));
+    let mut effect = EffectInstance::new(
+        "rainbow".to_string(),
+        EffectType::Rainbow {
+            speed: TempoAwareSpeed::Fixed(1.0),
+            saturation: 1.0,
+            brightness: 1.0,
+            duration: Duration::from_secs(10),
+        },
+        vec!["rgb".to_string()],
+        None,
+        None,
+        None,
+    );
+    effect.cue_time = Some(Duration::ZERO);
+    engine.start_effect(effect).unwrap();
+    let frame = |engine: &mut EffectEngine, song: Duration| -> Vec<u8> {
+        let mut commands: Vec<_> = engine
+            .update(Duration::from_millis(9), Some(song))
+            .unwrap()
+            .iter()
+            .map(|c| (c.channel, c.value))
+            .collect();
+        commands.sort_by_key(|(channel, _)| *channel);
+        commands.into_iter().map(|(_, value)| value).collect()
+    };
+    let mut song = Duration::ZERO;
+    run_song_slow_engine(&mut engine, &mut song, Duration::from_millis(250));
+    let before = frame(&mut engine, song);
+    engine.freeze_layer(EffectLayer::Background);
+    run_song_slow_engine(&mut engine, &mut song, Duration::from_millis(750));
+    assert_eq!(frame(&mut engine, song), before, "moved while frozen");
+    engine.unfreeze_layer(EffectLayer::Background);
+    let after = frame(&mut engine, song + Duration::from_millis(10));
+    let max_diff = before
+        .iter()
+        .zip(&after)
+        .map(|(a, b)| (*a as i16 - *b as i16).abs())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        max_diff < 30,
+        "jumped on unfreeze: {before:?} then {after:?}"
+    );
+}
+
+#[test]
+fn a_cued_effect_stopped_by_the_speed_master_keeps_to_song_time() {
+    // Speed 0 freezes the layer and speed 1 unfreezes it: the same time
+    // frozen, measured the same way.
+    let mut engine = cued_green_static();
+    let mut song = Duration::ZERO;
+    run_song_slow_engine(&mut engine, &mut song, Duration::from_secs(2));
+    engine.set_layer_speed_master(EffectLayer::Midground, 0.0);
+    run_song_slow_engine(&mut engine, &mut song, Duration::from_secs(7));
+    engine.set_layer_speed_master(EffectLayer::Midground, 1.0);
+    run_song_slow_engine(&mut engine, &mut song, Duration::from_millis(8_960));
+    assert!(engine.has_effect("green"), "ended early");
+    run_song_slow_engine(&mut engine, &mut song, Duration::from_millis(9_040));
+    assert!(!engine.has_effect("green"), "ran past 9 s");
+}

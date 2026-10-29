@@ -184,6 +184,9 @@ struct LayerState {
     speed_masters: HashMap<EffectLayer, f64>,
     /// Frozen layers — maps layer to the Instant when it was frozen.
     frozen: HashMap<EffectLayer, Instant>,
+    /// The song time a frozen layer was frozen at, when there was one: what
+    /// its cued effects hold at, and measure their time frozen from.
+    frozen_song: HashMap<EffectLayer, Duration>,
 }
 
 impl LayerState {
@@ -192,6 +195,7 @@ impl LayerState {
             intensity_masters: HashMap::new(),
             speed_masters: HashMap::new(),
             frozen: HashMap::new(),
+            frozen_song: HashMap::new(),
         }
     }
 
@@ -200,6 +204,7 @@ impl LayerState {
         self.intensity_masters.clear();
         self.speed_masters.clear();
         self.frozen.clear();
+        self.frozen_song.clear();
     }
 
     /// Reset a single layer back to defaults.
@@ -207,6 +212,7 @@ impl LayerState {
         self.intensity_masters.remove(&layer);
         self.speed_masters.remove(&layer);
         self.frozen.remove(&layer);
+        self.frozen_song.remove(&layer);
     }
 
     fn intensity_master(&self, layer: &EffectLayer) -> f64 {
@@ -1195,6 +1201,7 @@ impl EffectEngine {
             let layer_intensity = self.get_layer_intensity_master(layer);
             let layer_speed = self.get_layer_speed_master(layer);
             let frozen_at = self.layer_state.frozen.get(&layer).cloned();
+            let frozen_song = self.layer_state.frozen_song.get(&layer).copied();
 
             for effect_id in effect_ids {
                 // Get reference to effect to avoid unnecessary clone
@@ -1206,15 +1213,23 @@ impl EffectEngine {
                 // stamped before this update adds `dt`, and its cue lands part
                 // way through a tick), and an effect rendered past its end on
                 // engine time before it expired on score time went dark for a
-                // frame at a hand-over (#551). A frozen layer, an effect that
-                // has been through a freeze, and one with no cue keep engine
-                // time; on a frozen layer, the frozen time instead of now.
+                // frame at a hand-over (#551). Less the song time it has spent
+                // frozen, and on a frozen layer at the song time it froze at:
+                // engine time, which steps a fixed frame a tick, falls behind
+                // the song where frames run long, and an effect timed on it
+                // after an unfreeze ended late. One with no cue, or frozen
+                // with no song time to go by, keeps engine time; on a frozen
+                // layer, the frozen time instead of now.
                 let reference_time = frozen_at.unwrap_or(self.current_time);
                 let base_elapsed = match (effect.start_time, effect.cue_time, song_time) {
                     (Some(_), Some(cue_time), Some(now))
-                        if frozen_at.is_none() && !effect.engine_timed =>
+                        if !effect.engine_timed
+                            && (frozen_at.is_none() || frozen_song.is_some()) =>
                     {
-                        now.saturating_sub(cue_time)
+                        frozen_song
+                            .unwrap_or(now)
+                            .saturating_sub(cue_time)
+                            .saturating_sub(effect.score_frozen)
                     }
                     _ => effect
                         .start_time
@@ -1232,27 +1247,13 @@ impl EffectEngine {
                     Duration::from_secs_f64(base_elapsed.as_secs_f64() * layer_speed)
                 };
 
-                // Expire on the time the effect renders on. A cued effect on a
-                // layer at normal speed that has never been frozen renders on
-                // score time, so it ends exactly on its musical end (#536).
-                // Song time runs on through a freeze and ignores the speed
-                // master, so a frozen, slowed or once-frozen effect ends on its
-                // own elapsed instead: on score time a frozen look went dark
-                // at its normal end, and a slowed one was cut off at its
-                // full-speed end (#586).
-                let on_score_time = frozen_at.is_none()
-                    && !effect.engine_timed
-                    && (layer_speed - 1.0).abs() < f64::EPSILON;
-                let is_expired = if effect.start_time.is_some() {
-                    match (effect.cue_time, song_time) {
-                        (Some(cue_time), Some(now)) if on_score_time => {
-                            effect.has_reached_terminal_state(now.saturating_sub(cue_time))
-                        }
-                        _ => effect.has_reached_terminal_state(elapsed),
-                    }
-                } else {
-                    false
-                };
+                // Expire on the time the effect renders on: score time, less
+                // its time frozen, for a cued effect at normal speed, so it
+                // ends exactly on its musical end (#536); a frozen or slowed
+                // one on its own elapsed, as song time runs on through a
+                // freeze and ignores the speed master (#586).
+                let is_expired =
+                    effect.start_time.is_some() && effect.has_reached_terminal_state(elapsed);
 
                 if is_expired {
                     // Effect has completed — no state persists, so don't blend a final
@@ -1510,23 +1511,57 @@ impl EffectEngine {
     /// Freeze a layer - pauses all effects on the layer at their current state
     /// Effects maintain their current output values but don't advance in time
     pub fn freeze_layer(&mut self, layer: EffectLayer) {
+        let was_frozen = self.layer_state.frozen.contains_key(&layer);
         layers::freeze_layer(
             &mut self.layer_state.frozen,
             &mut self.active_effects,
             layer,
             self.current_time,
         );
+        self.freeze_changed(layer, was_frozen);
         self.cache.invalidate();
+    }
+
+    /// Keeps the song time a layer froze at, and its cued effects' time
+    /// frozen, in step with a freeze or unfreeze that has just happened (or
+    /// not) to `layer`. The song time is the last frame's: the command lands
+    /// between frames, and the same reading at both ends of the freeze
+    /// measures it whole.
+    fn freeze_changed(&mut self, layer: EffectLayer, was_frozen: bool) {
+        let frozen = self.layer_state.frozen.contains_key(&layer);
+        if frozen && !was_frozen {
+            if let Some(now) = self.last_song_time {
+                self.layer_state.frozen_song.insert(layer, now);
+            }
+        } else if was_frozen && !frozen {
+            let frozen_at = self.layer_state.frozen_song.remove(&layer);
+            for effect in self.active_effects.values_mut() {
+                if effect.layer != layer {
+                    continue;
+                }
+                match (frozen_at, self.last_song_time, effect.cue_time) {
+                    // An effect cued during the freeze held its first frame
+                    // from its cue on, not from the freeze.
+                    (Some(frozen_at), Some(now), Some(cue_time)) => {
+                        effect.score_frozen += now.saturating_sub(cue_time.max(frozen_at));
+                    }
+                    (_, _, Some(_)) => effect.engine_timed = true,
+                    _ => {}
+                }
+            }
+        }
     }
 
     /// Unfreeze a layer - resumes effects on the layer from where they left off
     pub fn unfreeze_layer(&mut self, layer: EffectLayer) {
+        let was_frozen = self.layer_state.frozen.contains_key(&layer);
         layers::unfreeze_layer(
             &mut self.layer_state.frozen,
             &mut self.active_effects,
             layer,
             self.current_time,
         );
+        self.freeze_changed(layer, was_frozen);
         self.cache.invalidate();
     }
 
@@ -1558,6 +1593,7 @@ impl EffectEngine {
     /// This multiplies with effect speeds on the layer
     /// 0.5 = half speed, 2.0 = double speed, 0.0 = frozen at current state
     pub fn set_layer_speed_master(&mut self, layer: EffectLayer, speed: f64) {
+        let was_frozen = self.layer_state.frozen.contains_key(&layer);
         layers::set_layer_speed_master(
             &mut self.layer_state.speed_masters,
             &mut self.layer_state.frozen,
@@ -1566,6 +1602,7 @@ impl EffectEngine {
             speed,
             self.current_time,
         );
+        self.freeze_changed(layer, was_frozen);
         self.cache.invalidate();
     }
 
