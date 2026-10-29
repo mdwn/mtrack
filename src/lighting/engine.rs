@@ -581,17 +581,35 @@ impl EffectEngine {
     /// carry a position (pan, tilt): a crossfade holds those rather than
     /// fading them, so no fade takes one dark.
     pub fn position_channels(&self) -> HashSet<(u16, u16)> {
-        self.fixtures
-            .as_map()
-            .values()
-            .flat_map(|fixture| {
-                fixture
-                    .channels
-                    .iter()
-                    .filter(|(name, _)| matches!(CrossKind::of(name), CrossKind::Position))
-                    .map(move |(_, &offset)| (fixture.universe, fixture.address + offset - 1))
-            })
-            .collect()
+        self.channels_where(|name| matches!(CrossKind::of(name), CrossKind::Position))
+    }
+
+    /// Every DMX channel (universe, channel) a patched fixture drives for a
+    /// channel whose name passes `keep`: its coarse byte, its fine byte, and
+    /// those of each section mirrored to it, as the frame writes them.
+    fn channels_where(&self, keep: impl Fn(&str) -> bool) -> HashSet<(u16, u16)> {
+        let mut out = HashSet::new();
+        for fixture in self.fixtures.as_map().values() {
+            let at = |offset: u16| (fixture.universe, fixture.address + offset - 1);
+            for (name, def) in &fixture.channel_defs {
+                if !keep(name) {
+                    continue;
+                }
+                out.insert(at(def.offset));
+                out.extend(def.fine.map(at));
+                for &(coarse, fine) in &def.mirrors {
+                    out.insert(at(coarse));
+                    out.extend(fine.map(at));
+                }
+            }
+        }
+        out
+    }
+
+    /// The channels (universe, DMX channel) of the patched fixtures that
+    /// carry a level or colour ([`fades_to_dark`]).
+    pub fn level_channels(&self) -> HashSet<(u16, u16)> {
+        self.channels_where(fades_to_dark)
     }
 
     /// The frame this engine last rendered.

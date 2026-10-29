@@ -64,6 +64,16 @@ type PassUpdates = std::collections::HashMap<
     ),
 >;
 
+/// A timeline going into a pass, its hold let go: a start held it while
+/// its state went in, and whatever would have let it go now finds the
+/// next song's timeline in its place.
+fn free(
+    mut timeline: crate::lighting::timeline::LightingTimeline,
+) -> crate::lighting::timeline::LightingTimeline {
+    timeline.hold(false);
+    timeline
+}
+
 /// A new pass's id.
 fn next_pass_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -315,6 +325,7 @@ impl Engine {
                     timeline
                 }),
             )
+            .map(free)
         };
         let mut outgoing = self.outgoing_pass.lock();
         if let Some(pass) = outgoing.take() {
@@ -363,7 +374,7 @@ impl Engine {
             let last = outgoing_engine.last_commands().to_vec();
             // The timeline goes with its engine, taken under the same lock
             // (engine, then timeline, as nothing takes them the other way).
-            let timeline = self.current_song_timeline.lock().take();
+            let timeline = self.current_song_timeline.lock().take().map(free);
             let inner = self.outgoing_pass.lock().take().map(Box::new);
             self.break_fades.lock().push(OutgoingPass {
                 effect_engine: outgoing_engine,
@@ -456,6 +467,14 @@ impl Engine {
             if outgoing.is_none() && fades.is_empty() {
                 return;
             }
+            // A loop break's fade that is over fires nothing more: held now,
+            // before its cues are looked at, so one due in the very frame it
+            // ends cannot move what it holds (a mover's position).
+            for fade in fades.iter_mut().filter(|f| !f.held) {
+                if fade.timing(song_time).0 >= 1.0 {
+                    fade.hold();
+                }
+            }
             for pass in outgoing.iter_mut().chain(fades.iter_mut()) {
                 let (_, time) = pass.timing(song_time);
                 pass.advance_timelines(time, &mut updates);
@@ -541,15 +560,12 @@ impl Engine {
         // A crossfade in progress belongs to the playback being replaced; a
         // loop break's fade carries on over this song's start.
         self.drop_pass_crossfade();
-        // Clear effects from previous song before starting new timeline
-        {
-            let mut effect_engine = self.effect_engine.lock();
-            effect_engine.stop_all_effects();
-        }
 
         let timeline_update = {
             let mut current_timeline = self.current_song_timeline.lock();
             if let Some(timeline) = current_timeline.as_mut() {
+                // Firing nothing until the state it starts from is in (below).
+                timeline.hold(true);
                 if start_time == Duration::ZERO {
                     timeline.start();
                     crate::lighting::timeline::TimelineUpdate::default()
@@ -579,12 +595,46 @@ impl Engine {
             }
         }
 
-        // Apply the historical timeline update to ensure deterministic state
-        // This must happen before the effects loop can process new cues to avoid conflicts
+        // The previous song's effects go and the historical state comes in
+        // under the one lock, groups resolved first: a frame between the two
+        // would find the channels unwritten and send them 0 -- a black flash
+        // at every seek and section loop (#581). As the watcher's reload.
+        let mut with_elapsed: Vec<_> = timeline_update.effects_with_elapsed.into_values().collect();
+        with_elapsed.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
+        let with_elapsed: Vec<_> = with_elapsed
+            .into_iter()
+            .map(|(effect, elapsed)| (self.resolve_effect_groups(effect), elapsed))
+            .collect();
+        let mut effects = timeline_update.effects;
+        effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
+        let effects: Vec<_> = effects
+            .into_iter()
+            .map(|effect| self.resolve_effect_groups(effect))
+            .collect();
+        let mut effect_engine = self.effect_engine.lock();
+        effect_engine.stop_all_effects();
         if start_time > Duration::ZERO {
-            if let Err(e) = self.apply_timeline_update(timeline_update) {
-                error!("Failed to apply historical timeline state: {}", e);
+            for cmd in &timeline_update.layer_commands {
+                effect_engine.apply_layer_command(cmd);
             }
+            for sequence_name in &timeline_update.stop_sequences {
+                effect_engine.stop_sequence(sequence_name);
+            }
+            for (effect, elapsed) in with_elapsed {
+                if let Err(e) = effect_engine.start_effect_with_elapsed(effect, elapsed) {
+                    error!("Failed to start lighting effect with elapsed time: {}", e);
+                }
+            }
+            for effect in effects {
+                if let Err(e) = effect_engine.start_effect(effect) {
+                    error!("Failed to start lighting effect: {}", e);
+                }
+            }
+        }
+        drop(effect_engine);
+        // Now its cues -- one at the start point too -- fire over that.
+        if let Some(timeline) = self.current_song_timeline.lock().as_mut() {
+            timeline.hold(false);
         }
     }
 

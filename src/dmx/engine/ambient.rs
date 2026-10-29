@@ -1563,6 +1563,38 @@ mod tests {
     }
 
     #[test]
+    fn a_fade_ending_in_the_frame_its_cue_is_due_fires_it_not() -> Result<(), Box<dyn Error>> {
+        // A frame late enough to find B's fade over and its cue at 1 s due
+        // fired the cue first: what the fade held moved (CI saw the pan
+        // step).
+        let b = "show \"song\" {\n    @0.000\n    mover: static, pan: 20%, duration: 60s\n    @1.000\n    mover: static, pan: 0%, duration: 60s\n}\n";
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_mover(&engine);
+        start_song(&engine, &pan_show("80%"));
+        song_frame(&engine, 0.5);
+        engine.begin_break_fade(Duration::from_secs(6));
+        engine.stop_lighting_timeline();
+        start_song(&engine, b);
+        song_frame(&engine, 0.1);
+        engine.begin_break_fade(Duration::from_millis(300));
+        engine.stop_lighting_timeline();
+        start_song(&engine, GREEN);
+        // No frame until both B's fade is over and its cue is due.
+        sleep(Duration::from_millis(1100));
+        song_frame(&engine, 1.2);
+        let fades = engine.break_fades.lock();
+        assert_eq!(fades.len(), 2);
+        assert!(fades[1].held, "B's fade, over, is held");
+        let pan = fades[1]
+            .last
+            .iter()
+            .find(|c| c.channel == 7)
+            .map(|c| c.value);
+        assert_eq!(pan, Some(51), "held at 20%, its 0% cue not fired");
+        Ok(())
+    }
+
+    #[test]
     fn a_song_looping_under_a_long_fade_adds_one_held_layer() -> Result<(), Box<dyn Error>> {
         // Each pass that went under the fade stacked another layer, every
         // one rendering a whole engine each frame until the fade was out.
@@ -1605,9 +1637,15 @@ mod tests {
             "show \"song\" {\n    @0.000\n    wash: static, color: \"red\", duration: 200ms\n}\n",
         );
         assert_eq!(song_frame(&engine, 0.1), (255.0, 0.0, 0.0));
-        // The effect is over; the rig holds its frame, as it does between
-        // cues.
-        assert_eq!(song_frame(&engine, 0.5), (255.0, 0.0, 0.0));
+        // The effect is over: its channels go as it does (#581).
+        assert_eq!(song_frame(&engine, 0.5), (0.0, 0.0, 0.0));
+        // Something no frame writes -- written straight to the universe, as
+        // MIDI DMX on an unpatched channel is -- the rig holds lit.
+        engine
+            .get_universe(5)
+            .unwrap()
+            .update_effect_commands(vec![(1, 255)]);
+        assert_eq!(tick(&engine), (255.0, 0.0, 0.0));
         // The song ends.
         engine.stop_lighting_timeline();
         engine.idle_ambient(None, true);
@@ -1623,13 +1661,16 @@ mod tests {
         // then went (the mode set Off), that stayed lit for good.
         let (_dir, engine) = ambient_engine(BLUE, ("0s", "100ms", "100ms"))?;
         add_spot(&engine);
-        start_song(
-            &engine,
-            "show \"song\" {\n    @0.000\n    spot: static, color: \"red\", duration: 200ms\n}\n",
-        );
+        start_song(&engine, GREEN);
         song_frame(&engine, 0.1);
+        // The spot lit by what no frame writes: MIDI DMX on an unpatched
+        // channel, straight to the universe.
+        engine
+            .get_universe(5)
+            .unwrap()
+            .update_effect_commands(vec![(4, 255)]);
         song_frame(&engine, 0.5);
-        assert_eq!(spot_red(&engine), 255.0, "held after its effect");
+        assert_eq!(spot_red(&engine), 255.0, "held, nothing writing it");
         engine.stop_lighting_timeline();
         engine.idle_ambient(None, true);
         for _ in 0..3 {
@@ -2114,6 +2155,155 @@ mod tests {
         tick(&engine);
         sleep(Duration::from_millis(1200));
         assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn an_effect_ending_mid_song_lets_its_channels_go() -> Result<(), Box<dyn Error>> {
+        // #581: an effect that ended mid-song left its last value on the
+        // rig -- nothing wrote the channel again -- while the view showed
+        // it dark.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_spot(&engine);
+        start_song(
+            &engine,
+            "show \"song\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 10s\n    spot: static, color: \"green\", duration: 300ms\n}\n",
+        );
+        song_frame(&engine, 0.1);
+        let green = |engine: &Engine| engine.get_universe(5).unwrap().get_target_value(4);
+        assert_eq!(green(&engine), 255.0);
+        song_frame(&engine, 0.5);
+        song_frame(&engine, 0.6);
+        assert_eq!(green(&engine), 0.0, "the spot's effect is over");
+        assert_eq!(
+            song_frame(&engine, 0.7),
+            (0.0, 0.0, 255.0),
+            "the wash plays on"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_ganged_bar_lets_every_section_go() -> Result<(), Box<dyn Error>> {
+        // A bar's sections ganged to its first, and a 16-bit dimmer's fine
+        // byte, were not let go as their effect ended: only the coarse byte
+        // of the first section was.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        let mut defs = std::collections::HashMap::new();
+        let mut red = crate::lighting::types::ChannelDef::at(1);
+        red.mirrors = vec![(4, None)];
+        defs.insert("red".to_string(), red);
+        let mut dimmer = crate::lighting::types::ChannelDef::at(2);
+        dimmer.fine = Some(3);
+        defs.insert("dimmer".to_string(), dimmer);
+        engine.effect_engine.lock().register_fixture(
+            crate::lighting::effects::FixtureInfo::new(
+                "bar".to_string(),
+                5,
+                10,
+                "Generic".to_string(),
+                std::collections::HashMap::from([
+                    ("red".to_string(), 1),
+                    ("dimmer".to_string(), 2),
+                ]),
+                None,
+            )
+            .with_channel_defs(defs),
+        );
+        start_song(
+            &engine,
+            "show \"song\" {\n    @0.000\n    bar: static, color: \"red\", dimmer: 100%, duration: 300ms\n}\n",
+        );
+        song_frame(&engine, 0.1);
+        let at = |engine: &Engine, ch: usize| engine.get_universe(5).unwrap().get_target_value(ch);
+        // Channels 10-13: red, dimmer, dimmer fine, red's mirror.
+        assert!(at(&engine, 9) > 0.0 && at(&engine, 12) > 0.0, "lit");
+        song_frame(&engine, 0.5);
+        song_frame(&engine, 0.6);
+        for ch in 9..13 {
+            assert_eq!(at(&engine, ch), 0.0, "channel {} let go", ch + 1);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_cue_at_the_start_point_is_not_lost_to_the_start() -> Result<(), Box<dyn Error>> {
+        // The effects loop fired the cue at the start point between the
+        // timeline's arming and the old effects' clearing, which then took
+        // it: the look was gone until the next cue.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let looper = {
+            let (engine, stop) = (engine.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = engine.update_song_lighting(Duration::ZERO);
+                }
+            })
+        };
+        let mut lost = 0;
+        for _ in 0..2000 {
+            *engine.current_song_timeline.lock() = Some(timeline(RED));
+            engine.update_song_time(Duration::ZERO);
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            let _ = engine.update_song_lighting(Duration::ZERO);
+            // An update the loop took but has yet to apply lands shortly.
+            let started = std::time::Instant::now();
+            while engine.effect_engine.lock().active_effects_count() == 0
+                && started.elapsed() < Duration::from_millis(50)
+            {
+                std::thread::yield_now();
+            }
+            if engine.effect_engine.lock().active_effects_count() == 0 {
+                lost += 1;
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        looper.join().unwrap();
+        assert_eq!(lost, 0, "the start point's cue lost {lost} times in 2000");
+        Ok(())
+    }
+
+    #[test]
+    fn a_held_timeline_taken_into_a_fade_plays_on_there() -> Result<(), Box<dyn Error>> {
+        // A loop break taking the song's timeline while a start held it
+        // left it held in the fade: none of its cues fired there.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_spot(&engine);
+        start_song(
+            &engine,
+            "show \"song\" {\n    @0.000\n    wash: static, color: \"red\", duration: 60s\n    @0.200\n    spot: static, color: \"red\", duration: 60s\n}\n",
+        );
+        song_frame(&engine, 0.1);
+        engine
+            .current_song_timeline
+            .lock()
+            .as_mut()
+            .unwrap()
+            .hold(true);
+        engine.begin_break_fade(Duration::from_secs(10));
+        sleep(Duration::from_millis(300));
+        song_frame(&engine, 0.3);
+        assert!(spot_red(&engine) > 200.0, "the fade's cue at 200 ms fired");
+        Ok(())
+    }
+
+    #[test]
+    fn midi_dmx_held_goes_when_the_next_song_starts() -> Result<(), Box<dyn Error>> {
+        // A song start clears the store: what MIDI DMX held, steady, went
+        // unwritten and the rig held it through the next song.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_spot(&engine);
+        midi_red_200(&engine);
+        start_song(&engine, SPOT_ONLY);
+        send_red_200(&engine);
+        song_frame(&engine, 0.5);
+        assert_eq!(wash_red(&engine), 200.0);
+        engine.stop_lighting_timeline();
+        start_song(&engine, SPOT_ONLY);
+        song_frame(&engine, 0.1);
+        song_frame(&engine, 0.2);
+        assert_eq!(wash_red(&engine), 0.0, "the next song's, not the last's");
         Ok(())
     }
 

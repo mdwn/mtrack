@@ -108,6 +108,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An effect that ends mid-song no longer leaves its lights on (#581)**: a channel no effect drove
+  any more -- its effect over, or MIDI DMX on it cleared at the next song's start -- kept its last
+  value on the rig, while the web UI and `get_fixture_state` showed it dark. A level or colour
+  nothing writes any more now goes to 0 at once -- ganged sections and fine bytes too -- and a
+  position or setting (pan, gobo, a mode) holds where it was. So a song whose first cue comes after
+  its start now starts from dark, as the web UI showed, rather than holding the last song's look.
 - **Ambient Off takes a show that has finished to dark too (#573)**: with ambient Off, a show whose
   effects had all ended by the time its song did -- at the very end or earlier -- left their last
   frame on the rig, since nothing writes a channel no effect drives and the engine darkened had

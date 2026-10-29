@@ -539,6 +539,9 @@ impl Engine {
                 return Ok(());
             }
         };
+        // What a channel no frame writes any more goes to, below: 0 for a
+        // level or colour.
+        let levels = effect_engine.level_channels();
         // Mid-crossfade between passes of a looping song: render the outgoing
         // pass too, a pass ahead in song time, and cross the two frames over
         // the overlap. The outgoing pass goes once the overlap is over (among
@@ -657,12 +660,35 @@ impl Engine {
             &commands
         };
 
-        *self.last_written.lock() = commands.iter().map(|c| (c.universe, c.channel)).collect();
+        // A level or colour the last frame wrote and this one does not --
+        // its effect over, its MIDI DMX cleared at a song start -- goes to
+        // 0: the universe would hold it lit, with nothing to say so (#581).
+        // A position or a setting holds where it was, as going dark leaves
+        // it.
+        let written: HashSet<(u16, u16)> =
+            commands.iter().map(|c| (c.universe, c.channel)).collect();
+        let released: Vec<crate::lighting::effects::DmxCommand> = {
+            let mut last = self.last_written.lock();
+            let gone: Vec<(u16, u16)> = last.difference(&written).copied().collect();
+            *last = written;
+            if gone.is_empty() {
+                Vec::new()
+            } else {
+                gone.into_iter()
+                    .filter(|at| levels.contains(at))
+                    .map(|(universe, channel)| crate::lighting::effects::DmxCommand {
+                        universe,
+                        channel,
+                        value: 0,
+                    })
+                    .collect()
+            }
+        };
 
         // Group commands by universe
         let mut universe_commands: std::collections::HashMap<u16, Vec<(u16, u8)>> =
             std::collections::HashMap::new();
-        for command in commands.iter() {
+        for command in commands.iter().chain(released.iter()) {
             universe_commands
                 .entry(command.universe)
                 .or_default()
