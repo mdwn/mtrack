@@ -586,6 +586,35 @@ show "t" {
     }
 
     #[test]
+    fn evaluate_at_a_slow_down_on_a_looks_last_instant() {
+        let fixtures = vec![rgb_fixture("wash", 1)];
+        let results = eval(
+            "show \"s\" {\n    @00:00.000\n    wash: static, color: \"blue\", duration: 4s\n    \
+             @00:04.000\n    master(layer: background, speed: 0.5)\n}\n",
+            &fixtures,
+            &[4.0],
+        );
+        assert_eq!(
+            results[0].active_effects.len(),
+            1,
+            "live plays it on at 4 s"
+        );
+    }
+
+    #[test]
+    fn evaluate_keeps_a_look_frozen_on_its_last_instant_over() {
+        let fixtures = vec![rgb_fixture("wash", 1)];
+        let results = eval(
+            "show \"s\" {\n    @00:00.000\n    wash: static, color: \"blue\", duration: 4s\n    \
+             @00:04.000\n    freeze(layer: background)\n    \
+             @00:06.000\n    master(layer: background, speed: 0.5)\n}\n",
+            &fixtures,
+            &[8.0],
+        );
+        assert_eq!(results[0].active_effects.len(), 0, "live: over at 4 s");
+    }
+
+    #[test]
     fn evaluate_keeps_a_look_slowed_on_its_last_instant() {
         // Live, the cue at 4 s fires before the frame that would end the
         // look, so it plays on at half speed (elapsed 2 s of 4) until 8 s.

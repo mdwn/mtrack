@@ -3222,6 +3222,49 @@ mod test {
         }
 
         #[test]
+        fn a_look_frozen_on_its_last_instant_stays_over_through_a_slow_down(
+        ) -> Result<(), Box<dyn Error>> {
+            // A 4 s look, frozen at 4 s (the instant it ends: live it is
+            // over), its layer then slowed at 6 s while still frozen.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
+                freeze(layer: midground)\n    @6.000\n    \
+                master(layer: midground, speed: 0.5)\n}\n";
+            let played = played_frame(show, 8.0)?;
+            let sought = seek_frame(show, 8.0)?;
+            assert_eq!(played, DARK, "live: over at its freeze");
+            assert_eq!(played, sought, "played {played:?} vs sought {sought:?}");
+            Ok(())
+        }
+
+        #[test]
+        fn a_look_frozen_on_its_last_instant_does_not_carry_the_show_end() {
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
+                freeze(layer: midground)\n    @6.000\n    \
+                master(layer: midground, speed: 0.5)\n    @8.000\n    \
+                unfreeze(layer: midground)\n}\n";
+            // Live the look is over at 4 s; the show's last cue is at 8 s.
+            assert_eq!(timeline(show).show_end(), Duration::from_secs(8));
+        }
+
+        #[test]
+        fn a_seek_onto_a_slow_down_on_a_looks_last_instant_keeps_it() -> Result<(), Box<dyn Error>>
+        {
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
+                master(layer: midground, speed: 0.5)\n}\n";
+            let played = played_frame(show, 6.0)?;
+            let sought = seek_then_play(show, 4.0, 6.0)?;
+            assert_eq!(played, GREEN);
+            assert_eq!(
+                played, sought,
+                "played {played:?} vs seek to 4 s then played {sought:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
         fn a_freeze_on_a_looks_last_instant_agrees_with_a_seek() -> Result<(), Box<dyn Error>> {
             // A freeze holds from its cue's time: on the instant a 4 s look
             // ends, it is over, played or sought. Live used to freeze at the

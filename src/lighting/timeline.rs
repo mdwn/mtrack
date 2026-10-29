@@ -284,6 +284,26 @@ fn replay(cues: &[Cue]) -> Replay {
                 }
             }
         }
+        // The cue lands, then the frame renders and expires anything at
+        // or past its end: an effect ending on this instant was kept for
+        // the commands to catch, and one they left over goes now. A look
+        // frozen on its last instant is over, and a later change of speed
+        // must not bring it back.
+        let timed: HashSet<EffectLayer> = group
+            .iter()
+            .flat_map(|cue| &cue.layer_commands)
+            .filter(|cmd| cmd.command_type != LayerCommandType::Clear)
+            .filter_map(|cmd| cmd.layer)
+            .collect();
+        for layer in timed {
+            settle_layer(
+                layer,
+                time,
+                layers,
+                arrived,
+                &mut result.effects_with_elapsed,
+            );
+        }
 
         for cue in group {
             // Purge already-accumulated effects from stopped sequences,
@@ -601,18 +621,29 @@ impl LightingTimeline {
         // memory without running it. Every completed move goes, in cue
         // order, since each one's turn is chosen from where the last one
         // left off.
+        // A freeze, unfreeze or speed change cued at the start point fires
+        // in the first frame, before it expires anything: an effect ending
+        // exactly there stays for it to catch, as it does played through.
+        let timed_at_start: HashSet<EffectLayer> = self.cues[self.next_cue_index..]
+            .iter()
+            .take_while(|cue| cue.time == start_time)
+            .flat_map(|cue| &cue.layer_commands)
+            .filter(|cmd| cmd.command_type != LayerCommandType::Clear)
+            .filter_map(|cmd| cmd.layer)
+            .collect();
         let all: HashSet<EffectLayer> = result
             .effects_with_elapsed
             .values()
             .map(|(effect, _)| effect.layer)
             .collect();
         for layer in all {
-            settle_layer(
+            settle_layer_past(
                 layer,
                 start_time,
                 &layers,
                 &mut arrived,
                 &mut result.effects_with_elapsed,
+                timed_at_start.contains(&layer),
             );
         }
         for (id, (effect, elapsed)) in result.effects_with_elapsed.iter_mut() {
