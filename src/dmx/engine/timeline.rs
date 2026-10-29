@@ -43,6 +43,12 @@ pub(crate) struct OutgoingPass {
     /// Which pass this is, so what its timeline fired finds it again after
     /// the passes are locked anew, wherever it has gone in between.
     pub(super) id: u64,
+    /// The frame this pass last rendered.
+    pub(super) last: Vec<crate::lighting::effects::DmxCommand>,
+    /// Over and held: the pass renders `last` and nothing more -- its engine
+    /// and timeline stopped -- for what it holds that nothing under it
+    /// drives (a mover's position), until the fades older than it go.
+    pub(super) held: bool,
 }
 
 /// What a pass's timeline fired, by the pass's id, its groups resolved.
@@ -105,27 +111,44 @@ impl OutgoingPass {
 
     /// Renders this pass's frame at its own song time `time`: its engine's,
     /// crossed with an inner pass still crossing into it, as before a break
-    /// that interrupted their crossfade. The inner pass goes once its
-    /// crossfade is over.
+    /// that interrupted their crossfade. A held pass renders its last frame.
     pub(super) fn render(
         &mut self,
         dt: Duration,
         time: Duration,
     ) -> Result<Vec<crate::lighting::effects::DmxCommand>, crate::lighting::effects::EffectError>
     {
+        if self.held {
+            return Ok(self.last.clone());
+        }
         let own = self.effect_engine.update(dt, Some(time))?.to_vec();
-        let Some(inner) = self.inner.as_mut() else {
-            return Ok(own);
+        let frame = match self.inner.as_mut() {
+            None => own,
+            Some(inner) => {
+                let (t, inner_time) = inner.timing(time);
+                let old = inner.render(dt, inner_time)?;
+                let blended = self.effect_engine.crossfade_commands(&old, &own, t);
+                let shown = self.effect_engine.crossfade_states(&inner.effect_engine, t);
+                self.effect_engine.set_shown(Some(shown));
+                // An inner pass whose crossfade is over stays, held, until
+                // this one goes: at its end it holds only what this one does
+                // not drive -- a mover's position -- which would jump as it
+                // went.
+                if t >= 1.0 {
+                    inner.hold();
+                }
+                blended
+            }
         };
-        let (t, inner_time) = inner.timing(time);
-        let old = inner.render(dt, inner_time)?;
-        let blended = self.effect_engine.crossfade_commands(&old, &own, t);
-        // An inner pass whose crossfade is over stays until this one goes: at
-        // its end it holds only what this one does not drive -- a mover's
-        // position -- which would jump as it went.
-        let shown = self.effect_engine.crossfade_states(&inner.effect_engine, t);
-        self.effect_engine.set_shown(Some(shown));
-        Ok(blended)
+        self.last.clone_from(&frame);
+        Ok(frame)
+    }
+
+    /// Stops this pass where it is: it renders its last frame from now on.
+    fn hold(&mut self) {
+        self.held = true;
+        self.timeline = None;
+        self.inner = None;
     }
 
     /// Advances this pass's timeline to its own song time `time`, and each
@@ -172,17 +195,27 @@ impl OutgoingPass {
         }
     }
 
-    /// This pass as a loop break's fade that is already over, from its own
-    /// time at `song_time` on.
-    fn shelved(mut self, song_time: Duration) -> OutgoingPass {
-        let (_, time) = self.timing(song_time);
+    /// This pass as a loop break's fade that is already over, held at the
+    /// last frame it rendered.
+    fn shelved(mut self) -> OutgoingPass {
+        self.hold();
         self.clock = PassClock::Wall {
             started: std::time::Instant::now(),
-            from: time,
+            from: Duration::ZERO,
         };
         self.overlap = Duration::ZERO;
         self.hurry = None;
         self
+    }
+
+    /// Takes `newer`'s held frame into this one's: where both drive a
+    /// channel, the newer, as crossing the two in turn would give.
+    fn merge_held(&mut self, newer: OutgoingPass) {
+        let theirs: std::collections::HashSet<(u16, u16)> =
+            newer.last.iter().map(|c| (c.universe, c.channel)).collect();
+        self.last
+            .retain(|c| !theirs.contains(&(c.universe, c.channel)));
+        self.last.extend(newer.last);
     }
 
     /// Hurries this pass to the end of its crossfade over `fade` from now,
@@ -234,7 +267,6 @@ impl Engine {
         lead: Duration,
         overlap: Duration,
     ) {
-        let before = self.to_delayed_song_time(self.get_song_time());
         // Song time first: a frame rendered between the swap and the reset
         // would read the old pass's time as the new one's, and end the
         // crossfade before it began.
@@ -248,7 +280,7 @@ impl Engine {
             let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
             let mut outgoing = self.outgoing_pass.lock();
             if let Some(pass) = outgoing.take() {
-                self.retire_pass(pass, before);
+                self.retire_pass(pass);
             }
             *outgoing = Some(OutgoingPass {
                 effect_engine: outgoing_engine,
@@ -258,6 +290,8 @@ impl Engine {
                 inner: None,
                 hurry: None,
                 id: next_pass_id(),
+                last: Vec::new(),
+                held: false,
             });
         }
         // Then the timelines. Until the old one joins its pass, that pass's
@@ -308,6 +342,8 @@ impl Engine {
                 inner,
                 hurry: None,
                 id: next_pass_id(),
+                last: Vec::new(),
+                held: false,
             });
         }
     }
@@ -348,21 +384,28 @@ impl Engine {
     fn drop_pass_crossfade(&self) {
         let pass = self.outgoing_pass.lock().take();
         if let Some(pass) = pass {
-            self.retire_pass(pass, self.to_delayed_song_time(self.get_song_time()));
+            self.retire_pass(pass);
         }
     }
 
     /// A crossfade pass going -- its crossfade over, the next pass's begun,
     /// or its playback stopped -- while a loop break's fade crosses over it:
-    /// it joins those fades, already over, so what it holds that nothing
-    /// under it drives (a mover's position) stays until every older fade
-    /// has gone, rather than jumping under them. With none, it just goes.
-    /// Takes `break_fades`: call it with `outgoing_pass` held or not, never
-    /// with `break_fades` held.
-    pub(super) fn retire_pass(&self, pass: OutgoingPass, song_time: Duration) {
+    /// it joins those fades, held at its last frame, so what it holds that
+    /// nothing under it drives (a mover's position) stays until every older
+    /// fade has gone, rather than jumping under them. Its engine and timeline
+    /// stop. One held right after another merges into it, so a song looping
+    /// under a long fade adds one, not one a pass. With no fade over it, it
+    /// just goes. Takes `break_fades`: call it with `outgoing_pass` held or
+    /// not, never with `break_fades` held.
+    pub(super) fn retire_pass(&self, pass: OutgoingPass) {
         let mut fades = self.break_fades.lock();
-        if !fades.is_empty() {
-            fades.push(pass.shelved(song_time));
+        if fades.is_empty() {
+            return;
+        }
+        let pass = pass.shelved();
+        match fades.last_mut() {
+            Some(newest) if newest.held => newest.merge_held(pass),
+            _ => fades.push(pass),
         }
     }
 

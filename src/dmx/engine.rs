@@ -569,7 +569,7 @@ impl Engine {
             };
         if done {
             if let Some(pass) = outgoing.take() {
-                self.retire_pass(pass, song_time);
+                self.retire_pass(pass);
             }
         }
         drop(outgoing);

@@ -1252,7 +1252,7 @@ mod tests {
     fn assert_pan_glides(engine: &Engine, secs: f64, per_sec: f64) {
         let started = std::time::Instant::now();
         let mut last = (pan(engine), std::time::Instant::now());
-        let mut song = 0.0;
+        let mut song = engine.get_song_time().as_secs_f64();
         while started.elapsed().as_secs_f64() < secs {
             sleep(Duration::from_millis(20));
             song += 0.02;
@@ -1291,32 +1291,34 @@ mod tests {
     }
 
     #[test]
-    fn a_loop_pass_ending_under_a_fade_does_not_jump_a_mover() -> Result<(), Box<dyn Error>> {
-        // The same for a looping song's pass whose crossfade ended under an
-        // older fade: what dropped it next -- another break, another pass,
-        // a stop -- jumped the pan it held.
-        for next in ["break", "pass", "stop"] {
+    fn a_loop_pass_going_under_a_fade_does_not_jump_a_mover() -> Result<(), Box<dyn Error>> {
+        // A looping song's pass going under an older fade -- its crossfade
+        // over, or cut short by another break, the next pass, a stop or a
+        // seek -- jumped the pan it held. Held, it fires no more cues: B's
+        // at 5 s would pan the mover to 0.
+        let b = "show \"song\" {\n    @0.000\n    mover: static, pan: 20%, duration: 60s\n    @5.000\n    mover: static, pan: 0%, duration: 60s\n}\n";
+        for next in ["end", "break", "pass", "stop", "seek"] {
             let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
             add_mover(&engine);
             start_song(&engine, &pan_show("80%"));
             song_frame(&engine, 0.5);
             engine.begin_break_fade(Duration::from_secs(3));
             engine.stop_lighting_timeline();
-            start_song(&engine, &pan_show("20%"));
+            start_song(&engine, b);
             song_frame(&engine, 0.1);
             // A third of the way out, A and B are well apart.
             sleep(Duration::from_millis(1000));
             song_frame(&engine, 1.1);
-            // B loops into a pass that does not drive the mover, over 100 ms,
-            // and that crossfade ends.
+            // B loops into a pass that does not drive the mover, over 500 ms;
+            // only the 3 s fade moves the pan meanwhile (153 over 3 s).
             engine.begin_loop_crossfade(
                 Some(timeline(GREEN)),
                 Duration::from_secs(1),
-                Duration::from_millis(100),
+                Duration::from_millis(500),
             );
-            // Only the 3 s fade moves the pan: the pass held it.
-            assert_pan_glides(&engine, 0.3, 100.0);
+            assert_pan_glides(&engine, 0.15, 100.0);
             match next {
+                "end" => {}
                 "break" => {
                     engine.begin_break_fade(Duration::from_millis(300));
                     engine.stop_lighting_timeline();
@@ -1325,13 +1327,44 @@ mod tests {
                 "pass" => engine.begin_loop_crossfade(
                     Some(timeline(GREEN)),
                     Duration::from_secs(1),
-                    Duration::from_millis(100),
+                    Duration::from_millis(500),
                 ),
-                _ => engine.stop_lighting_timeline(),
+                "stop" => engine.stop_lighting_timeline(),
+                _ => {
+                    engine.update_song_time(Duration::from_secs(10));
+                    engine.start_lighting_timeline_at(Duration::from_secs(10));
+                }
             }
-            // The 3 s fade alone moves it now: 153 over 3 s.
-            assert_pan_glides(&engine, 0.6, 100.0);
+            assert_pan_glides(&engine, 0.8, 100.0);
+            assert!(pan(&engine) > 100.0, "{next}: no cue of B's fired");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_song_looping_under_a_long_fade_adds_one_held_layer() -> Result<(), Box<dyn Error>> {
+        // Each pass that went under the fade stacked another layer, every
+        // one rendering a whole engine each frame until the fade was out.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_mover(&engine);
+        start_song(&engine, &pan_show("80%"));
+        song_frame(&engine, 0.5);
+        engine.begin_break_fade(Duration::from_secs(30));
+        engine.stop_lighting_timeline();
+        start_song(&engine, &pan_show("20%"));
+        song_frame(&engine, 0.1);
+        for _ in 0..10 {
+            engine.begin_loop_crossfade(
+                Some(timeline(GREEN)),
+                Duration::from_secs(1),
+                Duration::from_millis(50),
+            );
+            song_frame(&engine, 0.01);
+            song_frame(&engine, 0.2);
+        }
+        let fades = engine.break_fades.lock();
+        assert_eq!(fades.len(), 2, "the fade, and one held pass");
+        assert!(fades[1].held);
         Ok(())
     }
 
