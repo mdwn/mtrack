@@ -333,7 +333,9 @@ impl Engine {
         // fresh engine alone and a loop break begun meanwhile cannot take
         // one pass's engine with the other's timeline.
         let mut effect_engine = self.effect_engine.lock();
-        let fresh = Self::fresh_engine_showing(&effect_engine);
+        let mut fresh = Self::fresh_engine_showing(&effect_engine);
+        // The new pass starts at 0, for a freeze before its first frame.
+        fresh.set_song_time(Duration::ZERO);
         let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
         // What it drove the rig with until now: held as it is, should it go
         // before its first frame as a pass.
@@ -641,6 +643,9 @@ impl Engine {
             .collect();
         let mut effect_engine = self.effect_engine.lock();
         effect_engine.stop_all_effects();
+        // A freeze in the history holds at the start point, where the
+        // effects it replays are started from.
+        effect_engine.set_song_time(start_time);
         match midi {
             MidiDmxStart::Leave => {}
             MidiDmxStart::Install(playbacks) => {

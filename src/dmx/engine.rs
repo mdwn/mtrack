@@ -2918,6 +2918,32 @@ mod test {
              duration: 10s\n    @2.000\n    wash: static, color: \"green\", duration: 1s\n}\n";
 
         #[test]
+        fn a_freeze_in_a_seeks_history_holds_at_the_seek_point() -> Result<(), Box<dyn Error>> {
+            // A freeze replayed from a seek's history took the song time of
+            // the last frame before the seek: back from 60 s to 20 s, it held
+            // the look 55 s in, past its end, and the look went.
+            let (engine, _cancel_handle) = wash_running(
+                "show \"a\" {\n    @5.000\n    wash: static, color: \"red\", duration: 30s, \
+                 layer: midground\n    @8.000\n    freeze(layer: midground)\n}\n",
+            )?;
+            assert_eq!(
+                frame_at(&engine, 60.0).0,
+                255.0,
+                "held by the freeze at 60 s"
+            );
+
+            engine.update_song_time(Duration::from_secs(20));
+            engine.start_lighting_timeline_at(Duration::from_secs(20));
+            engine.update_effects()?;
+            assert_eq!(
+                engine.get_universe(5).unwrap().get_target_value(0),
+                255.0,
+                "the frozen look is gone after the seek"
+            );
+            Ok(())
+        }
+
+        #[test]
         fn a_cue_taken_before_a_restart_does_not_land_after_it() -> Result<(), Box<dyn Error>> {
             // A cue the effects loop took from the timeline just before a
             // section loop restarted it was applied on top of the state the

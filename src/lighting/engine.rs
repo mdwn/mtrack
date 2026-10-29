@@ -1522,6 +1522,14 @@ impl EffectEngine {
         self.cache.invalidate();
     }
 
+    /// Sets the song time a layer command applied before the next frame
+    /// takes as now: a start's, before its history is replayed. Without
+    /// it, a freeze in the history of a seek took the last frame rendered
+    /// before it -- the old position -- and held its effects there.
+    pub fn set_song_time(&mut self, song_time: Duration) {
+        self.last_song_time = Some(song_time);
+    }
+
     /// Keeps the song time a layer froze at, and its cued effects' time
     /// frozen, in step with a freeze or unfreeze that has just happened (or
     /// not) to `layer`. The song time is the last frame's: the command lands
