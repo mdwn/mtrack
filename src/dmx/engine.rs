@@ -3041,6 +3041,35 @@ mod test {
         }
 
         #[test]
+        fn the_timeline_runs_on_until_an_unfrozen_look_ends() -> Result<(), Box<dyn Error>> {
+            // Song time stops once the timeline finishes. One that finished
+            // at its last cue, the unfreeze, left the look stuck at the time
+            // it froze on for good (#590).
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @2.000\n    \
+                freeze(layer: midground)\n    @7.000\n    unfreeze(layer: midground)\n}\n";
+            let finished = |engine: &Engine| {
+                engine
+                    .current_song_timeline
+                    .lock()
+                    .as_ref()
+                    .is_none_or(|timeline| timeline.is_finished())
+            };
+            let (engine, _cancel_handle) = wash_running(show)?;
+            let mut at = 1.0;
+            while at < 8.9 {
+                at += 0.01;
+                frame_at(&engine, at);
+            }
+            assert!(!finished(&engine), "finished with the look still up");
+            assert_eq!(frame_at(&engine, 8.95), GREEN);
+            frame_at(&engine, 9.05);
+            assert!(finished(&engine), "ran on past the look's end");
+            assert_eq!(frame_at(&engine, 9.1), DARK);
+            Ok(())
+        }
+
+        #[test]
         fn a_seek_counts_speed_zero_and_back_as_a_freeze() -> Result<(), Box<dyn Error>> {
             let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
                 duration: 4s, layer: midground, blend_mode: replace\n    @2.000\n    \

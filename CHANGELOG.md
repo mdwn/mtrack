@@ -137,6 +137,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timed on the lighting engine's own clock, which steps a fixed frame each tick and falls behind
   the song where frames run long, so it ended late -- 100-140 ms after a 5 s freeze on a Pi, and
   more the longer it ran. It now plays on song time less the time it spent frozen.
+- **A slowed or frozen effect at the end of a show runs its course (#590)**: song time stops once
+  the show is over, and the show's end was its effects' authored ends. An effect slowed by the speed
+  master, or frozen with its unfreeze as the show's last cue, outlasted that end and stayed lit for
+  the rest of the song. The show now runs until such an effect has really ended; one left frozen
+  for good holds to the end of the song's audio.
 - **A cue at a loop restart lands on the right pass**: a cue fired just as a section loop restarted
   could also play on top of the restarted state. One fired just as a looping song started its next
   pass could land on the new pass instead of the one fading out.
