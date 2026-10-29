@@ -3279,6 +3279,279 @@ mod test {
             Ok(())
         }
 
+        const RV_TEMPO: &str =
+            "tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n}\n\n";
+
+        fn close_enough(a: (f64, f64, f64), b: (f64, f64, f64)) -> bool {
+            (a.0 - b.0).abs() <= 3.0 && (a.1 - b.1).abs() <= 3.0 && (a.2 - b.2).abs() <= 3.0
+        }
+
+        #[test]
+        fn a_tempo_cycle_frozen_over_a_break() -> Result<(), Box<dyn Error>> {
+            // A 4-bar cycle from bar 2 (2-10 s), frozen bar 3 to bar 4
+            // (4-6 s): it ends at 12 s.
+            let show = format!(
+                "{RV_TEMPO}show \"a\" {{\n    @2/1\n    wash: cycle color: \"red\", color: \"green\", \
+                 color: \"blue\", speed: 0.5, duration: 4measures, layer: midground, \
+                 blend_mode: replace\n    @3/1\n    freeze(layer: midground)\n    @4/1\n    \
+                 unfreeze(layer: midground)\n}}\n"
+            );
+            let mut bad = Vec::new();
+            for secs in [5.0, 7.3, 9.0, 11.9] {
+                let played = played_frame(&show, secs)?;
+                let sought = seek_frame(&show, secs)?;
+                if played == DARK || !close_enough(played, sought) {
+                    bad.push(format!("{secs}: played {played:?} sought {sought:?}"));
+                }
+            }
+            let played = played_frame(&show, 12.1)?;
+            let sought = seek_frame(&show, 12.1)?;
+            if played != DARK || sought != DARK {
+                bad.push(format!("12.1: played {played:?} sought {sought:?}"));
+            }
+            assert!(bad.is_empty(), "{bad:#?}");
+            Ok(())
+        }
+
+        #[test]
+        fn a_look_cued_during_a_freeze_plays_through_as_it_seeks() -> Result<(), Box<dyn Error>> {
+            // Frozen 2-4 s; green cued at 3 s for 2 s: held from 3 to 4 s,
+            // so it ends at 6 s.
+            let show = "show \"a\" {\n    @2.000\n    freeze(layer: midground)\n    @3.000\n    \
+                wash: static, color: \"green\", duration: 2s, layer: midground, \
+                blend_mode: replace\n    @4.000\n    unfreeze(layer: midground)\n}\n";
+            let mut bad = Vec::new();
+            for (secs, want) in [(3.5, GREEN), (5.9, GREEN), (6.1, DARK)] {
+                let played = played_frame(show, secs)?;
+                let sought = seek_frame(show, secs)?;
+                if played != want || sought != want {
+                    bad.push(format!("{secs}: played {played:?} sought {sought:?}"));
+                }
+            }
+            for (secs, want) in [(5.9, GREEN), (6.1, DARK)] {
+                let from_seek = seek_then_play(show, 3.5, secs)?;
+                if from_seek != want {
+                    bad.push(format!("seek 3.5 then {secs}: {from_seek:?}"));
+                }
+            }
+            assert!(bad.is_empty(), "{bad:#?}");
+            Ok(())
+        }
+
+        #[test]
+        fn an_outgoing_pass_once_frozen_look_ends_on_its_time() -> Result<(), Box<dyn Error>> {
+            // 8 s song, 2 s crossfade. Red 0-6 s, frozen 2-3 s: ends at 7 s
+            // of the outgoing pass, 1 s into the new one.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", \
+                duration: 6s, layer: midground, blend_mode: replace\n    @2.000\n    \
+                freeze(layer: midground)\n    @3.000\n    unfreeze(layer: midground)\n}\n";
+            let (engine, _c) = wash_running(show)?;
+            let mut at = 1.0;
+            while at < 5.99 {
+                at += 0.01;
+                frame_at(&engine, at);
+            }
+            engine.begin_loop_crossfade(
+                Some(timeline(
+                    "show \"b\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 8s\n}\n",
+                )),
+                Duration::from_secs(6),
+                Duration::from_secs(2),
+            );
+            let mut seen = Vec::new();
+            let mut t = 0.0;
+            while t < 1.6 {
+                seen.push((t, frame_at(&engine, t)));
+                t += 0.01;
+            }
+            let red_at = |x: f64| {
+                seen.iter()
+                    .min_by(|a, b| (a.0 - x).abs().partial_cmp(&(b.0 - x).abs()).unwrap())
+                    .unwrap()
+                    .1
+                     .0
+            };
+            assert!(
+                red_at(0.9) > 0.0,
+                "outgoing red gone early: {:?}",
+                &seen[85..95]
+            );
+            assert_eq!(
+                red_at(1.1),
+                0.0,
+                "outgoing red ran late: {:?}",
+                &seen[105..115]
+            );
+            // No frame of the hand-over dark.
+            assert!(
+                seen.iter().all(|(_, f)| *f != DARK),
+                "dark frame: {:?}",
+                seen.iter().find(|(_, f)| *f == DARK)
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_seek_exactly_on_freeze_and_unfreeze_cues() -> Result<(), Box<dyn Error>> {
+            let show = "show \"a\" {\n    @0.000\n    wash: rainbow, speed: 0.2, \
+                duration: 20s, layer: midground\n    @3.000\n    freeze(layer: midground)\n    \
+                @6.000\n    unfreeze(layer: midground)\n}\n";
+            let mut bad = Vec::new();
+            for (seek, to) in [(3.0, 5.0), (6.0, 8.0), (3.0, 3.0), (6.0, 6.0)] {
+                let played = played_frame(show, to)?;
+                let sought = seek_then_play(show, seek, to)?;
+                if !close_enough(played, sought) {
+                    bad.push(format!(
+                        "seek {seek} to {to}: played {played:?} sought {sought:?}"
+                    ));
+                }
+            }
+            assert!(bad.is_empty(), "{bad:#?}");
+            Ok(())
+        }
+
+        #[test]
+        fn a_freeze_inside_a_looping_sequence() -> Result<(), Box<dyn Error>> {
+            // A 2-bar (4 s) sequence looping 4 times from 1 s: a rainbow on
+            // the midground, frozen on beat 3 of bar 1 to beat 1 of bar 2.
+            let show = format!(
+                "{RV_TEMPO}sequence \"v\" {{\n    @1/1\n    wash: rainbow, speed: 0.3, \
+                 duration: 6beats, layer: midground\n    @1/3\n    freeze(layer: midground)\n    \
+                 @2/1\n    unfreeze(layer: midground)\n}}\n\nshow \"a\" {{\n    @1.000\n    \
+                 sequence \"v\", loop: 4\n}}\n"
+            );
+            let mut bad = Vec::new();
+            for secs in [2.5, 4.2, 5.5, 6.3, 9.1, 12.7, 16.9, 17.5] {
+                let played = played_frame(&show, secs)?;
+                let sought = seek_frame(&show, secs)?;
+                if !close_enough(played, sought) {
+                    bad.push(format!("{secs}: played {played:?} sought {sought:?}"));
+                }
+            }
+            assert!(bad.is_empty(), "{bad:#?}");
+            Ok(())
+        }
+
+        #[test]
+        #[ignore = "slow: 300 random shows; run with --ignored"]
+        fn random_shows_play_through_as_they_seek() -> Result<(), Box<dyn Error>> {
+            let mut seed: u64 = 0x9e3779b97f4a7c15;
+            let mut rnd = |n: u64| {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (seed >> 33) % n
+            };
+            let layers = ["background", "midground", "foreground"];
+            let mut bad = Vec::new();
+            for case in 0..300 {
+                let mut cues: Vec<(u64, String)> = Vec::new();
+                for _ in 0..(3 + rnd(4)) {
+                    let at = 4 + rnd(40); // quarter seconds, from 1 s
+                    let layer = layers[rnd(3) as usize];
+                    let dur = 1 + rnd(16);
+                    let body = match rnd(2) {
+                        0 => format!(
+                            "wash: rainbow, speed: 0.2, duration: {}ms, layer: {layer}, blend_mode: replace",
+                            dur * 250
+                        ),
+                        _ => format!(
+                            "wash: static, color: \"{}\", duration: {}ms, layer: {layer}, blend_mode: replace",
+                            ["red", "green", "blue"][rnd(3) as usize],
+                            dur * 250
+                        ),
+                    };
+                    cues.push((at, body));
+                }
+                for _ in 0..(1 + rnd(4)) {
+                    let at = 4 + rnd(44);
+                    let layer = layers[rnd(3) as usize];
+                    let body = match rnd(5) {
+                        0 => format!("freeze(layer: {layer})"),
+                        1 => format!("unfreeze(layer: {layer})"),
+                        2 => format!("master(layer: {layer}, speed: 0.5)"),
+                        3 => format!("master(layer: {layer}, speed: 1)"),
+                        _ => format!("master(layer: {layer}, speed: 0)"),
+                    };
+                    cues.push((at, body));
+                }
+                cues.sort_by_key(|c| c.0);
+                let mut show = String::from("show \"a\" {\n");
+                for (at, body) in &cues {
+                    show.push_str(&format!("    @{:.3}\n    {body}\n", *at as f64 / 4.0));
+                }
+                show.push_str("}\n");
+                {
+                    // Once the timeline is finished song time stops: nothing
+                    // may still be changing then.
+                    let (engine, _c) = wash_running(&show)?;
+                    let mut at = 1.0;
+                    while !timeline_finished(&engine) && at < 60.0 {
+                        at += 0.01;
+                        frame_at(&engine, at);
+                    }
+                    let a = frame_at(&engine, at + 0.02);
+                    let b = frame_at(&engine, at + 5.0);
+                    if (a.0 - b.0).abs() > 2.0 || (a.1 - b.1).abs() > 2.0 || (a.2 - b.2).abs() > 2.0
+                    {
+                        bad.push(format!(
+                            "case {case}: finished at {at:.2} with {a:?}, at +5 s {b:?}\n{show}"
+                        ));
+                    }
+                }
+                for _ in 0..3 {
+                    let secs = 1.5 + rnd(1400) as f64 / 100.0 + 0.003;
+                    let played = played_frame(&show, secs)?;
+                    let sought = seek_frame(&show, secs)?;
+                    if (played.0 - sought.0).abs() > 8.0
+                        || (played.1 - sought.1).abs() > 8.0
+                        || (played.2 - sought.2).abs() > 8.0
+                    {
+                        bad.push(format!(
+                            "case {case} at {secs}: played {played:?} sought {sought:?}\n{show}"
+                        ));
+                    }
+                }
+            }
+            assert!(
+                bad.is_empty(),
+                "{} mismatches:\n{}",
+                bad.len(),
+                bad.join("\n")
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn slowed_hits_over_a_bed() -> Result<(), Box<dyn Error>> {
+            // A blue bed; red hits on every beat on the foreground, slowed
+            // to half from bar 3 to bar 5.
+            let mut show = format!(
+                "{RV_TEMPO}show \"a\" {{\n    @1/1\n    wash: static, color: \"blue\", \
+                 duration: 8measures, layer: background\n"
+            );
+            for bar in 1..=6 {
+                for beat in 1..=4 {
+                    show.push_str(&format!(
+                        "    @{bar}/{beat}\n    wash: static, color: \"red\", duration: 0.5beats, \
+                         layer: foreground, blend_mode: replace\n"
+                    ));
+                }
+            }
+            show.push_str("    @3/1\n    master(layer: foreground, speed: 0.5)\n");
+            show.push_str("    @5/1\n    master(layer: foreground, speed: 1)\n}\n");
+            let mut bad = Vec::new();
+            for secs in [2.1, 2.4, 4.1, 4.4, 4.6, 6.8, 8.05, 8.3, 9.9] {
+                let played = played_frame(&show, secs)?;
+                let sought = seek_frame(&show, secs)?;
+                if played != sought {
+                    bad.push(format!("{secs}: played {played:?} sought {sought:?}"));
+                }
+            }
+            assert!(bad.is_empty(), "{bad:#?}");
+            Ok(())
+        }
+
         #[test]
         fn a_cue_taken_before_a_restart_does_not_land_after_it() -> Result<(), Box<dyn Error>> {
             // A cue the effects loop took from the timeline just before a
