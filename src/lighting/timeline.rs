@@ -47,6 +47,10 @@ pub struct LightingTimeline {
     next_cue_index: usize,
     /// Whether the timeline is currently playing
     is_playing: bool,
+    /// Armed, but firing nothing yet: while the state it starts from goes
+    /// in, a cue at the start point would fire into the engine about to be
+    /// cleared, and be lost.
+    held: bool,
     /// Tempo map for tempo-aware effects (from the first show that has one)
     tempo_map: Option<crate::lighting::tempo::TempoMap>,
     /// Sequences that have been stopped — future cues from these sequences are suppressed
@@ -126,6 +130,7 @@ impl LightingTimeline {
             current_time: Duration::ZERO,
             next_cue_index: 0,
             is_playing: false,
+            held: false,
             tempo_map: None,
             stopped_sequences: HashSet::new(),
             show_end,
@@ -292,6 +297,12 @@ impl LightingTimeline {
         self.cues.partition_point(|cue| cue.time < time)
     }
 
+    /// Holds an armed timeline from firing cues (`true`), or lets it go on
+    /// from where it was armed (`false`).
+    pub fn hold(&mut self, held: bool) {
+        self.held = held;
+    }
+
     /// Stops the timeline
     pub fn stop(&mut self) {
         self.is_playing = false;
@@ -337,7 +348,7 @@ impl LightingTimeline {
     /// Updates the timeline with the current song time
     /// Returns both effects and layer commands to be processed
     pub fn update(&mut self, song_time: Duration) -> TimelineUpdate {
-        if !self.is_playing {
+        if !self.is_playing || self.held {
             return TimelineUpdate::default();
         }
         self.current_time = song_time;

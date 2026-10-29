@@ -289,6 +289,9 @@ fn reload_timeline(
         let mut current = current_song_timeline.lock();
         // The song's end bound belongs to the song, not the show text.
         new_timeline.set_end_cap(current.as_ref().and_then(|t| t.end_cap()));
+        // Firing nothing until the reloaded state is in, below: a cue at
+        // the song's time would land in the engine about to be cleared.
+        new_timeline.hold(true);
         *current = Some(new_timeline);
     }
 
@@ -320,6 +323,9 @@ fn reload_timeline(
             }
         }
         info!("Watcher releasing effect_engine lock.");
+    }
+    if let Some(timeline) = current_song_timeline.lock().as_mut() {
+        timeline.hold(false);
     }
 
     Ok(())

@@ -545,6 +545,8 @@ impl Engine {
         let timeline_update = {
             let mut current_timeline = self.current_song_timeline.lock();
             if let Some(timeline) = current_timeline.as_mut() {
+                // Firing nothing until the state it starts from is in (below).
+                timeline.hold(true);
                 if start_time == Duration::ZERO {
                     timeline.start();
                     crate::lighting::timeline::TimelineUpdate::default()
@@ -609,6 +611,11 @@ impl Engine {
                     error!("Failed to start lighting effect: {}", e);
                 }
             }
+        }
+        drop(effect_engine);
+        // Now its cues -- one at the start point too -- fire over that.
+        if let Some(timeline) = self.current_song_timeline.lock().as_mut() {
+            timeline.hold(false);
         }
     }
 

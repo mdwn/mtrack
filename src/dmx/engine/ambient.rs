@@ -2195,6 +2195,44 @@ mod tests {
     }
 
     #[test]
+    fn a_cue_at_the_start_point_is_not_lost_to_the_start() -> Result<(), Box<dyn Error>> {
+        // The effects loop fired the cue at the start point between the
+        // timeline's arming and the old effects' clearing, which then took
+        // it: the look was gone until the next cue.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let looper = {
+            let (engine, stop) = (engine.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = engine.update_song_lighting(Duration::ZERO);
+                }
+            })
+        };
+        let mut lost = 0;
+        for _ in 0..2000 {
+            *engine.current_song_timeline.lock() = Some(timeline(RED));
+            engine.update_song_time(Duration::ZERO);
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            let _ = engine.update_song_lighting(Duration::ZERO);
+            // An update the loop took but has yet to apply lands shortly.
+            let started = std::time::Instant::now();
+            while engine.effect_engine.lock().active_effects_count() == 0
+                && started.elapsed() < Duration::from_millis(50)
+            {
+                std::thread::yield_now();
+            }
+            if engine.effect_engine.lock().active_effects_count() == 0 {
+                lost += 1;
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        looper.join().unwrap();
+        assert_eq!(lost, 0, "the start point's cue lost {lost} times in 2000");
+        Ok(())
+    }
+
+    #[test]
     fn midi_dmx_held_goes_when_the_next_song_starts() -> Result<(), Box<dyn Error>> {
         // A song start clears the store: what MIDI DMX held, steady, went
         // unwritten and the rig held it through the next song.
