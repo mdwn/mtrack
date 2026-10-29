@@ -278,7 +278,7 @@ pub(crate) fn song_lighting_timeline(
     let all_shows: Vec<_> = song
         .dsl_lighting_shows()
         .iter()
-        .flat_map(|dsl_show| dsl_show.shows().values().cloned())
+        .flat_map(|dsl_show| dsl_show.shows().values().cloned().collect::<Vec<_>>())
         .collect();
     if all_shows.is_empty() {
         return None;
@@ -517,7 +517,7 @@ impl Engine {
         if let Some(ref lighting_config) = self.lighting_config {
             for dsl_show in dsl_lighting_shows {
                 crate::lighting::validation::validate_light_shows(
-                    dsl_show.shows(),
+                    &dsl_show.shows(),
                     Some(lighting_config),
                 )
                 .map_err(|e| {
