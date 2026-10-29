@@ -266,12 +266,24 @@ impl MidiDmxStore {
         self.channel_to_slot.get(&(universe, channel)).copied()
     }
 
-    /// Whether MIDI DMX holds (universe, channel): a slot of it written to
-    /// since the last clear. Every patched channel has a slot; this is the
-    /// ones MIDI is driving.
-    pub fn holds(&self, universe: u16, channel: u16) -> bool {
-        self.lookup(universe, channel)
-            .is_some_and(|slot| self.slots[slot].active.load(Ordering::Acquire))
+    /// Fades every slot MIDI holds to 0 over `ticks` frames, from where it
+    /// is: every engine renders the store, so each sees the same value go
+    /// down -- nothing cut, nothing crossed twice. A MIDI write after takes
+    /// its channel back.
+    pub fn fade_out(&self, ticks: f64) {
+        let mut any = false;
+        for slot in &self.slots {
+            if !slot.active.load(Ordering::Acquire) {
+                continue;
+            }
+            let current = load_f64(&slot.current);
+            store_f64(&slot.target, 0.0);
+            store_f64(&slot.rate, -current / ticks.max(1.0));
+            any = true;
+        }
+        if any {
+            self.generation.fetch_add(1, Ordering::Release);
+        }
     }
 
     /// Resets all slots to inactive (called on song transition).
