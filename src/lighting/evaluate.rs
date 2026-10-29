@@ -1055,3 +1055,7 @@ show "T" {
 #[cfg(test)]
 #[path = "move_seek_tests.rs"]
 mod move_seek_tests;
+
+#[cfg(test)]
+#[path = "show_end_tests.rs"]
+mod show_end_tests;

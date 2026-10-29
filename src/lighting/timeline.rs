@@ -331,6 +331,22 @@ fn replay(cues: &[Cue]) -> Replay {
                             }
                             layers.remove(&layer);
                         } else {
+                            // What is over by now ended on its own, not here.
+                            let all: HashSet<EffectLayer> = result
+                                .effects_with_elapsed
+                                .values()
+                                .map(|(effect, _)| effect.layer)
+                                .collect();
+                            for layer in all {
+                                settle_layer(
+                                    layer,
+                                    time,
+                                    layers,
+                                    arrived,
+                                    &mut result.effects_with_elapsed,
+                                    ended,
+                                );
+                            }
                             if result
                                 .effects_with_elapsed
                                 .keys()
@@ -423,11 +439,24 @@ fn replay(cues: &[Cue]) -> Replay {
         }
 
         // Every effect cued goes in; the ones over by a given time come
-        // out once their layers' history up to it is known.
+        // out once their layers' history up to it is known. The frame these
+        // cues land in then renders, and expires one over already: a look
+        // with no length, on a frozen layer too.
+        let started: HashSet<EffectLayer> = fired.iter().map(|effect| effect.layer).collect();
         for effect_instance in fired {
             result.effects_with_elapsed.insert(
                 effect_instance.id.clone(),
                 (effect_instance, Duration::ZERO),
+            );
+        }
+        for layer in started {
+            settle_layer(
+                layer,
+                time,
+                layers,
+                arrived,
+                &mut result.effects_with_elapsed,
+                ended,
             );
         }
     }
