@@ -147,12 +147,17 @@ impl Universe {
             0 // Handle channel 0 case - map to index 0
         };
         let value = f64::from(value);
-        self.target.write()[channel_index] = value;
-        self.rates.write()[channel_index] = if dim {
+        // The rate first, with no other lock held: an assignment evaluates
+        // its value before its place, so reading `current` inside it held
+        // that read while waiting for `rates`, against the order the
+        // universe thread takes them in (target, rates, current).
+        let rate = if dim {
             (value - self.current.read()[channel_index]) / *self.global_dim_rate.read()
         } else {
             0.0
         };
+        self.target.write()[channel_index] = value;
+        self.rates.write()[channel_index] = rate;
 
         let _ =
             self.max_channels

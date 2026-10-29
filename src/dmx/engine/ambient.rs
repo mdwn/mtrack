@@ -454,6 +454,22 @@ impl Engine {
             }
             AmbientMode::Off => {
                 self.lower_overlay(&mut state, now);
+                // Between songs with no ambient up yet -- still waiting out
+                // its delay over the last song's frame -- that frame goes
+                // dark too, as Off is.
+                if matches!(state.phase, Phase::Pending { .. })
+                    && !state.song_lit
+                    && !state.under_dark
+                {
+                    let fade = state
+                        .ambient
+                        .as_ref()
+                        .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
+                            a.settings.fade_out
+                        });
+                    self.darken_under(fade, true);
+                    state.under_dark = true;
+                }
                 state.phase = Phase::Off;
             }
             AmbientMode::Auto if state.song_lit => {
@@ -635,7 +651,7 @@ impl Engine {
         self.watcher_handle.lock().take();
         self.midi_dmx_playbacks.lock().clear();
         let floor = if to_dark {
-            self.stale_lit_channels()
+            self.dark_floor()
         } else {
             Vec::new()
         };
@@ -646,16 +662,24 @@ impl Engine {
     /// Fades out over `fade` what the rig holds lit that nothing writes any
     /// more, under a stage already dark otherwise.
     fn fade_out_stale(&self, fade: Duration) {
-        let floor = self.stale_lit_channels();
+        let floor = self.dark_floor();
         if !floor.is_empty() {
             self.begin_break_fade_over(fade, floor);
         }
     }
 
-    /// The channels the rig holds lit that the last frame did not write.
-    fn stale_lit_channels(&self) -> Vec<crate::lighting::effects::DmxCommand> {
+    /// What going dark has to fade out besides the engine's own effects:
+    /// channels the rig holds lit that the last frame did not write, and
+    /// those MIDI DMX holds through the store -- which is cleared, so they
+    /// fade rather than go on being written. A position (pan, tilt) is left
+    /// out: a fade holds it rather than taking it dark, so it would only
+    /// come back as stale again.
+    fn dark_floor(&self) -> Vec<crate::lighting::effects::DmxCommand> {
         let written = self.last_written.lock().clone();
-        self.universes
+        let positions = self.effect_engine.lock().position_channels();
+        let store = self.midi_dmx_store.read();
+        let floor = self
+            .universes
             .iter()
             .flat_map(|(&universe, u)| {
                 u.lit_channels().into_iter().map(move |(channel, value)| {
@@ -666,8 +690,14 @@ impl Engine {
                     }
                 })
             })
-            .filter(|c| !written.contains(&(c.universe, c.channel)))
-            .collect()
+            .filter(|c| {
+                let at = (c.universe, c.channel);
+                !positions.contains(&at)
+                    && (!written.contains(&at) || store.lookup(c.universe, c.channel).is_some())
+            })
+            .collect();
+        store.clear();
+        floor
     }
 
     /// Moves the overlay's time on and starts what its timeline fires, its
@@ -1602,6 +1632,107 @@ mod tests {
         sleep(Duration::from_millis(300));
         tick(&engine);
         assert_eq!(spot_red(&engine), 0.0, "dark once ambient has gone");
+        Ok(())
+    }
+
+    #[test]
+    fn a_held_position_does_not_stack_dark_fades() -> Result<(), Box<dyn Error>> {
+        // A mover's pan the rig held with nothing writing it read as stale
+        // at every idle; no fade takes a position dark, so each pushed a
+        // fade that crossed the next song in from black.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        add_mover(&engine);
+        engine.idle_ambient(None, false);
+        tick(&engine);
+        sleep(Duration::from_millis(150));
+        tick(&engine);
+        assert!(engine.break_fades.lock().is_empty());
+        // The pan held, nothing writing it.
+        engine
+            .get_universe(5)
+            .unwrap()
+            .update_effect_commands(vec![(7, 127)]);
+        tick(&engine);
+        assert_eq!(pan(&engine), 127.0);
+        // Idle again, as a Stop while stopped is.
+        engine.idle_ambient(None, true);
+        assert!(engine.break_fades.lock().is_empty(), "nothing to fade");
+        start_song(&engine, RED);
+        assert_eq!(
+            song_frame(&engine, 0.1),
+            (255.0, 0.0, 0.0),
+            "no fade in from black"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn midi_dmx_through_the_store_goes_dark_while_off() -> Result<(), Box<dyn Error>> {
+        // A patched channel MIDI DMX held went on being written from the
+        // store after the stage went dark.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        {
+            let mut store = engine.midi_dmx_store.write();
+            store.register_slot(5, 1, "wash", "red");
+            store.register_universe(5);
+        }
+        {
+            let mut main = engine.effect_engine.lock();
+            main.set_midi_dmx_store(engine.midi_dmx_store.clone());
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            main.register_fixture(crate::lighting::effects::FixtureInfo::new(
+                "wash".to_string(),
+                5,
+                1,
+                "Generic".to_string(),
+                channels,
+                None,
+            ));
+        }
+        // A song lighting only the spot: the wash is MIDI DMX's alone.
+        add_spot(&engine);
+        start_song(
+            &engine,
+            "show \"song\" {\n    @0.000\n    spot: static, color: \"blue\", duration: 60s\n}\n",
+        );
+        // NoteOn key 0 is DMX channel 1, the wash's red; velocity 127, 254.
+        engine.handle_midi_event_by_id(
+            5,
+            midly::MidiMessage::NoteOn {
+                key: 0.into(),
+                vel: 127.into(),
+            },
+        );
+        engine.midi_dmx_store.read().tick();
+        assert_eq!(song_frame(&engine, 0.1).0, 254.0);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        tick(&engine);
+        sleep(Duration::from_millis(300));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0), "dark over fade_out");
+        Ok(())
+    }
+
+    #[test]
+    fn off_during_ambients_delay_goes_dark() -> Result<(), Box<dyn Error>> {
+        // Off set while ambient still waited out its delay left the last
+        // song's frame on, there being no ambient yet to take down.
+        let (_dir, engine) = ambient_engine(BLUE, ("10s", "100ms", "100ms"))?;
+        start_song(&engine, RED);
+        song_frame(&engine, 0.5);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        tick(&engine);
+        assert_eq!(engine.ambient_report().state, "pending");
+        engine.set_ambient_mode(AmbientMode::Off);
+        tick(&engine);
+        sleep(Duration::from_millis(300));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
         Ok(())
     }
 

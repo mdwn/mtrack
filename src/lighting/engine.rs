@@ -557,6 +557,23 @@ impl EffectEngine {
             .collect()
     }
 
+    /// The channels (universe, DMX channel) of the patched fixtures that
+    /// carry a position (pan, tilt): a crossfade holds those rather than
+    /// fading them, so no fade takes one dark.
+    pub fn position_channels(&self) -> HashSet<(u16, u16)> {
+        self.fixtures
+            .as_map()
+            .values()
+            .flat_map(|fixture| {
+                fixture
+                    .channels
+                    .iter()
+                    .filter(|(name, _)| matches!(CrossKind::of(name), CrossKind::Position))
+                    .map(move |(_, &offset)| (fixture.universe, fixture.address + offset - 1))
+            })
+            .collect()
+    }
+
     /// The frame this engine last rendered.
     pub fn last_commands(&self) -> &[DmxCommand] {
         self.cache.get_cached()
