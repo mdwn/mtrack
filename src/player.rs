@@ -3959,6 +3959,96 @@ mod test {
         Ok(())
     }
 
+    /// A player whose playlist is a short lit song, then a long one that
+    /// starts by itself `gap` after it ends, with DMX.
+    async fn auto_play_lit_player(
+        gap: &str,
+    ) -> Result<(tempfile::TempDir, Arc<Player>), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let show = "show \"s\" {\n    @0.000\n    wash: static, color: \"red\", duration: 30s\n}\n";
+        for (name, wav) in [
+            ("First", "assets/1Channel44.1k.wav"),
+            ("Second", "assets/20-sec-long.wav"),
+        ] {
+            let song_dir = dir.path().join("songs").join(name);
+            fs::create_dir_all(&song_dir)?;
+            fs::copy(wav, song_dir.join("track.wav"))?;
+            fs::write(song_dir.join("show.light"), show)?;
+            fs::write(
+                song_dir.join("song.yaml"),
+                format!("name: {name}\ntracks:\n- name: track\n  file: track.wav\n  file_channel: 1\nlighting:\n- file: show.light\n"),
+            )?;
+        }
+        let groups = HashMap::from([(
+            "wash".to_string(),
+            config::lighting::LogicalGroup::new("wash".to_string(), vec![]),
+        )]);
+        let dmx = config::Dmx::new(
+            None,
+            None,
+            Some(9090),
+            vec![config::Universe::new(1, "test".to_string())],
+            Some(config::Lighting::new(None, Some(groups), None)),
+        );
+        let songs = songs::get_all_songs(&dir.path().join("songs"))?;
+        assert!(songs.failures().is_empty(), "{:?}", songs.failures());
+        let config: config::Playlist = ::config::Config::builder()
+            .add_source(::config::File::from_str(
+                &format!("songs:\n- First\n- song: Second\n  auto_play: {gap}\n"),
+                ::config::FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        let playlist = Playlist::new("playlist", &config, songs.clone())?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                Some(dmx),
+                HashMap::new(),
+                "songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        Ok((dir, player))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ambient_off_goes_dark_in_an_auto_play_gap() -> Result<(), Box<dyn Error>> {
+        // The song before held its lights through the gap, Off or not.
+        let (_dir, player) = auto_play_lit_player("5s").await?;
+        player.set_ambient_mode(crate::dmx::engine::AmbientMode::Off);
+        let engine = player.dmx_engine().expect("DMX engine should be present");
+        player.play().await?;
+        playing_eventually(&player, "First").await?;
+        eventually(|| !engine.gone_dark(), "lit while First plays");
+        eventually(|| player.auto_play_status().is_some(), "the gap");
+        eventually(|| engine.gone_dark(), "dark in the gap");
+        player.cancel_waiting_auto_play();
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn off_set_in_an_auto_play_gap_goes_dark() -> Result<(), Box<dyn Error>> {
+        // In Auto the gap holds the song before's lights, as a segue; Off
+        // set then takes them dark.
+        let (_dir, player) = auto_play_lit_player("5s").await?;
+        let engine = player.dmx_engine().expect("DMX engine should be present");
+        player.play().await?;
+        playing_eventually(&player, "First").await?;
+        eventually(|| player.auto_play_status().is_some(), "the gap");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!engine.gone_dark(), "held through the gap in Auto");
+        player.set_ambient_mode(crate::dmx::engine::AmbientMode::Off);
+        assert!(engine.gone_dark(), "dark once Off");
+        player.cancel_waiting_auto_play();
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_is_current_song_looping() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;

@@ -114,7 +114,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing left to fade. Going dark now fades out whatever the rig still holds lit that nothing
   writes any more, and what MIDI DMX holds, over the ambient `fade_out` -- including what ambient
   at full had left as it was, once ambient goes. Setting Off between songs takes the last song's
-  frame dark too, while ambient is still waiting out its delay or has no show to play.
+  frame dark too, while ambient is still waiting out its delay or has no show to play, and so does
+  the gap before a song that auto plays: in Off, the song before no longer holds its lights through
+  it.
 - **A loop break's fade no longer leaves lights stuck on, or ends early**: a Stop, pause or seek
   while the looping song still faded out under the next one dropped its fade, and so did the next
   song looping with a `loop_crossfade`. Whatever only the looping song lit then held where the

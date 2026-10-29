@@ -649,6 +649,11 @@ impl Player {
             state.generation
         };
         info!(gap = ?gap, "Auto play: the song starts by itself.");
+        // The song before holds its lights through the gap as a segue --
+        // but for ambient Off, which is dark between songs.
+        if self.ambient_mode() == crate::dmx::engine::AmbientMode::Off {
+            self.idle_ambient(true);
+        }
         let player = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(gap).await;
@@ -714,6 +719,11 @@ impl Player {
         let dmx_engine = self.hardware.read().dmx_engine.clone();
         if let Some(dmx_engine) = dmx_engine {
             dmx_engine.set_ambient_mode(mode);
+        }
+        // Off in an auto play's gap: the song before was holding its lights
+        // as a segue, and goes dark now.
+        if mode == crate::dmx::engine::AmbientMode::Off && self.auto_play.lock().waiting.is_some() {
+            self.idle_ambient(true);
         }
     }
 

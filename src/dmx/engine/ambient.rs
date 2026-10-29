@@ -483,6 +483,12 @@ impl Engine {
         }
     }
 
+    /// Whether the stage has gone dark between songs.
+    #[cfg(test)]
+    pub(crate) fn gone_dark(&self) -> bool {
+        self.ambient.lock().under_dark
+    }
+
     /// Ambient light's mode.
     pub fn ambient_mode(&self) -> AmbientMode {
         self.ambient.lock().mode

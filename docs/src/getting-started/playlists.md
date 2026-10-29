@@ -154,7 +154,9 @@ songs:
   starting the player.
 - **The gap.** `true` starts the song at once; a length (`2s`, `500ms`, or a bare number of
   seconds) waits that long first. The song before it holds its lights through the gap, as a
-  segue. Play, Stop, Next, Previous or a playlist switch during the gap calls it off.
+  segue -- unless ambient light is Off, which is dark between songs: then they fade to dark over
+  its `fade_out`, as at any other end, and setting Off during a gap takes them dark too. Play,
+  Stop, Next, Previous or a playlist switch during the gap calls it off.
 - **The end of the list.** Next on the last song does not move, so does not start it again.
 - A song that failed does not lead into one that auto plays.
 - **Seeing it coming.** While a gap runs, the dashboard's playback card counts it down
