@@ -108,6 +108,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A Stop, pause or seek under a loop break's fade no longer leaves lights stuck on**: cutting
+  the looping song's fade dropped it, so whatever it lit that the song after it does not held
+  where the fade had got to until a later song lit it. Its lights now go the rest of the way out
+  over the ambient `fade_out`, and a Stop with ambient Off takes the song playing over it to dark
+  too.
 - **Next during a loop crossfade fades the blend out, without a jump (#560)**: a loop break
   started its fade from the newer loop pass alone, dropping the older pass mid-crossfade, so the
   lights stepped once (74 of 255 on the rig) before fading. The older pass now carries on inside

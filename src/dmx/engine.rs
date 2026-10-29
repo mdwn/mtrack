@@ -3260,9 +3260,12 @@ mod test {
             assert_eq!(frame_at(&engine, 0.5), (0.0, 0.0, 255.0));
             assert!(engine.outgoing_pass.lock().is_none());
 
-            // A stop or seek ends one early.
+            // A stop or seek hurries one to its end, over ambient's
+            // fade_out (1s with none set).
             engine.begin_break_fade(Duration::from_secs(5));
-            engine.end_break_fade();
+            engine.cut_break_fade_lights();
+            std::thread::sleep(Duration::from_millis(1100));
+            frame_at(&engine, 0.6);
             assert!(engine.outgoing_pass.lock().is_none());
             Ok(())
         }

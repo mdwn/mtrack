@@ -240,8 +240,8 @@ impl Engine {
     /// play on as the outgoing pass, on the wall clock from now, while a fresh
     /// engine for the same rig waits for the next song's show. That pass
     /// outlives this playback -- its cleanup and the next song's timeline
-    /// start leave it be -- and ends when the fade does, or with a stop or
-    /// seek ([`Engine::end_break_fade`]). A fade in progress -- a pass
+    /// start leave it be -- and ends when the fade does, sooner for a stop,
+    /// pause or seek ([`Engine::hurry_break_fade`]). A fade in progress -- a pass
     /// crossfade, or an earlier break's -- carries on inside it, crossing
     /// into the engine it crossed into before (#560).
     pub fn begin_break_fade(&self, fade: Duration) {
@@ -285,7 +285,8 @@ impl Engine {
         fresh
     }
 
-    /// Ends a loop break's fade early, for a stop or seek.
+    /// Ends a loop break's fade at once.
+    #[cfg(test)]
     pub fn end_break_fade(&self) {
         let mut outgoing = self.outgoing_pass.lock();
         if outgoing.as_ref().is_some_and(OutgoingPass::is_break_fade) {

@@ -538,7 +538,7 @@ impl Player {
         }
         let song = self.stop_locked(join).await;
         if ending {
-            self.cut_break_fade(true);
+            self.cut_break_fade();
         }
         // Stopped, or a stop after a pause: between songs either way. A cut
         // ending is "now": ambient comes in at once, over its lights going
@@ -749,7 +749,7 @@ impl Player {
             }
         };
 
-        self.cut_break_fade(false);
+        self.cut_break_fade();
         let song = match self.get_playlist().current() {
             Some(song) => song,
             None => {
@@ -1179,21 +1179,17 @@ impl Player {
         }
     }
 
-    /// Cuts a looping song still fading out after a loop break, for a stop or
-    /// seek that ends whatever is playing. With `to_dark`, a stop cutting an
-    /// ending short, its lights go the rest of the way to dark over
-    /// ambient's `fade_out` rather than holding where they were (#572).
-    pub(super) fn cut_break_fade(&self, to_dark: bool) {
+    /// Cuts a looping song still fading out after a loop break, for a stop,
+    /// pause or seek that ends whatever is playing: its audio at once, its
+    /// lights the rest of the way out over ambient's `fade_out`, rather
+    /// than holding where they were (#572).
+    pub(super) fn cut_break_fade(&self) {
         let ids = std::mem::take(&mut *self.break_fade_ids.lock());
         *self.break_fade.lock() = None;
         *self.start_fade.lock() = None;
         let hw = self.hardware.read();
         if let Some(dmx) = hw.dmx_engine.as_ref() {
-            if to_dark {
-                dmx.cut_ending_lights();
-            } else {
-                dmx.end_break_fade();
-            }
+            dmx.cut_break_fade_lights();
         }
         if ids.is_empty() {
             return;

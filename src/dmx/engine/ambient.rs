@@ -350,12 +350,14 @@ impl Engine {
                 // out rather than holding (#570) -- unless a fade is already
                 // taking it to dark, as a graceful ending's does, which goes
                 // on at its own length (#571).
+                // A song still lit over that fade is not: it goes dark.
                 let fading = self
                     .outgoing_pass
                     .lock()
                     .as_ref()
                     .is_some_and(|pass| pass.is_break_fade());
-                if fading {
+                let lit = self.effect_engine.lock().active_effects_count() > 0;
+                if fading && !lit {
                     state.under_dark = true;
                 }
                 if !state.under_dark {
@@ -403,9 +405,11 @@ impl Engine {
         }
     }
 
-    /// A stop cuts an ending short: its lights go the rest of the way to
-    /// dark over ambient's `fade_out`, if that is sooner (#572).
-    pub fn cut_ending_lights(&self) {
+    /// A stop, pause or seek cuts a loop break's fade short: the looping
+    /// song's lights go the rest of the way out over ambient's `fade_out`,
+    /// if that is sooner, rather than holding what they lit that nothing
+    /// after them does (#572).
+    pub fn cut_break_fade_lights(&self) {
         let fade = self
             .ambient
             .lock()
@@ -1088,6 +1092,86 @@ mod tests {
         Ok(())
     }
 
+    /// Patches a spot at channels 4-6 of universe 5, beside the wash.
+    fn add_spot(engine: &Engine) {
+        let mut channels = std::collections::HashMap::new();
+        for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+            channels.insert(name.to_string(), offset);
+        }
+        engine
+            .effect_engine
+            .lock()
+            .register_fixture(crate::lighting::effects::FixtureInfo::new(
+                "spot".to_string(),
+                5,
+                4,
+                "Generic".to_string(),
+                channels,
+                None,
+            ));
+    }
+
+    /// The spot's red, which only the vamp lights.
+    fn spot_red(engine: &Engine) -> f64 {
+        engine.get_universe(5).unwrap().get_target_value(3)
+    }
+
+    const VAMP: &str = "show \"song\" {\n    @0.000\n    wash: static, color: \"red\", duration: 60s\n    spot: static, color: \"red\", duration: 60s\n}\n";
+
+    /// A vamp lighting wash and spot breaks out into GREEN, which lights
+    /// only the wash, its fade still running at `secs` into GREEN.
+    fn vamp_into_green(engine: &Engine) {
+        add_spot(engine);
+        start_song(engine, VAMP);
+        song_frame(engine, 0.5);
+        assert_eq!(spot_red(engine), 255.0);
+        engine.begin_break_fade(Duration::from_secs(10));
+        engine.stop_lighting_timeline();
+        start_song(engine, GREEN);
+        song_frame(engine, 0.5);
+        sleep(Duration::from_millis(200));
+        song_frame(engine, 0.7);
+        assert!(spot_red(engine) > 200.0, "the vamp still fading");
+    }
+
+    #[test]
+    fn a_stop_under_a_break_fade_leaves_nothing_lit() -> Result<(), Box<dyn Error>> {
+        // A Stop while the vamp still faded under the next song dropped its
+        // fade: the spot, which the next song does not light, held.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        engine.set_ambient_mode(AmbientMode::Off);
+        vamp_into_green(&engine);
+        engine.stop_lighting_timeline();
+        engine.cut_break_fade_lights();
+        engine.idle_ambient(None, true);
+        tick(&engine);
+        sleep(Duration::from_millis(300));
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0), "the wash dark");
+        assert_eq!(spot_red(&engine), 0.0, "the spot dark too");
+        Ok(())
+    }
+
+    #[test]
+    fn a_seek_under_a_break_fade_lets_the_vamp_go() -> Result<(), Box<dyn Error>> {
+        // The same for a seek in the next song: it plays on, the vamp's
+        // spot must not hold.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        vamp_into_green(&engine);
+        engine.stop_lighting_timeline();
+        engine.cut_break_fade_lights();
+        start_song(&engine, GREEN);
+        song_frame(&engine, 2.0);
+        // Ambient's settings unloaded: the default fade_out, a second.
+        sleep(Duration::from_millis(1100));
+        assert_eq!(
+            song_frame(&engine, 3.1),
+            (0.0, 255.0, 0.0),
+            "the song plays"
+        );
+        assert_eq!(spot_red(&engine), 0.0, "the vamp gone");
+        Ok(())
+    }
+
     #[test]
     fn a_song_stopped_while_off_fades_to_dark() -> Result<(), Box<dyn Error>> {
         // #570: with the mode Off, the song's last frame held for good.
@@ -1142,7 +1226,7 @@ mod tests {
         assert!(mid.0 > 200.0, "still fading at the ending's pace: {mid:?}");
         // The cut: the ending's lights hurry to dark, and the player goes
         // idle again.
-        engine.cut_ending_lights();
+        engine.cut_break_fade_lights();
         engine.idle_ambient(None, true);
         let cut = tick(&engine);
         assert!(cut.0 > 200.0, "no jump at the cut: {cut:?}");
