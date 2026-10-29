@@ -332,9 +332,7 @@ impl Engine {
         // fresh engine alone and a loop break begun meanwhile cannot take
         // one pass's engine with the other's timeline.
         let mut effect_engine = self.effect_engine.lock();
-        let mut fresh = Self::fresh_engine_showing(&effect_engine);
-        // The new pass starts at 0, for a freeze before its first frame.
-        fresh.set_song_time(Duration::ZERO);
+        let fresh = Self::fresh_engine_showing(&effect_engine);
         let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
         // What it drove the rig with until now: held as it is, should it go
         // before its first frame as a pass.
@@ -654,9 +652,7 @@ impl Engine {
             MidiDmxStart::Seek => self.seek_midi_dmx_playbacks(start_time),
         }
         if start_time > Duration::ZERO {
-            for cmd in &timeline_update.layer_commands {
-                effect_engine.apply_layer_command(cmd);
-            }
+            effect_engine.apply_layer_commands(&timeline_update.layer_commands, &[]);
             for sequence_name in &timeline_update.stop_sequences {
                 effect_engine.stop_sequence(sequence_name);
             }

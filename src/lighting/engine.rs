@@ -54,17 +54,23 @@ pub(crate) fn fades_to_dark(channel: &str) -> bool {
         && !matches!(base_channel(channel), "zoom" | "focus" | "iris" | "frost")
 }
 
-/// A channel's name without its section (`dimmer:background`, as GDTF
-/// profiles with several emitters name theirs) or its fine byte.
-/// `elapsed` at a layer speed master: 1 and 0 (a freeze) leave it be.
-fn scale_by_speed(elapsed: Duration, speed: f64) -> Duration {
-    if (speed - 1.0).abs() < f64::EPSILON || speed == 0.0 {
-        elapsed
-    } else {
+/// Whether a layer speed master scales its effects' time: 1 does not, and
+/// nor does 0, which freezes the layer instead.
+pub(crate) fn speed_scales(speed: f64) -> bool {
+    (speed - 1.0).abs() >= f64::EPSILON && speed != 0.0
+}
+
+/// `elapsed` at a layer speed master (see [`speed_scales`]).
+pub(crate) fn scale_by_speed(elapsed: Duration, speed: f64) -> Duration {
+    if speed_scales(speed) {
         Duration::try_from_secs_f64(elapsed.as_secs_f64() * speed).unwrap_or(Duration::MAX)
+    } else {
+        elapsed
     }
 }
 
+/// A channel's name without its section (`dimmer:background`, as GDTF
+/// profiles with several emitters name theirs) or its fine byte.
 fn base_channel(channel: &str) -> &str {
     let base = channel.split(':').next().unwrap_or(channel);
     base.strip_suffix("_fine").unwrap_or(base)
@@ -1538,9 +1544,9 @@ impl EffectEngine {
 
     /// Keeps the song time a layer froze at, and its cued effects' time
     /// frozen, in step with a freeze or unfreeze that has just happened (or
-    /// not) to `layer`. The song time is the last frame's: the command lands
-    /// between frames, and the same reading at both ends of the freeze
-    /// measures it whole.
+    /// not) to `layer`. The song time is the command's cue's, as
+    /// [`Self::apply_layer_commands`] sets it, or a start's, as
+    /// [`Self::set_song_time`] does for a seek's history.
     fn freeze_changed(&mut self, layer: EffectLayer, was_frozen: bool) {
         let frozen = self.layer_state.frozen.contains_key(&layer);
         if frozen && !was_frozen {

@@ -3244,8 +3244,9 @@ mod test {
                 freeze(layer: midground)\n    @6.000\n    \
                 master(layer: midground, speed: 0.5)\n    @8.000\n    \
                 unfreeze(layer: midground)\n}\n";
-            // Live the look is over at 4 s; the show's last cue is at 8 s.
-            assert_eq!(timeline(show).show_end(), Duration::from_secs(8));
+            // Live the look is over at 4 s, and so is the show's end; the
+            // timeline still waits for its last cue at 8 s to fire.
+            assert_eq!(timeline(show).show_end(), Duration::from_secs(4));
         }
 
         #[test]

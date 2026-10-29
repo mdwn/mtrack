@@ -97,7 +97,8 @@ fn replay_stop_at_same_time_as_sequence_cue_show_end() {
         LightingTimeline::new(parse(&no_hold)).show_end(),
         Duration::from_secs(13)
     );
-    // An unrelated freeze sends it through the replay, which drops the wash.
+    // An unrelated freeze sends it through the replay, which has to keep the
+    // wash too.
     let tl = LightingTimeline::new(parse(STOP_SAME_TIME));
     assert_eq!(
         tl.show_end(),
@@ -120,7 +121,7 @@ fn replay_stop_then_restart_at_same_time() {
 }
 
 #[test]
-fn replay_stop_then_restart_later_passes_lost_after_seek() {
+fn replay_stop_then_restart_keeps_later_passes_after_seek() {
     let looped = STOP_THEN_RESTART.replace(
         "    @00:04.000\n    sequence \"x\"\n",
         "    @00:04.000\n    sequence \"x\", loop: 3\n",
@@ -152,5 +153,25 @@ fn replay_stop_at_same_time_as_sequence_cue_seek() {
     assert_eq!(
         seek_running_at(STOP_SAME_TIME, t),
         live_running_at(STOP_SAME_TIME, t)
+    );
+}
+
+/// A freeze or speed master that holds nothing leaves the show's end where
+/// it was written: not at the last cue.
+#[test]
+fn replay_a_hold_on_nothing_keeps_the_written_end() {
+    let plain = "show \"s\" {\n    @00:00.000\n    spots: static red: 100%, duration: 4s\n    \
+                 @00:10.000\n    clear(layer: foreground)\n}\n";
+    let held = plain.replace(
+        "    @00:10.000\n",
+        "    @00:01.000\n    master(layer: foreground, speed: 1)\n    @00:10.000\n",
+    );
+    assert_eq!(
+        LightingTimeline::new(parse(plain)).show_end(),
+        Duration::from_secs(4)
+    );
+    assert_eq!(
+        LightingTimeline::new(parse(&held)).show_end(),
+        Duration::from_secs(4)
     );
 }

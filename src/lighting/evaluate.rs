@@ -144,6 +144,9 @@ where
             // on it. `start_at` stops short of `time` by design, so both halves
             // are needed for a cue at the requested instant to count.
             let history = timeline.start_at(time);
+            // A freeze in the history holds at `time`, as the live start
+            // paths have it.
+            engine.set_song_time(time);
             apply_timeline_update(&mut engine, history, &mut resolve_groups);
             let now = timeline.update(time);
             apply_timeline_update(&mut engine, now, &mut resolve_groups);
@@ -366,8 +369,8 @@ fn fill_dark_fixtures<'a>(
 ///
 /// `at` is the time to label the snapshot with — normally the song's elapsed
 /// time. It does not drive the reading; effect elapsed values come from the
-/// engine's own clock, which is what makes this a measurement rather than a
-/// prediction.
+/// engine's own state -- the song time it last rendered at, as it renders
+/// them -- which is what makes this a measurement rather than a prediction.
 pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
     let has_dimmer: HashMap<String, bool> = engine
         .get_fixture_registry()
@@ -1048,3 +1051,7 @@ show "T" {
         assert_eq!(lit.is_dark(), Some(false));
     }
 }
+
+#[cfg(test)]
+#[path = "move_seek_tests.rs"]
+mod move_seek_tests;

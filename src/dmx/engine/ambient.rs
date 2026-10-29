@@ -2472,9 +2472,9 @@ mod tests {
         let show = "show \"ambient\" {\n    @0.000\n    wash: static, color: \"blue\", \
                     up_time: 1s, hold_time: 1s, layer: midground\n    \
                     @0.500\n    freeze(layer: midground)\n}\n";
-        // 73043b3: 2 s (the look's authored end). HEAD: 500 ms, the freeze's
-        // own time, so the overlay restarts on the frame the freeze is due
-        // and the freeze never fires.
+        // The loop runs the look's written 2 s. Cut to the freeze's 500 ms,
+        // the overlay would restart on the frame the freeze is due, and the
+        // freeze would never fire.
         let length = timeline(show).show_end();
         let (_dir, engine) = ambient_engine(show, ("0s", "0s", "0s"))?;
         engine.idle_ambient(None, false);
