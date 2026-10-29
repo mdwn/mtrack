@@ -70,6 +70,10 @@ impl CrossKind {
             | "iris" | "frost" | "ct" | "cto" | "ctb" | "color_temp"
             // GDTF's amber and lime, as their attributes come through.
             | "coloradd_ry" | "coloradd_gy" => CrossKind::Fade,
+            // GDTF's other additive and RGB colour attributes, likewise.
+            base if base.starts_with("coloradd_") || base.starts_with("colorrgb_") => {
+                CrossKind::Fade
+            }
             _ => CrossKind::Snap,
         }
     }

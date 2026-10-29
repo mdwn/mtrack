@@ -421,6 +421,8 @@ mod tests {
             "red:ring",
             "coloradd_ry",
             "coloradd_gy",
+            "coloradd_c",
+            "colorrgb_red",
             "color_temp",
             "indigo",
             "zoom",
