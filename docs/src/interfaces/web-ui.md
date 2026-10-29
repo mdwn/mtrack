@@ -93,8 +93,19 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
 - **Playback card** — Play/stop/next/prev with a progress bar showing elapsed and total time
   (for a song with no audio, the total is when its last lighting effect ends).
   While a song waits out its playlist entry's [auto play](../getting-started/playlists.md#auto-play)
-  gap, the card counts it down ("Opener starts in 2s"); Stop cancels it. An **Ambient light**
-  badge shows while the [ambient show](../lighting/configuration.md#ambient-light) plays.
+  gap, the card counts it down ("Opener starts in 2s"); Stop cancels it. While a looping song
+  [ends over its fade-out](../getting-started/playlists.md#ending-a-looping-song) the card says
+  so ("Walk-in loop is fading out (4s)"); Stop again cuts it. An **Ambient light**
+  badge shows while the [ambient show](../lighting/configuration.md#ambient-light) plays, and
+  **No ambient show** when the mode is On with none to play. With a DMX engine, an
+  **Auto / On / Off** switch beside it sets the
+  [ambient mode](../lighting/configuration.md#ambient-mode): On holds ambient up now, over any
+  song; Off fades it out. Like the transport, it works while the player is locked.
+  Under the song name a quiet line says what comes next and how it will arrive: "Next: Opener —
+  starts by itself after 2s", "Next: The Slow One — waits for Play", or, while a looping song
+  plays, "Next breaks the loop: fades out over 1 measure into Opener" (from the playlist's
+  [transitions](../getting-started/playlists.md#transitions)). At the last song it reads "End of
+  playlist".
 
   ![The playback card counting down to a song's auto play, with the Ambient light
   badge](../images/playback-auto-play.png)
@@ -554,6 +565,14 @@ available-songs list. Each song has an **Auto play** box (and a gap once ticked)
 playlist an **Ambient light** setting: the profile's, none, or its own. See
 [Playlists](../getting-started/playlists.md#auto-play).
 
+Each song's **Transitions** button opens a panel under it for its fade out and fade in: a length
+(`3s`, `500ms`, `6beats`, `1measure`; empty for none), the curve, the song's tracks that do not
+fade, and for the fade out how long the lights take to cross. Closed, the button sums the fades
+up ("fade out 1 measure · fade in 4 beats"). The fade out applies only to loop breaks of a
+looping song. A save the player would not load (a bad length or curve, or a track the song does
+not have) is refused and nothing is written. See
+[Transitions](../getting-started/playlists.md#transitions).
+
 ![The playlist editor: two songs set to auto play, one after a 2s gap, and the playlist's own
 ambient show](../images/playlist-auto-play.png)
 
@@ -588,8 +607,7 @@ top-level sections that belong to the whole project rather than one profile: **S
 Opening a profile shows its settings in tabs:
 
 - **Audio** — Device selection, sample rate, format, buffer size, track mappings
-- **MIDI** — Device selection, beat clock, MIDI-to-DMX passthrough mappings with Note Mapper
-  and CC Mapper transformer editors
+- **MIDI** — Device selection, playback delay, beat clock
 - **Lighting** — The DMX hardware: the olad port and universe mappings. Below it, a summary of
   the profile's current venue and group count, with an **Edit in Lighting** link. Fixture types,
   venues and groups are edited in the [Lighting area](../lighting/web-ui.md)
@@ -679,7 +697,9 @@ mtrack supports two levels of looping:
 Songs with `loop_playback: true` in their `song.yaml` loop indefinitely. Audio crossfades
 seamlessly at loop boundaries (a 10 ms crossfade), MIDI restarts from the beginning, and
 lighting/DMX timelines reset cleanly. During a looping song, pressing Play or Next breaks out
-of the loop, advances the playlist, and auto-plays the next song.
+of the loop, advances the playlist, and auto-plays the next song. Next on the last song, or
+Stop when its playlist entry has a `fade_out`, ends it instead (see
+[Ending a looping song](../getting-started/playlists.md#ending-a-looping-song)).
 
 With `loop_crossfade` set, consecutive passes overlap instead: the audio, lights and MIDI cross
 from one pass to the next over seconds or measures. See

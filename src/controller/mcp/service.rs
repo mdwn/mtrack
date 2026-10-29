@@ -142,6 +142,24 @@ pub struct SwitchPlaylistArgs {
     pub name: String,
 }
 
+/// Ambient light's mode.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AmbientModeArg {
+    /// Between songs, after its delay: the usual.
+    Auto,
+    /// Now, over any song, until `auto` again.
+    On,
+    /// None: ambient playing fades out.
+    Off,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetAmbientModeArgs {
+    /// `auto`, `on` or `off`.
+    pub mode: AmbientModeArg,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LoopSectionArgs {
     /// Name of the section to loop. Must match a section defined on the current song.
@@ -468,10 +486,16 @@ impl McpServer {
         do, by the playlist: the current entry's `fade_out`, and the song \
         `next` and `previous` would move to with its `fade_in` (each `null` \
         for none). `ambient` is the show the rig plays while no song is: its \
-        `show` file and `state` (`pending` while its delay runs, or \
-        `playing`), `null` when none is. `auto_play` is a song about to start \
+        `mode` (`auto`, `on` or `off`; see `set_ambient_mode`), `show` file \
+        (`null` for none) and `state` (`pending` while its delay runs, \
+        `playing`, `off`, or `unavailable` when `on` has no show to play); \
+        `null` without a DMX engine. `auto_play` is a song about to start \
         by itself (its playlist entry's `auto_play` gap running): its `song` \
-        and `starts_in_seconds`, `null` when none is.")]
+        and `starts_in_seconds`, `null` when none is. `ending` is a looping \
+        song fading out after a stop (or next or previous at the end of the \
+        list) over its entry's `fade_out`, the player stopped under it: its \
+        `song` and `remaining_seconds`, `null` when none is; a second `stop` \
+        cuts it.")]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         Ok(ok_json(self.status_snapshot().await?))
     }
@@ -722,7 +746,10 @@ impl McpServer {
         Ok(ok_json(json!({ "section": args.section_name })))
     }
 
-    #[tool(description = "Stop playback of the currently playing song.")]
+    #[tool(description = "Stop playback of the currently playing song. A \
+        looping song whose playlist entry has a `fade_out` fades out over it \
+        first, the player stopped under it (see `ending` in `status`); a \
+        second stop cuts it at once.")]
     async fn stop(&self) -> Result<CallToolResult, McpError> {
         let song = self.player.stop().await;
         Ok(ok_json(json!({
@@ -733,7 +760,8 @@ impl McpServer {
     #[tool(
         description = "Advance the active playlist to the next song. Returns the \
         new current song. On a looping song this breaks the loop and returns the \
-        song playback moves on to, which starts a moment later."
+        song playback moves on to, which starts a moment later; on the last \
+        song it ends the loop as `stop` does instead."
     )]
     async fn next(&self) -> Result<CallToolResult, McpError> {
         let song = self.player.next().await;
@@ -745,7 +773,8 @@ impl McpServer {
     #[tool(
         description = "Move the active playlist to the previous song. Returns the \
         new current song. On a looping song this breaks the loop and returns the \
-        song playback moves back to, which starts a moment later."
+        song playback moves back to, which starts a moment later; on the \
+        first song it ends the loop as `stop` does instead."
     )]
     async fn previous(&self) -> Result<CallToolResult, McpError> {
         let song = self.player.prev().await;
@@ -770,6 +799,46 @@ impl McpServer {
     async fn stop_samples(&self) -> Result<CallToolResult, McpError> {
         self.player.stop_samples();
         Ok(ok_json(json!({ "ok": true })))
+    }
+
+    #[tool(description = "Set ambient light's mode. `on` fades the ambient show \
+        in now, over its `fade_in`, and holds it until the mode is `auto` \
+        again -- over a song's own show too, which plays on underneath, so \
+        going back to `auto` mid-song crosses back to the song where it is. \
+        `off` fades ambient out, over its `fade_out`, and plays none: the \
+        stage is dark between songs, and songs light as ever. `auto` (the \
+        mode at startup; it is not saved) plays ambient between songs after \
+        its delay. Returns `ambient` as `status` does; `state` \
+        `unavailable` means `on` with no ambient show to play.")]
+    async fn set_ambient_mode(
+        &self,
+        Parameters(args): Parameters<SetAmbientModeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::dmx::engine::AmbientMode;
+        let mode = match args.mode {
+            AmbientModeArg::Auto => AmbientMode::Auto,
+            AmbientModeArg::On => AmbientMode::On,
+            AmbientModeArg::Off => AmbientMode::Off,
+        };
+        let player = self.player.clone();
+        tokio::task::spawn_blocking(move || player.set_ambient_mode(mode))
+            .await
+            .map_err(internal_err)?;
+        Ok(ok_json(
+            json!({ "ambient": ambient_json(&self.player).await }),
+        ))
+    }
+
+    #[tool(
+        description = "Call off an auto play waiting to start (`status.auto_play`), \
+        and nothing else: the player stays stopped on that song, and ambient \
+        light comes up as after a stop. `cancelled` is false when none was \
+        waiting."
+    )]
+    async fn cancel_auto_play(&self) -> Result<CallToolResult, McpError> {
+        Ok(ok_json(
+            json!({ "cancelled": self.player.cancel_waiting_auto_play() }),
+        ))
     }
 
     #[tool(description = "Activate section looping for a named section on the current song.")]
@@ -3480,26 +3549,7 @@ async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
         }
         None => None,
     };
-    // Bounded on the blocking pool too: the effects loop holds the ambient
-    // lock while it starts the show.
-    let ambient = match player.dmx_engine() {
-        Some(dmx) => {
-            let read = tokio::task::spawn_blocking(move || dmx.ambient_status());
-            match tokio::time::timeout(std::time::Duration::from_millis(500), read).await {
-                Ok(Ok(status)) => status.map(|status| {
-                    json!({
-                        "show": status.show.display().to_string(),
-                        "state": status.state,
-                    })
-                }),
-                _ => Some(json!({
-                    "available": false,
-                    "reason": "could not read the ambient light's state",
-                })),
-            }
-        }
-        None => None,
-    };
+    let ambient = ambient_json(player).await;
 
     Ok(json!({
         "playlist_name": playlist.name(),
@@ -3512,8 +3562,33 @@ async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
             "song": song,
             "starts_in_seconds": starts_in.as_secs_f64(),
         })),
+        "ending": player.ending_status().map(|(song, remaining)| json!({
+            "song": song,
+            "remaining_seconds": remaining.as_secs_f64(),
+        })),
         "transitions": transitions_json(&playlist),
     }))
+}
+
+/// Ambient light's mode and state for `status`, `null` without a DMX
+/// engine. Bounded on the blocking pool: the effects loop holds the ambient
+/// lock while it starts the show.
+async fn ambient_json(player: &Player) -> Value {
+    let Some(dmx) = player.dmx_engine() else {
+        return Value::Null;
+    };
+    let read = tokio::task::spawn_blocking(move || dmx.ambient_report());
+    match tokio::time::timeout(std::time::Duration::from_millis(500), read).await {
+        Ok(Ok(report)) => json!({
+            "mode": report.mode.as_str(),
+            "show": report.show.map(|show| show.display().to_string()),
+            "state": report.state,
+        }),
+        _ => json!({
+            "available": false,
+            "reason": "could not read the ambient light's state",
+        }),
+    }
 }
 
 /// What breaking the current song's loop would do, by the playlist's
@@ -3539,18 +3614,7 @@ fn transitions_json(playlist: &crate::playlist::Playlist) -> Value {
 /// is the default (a fade-out's `loop_crossfade_cut`, a fade-in's none),
 /// as is a `null` `lights` (the length).
 fn fade_json(fade: Option<&crate::config::Fade>) -> Value {
-    let Some(fade) = fade else {
-        return Value::Null;
-    };
-    json!({
-        "length": fade.length.to_string(),
-        "curve": match fade.curve {
-            crate::config::FadeCurve::EqualPower => "equal_power",
-            crate::config::FadeCurve::Linear => "linear",
-        },
-        "exclude": fade.exclude,
-        "lights": fade.lights.map(|l| l.to_string()),
-    })
+    fade.map_or(Value::Null, crate::config::Fade::to_json)
 }
 
 impl McpServer {

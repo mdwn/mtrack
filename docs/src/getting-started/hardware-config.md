@@ -28,8 +28,7 @@ Click a profile to open its settings. Configuration is organized into tabs:
 
 - **Audio** — Select your audio device, set sample rate, buffer size, bit depth, and playback
   delay. The device list is populated from connected hardware.
-- **MIDI** — Select your MIDI device, configure playback delay, beat clock output, and
-  MIDI-to-DMX passthrough mappings with transformer editors.
+- **MIDI** — Select your MIDI device, configure playback delay and beat clock output.
 - **Lighting** — Configure DMX universes, map them to olad universe numbers, and set the olad port (`ola_port`). Fixtures,
   venues and groups are set up in the [Lighting area](../interfaces/web-ui.md#lighting); see
   [First Light](../lighting/first-light.md).

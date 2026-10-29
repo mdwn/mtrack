@@ -16,14 +16,13 @@ use std::{any::Any, error::Error, fmt, sync::Arc};
 use midly::live::LiveEvent;
 use tokio::sync::mpsc::Sender;
 
-use crate::{config, dmx::engine::Engine, playsync::PlaybackSync, songs::Song};
+use crate::{config, playsync::PlaybackSync, songs::Song};
 
 pub(crate) mod beat_clock;
 pub(crate) mod midir;
 pub(crate) mod mock;
 pub mod morningstar;
 pub(crate) mod playback;
-mod transform;
 
 /// Typed errors for the MIDI subsystem.
 #[derive(Debug, thiserror::Error)]
@@ -49,8 +48,7 @@ impl From<Box<dyn Error + Send + Sync>> for MidiError {
 
 /// A MIDI device that can play MIDI files and listen for inputs.
 pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
-    /// Watches MIDI input for events and sends them to the given sender. If a DMX engine
-    /// is loaded, the events may be passed through to the engine.
+    /// Watches MIDI input for events and sends them to the given sender.
     fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>>;
 
     /// Stops watching events.
@@ -84,10 +82,7 @@ pub fn list_devices() -> Result<Vec<Box<dyn Device>>, Box<dyn Error>> {
 }
 
 /// Gets a device with the given name.
-pub fn get_device(
-    config: Option<config::Midi>,
-    dmx_engine: Option<Arc<Engine>>,
-) -> Result<Option<Arc<dyn Device>>, Box<dyn Error>> {
+pub fn get_device(config: Option<config::Midi>) -> Result<Option<Arc<dyn Device>>, Box<dyn Error>> {
     let config = match config {
         Some(config) => config,
         None => return Ok(None),
@@ -98,7 +93,7 @@ pub fn get_device(
         return Ok(Some(Arc::new(mock::Device::get(device))));
     };
 
-    Ok(Some(Arc::new(midir::get(&config, dmx_engine)?)))
+    Ok(Some(Arc::new(midir::get(&config)?)))
 }
 
 #[cfg(test)]
@@ -114,14 +109,14 @@ mod test {
 
     #[test]
     fn get_device_none_config_returns_none() {
-        let result = get_device(None, None).unwrap();
+        let result = get_device(None).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn get_device_mock_returns_some() {
         let config = config::Midi::new("mock-midi", None);
-        let result = get_device(Some(config), None).unwrap();
+        let result = get_device(Some(config)).unwrap();
         assert!(result.is_some());
         assert!(format!("{}", result.unwrap()).contains("mock-midi"));
     }

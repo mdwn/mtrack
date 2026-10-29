@@ -100,11 +100,35 @@ Either can be a length alone or a map:
 A source part way through a loop crossfade fades out from where it is. A fade that outlasts the
 pass it began in carries on into as many more passes as it takes, crossing pass to pass over the
 song's `loop_crossfade` as its loop does. MIDI from the looping song stops
-at the break. Stop or a seek cuts everything, the fading song included.
+at the break. A seek cuts everything, the fading song included.
 
-The web UI's playlist editor keeps a playlist's transitions when it saves, and will not overwrite
-a playlist file that does not read; fades are edited in the file. Auto play and ambient light
-(below) can be set in the editor too.
+### Ending a looping song
+
+Stop on a looping song whose entry has a `fade_out` ends it over that fade, as a loop break
+would -- the same length, curve, `exclude` and `lights` -- with nothing after it. The player
+stops at once and the playlist stays where it is, and the lights cross toward dark. Beats and
+measures count on the grid of the song Next would go to, as for a loop break, so a prelude with
+no grid of its own still fades; on the last entry they count on the song's own. Ambient light's
+delay counts from the Stop, so it comes in over the tail of the fade rather than after a dark
+gap. Without a `fade_out`, Stop cuts at once, as it does any song that is not looping.
+
+- **Stop again** while the song fades out cuts the audio at once. Its lights go the rest of the
+  way to dark over the ambient light's `fade_out` (1 s by default), unless they were already
+  closer to dark than that, and ambient light comes in at once rather than after the rest of its
+  `delay`.
+- **Play** while it fades out starts the song again from the top, the fade playing on under it;
+  **Next** and **Previous** move the playlist as on a stopped player, and the fade plays out.
+- **The end of the list.** Next on the last entry, or Previous on the first, has no song to
+  break into: it ends the looping song as Stop does, rather than starting it over. Play still
+  breaks the loop and starts the song again.
+- While it fades out, the dashboard's playback card says so ("Walk-in loop is fading out (4s)")
+  with Stop left live, and the MCP `status` tool reports `ending: {song, remaining_seconds}`.
+
+Fades can also be set in the web UI's playlist editor, under each song's **Transitions**; it
+refuses what the player would refuse, writes an entry left with no settings as its name alone,
+and will not overwrite a playlist file that does not read. Auto play and ambient light (below)
+can be set in the editor too. The dashboard's playback card says what a loop break will do
+("Next breaks the loop: fades out over 1 measure into Opener").
 
 ## Auto play
 
@@ -131,8 +155,14 @@ songs:
 - **The end of the list.** Next on the last song does not move, so does not start it again.
 - A song that failed does not lead into one that auto plays.
 - **Seeing it coming.** While a gap runs, the dashboard's playback card counts it down
-  ("Opener starts in 2s"), and the MCP `status` tool reports the song and how long until it
-  starts, as `auto_play: {song, starts_in_seconds}`.
+  ("Opener starts in 2s"), the MCP `status` tool reports the song and how long until it
+  starts, as `auto_play: {song, starts_in_seconds}`, and the gRPC `Status` as `auto_play`. A
+  MIDI controller's LED can show it too, with the profile's `status_events.auto_play_events`
+  (see [Hardware Profiles](../configuration/hardware-profiles.md)).
+- **Calling it off from a controller.** Cancel auto play calls off the wait and nothing else:
+  the player stays stopped on the song, and ambient light comes up as after a stop. It is the
+  gRPC `CancelAutoPlay` RPC, the OSC address `/mtrack/auto_play/cancel`, a MIDI controller's
+  `cancel_auto_play` event, and the MCP `cancel_auto_play` tool.
 - **In the web UI.** The playlist editor has an **Auto play** box on each song, with a gap field
   beside it once ticked: empty starts the song at once.
 
@@ -158,6 +188,11 @@ songs:
 
 `ambient: false` turns it off for the playlist. Switching playlists while nothing plays crosses
 straight into the new playlist's ambient light, or fades the old one out.
+
+The ambient **mode** -- `auto`, `on` (hold it now, over any song) or `off` -- is set while the
+player runs, from the dashboard or a controller; see
+[Ambient mode](../lighting/configuration.md#ambient-mode). `on` with a playlist that has
+`ambient: false` lights nothing.
 
 In the web UI's playlist editor, **Ambient light** picks the profile's, none, or the playlist's
 own; its own shows the show and timing fields, each left empty to keep the profile's.

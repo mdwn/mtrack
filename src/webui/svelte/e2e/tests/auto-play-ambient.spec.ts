@@ -13,7 +13,9 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { fromBinary } from "@bufbuild/protobuf";
 import { PlaylistEditorPage } from "../pages/playlist-editor.page.js";
+import { SetAmbientModeRequestSchema } from "../../src/gen/player/v1/player_pb";
 
 let testCounter = 0;
 
@@ -225,11 +227,19 @@ test.describe("Dashboard: auto play and ambient light", () => {
     await sendWsMessage(page, wsId, {
       ...frame,
       auto_play: { song: "Test Song Beta", starts_in_ms: 2400 },
-      ambient: { show: "/p/lighting/ambient.light", state: "playing" },
+      ambient: {
+        mode: "auto",
+        show: "/p/lighting/ambient.light",
+        state: "playing",
+      },
     });
     await expect(page.getByTestId("auto-play-countdown")).toContainText(
       "Test Song Beta starts in 3s",
     );
+    // "Stop cancels it": the button is there to press while nothing plays.
+    await expect(
+      page.getByRole("button", { name: "Stop", exact: true }),
+    ).toBeEnabled();
     await expect(page.getByTestId("ambient-badge")).toContainText(
       "Ambient light",
     );
@@ -237,5 +247,123 @@ test.describe("Dashboard: auto play and ambient light", () => {
     await sendWsMessage(page, wsId, { ...frame, is_playing: true });
     await expect(page.getByTestId("auto-play-countdown")).toHaveCount(0);
     await expect(page.getByTestId("ambient-badge")).toHaveCount(0);
+  });
+
+  test("a looping song ending shows its fade, and Stop stays live", async ({
+    page,
+  }) => {
+    const wsId = `ending-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/`);
+    await expect(page.locator(".playback-card__title")).toBeVisible();
+    await expect(page.getByTestId("ending-fade")).toHaveCount(0);
+
+    const frame = {
+      type: "playback",
+      is_playing: false,
+      elapsed_ms: 0,
+      song_name: "Test Song Beta",
+      song_duration_ms: 180000,
+      playlist_name: "setlist",
+      playlist_position: 1,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+    };
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      ending: { song: "Test Song Beta", remaining_ms: 3600 },
+    });
+    await expect(page.getByTestId("ending-fade")).toContainText(
+      "Test Song Beta is fading out (4s)",
+    );
+    await expect(page.getByTestId("ending-fade")).toContainText(
+      "Stop again to cut.",
+    );
+    await expect(
+      page.getByRole("button", { name: "Stop", exact: true }),
+    ).toBeEnabled();
+
+    await sendWsMessage(page, wsId, { ...frame, ending: null });
+    await expect(page.getByTestId("ending-fade")).toHaveCount(0);
+  });
+});
+
+test.describe("Dashboard: ambient light mode", () => {
+  test("the mode shows, and a click sets it over gRPC", async ({ page }) => {
+    // A well-formed grpc-web unary reply: an empty message frame followed by
+    // a trailers frame.
+    const trailers = Buffer.from("grpc-status: 0\r\n");
+    const grpcWebBody = Buffer.concat([
+      Buffer.from([0x00, 0, 0, 0, 0]),
+      Buffer.from([0x80, 0, 0, 0, trailers.length]),
+      trailers,
+    ]);
+    await page.route("**/player.v1.PlayerService/**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        headers: { "content-type": "application/grpc-web+proto" },
+        body: grpcWebBody,
+      });
+    });
+
+    const wsId = `ambient-mode-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/`);
+    await expect(page.locator(".playback-card__title")).toBeVisible();
+
+    const frame = {
+      type: "playback",
+      is_playing: false,
+      elapsed_ms: 0,
+      song_name: "Test Song Alpha",
+      song_duration_ms: 180000,
+      playlist_name: "setlist",
+      playlist_position: 0,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      // Locked: ambient mode is a show control, open like transport.
+      locked: true,
+    };
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      ambient: { mode: "off", show: "/p/lighting/ambient.light", state: "off" },
+    });
+    await expect(page.getByTestId("ambient-mode")).toBeVisible();
+    await expect(page.getByTestId("ambient-mode-off")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.getByTestId("ambient-badge")).toHaveCount(0);
+
+    const request = page.waitForRequest((req) =>
+      req.url().includes("/SetAmbientMode"),
+    );
+    await page.getByTestId("ambient-mode-on").click();
+    const body = (await request).postDataBuffer();
+    if (!body) throw new Error("set ambient mode had no body");
+    // grpc-web frames the message after a 5-byte header.
+    expect(fromBinary(SetAmbientModeRequestSchema, body.subarray(5)).mode).toBe(
+      "on",
+    );
+
+    // On with no show to play says so.
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      ambient: { mode: "on", show: null, state: "unavailable" },
+    });
+    await expect(page.getByTestId("ambient-mode-on")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.getByTestId("ambient-badge")).toContainText(
+      "No ambient show",
+    );
+
+    // No DMX engine: no control.
+    await sendWsMessage(page, wsId, { ...frame, ambient: null });
+    await expect(page.getByTestId("ambient-mode")).toHaveCount(0);
   });
 });

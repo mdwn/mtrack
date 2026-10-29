@@ -186,28 +186,6 @@ midi:
   # stops.
   persist_tempo: true
 
-  # (Optional) You can route live MIDI events into the DMX engine with this configuration.
-  midi_to_dmx:
-
-  # Watch for each MIDI event in channel 15.
-  - midi_channel: 15
-    # Route these events to the light-show universe.
-    universe: light-show
-
-    # Transform the MIDI events into multiple
-    transformers:
-    # Maps the input note into the given list of notes. The velocity will be copied to each
-    # new note.
-    - type: note_mapper
-      input_note: 0
-      convert_to_notes: [0, 1, 2, 4, 5, 6]
-
-    # Maps the input controller into the given list of controllers. The controller value will
-    # be mapped to each new controller.
-    - type: control_change_mapper
-      input_controller: 0
-      convert_to_controllers: [0, 1, 2, 4, 5, 6]
-
 # The DMX configuration. This maps OLA universes to light show names defined within
 # song files. Omit the section on a host without lighting.
 dmx:
@@ -360,6 +338,12 @@ controllers:
   seek: /mtrack/seek
   seek_section: /mtrack/seek_section
 
+  # Ambient light's mode (on, off, auto) and calling off a waiting auto play.
+  ambient_on: /mtrack/ambient/on
+  ambient_off: /mtrack/ambient/off
+  ambient_auto: /mtrack/ambient/auto
+  cancel_auto_play: /mtrack/auto_play/cancel
+
   # Per-track gain in dB (float argument). The `*` segment is the track name; the same
   # pattern, with the name filled in, is used for gain feedback broadcasts.
   track_gain: /mtrack/track/*/gain
@@ -428,6 +412,31 @@ controllers:
     controller: 100
     value: 7
 
+  # (Optional) Set ambient light's mode: on holds it up now, over any song; off fades it
+  # out; auto plays it between songs.
+  ambient_on:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 8
+  ambient_off:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 9
+  ambient_auto:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 10
+
+  # (Optional) Call off a song waiting to auto play, leaving the player stopped on it.
+  cancel_auto_play:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 11
+
   # Optional: Morningstar controller integration. When configured, mtrack will
   # automatically update the current bank name on the controller via SysEx
   # whenever the current song changes. This eliminates the need for per-song
@@ -492,7 +501,6 @@ controllers:
 | `midi.playback_delay` | duration | `0` | no |
 | `midi.beat_clock` | bool | `false` | no |
 | `midi.persist_tempo` | bool | `false` | no |
-| `midi.midi_to_dmx` | list | `[]` | no |
 | `dmx.dim_speed_modifier` | float > 0 | `1.0` | no |
 | `dmx.playback_delay` | duration | `0` | no |
 | `dmx.ola_port` | integer | `9010` | no |

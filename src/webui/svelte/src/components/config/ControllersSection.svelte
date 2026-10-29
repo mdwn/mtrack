@@ -100,6 +100,10 @@
     ["section_ack", "/mtrack/section_ack"],
     ["stop_section_loop", "/mtrack/stop_section_loop"],
     ["loop_section", "/mtrack/loop_section"],
+    ["ambient_on", "/mtrack/ambient/on"],
+    ["ambient_off", "/mtrack/ambient/off"],
+    ["ambient_auto", "/mtrack/ambient/auto"],
+    ["cancel_auto_play", "/mtrack/auto_play/cancel"],
     ["status", "/mtrack/status"],
     ["playlist_current", "/mtrack/playlist/current"],
     ["playlist_current_song", "/mtrack/playlist/current_song"],
@@ -188,6 +192,10 @@
     ["playlist", "controllers.midiPlaylist", true],
     ["section_ack", "controllers.midiSectionAck", false],
     ["stop_section_loop", "controllers.midiStopSectionLoop", false],
+    ["ambient_on", "controllers.midiAmbientOn", false],
+    ["ambient_off", "controllers.midiAmbientOff", false],
+    ["ambient_auto", "controllers.midiAmbientAuto", false],
+    ["cancel_auto_play", "controllers.midiCancelAutoPlay", false],
   ];
 
   function defaultMidiEvent(): MidiEvent {

@@ -23,11 +23,15 @@
     type PlaylistInfo,
     type PlaylistData,
     type AutoPlay,
+    type EntryFades,
+    type FadeConfig,
     type AmbientSettings,
     type PlaylistAmbient,
   } from "../lib/api/config";
   import { playbackStore } from "../lib/ws/stores";
   import { registerDirtyGuard } from "../lib/dirtyGuard";
+  import { formatFadeLength } from "../lib/util/format";
+  import FadeFields from "../components/playlists/FadeFields.svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -52,6 +56,10 @@
   let editSongs = $state<string[]>([]);
   /** Each song's auto play, kept in step with `editSongs`. */
   let editAutoPlay = $state<AutoPlay[]>([]);
+  /** Each song's fades, kept in step with `editSongs`. */
+  let editFades = $state<EntryFades[]>([]);
+  /** The slot whose transitions panel is open. */
+  let openTransitions = $state<number | null>(null);
   let editAmbient = $state<PlaylistAmbient>(null);
   let loading = $state(true);
   let error = $state("");
@@ -118,6 +126,11 @@
       editAutoPlay = fetched.songs.map(
         (_, i) => fetched.auto_play?.[i] ?? null,
       );
+      editFades = fetched.songs.map((_, i) => ({
+        fade_out: fetched.fades?.[i]?.fade_out ?? null,
+        fade_in: fetched.fades?.[i]?.fade_in ?? null,
+      }));
+      openTransitions = null;
       editAmbient = fetched.ambient ?? null;
       assignSlotIds(editSongs);
       dirty = false;
@@ -131,6 +144,7 @@
         detail = null;
         editSongs = [];
         editAutoPlay = [];
+        editFades = [];
         editAmbient = null;
         dirty = false;
       }
@@ -148,6 +162,7 @@
       error = "";
       await savePlaylist(selected, editSongs, {
         auto_play: editAutoPlay,
+        fades: editFades,
         ambient: editAmbient,
       });
       dirty = false;
@@ -184,6 +199,7 @@
         detail = null;
         editSongs = [];
         editAutoPlay = [];
+        editFades = [];
         editSlotIds = [];
       }
       confirmDelete = null;
@@ -215,6 +231,7 @@
   function addSong(song: string) {
     editSongs = [...editSongs, song];
     editAutoPlay = [...editAutoPlay, null];
+    editFades = [...editFades, { fade_out: null, fade_in: null }];
     editSlotIds = [...editSlotIds, slotIdCounter++];
     dirty = true;
   }
@@ -222,6 +239,7 @@
   function removeSong(index: number) {
     editSongs = editSongs.filter((_, i) => i !== index);
     editAutoPlay = editAutoPlay.filter((_, i) => i !== index);
+    editFades = editFades.filter((_, i) => i !== index);
     editSlotIds = editSlotIds.filter((_, i) => i !== index);
     dirty = true;
   }
@@ -231,15 +249,19 @@
     const songs = [...editSongs];
     const ids = [...editSlotIds];
     const autoPlay = [...editAutoPlay];
+    const fades = [...editFades];
     const [item] = songs.splice(from, 1);
     const [id] = ids.splice(from, 1);
     const [ap] = autoPlay.splice(from, 1);
+    const [fade] = fades.splice(from, 1);
     songs.splice(to, 0, item);
     ids.splice(to, 0, id);
     autoPlay.splice(to, 0, ap);
+    fades.splice(to, 0, fade);
     editSongs = songs;
     editSlotIds = ids;
     editAutoPlay = autoPlay;
+    editFades = fades;
     dirty = true;
   }
 
@@ -251,6 +273,35 @@
   /** A gap typed in: empty starts the song at once. */
   function setAutoPlayGap(index: number, gap: string) {
     setAutoPlay(index, gap ? gap : true);
+  }
+
+  function setFade(
+    index: number,
+    kind: keyof EntryFades,
+    value: FadeConfig | null,
+  ) {
+    editFades = editFades.map((f, i) =>
+      i === index ? { ...f, [kind]: value } : f,
+    );
+    dirty = true;
+  }
+
+  function fadeLength(fade: FadeConfig | null): string | null {
+    if (fade === null) return null;
+    return formatFadeLength(typeof fade === "string" ? fade : fade.length);
+  }
+
+  /** A row's fades in short, for its closed transitions panel. */
+  function fadesSummary(fades: EntryFades | undefined): string {
+    const out = fadeLength(fades?.fade_out ?? null);
+    const fadeIn = fadeLength(fades?.fade_in ?? null);
+    return [
+      out && get(t)("playlists.fadeOutSummary", { values: { length: out } }),
+      fadeIn &&
+        get(t)("playlists.fadeInSummary", { values: { length: fadeIn } }),
+    ]
+      .filter(Boolean)
+      .join(" · ");
   }
 
   type AmbientMode = "profile" | "off" | "custom";
@@ -299,15 +350,19 @@
     const songs = [...editSongs];
     const ids = [...editSlotIds];
     const autoPlay = [...editAutoPlay];
+    const fades = [...editFades];
     const [moved] = songs.splice(dragIndex, 1);
     const [movedId] = ids.splice(dragIndex, 1);
     const [movedAp] = autoPlay.splice(dragIndex, 1);
+    const [movedFade] = fades.splice(dragIndex, 1);
     songs.splice(targetIndex, 0, moved);
     ids.splice(targetIndex, 0, movedId);
     autoPlay.splice(targetIndex, 0, movedAp);
+    fades.splice(targetIndex, 0, movedFade);
     editSongs = songs;
     editSlotIds = ids;
     editAutoPlay = autoPlay;
+    editFades = fades;
     dirty = true;
     dragIndex = null;
     dragOverIndex = null;
@@ -560,7 +615,10 @@
             <ul class="song-list">
               {#each editSongs as song, i (editSlotIds[i])}
                 <li
-                  draggable="true"
+                  draggable={openTransitions === editSlotIds[i]
+                    ? "false"
+                    : "true"}
+                  class="song-row"
                   ondragstart={(e) => handleDragStart(e, i)}
                   ondragover={(e) => handleDragOver(e, i)}
                   ondrop={(e) => handleDrop(e, i)}
@@ -622,6 +680,20 @@
                     />
                   {/if}
                   <button
+                    class="transitions-toggle"
+                    data-testid="transitions-toggle"
+                    aria-expanded={openTransitions === editSlotIds[i]}
+                    aria-controls={`transitions-${editSlotIds[i]}`}
+                    title={$t("playlists.transitionsTooltip")}
+                    onclick={() =>
+                      (openTransitions =
+                        openTransitions === editSlotIds[i]
+                          ? null
+                          : editSlotIds[i])}
+                  >
+                    {fadesSummary(editFades[i]) || $t("playlists.transitions")}
+                  </button>
+                  <button
                     class="btn-icon"
                     title={$playbackStore.locked
                       ? $t("common.locked")
@@ -632,6 +704,24 @@
                   >
                     &#10005;
                   </button>
+                  {#if openTransitions === editSlotIds[i]}
+                    <div
+                      class="transitions-panel"
+                      id={`transitions-${editSlotIds[i]}`}
+                      data-testid="transitions-panel"
+                    >
+                      {#each ["fade_out", "fade_in"] as const as kind (kind)}
+                        <FadeFields
+                          {kind}
+                          value={editFades[i]?.[kind] ?? null}
+                          tracks={detail.song_tracks?.[song] ?? []}
+                          disabled={$playbackStore.locked}
+                          idPrefix={`transitions-${editSlotIds[i]}`}
+                          onchange={(value) => setFade(i, kind, value)}
+                        />
+                      {/each}
+                    </div>
+                  {/if}
                 </li>
               {/each}
             </ul>
@@ -716,6 +806,40 @@
   .auto-play-gap {
     width: 80px;
     flex-shrink: 0;
+  }
+  .song-list li.song-row {
+    flex-wrap: wrap;
+  }
+  .transitions-toggle {
+    background: none;
+    border: 1px solid var(--card-border);
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-size: 12px;
+    color: var(--nc-fg-3);
+    cursor: pointer;
+    white-space: nowrap;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .transitions-toggle[aria-expanded="true"] {
+    color: var(--nc-fg-1);
+    border-color: var(--nc-cyan-400);
+  }
+  .transitions-panel {
+    flex-basis: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 10px 0 4px 34px;
+    cursor: default;
+  }
+  @media (max-width: 720px) {
+    .transitions-panel {
+      grid-template-columns: 1fr;
+      padding-left: 0;
+    }
   }
   .panel-header__actions {
     display: flex;

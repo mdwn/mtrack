@@ -22,17 +22,19 @@ use crate::{
     player::Player,
     proto::player::v1::{
         player_service_server::{PlayerService, PlayerServiceServer},
-        AddProfileRequest, AudioHealth, Cue, GetActiveEffectsRequest, GetActiveEffectsResponse,
+        AddProfileRequest, AmbientStatus, AudioHealth, AutoPlayStatus, CancelAutoPlayRequest,
+        CancelAutoPlayResponse, Cue, GetActiveEffectsRequest, GetActiveEffectsResponse,
         GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, GetTrackGainsRequest,
         GetTrackGainsResponse, LoopSectionRequest, LoopSectionResponse, NextRequest, NextResponse,
         PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest, PreviousRequest,
         PreviousResponse, RemoveProfileRequest, SectionAckRequest, SectionAckResponse, SeekRequest,
-        SeekResponse, SeekToSectionRequest, SetTrackGainRequest, SetTrackGainResponse,
-        SetTrackMuteRequest, SetTrackMuteResponse, StatusRequest, StatusResponse, StopRequest,
-        StopResponse, StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest,
-        StopSectionLoopResponse, SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain,
-        UpdateAudioRequest, UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest,
-        UpdateMidiRequest, UpdateProfileRequest, FILE_DESCRIPTOR_SET,
+        SeekResponse, SeekToSectionRequest, SetAmbientModeRequest, SetAmbientModeResponse,
+        SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse,
+        StatusRequest, StatusResponse, StopRequest, StopResponse, StopSamplesRequest,
+        StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
+        SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
+        UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
+        UpdateProfileRequest, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -112,6 +114,21 @@ impl PlayerServer {
             player,
             config_store: Some(config_store),
         }
+    }
+
+    /// Ambient light's mode and state, without a DMX engine `None`. Read on
+    /// the blocking pool: the effects loop holds the ambient lock while it
+    /// starts the show.
+    async fn ambient_status(&self) -> Option<AmbientStatus> {
+        let dmx = self.player.dmx_engine()?;
+        let report = tokio::task::spawn_blocking(move || dmx.ambient_report())
+            .await
+            .ok()?;
+        Some(AmbientStatus {
+            mode: report.mode.as_str().to_string(),
+            state: report.state.to_string(),
+            show: report.show.map(|show| show.display().to_string()),
+        })
     }
 
     /// Converts a play/play_from result into a gRPC response.
@@ -429,12 +446,25 @@ impl PlayerService for PlayerServer {
                 last_error: h.last_error,
             });
 
+        let auto_play = match self.player.auto_play_status() {
+            Some((song, starts_in)) => Some(AutoPlayStatus {
+                song,
+                starts_in: Some(
+                    prost_types::Duration::try_from(starts_in)
+                        .map_err(|e| Status::internal(e.to_string()))?,
+                ),
+            }),
+            None => None,
+        };
+
         Ok(Response::new(StatusResponse {
             playlist_name: playlist_name.to_string(),
             current_song,
             playing,
             elapsed,
             audio_health,
+            ambient: self.ambient_status().await,
+            auto_play,
         }))
     }
 
@@ -690,6 +720,34 @@ impl PlayerService for PlayerServer {
                 }
             })?;
         Ok(Response::new(SetTrackMuteResponse { muted }))
+    }
+
+    async fn set_ambient_mode(
+        &self,
+        request: Request<SetAmbientModeRequest>,
+    ) -> Result<Response<SetAmbientModeResponse>, Status> {
+        let name = request.into_inner().mode;
+        let mode = crate::dmx::engine::AmbientMode::parse(&name).ok_or_else(|| {
+            Status::invalid_argument(format!(
+                "unknown ambient mode '{name}': use auto, on or off"
+            ))
+        })?;
+        let player = self.player.clone();
+        tokio::task::spawn_blocking(move || player.set_ambient_mode(mode))
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(SetAmbientModeResponse {
+            ambient: self.ambient_status().await,
+        }))
+    }
+
+    async fn cancel_auto_play(
+        &self,
+        _: Request<CancelAutoPlayRequest>,
+    ) -> Result<Response<CancelAutoPlayResponse>, Status> {
+        Ok(Response::new(CancelAutoPlayResponse {
+            cancelled: self.player.cancel_waiting_auto_play(),
+        }))
     }
 
     async fn get_track_gains(
@@ -1011,7 +1069,14 @@ mod test {
         )?;
         player.await_hardware_ready().await;
         let device = player.audio_device().expect("audio device").to_mock()?;
+        let client = serve_grpc(player.clone()).await?;
+        Ok((player, client, device))
+    }
 
+    /// Serves `player` over gRPC on an ephemeral port; a client for it.
+    async fn serve_grpc(
+        player: Arc<Player>,
+    ) -> Result<PlayerServiceClient<Channel>, Box<dyn Error>> {
         let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
         let listener = TcpListener::bind(addr).await?;
         let port = listener.local_addr()?.port();
@@ -1030,11 +1095,7 @@ mod test {
                 Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
             }
         }
-        Ok((
-            player,
-            client.expect("gRPC client connection failed"),
-            device,
-        ))
+        Ok(client.expect("gRPC client connection failed"))
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1454,6 +1515,134 @@ mod test {
         // Verify state was cleared.
         assert!(player.active_section().is_none());
 
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_ambient_mode() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::SetAmbientModeRequest;
+
+        // A DMX engine with no ambient show: on says it has none to play.
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let pl = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let mut playlists = HashMap::new();
+        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
+        playlists.insert("playlist".to_string(), pl);
+        let player = Player::new(
+            playlists,
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                Some(config::Dmx::new(
+                    None,
+                    None,
+                    Some(9090),
+                    vec![config::Universe::new(1, "test".to_string())],
+                    None,
+                )),
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let mut client = serve_grpc(player.clone()).await?;
+
+        let ambient = client.status(StatusRequest {}).await?.into_inner().ambient;
+        let ambient = ambient.expect("ambient with a DMX engine");
+        assert_eq!(
+            (ambient.mode.as_str(), ambient.state.as_str()),
+            ("auto", "off")
+        );
+
+        let resp = client
+            .set_ambient_mode(SetAmbientModeRequest {
+                mode: "on".to_string(),
+            })
+            .await?
+            .into_inner();
+        let ambient = resp.ambient.expect("ambient");
+        assert_eq!(
+            (ambient.mode.as_str(), ambient.state.as_str()),
+            ("on", "unavailable")
+        );
+        assert_eq!(player.ambient_mode(), crate::dmx::engine::AmbientMode::On);
+
+        let status = client
+            .set_ambient_mode(SetAmbientModeRequest {
+                mode: "dim".to_string(),
+            })
+            .await
+            .expect_err("an unknown mode");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_auto_play_status_and_cancel() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::CancelAutoPlayRequest;
+
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 2s\n";
+        let playlist_config: config::Playlist = ::config::Config::builder()
+            .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone())?,
+        );
+        playlists.insert(
+            "playlist".to_string(),
+            Playlist::new("playlist", &playlist_config, songs)?,
+        );
+        let player = Player::new(
+            playlists,
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let mut client = serve_grpc(player.clone()).await?;
+
+        let status = client.status(StatusRequest {}).await?.into_inner();
+        assert!(status.auto_play.is_none(), "nothing waiting");
+        assert!(status.ambient.is_none(), "no DMX engine");
+
+        client.next(NextRequest {}).await?;
+        let auto_play = client
+            .status(StatusRequest {})
+            .await?
+            .into_inner()
+            .auto_play
+            .expect("waiting");
+        assert_eq!(auto_play.song, "Song 3");
+        let starts_in = auto_play.starts_in.expect("starts_in");
+        assert!(starts_in.seconds <= 2, "{starts_in:?}");
+
+        let resp = client.cancel_auto_play(CancelAutoPlayRequest {}).await?;
+        assert!(resp.into_inner().cancelled);
+        let status = client.status(StatusRequest {}).await?.into_inner();
+        assert!(status.auto_play.is_none(), "called off");
+        assert!(!status.playing);
+        assert_eq!(status.current_song.expect("song").name, "Song 3");
+
+        let resp = client.cancel_auto_play(CancelAutoPlayRequest {}).await?;
+        assert!(!resp.into_inner().cancelled, "nothing left to call off");
         Ok(())
     }
 }

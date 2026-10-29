@@ -70,12 +70,17 @@ pub(super) async fn get_playlist_by_name(
         )
             .into_response();
     };
-    let all_songs: Vec<String> = state
-        .player
-        .songs()
+    let registry = state.player.songs();
+    let all_songs: Vec<String> = registry
         .sorted_list()
         .iter()
         .map(|s| s.name().to_string())
+        .collect();
+    // Each song's tracks, for picking the ones a fade leaves out.
+    let song_tracks: serde_json::Map<String, serde_json::Value> = registry
+        .sorted_list()
+        .iter()
+        .map(|s| (s.name().to_string(), json!(s.output_track_names())))
         .collect();
     // Each entry's auto play as the editor writes it: `true` for at once,
     // a gap, or null for none.
@@ -94,8 +99,10 @@ pub(super) async fn get_playlist_by_name(
             "name": name,
             "songs": pl.songs(),
             "auto_play": auto_play,
+            "fades": pl.entry_fades(),
             "ambient": pl.ambient(),
             "available_songs": all_songs,
+            "song_tracks": song_tracks,
         })),
     )
         .into_response()
@@ -118,6 +125,10 @@ pub(super) struct PlaylistBody {
     /// entry's as it was.
     #[serde(default)]
     auto_play: Option<Vec<Option<config::AutoPlayConfig>>>,
+    /// Each song's fade out and fade in, in the order of `songs`, null for
+    /// none; absent keeps each entry's as it was.
+    #[serde(default)]
+    fades: Option<Vec<config::EntryFades>>,
     /// The playlist's ambient light: absent keeps it, null removes it (the
     /// profile's plays), `false` turns it off, a map overrides settings.
     #[serde(default, deserialize_with = "present")]
@@ -180,22 +191,28 @@ pub(super) async fn put_playlist_by_name(
         Some(auto_play) => playlist_config.with_auto_play(auto_play),
         None => playlist_config,
     };
+    let playlist_config = match &body.fades {
+        Some(fades) => playlist_config.with_fades(fades),
+        None => playlist_config,
+    };
     let playlist_config = match body.ambient {
         Some(ambient) => playlist_config.with_ambient(ambient),
         None => playlist_config,
     };
     // What the player would refuse to load is refused here, before the file
-    // is written.
-    let invalid = playlist_config.entry_transitions().err().or_else(|| {
-        playlist_config
-            .ambient()
-            .and_then(|ambient| ambient.validate().err())
-    });
-    if let Some(e) = invalid {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": e}))).into_response());
+    // is written: a bad fade or ambient, or a fade leaving out a track its
+    // song does not have.
+    if let Err(e) = crate::playlist::validate_transitions(&playlist_config, &state.player.songs()) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response());
     }
     let yaml = match crate::util::to_yaml_string(&playlist_config) {
-        Ok(y) => y,
+        // A text file ends with a newline.
+        Ok(y) if y.ends_with('\n') => y,
+        Ok(y) => y + "\n",
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -377,7 +394,8 @@ mod test {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(playlists_dir.join("mylist.yaml").exists());
+        let written = std::fs::read_to_string(playlists_dir.join("mylist.yaml")).unwrap();
+        assert!(written.ends_with('\n'), "{written:?}");
     }
 
     /// PUTs `songs` (JSON) to the playlist `mylist`, whose file holds
@@ -476,6 +494,127 @@ mod test {
             assert!(status.is_client_error(), "{body}: {status}");
             assert_eq!(after, existing, "{body}");
         }
+    }
+
+    #[tokio::test]
+    async fn put_playlist_sets_fades_that_follow_their_songs() {
+        let (status, after) = put_body_over(
+            "songs:\n- song: Song A\n  fade_in: 2s\n  auto_play: true\n- Song B\n",
+            r#"{"songs": ["Song B", "Song A"],
+                "fades": [
+                  {"fade_in": "4beats"},
+                  {"fade_out": {"length": "1measure", "curve": "linear",
+                                "exclude": ["kick"], "lights": "0s"},
+                   "fade_in": null}
+                ]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{after}");
+        let written = read(&after);
+        assert_eq!(written.songs(), ["Song B", "Song A"]);
+        assert_eq!(
+            written.entry_fades(),
+            vec![
+                config::EntryFades {
+                    fade_out: None,
+                    fade_in: Some(config::FadeConfig::Length("4beats".to_string())),
+                },
+                config::EntryFades {
+                    fade_out: Some(config::FadeConfig::Full {
+                        length: "1measure".to_string(),
+                        curve: Some("linear".to_string()),
+                        exclude: Some(vec!["kick".to_string()]),
+                        lights: Some("0s".to_string()),
+                    }),
+                    fade_in: None,
+                },
+            ]
+        );
+        // Song A's auto play stays with it.
+        assert!(after.contains("auto_play: true"), "{after}");
+    }
+
+    #[tokio::test]
+    async fn put_playlist_keeps_or_clears_fades() {
+        let existing = "songs:\n- song: Song A\n  fade_out: 2s\n  fade_in: 1s\n";
+        // Left out: kept.
+        let (status, after) = put_body_over(existing, r#"{"songs": ["Song A"]}"#).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(after.contains("fade_out: 2s"), "{after}");
+        assert!(after.contains("fade_in: 1s"), "{after}");
+        // Null: removed, leaving the song's name alone.
+        let (status, after) = put_body_over(
+            existing,
+            r#"{"songs": ["Song A"], "fades": [{"fade_out": null, "fade_in": null}]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!after.contains("fade"), "{after}");
+        assert!(after.contains("- Song A"), "{after}");
+    }
+
+    #[tokio::test]
+    async fn put_playlist_refuses_a_bad_fade() {
+        let existing = "songs:\n- Song A\n";
+        for fade in [
+            r#"{"fade_out": "soon"}"#,
+            r#"{"fade_out": {"length": "2s", "curve": "wobbly"}}"#,
+            r#"{"fade_out": {"length": "2s", "exclude": ["cowbell"]}}"#,
+            r#"{"fade_in": {"length": "2s", "exclude": ["cowbell"]}}"#,
+            r#"{"fade_in": {"length": "2s", "lights": "1s"}}"#,
+            r#"{"fade_out": {"length": "2s", "exlude": ["kick"]}}"#,
+            r#"{"fade_ot": "2s"}"#,
+        ] {
+            let body = format!(r#"{{"songs": ["Song A"], "fades": [{fade}]}}"#);
+            let (status, after) = put_body_over(existing, &body).await;
+            assert!(status.is_client_error(), "{fade}: {status}");
+            assert_eq!(after, existing, "{fade}");
+        }
+    }
+
+    #[tokio::test]
+    async fn get_playlist_reports_its_fades_and_each_songs_tracks() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path.join("song_a");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("kick.wav"), vec![vec![0_i32; 441]], 44100)
+            .unwrap();
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: Song A\ntracks:\n- name: kick\n  file: kick.wav\n",
+        )
+        .unwrap();
+        std::fs::write(
+            state.playlists_dir.clone().unwrap().join("testlist.yaml"),
+            "songs:\n- song: Song A\n  fade_out: {length: 1measure, exclude: [kick]}\n- Song A\n",
+        )
+        .unwrap();
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/playlists/testlist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(
+            parsed["fades"],
+            serde_json::json!([
+                {"fade_out": {"length": "1measure", "exclude": ["kick"]}, "fade_in": null},
+                {"fade_out": null, "fade_in": null},
+            ])
+        );
+        assert_eq!(parsed["song_tracks"]["Song A"], serde_json::json!(["kick"]));
     }
 
     #[test]

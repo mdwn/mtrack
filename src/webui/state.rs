@@ -328,14 +328,58 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 "song": song,
                 "starts_in_ms": starts_in.as_millis() as u64,
             })),
-            "ambient": player.dmx_engine().and_then(|dmx| dmx.ambient_status()).map(|status| json!({
-                "show": status.show.display().to_string(),
-                "state": status.state,
+            "ending": player.ending_status().map(|(song, remaining)| json!({
+                "song": song,
+                "remaining_ms": remaining.as_millis() as u64,
             })),
+            // With a DMX engine, whatever the mode, so the card can show it.
+            "ambient": player.dmx_engine().map(|dmx| dmx.ambient_report()).map(|report| json!({
+                "mode": report.mode.as_str(),
+                "show": report.show.map(|show| show.display().to_string()),
+                "state": report.state,
+            })),
+            "next": next_json(&playlist, is_playing),
         });
 
         let _ = tx.send(msg.to_string());
     }
+}
+
+/// What comes after the current song and how it arrives, for the
+/// dashboard: `null` with no current song, a `null` song at the end of the
+/// playlist. A looping song that is playing goes on only by a loop break
+/// (Play or Next), which takes the playlist's fades; otherwise the next song
+/// starts by itself after its auto-play gap, or waits for Play.
+fn next_json(playlist: &crate::playlist::Playlist, is_playing: bool) -> serde_json::Value {
+    let Some(current) = playlist.current() else {
+        return serde_json::Value::Null;
+    };
+    let position = playlist.position();
+    let Some(song) = playlist.songs().get(position + 1) else {
+        return json!({"song": null});
+    };
+    if is_playing && current.loop_playback() {
+        let handover = playlist.loop_break(false);
+        return json!({
+            "song": handover.target.as_ref().map(|s| s.name().to_string()),
+            "breaks_loop": true,
+            "fade_out": handover.fade_out.as_ref().map(crate::config::Fade::to_json),
+            "fade_in": handover.fade_in.as_ref().map(crate::config::Fade::to_json),
+            "auto_play_ms": null,
+        });
+    }
+    let gap = playlist
+        .entry_auto_play()
+        .get(position + 1)
+        .copied()
+        .flatten();
+    json!({
+        "song": song,
+        "breaks_loop": false,
+        "fade_out": null,
+        "fade_in": null,
+        "auto_play_ms": gap.map(|gap| gap.as_millis() as u64),
+    })
 }
 
 /// Watches the shared state snapshot (fixtures + active effects) and broadcasts changes.
@@ -1205,6 +1249,75 @@ metronome: {}
     }
 
     #[tokio::test]
+    async fn playback_poller_reports_the_ambient_mode_whatever_it_is() {
+        let engine = crate::dmx::engine::Engine::new(
+            &crate::config::Dmx::new(
+                None,
+                None,
+                Some(9010),
+                vec![crate::config::Universe::new(1, "u".to_string())],
+                None,
+            ),
+            None,
+            None,
+            crate::dmx::ola_client::OlaClientFactory::create_mock_client(),
+        )
+        .unwrap();
+        let songs = Arc::new(Songs::new(HashMap::from([(
+            "Song A".to_string(),
+            Arc::new(Song::new_for_test("Song A", &["track1"])),
+        )])));
+        let pl = playlist::Playlist::new(
+            "test",
+            &crate::config::Playlist::new(&["Song A".to_string()]),
+            songs,
+        )
+        .unwrap();
+        let devices = PlayerDevices {
+            audio: None,
+            mappings: None,
+            midi: None,
+            dmx_engine: Some(Arc::new(engine)),
+            sample_engine: None,
+            trigger_engine: None,
+        };
+        let player = Arc::new(
+            crate::player::Player::new_with_devices(
+                devices,
+                HashMap::from([("test".to_string(), pl)]),
+                "test".to_string(),
+                None,
+            )
+            .unwrap(),
+        );
+        let (tx, mut rx) = broadcast::channel(16);
+        let handle = tokio::spawn(playback_poller(player.clone(), tx));
+        let mut next = async || -> serde_json::Value {
+            let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("timed out waiting for playback message")
+                .expect("recv error");
+            serde_json::from_str(&msg).unwrap()
+        };
+
+        // Off and idle with no show: still there, for the mode.
+        let parsed = next().await;
+        assert_eq!(parsed["ambient"]["mode"], "auto", "{parsed}");
+        assert_eq!(parsed["ambient"]["state"], "off");
+        assert!(parsed["ambient"]["show"].is_null());
+
+        player.set_ambient_mode(crate::dmx::engine::AmbientMode::On);
+        let parsed = loop {
+            let parsed = next().await;
+            if parsed["ambient"]["mode"] == "on" {
+                break parsed;
+            }
+        };
+        assert_eq!(parsed["ambient"]["state"], "unavailable", "{parsed}");
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn playback_poller_sends_message() {
         let player = test_player(&["Song A"]);
         let (tx, mut rx) = broadcast::channel(16);
@@ -1230,6 +1343,52 @@ metronome: {}
         }
 
         handle.abort();
+    }
+
+    #[test]
+    fn next_says_what_follows_and_how_it_arrives() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "Walk-in".to_string(),
+            Arc::new(Song::new_for_test_looping("Walk-in", &["pad"])),
+        );
+        for name in ["Opener", "Slow One"] {
+            map.insert(
+                name.to_string(),
+                Arc::new(Song::new_for_test(name, &["kick"])),
+            );
+        }
+        let songs = Arc::new(Songs::new(map));
+        let text = "songs:\n- song: Walk-in\n  fade_out: {length: 1measure, lights: 0s}\n\
+                    - song: Opener\n  fade_in: 4beats\n  auto_play: 2s\n- Slow One\n";
+        let config: crate::config::Playlist = ::config::Config::builder()
+            .add_source(::config::File::from_str(text, ::config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        let pl = playlist::Playlist::new("show", &config, songs).unwrap();
+
+        // Looping and playing: only a loop break goes on, with its fades.
+        let next = next_json(&pl, true);
+        assert_eq!(next["song"], "Opener");
+        assert_eq!(next["breaks_loop"], true);
+        assert_eq!(next["fade_out"]["length"], "1measure");
+        assert_eq!(next["fade_out"]["lights"], "0s");
+        assert_eq!(next["fade_in"]["length"], "4beats");
+        // Stopped, Next reaches the song, which starts after its gap.
+        let next = next_json(&pl, false);
+        assert_eq!(next["breaks_loop"], false);
+        assert_eq!(next["auto_play_ms"], 2000);
+
+        pl.next();
+        let next = next_json(&pl, true);
+        assert_eq!(next["song"], "Slow One");
+        assert_eq!(next["breaks_loop"], false);
+        assert!(next["auto_play_ms"].is_null(), "waits for play: {next}");
+
+        pl.next();
+        assert_eq!(next_json(&pl, true), json!({"song": null}));
     }
 
     #[test]

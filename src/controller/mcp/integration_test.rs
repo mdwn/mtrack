@@ -5212,3 +5212,112 @@ async fn mcp_resource_subscription_notifies_on_config_change() -> Result<(), Box
     controller.shutdown();
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Ambient mode and auto play cancel
+// ---------------------------------------------------------------------------
+
+/// `set_ambient_mode` sets the mode `status.ambient` reports, and
+/// `cancel_auto_play` calls off a waiting auto play and nothing else.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_ambient_mode_and_cancel_auto_play() -> Result<(), Box<dyn Error>> {
+    let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+    let playlist_config: config::Playlist = ::config::Config::builder()
+        .add_source(::config::File::from_str(
+            "songs:\n- Song 1\n- song: Song 3\n  auto_play: 2s\n",
+            ::config::FileFormat::Yaml,
+        ))
+        .build()?
+        .try_deserialize()?;
+    let mut playlists = HashMap::new();
+    playlists.insert(
+        "all_songs".to_string(),
+        playlist::from_songs(songs.clone())?,
+    );
+    playlists.insert(
+        "playlist".to_string(),
+        playlist::Playlist::new("playlist", &playlist_config, songs)?,
+    );
+    // A DMX engine with no ambient show.
+    let player = Player::new(
+        playlists,
+        "playlist".to_string(),
+        &config::Player::new(
+            vec![],
+            Some(config::Audio::new("mock-device")),
+            None,
+            Some(config::Dmx::new(
+                None,
+                None,
+                Some(9090),
+                vec![config::Universe::new(1, "test".to_string())],
+                None,
+            )),
+            HashMap::new(),
+            "assets/songs",
+        ),
+        None,
+    )?;
+    player.await_hardware_ready().await;
+
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let status = tool_json(&call_tool(&client, &url, &session, 300, "status", json!({})).await);
+    assert_eq!(status["ambient"]["mode"], "auto", "{status}");
+    assert_eq!(status["ambient"]["state"], "off", "{status}");
+
+    let resp = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            301,
+            "set_ambient_mode",
+            json!({"mode": "on"}),
+        )
+        .await,
+    );
+    assert_eq!(resp["ambient"]["mode"], "on", "{resp}");
+    assert_eq!(resp["ambient"]["state"], "unavailable", "no show: {resp}");
+    assert_eq!(player.ambient_mode(), crate::dmx::engine::AmbientMode::On);
+
+    let bad = call_tool(
+        &client,
+        &url,
+        &session,
+        302,
+        "set_ambient_mode",
+        json!({"mode": "dim"}),
+    )
+    .await;
+    assert!(tool_is_error(&bad), "an unknown mode: {bad}");
+
+    // Nothing waiting, then a song waiting out its gap.
+    let resp =
+        tool_json(&call_tool(&client, &url, &session, 303, "cancel_auto_play", json!({})).await);
+    assert_eq!(resp["cancelled"], false, "{resp}");
+    player.next().await;
+    let status = tool_json(&call_tool(&client, &url, &session, 304, "status", json!({})).await);
+    assert_eq!(status["auto_play"]["song"], "Song 3", "{status}");
+    let resp =
+        tool_json(&call_tool(&client, &url, &session, 305, "cancel_auto_play", json!({})).await);
+    assert_eq!(resp["cancelled"], true, "{resp}");
+    let status = tool_json(&call_tool(&client, &url, &session, 306, "status", json!({})).await);
+    assert!(status["auto_play"].is_null(), "{status}");
+    assert_eq!(status["playing"], false);
+    assert_eq!(status["current_song"]["name"], "Song 3", "{status}");
+
+    controller.shutdown();
+    Ok(())
+}

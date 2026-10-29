@@ -36,6 +36,10 @@ controllers:
   loop_section: /mtrack/loop_section
   seek: /mtrack/seek
   seek_section: /mtrack/seek_section
+  ambient_on: /mtrack/ambient/on
+  ambient_off: /mtrack/ambient/off
+  ambient_auto: /mtrack/ambient/auto
+  cancel_auto_play: /mtrack/auto_play/cancel
   track_gain: /mtrack/track/*/gain
 
   # Events the player broadcasts.
@@ -64,6 +68,10 @@ controllers:
 | `loop_section` | `/mtrack/loop_section` | section name (`string`) | Loops the named section. |
 | `seek` | `/mtrack/seek` | seconds (`float`, `double` or `int`, not negative) | Seeks within the current song. |
 | `seek_section` | `/mtrack/seek_section` | section name (`string`) | Seeks to the start of the named section. |
+| `ambient_on` | `/mtrack/ambient/on` | none | Holds [ambient light](../lighting/configuration.md#ambient-mode) up now, over any song (mode `on`). |
+| `ambient_off` | `/mtrack/ambient/off` | none | Fades ambient light out and plays none (mode `off`). |
+| `ambient_auto` | `/mtrack/ambient/auto` | none | Ambient light between songs again (mode `auto`). |
+| `cancel_auto_play` | `/mtrack/auto_play/cancel` | none | Calls off a song waiting to [auto play](../getting-started/playlists.md#auto-play), leaving the player stopped on it. |
 | `track_gain` | `/mtrack/track/*/gain` | gain in dB (`float`; `double` and `int` also accepted) | Sets the gain of one output track. |
 
 `/mtrack/pause` leaves the song position where it is: the next `/mtrack/play` resumes from there.

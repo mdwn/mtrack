@@ -1215,6 +1215,24 @@ export interface PlaylistInfo {
  *  none. */
 export type AutoPlay = true | string | null;
 
+/** A fade as written: a length alone (`"3s"`, `"1measure"`), or with its
+ *  settings. */
+export type FadeConfig =
+  | string
+  | {
+      length: string;
+      curve?: "equal_power" | "linear";
+      exclude?: string[];
+      /** fade_out only. */
+      lights?: string;
+    };
+
+/** An entry's fades: `null` for none. */
+export interface EntryFades {
+  fade_out: FadeConfig | null;
+  fade_in: FadeConfig | null;
+}
+
 /** A playlist's ambient light settings, each overriding the profile's. */
 export interface AmbientSettings {
   show?: string;
@@ -1232,13 +1250,18 @@ export interface PlaylistData {
   songs: string[];
   /** Each song's auto play, in the order of `songs`. */
   auto_play?: AutoPlay[];
+  /** Each song's fades, in the order of `songs`. */
+  fades?: EntryFades[];
   ambient?: PlaylistAmbient;
   available_songs: string[];
+  /** Each song's track names, for the tracks a fade leaves out. */
+  song_tracks?: Record<string, string[]>;
 }
 
 /** What a save sets beyond the songs; each left out is kept as it is. */
 export interface PlaylistSettings {
   auto_play?: AutoPlay[];
+  fades?: EntryFades[];
   ambient?: PlaylistAmbient;
 }
 

@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Ending a looping song gracefully**: Stop on a looping song whose playlist entry has a
+  `fade_out` now fades it out over that fade, lights included, instead of cutting; the playlist
+  stays put, nothing starts after it, and ambient light comes in over the fade's tail (its delay
+  counts from the Stop). Beats and measures count on the next song's grid, as for a loop break,
+  so a prelude with no grid of its own fades too. A second Stop cuts the audio at once, and the
+  lights go to dark over the ambient `fade_out` as ambient light comes in without waiting. Next
+  on the last entry (or Previous on the first) while it loops ends the song the same way instead
+  of restarting it. The dashboard shows "… is fading out — Stop again to cut", and the MCP
+  `status` tool reports it as `ending`.
+- **Ambient mode: Auto / On / Off**: On brings ambient light up now and holds it over any song,
+  crossing back to the song's show where it has got to when set back to Auto; Off fades ambient
+  out to dark, and a song that ends or is stopped while Off fades to dark too. Set it from the dashboard's playback card, gRPC (`SetAmbientMode`), OSC
+  (`/mtrack/ambient/on|off|auto`), a MIDI controller (`ambient_on`, `ambient_off`,
+  `ambient_auto`) or MCP (`set_ambient_mode`); it shows in `status` and the playback feed.
+- **Auto-play controls**: a song waiting to auto play can be called off without stopping
+  anything else, from gRPC (`CancelAutoPlay`), OSC (`/mtrack/auto_play/cancel`), a MIDI
+  controller (`cancel_auto_play`) or MCP (`cancel_auto_play`). gRPC `Status` reports the wait,
+  and status events can show it on a controller (`auto_play_events`). Stop on the dashboard is
+  now enabled during the wait, as its hint says.
+- **Fades in the playlist editor**: each song's fade out and fade in (length, curve, tracks that
+  don't fade, lights) are edited under a per-song Transitions panel; the playlist API returns
+  and accepts `fades` and refuses ones the player would not load, including an `exclude` naming
+  a track the song lacks.
+- **What comes next, on the dashboard**: the playback card says what follows and how: a loop
+  break with its fade, a song starting by itself after its gap, one waiting for Play, or the end
+  of the playlist. The playback feed carries it as `next`.
 - **Auto play and ambient light in the web UI**: the playlist editor sets each song's auto play
   and gap, and the playlist's ambient light (the profile's, none, or its own); Lighting › Groups
   sets the profile's ambient show and timings; and the dashboard's playback card counts down a
@@ -71,6 +97,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the bar now restarts on the bar without a padding cue to stretch it, and an effect that runs
   past the length is cut when the next pass starts. A cue starting at or past the length is a
   parse error. The web UI's lighting editor keeps the length when it saves the file.
+
+### Removed
+
+- **The live MIDI to DMX pass-through** (`midi.midi_to_dmx`, with its `note_mapper` and
+  `control_change_mapper` transformers) and its web UI editor. Ambient light and its Auto / On /
+  Off mode replace it. A profile that still has `midi_to_dmx` loads, and the key is ignored;
+  the next save from the web UI drops it, so a profile kept in git shows that as a diff.
+  MIDI-file light shows (`dmx_file`) are unaffected.
 
 ### Fixed
 

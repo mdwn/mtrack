@@ -483,6 +483,18 @@ impl EffectEngine {
         }
     }
 
+    /// Takes `other`'s rig -- its fixtures, MIDI DMX store and focus points
+    /// -- keeping this engine's effects: how an engine running beside the
+    /// main one (ambient light over a song) follows a venue registration.
+    pub fn adopt_rig(&mut self, other: &EffectEngine) {
+        self.fixtures = other.fixtures.clone();
+        self.midi_dmx_store = other.midi_dmx_store.clone();
+        self.focus_points = other.focus_points.clone();
+        self.poses.retain(|name, _| other.fixtures.contains(name));
+        self.goals.retain(|name, _| other.fixtures.contains(name));
+        self.cache.invalidate();
+    }
+
     /// The frame `t` of the way (0.0 to 1.0) through a crossfade from
     /// `outgoing` (another engine's frame for the same rig) to `incoming`
     /// (this engine's), channel by channel as a console crosses cues:

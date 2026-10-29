@@ -50,6 +50,8 @@ pub struct Playlist {
     songs: Vec<String>,
     /// How each entry hands over to the next.
     transitions: Vec<config::EntryTransitions>,
+    /// Each entry's fades as written, for an editor.
+    fades: Vec<config::EntryFades>,
     /// Its ambient light, as written: overriding the player's.
     ambient: Option<config::ambient::PlaylistAmbient>,
     /// The current position of the playlist.
@@ -95,6 +97,7 @@ impl Playlist {
             name: name.to_string(),
             songs: song_names,
             transitions,
+            fades: config.entry_fades(),
             ambient: config.ambient().cloned(),
             position: Arc::new(RwLock::new(0)),
             registry: Arc::clone(&registry),
@@ -215,6 +218,17 @@ impl Playlist {
         }
     }
 
+    /// Whether there is an entry before the current one (`back`) or after
+    /// it: false at either end of the list, where next and previous clamp.
+    pub fn can_move(&self, back: bool) -> bool {
+        let position = *self.position.read();
+        if back {
+            position > 0
+        } else {
+            position + 1 < self.songs.len()
+        }
+    }
+
     /// The gap before the song at the current position starts by itself,
     /// reached by the song before it ending or by next/previous while
     /// stopped; `None` when it waits for play.
@@ -227,6 +241,11 @@ impl Playlist {
     /// play.
     pub fn entry_auto_play(&self) -> Vec<Option<Duration>> {
         self.transitions.iter().map(|t| t.auto_play).collect()
+    }
+
+    /// Each entry's fades as written, in order.
+    pub fn entry_fades(&self) -> &[config::EntryFades] {
+        &self.fades
     }
 
     /// Sets the playlist position to the song matching the given name.
@@ -370,6 +389,7 @@ mod test {
             name: "empty".to_string(),
             songs: vec![],
             transitions: vec![],
+            fades: vec![],
             ambient: None,
             position: Arc::new(parking_lot::RwLock::new(0)),
             registry,
@@ -498,6 +518,7 @@ mod test {
             name: "broken".to_string(),
             songs: vec!["Song 1".to_string(), "Ghost Song".to_string()],
             transitions: vec![Default::default(); 2],
+            fades: vec![Default::default(); 2],
             ambient: None,
             position: Arc::new(parking_lot::RwLock::new(0)),
             registry,
@@ -547,6 +568,16 @@ mod test {
         assert_eq!(length(back.fade_in), Some("1s".to_string()));
         // Breaking doesn't move: the cleanup does.
         assert_eq!(playlist.current().unwrap().name(), "B");
+    }
+
+    #[test]
+    fn can_move_is_false_at_either_end() {
+        let playlist = playlist_from("songs:\n- A\n- B\n").unwrap();
+        assert!(!playlist.can_move(true));
+        assert!(playlist.can_move(false));
+        playlist.navigate_to("B");
+        assert!(playlist.can_move(true));
+        assert!(!playlist.can_move(false));
     }
 
     #[test]

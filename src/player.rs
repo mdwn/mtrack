@@ -386,8 +386,17 @@ pub struct Player {
     /// Set with `loop_break` when the break came from previous rather than
     /// next or play, so the cleanup moves the playlist back, not on.
     loop_break_to_prev: Arc<AtomicBool>,
+    /// Set with `loop_break` when the break ends the song rather than moving
+    /// on (a stop, or next or previous at the end of the list): the cleanup
+    /// leaves the playlist where it is and starts nothing.
+    loop_end: Arc<AtomicBool>,
+    /// A looping song ending, fading out with nothing after it, if one is.
+    ending: Arc<parking_lot::Mutex<EndingState>>,
     /// A playlist entry's `auto_play` waiting out its gap, if one is.
     auto_play: Arc<parking_lot::Mutex<AutoPlayState>>,
+    /// Ambient light's mode, kept here so an engine a reload brings in
+    /// takes it up.
+    ambient_mode: Arc<parking_lot::Mutex<dmx::engine::AmbientMode>>,
     /// A looping song fading out after a loop break (a playlist `fade_out`):
     /// when the break came and how long the fade lasts. The audio monitor
     /// reads it to carry the fade across a loop boundary.
@@ -642,7 +651,10 @@ impl Player {
             controller_config: Arc::new(parking_lot::Mutex::new(None)),
             loop_break: Arc::new(AtomicBool::new(false)),
             loop_break_to_prev: Arc::new(AtomicBool::new(false)),
+            loop_end: Arc::new(AtomicBool::new(false)),
+            ending: Arc::new(parking_lot::Mutex::new(EndingState::default())),
             auto_play: Arc::new(parking_lot::Mutex::new(AutoPlayState::default())),
+            ambient_mode: Arc::new(parking_lot::Mutex::new(Default::default())),
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
@@ -1041,6 +1053,9 @@ pub struct StatusEvents {
     idling_events: Vec<LiveEvent<'static>>,
     /// The events to emit to indicate that the player is currently playing.
     playing_events: Vec<LiveEvent<'static>>,
+    /// The events to emit, in place of the idling events, while an auto
+    /// play waits; empty for the idling events.
+    auto_play_events: Vec<LiveEvent<'static>>,
 }
 
 impl StatusEvents {
@@ -1053,9 +1068,22 @@ impl StatusEvents {
                 off_events: config.off_events()?,
                 idling_events: config.idling_events()?,
                 playing_events: config.playing_events()?,
+                auto_play_events: config.auto_play_events()?,
             }),
             None => None,
         })
+    }
+
+    /// The events that report the player's state: playing, an auto play
+    /// waiting to start (when it has events of its own), or idling.
+    fn current(&self, playing: bool, auto_play_waiting: bool) -> &[LiveEvent<'static>] {
+        if playing {
+            &self.playing_events
+        } else if auto_play_waiting && !self.auto_play_events.is_empty() {
+            &self.auto_play_events
+        } else {
+            &self.idling_events
+        }
     }
 }
 
@@ -1068,6 +1096,16 @@ struct AutoPlayState {
     pending: bool,
     /// The song waiting and when it starts, while one is.
     waiting: Option<(String, std::time::Instant)>,
+}
+
+/// A looping song ending: each ending takes the next generation, and one
+/// whose generation has moved on, or that was cut, brings no ambient light
+/// when its fade would have ended.
+#[derive(Default)]
+struct EndingState {
+    generation: u64,
+    /// The song fading out and when its fade ends, while one is.
+    fading: Option<(String, std::time::Instant)>,
 }
 
 /// The result of receiving a playback completion signal.
@@ -2190,8 +2228,9 @@ mod test {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn ambient_light_plays_while_no_song_does() -> Result<(), Box<dyn Error>> {
+    /// A player whose one song, "Lit", has a red show of its own and whose
+    /// ambient light is blue, with the directory holding them.
+    async fn ambient_player() -> Result<(tempfile::TempDir, Arc<Player>), Box<dyn Error>> {
         // A song with a show of its own, long enough to pause and stop.
         let dir = tempfile::tempdir()?;
         let song_dir = dir.path().join("songs").join("lit");
@@ -2250,6 +2289,12 @@ mod test {
             None,
         )?;
         player.await_hardware_ready().await;
+        Ok((dir, player))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ambient_light_plays_while_no_song_does() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = ambient_player().await?;
         let engine = player.dmx_engine().expect("DMX engine should be present");
         let state = || engine.ambient_status().map(|s| s.state);
 
@@ -2271,6 +2316,42 @@ mod test {
         // A stop is between songs.
         player.stop().await;
         eventually(|| state() == Some("playing"), "ambient after a stop");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_ambient_mode_holds_it_over_a_song_or_keeps_it_off() -> Result<(), Box<dyn Error>> {
+        use crate::dmx::engine::AmbientMode;
+        let (_dir, player) = ambient_player().await?;
+        let engine = player.dmx_engine().expect("DMX engine should be present");
+        let report = || {
+            let report = engine.ambient_report();
+            (report.mode, report.state)
+        };
+        assert_eq!(player.ambient_mode(), AmbientMode::Auto, "starts in auto");
+        eventually(
+            || report() == (AmbientMode::Auto, "playing"),
+            "ambient at startup",
+        );
+
+        // On: ambient holds over the song.
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        player.set_ambient_mode(AmbientMode::On);
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(report(), (AmbientMode::On, "playing"), "on wins");
+
+        // Auto, mid-song: back to the song's lights.
+        player.set_ambient_mode(AmbientMode::Auto);
+        assert_eq!(report(), (AmbientMode::Auto, "off"));
+
+        // Off: a stop leaves the stage dark.
+        player.set_ambient_mode(AmbientMode::Off);
+        player.stop().await;
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(report(), (AmbientMode::Off, "off"));
+        assert_eq!(player.ambient_mode(), AmbientMode::Off);
         Ok(())
     }
 
@@ -2454,6 +2535,60 @@ mod test {
         assert!(!player.is_playing().await, "moving on calls it off");
         assert_eq!(current_name(&player).await, "Song 5");
         Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancelling_a_waiting_auto_play_stops_on_its_song() -> Result<(), Box<dyn Error>> {
+        let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 500ms\n- Song 5\n";
+        let player = make_test_player_with_playlist(yaml).await?;
+        assert!(!player.cancel_waiting_auto_play(), "nothing waiting");
+
+        player.next().await;
+        assert!(player.auto_play_status().is_some(), "waiting");
+        assert!(player.cancel_waiting_auto_play());
+        assert!(player.auto_play_status().is_none());
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(!player.is_playing().await, "called off");
+        assert_eq!(current_name(&player).await, "Song 3");
+        Ok(())
+    }
+
+    #[test]
+    fn status_events_show_a_waiting_auto_play_when_they_have_its_events() {
+        let parse = |yaml: &str| -> StatusEvents {
+            let config: config::StatusEvents = ::config::Config::builder()
+                .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+                .build()
+                .unwrap()
+                .try_deserialize()
+                .unwrap();
+            StatusEvents::new(Some(config)).unwrap().unwrap()
+        };
+        let cc = |value: u8| {
+            format!("[{{ type: control_change, channel: 16, controller: 2, value: {value} }}]")
+        };
+        let base = format!(
+            "off_events: {}\nidling_events: {}\nplaying_events: {}\n",
+            cc(0),
+            cc(1),
+            cc(2)
+        );
+        let value = |events: &[LiveEvent<'static>]| match events[0] {
+            LiveEvent::Midi {
+                message: midly::MidiMessage::Controller { value, .. },
+                ..
+            } => u8::from(value),
+            _ => panic!("a control change"),
+        };
+
+        let events = parse(&format!("{base}auto_play_events: {}\n", cc(3)));
+        assert_eq!(value(events.current(false, false)), 1, "idling");
+        assert_eq!(value(events.current(false, true)), 3, "auto play waiting");
+        assert_eq!(value(events.current(true, false)), 2, "playing");
+
+        // Without events of its own, a waiting auto play idles.
+        let events = parse(&base);
+        assert_eq!(value(events.current(false, true)), 1);
     }
 
     // --- resolve_playback_outcome tests ---
@@ -3434,7 +3569,9 @@ mod test {
             std::fs::write(
                 song_dir.join("song.yaml"),
                 format!(
-                    "name: {name}\ntracks:\n  - name: t\n    file: t.wav\nloop_playback: {looping}\n"
+                    "name: {name}\ntracks:\n  - name: t\n    file: t.wav\nloop_playback: {looping}\n{}",
+                    // Only C has a grid: one measure is 2 s.
+                    if name == "C" { "tempo:\n  bpm: 120\n  time_signature: 4/4\n" } else { "" }
                 ),
             )?;
         }
@@ -3546,6 +3683,279 @@ mod test {
         assert!(player.start_fade.lock().is_none());
         playing_eventually(&player, "C").await?;
         player.stop().await;
+        Ok(())
+    }
+
+    /// Waits until the player has stopped, and checks it stays stopped, on
+    /// `name`: nothing started after it.
+    async fn rests_stopped_on(player: &Arc<Player>, name: &str) {
+        eventually_async(
+            || async { !player.is_playing().await },
+            "the player never stopped",
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!player.is_playing().await, "nothing starts after it");
+        assert_eq!(current_name(player).await, name, "the playlist stays put");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_ends_a_looping_song_over_its_fade_out() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 2s\n- C\n").await?;
+        let stopped = player.stop().await.map(|s| s.name().to_string());
+        assert_eq!(stopped.as_deref(), Some("B"));
+        // B fades out on its entry's setting, as a loop break's would.
+        let fade = player.break_fade.lock().clone().expect("a fade");
+        assert_eq!(fade.length, Duration::from_secs(2));
+        let (song, remaining) = player.ending_status().expect("ending");
+        assert_eq!(song, "B");
+        assert!(remaining <= Duration::from_secs(2), "{remaining:?}");
+        rests_stopped_on(&player, "B").await;
+        assert!(player.ending_status().is_some(), "still fading");
+        assert!(player.elapsed().await?.is_none(), "stopped as by a stop");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_counts_measures_on_the_next_songs_grid() -> Result<(), Box<dyn Error>> {
+        // #569: B has no grid of its own, so a fade in measures cut.
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 1measure\n- C\n").await?;
+        player.stop().await;
+        let fade = player.break_fade.lock().clone().expect("a fade");
+        assert_eq!(fade.length, Duration::from_secs(2));
+        assert!(player.ending_status().is_some());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_second_stop_cuts_the_ending() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 10s\n- C\n").await?;
+        player.stop().await;
+        assert!(player.ending_status().is_some());
+        // At once, whether or not the playback has wound down yet.
+        player.stop().await;
+        assert!(player.ending_status().is_none(), "cut");
+        assert!(player.break_fade.lock().is_none(), "cut");
+        assert!(!player.is_playing().await);
+        rests_stopped_on(&player, "B").await;
+
+        // And once it has.
+        player.play().await?;
+        playing_eventually(&player, "B").await?;
+        player.stop().await;
+        rests_stopped_on(&player, "B").await;
+        assert!(player.ending_status().is_some());
+        player.stop().await;
+        assert!(player.ending_status().is_none(), "cut");
+        assert!(player.break_fade.lock().is_none(), "cut");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_ending_is_over_when_its_fade_is() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 300ms\n- C\n").await?;
+        player.stop().await;
+        assert!(player.ending_status().is_some());
+        eventually(
+            || player.ending_status().is_none(),
+            "the ending never ended",
+        );
+        rests_stopped_on(&player, "B").await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn play_during_an_ending_starts_the_song_again() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 10s\n- C\n").await?;
+        player.stop().await;
+        eventually_async(
+            || async { !player.is_playing().await },
+            "the player never stopped",
+        )
+        .await;
+        // As on a stopped player: the playlist's song, the fade under it.
+        player.play().await?;
+        playing_eventually(&player, "B").await?;
+        assert!(player.ending_status().is_none(), "no longer ending");
+        assert!(player.break_fade.lock().is_some(), "fading on under it");
+        player.stop().await;
+        player.stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_cuts_a_looping_song_without_a_fade_out() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) = player_looping_b().await?;
+        player.stop().await;
+        assert!(!player.is_playing().await, "at once");
+        assert!(player.ending_status().is_none());
+        assert!(player.break_fade.lock().is_none());
+        rests_stopped_on(&player, "B").await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_cuts_a_song_that_does_not_loop() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) = player_looping_b_with(
+            "songs:\n- song: A\n  fade_out: 2s\n- song: B\n  fade_out: 2s\n- C\n",
+        )
+        .await?;
+        player.stop().await;
+        player.stop().await;
+        player.get_playlist().navigate_to("A");
+        player.play().await?;
+        playing_eventually(&player, "A").await?;
+        player.stop().await;
+        assert!(!player.is_playing().await, "at once");
+        assert!(player.ending_status().is_none());
+        assert!(player.break_fade.lock().is_none());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn next_on_the_last_looping_song_ends_it() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 2s\n").await?;
+        let at = player.next().await.map(|s| s.name().to_string());
+        assert_eq!(at.as_deref(), Some("B"), "where the playlist stays");
+        let fade = player.break_fade.lock().clone().expect("a fade");
+        assert_eq!(fade.length, Duration::from_secs(2));
+        assert!(player.ending_status().is_some());
+        // Rather than starting B over.
+        rests_stopped_on(&player, "B").await;
+
+        // Without a fade_out, it stops at once.
+        let (player, _dir) = player_looping_b_with("songs:\n- A\n- B\n").await?;
+        player.next().await;
+        assert!(!player.is_playing().await, "at once");
+        assert!(player.ending_status().is_none());
+        rests_stopped_on(&player, "B").await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn previous_on_the_first_looping_song_ends_it() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- song: B\n  fade_out: 2s\n- C\n").await?;
+        let at = player.prev().await.map(|s| s.name().to_string());
+        assert_eq!(at.as_deref(), Some("B"));
+        assert!(player.ending_status().is_some());
+        rests_stopped_on(&player, "B").await;
+        Ok(())
+    }
+
+    /// A player on a looping Vamp whose entry fades out over 3s, red under
+    /// a blue ambient light with `delay`, the ambient up at startup.
+    async fn ending_ambient_player(
+        delay: &str,
+    ) -> Result<(tempfile::TempDir, Arc<Player>), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let song_dir = dir.path().join("songs").join("vamp");
+        fs::create_dir_all(&song_dir)?;
+        fs::copy("assets/20-sec-long.wav", song_dir.join("track.wav"))?;
+        let wash = |color: &str| {
+            format!(
+                "show \"s\" {{\n    @0.000\n    wash: static, color: \"{color}\", duration: 30s\n}}\n"
+            )
+        };
+        fs::write(song_dir.join("show.light"), wash("red"))?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            "name: Vamp\ntracks:\n- name: track\n  file: track.wav\n  file_channel: 1\nlighting:\n- file: show.light\nloop_playback: true\n",
+        )?;
+        let ambient_show = dir.path().join("ambient.light");
+        fs::write(&ambient_show, wash("blue"))?;
+        let groups = HashMap::from([(
+            "wash".to_string(),
+            config::lighting::LogicalGroup::new("wash".to_string(), vec![]),
+        )]);
+        let lighting = config::Lighting::new(None, Some(groups), None).with_ambient(Some(
+            config::ambient::Ambient::new(
+                Some(ambient_show.display().to_string()),
+                Some(delay.to_string()),
+                None,
+                None,
+            ),
+        ));
+        let dmx = config::Dmx::new(
+            None,
+            None,
+            Some(9090),
+            vec![config::Universe::new(1, "test".to_string())],
+            Some(lighting),
+        );
+        let songs = songs::get_all_songs(&dir.path().join("songs"))?;
+        assert!(songs.failures().is_empty(), "{:?}", songs.failures());
+        let config: config::Playlist = ::config::Config::builder()
+            .add_source(::config::File::from_str(
+                "songs:\n- song: Vamp\n  fade_out: 3s\n",
+                ::config::FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        let playlist = Playlist::new("playlist", &config, songs.clone())?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                Some(dmx),
+                HashMap::new(),
+                "songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        Ok((dir, player))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ambient_light_counts_its_delay_from_the_start_of_an_ending(
+    ) -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = ending_ambient_player("500ms").await?;
+        let engine = player.dmx_engine().expect("DMX engine should be present");
+        let state = || engine.ambient_status().map(|s| s.state);
+        eventually(|| state() == Some("playing"), "ambient at startup");
+        player.play().await?;
+        playing_eventually(&player, "Vamp").await?;
+        eventually(|| state().is_none(), "ambient leaves for the song");
+
+        // Ambient's delay counts from the Stop, not from the end of the fade,
+        // so it comes in over the fade's tail rather than after a dark gap.
+        player.stop().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!player.is_playing().await);
+        assert_eq!(state(), Some("pending"), "ambient waits out its delay");
+        eventually(|| state() == Some("playing"), "ambient during the ending");
+        assert!(player.ending_status().is_some(), "the fade still runs");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cut_ending_brings_ambient_in_at_once() -> Result<(), Box<dyn Error>> {
+        // A second Stop is "now": ambient doesn't wait out the rest of its
+        // delay over lights hurrying to dark, which left a dark gap.
+        let (_dir, player) = ending_ambient_player("30s").await?;
+        let engine = player.dmx_engine().expect("DMX engine should be present");
+        let state = || engine.ambient_status().map(|s| s.state);
+        eventually(|| state() == Some("playing"), "ambient at startup");
+        player.play().await?;
+        playing_eventually(&player, "Vamp").await?;
+        eventually(|| state().is_none(), "ambient leaves for the song");
+
+        player.stop().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(state(), Some("pending"), "ambient waits out its delay");
+        player.stop().await;
+        assert!(player.ending_status().is_none(), "the cut ends the ending");
+        eventually(|| state() == Some("playing"), "ambient at the cut");
         Ok(())
     }
 

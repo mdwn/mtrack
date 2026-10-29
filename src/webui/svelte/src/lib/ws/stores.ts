@@ -75,6 +75,26 @@ export interface ReactiveLoopState {
   section_name?: string;
 }
 
+/** A transition's fade as configured: `exclude` and `lights` null for the
+ *  defaults. */
+export interface FadeInfo {
+  length: string;
+  curve: "equal_power" | "linear";
+  exclude: string[] | null;
+  lights: string | null;
+}
+
+/** The song after the current one. A looping song that is playing goes on
+ *  only by a loop break, with the playlist's fades; otherwise the next song
+ *  starts by itself after `auto_play_ms`, or (null) waits for Play. */
+export interface NextUp {
+  song: string | null;
+  breaks_loop?: boolean;
+  fade_out?: FadeInfo | null;
+  fade_in?: FadeInfo | null;
+  auto_play_ms?: number | null;
+}
+
 export interface PlaybackState {
   is_playing: boolean;
   elapsed_ms: number;
@@ -102,13 +122,27 @@ export interface PlaybackState {
   /** A song about to start by itself, its playlist entry's auto-play gap
    *  running. */
   auto_play?: { song: string; starts_in_ms: number } | null;
-  /** The show the rig plays while no song is, when one is playing or about
-   *  to (`pending`, waiting out its delay). */
-  ambient?: { show: string; state: "pending" | "playing" } | null;
+  /** A looping song fading out after a stop, with nothing after it; a
+   *  second stop cuts it. */
+  ending?: { song: string; remaining_ms: number } | null;
+  /** The show the rig plays while no song is: its mode, its show (null for
+   *  none) and what it is doing (`pending` while its delay runs;
+   *  `unavailable` when on with no show to play). Null without DMX. */
+  ambient?: {
+    mode: AmbientMode;
+    show: string | null;
+    state: "pending" | "playing" | "off" | "unavailable";
+  } | null;
+  /** What comes after the current song and how it arrives; `song` is null
+   *  at the end of the playlist. */
+  next?: NextUp | null;
   /** performance.now() when this frame was received; lets consumers
    *  extrapolate elapsed_ms smoothly between the 5Hz frames. */
   received_at: number;
 }
+
+/** Ambient light's mode: between songs, held on, or none. */
+export type AmbientMode = "auto" | "on" | "off";
 
 export interface FixtureChannels {
   [channel: string]: number;
@@ -204,7 +238,9 @@ export const playbackStore = writable<PlaybackState>({
   pilot_hints: [],
   tempo: null,
   auto_play: null,
+  ending: null,
   ambient: null,
+  next: null,
   received_at: 0,
 });
 
@@ -275,7 +311,9 @@ on("playback", (msg) => {
     pilot_hints: m.pilot_hints ?? [],
     tempo: m.tempo ?? null,
     auto_play: m.auto_play ?? null,
+    ending: m.ending ?? null,
     ambient: m.ambient ?? null,
+    next: m.next ?? null,
     received_at: performance.now(),
   });
 });

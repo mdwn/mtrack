@@ -189,6 +189,17 @@ pub struct EntryTransitions {
     pub auto_play: Option<std::time::Duration>,
 }
 
+/// An entry's fades as written, for an editor that sets them per entry:
+/// `None` for none.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EntryFades {
+    #[serde(default)]
+    pub fade_out: Option<FadeConfig>,
+    #[serde(default)]
+    pub fade_in: Option<FadeConfig>,
+}
+
 /// A fade as written in a playlist: a length alone, or with its settings.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
@@ -347,6 +358,23 @@ impl FadeConfig {
     }
 }
 
+impl Fade {
+    /// The fade as configured, for status reports: a `null` `exclude` is the
+    /// default (a fade-out's `loop_crossfade_cut`, a fade-in's none), as is a
+    /// `null` `lights` (the length).
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "length": self.length.to_string(),
+            "curve": match self.curve {
+                FadeCurve::EqualPower => "equal_power",
+                FadeCurve::Linear => "linear",
+            },
+            "exclude": self.exclude,
+            "lights": self.lights.map(|l| l.to_string()),
+        })
+    }
+}
+
 /// A fade's length: as a loop crossfade, or zero for none.
 fn parse_length(field: &str, value: &str) -> Result<LoopCrossfade, String> {
     if value.trim().trim_end_matches(['m', 's']).trim() == "0" {
@@ -439,14 +467,49 @@ impl Playlist {
         }
     }
 
+    /// Each entry's fades as written, in order.
+    pub fn entry_fades(&self) -> Vec<EntryFades> {
+        self.songs
+            .iter()
+            .map(|entry| match entry {
+                PlaylistEntry::Song(_) => EntryFades::default(),
+                PlaylistEntry::Configured(entry) => EntryFades {
+                    fade_out: entry.fade_out.clone(),
+                    fade_in: entry.fade_in.clone(),
+                },
+            })
+            .collect()
+    }
+
     /// This playlist with each entry's `auto_play` set from `auto_play`, in
     /// entry order, for an editor that sets it per entry. An entry left with
     /// no settings is written as its name alone.
-    pub fn with_auto_play(mut self, auto_play: &[Option<AutoPlayConfig>]) -> Playlist {
-        for (entry, auto_play) in self.songs.iter_mut().zip(auto_play) {
-            let auto_play = auto_play
+    pub fn with_auto_play(self, auto_play: &[Option<AutoPlayConfig>]) -> Playlist {
+        self.edit_entries(auto_play, |configured, auto_play| {
+            configured.auto_play = auto_play
                 .clone()
                 .filter(|a| *a != AutoPlayConfig::On(false));
+        })
+    }
+
+    /// This playlist with each entry's `fade_out` and `fade_in` set from
+    /// `fades`, in entry order, as [`Playlist::with_auto_play`] sets auto
+    /// play.
+    pub fn with_fades(self, fades: &[EntryFades]) -> Playlist {
+        self.edit_entries(fades, |configured, fades| {
+            configured.fade_out = fades.fade_out.clone();
+            configured.fade_in = fades.fade_in.clone();
+        })
+    }
+
+    /// Applies `edit` to each entry with its value from `values`, in order,
+    /// writing an entry left with no settings as its name alone.
+    fn edit_entries<T>(
+        mut self,
+        values: &[T],
+        edit: impl Fn(&mut ConfiguredEntry, &T),
+    ) -> Playlist {
+        for (entry, value) in self.songs.iter_mut().zip(values) {
             let mut configured = match std::mem::replace(entry, PlaylistEntry::Song(String::new()))
             {
                 PlaylistEntry::Song(song) => ConfiguredEntry {
@@ -457,7 +520,7 @@ impl Playlist {
                 },
                 PlaylistEntry::Configured(configured) => configured,
             };
-            configured.auto_play = auto_play;
+            edit(&mut configured, value);
             *entry = if configured.fade_out.is_none()
                 && configured.fade_in.is_none()
                 && configured.auto_play.is_none()
@@ -679,6 +742,41 @@ songs:
         let zero = LoopCrossfade::Time(std::time::Duration::ZERO);
         assert_eq!(t[0].fade_out.as_ref().unwrap().length, zero);
         assert_eq!(t[1].fade_out.as_ref().unwrap().lights, Some(zero));
+    }
+
+    #[test]
+    fn with_fades_sets_each_entrys_and_leaves_bare_names_bare() {
+        let p = parse("songs:\n  - song: A\n    fade_in: 1s\n    auto_play: true\n  - song: B\n    fade_out: 2s\n  - C\n").unwrap();
+        let out = FadeConfig::Full {
+            length: "1measure".to_string(),
+            curve: Some("linear".to_string()),
+            exclude: Some(vec!["click".to_string()]),
+            lights: Some("0s".to_string()),
+        };
+        let q = p.with_fades(&[
+            EntryFades::default(),
+            EntryFades::default(),
+            EntryFades {
+                fade_out: Some(out.clone()),
+                fade_in: None,
+            },
+        ]);
+        // A keeps its auto play, B is left with nothing, C takes the fade.
+        assert_eq!(
+            q.entry_fades(),
+            vec![
+                EntryFades::default(),
+                EntryFades::default(),
+                EntryFades {
+                    fade_out: Some(out),
+                    fade_in: None
+                }
+            ]
+        );
+        assert!(matches!(q.entries()[0], PlaylistEntry::Configured(_)));
+        assert_eq!(q.entries()[1], PlaylistEntry::Song("B".to_string()));
+        let yaml = crate::util::to_yaml_string(&q).unwrap();
+        assert_eq!(parse(&yaml).unwrap(), q, "{yaml}");
     }
 
     #[test]

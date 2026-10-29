@@ -14,11 +14,12 @@
      * -->
 <script lang="ts">
   import { Code, ConnectError } from "@connectrpc/connect";
-  import { playbackStore } from "../../lib/ws/stores";
+  import { playbackStore, type AmbientMode } from "../../lib/ws/stores";
   import { playerClient } from "../../lib/grpc/client";
   import { sectionColor } from "../../lib/sectionColors";
   import BeatIndicator from "./BeatIndicator.svelte";
   import { formatMs } from "../../lib/util/format";
+  import { describeNext } from "../../lib/nextUp";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -90,6 +91,16 @@
       }
     } finally {
       loading = false;
+    }
+  }
+
+  // Ambient mode is a show control, like transport: open while locked.
+  async function setAmbientMode(mode: AmbientMode) {
+    try {
+      await playerClient.setAmbientMode({ mode });
+    } catch (e) {
+      console.error("set ambient mode failed:", e);
+      showError(get(t)("playback.error.ambientMode"));
     }
   }
 
@@ -203,9 +214,17 @@
     }));
   });
 
+  /** What comes after this song and how it will arrive. */
+  let nextUp = $derived(describeNext($playbackStore.next, $t));
+
   /** Whole seconds until an auto-play song starts, rounded up. */
   let autoPlaySeconds = $derived(
     Math.ceil(($playbackStore.auto_play?.starts_in_ms ?? 0) / 1000),
+  );
+
+  /** Whole seconds until an ending song's fade is over, rounded up. */
+  let endingSeconds = $derived(
+    Math.ceil(($playbackStore.ending?.remaining_ms ?? 0) / 1000),
   );
 
   let pendingStartPct = $derived(
@@ -405,15 +424,38 @@
       {#if $playbackStore.looping}
         <span class="badge badge--ctrl">LOOP</span>
       {/if}
-      {#if $playbackStore.ambient}
+      {#if $playbackStore.ambient && $playbackStore.ambient.state !== "off"}
         <span
           class="badge"
           data-testid="ambient-badge"
-          title={$playbackStore.ambient.show}
+          title={$playbackStore.ambient.show ?? ""}
           >{$playbackStore.ambient.state === "playing"
             ? $t("playback.ambientPlaying")
-            : $t("playback.ambientPending")}</span
+            : $playbackStore.ambient.state === "pending"
+              ? $t("playback.ambientPending")
+              : $t("playback.ambientUnavailable")}</span
         >
+      {/if}
+      {#if $playbackStore.ambient}
+        <div
+          class="playback-card__ambient-mode"
+          role="group"
+          aria-label={$t("playback.ambientMode")}
+          title={$t("playback.ambientModeHint")}
+          data-testid="ambient-mode"
+        >
+          {#each ["auto", "on", "off"] as const as mode (mode)}
+            <button
+              type="button"
+              class="playback-card__ambient-btn"
+              class:active={$playbackStore.ambient.mode === mode}
+              aria-pressed={$playbackStore.ambient.mode === mode}
+              data-testid={`ambient-mode-${mode}`}
+              onclick={() => setAmbientMode(mode)}
+              >{$t(`playback.ambientModes.${mode}`)}</button
+            >
+          {/each}
+        </div>
       {/if}
     </div>
 
@@ -441,6 +483,24 @@
       </div>
     {/if}
 
+    {#if !$playbackStore.is_playing && $playbackStore.ending}
+      <div
+        class="playback-card__auto-play"
+        role="status"
+        data-testid="ending-fade"
+      >
+        {$t("playback.endingFade", {
+          values: {
+            song: $playbackStore.ending.song,
+            seconds: endingSeconds,
+          },
+        })}
+        <span class="playback-card__auto-play-hint"
+          >{$t("playback.endingCutHint")}</span
+        >
+      </div>
+    {/if}
+
     <div class="playback-card__head">
       <div class="playback-card__heading">
         <h2 class="playback-card__title">
@@ -459,6 +519,11 @@
           {/if}
           <BeatIndicator />
         </div>
+        {#if nextUp}
+          <div class="playback-card__next" data-testid="next-up">
+            {nextUp}
+          </div>
+        {/if}
       </div>
       <div class="playback-card__transport">
         <button
@@ -477,7 +542,10 @@
         <button
           class="btn-icon-circle"
           onclick={stop}
-          disabled={loading || !$playbackStore.is_playing}
+          disabled={loading ||
+            (!$playbackStore.is_playing &&
+              !$playbackStore.ending &&
+              !$playbackStore.auto_play)}
           title={$t("playback.stopTooltip")}
           aria-label={$t("playback.stop")}
         >
@@ -707,9 +775,42 @@
   :global(.nc--dark) .playback-card__auto-play {
     color: var(--nc-cyan-300);
   }
+  .playback-card__next {
+    margin-top: 4px;
+    font-size: 13px;
+    color: var(--nc-fg-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .playback-card__auto-play-hint {
     margin-left: 8px;
     color: var(--nc-fg-3);
+  }
+  .playback-card__ambient-mode {
+    display: inline-flex;
+    border: 1px solid var(--nc-border-2);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .playback-card__ambient-btn {
+    border: none;
+    background: var(--card-bg);
+    color: var(--nc-fg-3);
+    font-family: var(--nc-font-sans);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 4px 8px;
+    cursor: pointer;
+  }
+  .playback-card__ambient-btn + .playback-card__ambient-btn {
+    border-left: 1px solid var(--nc-border-2);
+  }
+  .playback-card__ambient-btn.active {
+    background: var(--nc-cyan-600);
+    color: var(--card-bg);
   }
   :global(.nc--dark) .playback-card__state--playing {
     color: var(--nc-pink-300);

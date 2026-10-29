@@ -29,6 +29,10 @@ pub struct StatusEvents {
     idling_events: Vec<midi::Event>,
     /// The events to emit to indicate that the player is currently playing.
     playing_events: Vec<midi::Event>,
+    /// The events to emit, in place of the idling events, while an auto
+    /// play waits to start its song. None configured: the idling events.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    auto_play_events: Vec<midi::Event>,
 }
 
 impl StatusEvents {
@@ -51,6 +55,14 @@ impl StatusEvents {
     /// Gets the playing events.
     pub fn playing_events(&self) -> Result<Vec<LiveEvent<'static>>, Box<dyn Error>> {
         self.playing_events
+            .iter()
+            .map(|event| event.to_midi_event())
+            .collect()
+    }
+
+    /// Gets the auto play events.
+    pub fn auto_play_events(&self) -> Result<Vec<LiveEvent<'static>>, Box<dyn Error>> {
+        self.auto_play_events
             .iter()
             .map(|event| event.to_midi_event())
             .collect()
@@ -154,6 +166,25 @@ mod tests {
             "#,
         );
         assert_eq!(se.off_events().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn auto_play_events_are_optional() {
+        let se = make_status_events(
+            r#"
+            off_events: []
+            idling_events: []
+            playing_events: []
+            auto_play_events:
+              - type: control_change
+                channel: 16
+                controller: 2
+                value: 64
+            "#,
+        );
+        assert_eq!(se.auto_play_events().unwrap().len(), 1);
+        let se = make_status_events("off_events: []\nidling_events: []\nplaying_events: []\n");
+        assert!(se.auto_play_events().unwrap().is_empty());
     }
 
     #[test]

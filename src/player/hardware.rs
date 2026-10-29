@@ -100,7 +100,7 @@ impl Player {
     /// written to `HardwareState` as they become available, so playback can
     /// use whatever hardware is ready. Respects dependency ordering:
     ///   Phase 1: Audio + DMX (parallel)
-    ///   Phase 2: MIDI (needs DMX), Sample engine (needs Audio) — parallel
+    ///   Phase 2: MIDI, Sample engine (needs Audio) — parallel
     ///   Phase 3: Trigger engine (needs Sample engine), status reporting
     /// `cancel` is captured by the *spawner*, not read here.
     ///
@@ -278,17 +278,15 @@ impl Player {
             return;
         }
 
-        // Phase 2: MIDI (needs DMX) + Sample engine (needs Audio) — parallel.
+        // Phase 2: MIDI + Sample engine (needs Audio) — parallel.
         let midi_config = profile.midi().cloned();
         let cancel3 = cancel.clone();
-        let dmx_engine_for_midi = dmx_result.clone();
 
         let (midi_result, sample_engine) = tokio::join!(
             async {
                 if let Some(midi_config) = midi_config {
                     let outcome = Self::retry_until_ready("midi device", cancel3, move || {
-                        midi::get_device(Some(midi_config.clone()), dmx_engine_for_midi.clone())
-                            .map_err(|e| e.to_string())
+                        midi::get_device(Some(midi_config.clone())).map_err(|e| e.to_string())
                     })
                     .await;
                     self.record_init_outcome("midi", outcome, &cancel).flatten()
@@ -861,6 +859,7 @@ impl Player {
             }
         };
         let join = self.join.clone();
+        let auto_play = self.auto_play.clone();
 
         // This thread will run until the process is terminated.
         let _join_handle = tokio::spawn(async move {
@@ -868,17 +867,11 @@ impl Player {
                 {
                     let join = join.lock().await;
 
-                    let emit_result: Result<(), Box<dyn Error>> = if join.is_none() {
-                        status_events
-                            .idling_events
-                            .iter()
-                            .try_for_each(|event| midi_device.emit(Some(*event)))
-                    } else {
-                        status_events
-                            .playing_events
-                            .iter()
-                            .try_for_each(|event| midi_device.emit(Some(*event)))
-                    };
+                    let auto_play_waiting = auto_play.lock().waiting.is_some();
+                    let emit_result: Result<(), Box<dyn Error>> = status_events
+                        .current(join.is_some(), auto_play_waiting)
+                        .iter()
+                        .try_for_each(|event| midi_device.emit(Some(*event)));
 
                     if let Err(err) = emit_result {
                         error!(err = err.as_ref(), "error emitting status event")

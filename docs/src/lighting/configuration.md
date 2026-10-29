@@ -940,6 +940,37 @@ plays. The show is read each time the player goes idle, so an edit to it is pick
 A show that does not read or names a group the profile does not have is reported in the log,
 and nothing plays. The MCP `status` tool reports what is playing as `ambient`.
 
+### Ambient mode
+
+The operator can take ambient light in hand while the player runs, with its **mode**:
+
+| Mode | What it does |
+|------|--------------|
+| `auto` | The usual: ambient between songs, as above. |
+| `on` | Ambient fades in now, over `fade_in`, with no `delay`, and holds until the mode is `auto` again -- over a song's own lights too. House light for a talk to the audience, mid-set. |
+| `off` | No ambient. Ambient playing fades out over `fade_out`, to dark between songs. Songs light as ever. |
+
+- **On over a song.** A song with lights that is playing, or starts, while the mode is `on`
+  shows ambient, not its show. Its show runs on underneath, so going back to `auto` mid-song
+  crosses back to the song where it has got to, over `fade_out`. A pause holds whichever is
+  showing.
+- **Off between songs.** The stage goes dark once ambient has faded out, and stays dark until a
+  song plays or the mode changes. A song that ends or is stopped while the mode is `off` fades
+  to dark over `fade_out` (1 s with no ambient light configured); a looping song ending over its
+  playlist `fade_out` goes dark over that fade instead.
+- **Back to auto.** Between songs, ambient fades in at once; during a song with lights, it
+  waits for the song to end.
+- **No show.** With no ambient light configured, or a show that does not load, `on` lights
+  nothing; status says so (`unavailable`) rather than refusing.
+- The mode is not saved: the player starts in `auto`.
+
+The mode is set from the dashboard's playback card (**Auto / On / Off**, open while the player
+is locked, like the transport), the gRPC `SetAmbientMode` RPC, the OSC addresses
+`/mtrack/ambient/on`, `/mtrack/ambient/off` and `/mtrack/ambient/auto`, a MIDI controller's
+`ambient_on`, `ambient_off` and `ambient_auto` events, or the MCP `set_ambient_mode` tool. See
+[OSC](../interfaces/osc.md), [gRPC](../interfaces/grpc.md), [MCP](../interfaces/mcp.md) and
+[Hardware Profiles](../configuration/hardware-profiles.md).
+
 ## Lint warnings
 
 Syntax is only the first check. A show can be legal DSL and still do nothing on the rig, so

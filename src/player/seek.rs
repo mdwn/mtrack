@@ -64,6 +64,12 @@ impl Player {
             .into());
         }
 
+        // A looping song ending: stopped a moment from now, and nothing to
+        // restart.
+        if join.is_some() && self.loop_end.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Cannot seek: the song is ending".into());
+        }
+
         let handles = match join.take() {
             None => {
                 // Not playing: remember the position for the next play().
@@ -88,7 +94,7 @@ impl Player {
         // when cancelled, so this ordering keeps it from writing the pre-seek
         // position back after we clear it.
         self.fade_out_current_audio();
-        self.cut_break_fade();
+        self.cut_break_fade(false);
         {
             let mut play_start_time = self.play_start_time.lock().await;
             handles.cancel.cancel();

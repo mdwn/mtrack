@@ -46,7 +46,7 @@ mod playback;
 mod test_output;
 mod timeline;
 
-pub use ambient::AmbientStatus;
+pub use ambient::{AmbientMode, AmbientReport, AmbientStatus};
 pub use test_output::{TestOutput, TestOutputStatus, EXPIRY_ENV, TEST_OUTPUT_EXPIRY};
 
 /// The result of classifying a MIDI message for DMX purposes.
@@ -162,6 +162,9 @@ pub struct Engine {
     base_path: Option<std::path::PathBuf>,
     /// The show the rig plays while no song is (see `ambient`).
     ambient: Mutex<ambient::AmbientState>,
+    /// Ambient light playing or fading, over the main engine. Locked after
+    /// `effect_engine` and `outgoing_pass`, never before.
+    ambient_overlay: Mutex<Option<ambient::Overlay>>,
 }
 
 /// A MIDI DMX light show being played back from the effects loop.
@@ -282,6 +285,7 @@ impl Engine {
             test_expiry: test_output::expiry_from_env(),
             base_path: base_path.map(std::path::Path::to_path_buf),
             ambient: Mutex::new(ambient::AmbientState::default()),
+            ambient_overlay: Mutex::new(None),
         })
     }
 
@@ -434,15 +438,8 @@ impl Engine {
         self.universes.get(&universe_id)
     }
 
-    /// Handles an incoming MIDI event (by universe name).
-    pub fn handle_midi_event(&self, universe_name: String, midi_message: midly::MidiMessage) {
-        if let Some(&universe_id) = self.universe_name_to_id.get(&universe_name) {
-            self.handle_midi_event_by_id(universe_id, midi_message);
-        }
-    }
-
-    /// Handles an incoming MIDI event (by universe ID).
-    /// Avoids the name→ID HashMap lookup when the caller already knows the ID.
+    /// Handles a MIDI event from a MIDI DMX light show, applying it to the
+    /// given universe.
     fn handle_midi_event_by_id(&self, universe_id: u16, midi_message: midly::MidiMessage) {
         match classify_midi_dmx_action(midi_message, self.dimming_speed_modifier) {
             MidiDmxAction::KeyVelocity { channel, value } => {
@@ -555,6 +552,20 @@ impl Engine {
                 None => std::borrow::Cow::Borrowed(effect_engine.update(dt, Some(song_time))?),
             };
         drop(outgoing);
+
+        // Ambient light crosses over it at its level: over a song's show
+        // with ambient on, or over the last song's frame as it fades in.
+        let has_ambient = self.ambient_overlay.lock().is_some();
+        let ambient_frame;
+        let commands: &[crate::lighting::effects::DmxCommand] = if has_ambient {
+            let under = commands.into_owned();
+            ambient_frame = self
+                .render_ambient(&mut effect_engine, dt, &under)?
+                .unwrap_or(under);
+            &ambient_frame
+        } else {
+            &commands
+        };
 
         // Group commands by universe
         let mut universe_commands: std::collections::HashMap<u16, Vec<(u16, u8)>> =
@@ -680,6 +691,7 @@ impl Engine {
         self.midi_dmx_store.write().retain_channels(|_, _| false);
         effect_engine.replace_fixtures(Vec::new());
         effect_engine.set_focus_points(HashMap::new());
+        self.ambient_follows_rig(&effect_engine);
     }
 
     /// Registers all fixtures from the current venue (thread-safe version).
@@ -782,6 +794,8 @@ impl Engine {
                     })
                     .unwrap_or_default(),
             );
+            drop(midi_dmx_store);
+            self.ambient_follows_rig(&effect_engine);
         }
         Ok(())
     }
@@ -1513,7 +1527,7 @@ mod test {
     }
 
     #[test]
-    fn test_midi_to_dmx_channel_mapping() -> Result<(), Box<dyn Error>> {
+    fn test_midi_dmx_channel_mapping() -> Result<(), Box<dyn Error>> {
         let (engine, _cancel_handle) = create_engine()?;
 
         // Test that MIDI keys map to correct DMX channels
@@ -1522,8 +1536,8 @@ mod test {
         // and MIDI key 1 should map to DMX channel 2 (array index 1), etc.
 
         // Test NoteOn: MIDI key 0 should update DMX channel 1 (index 0)
-        engine.handle_midi_event(
-            "universe1".to_string(),
+        engine.handle_midi_event_by_id(
+            5,
             midly::MidiMessage::NoteOn {
                 key: 0.into(),
                 vel: 100.into(),
@@ -1537,8 +1551,8 @@ mod test {
         );
 
         // Test NoteOn: MIDI key 1 should update DMX channel 2 (index 1)
-        engine.handle_midi_event(
-            "universe1".to_string(),
+        engine.handle_midi_event_by_id(
+            5,
             midly::MidiMessage::NoteOn {
                 key: 1.into(),
                 vel: 50.into(),
@@ -1552,8 +1566,8 @@ mod test {
 
         // Test Controller: MIDI controller 2 should update DMX channel 3 (index 2)
         // Note: Controller values are multiplied by 2, so 100 * 2 = 200
-        engine.handle_midi_event(
-            "universe1".to_string(),
+        engine.handle_midi_event_by_id(
+            5,
             midly::MidiMessage::Controller {
                 controller: 2.into(),
                 value: 100.into(),
@@ -1567,8 +1581,8 @@ mod test {
 
         // Test Controller: MIDI controller 3 should update DMX channel 4 (index 3)
         // Note: Controller values are multiplied by 2, so 50 * 2 = 100
-        engine.handle_midi_event(
-            "universe1".to_string(),
+        engine.handle_midi_event_by_id(
+            5,
             midly::MidiMessage::Controller {
                 controller: 3.into(),
                 value: 50.into(),
@@ -1842,8 +1856,8 @@ mod test {
         }
 
         // Send a MIDI DMX NoteOn: key=0 → DMX channel 1 (dimmer), vel=127 → value=254
-        engine.handle_midi_event(
-            "universe1".to_string(),
+        engine.handle_midi_event_by_id(
+            5,
             midly::MidiMessage::NoteOn {
                 key: 0.into(),
                 vel: 127.into(),
@@ -1916,8 +1930,8 @@ mod test {
         }
 
         // Send a MIDI event to channel 10 (not mapped to any fixture)
-        engine.handle_midi_event(
-            "universe1".to_string(),
+        engine.handle_midi_event_by_id(
+            5,
             midly::MidiMessage::NoteOn {
                 key: 9.into(), // key+1=10
                 vel: 100.into(),
@@ -2528,34 +2542,15 @@ mod test {
         }
     }
 
-    mod handle_midi_event_routing_tests {
+    mod handle_midi_event_by_id_tests {
         use super::*;
-
-        #[test]
-        fn unknown_universe_name_is_ignored() -> Result<(), Box<dyn Error>> {
-            let (engine, _cancel_handle) = create_engine()?;
-
-            // Should not panic with unknown universe name
-            engine.handle_midi_event(
-                "nonexistent_universe".to_string(),
-                midly::MidiMessage::NoteOn {
-                    key: 0.into(),
-                    vel: 100.into(),
-                },
-            );
-
-            // Universe 5 should be unaffected
-            let universe = engine.get_universe(5).unwrap();
-            assert_eq!(universe.get_target_value(0), 0.0);
-            Ok(())
-        }
 
         #[test]
         fn note_off_updates_universe() -> Result<(), Box<dyn Error>> {
             let (engine, _cancel_handle) = create_engine()?;
 
-            engine.handle_midi_event(
-                "universe1".to_string(),
+            engine.handle_midi_event_by_id(
+                5,
                 midly::MidiMessage::NoteOff {
                     key: 5.into(),
                     vel: 50.into(),
