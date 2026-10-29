@@ -5195,6 +5195,121 @@ mod test {
             Ok(())
         }
 
+        /// A MIDI file that sets CC0 to 127 (DMX 1 to 254) at 0 and nothing
+        /// else on it, with one more CC at 8 s to keep the show running.
+        fn create_cc_held_midi_file(path: &std::path::Path) {
+            use midly::num::{u15, u28, u4, u7};
+            use midly::{Format, Header, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
+            let cc = |delta: u32, controller: u8, value: u8| TrackEvent {
+                delta: u28::new(delta),
+                kind: TrackEventKind::Midi {
+                    channel: u4::new(0),
+                    message: MidiMessage::Controller {
+                        controller: u7::new(controller),
+                        value: u7::new(value),
+                    },
+                },
+            };
+            let smf = Smf {
+                header: Header::new(Format::SingleTrack, Timing::Metrical(u15::new(480))),
+                tracks: vec![vec![
+                    cc(0, 0, 127),
+                    // 120 bpm at 480 ticks a beat: 960 ticks a second.
+                    cc(960 * 8, 9, 1),
+                    TrackEvent {
+                        delta: u28::new(0),
+                        kind: TrackEventKind::Meta(midly::MetaMessage::EndOfTrack),
+                    },
+                ]],
+            };
+            smf.save(path).unwrap();
+        }
+
+        #[test]
+        fn a_value_set_before_the_start_point_holds_after_it() -> Result<(), Box<dyn Error>> {
+            held_after_a_start_part_way(false)
+        }
+
+        #[test]
+        fn a_fixture_value_set_before_the_start_point_holds_after_it() -> Result<(), Box<dyn Error>>
+        {
+            held_after_a_start_part_way(true)
+        }
+
+        /// #583: a playback from 3 s skipped the CC at 0, and since #581
+        /// nothing held the channel, so it stayed dark. `fixture` patches
+        /// DMX 1 as a fixture's red, which MIDI drives through the store.
+        fn held_after_a_start_part_way(fixture: bool) -> Result<(), Box<dyn Error>> {
+            let (engine, cancel_handle) = create_engine()?;
+            if fixture {
+                {
+                    let mut store = engine.midi_dmx_store.write();
+                    store.register_slot(5, 1, "wash", "red");
+                    store.register_universe(5);
+                }
+                let mut main = engine.effect_engine.lock();
+                main.set_midi_dmx_store(engine.midi_dmx_store.clone());
+                main.register_fixture(crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    std::collections::HashMap::from([("red".to_string(), 1)]),
+                    None,
+                ));
+            }
+            Engine::start_persistent_effects_loop(engine.clone());
+
+            let tmp_dir = tempfile::tempdir()?;
+            create_cc_held_midi_file(&tmp_dir.path().join("light.mid"));
+            let song_config = crate::config::Song::new(
+                "MIDI DMX Held",
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightShow::new(
+                    "universe1".to_string(),
+                    "light.mid".to_string(),
+                    None,
+                )]),
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
+            let play = {
+                let engine = engine.clone();
+                let cancel_handle = cancel_handle.clone();
+                std::thread::spawn(move || {
+                    Engine::play(
+                        engine,
+                        song,
+                        crate::playsync::PlaybackSync {
+                            cancel_handle,
+                            ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                            clock,
+                            start_time: Duration::from_secs(3),
+                            loop_control: crate::playsync::LoopControl::new(),
+                        },
+                    )
+                    .map_err(|e| e.to_string())
+                })
+            };
+            ready_rx.recv_timeout(Duration::from_secs(5))?;
+            std::thread::sleep(Duration::from_millis(200));
+            let red = engine.get_universe(5).unwrap().get_target_value(0);
+            let through_store = engine.midi_dmx_store.read().has_active_slots();
+            cancel_handle.cancel();
+            play.join().unwrap()?;
+            assert_eq!(red, 254.0, "the CC at 0 was lost at a start from 3 s");
+            assert_eq!(through_store, fixture, "the store path is the fixture's");
+            Ok(())
+        }
+
         #[test]
         fn play_midi_dmx_song_matched_with_start_time() -> Result<(), Box<dyn Error>> {
             let (engine, cancel_handle) = create_engine()?;

@@ -205,6 +205,28 @@ impl MidiDmxStore {
         }
     }
 
+    /// The dim rate for a universe (ticks for a full transition), 1.0 --
+    /// instant -- for one never set.
+    pub fn dim_rate(&self, universe: u16) -> f64 {
+        self.dim_rates.get(&universe).map(load_f64).unwrap_or(1.0)
+    }
+
+    /// Puts a channel back where the MIDI writes before a playback's start
+    /// point left it: at `current`, still moving toward `target` by `rate`
+    /// a tick if a dim had not finished (#583). Counts as a MIDI write.
+    pub fn restore(&self, universe: u16, channel: u16, current: f64, target: f64, rate: f64) {
+        if let Some(&slot_index) = self.channel_to_slot.get(&(universe, channel)) {
+            let slot = &self.slots[slot_index];
+            store_f64(&slot.current, current);
+            store_f64(&slot.target, target);
+            store_f64(&slot.rate, rate);
+            slot.store_fade.store(false, Ordering::Release);
+            slot.writes.fetch_add(1, Ordering::SeqCst);
+            slot.active.store(true, Ordering::SeqCst);
+            self.generation.fetch_add(1, Ordering::Release);
+        }
+    }
+
     /// Interpolates all active slots one tick toward their targets.
     /// Called each frame from the effects loop (~44Hz).
     /// Returns true if any slot value actually changed this tick.

@@ -12,7 +12,121 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use super::Engine;
+use std::collections::{BTreeMap, HashSet};
+use std::time::Duration;
+
+use super::{classify_midi_dmx_action, Engine, MidiDmxAction};
+use crate::dmx::universe::TARGET_HZ;
+use crate::midi::playback::TimedMidiEvent;
+
+/// Where a channel MIDI DMX drove stands at a point in the song: at
+/// `current`, moving toward `target` by `rate` a tick (0 once there).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct MidiDmxChannelState {
+    pub(super) current: f64,
+    pub(super) target: f64,
+    pub(super) rate: f64,
+}
+
+/// A channel as the last write left it, `since` the time of that write.
+struct Written {
+    from: f64,
+    target: f64,
+    rate: f64,
+    since: Duration,
+}
+
+impl Written {
+    /// Where the channel has got to at `time`, dimming as the store and the
+    /// universe do: `rate` a tick, at TARGET_HZ, up to the target.
+    fn at(&self, time: Duration) -> f64 {
+        if self.rate == 0.0 {
+            return self.target;
+        }
+        let ticks = time.saturating_sub(self.since).as_secs_f64() * TARGET_HZ;
+        let value = self.from + self.rate * ticks;
+        if self.rate > 0.0 {
+            value.min(self.target)
+        } else {
+            value.max(self.target)
+        }
+    }
+}
+
+/// The state the MIDI DMX events before `until` leave each DMX channel in,
+/// replayed without their timing: a playback starting part way through a
+/// song skips them, and since nothing holds a channel no frame writes
+/// (#581), a look a MIDI show set once and held stayed dark after a seek
+/// (#583). Notes and CCs land with their values, a dim at the level it has
+/// reached by `until` and still on its way if it has not finished.
+/// `dim_rate` is the dim rate (ticks) the replay starts from; also returns
+/// the last dimming speed the events set, for the playback to carry on with.
+pub(super) fn replay_midi_dmx(
+    events: &[TimedMidiEvent],
+    midi_channels: &HashSet<u8>,
+    until: Duration,
+    dimming_speed_modifier: f64,
+    mut dim_rate: f64,
+) -> (BTreeMap<u16, MidiDmxChannelState>, Option<Duration>) {
+    let mut channels: BTreeMap<u16, Written> = BTreeMap::new();
+    let mut dimming = None;
+    for event in events.iter().take_while(|e| e.time < until) {
+        if !midi_channels.is_empty() && !midi_channels.contains(&event.channel) {
+            continue;
+        }
+        let (channel, value, dim) =
+            match classify_midi_dmx_action(event.message, dimming_speed_modifier) {
+                MidiDmxAction::KeyVelocity { channel, value } => (channel, value, true),
+                MidiDmxAction::Controller { channel, value } => (channel, value, false),
+                MidiDmxAction::Dimming { duration } => {
+                    dim_rate = if duration.is_zero() {
+                        1.0
+                    } else {
+                        duration.as_secs_f64() * TARGET_HZ
+                    };
+                    dimming = Some(duration);
+                    continue;
+                }
+                MidiDmxAction::Unrecognized => continue,
+            };
+        let from = channels.get(&channel).map_or(0.0, |w| w.at(event.time));
+        let target = f64::from(value);
+        let rate = if dim && dim_rate > f64::EPSILON {
+            (target - from) / dim_rate
+        } else {
+            0.0
+        };
+        channels.insert(
+            channel,
+            Written {
+                from,
+                target,
+                rate,
+                since: event.time,
+            },
+        );
+    }
+    let states = channels
+        .into_iter()
+        .map(|(channel, written)| {
+            let current = written.at(until);
+            let rate = if (current - written.target).abs() > f64::EPSILON {
+                written.rate
+            } else {
+                0.0
+            };
+            (
+                channel,
+                MidiDmxChannelState {
+                    current,
+                    target: written.target,
+                    rate,
+                },
+            )
+        })
+        .collect();
+    (states, dimming)
+}
 
 impl Engine {
     /// Advances all MIDI DMX playback cursors to the current song time,
@@ -37,9 +151,160 @@ impl Engine {
         }
     }
 
+    /// Puts a universe's MIDI DMX channels where the events before a
+    /// playback's start point left them (see [`replay_midi_dmx`]). Run once
+    /// the song start has cleared the store, before the playback's cursor
+    /// goes live.
+    pub(super) fn restore_midi_dmx(
+        &self,
+        universe_id: u16,
+        events: &[TimedMidiEvent],
+        midi_channels: &HashSet<u8>,
+        until: Duration,
+    ) {
+        if until.is_zero() {
+            return;
+        }
+        let dim_rate = self.midi_dmx_store.read().dim_rate(universe_id);
+        let (states, dimming) = replay_midi_dmx(
+            events,
+            midi_channels,
+            until,
+            self.dimming_speed_modifier,
+            dim_rate,
+        );
+        if let Some(duration) = dimming {
+            self.update_dimming_by_id(universe_id, duration);
+        }
+        let store = self.midi_dmx_store.read();
+        for (channel, state) in states {
+            if store.lookup(universe_id, channel).is_some() {
+                store.restore(
+                    universe_id,
+                    channel,
+                    state.current,
+                    state.target,
+                    state.rate,
+                );
+            } else if let Some(universe) = self.universes.get(&universe_id) {
+                universe.restore_channel_data(channel, state.current, state.target, state.rate);
+            }
+        }
+    }
+
     /// Returns true if all MIDI DMX playbacks have finished.
     pub(super) fn midi_dmx_playbacks_finished(&self) -> bool {
         let playbacks = self.midi_dmx_playbacks.lock();
         playbacks.iter().all(|p| p.cursor >= p.precomputed.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use midly::num::u7;
+    use midly::MidiMessage;
+
+    fn at(ms: u64, channel: u8, message: MidiMessage) -> TimedMidiEvent {
+        TimedMidiEvent {
+            time: Duration::from_millis(ms),
+            channel,
+            message,
+        }
+    }
+
+    fn cc(controller: u8, value: u8) -> MidiMessage {
+        MidiMessage::Controller {
+            controller: u7::new(controller),
+            value: u7::new(value),
+        }
+    }
+
+    fn note(key: u8, vel: u8) -> MidiMessage {
+        MidiMessage::NoteOn {
+            key: u7::new(key),
+            vel: u7::new(vel),
+        }
+    }
+
+    fn program(program: u8) -> MidiMessage {
+        MidiMessage::ProgramChange {
+            program: u7::new(program),
+        }
+    }
+
+    #[test]
+    fn values_before_the_start_land_and_later_ones_do_not() {
+        let events = [
+            at(0, 0, cc(0, 127)),
+            at(100, 0, note(1, 50)),
+            at(200, 0, cc(0, 10)),
+            at(5_000, 0, cc(2, 127)),
+        ];
+        let (states, dimming) =
+            replay_midi_dmx(&events, &HashSet::new(), Duration::from_secs(3), 1.0, 1.0);
+        let state = |c| states.get(&c).copied();
+        assert_eq!(state(1).map(|s| s.current), Some(20.0), "last CC wins");
+        assert_eq!(
+            state(2).map(|s| s.current),
+            Some(100.0),
+            "a note's velocity"
+        );
+        assert_eq!(state(3), None, "an event after the start");
+        assert_eq!(dimming, None);
+    }
+
+    #[test]
+    fn a_dim_under_way_comes_back_part_way_and_still_moving() {
+        // Dim over 2 s (program 2 at a 1 s modifier), up from 0 to 200 at
+        // 1 s; at 2 s it is half way there.
+        let events = [at(0, 0, program(2)), at(1_000, 0, note(0, 100))];
+        let (states, dimming) =
+            replay_midi_dmx(&events, &HashSet::new(), Duration::from_secs(2), 1.0, 1.0);
+        let state = states[&1];
+        assert!((state.current - 100.0).abs() < 1e-6, "{state:?}");
+        assert_eq!(state.target, 200.0);
+        assert!((state.rate - 200.0 / (2.0 * TARGET_HZ)).abs() < 1e-9);
+        assert_eq!(dimming, Some(Duration::from_secs(2)));
+
+        // Past its end, it is there and still.
+        let (states, _) =
+            replay_midi_dmx(&events, &HashSet::new(), Duration::from_secs(4), 1.0, 1.0);
+        assert_eq!(
+            states[&1],
+            MidiDmxChannelState {
+                current: 200.0,
+                target: 200.0,
+                rate: 0.0
+            }
+        );
+    }
+
+    #[test]
+    fn a_dim_starts_from_where_the_last_one_had_got_to() {
+        // Up to 200 over 2 s from 0, then at 1 s (100 reached) down to 0
+        // over the same 2 s: from 100, so it is at 50 at 2 s.
+        let events = [
+            at(0, 0, program(2)),
+            at(0, 0, note(0, 100)),
+            at(1_000, 0, note(0, 0)),
+        ];
+        let (states, _) =
+            replay_midi_dmx(&events, &HashSet::new(), Duration::from_secs(2), 1.0, 1.0);
+        assert!((states[&1].current - 50.0).abs() < 1e-6, "{:?}", states[&1]);
+    }
+
+    #[test]
+    fn only_the_shows_midi_channels_replay() {
+        let events = [at(0, 0, cc(0, 127)), at(0, 3, cc(1, 127))];
+        let (states, _) = replay_midi_dmx(
+            &events,
+            &HashSet::from([3]),
+            Duration::from_secs(1),
+            1.0,
+            1.0,
+        );
+        assert!(!states.contains_key(&1));
+        assert!(states.contains_key(&2));
     }
 }

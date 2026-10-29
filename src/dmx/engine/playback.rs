@@ -239,8 +239,12 @@ impl Engine {
                     None => continue,
                 };
                 let events = midi_sheet.precomputed.into_events();
-                // Seek cursor past start_time
-                let cursor = events.partition_point(|e| e.time < start_time);
+                // The events run on delayed song time, as the DSL timeline
+                // starts from: skip those before the start point, and put
+                // back the state they built up (#583).
+                let from = dmx_engine.to_delayed_song_time(start_time);
+                let cursor = events.partition_point(|e| e.time < from);
+                dmx_engine.restore_midi_dmx(universe_id, &events[..cursor], &midi_channels, from);
                 playbacks.push(MidiDmxPlayback {
                     precomputed: PrecomputedMidi::from_events(events),
                     cursor,

@@ -169,6 +169,25 @@ impl Universe {
                 });
     }
 
+    /// Puts a channel back where the MIDI writes before a playback's start
+    /// point left it: at `current`, still moving toward `target` by `rate`
+    /// a tick if a dim had not finished (#583). Takes the locks in the
+    /// universe thread's order (target, rates, current).
+    pub fn restore_channel_data(&self, channel: u16, current: f64, target: f64, rate: f64) {
+        let channel_index = usize::from(channel.max(1) - 1);
+        self.target.write()[channel_index] = target;
+        self.rates.write()[channel_index] = rate;
+        self.current.write()[channel_index] = current;
+        let _ =
+            self.max_channels
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current_channel| {
+                    if channel >= current_channel {
+                        return Some(channel + 1);
+                    }
+                    None
+                });
+    }
+
     /// Updates the universe with effect commands (bypasses dimming).
     /// Acquires locks once for the entire batch rather than per-command, and
     /// skips a channel already at the value (and not dimming toward
