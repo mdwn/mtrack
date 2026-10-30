@@ -538,6 +538,11 @@ pub struct Reopenable {
     /// opened afresh. Its lock also keeps a watch from starting or stopping
     /// midway through a reopen.
     watch: Mutex<Option<Sender<Vec<u8>>>>,
+    /// Held across a whole reopen: two at once would each stop the clock of
+    /// the device they found, and the second could stop the one the first
+    /// is replacing rather than the one it installs, leaving two clocks on
+    /// the port.
+    reopening: Mutex<()>,
 }
 
 impl Reopenable {
@@ -557,6 +562,7 @@ impl Reopenable {
             config,
             device: std::sync::RwLock::new(Arc::new(device)),
             watch: Mutex::new(None),
+            reopening: Mutex::new(()),
         }
     }
 
@@ -581,6 +587,7 @@ impl Reopenable {
         // stopping need not wait on it. Should the fresh device not open,
         // the reload opens one anew holding the same tempo
         // (`Device::held_tempo`).
+        let _reopening = self.reopening.lock().expect("unable to get lock");
         let current = self.current();
         current.stop_beat_clock();
         let held = current.held_tempo();
@@ -1142,12 +1149,14 @@ fn beat_clock_engine_loop(
         // note, holding the tempo across the wait rather than going silent for
         // however long the rest of the player takes to get ready. Cancel-aware,
         // so an early stop can't wedge the engine.
-        wait_for_start_holding_tempo(
+        let interrupted = wait_for_start_holding_tempo(
             sender,
             &play,
             held.map(|interval| hold_at(&mut hold, interval)),
+            rx,
+            &mut pending,
         );
-        if play.cancel.is_cancelled() {
+        if interrupted || play.cancel.is_cancelled() {
             continue;
         }
 
@@ -1353,21 +1362,35 @@ fn run_idle_until_command(
 fn wait_for_start_holding_tempo(
     sender: &mut dyn MidiSender,
     play: &BeatClockPlay,
-    hold: Option<&mut TempoHold>,
-) {
-    let Some(hold) = hold else {
-        play.clock.wait_for_start_or_cancel(&play.cancel);
-        return;
-    };
-
-    while !play
-        .clock
-        .wait_for_start_or_cancel_until(&play.cancel, hold.until_next())
-    {
-        if play.cancel.is_cancelled() {
-            return;
+    mut hold: Option<&mut TempoHold>,
+    rx: &mpsc::Receiver<BeatClockCommand>,
+    pending: &mut Option<BeatClockCommand>,
+) -> bool {
+    // A command arriving while the start is awaited gives the wait up for
+    // it, as one arriving mid-schedule does: a shutdown must not wait on a
+    // start that may never come -- stopping the clock for a reopen joins
+    // this thread -- and a newer song replaces this one.
+    const COMMAND_CHECK: Duration = Duration::from_millis(50);
+    loop {
+        let wait = hold
+            .as_ref()
+            .map_or(COMMAND_CHECK, |hold| hold.until_next().min(COMMAND_CHECK));
+        if play
+            .clock
+            .wait_for_start_or_cancel_until(&play.cancel, wait)
+        {
+            return false;
         }
-        hold.tick_if_due(sender);
+        if play.cancel.is_cancelled() {
+            return false;
+        }
+        if let Ok(command) = rx.try_recv() {
+            *pending = Some(command);
+            return true;
+        }
+        if let Some(hold) = hold.as_deref_mut() {
+            hold.tick_if_due(sender);
+        }
     }
 }
 
@@ -1776,9 +1799,9 @@ mod test {
     /// A device opened afresh started its beat clock knowing no tempo, so
     /// one free-running the tempo held between songs went silent until the
     /// next song. The fresh one is opened holding it.
-    /// REVIEW: the fresh device now starts its beat clock free-running the
-    /// held tempo, and it is opened while the old one's engine still runs:
-    /// for the rest of the reopen both send timing clocks to the same port.
+    /// The fresh device starts its beat clock free-running the held tempo,
+    /// so the old one's is stopped before it opens: both at once would send
+    /// timing clocks to the same port.
     #[test]
     fn reopen_stops_the_old_beat_clock_before_the_fresh_one_runs() {
         let (tx, rx) = mpsc::channel();
@@ -1805,9 +1828,8 @@ mod test {
         );
     }
 
-    /// REVIEW: on a fresh device that cannot take the watch over, the fresh
-    /// device (and its beat clock thread's join) is dropped with the watch
-    /// lock still held.
+    /// A fresh device that cannot take the watch over, and its beat clock
+    /// thread's join, are dropped outside the watch lock.
     #[test]
     fn a_refused_fresh_device_is_dropped_outside_the_watch_lock() {
         use crate::midi::Device as _;
@@ -1915,6 +1937,157 @@ mod test {
             Some(Some(Duration::from_millis(10))),
             "the fresh clock was handed the tempo from before the running schedule"
         );
+    }
+
+    /// Two reopens racing take turns, so the second stops the clock of the
+    /// device the first installs, not of the one the first replaced, and the
+    /// port never carries two clocks.
+    #[test]
+    fn racing_reopens_stop_the_clock_actually_replaced() {
+        let device = Arc::new(Reopenable::with_device(
+            config::Midi::new("test", None),
+            device_holding("old", Some(Duration::from_millis(20))),
+        ));
+        let (fresh1_tx, fresh1_rx) = mpsc::channel();
+        let (opening_tx, opening_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let first = std::thread::spawn({
+            let device = device.clone();
+            move || {
+                device
+                    .reopen_with(|held| {
+                        opening_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        let mut fresh = Device::new_default("fresh1".to_string());
+                        fresh.beat_clock_engine = Some(Arc::new(BeatClockEngine {
+                            tx: fresh1_tx,
+                            join: Mutex::new(None),
+                            tempo: Arc::new(Mutex::new(held)),
+                        }));
+                        Ok(fresh)
+                    })
+                    .unwrap();
+            }
+        });
+        // The first holds the watch lock, opening its fresh device.
+        opening_rx.recv().unwrap();
+        let second = std::thread::spawn({
+            let device = device.clone();
+            move || {
+                let mut fresh1_running = None;
+                device
+                    .reopen_with(|held| {
+                        fresh1_running = Some(!matches!(
+                            fresh1_rx.try_recv(),
+                            Ok(BeatClockCommand::Shutdown)
+                        ));
+                        Ok(device_holding("fresh2", held))
+                    })
+                    .unwrap();
+                fresh1_running
+            }
+        });
+        // Let the second reach the watch lock, then let the first finish.
+        std::thread::sleep(Duration::from_millis(100));
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
+        assert_eq!(
+            second.join().unwrap(),
+            Some(false),
+            "the second reopen opened its device while the first one's clock still ran"
+        );
+    }
+
+    /// A reopen that fails mid-schedule has stopped the old clock, and the
+    /// schedule has set its tempo by then: that, not the one before it, is
+    /// what the device the reload opens instead goes on with.
+    #[test]
+    fn the_fallback_tempo_is_read_after_the_old_clock_stops() {
+        use crate::midi::Device as _;
+        struct Null;
+        impl MidiSender for Null {
+            fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
+                Ok(())
+            }
+        }
+        let (tx, rx) = mpsc::channel();
+        let tempo = Arc::new(Mutex::new(Some(Duration::from_millis(20))));
+        let engine_tempo = tempo.clone();
+        let join = std::thread::spawn(move || {
+            beat_clock_engine_loop(&mut Null, true, &engine_tempo, &rx);
+        });
+        let clock = PlaybackClock::wall();
+        clock.start();
+        let ticks: Vec<Duration> = (0..1000).map(|i| Duration::from_millis(10 * i)).collect();
+        tx.send(BeatClockCommand::Play(BeatClockPlay {
+            ticks: Arc::new(ticks),
+            start_time: Duration::ZERO,
+            playback_delay: Duration::ZERO,
+            cancel: CancelHandle::new(),
+            clock,
+        }))
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let mut old = Device::new_default("test".to_string());
+        old.beat_clock_engine = Some(Arc::new(BeatClockEngine {
+            tx,
+            join: Mutex::new(Some(join)),
+            tempo,
+        }));
+        let device = Reopenable::with_device(config::Midi::new("test", None), old);
+        // As the reload's MIDI phase does it: the reopen, then the tempo for
+        // the device opened instead, once the old clock has stopped.
+        assert!(device.reopen_with(|_| Err("device gone".into())).is_err());
+        assert_eq!(
+            device.held_tempo(),
+            Some(Duration::from_millis(10)),
+            "the fallback would be handed the tempo from before the running schedule"
+        );
+    }
+
+    /// A schedule waiting on a go signal that never comes, and is never
+    /// cancelled, still hears a stop: stopping the clock for a reopen joins
+    /// its thread, and would otherwise never return.
+    #[test]
+    fn stop_returns_while_a_schedule_waits_for_its_start() {
+        struct Null;
+        impl MidiSender for Null {
+            fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
+                Ok(())
+            }
+        }
+        let (tx, rx) = mpsc::channel();
+        let tempo = Arc::new(Mutex::new(Some(Duration::from_millis(20))));
+        let engine_tempo = tempo.clone();
+        let join = std::thread::spawn(move || {
+            beat_clock_engine_loop(&mut Null, true, &engine_tempo, &rx);
+        });
+        let cancel = CancelHandle::new();
+        tx.send(BeatClockCommand::Play(BeatClockPlay {
+            ticks: Arc::new(vec![Duration::ZERO]),
+            start_time: Duration::ZERO,
+            playback_delay: Duration::ZERO,
+            cancel: cancel.clone(),
+            clock: PlaybackClock::wall(),
+        }))
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let engine = Arc::new(BeatClockEngine {
+            tx,
+            join: Mutex::new(Some(join)),
+            tempo,
+        });
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn({
+            let engine = engine.clone();
+            move || {
+                engine.stop();
+                let _ = done_tx.send(());
+            }
+        });
+        let stopped = done_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        cancel.cancel(); // let the thread go either way
+        assert!(stopped, "stop() hung on a schedule waiting for its start");
     }
 
     #[test]

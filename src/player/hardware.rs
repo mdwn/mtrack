@@ -349,10 +349,10 @@ impl Player {
                     // and plugged back in is heard again only then; if it
                     // cannot be, it is gone, and a new one is opened.
                     // A device opened anew goes on with the tempo the one it
-                    // replaces held between songs.
-                    let held = previous_midi
-                        .as_ref()
-                        .and_then(|(_, device)| device.held_tempo());
+                    // replaces held between songs, read once a reopen has
+                    // stopped its clock: a schedule still running sets its
+                    // tempo as it ends.
+                    let previous_device = previous_midi.as_ref().map(|(_, device)| device.clone());
                     let kept = match previous_midi {
                         Some((previous, device))
                             if midi_fingerprint.as_ref() == Some(&previous) =>
@@ -379,6 +379,7 @@ impl Player {
                     if kept.is_some() {
                         return kept;
                     }
+                    let held = previous_device.and_then(|device| device.held_tempo());
                     let outcome = Self::retry_until_ready("midi device", cancel3, move || {
                         midi::get_device_holding(Some(midi_config.clone()), held)
                             .map_err(|e| e.to_string())
