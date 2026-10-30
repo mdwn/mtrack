@@ -315,16 +315,8 @@ impl super::Device for Device {
                         finished,
                         exclude_channels: &exclude_midi_channels,
                         clock: &clock,
-                        loop_playback: song.loop_playback(),
-                        // Passes on the song's own grid, as the audio and
-                        // lights loop: every song length, less the crossfade.
-                        // A song without audio has no length to loop on and
-                        // restarts when its MIDI runs out, as it always has.
-                        loop_passes: (song.loop_playback() && !song.duration().is_zero())
-                            .then(|| (song.duration(), song.loop_crossfade().unwrap_or_default())),
                         loop_break: loop_break.clone(),
                         active_section: active_section.clone(),
-                        section_loop_break: section_loop_break.clone(),
                         section_jumps: section_jumps.clone(),
                     },
                 );
@@ -752,16 +744,8 @@ struct PlaybackContext<'a> {
     finished: Arc<AtomicBool>,
     exclude_channels: &'a HashSet<u8>,
     clock: &'a PlaybackClock,
-    loop_playback: bool,
-    /// For a looping song with audio: its length and its `loop_crossfade`
-    /// (zero without one), each pass starting that long before the last
-    /// ends. Passes then follow the song's length, not its MIDI's: a MIDI
-    /// file ending before the audio used to restart early and drift ahead
-    /// every pass.
-    loop_passes: Option<(Duration, Duration)>,
     loop_break: Arc<AtomicBool>,
     active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
-    section_loop_break: Arc<AtomicBool>,
     /// The playback's section loop jumps, which the notes follow.
     section_jumps: Arc<crate::playsync::SectionJumpLog>,
 }
@@ -805,120 +789,185 @@ fn run_playback(sender: &mut dyn MidiSender, mut ctx: PlaybackContext<'_>) {
         }
     }
 
-    // The song plays from where it starts, and on from each section loop
-    // jump committed to -- by the audio, or the playback's own publisher
-    // without it -- up to the next: the notes go back where and when the
-    // audio and lights do, and play on once the loop is broken. A looping
-    // song's first pass plays to the first boundary; the passes from there on
-    // follow the song's grid (`play_looping_passes`).
+    // The song plays from where it starts, and on from each loop jump
+    // committed to -- by the audio, or the playback's own publisher without
+    // it -- sections and a looping song's passes alike: the notes go back
+    // where and when the audio and lights do, the pass a jump leaves playing
+    // on under the next for its overlap, and play on once a loop is broken.
+    // While the log is open they follow it, even past their last note: a
+    // section armed then, or one looping past it, plays them again (#606).
     let first_clock_base = ctx.clock.elapsed();
     let mut jumps = crate::playsync::JumpCursor::new(ctx.section_jumps.clone());
-    let mut segment = Some((
-        ctx.start_time,
-        first_clock_base,
-        ctx.loop_passes
-            .map(|(length, overlap)| length.saturating_sub(overlap)),
-    ));
-    while let Some((from, clock_base, end_time)) = segment.take() {
-        if ctx.cancel_handle.is_cancelled() || ctx.loop_break.load(Ordering::Relaxed) {
-            break;
-        }
-        let played = play_precomputed(
-            &MidiPlaybackParams {
-                precomputed: ctx.precomputed,
-                start_time: from,
-                end_time,
-                clock_base,
-                cancel_handle: ctx.cancel_handle,
-                exclude_channels: ctx.exclude_channels,
-                clock: ctx.clock,
-            },
-            Some((&mut jumps, ctx.start_time, &ctx.active_section)),
-            sender,
-        );
-        let jumped = match played {
-            Played::Jumped(jump) => Some(jump),
-            Played::Cancelled => None,
-            // Out of notes with a section still looping (its end past the
-            // last of them, or no notes in it at all): its jump is to come.
-            Played::Ended => loop {
-                if ctx.cancel_handle.is_cancelled() || ctx.loop_break.load(Ordering::Relaxed) {
-                    break None;
-                }
-                if let Some(jump) = jumps.due(ctx.start_time + ctx.clock.elapsed()) {
-                    break Some(jump);
-                }
-                let looping = !ctx.section_loop_break.load(Ordering::Relaxed)
-                    && ctx.active_section.read().is_some();
-                if !looping && jumps.peek().is_none() {
-                    break None;
-                }
-                thread::sleep(Duration::from_millis(5));
-            },
-        };
-        if let Some(jump) = jumped {
-            debug!(from = ?jump.from, to = ?jump.to, "MIDI section loop: going back");
-            segment = Some((jump.to, jump.at.saturating_sub(ctx.start_time), None));
-        }
-    }
-
-    loop {
-        if ctx.cancel_handle.is_cancelled() || ctx.loop_break.load(Ordering::Relaxed) {
-            break;
-        }
-
-        // Whole-song loop check.
-        if let Some((length, overlap)) = ctx.loop_passes {
-            if ctx.loop_playback
-                && !ctx.cancel_handle.is_cancelled()
-                && !ctx.loop_break.load(Ordering::Relaxed)
-                && ctx.active_section.read().is_none()
-            {
-                info!("MIDI loop: passes every song length less its crossfade");
-                play_looping_passes(
-                    &LoopingPasses {
-                        precomputed: ctx.precomputed,
-                        // Song time 0 of the first pass on the clock.
-                        first_origin: first_clock_base.as_secs_f64() - ctx.start_time.as_secs_f64(),
-                        start_time: ctx.start_time,
-                        length,
-                        overlap,
-                        cancel_handle: ctx.cancel_handle,
-                        loop_break: &ctx.loop_break,
-                        exclude_channels: ctx.exclude_channels,
-                        clock: ctx.clock,
-                    },
-                    sender,
-                );
-            }
-            break;
-        }
-        if ctx.loop_playback
-            && !ctx.cancel_handle.is_cancelled()
-            && !ctx.loop_break.load(Ordering::Relaxed)
-        {
-            info!("MIDI loop: restarting from beginning");
-            play_precomputed(
-                &MidiPlaybackParams {
-                    precomputed: ctx.precomputed,
-                    start_time: Duration::ZERO,
-                    end_time: None,
-                    clock_base: ctx.clock.elapsed(),
-                    cancel_handle: ctx.cancel_handle,
-                    exclude_channels: ctx.exclude_channels,
-                    clock: ctx.clock,
-                },
-                None,
-                sender,
-            );
-            continue;
-        }
-
-        break;
-    }
+    play_streams(
+        &NoteStreams {
+            precomputed: ctx.precomputed,
+            start_time: ctx.start_time,
+            first_clock_base,
+            cancel_handle: ctx.cancel_handle,
+            loop_break: &ctx.loop_break,
+            active_section: &ctx.active_section,
+            exclude_channels: ctx.exclude_channels,
+            clock: ctx.clock,
+        },
+        &mut jumps,
+        sender,
+    );
 
     ctx.finished.store(true, Ordering::Relaxed);
     ctx.cancel_handle.notify();
+}
+
+/// What [`play_streams`] plays.
+struct NoteStreams<'a> {
+    precomputed: &'a super::playback::PrecomputedMidi,
+    /// Where in the song playback began; the jumps are timed on the
+    /// playback timeline, which starts here.
+    start_time: Duration,
+    /// What the clock read when the first note's stream began (after the
+    /// playback delay).
+    first_clock_base: Duration,
+    cancel_handle: &'a CancelHandle,
+    loop_break: &'a AtomicBool,
+    active_section: &'a parking_lot::RwLock<Option<crate::player::SectionBounds>>,
+    exclude_channels: &'a HashSet<u8>,
+    clock: &'a PlaybackClock,
+}
+
+/// One run through the song's notes: from where playback began, or from a
+/// jump's target.
+struct NoteStream {
+    /// When the stream's song time 0 falls on the clock, in seconds (negative
+    /// for one that began part way in).
+    origin: f64,
+    /// Its next event.
+    index: usize,
+    /// Where in the song it stops, once a jump has left it: its `from`, or,
+    /// for a pass that plays on under the next, its `from` plus the overlap.
+    end: Option<Duration>,
+}
+
+/// Plays the song's notes as one merged run over its streams: the first from
+/// where playback began, and another from each jump's target as it falls
+/// due. A jump ends the stream it leaves at its `from`, or, with an overlap
+/// (a looping song's pass crossfading into the next), lets it play on to
+/// `from + overlap`, its notes in time with the new stream's. Events of two
+/// streams due at the same moment go older stream first. Returns on cancel
+/// or loop break, or when the notes have run out and no more jumps can come.
+fn play_streams(
+    params: &NoteStreams<'_>,
+    jumps: &mut crate::playsync::JumpCursor,
+    sender: &mut dyn MidiSender,
+) {
+    // Waits on the clock in steps this long while a jump may be committed.
+    const JUMP_CHECK: Duration = Duration::from_millis(10);
+    // Otherwise in steps still shorter than the 30ms a jump is committed
+    // ahead, so one armed meanwhile is not missed.
+    const IDLE_CHECK: Duration = Duration::from_millis(25);
+    let events = params.precomputed.events();
+    let song_start = params.start_time.as_secs_f64();
+    let mut streams = vec![NoteStream {
+        origin: params.first_clock_base.as_secs_f64() - song_start,
+        index: events.partition_point(|e| e.time < params.start_time),
+        end: None,
+    }];
+    let mut buf = Vec::with_capacity(8);
+    // The newest stream's origin, kept for a jump that comes once every
+    // stream has run out of notes.
+    let mut last_origin = streams[0].origin;
+
+    loop {
+        if params.cancel_handle.is_cancelled() || params.loop_break.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Some(current) = streams.last() {
+            last_origin = current.origin;
+        }
+        streams.retain(|stream| {
+            events
+                .get(stream.index)
+                .is_some_and(|event| stream.end.is_none_or(|end| event.time < end))
+        });
+        // The earliest note due, older stream first at the same moment (to
+        // the microsecond, past float rounding); `streams` is in age order.
+        let next_event = streams
+            .iter()
+            .enumerate()
+            .map(|(i, stream)| (stream.origin + events[stream.index].time.as_secs_f64(), i))
+            .min_by_key(|(at, i)| ((at * 1e6).round() as i64, *i));
+        let next_jump = jumps.peek();
+        // A jump falling due before the next note (or with it): the song goes
+        // on from there, at its time -- on the schedule of the stream it
+        // leaves, where its `from` falls, so the streams keep one grid (the
+        // playback delay included) rather than each starting a poll late.
+        let jump_at = next_jump.as_ref().map(|jump| match streams.last() {
+            Some(current) => current.origin + jump.from.as_secs_f64(),
+            None => last_origin + jump.from.as_secs_f64(),
+        });
+        let now = params.clock.elapsed().as_secs_f64();
+        match (next_event, jump_at) {
+            (_, Some(at)) if next_event.is_none_or(|(due, _)| at <= due) => {
+                if now >= at {
+                    let jump = jumps.due(Duration::MAX).expect("the jump peeked at is due");
+                    debug!(
+                        from = ?jump.from,
+                        to = ?jump.to,
+                        overlap = ?jump.overlap,
+                        "MIDI loop: going back"
+                    );
+                    if let Some(current) = streams.last() {
+                        last_origin = current.origin;
+                    }
+                    if let Some(current) = streams.last_mut() {
+                        let end = jump.from + jump.overlap;
+                        current.end = Some(current.end.map_or(end, |e| e.min(end)));
+                    }
+                    streams.push(NoteStream {
+                        origin: at - jump.to.as_secs_f64(),
+                        index: events.partition_point(|e| e.time < jump.to),
+                        end: None,
+                    });
+                    continue;
+                }
+                spin_sleep::sleep(Duration::from_secs_f64(at - now).min(JUMP_CHECK));
+            }
+            (Some((due, stream)), _) => {
+                if now >= due {
+                    let stream = &mut streams[stream];
+                    if let Some(bytes) = serialize_midi_event(
+                        &events[stream.index],
+                        params.exclude_channels,
+                        &mut buf,
+                    ) {
+                        if let Err(e) = sender.send(&bytes) {
+                            debug!("MIDI send failed: {:?}", e);
+                        }
+                    }
+                    stream.index += 1;
+                    continue;
+                }
+                // In short steps while a jump could come (one committed, a
+                // section armed, or the log open); otherwise longer, still
+                // short of the time a jump is committed ahead.
+                let step = if next_jump.is_some()
+                    || params.active_section.read().is_some()
+                    || !jumps.log().is_closed()
+                {
+                    JUMP_CHECK
+                } else {
+                    IDLE_CHECK
+                };
+                spin_sleep::sleep(Duration::from_secs_f64(due - now).min(step));
+            }
+            // Out of notes: on while a jump may yet come, which plays them
+            // again.
+            (None, _) => {
+                if !jumps.may_jump() {
+                    return;
+                }
+                thread::sleep(JUMP_CHECK / 2);
+            }
+        }
+    }
 }
 
 /// Serializes a MIDI System Real-Time event to bytes.
@@ -1831,206 +1880,6 @@ fn heard_command(
     true
 }
 
-/// Parameters for playing pre-computed MIDI events.
-struct MidiPlaybackParams<'a> {
-    precomputed: &'a super::playback::PrecomputedMidi,
-    /// Start time in the event timeline to begin playback from.
-    start_time: Duration,
-    /// If set, stop playback when events reach this time.
-    end_time: Option<Duration>,
-    /// What the clock reads at the logical start of this playback iteration.
-    /// Events are timed relative to this so looped iterations work correctly
-    /// even though the clock keeps advancing.
-    clock_base: Duration,
-    cancel_handle: &'a CancelHandle,
-    exclude_channels: &'a HashSet<u8>,
-    clock: &'a PlaybackClock,
-}
-
-/// The passes of a looping song, for [`play_looping_passes`].
-struct LoopingPasses<'a> {
-    precomputed: &'a super::playback::PrecomputedMidi,
-    /// When the first pass's song time 0 falls on the clock, in seconds
-    /// (negative for a playback that began part way in).
-    first_origin: f64,
-    /// Where the first pass's playback began; a start inside the overlap
-    /// plays none of what came before it.
-    start_time: Duration,
-    length: Duration,
-    overlap: Duration,
-    cancel_handle: &'a CancelHandle,
-    loop_break: &'a AtomicBool,
-    exclude_channels: &'a HashSet<u8>,
-    clock: &'a PlaybackClock,
-}
-
-/// Plays a looping song from its first boundary on: the first pass's events
-/// from `length - overlap`, and each later pass from its start, a pass's
-/// length less the overlap after the last -- so passes keep to the song's
-/// grid however early or late its MIDI ends. Through an overlap both passes
-/// play, their events in time order. Returns on cancel or loop break.
-fn play_looping_passes(params: &LoopingPasses<'_>, sender: &mut dyn MidiSender) {
-    let events = params.precomputed.events();
-    let period = params.length.saturating_sub(params.overlap).as_secs_f64();
-    if period <= 0.0 {
-        return;
-    }
-    let boundary = params.length.saturating_sub(params.overlap);
-    // (when the pass's song time 0 falls on the clock, its next event)
-    let mut passes: Vec<(f64, usize)> = vec![(
-        params.first_origin,
-        events.partition_point(|e| e.time < boundary.max(params.start_time)),
-    )];
-    // The second pass starts at the first boundary, or at once for a start
-    // already past it: the same grid as the audio and lights
-    // (`Song::loop_pass_start`).
-    let mut next_origin = params.first_origin + boundary.max(params.start_time).as_secs_f64();
-    let mut buf = Vec::with_capacity(8);
-
-    loop {
-        passes.retain(|(_, index)| *index < events.len());
-        // The earliest thing due: a pass's next event, or the next pass.
-        // Events of two passes at the same moment (to the microsecond, past
-        // float rounding) go older pass first; `passes` is in age order.
-        let next_event = passes
-            .iter()
-            .enumerate()
-            .map(|(i, (origin, index))| (origin + events[*index].time.as_secs_f64(), i))
-            .min_by_key(|(at, i)| ((at * 1e6).round() as i64, *i));
-        let (due, pass) = match next_event {
-            Some((at, pass)) if at < next_origin => (at, Some(pass)),
-            _ => (next_origin, None),
-        };
-
-        // Wait in short steps, so a stop or break is heard promptly even
-        // across a long stretch with no events.
-        loop {
-            if params.cancel_handle.is_cancelled() || params.loop_break.load(Ordering::Relaxed) {
-                return;
-            }
-            let now = params.clock.elapsed().as_secs_f64();
-            if now >= due {
-                break;
-            }
-            spin_sleep::sleep(Duration::from_secs_f64((due - now).min(0.05)));
-        }
-
-        match pass {
-            Some(pass) => {
-                let index = &mut passes[pass].1;
-                if let Some(bytes) =
-                    serialize_midi_event(&events[*index], params.exclude_channels, &mut buf)
-                {
-                    if let Err(e) = sender.send(&bytes) {
-                        debug!("MIDI send failed: {:?}", e);
-                    }
-                }
-                *index += 1;
-            }
-            None => {
-                passes.push((next_origin, 0));
-                next_origin += period;
-            }
-        }
-    }
-}
-
-/// Plays pre-computed MIDI events through a MIDI sender.
-/// Sleeps between events using spin_sleep for precision without busy-waiting.
-/// How a stretch of notes ended.
-#[derive(Debug, PartialEq)]
-enum Played {
-    /// The notes ran out, or reached the end asked for.
-    Ended,
-    /// A section loop jump fell due: the song goes on from its target.
-    Jumped(crate::section_loop::SectionJump),
-    Cancelled,
-}
-
-/// Plays a stretch of notes, up to `params.end_time` -- or, given the
-/// playback's section loop jumps (with the start position they are timed
-/// from), up to the next that falls due before a note, at its time.
-fn play_precomputed(
-    params: &MidiPlaybackParams<'_>,
-    mut jumps: Option<(
-        &mut crate::playsync::JumpCursor,
-        Duration,
-        &parking_lot::RwLock<Option<crate::player::SectionBounds>>,
-    )>,
-    sender: &mut dyn MidiSender,
-) -> Played {
-    // Waits on the clock in steps this long while a jump may be committed.
-    const JUMP_CHECK: Duration = Duration::from_millis(10);
-    const IDLE_CHECK: Duration = Duration::from_millis(25);
-    let events = params.precomputed.events_from(params.start_time);
-    let mut buf = Vec::with_capacity(8);
-
-    for event in events {
-        if params.cancel_handle.is_cancelled() {
-            return Played::Cancelled;
-        }
-
-        // Stop at section end time if specified.
-        if let Some(end) = params.end_time {
-            if event.time >= end {
-                return Played::Ended;
-            }
-        }
-
-        // target_wall is relative to the section start, then offset by
-        // clock_base so it aligns with the continuously-advancing clock.
-        let target_wall = params.clock_base + (event.time - params.start_time);
-        loop {
-            // A jump falling due before this note: the song goes on from
-            // there, at its time.
-            if let Some((cursor, song_start, _)) = jumps.as_mut() {
-                if let Some(next) = cursor.peek() {
-                    let at = next.at.saturating_sub(*song_start);
-                    if at <= target_wall {
-                        while params.clock.elapsed() < at {
-                            if params.cancel_handle.is_cancelled() {
-                                return Played::Cancelled;
-                            }
-                            let left = at.saturating_sub(params.clock.elapsed());
-                            spin_sleep::sleep(left.min(JUMP_CHECK));
-                        }
-                        let jump = cursor.due(next.at).expect("the jump peeked at is due");
-                        return Played::Jumped(jump);
-                    }
-                }
-            }
-            let elapsed = params.clock.elapsed();
-            if target_wall <= elapsed {
-                break;
-            }
-            let wait = target_wall - elapsed;
-            let Some((cursor, _, armed)) = jumps.as_ref() else {
-                spin_sleep::sleep(wait);
-                break;
-            };
-            // In short steps while a jump could come (one committed, or a
-            // section armed); otherwise in steps still shorter than the 30ms
-            // a jump is committed ahead, so one armed meanwhile is not missed.
-            let step = if cursor.peek().is_some() || armed.read().is_some() {
-                JUMP_CHECK
-            } else {
-                IDLE_CHECK
-            };
-            spin_sleep::sleep(wait.min(step));
-            if params.cancel_handle.is_cancelled() {
-                return Played::Cancelled;
-            }
-        }
-
-        if let Some(bytes) = serialize_midi_event(event, params.exclude_channels, &mut buf) {
-            if let Err(e) = sender.send(&bytes) {
-                debug!("MIDI send failed: {:?}", e);
-            }
-        }
-    }
-    Played::Ended
-}
-
 /// Promotes the current thread to real-time priority for low-jitter MIDI clock output.
 ///
 /// Uses the shared thread priority utility that sets a high crossplatform priority
@@ -2080,6 +1929,26 @@ mod test {
             song: None,
         };
         thread::spawn(move || crate::section_loop::publish_jumps(publisher));
+        // The audio this stands in for plays on as long as the notes: the
+        // log closes once the section is broken or cleared (the notes then
+        // end with their own), or the test is done.
+        {
+            let log = log.clone();
+            let done = done.clone();
+            let active_section = active_section.clone();
+            let section_loop_break = section_loop_break.clone();
+            thread::spawn(move || {
+                while !done.load(Ordering::Relaxed)
+                    && !section_loop_break.load(Ordering::Relaxed)
+                    && active_section.read().is_some()
+                {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                // A jump committed just before still falls due.
+                thread::sleep(Duration::from_millis(50));
+                log.close();
+            });
+        }
         (log, done)
     }
     use midly::num::u7;
@@ -3014,7 +2883,7 @@ mod test {
             PrecomputedMidi::from_events(events)
         }
 
-        /// Helper: run play_precomputed with common defaults for tests.
+        /// Helper: run play_streams with common defaults for tests.
         fn run_play(
             midi: &PrecomputedMidi,
             start: Duration,
@@ -3023,17 +2892,25 @@ mod test {
             exclude: &HashSet<u8>,
             clock: &PlaybackClock,
         ) {
-            play_precomputed(
-                &MidiPlaybackParams {
+            // The notes keep to the clock: running.
+            if !clock.has_started() {
+                clock.start();
+            }
+            // No loops: the log is closed from the start.
+            let log = Arc::new(crate::playsync::SectionJumpLog::default());
+            log.close();
+            play_streams(
+                &NoteStreams {
                     precomputed: midi,
                     start_time: start,
-                    end_time: None,
-                    clock_base: clock.elapsed(),
+                    first_clock_base: clock.elapsed(),
                     cancel_handle: cancel,
+                    loop_break: &AtomicBool::new(false),
+                    active_section: &parking_lot::RwLock::new(None),
                     exclude_channels: exclude,
                     clock,
                 },
-                None,
+                &mut crate::playsync::JumpCursor::new(log),
                 sender,
             );
         }
@@ -3292,6 +3169,30 @@ mod test {
             }
         }
 
+        /// A looping song's passes as the audio commits them: a jump at each
+        /// of `at_ms`, from `from_ms` back to the top, with `overlap_ms`. The
+        /// log is closed: no more come.
+        fn passes(
+            at_ms: &[u64],
+            from_ms: u64,
+            overlap_ms: u64,
+        ) -> Arc<crate::playsync::SectionJumpLog> {
+            let log = Arc::new(crate::playsync::SectionJumpLog::default());
+            for &at in at_ms {
+                log.push(crate::section_loop::SectionJump {
+                    at: Duration::from_millis(at),
+                    from: Duration::from_millis(from_ms),
+                    to: Duration::ZERO,
+                    overlap: Duration::from_millis(overlap_ms),
+                });
+            }
+            log.close();
+            log
+        }
+
+        /// A crossfading loop's passes overlap: at each pass jump in the log,
+        /// the pass it leaves plays on for the overlap, its notes in time
+        /// with the new pass's, older pass first at the same moment.
         #[test]
         fn crossfading_loop_overlaps_its_passes() {
             // A 1 s song with a 0.4 s overlap: a pass every 0.6 s, notes
@@ -3329,12 +3230,9 @@ mod test {
                     finished: Arc::new(AtomicBool::new(false)),
                     exclude_channels: &exclude,
                     clock: &clock,
-                    loop_playback: true,
-                    loop_passes: Some((Duration::from_secs(1), Duration::from_millis(400))),
                     loop_break: loop_break.clone(),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
-                    section_loop_break: Arc::new(AtomicBool::new(false)),
-                    section_jumps: Default::default(),
+                    section_jumps: passes(&[600, 1_200], 600, 400),
                 },
             );
             breaker.join().unwrap();
@@ -3359,6 +3257,8 @@ mod test {
             }
         }
 
+        /// A plain loop's passes (no overlap) start as the log says: on the
+        /// song's length, not when its MIDI runs out.
         #[test]
         fn a_loop_restarts_on_the_songs_length_not_its_midis() {
             // A 0.5 s song whose MIDI is done by 0.1 s: each pass starts on
@@ -3397,12 +3297,9 @@ mod test {
                     finished: Arc::new(AtomicBool::new(false)),
                     exclude_channels: &exclude,
                     clock: &clock,
-                    loop_playback: true,
-                    loop_passes: Some((Duration::from_millis(500), Duration::ZERO)),
                     loop_break: loop_break.clone(),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
-                    section_loop_break: Arc::new(AtomicBool::new(false)),
-                    section_jumps: Default::default(),
+                    section_jumps: passes(&[500, 1_000], 500, 0),
                 },
             );
             breaker.join().unwrap();
@@ -3481,11 +3378,8 @@ mod test {
                     finished: Arc::new(AtomicBool::new(false)),
                     exclude_channels: &exclude,
                     clock: &clock,
-                    loop_playback: true,
-                    loop_passes: Some((Duration::from_secs(1), Duration::ZERO)),
                     loop_break: loop_break.clone(),
                     active_section,
-                    section_loop_break,
                     section_jumps: log,
                 },
             );
@@ -3566,11 +3460,8 @@ mod test {
                     finished: Arc::new(AtomicBool::new(false)),
                     exclude_channels: &exclude,
                     clock: &clock,
-                    loop_playback: false,
-                    loop_passes: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section,
-                    section_loop_break,
                     section_jumps: log,
                 },
             );
@@ -3634,17 +3525,71 @@ mod test {
                     finished: Arc::new(AtomicBool::new(false)),
                     exclude_channels: &exclude,
                     clock: &clock,
-                    loop_playback: false,
-                    loop_passes: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section,
-                    section_loop_break,
                     section_jumps: log,
                 },
             );
             driver.join().unwrap();
             done.store(true, Ordering::Relaxed);
             sender.sent
+        }
+
+        /// While the log is open the notes follow it past their last note: a
+        /// section armed after it, its jump committed then, plays them again
+        /// (#606); they end once the log closes. They used to end with their
+        /// last note.
+        #[test]
+        fn notes_replay_after_their_last_note_while_the_log_is_open() {
+            let midi = make_events(&[0, 50]);
+            let cancel = CancelHandle::new();
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let exclude = HashSet::new();
+            let clock = PlaybackClock::wall();
+            clock.start();
+            let mut sender = TimedSender {
+                clock: clock.clone(),
+                sent: Vec::new(),
+            };
+            let log = Arc::new(crate::playsync::SectionJumpLog::default());
+            let audio = {
+                let log = log.clone();
+                let clock = clock.clone();
+                std::thread::spawn(move || {
+                    // The section 0-300ms armed at 200ms, past the last note:
+                    // its jump at its end.
+                    wait_until(&clock, 200);
+                    log.push(crate::section_loop::SectionJump {
+                        at: Duration::from_millis(300),
+                        from: Duration::from_millis(300),
+                        to: Duration::ZERO,
+                        overlap: Duration::ZERO,
+                    });
+                    // Broken, and the song over: the log closes.
+                    wait_until(&clock, 450);
+                    log.close();
+                })
+            };
+            run_playback(
+                &mut sender,
+                PlaybackContext {
+                    precomputed: &midi,
+                    start_time: Duration::ZERO,
+                    playback_delay: Duration::ZERO,
+                    cancel_handle: &cancel,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    finished: Arc::new(AtomicBool::new(false)),
+                    exclude_channels: &exclude,
+                    clock: &clock,
+                    loop_break: Arc::new(AtomicBool::new(false)),
+                    active_section: Arc::new(parking_lot::RwLock::new(None)),
+                    section_jumps: log.clone(),
+                },
+            );
+            audio.join().unwrap();
+            assert!(log.is_closed(), "the notes ended before the log closed");
+            let notes: Vec<u8> = sender.sent.iter().map(|(_, note)| *note).collect();
+            assert_eq!(notes, vec![60, 61, 60, 61], "{:?}", sender.sent);
         }
 
         fn wait_until(clock: &PlaybackClock, ms: u64) {
@@ -3716,12 +3661,9 @@ mod test {
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     clock: &clock,
-                    loop_playback: false,
-                    loop_passes: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
-                    section_loop_break: Arc::new(AtomicBool::new(false)),
-                    section_jumps: Default::default(),
+                    section_jumps: passes(&[], 0, 0),
                 },
             );
 
@@ -3752,12 +3694,9 @@ mod test {
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     clock: &clock,
-                    loop_playback: false,
-                    loop_passes: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
-                    section_loop_break: Arc::new(AtomicBool::new(false)),
-                    section_jumps: Default::default(),
+                    section_jumps: passes(&[], 0, 0),
                 },
             );
 
@@ -3795,12 +3734,9 @@ mod test {
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     clock: &clock,
-                    loop_playback: false,
-                    loop_passes: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
-                    section_loop_break: Arc::new(AtomicBool::new(false)),
-                    section_jumps: Default::default(),
+                    section_jumps: passes(&[], 0, 0),
                 },
             );
 
@@ -3832,12 +3768,9 @@ mod test {
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     clock: &clock,
-                    loop_playback: false,
-                    loop_passes: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
-                    section_loop_break: Arc::new(AtomicBool::new(false)),
-                    section_jumps: Default::default(),
+                    section_jumps: passes(&[], 0, 0),
                 },
             );
 
@@ -3886,12 +3819,9 @@ mod test {
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     clock: &clock,
-                    loop_playback: false,
-                    loop_passes: None,
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
-                    section_loop_break: Arc::new(AtomicBool::new(false)),
-                    section_jumps: Default::default(),
+                    section_jumps: passes(&[], 0, 0),
                 },
             );
 
@@ -3926,12 +3856,9 @@ mod test {
                         finished: finished_clone,
                         exclude_channels: &exclude,
                         clock: &clock_clone,
-                        loop_playback: false,
-                        loop_passes: None,
                         loop_break: Arc::new(AtomicBool::new(false)),
                         active_section: Arc::new(parking_lot::RwLock::new(None)),
-                        section_loop_break: Arc::new(AtomicBool::new(false)),
-                        section_jumps: Default::default(),
+                        section_jumps: passes(&[], 0, 0),
                     },
                 );
                 sender
