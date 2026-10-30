@@ -227,6 +227,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fade_in` its own, as a `loop_crossfade` is bound by its song. The playlist editor, the API and
   MCP `write_playlist` refuse a longer one; one already in a file is cut short to that song, with
   a warning, rather than the playlist being dropped.
+- **Playlist saves refuse what the player would not load, and take turns (#578)**: a save naming
+  a song the player does not have was accepted, and the playlist then vanished, the player falling
+  back to all songs if it was the active one. `auto_play` or `fades` lists of another length than
+  the songs were laid over the entries by position. Both are now refused with a 422, as is an
+  ambient show outside the project (`../`, or an absolute path); the player no longer reads one
+  either. MCP `write_playlist` and `patch_playlist` refuse an unknown song too. Saves of one file
+  at once no longer fail with a 500: every config write now holds the file's lock while it
+  stages the new content, not only while it rewrites the file, and the playlist editor's saves
+  take turns from reading the file to reloading the player.
 
 ## [0.17.4] - 2026-10-26
 

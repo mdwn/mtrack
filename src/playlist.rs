@@ -421,10 +421,39 @@ pub fn validate_transitions(
 /// of the list), a fade-in under its own. The player cuts such a fade short
 /// rather than drop the playlist on load, so it is refused here, where the
 /// one writing it can fix it (#577).
+///
+/// Each song must be in `registry` too: the player drops a playlist naming
+/// one that is not, and a save would make it vanish (#578). And an ambient
+/// show must be a path inside the project, which the player will read it
+/// from and no further.
 pub fn validate_for_write(
     config: &config::Playlist,
     registry: &Songs,
 ) -> Result<(), PlaylistError> {
+    if let Some(missing) = config
+        .songs()
+        .iter()
+        .find(|name| registry.get(name).is_err())
+    {
+        return Err(PlaylistError::SongNotFound(missing.clone()));
+    }
+    let show = match config.ambient() {
+        Some(config::ambient::PlaylistAmbient::On(ambient)) => ambient.show(),
+        _ => None,
+    };
+    if let Some(show) = show {
+        let path = std::path::Path::new(show);
+        let escapes = path.is_absolute()
+            || path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir));
+        if escapes {
+            return Err(PlaylistError::InvalidAmbient(format!(
+                "ambient show {show:?}: must be a path inside the project, relative to it \
+                 and without \"..\""
+            )));
+        }
+    }
     let transitions = validate_transitions(config, registry)?;
     let songs: Vec<Option<Arc<Song>>> = config
         .songs()

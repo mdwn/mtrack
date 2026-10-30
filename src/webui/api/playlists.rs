@@ -145,6 +145,12 @@ where
     serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
+/// Held by each playlist save and delete from reading the file to reloading
+/// the player, so two at once (two editor tabs, say) take turns: a save reads
+/// the file to keep what the editor does not send, and one reading it while
+/// another rewrote it found it short and refused (#578).
+static PLAYLIST_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// PUT /api/playlists/:name — create or update a playlist.
 pub(super) async fn put_playlist_by_name(
     State(state): State<WebUiState>,
@@ -152,6 +158,7 @@ pub(super) async fn put_playlist_by_name(
     Json(body): Json<PlaylistBody>,
 ) -> impl IntoResponse {
     validate_playlist_name(&name)?;
+    let _writing = PLAYLIST_WRITES.lock().await;
     let playlists_dir =
         require_configured_dir(&state.playlists_dir, "playlists", StatusCode::NOT_FOUND)?;
 
@@ -187,6 +194,27 @@ pub(super) async fn put_playlist_by_name(
     } else {
         config::Playlist::new(&body.songs)
     };
+    // `auto_play` and `fades` go entry for entry with `songs`: a list of
+    // another length would be laid over the entries by position, those past
+    // its end keeping their old settings while the ones before lost theirs.
+    let lengths = [
+        ("auto_play", body.auto_play.as_ref().map(Vec::len)),
+        ("fades", body.fades.as_ref().map(Vec::len)),
+    ];
+    for (field, length) in lengths {
+        if let Some(length) = length.filter(|&length| length != body.songs.len()) {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({
+                    "error": format!(
+                        "{field} has {length} entries, but there are {} songs: one for each",
+                        body.songs.len()
+                    )
+                })),
+            )
+                .into_response());
+        }
+    }
     let playlist_config = match &body.auto_play {
         Some(auto_play) => playlist_config.with_auto_play(auto_play),
         None => playlist_config,
@@ -200,9 +228,10 @@ pub(super) async fn put_playlist_by_name(
         None => playlist_config,
     };
     // What the player would refuse to load is refused here, before the file
-    // is written: a bad fade or ambient, or a fade leaving out a track its
-    // song does not have. So is a fade the player would cut short, longer
-    // than the song it plays under.
+    // is written: a song it does not have, a bad fade or ambient, or a fade
+    // leaving out a track its song does not have. So is a fade the player
+    // would cut short, longer than the song it plays under, and an ambient
+    // show outside the project.
     if let Err(e) = crate::playlist::validate_for_write(&playlist_config, &state.player.songs()) {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -253,6 +282,7 @@ pub(super) async fn delete_playlist_by_name(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     validate_playlist_name(&name)?;
+    let _writing = PLAYLIST_WRITES.lock().await;
     let playlists_dir =
         require_configured_dir(&state.playlists_dir, "playlists", StatusCode::NOT_FOUND)?;
 
@@ -408,7 +438,7 @@ mod test {
     /// PUTs `body` to the playlist `mylist`, whose file holds `existing`;
     /// returns the status and the file after.
     async fn put_body_over(existing: &str, body: &str) -> (StatusCode, String) {
-        let (state, _dir) = test_state();
+        let (state, _dir) = test_state_with_registry(songs_abc());
         let path = state.playlists_dir.clone().unwrap().join("mylist.yaml");
         std::fs::write(&path, existing).unwrap();
         let app = router().with_state(state);
@@ -424,6 +454,105 @@ mod test {
             .await
             .unwrap();
         (response.status(), std::fs::read_to_string(&path).unwrap())
+    }
+
+    /// A registry of "Song A", "Song B" and "Song C", each with tracks
+    /// `kick` and `snare`.
+    fn songs_abc() -> std::sync::Arc<crate::songs::Songs> {
+        use crate::songs::{Song, Songs};
+        let map = ["Song A", "Song B", "Song C"]
+            .into_iter()
+            .map(|name| {
+                let song = Song::new_for_test(name, &["kick", "snare"]);
+                (name.to_string(), std::sync::Arc::new(song))
+            })
+            .collect();
+        std::sync::Arc::new(Songs::new(map))
+    }
+
+    #[tokio::test]
+    async fn put_playlist_refuses_a_song_it_does_not_have() {
+        // #578: saved, and then the playlist vanished, being one the player
+        // would not load.
+        let existing = "songs:\n- Song A\n";
+        let (status, after) = put_over(existing, r#"["Song A", "No Such Song"]"#).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(after, existing);
+    }
+
+    #[tokio::test]
+    async fn put_playlist_refuses_lists_that_do_not_match_its_songs() {
+        // #578: laid over the entries by position, the first lost its
+        // fade_in and the rest kept theirs.
+        let existing = "songs:\n- song: Song A\n  fade_in: 1s\n- Song B\n- Song C\n";
+        for body in [
+            r#"{"songs": ["Song A", "Song B", "Song C"], "fades": [{"fade_out": "9s"}]}"#,
+            r#"{"songs": ["Song A"], "auto_play": [true, false]}"#,
+        ] {
+            let (status, after) = put_body_over(existing, body).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+            assert_eq!(after, existing, "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn put_playlist_keeps_its_ambient_show_inside_the_project() {
+        // #578: saved, and read from wherever it pointed on a switch.
+        let existing = "songs:\n- Song A\n";
+        for show in [
+            "../../../etc/passwd",
+            "/etc/passwd",
+            "lighting/../../x.light",
+        ] {
+            let body = format!(r#"{{"songs": ["Song A"], "ambient": {{"show": "{show}"}}}}"#);
+            let (status, after) = put_body_over(existing, &body).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{show}");
+            assert_eq!(after, existing, "{show}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_puts_to_one_playlist_all_save() {
+        // #578: two editors saving at once shared the write's sidecar, and
+        // all but one got a 500.
+        let (state, _dir) = test_state();
+        // On disk, so it is still there after each save's rescan.
+        let song_dir = state.songs_path.join("song_a");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("kick.wav"), vec![vec![0_i32; 441]], 44100)
+            .unwrap();
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: Song A\ntracks:\n- name: kick\n  file: kick.wav\n",
+        )
+        .unwrap();
+        state.player.reload_songs(&state.songs_path, None, None);
+        let puts: Vec<_> = (0..12)
+            .map(|i| {
+                let app = router().with_state(state.clone());
+                let songs = if i % 2 == 0 {
+                    "Song A"
+                } else {
+                    "Song A\", \"Song A"
+                };
+                tokio::spawn(async move {
+                    app.oneshot(
+                        http::Request::builder()
+                            .method("PUT")
+                            .uri("/playlists/mylist")
+                            .header("content-type", "application/json")
+                            .body(Body::from(format!(r#"{{"songs": ["{songs}"]}}"#)))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+                    .status()
+                })
+            })
+            .collect();
+        for put in puts {
+            assert_eq!(put.await.unwrap(), StatusCode::OK);
+        }
     }
 
     /// The playlist file `text` reads as.

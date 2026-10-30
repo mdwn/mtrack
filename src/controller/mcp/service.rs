@@ -3883,8 +3883,9 @@ impl McpServer {
 
     /// Checks a playlist about to be written: that it parses, and that its
     /// transitions do and name tracks their songs have, as the player will
-    /// when it loads it, and that no fade outlasts the song it plays under.
-    /// Songs it names that do not exist are left to the player, as before.
+    /// when it loads it, that no fade outlasts the song it plays under, that
+    /// every song it names exists (the player drops a playlist naming one
+    /// that does not), and that its ambient show is inside the project.
     fn validate_playlist(&self, yaml: &str) -> Result<(), McpError> {
         let config: crate::config::Playlist = serde_yaml_from_str(yaml)?;
         crate::playlist::validate_for_write(&config, &self.player.songs())

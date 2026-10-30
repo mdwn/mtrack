@@ -156,10 +156,11 @@ pub fn staged_path(path: &Path) -> std::path::PathBuf {
 /// completed, and holds the content it was trying to write. Recovery is
 /// currently manual: copy the sidecar over the destination.
 ///
-/// The destination is locked for the duration, so two mtrack processes writing
-/// the same file serialise rather than interleave. The lock is advisory and
-/// only binds cooperating processes, which is all we need — the racing writer
-/// this guards against is another mtrack.
+/// The destination is locked for the duration, sidecar and all, so two writers
+/// of the same file serialise rather than interleave -- whether two mtrack
+/// processes or two requests in one: the lock is taken on a file description
+/// of each writer's own. It is advisory and only binds cooperating writers,
+/// which is all we need — the racing writer this guards against is mtrack.
 pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
@@ -167,6 +168,19 @@ pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     // creating the destination would otherwise answer the question with the
     // freshly created file's own ownership.
     let intended = intended_ownership(path)?;
+
+    // Lock before staging, not just before the rewrite: the sidecar has one
+    // name per destination, so a writer staging while another rewrites would
+    // overwrite its sidecar, and whichever removed it first left the other's
+    // removal to fail (#578). Lock before truncating, too, not as part of the
+    // open: opening with truncation would discard a competing writer's
+    // content before we had any claim to the file.
+    let mut destination = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+    destination.lock()?;
 
     // Stage the complete new content beside the destination and get it on disk,
     // so the rewrite below always has something to recover from.
@@ -186,26 +200,16 @@ pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         std::fs::File::open(parent)?.sync_all()?;
     }
 
-    {
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(path)?;
-        // Lock before truncating, not as part of the open: opening with
-        // truncation would discard a competing writer's content before we had
-        // any claim to the file.
-        file.lock()?;
-        if let Some(ownership) = intended {
-            ownership.apply(&file, path)?;
-        }
-        file.set_len(0)?;
-        file.write_all(contents)?;
-        file.sync_all()?;
+    if let Some(ownership) = intended {
+        ownership.apply(&destination, path)?;
     }
+    destination.set_len(0)?;
+    destination.write_all(contents)?;
+    destination.sync_all()?;
 
     // The destination is durable, so the staged copy has served its purpose.
-    // Leaving it behind would falsely advertise an interrupted write.
+    // Leaving it behind would falsely advertise an interrupted write. The
+    // lock goes with the file, after.
     std::fs::remove_file(&staged)
 }
 
@@ -1023,6 +1027,29 @@ mod ownership_test {
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
         assert_eq!(mode_of(&path), 0o604);
+    }
+
+    #[test]
+    fn concurrent_writes_to_one_file_all_succeed() {
+        // #578: writers shared the sidecar, and all but one failed to
+        // remove it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("list.yaml");
+        let writers: Vec<_> = (0..16)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || write_file(&path, format!("songs: [{i}]\n").as_bytes()))
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap().unwrap();
+        }
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.starts_with("songs: [") && written.ends_with("]\n"),
+            "{written:?}"
+        );
+        assert!(!staged_path(&path).exists());
     }
 }
 

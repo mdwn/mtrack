@@ -1256,8 +1256,10 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         "rejected fixture type was written anyway",
     );
 
-    // --- patch_playlist: rename a song in place
-    let _ = call_tool(
+    // --- patch_playlist: a song the player does not have is refused, since
+    // it would not load the playlist (#578); an entry's settings edit in place.
+    let pl_before = std::fs::read_to_string(fixture.root.join("playlist.yaml"))?;
+    let renamed = call_tool(
         &client,
         &url,
         &session,
@@ -1269,14 +1271,14 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         }),
     )
     .await;
-    let pl_after = std::fs::read_to_string(fixture.root.join("playlist.yaml"))?;
     assert!(
-        pl_after.contains("Renamed Song"),
-        "patch_playlist did not apply: {pl_after}"
+        renamed.get("error").is_some() || renamed["result"]["isError"].as_bool() == Some(true),
+        "a song the player does not have should be refused: {renamed}",
     );
-    assert!(!pl_after.contains("DSL Light Show Song"));
-
-    // Restore so subsequent tools that reference the song still work.
+    assert_eq!(
+        std::fs::read_to_string(fixture.root.join("playlist.yaml"))?,
+        pl_before
+    );
     let _ = call_tool(
         &client,
         &url,
@@ -1284,7 +1286,26 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         29,
         "patch_playlist",
         json!({
-            "old_string": "- Renamed Song",
+            "old_string": "- DSL Light Show Song",
+            "new_string": "- song: DSL Light Show Song\n  auto_play: false",
+        }),
+    )
+    .await;
+    let pl_after = std::fs::read_to_string(fixture.root.join("playlist.yaml"))?;
+    assert!(
+        pl_after.contains("auto_play: false"),
+        "patch_playlist did not apply: {pl_after}"
+    );
+
+    // Restore so subsequent tools see the playlist as it was.
+    let _ = call_tool(
+        &client,
+        &url,
+        &session,
+        291,
+        "patch_playlist",
+        json!({
+            "old_string": "- song: DSL Light Show Song\n  auto_play: false",
             "new_string": "- DSL Light Show Song",
         }),
     )

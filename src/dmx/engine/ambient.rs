@@ -764,7 +764,9 @@ impl Engine {
             }
         };
         let path = resolve_show_path(self.base_path.as_deref(), &settings.show);
-        match self.read_ambient_shows(&path) {
+        let read = confine_show_path(self.base_path.as_deref(), &path)
+            .and_then(|path| self.read_ambient_shows(&path));
+        match read {
             Ok((content, shows)) => Some(LoadedAmbient {
                 settings,
                 path,
@@ -809,6 +811,21 @@ fn resolve_show_path(base: Option<&Path>, show: &str) -> PathBuf {
         Some(base) if path.is_relative() => base.join(path),
         _ => path.to_path_buf(),
     }
+}
+
+/// `path`, an ambient show's, checked to be inside the project `base`, as a
+/// light show's `include`s are: a playlist written over the web names it,
+/// and it must not read files elsewhere on the machine (#578).
+fn confine_show_path(base: Option<&Path>, path: &Path) -> Result<PathBuf, String> {
+    let Some(base) = base else {
+        return Ok(path.to_path_buf());
+    };
+    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+    let base = base.canonicalize().map_err(|e| e.to_string())?;
+    if !canonical.starts_with(&base) {
+        return Err("the show is outside the project directory".to_string());
+    }
+    Ok(canonical)
 }
 
 #[cfg(test)]
@@ -978,6 +995,26 @@ mod tests {
         assert_eq!(tick(&engine), (0.0, 255.0, 0.0), "its second cue");
         sleep(Duration::from_millis(500));
         assert_eq!(tick(&engine), (0.0, 0.0, 255.0), "round again");
+        Ok(())
+    }
+
+    #[test]
+    fn an_ambient_show_must_be_inside_the_project() -> Result<(), Box<dyn Error>> {
+        // #578: a playlist's `../../etc/passwd` was read.
+        let root = tempfile::tempdir()?;
+        let project = root.path().join("project");
+        std::fs::create_dir_all(project.join("lighting"))?;
+        std::fs::write(project.join("lighting/a.light"), "")?;
+        std::fs::write(root.path().join("secret"), "")?;
+        let inside = resolve_show_path(Some(&project), "lighting/a.light");
+        assert!(confine_show_path(Some(&project), &inside).is_ok());
+        for show in ["../secret", "lighting/../../secret"] {
+            let outside = resolve_show_path(Some(&project), show);
+            let err = confine_show_path(Some(&project), &outside).unwrap_err();
+            assert!(err.contains("outside the project"), "{show}: {err}");
+        }
+        let absolute = root.path().join("secret");
+        assert!(confine_show_path(Some(&project), &absolute).is_err());
         Ok(())
     }
 
