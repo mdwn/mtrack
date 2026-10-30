@@ -1109,6 +1109,22 @@ impl EffectEngine {
                 .checked_sub(elapsed_time)
                 .unwrap_or(self.current_time),
         );
+        // A move part way is where it has the head now, as played through:
+        // pose memory holds that before the first frame renders it, so a
+        // clear, a stop or a later move on a cue at the start point finds
+        // the head there, not where it was before the move, or nowhere.
+        if matches!(effect.effect_type, EffectType::Move { .. }) {
+            let elapsed = self.elapsed_at(&effect, self.last_song_time);
+            for (name, pose) in processing::move_poses_at(
+                self.fixtures.as_map(),
+                &self.focus_points,
+                &effect,
+                elapsed,
+            ) {
+                self.goals.insert(name.clone(), pose);
+                self.poses.insert(name, pose);
+            }
+        }
         self.active_effects.insert(effect.id.clone(), effect);
         self.cache.invalidate();
         Ok(())

@@ -667,3 +667,200 @@ fn a_move_takes_a_head_from_one_frozen_or_slowed() {
     bad.extend(compare_heads("slowed", slowed, &f, &pairs));
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+fn two_heads() -> [FixtureInfo; 2] {
+    [mover_at("m1", 1), mover_at("m2", 11)]
+}
+
+/// Checks the show's end against the last frame live has an effect on.
+fn end_check(name: &str, src: &str, f: &[FixtureInfo], bad: &mut Vec<String>) {
+    let live = live_end(src, f, 20000);
+    let end = LightingTimeline::new(shows(src)).show_end();
+    if live.abs_diff(end) > Duration::from_millis(15) {
+        bad.push(format!("{name} end: live {live:?} show_end {end:?}"));
+    }
+}
+
+/// A seek exactly onto a layer clear part way through a move holds the
+/// head where the move had it then, as played through: the move restored
+/// part way has not rendered when the clear lands in the first frame.
+#[test]
+fn a_seek_onto_a_layer_clear_holds_the_head_where_the_move_had_it() {
+    let src = show(mv("00:02.000", "") + "    @00:03.000\n    clear(layer: background)\n");
+    let bad = compare_heads(
+        "onto clear",
+        &src,
+        &[mover("m")],
+        &[(3000, 3000), (3000, 3500), (3000, 5000)],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// The same for a seek onto a `stop sequence` part way through its move.
+#[test]
+fn a_seek_onto_a_stop_holds_the_head_where_the_sequence_move_had_it() {
+    let src = "sequence \"q\" {\n    @00:00.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s\n}\n\n\
+        show \"s\" {\n    @00:02.000\n    sequence \"q\"\n    @00:03.000\n    stop sequence \"q\"\n}\n";
+    let bad = compare_heads(
+        "onto stop",
+        src,
+        &[mover("m")],
+        &[(3000, 3000), (3000, 3500), (3000, 5000)],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// And the DMX sent after a seek onto that clear, from the first frame:
+/// the head held where the clear caught it, then swept on by a later move
+/// from there, not dropped.
+#[test]
+fn a_seek_onto_a_clear_sends_the_held_head_from_its_first_frame() {
+    let src = show(mv("00:02.000", "") + "    @00:03.000\n    clear(layer: background)\n    @00:04.000\n    m: move pan: -90deg, tilt: 0deg, duration: 2s\n");
+    let f = [mover("m")];
+    let mut bad = Vec::new();
+    for (seek, at) in [
+        (3000, 3000),
+        (3000, 3500),
+        (3000, 4500),
+        (3010, 3500),
+        (3010, 4500),
+    ] {
+        let live = pan_of(&played(&src, &f, at));
+        let sought = pan_of(&seek_play(&src, &f, seek, at));
+        let close = matches!((live, sought), (Some(l), Some(s)) if (l - s).abs() <= 1.0);
+        if !close {
+            bad.push(format!(
+                "seek {seek} at {at}: live {live:?} seek {sought:?}"
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A seek onto a later move's cue that takes one head of a two-head move:
+/// the head sweeps on from where the earlier move had it, rather than
+/// snapping to the later move's target for want of a pose.
+#[test]
+fn a_seek_onto_a_later_move_sweeps_the_head_from_where_it_is() {
+    let src = "show \"s\" {\n    @00:02.000\n    m1, m2: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:03.000\n    m2: move pan: -90deg, tilt: 0deg, duration: 2s, layer: background\n}\n";
+    let bad = compare_heads(
+        "onto supersede",
+        src,
+        &two_heads(),
+        &[(3000, 3000), (3000, 3500), (3000, 4500), (3000, 6000)],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A layer clear of a move held by a freeze or slowed by the speed master,
+/// sought onto and past: the head holds where the move had it, and the
+/// show ends at the clear.
+#[test]
+fn a_clear_of_a_frozen_or_slowed_move_holds_the_head_after_a_seek() {
+    let f = [mover("m")];
+    let frozen = show(mv("00:02.000", "") + "    @00:02.500\n    freeze(layer: background)\n    @00:03.000\n    clear(layer: background)\n");
+    let slowed = show(mv("00:02.000", "") + "    @00:02.500\n    master(layer: background, speed: 0.5)\n    @00:03.500\n    clear(layer: background)\n");
+    let pairs = [
+        (2800, 2800),
+        (3000, 3000),
+        (3010, 3500),
+        (3500, 3500),
+        (4000, 4000),
+        (2700, 5000),
+    ];
+    let mut bad = compare_heads("frozen clear", &frozen, &f, &pairs);
+    bad.extend(compare_heads("slowed clear", &slowed, &f, &pairs));
+    end_check("frozen", &frozen, &f, &mut bad);
+    end_check("slowed", &slowed, &f, &mut bad);
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A move on another layer taking the head from a frozen move, sought
+/// onto: it sweeps from where the freeze holds the head, and the show ends
+/// with it, the frozen move over.
+#[test]
+fn a_seek_onto_a_move_taking_the_head_from_a_frozen_move() {
+    let f = [mover("m")];
+    let src = "show \"s\" {\n    @00:02.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:02.500\n    freeze(layer: foreground)\n    @00:03.000\n    m: move pan: -90deg, tilt: 0deg, duration: 2s, layer: background\n}\n";
+    let active = played(src, &f, 6000).get_active_effects().len();
+    let mut bad = compare_heads(
+        "frozen sup",
+        src,
+        &f,
+        &[(3000, 3000), (3500, 3500), (6000, 6000)],
+    );
+    end_check("frozen sup", src, &f, &mut bad);
+    assert!(bad.is_empty(), "{bad:#?} active at 6s {active}");
+}
+
+/// A clear in one show and a move in another at one time, in either file
+/// order: the move sweeps from where the clear held the head.
+#[test]
+fn a_clear_and_a_move_at_one_time_in_two_shows_after_a_seek() {
+    let f = [mover("m")];
+    let a = format!(
+        "show \"a\" {{\n{}    @00:03.000\n    clear(layer: background)\n}}\n",
+        mv("00:02.000", "")
+    );
+    let b = "show \"b\" {\n    @00:03.000\n    m: move pan: -90deg, tilt: 0deg, duration: 2s\n}\n"
+        .to_string();
+    let pairs = [
+        (3000, 3000),
+        (3000, 4000),
+        (3500, 3500),
+        (4000, 4000),
+        (2500, 6000),
+        (6000, 6000),
+    ];
+    let mut bad = Vec::new();
+    for (n, s) in [("ab", format!("{a}\n{b}")), ("ba", format!("{b}\n{a}"))] {
+        bad.extend(compare_heads(n, &s, &f, &pairs));
+        end_check(n, &s, &f, &mut bad);
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A sequence stopped and started again on one cue part way through its
+/// move, then a show's move and another stop: each sought onto and past.
+#[test]
+fn a_sequence_stopped_and_restarted_at_one_time_after_a_seek() {
+    let f = [mover("m")];
+    let src = "sequence \"q\" {\n    @00:00.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s\n}\n\n\
+        show \"s\" {\n    @00:02.000\n    sequence \"q\"\n    @00:03.000\n    stop sequence \"q\"\n    sequence \"q\"\n    @00:03.500\n    m: move pan: -90deg, tilt: 0deg, duration: 1s\n    stop sequence \"q\"\n}\n";
+    let pairs = [
+        (3000, 3000),
+        (3200, 3200),
+        (3500, 3500),
+        (3500, 4000),
+        (3700, 3700),
+        (5000, 5000),
+        (2500, 6000),
+    ];
+    let mut bad = compare_heads("stop restart", src, &f, &pairs);
+    end_check("stop restart", src, &f, &mut bad);
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A move taking one head of a frozen two-head move, then an unfreeze and
+/// a slow down: the other head runs on slowed from where it froze.
+#[test]
+fn an_unfreeze_after_a_head_is_taken_runs_the_other_on_after_a_seek() {
+    let f = two_heads();
+    let src = "show \"s\" {\n    @00:02.000\n    m1, m2: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:02.500\n    freeze(layer: foreground)\n    @00:03.000\n    m2: move pan: -90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:03.500\n    unfreeze(layer: foreground)\n    master(layer: foreground, speed: 0.5)\n}\n";
+    let pairs = [
+        (3000, 3000),
+        (3200, 3200),
+        (3500, 3500),
+        (3500, 5000),
+        (4000, 4000),
+        (6000, 6000),
+        (9000, 9000),
+    ];
+    let mut bad = compare_heads("unfreeze after cut", src, &f, &pairs);
+    end_check("unfreeze after cut", src, &f, &mut bad);
+    assert!(bad.is_empty(), "{bad:#?}");
+}
