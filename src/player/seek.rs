@@ -97,9 +97,8 @@ impl Player {
         let Some(song) = self.get_playlist().current() else {
             return position;
         };
-        // A looping song's elapsed runs on over its passes: where it is in
-        // the pass it is on is what to resume from.
-        let position = song.position_in_pass(position);
+        // The position is already the place in the pass playing: the log's
+        // passes put it back as they fell due.
         // Paused on the song's very end: there is nothing left to resume,
         // so the next play starts it over.
         if check_start_position(&song, position, "").is_err() {

@@ -3592,6 +3592,105 @@ mod test {
             assert_eq!(notes, vec![60, 61, 60, 61], "{:?}", sender.sent);
         }
 
+        /// A section armed in a song looping with a crossfade loops on its
+        /// own seam, the notes with it, whether it reaches into the
+        /// crossfade's tail or ends on the song's end: the whole-song pass
+        /// never starts under it (it used to be refused in such a song). The
+        /// jumps come from the playback's publisher, deciding as the audio
+        /// does.
+        #[test]
+        fn a_section_in_a_crossfading_song_loops_without_a_pass_under_it() {
+            // A 1s song crossfading over its last 0.4s (passes would start
+            // at 0.6s); notes at 0, 0.45, 0.55 and 0.65s.
+            for (start, end) in [(400, 700), (500, 1_000)] {
+                let midi = make_events(&[0, 450, 550, 650]);
+                let cancel = CancelHandle::new();
+                let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+                let exclude = HashSet::new();
+                let clock = PlaybackClock::wall();
+                clock.start();
+                let mut sender = TimedSender {
+                    clock: clock.clone(),
+                    sent: Vec::new(),
+                };
+                let loop_control = crate::playsync::LoopControl::new();
+                *loop_control.active_section.write() = Some(crate::player::SectionBounds {
+                    name: "a".to_string(),
+                    start_time: Duration::from_millis(start),
+                    end_time: Duration::from_millis(end),
+                });
+                let log = loop_control.section_jumps.clone();
+                let loop_break = loop_control.loop_break.clone();
+                let done = Arc::new(AtomicBool::new(false));
+                let song = Arc::new(crate::songs::Song::new_for_test_crossfading(
+                    "Crossfading",
+                    Duration::from_secs(1),
+                    Duration::from_millis(400),
+                ));
+                let publisher = crate::section_loop::JumpPublisher {
+                    clock: clock.clone(),
+                    start_time: Duration::ZERO,
+                    cancel: cancel.clone(),
+                    done: done.clone(),
+                    audio_gone: None,
+                    loop_control: loop_control.clone(),
+                    song: Some(song),
+                };
+                let publisher =
+                    thread::spawn(move || crate::section_loop::publish_jumps(publisher));
+                let breaker = {
+                    let loop_break = loop_break.clone();
+                    let clock = clock.clone();
+                    thread::spawn(move || {
+                        wait_until(&clock, 2_300);
+                        loop_break.store(true, Ordering::Relaxed);
+                    })
+                };
+                run_playback(
+                    &mut sender,
+                    PlaybackContext {
+                        precomputed: &midi,
+                        start_time: Duration::ZERO,
+                        playback_delay: Duration::ZERO,
+                        cancel_handle: &cancel,
+                        ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                        finished: Arc::new(AtomicBool::new(false)),
+                        exclude_channels: &exclude,
+                        clock: &clock,
+                        loop_break,
+                        active_section: loop_control.active_section.clone(),
+                        section_jumps: log.clone(),
+                    },
+                );
+                breaker.join().unwrap();
+                done.store(true, Ordering::Relaxed);
+                publisher.join().unwrap();
+                let mut cursor = crate::playsync::JumpCursor::new(log);
+                let mut jumps = 0;
+                while let Some(jump) = cursor.due(Duration::MAX) {
+                    jumps += 1;
+                    assert_eq!(
+                        (jump.to, jump.overlap),
+                        (Duration::from_millis(start), Duration::ZERO),
+                        "section {start}-{end}ms: a pass under it: {jump:?}"
+                    );
+                }
+                assert!(jumps >= 2, "section {start}-{end}ms: {jumps} jumps");
+                let notes: Vec<u8> = sender.sent.iter().map(|(_, note)| *note).collect();
+                // The top's note once, never again (no pass); the section's
+                // notes round and round.
+                assert_eq!(
+                    notes.iter().filter(|note| **note == 60).count(),
+                    1,
+                    "section {start}-{end}ms: {notes:?}"
+                );
+                assert!(
+                    notes.iter().filter(|note| **note == 62).count() >= 3,
+                    "section {start}-{end}ms: {notes:?}"
+                );
+            }
+        }
+
         fn wait_until(clock: &PlaybackClock, ms: u64) {
             while clock.elapsed() < Duration::from_millis(ms) {
                 std::thread::sleep(Duration::from_millis(2));

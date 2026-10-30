@@ -1066,18 +1066,6 @@ impl Player {
             .current()
             .ok_or("Cannot loop section: no current song")?;
 
-        // A song whose passes overlap loops as a whole; a section loop inside
-        // it would need its own grid across the overlapping passes.
-        if song.loop_crossfade().is_some() {
-            return Err(format!(
-                "Cannot loop section '{}': song '{}' loops with a loop_crossfade, which \
-                 section loops do not combine with",
-                section_name,
-                song.name()
-            )
-            .into());
-        }
-
         let (start_time, end_time) = song.resolve_section(section_name).ok_or_else(|| {
             format!(
                 "Section '{}' not found or cannot be resolved (missing beat grid?)",
@@ -1204,9 +1192,7 @@ impl Player {
         };
 
         let sections = song.sections();
-        // Nothing to offer in a song looping with a crossfade: it cannot
-        // loop a section (see `loop_section`).
-        if sections.is_empty() || song.loop_crossfade().is_some() {
+        if sections.is_empty() {
             return;
         }
 
