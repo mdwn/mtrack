@@ -236,6 +236,7 @@ fn config_error_to_status(e: config::ConfigError) -> Status {
     match e {
         config::ConfigError::StaleChecksum { .. } => Status::failed_precondition(e.to_string()),
         config::ConfigError::InvalidProfileIndex { .. } => Status::out_of_range(e.to_string()),
+        config::ConfigError::Validation(_) => Status::invalid_argument(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
 }
@@ -1488,6 +1489,67 @@ mod test {
             .into_inner();
         assert!(applied.applied);
         assert!(applied.message.is_empty(), "{}", applied.message);
+        Ok(())
+    }
+
+    /// A config change the next start would refuse, a second MIDI
+    /// controller, was saved and applied, and mtrack then failed to start.
+    /// It is refused as an invalid argument, and the file is left as it was.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_config_update_that_would_not_load_is_an_invalid_argument(
+    ) -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::{
+            player_service_server::PlayerService, AddProfileRequest, UpdateControllersRequest,
+        };
+
+        let (player, _client, _device) = setup_grpc().await?;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "songs: assets/songs\n")?;
+        let store = Arc::new(config::ConfigStore::new(
+            config::Player::deserialize(&path)?,
+            path.clone(),
+        ));
+        player.set_config_store(store.clone());
+        let server = super::PlayerServer::with_config_store(player.clone(), store.clone());
+        let midi = config::Controller::Midi(config::MidiController::new(
+            config::midi::note_on(16, 0, 127),
+            config::midi::note_on(16, 1, 127),
+            config::midi::note_on(16, 2, 127),
+            config::midi::note_on(16, 3, 127),
+            config::midi::note_on(16, 4, 127),
+            config::midi::note_on(16, 5, 127),
+        ));
+        let controllers = serde_json::to_string(&[&midi, &midi])?;
+        let before = std::fs::read_to_string(&path)?;
+        let (_, checksum) = store.read_yaml().await?;
+
+        let refused = server
+            .update_controllers(tonic::Request::new(UpdateControllersRequest {
+                controllers_json: controllers.clone(),
+                expected_checksum: checksum.clone(),
+            }))
+            .await
+            .expect_err("two MIDI controllers were accepted");
+        assert_eq!(refused.code(), tonic::Code::InvalidArgument);
+        assert!(
+            refused.message().contains("only one can watch"),
+            "{refused}"
+        );
+
+        let profile = format!(r#"{{"hostname": "two-midi", "controllers": {controllers}}}"#);
+        let refused = server
+            .add_profile(tonic::Request::new(AddProfileRequest {
+                profile_json: profile,
+                expected_checksum: checksum.clone(),
+            }))
+            .await
+            .expect_err("a profile with two MIDI controllers was accepted");
+        assert_eq!(refused.code(), tonic::Code::InvalidArgument);
+
+        assert_eq!(std::fs::read_to_string(&path)?, before);
+        assert_eq!(store.read_yaml().await?.1, checksum);
+        config::Player::deserialize(&path)?;
         Ok(())
     }
 

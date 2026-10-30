@@ -153,7 +153,7 @@ fn config_store_error_response(e: config::ConfigError) -> axum::response::Respon
         config::ConfigError::StaleChecksum { .. } => {
             (StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))).into_response()
         }
-        config::ConfigError::InvalidProfileIndex { .. } => (
+        config::ConfigError::InvalidProfileIndex { .. } | config::ConfigError::Validation(_) => (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": e.to_string()})),
         )
@@ -1609,6 +1609,50 @@ mod test {
         let result: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(result["yaml"].is_string());
         assert!(!result["checksum"].as_str().unwrap().is_empty());
+    }
+
+    /// A second MIDI controller was saved and applied, and mtrack then
+    /// failed to start on the config it wrote. It is refused with a 400, and
+    /// the file is left as it was.
+    #[tokio::test]
+    async fn put_config_controllers_refuses_a_config_that_would_not_load() {
+        let (state, _dir) = test_state_with_store();
+        let checksum = get_checksum(&state).await;
+        let path = state.config_path.clone();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let midi = crate::config::Controller::Midi(crate::config::MidiController::new(
+            crate::config::midi::note_on(16, 0, 127),
+            crate::config::midi::note_on(16, 1, 127),
+            crate::config::midi::note_on(16, 2, 127),
+            crate::config::midi::note_on(16, 3, 127),
+            crate::config::midi::note_on(16, 4, 127),
+            crate::config::midi::note_on(16, 5, 127),
+        ));
+
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/controllers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "controllers": [midi, midi]
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("only one can watch"), "{body}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert_eq!(get_checksum(&state).await, checksum);
     }
 
     #[tokio::test]

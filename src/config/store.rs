@@ -288,6 +288,14 @@ impl ConfigStore {
             return Err(e);
         }
 
+        // Checked as the next start will check it. The running player took
+        // a section on its own, so two MIDI controllers in one profile, say,
+        // were written, applied, and then refused at the next load (#578).
+        if let Err(e) = Self::validate(&guard) {
+            *guard = rollback;
+            return Err(e);
+        }
+
         // The checksum covers the whole in-memory config, including profiles
         // loaded from a directory. That is deliberate and independent of how
         // the config is split across files: it is what `read` hashes, so
@@ -309,6 +317,13 @@ impl ConfigStore {
             yaml: new_yaml,
             checksum: new_checksum,
         })
+    }
+
+    /// Validates the whole config, as [`Player::deserialize`] does at load.
+    fn validate(config: &Player) -> Result<(), ConfigError> {
+        config
+            .validate()
+            .map_err(|errors| ConfigError::Validation(errors.join("; ")))
     }
 
     /// Writes the config to disk, respecting how it is split across files.
@@ -638,6 +653,7 @@ impl ConfigStore {
         gains: indexmap::IndexMap<String, f32>,
     ) -> Result<(), ConfigError> {
         let mut guard = self.inner.write().await;
+        let rollback = guard.clone();
 
         // Update the in-memory active profile so subsequent reads are current.
         let profile = guard.active_profile_mut(hostname).ok_or_else(|| {
@@ -647,6 +663,11 @@ impl ConfigStore {
             ConfigError::Validation("active profile has no audio config".to_string())
         })?;
         audio.set_track_gains(gains.clone());
+        // A gain the next load would refuse is not written either.
+        if let Err(e) = Self::validate(&guard) {
+            *guard = rollback;
+            return Err(e);
+        }
 
         // `directory_profiles` rather than `resolved_profiles_dir`: a
         // configured-but-empty directory falls back to inline profiles at load
@@ -913,6 +934,51 @@ profiles:
 
     /// The same, on a `profiles_dir` layout: the owning file is rewritten and
     /// the main config is not turned into an inline copy of the directory.
+    /// A store mutation is checked as the next load checks it. A second
+    /// MIDI controller, through `update_controllers` or a profile, was
+    /// written and applied, and the config then failed to load. It is
+    /// refused, and neither the file nor the store changes.
+    #[tokio::test]
+    async fn a_mutation_the_next_load_would_refuse_is_not_written() {
+        let yaml = "songs: songs\nprofiles:\n  - audio:\n      device: a\n      track_mappings:\n        click: [1]\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        let player = Player::deserialize(&path).unwrap();
+        let store = ConfigStore::new(player, path.clone());
+        let snap = store.read().await.unwrap();
+        let midi = || {
+            Controller::Midi(super::super::MidiController::new(
+                super::super::midi::note_on(16, 0, 127),
+                super::super::midi::note_on(16, 1, 127),
+                super::super::midi::note_on(16, 2, 127),
+                super::super::midi::note_on(16, 3, 127),
+                super::super::midi::note_on(16, 4, 127),
+                super::super::midi::note_on(16, 5, 127),
+            ))
+        };
+        let mut two_midi = Profile::new(None, None, None, None);
+        two_midi.set_controllers(vec![midi(), midi()]);
+
+        let refusals = [
+            store
+                .update_controllers(vec![midi(), midi()], &snap.checksum)
+                .await,
+            store.add_profile(two_midi.clone(), &snap.checksum).await,
+            store.update_profile(0, two_midi, &snap.checksum).await,
+        ];
+        for refused in refusals {
+            let e = refused.expect_err("a second MIDI controller was accepted");
+            assert!(
+                matches!(&e, ConfigError::Validation(m) if m.contains("only one can watch")),
+                "{e}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), yaml);
+        assert_eq!(store.read().await.unwrap().checksum, snap.checksum);
+        Player::deserialize(&path).expect("the config still loads");
+    }
+
     #[tokio::test]
     async fn update_midi_profiles_dir_writes_the_owning_profile_file() {
         let dir = tempfile::tempdir().unwrap();

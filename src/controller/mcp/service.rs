@@ -899,7 +899,7 @@ impl McpServer {
         let snapshot = store
             .update_audio(audio, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
+            .map_err(config_err)?;
         self.reload_and_respond(snapshot).await
     }
 
@@ -916,7 +916,7 @@ impl McpServer {
         let snapshot = store
             .update_midi(midi, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
+            .map_err(config_err)?;
         self.reload_and_respond(snapshot).await
     }
 
@@ -933,7 +933,7 @@ impl McpServer {
         let snapshot = store
             .update_dmx(dmx, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
+            .map_err(config_err)?;
         self.reload_and_respond(snapshot).await
     }
 
@@ -952,7 +952,7 @@ impl McpServer {
         let snapshot = store
             .update_controllers(controllers, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
+            .map_err(config_err)?;
         self.reload_and_respond(snapshot).await
     }
 
@@ -967,7 +967,7 @@ impl McpServer {
         let snapshot = store
             .add_profile(profile, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
+            .map_err(config_err)?;
         self.reload_and_respond(snapshot).await
     }
 
@@ -988,7 +988,7 @@ impl McpServer {
         let snapshot = store
             .update_profile(args.index as usize, profile, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
+            .map_err(config_err)?;
         self.reload_and_respond(snapshot).await
     }
 
@@ -1001,7 +1001,7 @@ impl McpServer {
         let snapshot = store
             .remove_profile(args.index as usize, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
+            .map_err(config_err)?;
         self.reload_and_respond(snapshot).await
     }
 
@@ -3480,6 +3480,15 @@ fn parse_mm_ss(s: &str) -> Result<f64, McpError> {
 /// Wraps a domain error into [`McpError::internal_error`].
 pub(crate) fn internal_err<E: std::fmt::Display>(e: E) -> McpError {
     McpError::internal_error(e.to_string(), None)
+}
+
+/// A config store error as an MCP error: a change the config would not load
+/// with is the caller's to fix, not a fault of the server.
+fn config_err(e: crate::config::ConfigError) -> McpError {
+    match e {
+        crate::config::ConfigError::Validation(_) => McpError::invalid_params(e.to_string(), None),
+        e => internal_err(e),
+    }
 }
 
 /// Sends a `notifications/resources/updated` to a peer with a JSON payload

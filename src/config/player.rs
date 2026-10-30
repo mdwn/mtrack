@@ -327,6 +327,17 @@ impl Player {
                     }
                 }
             }
+        } else if let Some(profile) = self.legacy_profile() {
+            // A config edited in place without profiles loads as the one its
+            // legacy fields make, which the load validates whole: two MIDI
+            // controllers there passed here and failed the next start.
+            if let Err(profile_errors) = profile.validate() {
+                for e in profile_errors {
+                    if !errors.contains(&e) {
+                        errors.push(e);
+                    }
+                }
+            }
         }
 
         if errors.is_empty() {
@@ -417,7 +428,16 @@ impl Player {
             return;
         }
 
-        // Build a single profile from legacy fields.
+        let profile = self.legacy_profile();
+        self.status_events = None;
+        if let Some(profile) = profile {
+            self.profiles = Some(vec![profile]);
+        }
+    }
+
+    /// The single profile a config without profiles loads as, built from its
+    /// legacy fields, if any subsystem is configured.
+    fn legacy_profile(&self) -> Option<Profile> {
         let audio = if let Some(audio) = &self.audio {
             Some(audio.clone())
         } else {
@@ -457,7 +477,7 @@ impl Player {
         // Collect controllers from legacy top-level fields.
         let controllers = self.collect_controllers();
 
-        let status_events = self.status_events.take();
+        let status_events = self.status_events.clone();
 
         // Create a profile if any subsystem is configured.
         if audio_config.is_some()
@@ -471,7 +491,9 @@ impl Player {
             profile.set_trigger(trigger);
             profile.set_controllers(controllers);
             profile.set_status_events(status_events);
-            self.profiles = Some(vec![profile]);
+            Some(profile)
+        } else {
+            None
         }
     }
 

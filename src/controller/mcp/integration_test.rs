@@ -5797,6 +5797,68 @@ async fn mcp_controller_change_leaves_the_mcp_server_running() -> Result<(), Box
     Ok(())
 }
 
+/// A config change the next start would refuse, here a second MIDI
+/// controller, was saved and applied, and mtrack then failed to start. It is
+/// refused as invalid params, and the config file is left as it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_refuses_a_config_change_that_would_not_load() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let mcp = json!({"kind": "mcp", "port": port});
+    player.start_controllers(vec![serde_json::from_value(mcp.clone())?]);
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let midi = serde_json::to_value(config::Controller::Midi(config::MidiController::new(
+        config::midi::note_on(16, 0, 127),
+        config::midi::note_on(16, 1, 127),
+        config::midi::note_on(16, 2, 127),
+        config::midi::note_on(16, 3, 127),
+        config::midi::note_on(16, 4, 127),
+        config::midi::note_on(16, 5, 127),
+    )))?;
+    let before = std::fs::read_to_string(&fixture.config_path)?;
+    let cfg = tool_json(&call_tool(&client, &url, &session, 10, "get_config", json!({})).await);
+    let checksum = cfg["checksum"].as_str().expect("checksum").to_string();
+    for (id, tool, body) in [
+        (11, "update_controllers", json!([mcp, midi, midi])),
+        (
+            12,
+            "add_profile",
+            json!({"kind": "hardware_profile", "hostname": "two-midi", "controllers": [midi, midi]}),
+        ),
+    ] {
+        let refused = call_tool(
+            &client,
+            &url,
+            &session,
+            id,
+            tool,
+            json!({"body": body, "expected_checksum": checksum}),
+        )
+        .await;
+        assert_eq!(refused["error"]["code"], json!(-32602), "{tool}: {refused}");
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("only one can watch")),
+            "{tool}: {refused}"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&fixture.config_path)?, before);
+    let after = tool_json(&call_tool(&client, &url, &session, 13, "get_config", json!({})).await);
+    assert_eq!(after["checksum"].as_str(), Some(checksum.as_str()));
+    player.shutdown_controllers();
+    Ok(())
+}
+
 /// A config change made over MCP while a song plays or is paused is saved,
 /// and the hardware reload waits for the song: the reply says it has not
 /// been applied yet, rather than reading as a change that took effect.

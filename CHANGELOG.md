@@ -128,6 +128,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MIDI controller, which could never watch the one MIDI device, is refused by config validation;
   one that gets past it reads as that error, and is no longer retried, which restarted the
   working one each time.
+- **A config change the next start would refuse is refused (#578)**: changes made over MCP,
+  gRPC or the web UI (`update_controllers`, the profile tools and the other section updates)
+  were saved without the checks a load runs, so a second MIDI controller, say, was written and
+  applied, and mtrack then failed to start. Each change is now checked as the whole config the
+  next start would load, and one that fails is not saved: MCP answers invalid params, gRPC
+  `INVALID_ARGUMENT` and the web UI a 400, with the reason.
 - **The latest move takes a mover, whatever its layer (#599)**: two moves on different layers
   over one head blended by layer, and where the head came to rest depended on how you got there:
   played through, after a seek and in `evaluate_show` it could land on three different poses. A
