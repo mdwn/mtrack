@@ -1128,12 +1128,21 @@ impl TempoMap {
             return ticks;
         };
 
+        // The lead-in is whole bars at the starting tempo: gear counts beats,
+        // and bars, from the first pulse after Start, so bar 1 must be a whole
+        // number of bars of pulses in. What is left over before the first
+        // whole bar has no pulses. Snapped first, so a count-in of exactly
+        // whole bars that floating point puts a hair short keeps its first.
         let interval = 60.0 / self.initial_bpm / PULSES_PER_QUARTER;
+        let bar_pulses = ((self.initial_time_signature.beats_per_measure() * PULSES_PER_QUARTER)
+            .round() as usize)
+            .max(1);
         let start = self.start_offset.as_secs_f64();
-        let lead = (start / interval).floor() as usize;
-        for k in (1..=lead.min(MAX_PULSES)).rev() {
-            let at = start - k as f64 * interval;
-            if at >= 0.0 && at < until.as_secs_f64() {
+        let lead_bars = (start / (bar_pulses as f64 * interval) + 1e-9).floor() as usize;
+        let lead = lead_bars.saturating_mul(bar_pulses).min(MAX_PULSES);
+        for k in (1..=lead).rev() {
+            let at = (start - k as f64 * interval).max(0.0);
+            if at < until.as_secs_f64() {
                 ticks.push(Duration::from_secs_f64(at));
             }
         }
@@ -1191,24 +1200,50 @@ mod tests {
             }
         }
 
-        /// A count-in before bar 1 pulses at the starting tempo, in phase:
-        /// bar 1 falls exactly on a pulse.
+        /// A count-in before bar 1 pulses at the starting tempo, in whole
+        /// bars: gear counting from the first pulse after Start has bar 1 on
+        /// a downbeat. What is left over before them has no pulses.
         #[test]
-        fn time_before_bar_one_pulses_in_phase_with_it() {
-            let ticks = secs(
-                &map(Duration::from_millis(1_010), 120.0, vec![])
-                    .beat_clock_ticks(Duration::from_secs(2)),
-            );
-            let bar_one = ticks
-                .iter()
-                .position(|at| (at - 1.010).abs() < 1e-6)
-                .expect("a pulse on bar 1");
-            // 1.010 s holds 48 whole pulses and a part one: the first pulse
-            // is that part in, not at zero.
-            assert_eq!(bar_one, 48);
-            assert!((ticks[0] - 0.010).abs() < 1e-6, "{}", ticks[0]);
-            for pair in ticks.windows(2) {
-                assert!((pair[1] - pair[0] - PULSE_120).abs() < 1e-6, "{pair:?}");
+        fn time_before_bar_one_pulses_in_whole_bars() {
+            // At 120 BPM in 4/4 a bar is 2 s and 96 pulses.
+            for (start_ms, lead_bars) in [(300, 0), (2_000, 1), (2_137, 1), (4_999, 2), (5_000, 2)]
+            {
+                let start = Duration::from_millis(start_ms);
+                let ticks = map(start, 120.0, vec![]).beat_clock_ticks(Duration::from_secs(8));
+                let bar_one = ticks
+                    .iter()
+                    .position(|at| *at == start)
+                    .expect("a pulse on bar 1");
+                assert_eq!(bar_one, lead_bars * 96, "start {start_ms}ms");
+                let first = start.as_secs_f64() - lead_bars as f64 * 2.0;
+                assert!(
+                    (ticks[0].as_secs_f64() - first).abs() < 1e-6,
+                    "start {start_ms}ms"
+                );
+                for pair in secs(&ticks).windows(2) {
+                    assert!((pair[1] - pair[0] - PULSE_120).abs() < 1e-6, "{pair:?}");
+                }
+            }
+        }
+
+        /// A count-in of exactly whole bars starts with a pulse at zero, at
+        /// any tempo: floating point putting it a hair short must not drop
+        /// a bar.
+        #[test]
+        fn a_count_in_of_whole_bars_pulses_from_zero() {
+            for bpm in [60.0, 90.0, 100.0, 120.0, 133.0, 140.0, 150.0, 170.0, 180.0] {
+                for bars in 1..=8u32 {
+                    let start = Duration::from_secs_f64(bars as f64 * 4.0 * 60.0 / bpm);
+                    let ticks = map(start, bpm, vec![]).beat_clock_ticks(Duration::from_secs(40));
+                    assert!(
+                        ticks[0] < Duration::from_micros(1),
+                        "{bpm} BPM, {bars} bars: {:?}",
+                        ticks[0]
+                    );
+                    for pair in ticks.windows(2) {
+                        assert!(pair[1] > pair[0], "{bpm} BPM, {bars} bars: {pair:?}");
+                    }
+                }
             }
         }
 

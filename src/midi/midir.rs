@@ -956,16 +956,16 @@ fn run_beat_clock(
     loop {
         let mut next_pass = false;
         for tick in ticks {
-            // Song time on the clock this schedule plays to.
-            let tick_time = pass_offset + *tick;
-            if tick_time < start_time {
-                continue;
-            }
             if let Some(passes) = passes {
                 if *tick >= passes.period && !passes.loop_break.load(Ordering::Relaxed) {
                     next_pass = true;
                     break;
                 }
+            }
+            // Song time on the clock this schedule plays to.
+            let tick_time = pass_offset + *tick;
+            if tick_time < start_time {
+                continue;
             }
 
             if cancel_handle.is_cancelled() {
@@ -1017,7 +1017,17 @@ fn run_beat_clock(
         let looping = passes.filter(|passes| !passes.loop_break.load(Ordering::Relaxed));
         match looping {
             Some(passes) if next_pass || ticks.last().is_some_and(|last| *last < passes.period) => {
-                pass_offset += passes.period;
+                // The second pass starts at the first boundary, or at once
+                // for a start already past it (in the crossfade's tail), as
+                // the audio's, lights' and notes' do (`Song::loop_pass_start`).
+                pass_offset = if pass_offset.is_zero() {
+                    passes.period.max(start_time)
+                } else {
+                    pass_offset + passes.period
+                };
+                // The gap across the seam is no tempo: a stop just past it
+                // would hold that as the tempo to keep.
+                prev_tick = None;
             }
             _ => break,
         }
@@ -3387,6 +3397,123 @@ mod test {
             let ticks: Vec<Duration> = (40..45).map(|i| Duration::from_millis(i * 10)).collect();
             let clocks = play_looping(&ticks, Duration::from_millis(300), usize::MAX);
             assert_eq!(clocks.len(), 5);
+        }
+
+        /// A seek into the crossfade tail past its last clock: audio, lights
+        /// and notes start the next pass at once (`Song::loop_pass_start`),
+        /// and the clock goes round with them rather than stopping.
+        #[test]
+        fn a_start_past_the_last_clock_in_the_tail_still_loops() {
+            let period = Duration::from_millis(300);
+            // After the last clock (490ms), before the song's end (500ms).
+            let start = Duration::from_millis(495);
+            let clock = PlaybackClock::wall();
+            clock.start();
+            let loop_break = Arc::new(AtomicBool::new(false));
+            let mut sender = LoopingSender {
+                clock: clock.clone(),
+                clocks: Vec::new(),
+                break_after: 45,
+                loop_break: loop_break.clone(),
+            };
+            let (_tx, rx) = mpsc::channel();
+            run_beat_clock(
+                &mut sender,
+                &every_10ms(500),
+                start,
+                Some(&BeatClockPasses { period, loop_break }),
+                &CancelHandle::new(),
+                &clock,
+                &rx,
+            );
+            // The audio goes on into pass 1 at once and keeps looping; the
+            // clock should go round with it (45 clocks, then the rest of
+            // the pass under way).
+            assert!(sender.clocks.len() >= 45, "{:?}", sender.clocks);
+        }
+
+        /// A seek into the crossfade tail before its last clock: the next pass
+        /// starts at once, on the song's grid, not a period after the tail's
+        /// start, which ran the clock ahead of the audio for the whole loop.
+        #[test]
+        fn a_start_in_the_tail_starts_the_next_pass_at_once() {
+            let clock = PlaybackClock::wall();
+            clock.start();
+            let loop_break = Arc::new(AtomicBool::new(false));
+            let mut sender = LoopingSender {
+                clock: clock.clone(),
+                clocks: Vec::new(),
+                break_after: 31,
+                loop_break: loop_break.clone(),
+            };
+            let (_tx, rx) = mpsc::channel();
+            run_beat_clock(
+                &mut sender,
+                &every_10ms(500),
+                Duration::from_millis(350),
+                Some(&BeatClockPasses {
+                    period: Duration::from_millis(300),
+                    loop_break,
+                }),
+                &CancelHandle::new(),
+                &clock,
+                &rx,
+            );
+            // Nothing of the tail; the next pass whole from its start (30
+            // clocks to the seam), then, broken, the one after to its end.
+            assert_eq!(sender.clocks.len(), 30 + 50, "{:?}", sender.clocks);
+            assert!(
+                sender.clocks[0] < Duration::from_millis(100),
+                "{:?}",
+                sender.clocks[0]
+            );
+        }
+
+        /// A stop just past a seam hands back the song's tempo to hold, not
+        /// the gap across the seam.
+        #[test]
+        fn a_stop_just_after_a_seam_holds_the_songs_tempo() {
+            struct CancelAfter {
+                n: usize,
+                sent: usize,
+                cancel: CancelHandle,
+            }
+            impl MidiSender for CancelAfter {
+                fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                    if bytes == clock_bytes().as_slice() {
+                        self.sent += 1;
+                        if self.sent == self.n {
+                            self.cancel.cancel();
+                        }
+                    }
+                    Ok(())
+                }
+            }
+            let cancel = CancelHandle::new();
+            // Clocks every 10ms; a pass every 291ms: 30 clocks a pass, the
+            // seam 1ms after the last.
+            let mut sender = CancelAfter {
+                n: 31,
+                sent: 0,
+                cancel: cancel.clone(),
+            };
+            let clock = PlaybackClock::wall();
+            clock.start();
+            let (_tx, rx) = mpsc::channel();
+            let interval = run_beat_clock(
+                &mut sender,
+                &every_10ms(500),
+                Duration::ZERO,
+                Some(&BeatClockPasses {
+                    period: Duration::from_millis(291),
+                    loop_break: Arc::new(AtomicBool::new(false)),
+                }),
+                &cancel,
+                &clock,
+                &rx,
+            )
+            .interval();
+            assert_eq!(interval, Some(Duration::from_millis(10)));
         }
 
         #[test]

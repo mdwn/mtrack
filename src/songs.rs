@@ -830,7 +830,14 @@ impl Song {
         if let Some(beat_clock) = sheet.and_then(|sheet| sheet.beat_clock.as_ref()) {
             return Some(beat_clock.ticks_from(Duration::ZERO).to_vec());
         }
-        let ticks = self.lighting_tempo_map()?.beat_clock_ticks(self.length());
+        // To the song's end, or its MIDI file's, for a song with no audio.
+        let midi_end = sheet
+            .and_then(|sheet| sheet.precomputed.events().last())
+            .map(|event| event.time)
+            .unwrap_or_default();
+        let ticks = self
+            .lighting_tempo_map()?
+            .beat_clock_ticks(self.length().max(midi_end));
         (!ticks.is_empty()).then_some(ticks)
     }
 
