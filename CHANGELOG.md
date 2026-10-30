@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Section loops in every song**: a section now loops the same way whether the song does not
+  loop, loops plainly, or loops with a `loop_crossfade`; `loop_section` used to refuse a song
+  with a crossfade, and reactive looping offered none of its sections. An armed section always
+  takes precedence over the song's own loop: one reaching into the crossfade, or ending on the
+  song's end, goes round on its own 10 ms seam, and the whole-song crossfade does not start
+  early under it. Once it is broken, the song goes round as a whole again from where playback
+  is, at once (over what is left of the crossfade) if that is already inside it.
+
 - **The beat clock follows a song's tempo without a MIDI file** (#602): the MIDI beat clock
   came only from tempo events in a song's MIDI file, so a song with a `tempo:` block, or only a
   click track, sent none. It now follows the MIDI file's tempo, else the song's `tempo:` (tempo
@@ -122,6 +130,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MIDI-file light shows (`dmx_file`) are unaffected.
 
 ### Fixed
+
+- **A looping song's passes are decided once, and followed by everything** (#606): the audio
+  (or, with no audio, the playback's own publisher) now decides a looping song's passes as it
+  decides section loop jumps, on the same trigger, and puts them in the same log, each with its
+  overlap; the notes, lights, beat clock and position follow them all from there instead of
+  each keeping a pass grid of its own. A plain loop now restarts on the trigger rather than when
+  the audio files run out, and a loop break's fade carries on into another pass from where the
+  pass actually ends. The notes and lights also follow the log until the playback is over,
+  rather than stopping at their last note or cue: a show whose last cue falls inside a section
+  that keeps looping is re-cued each time round, and a section armed after a song's last MIDI
+  note plays its notes again. A song without loops ends as it did.
 
 - **The beat clock follows section loops, and keeps with the audio over long loops** (#604): a
   section loop took the notes and audio back to the section's start at its end, but the clock ran

@@ -251,8 +251,11 @@ loop_crossfade_cut: [click, cues]
 - **MIDI DMX** restarts with the new pass rather than crossing.
 - The playhead restarts with each new pass, which arrives a pass's length less the
   crossfade after the last. Playback started inside the overlap starts the next pass at once.
-- A song with `loop_crossfade` loops as a whole: its sections cannot be looped, and are not
-  offered for reactive looping.
+- Sections loop in a song with `loop_crossfade` as in any other, and are offered for reactive
+  looping. An armed section always comes first: one reaching into the crossfade, or ending on
+  the song's end, goes round on its own short seam, and no pass starts under it. Once its loop
+  is broken the song goes round as a whole again, the next pass starting where playback then
+  is -- at once, over what is left of the crossfade, if it is already inside it.
 
 At a steady tempo, with the crossfade in whole beats or measures and a song whose audio is a
 whole number of beats long, the new pass's beats fall on the old pass's, so the overlap stays in
