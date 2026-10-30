@@ -882,8 +882,19 @@ pub(super) struct LightingDirQuery {
 /// Validates that a fixture type or venue name is safe for use as a filename.
 #[allow(clippy::result_large_err)]
 pub(super) fn validate_lighting_name(name: &str) -> Result<(), axum::response::Response> {
+    validate_lighting_name_to_write(name, true)
+}
+
+/// As [`validate_lighting_name`], for a fixture type or venue being written:
+/// one not already on disk (`exists` false) is being created, and its name
+/// must also pass the rules for new names.
+#[allow(clippy::result_large_err)]
+pub(super) fn validate_lighting_name_to_write(
+    name: &str,
+    exists: bool,
+) -> Result<(), axum::response::Response> {
     use super::super::safe_path::SafePath;
-    if SafePath::validate_name(name).is_err() {
+    if SafePath::validate_name_to_write(name, exists).is_err() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Invalid name"})),
@@ -1624,6 +1635,7 @@ pub(super) async fn put_fixture_type(
     // Read against the resolved directory rather than the created one: every
     // refusal below should land before anything is made on disk.
     let located = locate_fixture_type_file(&dir, &name).await?;
+    validate_lighting_name_to_write(&name, located.is_some())?;
     // An existing type is saved back to the file it lives in, whatever that
     // file is called; only a new type is named after itself.
     let stem = located
@@ -2524,6 +2536,9 @@ pub(super) async fn put_venue(
         let reply = |r: axum::response::Response| Ok::<_, String>(Err(r));
         let bad = |e: String| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
         let located = locate_venue_file(&dir, &name)?;
+        if let Err(r) = validate_lighting_name_to_write(&name, located.is_some()) {
+            return reply(r);
+        }
         if let Some(expected) = &expected {
             let current = located.as_ref().map(LocatedVenue::version);
             if current.as_deref() != Some(expected.as_str()) {

@@ -22,7 +22,10 @@ use serde_json::json;
 
 use super::super::config_io;
 use super::super::server::WebUiState;
-use super::helpers::{require_configured_dir, resolve_resource_path, validate_resource_name};
+use super::helpers::{
+    require_configured_dir, resolve_resource_path, validate_resource_name,
+    validate_resource_name_to_write,
+};
 use crate::config;
 
 // ---------------------------------------------------------------------------
@@ -171,6 +174,7 @@ pub(super) async fn put_playlist_by_name(
     // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
     // verified via canonicalize + starts_with containment in resolve_resource_path.
     let file_path = resolve_resource_path(&playlists_dir, &name, "yaml")?;
+    validate_resource_name_to_write(&name, "playlist", file_path.is_file())?;
 
     // The editor knows only the songs: an existing playlist keeps its
     // transitions, and each entry its own with the song. One that does not
@@ -813,6 +817,42 @@ mod test {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn playlists_already_on_disk_stay_savable_and_deletable() {
+        // Names from before #578's rules for new names: they load and are
+        // listed, and the editor must still save and delete them. A new
+        // playlist cannot be given one.
+        for (file, uri) in [
+            (".warmup.yaml", "/playlists/.warmup"),
+            ("Encore .yaml", "/playlists/Encore%20"),
+        ] {
+            let (state, _dir) = test_state();
+            let playlists_dir = state.playlists_dir.clone().unwrap();
+            let app = router().with_state(state);
+            let send = |method: &str, body: &'static str| {
+                let request = http::Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap();
+                app.clone().oneshot(request)
+            };
+            let created = send("PUT", r#"{"songs": ["Song A"]}"#).await.unwrap();
+            assert_eq!(created.status(), StatusCode::BAD_REQUEST, "{file}");
+            assert!(!playlists_dir.join(file).exists(), "{file}");
+
+            std::fs::write(playlists_dir.join(file), "songs:\n  - \"Song A\"\n").unwrap();
+            let saved = send("PUT", r#"{"songs": ["Song A", "Song A"]}"#)
+                .await
+                .unwrap();
+            assert_eq!(saved.status(), StatusCode::OK, "{file}");
+            let deleted = send("DELETE", "").await.unwrap();
+            assert_eq!(deleted.status(), StatusCode::OK, "{file}");
+            assert!(!playlists_dir.join(file).exists(), "{file}");
+        }
     }
 
     #[tokio::test]

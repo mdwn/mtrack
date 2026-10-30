@@ -1217,7 +1217,7 @@ impl McpServer {
                     .to_path_buf()
             }
             Err(_) => {
-                crate::webui::safe_path::SafePath::validate_name(&args.name)
+                crate::webui::safe_path::SafePath::validate_new_name(&args.name)
                     .map_err(safepath_err)?;
                 let song_dir = crate::webui::safe_path::SafePath::create_dir(
                     &songs_root.as_safe_path(),
@@ -1282,6 +1282,9 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         self.validate_playlist(&args.yaml)?;
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
+        if let Some(name) = &args.name {
+            validate_name_to_write(&path, name)?;
+        }
         // Same rule as the web UI's playlist write and every other configured
         // root: created only when it is inside the project. A `playlists_dir:`
         // pointing elsewhere is the operator's to set up.
@@ -2236,6 +2239,7 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::Venues, &args.file)
             .await?;
+        validate_name_to_write(&path, &args.file)?;
         staged_write_string(&path, &args.source).await?;
         let (reloaded, venue_error) = self.reload_venue_if_current().await;
         let mut body = json!({
@@ -2429,6 +2433,7 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
             .await?;
+        validate_name_to_write(&path, &args.file)?;
         staged_write_string(&path, &args.source).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
@@ -2473,6 +2478,8 @@ impl McpServer {
         let path = match find_song_lighting_write_path(&song, &args.file) {
             Some(existing) => existing,
             None => {
+                crate::webui::safe_path::SafePath::validate_new_name(&args.file)
+                    .map_err(safepath_err)?;
                 // First time we're writing this basename for this song: drop
                 // it into the conventional `lighting/` subdirectory and
                 // create that directory if it doesn't exist yet.
@@ -3966,6 +3973,14 @@ pub(crate) fn create_within_err(err: crate::util::CreateWithinError) -> McpError
 /// Wraps a [`SafePathError`] as an `invalid_params` MCP error.
 pub(crate) fn safepath_err(err: crate::webui::safe_path::SafePathError) -> McpError {
     McpError::invalid_params(err.to_string(), None)
+}
+
+/// Validates `name`, already checked safe, for a write to `path`: a file not
+/// there yet is being created, and its name must also pass the rules for new
+/// names. One already there is written under its own name.
+fn validate_name_to_write(path: &std::path::Path, name: &str) -> Result<(), McpError> {
+    crate::webui::safe_path::SafePath::validate_name_to_write(name, path.exists())
+        .map_err(safepath_err)
 }
 
 /// Resolves a lighting filename to its on-disk path, searching three

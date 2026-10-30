@@ -27,6 +27,7 @@ use tracing::warn;
 use super::config_api::{reject_if_playing, reload_hardware_after_mutation};
 use super::helpers::{
     require_configured_dir, resolve_resource_path, spawn_blocking_io, validate_resource_name,
+    validate_resource_name_to_write,
 };
 use super::lighting_api::{content_version, if_match_version};
 use crate::config::Profile;
@@ -324,6 +325,7 @@ pub(super) async fn put_profile(
             yaml_path
         }
     };
+    validate_resource_name_to_write(&filename, "profile", file_path.is_file())?;
 
     // Write the file off the async runtime. The version check and the write
     // happen under one lock so two saves cannot both pass the check.

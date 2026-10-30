@@ -129,7 +129,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seek. A sequence's effects are now matched by its exact name.
 - **A name that would read wrong or vanish is refused (#578)**: a playlist, profile, song or file
   name that was blank, had space at either end, started with a dot (a song directory so named is
-  skipped as hidden) or held a control character was accepted. Such names are now refused.
+  skipped as hidden) or held a control character was accepted. Such names are now refused for
+  anything new; a file already named so can still be saved, renamed and deleted.
 - **A show edited during playback reloads where the lights are (#593)**: with a lighting
   `playback_delay`, a hot reload of the `.light` file rebuilt the show at the song's time rather
   than the lights' one, the delay ahead of the rig: cues in between were skipped, effects jumped

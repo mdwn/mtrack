@@ -42,8 +42,8 @@ use super::super::server::WebUiState;
 use super::lighting_api::{
     canonical_project_root, content_version, existing_fixture_type_file, if_match_version,
     locate_fixture_type_file, project_root, resolve_lighting_dir, validate_lighting_name,
-    venue_error_after_save, DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR, VENUE_EXTENSIONS,
-    VENUE_WRITES,
+    validate_lighting_name_to_write, venue_error_after_save, DEFAULT_FIXTURE_TYPES_DIR,
+    DEFAULT_VENUES_DIR, VENUE_EXTENSIONS, VENUE_WRITES,
 };
 use crate::lighting;
 use crate::lighting::fixture_patch::{current_settings, patch_fixture_type, FixtureSettings};
@@ -320,7 +320,7 @@ fn plan(
     let new_name = request.name.trim().to_string();
     let renaming = new_name != name;
     if renaming {
-        validate_lighting_name(&new_name).map_err(|_| {
+        validate_lighting_name_to_write(&new_name, false).map_err(|_| {
             bad(format!(
                 "\"{new_name}\" cannot be a fixture type name (letters, digits, spaces, \
                  hyphens and underscores; not a route name)"

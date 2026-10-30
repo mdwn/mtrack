@@ -50,6 +50,29 @@ pub(crate) fn validate_resource_name(
     Ok(())
 }
 
+/// Validates the name of a resource being written: one not already on disk
+/// (`exists` false) is being created, and must also pass the rules for new
+/// names ([`SafePath::validate_new_name`]). One already there is saved under
+/// its own name, which only needs to be safe.
+///
+/// [`SafePath::validate_new_name`]: super::super::safe_path::SafePath::validate_new_name
+#[allow(clippy::result_large_err)]
+pub(crate) fn validate_resource_name_to_write(
+    name: &str,
+    label: &str,
+    exists: bool,
+) -> Result<(), axum::response::Response> {
+    use super::super::safe_path::SafePath;
+    if SafePath::validate_name_to_write(name, exists).is_err() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("Invalid {} name", label)})),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
 /// Returns a configured directory path, or an error response if it is `None`.
 #[allow(clippy::result_large_err)]
 pub(crate) fn require_configured_dir(

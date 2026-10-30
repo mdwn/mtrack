@@ -285,7 +285,8 @@ pub(super) async fn import_file_to_song(
         .or_else(|| source.file_name().and_then(|n| n.to_str()))
         .unwrap_or("unknown");
 
-    if let Err(e) = validate_track_filename(filename) {
+    let exists = song_has_file(&state.player, &state.songs_path, &name, filename);
+    if let Err(e) = validate_track_filename(filename, exists) {
         return *e;
     }
 
@@ -735,7 +736,8 @@ pub(super) async fn upload_track_single(
     Path((name, filename)): Path<(String, String)>,
     body: Bytes,
 ) -> impl IntoResponse {
-    validate_track_filename(&filename).map_err(|e| *e)?;
+    let exists = song_has_file(&state.player, &state.songs_path, &name, &filename);
+    validate_track_filename(&filename, exists).map_err(|e| *e)?;
     let song_dir =
         resolve_or_create_song_dir(&state.player, &state.songs_path, &name).map_err(|e| *e)?;
 
@@ -790,7 +792,8 @@ pub(super) async fn upload_tracks_multipart(
             }
         };
 
-        validate_track_filename(&filename).map_err(|e| *e)?;
+        let exists = song_dir.join_filename(&filename).exists();
+        validate_track_filename(&filename, exists).map_err(|e| *e)?;
 
         let data = field.bytes().await.map_err(|e| {
             (
@@ -1019,9 +1022,28 @@ pub(super) fn ensure_song_config(
     })
 }
 
-/// Validates that a track filename has a supported extension.
-pub(super) fn validate_track_filename(filename: &str) -> Result<(), Box<axum::response::Response>> {
-    if SafePath::validate_name(filename).is_err() {
+/// Whether song `name` has a file `filename` already, for
+/// [`validate_track_filename`]. False for a song not yet created, or a
+/// filename that is not safe to look up.
+fn song_has_file(
+    player: &crate::player::Player,
+    songs_path: &std::path::Path,
+    name: &str,
+    filename: &str,
+) -> bool {
+    SafePath::validate_name(filename).is_ok()
+        && resolve_song_dir(player, songs_path, name)
+            .is_ok_and(|dir| dir.join_filename(filename).exists())
+}
+
+/// Validates that a track filename is safe and has a supported extension.
+/// One not already in the song (`exists` false) is a new file, and must also
+/// pass the rules for new names; one there is replaced under its own name.
+pub(super) fn validate_track_filename(
+    filename: &str,
+    exists: bool,
+) -> Result<(), Box<axum::response::Response>> {
+    if SafePath::validate_name_to_write(filename, exists).is_err() {
         return Err(Box::new(
             (
                 StatusCode::BAD_REQUEST,

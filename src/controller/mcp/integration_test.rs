@@ -3901,6 +3901,53 @@ async fn mcp_write_playlist_checks_transitions() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_write_playlist_keeps_names_already_on_disk() -> Result<(), Box<dyn Error>> {
+    // A name the rules for new names refuse is still written to when the
+    // playlist is already there, from before those rules.
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+    let refused = |response: &serde_json::Value| {
+        response.get("error").is_some() || response["result"]["isError"].as_bool() == Some(true)
+    };
+    let yaml = "kind: playlist\nsongs:\n- DSL Light Show Song\n";
+    let warmup = fixture.root.join("playlists/.warmup.yaml");
+
+    let args = json!({"name": ".warmup", "yaml": yaml});
+    let response = call_tool(
+        &client,
+        &url,
+        &session,
+        1620,
+        "write_playlist",
+        args.clone(),
+    )
+    .await;
+    assert!(refused(&response), "a new .warmup: {response}");
+    assert!(!warmup.exists());
+
+    std::fs::create_dir_all(fixture.root.join("playlists"))?;
+    std::fs::write(&warmup, "songs: []\n")?;
+    let response = call_tool(&client, &url, &session, 1621, "write_playlist", args).await;
+    assert!(!refused(&response), "{response}");
+    assert_eq!(std::fs::read_to_string(&warmup)?, yaml);
+
+    controller.shutdown();
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Test 3l: song_details returns the structured metadata + computed BPM
 // ---------------------------------------------------------------------------

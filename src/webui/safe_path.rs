@@ -87,11 +87,11 @@ impl SafePath {
     }
 
     /// Validates a single path segment (filename or directory name) is safe.
-    /// Rejects empty strings, "..", and path separators. Also a name that is
-    /// blank or has space at either end, which reads as a different name or
-    /// none in a list; one starting with a dot, which the song loader skips as
-    /// hidden, so what was saved vanishes; and control characters. Names
-    /// Windows reserves (`CON`) are fine on the systems mtrack runs on.
+    /// Rejects empty strings, "..", and path separators.
+    ///
+    /// Enough for a name already on disk, to read, save, rename away from or
+    /// delete; a name being given to something new must also pass
+    /// [`SafePath::validate_new_name`].
     pub fn validate_name(name: &str) -> Result<(), SafePathError> {
         if name.is_empty()
             || name == "."
@@ -99,13 +99,37 @@ impl SafePath {
             || name.contains('/')
             || name.contains('\\')
             || name.contains('\0')
-            || name.trim() != name
-            || name.starts_with('.')
-            || name.chars().any(char::is_control)
         {
             return Err(SafePathError::InvalidName);
         }
         Ok(())
+    }
+
+    /// Validates a name for something new: safe, as [`SafePath::validate_name`]
+    /// checks, and not a name that is blank or has space at either end,
+    /// which reads as a different name or none in a list; one starting with
+    /// a dot, which the song loader skips as hidden, so what was saved
+    /// vanishes; or one with control characters. Names Windows reserves
+    /// (`CON`) are fine on the systems mtrack runs on.
+    ///
+    /// Only for a new name: files with names like these from before these
+    /// rules stay readable, savable and deletable.
+    pub fn validate_new_name(name: &str) -> Result<(), SafePathError> {
+        Self::validate_name(name)?;
+        if name.trim() != name || name.starts_with('.') || name.chars().any(char::is_control) {
+            return Err(SafePathError::InvalidName);
+        }
+        Ok(())
+    }
+
+    /// Validates a name to write to: [`SafePath::validate_new_name`]'s rules
+    /// unless `exists`, a file of that name already being there.
+    pub fn validate_name_to_write(name: &str, exists: bool) -> Result<(), SafePathError> {
+        if exists {
+            Self::validate_name(name)
+        } else {
+            Self::validate_new_name(name)
+        }
     }
 
     /// Validates a relative path under the root without creating anything.
@@ -251,14 +275,37 @@ impl SafePathError {
 mod tests {
 
     #[test]
-    fn validate_name_refuses_names_that_read_wrong_or_vanish() {
+    fn validate_new_name_refuses_names_that_read_wrong_or_vanish() {
         // #578: names like these were saved, then shown blank, as another
         // name, or (a hidden song directory) not loaded at all.
         for name in [" ", "  ", " lead", "trail ", ".hidden", "tab\there", "nl\n"] {
-            assert!(SafePath::validate_name(name).is_err(), "{name:?}");
+            assert!(SafePath::validate_new_name(name).is_err(), "{name:?}");
+            assert!(
+                SafePath::validate_name_to_write(name, false).is_err(),
+                "{name:?}"
+            );
         }
         for name in ["Battle Scarred", "show.light", "CON", "a_b-c (2)"] {
+            assert!(SafePath::validate_new_name(name).is_ok(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_name_already_on_disk_needs_only_be_safe() {
+        // Files named before the rules for new names stay usable: saved,
+        // renamed away from, deleted.
+        for name in [" ", "trail ", ".warmup", "tab\there"] {
             assert!(SafePath::validate_name(name).is_ok(), "{name:?}");
+            assert!(
+                SafePath::validate_name_to_write(name, true).is_ok(),
+                "{name:?}"
+            );
+        }
+        for name in ["", ".", "..", "a/b", "a\\b", "a\0b", "../x"] {
+            assert!(
+                SafePath::validate_name_to_write(name, true).is_err(),
+                "{name:?}"
+            );
         }
     }
 

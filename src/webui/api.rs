@@ -342,7 +342,11 @@ async fn upload_sample_file(
     }
 
     let file_path = samples_dir.join(&filename);
-    if !file_path.starts_with(&root_canonical) {
+    // A new sample's name must also pass the rules for new names; one
+    // already there is replaced under its own.
+    let refused =
+        !file_path.exists() && super::safe_path::SafePath::validate_new_name(&filename).is_err();
+    if refused || !file_path.starts_with(&root_canonical) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Invalid filename"})),
