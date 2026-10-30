@@ -689,7 +689,11 @@ impl Device {
         }
 
         let half_overlap = song_loop.overlap / 2;
-        // A pass begun late, inside the crossfade, has less of it to cross.
+        // A pass begun late, inside the crossfade (after a section loop
+        // broken there), has less of it to cross. Its cut tracks were built
+        // ahead to start half the full overlap in, so they switch a little
+        // off the shorter crossfade's midpoint: left as it is, for so rare a
+        // case.
         let overlap = timing.overlap.min(song_loop.overlap);
         if timing.now + PASS_PREBUILD_AHEAD >= timing.target
             && song_loop.prebuilt.is_none()

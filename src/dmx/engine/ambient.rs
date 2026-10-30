@@ -1145,7 +1145,7 @@ mod tests {
                 ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                 clock,
                 start_time: Duration::ZERO,
-                loop_control: crate::playsync::LoopControl::new(),
+                loop_control: crate::playsync::LoopControl::without_jumps(),
             },
         )?;
         assert_eq!(engine.ambient_status().unwrap().state, "playing");

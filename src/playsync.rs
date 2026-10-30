@@ -271,6 +271,18 @@ impl LoopControl {
     }
 }
 
+impl LoopControl {
+    /// A `LoopControl` for a playback nothing commits loop jumps for: its
+    /// log closed from the start, so the lights and notes end with their
+    /// own content, as a song without loops does.
+    #[cfg(test)]
+    pub fn without_jumps() -> Self {
+        let loop_control = Self::new();
+        loop_control.section_jumps.close();
+        loop_control
+    }
+}
+
 impl Default for LoopControl {
     fn default() -> Self {
         Self::new()

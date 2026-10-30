@@ -1594,7 +1594,7 @@ mod test {
                 ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                 clock,
                 start_time: std::time::Duration::ZERO,
-                loop_control: crate::playsync::LoopControl::new(),
+                loop_control: crate::playsync::LoopControl::without_jumps(),
             },
         )?;
 
@@ -1880,7 +1880,7 @@ mod test {
                 ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                 clock,
                 start_time: std::time::Duration::ZERO,
-                loop_control: crate::playsync::LoopControl::new(),
+                loop_control: crate::playsync::LoopControl::without_jumps(),
             },
         )?;
 
@@ -1938,7 +1938,7 @@ mod test {
                 ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                 clock,
                 start_time: std::time::Duration::ZERO,
-                loop_control: crate::playsync::LoopControl::new(),
+                loop_control: crate::playsync::LoopControl::without_jumps(),
             },
         )?;
 
@@ -2155,6 +2155,16 @@ mod test {
             };
             std::thread::spawn(move || crate::section_loop::publish_jumps(publisher));
         }
+        // The audio this stands in for stops when the test cancels: the log
+        // closes then, so the lights cannot wait on it for ever.
+        {
+            let cancel_handle = cancel_handle.clone();
+            let log = loop_control.section_jumps.clone();
+            std::thread::spawn(move || {
+                cancel_handle.wait(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+                log.close();
+            });
+        }
         let thread = {
             let engine = engine.clone();
             let cancel_handle = cancel_handle.clone();
@@ -2181,6 +2191,174 @@ mod test {
         while clock.elapsed() < at {
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    /// Plays a DSL show following `log`, with nothing to commit jumps but the
+    /// test, and returns the playback's handles.
+    fn play_logged_show(
+        engine: &Arc<Engine>,
+        show: &str,
+        log: Arc<crate::playsync::SectionJumpLog>,
+    ) -> Result<SectionShow, Box<dyn Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let dsl_path = tmp_dir.path().join("show.dsl");
+        std::fs::write(&dsl_path, show)?;
+        let song_config = crate::config::Song::new(
+            "Logged",
+            None,
+            None,
+            None,
+            None,
+            Some(vec![crate::config::LightingShow::new(
+                dsl_path.to_string_lossy().into_owned(),
+            )]),
+            vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
+        );
+        let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+        let cancel_handle = crate::playsync::CancelHandle::new();
+        let clock = crate::clock::PlaybackClock::wall();
+        let mut loop_control = crate::playsync::LoopControl::new();
+        loop_control.section_jumps = log;
+        // The effects loop says when the show has run out.
+        Engine::start_persistent_effects_loop(engine.clone());
+        let thread = {
+            let engine = engine.clone();
+            let cancel_handle = cancel_handle.clone();
+            let clock = clock.clone();
+            std::thread::spawn(move || {
+                let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+                let _ = Engine::play(
+                    engine,
+                    song,
+                    crate::playsync::PlaybackSync {
+                        cancel_handle,
+                        ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                        clock,
+                        start_time: Duration::ZERO,
+                        loop_control,
+                    },
+                );
+            })
+        };
+        Ok((tmp_dir, cancel_handle, clock, thread))
+    }
+
+    /// Waits up to a generous while for `thread` to end; whether it did.
+    fn ended_soon(thread: &std::thread::JoinHandle<()>) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !thread.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        thread.is_finished()
+    }
+
+    const SHORT_SHOW: &str = r#"show "short" {
+    @00:00.000
+    front_wash: static color: "blue", duration: 200ms, dimmer: 100%
+}"#;
+
+    /// A show whose last cue is long done keeps following the log while it
+    /// is open: a section going round after it re-cues it (#606); the
+    /// lights end once the log closes. They used to end with the last cue.
+    #[test]
+    fn the_lights_recue_after_their_last_cue_while_the_log_is_open() -> Result<(), Box<dyn Error>> {
+        let (engine, _) = create_engine()?;
+        let log = Arc::new(crate::playsync::SectionJumpLog::default());
+        let (_dir, cancel_handle, clock, thread) =
+            play_logged_show(&engine, SHORT_SHOW, log.clone())?;
+        clock.start();
+        // The show is over by 200ms; at 500ms a section (0-600ms) is armed,
+        // its jump committed.
+        wait_for_clock(&clock, Duration::from_millis(500));
+        let alive_after_its_show = !thread.is_finished();
+        let finished_before = engine
+            .timeline_finished
+            .load(std::sync::atomic::Ordering::Relaxed);
+        log.push(crate::section_loop::SectionJump {
+            at: Duration::from_millis(600),
+            from: Duration::from_millis(600),
+            to: Duration::ZERO,
+            overlap: Duration::ZERO,
+        });
+        wait_for_clock(&clock, Duration::from_millis(700));
+        let song_time = engine.get_song_time();
+        let restarted = !engine
+            .timeline_finished
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || engine
+                .effect_engine
+                .lock()
+                .get_active_effects()
+                .values()
+                .any(|e| e.cue_time == Some(Duration::ZERO));
+        log.close();
+        let ended = ended_soon(&thread);
+        cancel_handle.cancel();
+        thread.join().unwrap();
+        assert!(alive_after_its_show, "the lights ended with their show");
+        assert!(finished_before, "the show had not run out");
+        assert!(
+            song_time < Duration::from_millis(400),
+            "the lights did not go back: {song_time:?}"
+        );
+        assert!(restarted, "the show was not re-cued");
+        assert!(ended, "the lights did not end when the log closed");
+        Ok(())
+    }
+
+    /// A looping song's pass with a crossfade, as the log gives it: the
+    /// lights cross over from the outgoing pass (`begin_loop_crossfade`),
+    /// the new one from the top; a pass without one restarts the show.
+    #[test]
+    fn the_lights_follow_a_pass_with_a_crossfade() -> Result<(), Box<dyn Error>> {
+        for overlap in [Duration::from_secs(5), Duration::ZERO] {
+            let (engine, _) = create_engine()?;
+            let log = Arc::new(crate::playsync::SectionJumpLog::default());
+            log.push(crate::section_loop::SectionJump {
+                at: Duration::from_millis(300),
+                from: Duration::from_millis(300),
+                to: Duration::ZERO,
+                overlap,
+            });
+            let (_dir, cancel_handle, clock, thread) = play_logged_show(
+                &engine,
+                r#"show "long" {
+    @00:00.000
+    front_wash: static color: "blue", duration: 30s, dimmer: 100%
+}"#,
+                log.clone(),
+            )?;
+            clock.start();
+            wait_for_clock(&clock, Duration::from_millis(450));
+            let crossing = engine.outgoing_pass.lock().is_some();
+            let song_time = engine.get_song_time();
+            cancel_handle.cancel();
+            thread.join().unwrap();
+            assert_eq!(crossing, !overlap.is_zero(), "overlap {overlap:?}");
+            assert!(
+                song_time < Duration::from_millis(300),
+                "overlap {overlap:?}: the new pass not from the top: {song_time:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A song without loops ends with its show once the log is closed, as
+    /// it always has.
+    #[test]
+    fn a_show_without_loops_ends_with_its_last_cue() -> Result<(), Box<dyn Error>> {
+        let (engine, _) = create_engine()?;
+        let log = Arc::new(crate::playsync::SectionJumpLog::default());
+        log.close();
+        let (_dir, cancel_handle, clock, thread) = play_logged_show(&engine, SHORT_SHOW, log)?;
+        clock.start();
+        let ended = ended_soon(&thread);
+        cancel_handle.cancel();
+        thread.join().unwrap();
+        assert!(ended);
+        Ok(())
     }
 
     /// Another section armed while one loops (no break): the lights play on
@@ -5450,7 +5628,7 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: std::time::Duration::ZERO,
-                    loop_control: crate::playsync::LoopControl::new(),
+                    loop_control: crate::playsync::LoopControl::without_jumps(),
                 },
             );
             assert!(result.is_ok());
@@ -5484,7 +5662,7 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: std::time::Duration::ZERO,
-                    loop_control: crate::playsync::LoopControl::new(),
+                    loop_control: crate::playsync::LoopControl::without_jumps(),
                 },
             );
             assert!(result.is_ok());
@@ -5519,7 +5697,7 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: std::time::Duration::from_secs(3),
-                    loop_control: crate::playsync::LoopControl::new(),
+                    loop_control: crate::playsync::LoopControl::without_jumps(),
                 },
             );
             assert!(result.is_ok());
@@ -5560,7 +5738,7 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: std::time::Duration::ZERO,
-                    loop_control: crate::playsync::LoopControl::new(),
+                    loop_control: crate::playsync::LoopControl::without_jumps(),
                 },
             );
             assert!(result.is_ok());
@@ -5609,7 +5787,7 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: std::time::Duration::ZERO,
-                    loop_control: crate::playsync::LoopControl::new(),
+                    loop_control: crate::playsync::LoopControl::without_jumps(),
                 },
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
@@ -6287,7 +6465,7 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: std::time::Duration::ZERO,
-                    loop_control: crate::playsync::LoopControl::new(),
+                    loop_control: crate::playsync::LoopControl::without_jumps(),
                 },
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
@@ -6472,7 +6650,7 @@ mod test {
                             ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                             clock,
                             start_time: Duration::ZERO,
-                            loop_control: crate::playsync::LoopControl::new(),
+                            loop_control: crate::playsync::LoopControl::without_jumps(),
                         },
                     )
                     .map_err(|e| e.to_string())
@@ -6548,7 +6726,7 @@ mod test {
                             ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                             clock,
                             start_time: Duration::from_secs(3),
-                            loop_control: crate::playsync::LoopControl::new(),
+                            loop_control: crate::playsync::LoopControl::without_jumps(),
                         },
                     )
                     .map_err(|e| e.to_string())
@@ -6603,7 +6781,7 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: std::time::Duration::from_secs(10),
-                    loop_control: crate::playsync::LoopControl::new(),
+                    loop_control: crate::playsync::LoopControl::without_jumps(),
                 },
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
@@ -6654,7 +6832,7 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: std::time::Duration::ZERO,
-                    loop_control: crate::playsync::LoopControl::new(),
+                    loop_control: crate::playsync::LoopControl::without_jumps(),
                 },
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
@@ -6732,7 +6910,7 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: std::time::Duration::ZERO,
-                    loop_control: crate::playsync::LoopControl::new(),
+                    loop_control: crate::playsync::LoopControl::without_jumps(),
                 },
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
@@ -6796,7 +6974,7 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: std::time::Duration::ZERO,
-                    loop_control: crate::playsync::LoopControl::new(),
+                    loop_control: crate::playsync::LoopControl::without_jumps(),
                 },
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
@@ -6909,7 +7087,7 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: std::time::Duration::ZERO,
-                    loop_control: crate::playsync::LoopControl::new(),
+                    loop_control: crate::playsync::LoopControl::without_jumps(),
                 },
             );
             assert!(result.is_ok());
