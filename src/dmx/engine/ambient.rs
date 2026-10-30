@@ -287,20 +287,23 @@ impl Overlay {
     fn render_over(
         &mut self,
         dt: Duration,
-        now: Instant,
         under: &[DmxCommand],
         under_engine: &EffectEngine,
     ) -> Result<Vec<DmxCommand>, EffectError> {
+        // Each overlay at the instant its own time was moved on to (an
+        // outer one raised since may have been made later).
         let Overlay {
             engine,
             inner,
             level,
             started,
+            frame,
             ..
         } = self;
+        let now = *frame;
         let (base, base_engine): (Cow<[DmxCommand]>, &EffectEngine) = match inner.as_deref_mut() {
             Some(inner) => {
-                let commands = inner.render_over(dt, now, under, under_engine)?;
+                let commands = inner.render_over(dt, under, under_engine)?;
                 (Cow::Owned(commands), &inner.engine)
             }
             None => (Cow::Borrowed(under), under_engine),
@@ -605,7 +608,7 @@ impl Engine {
         // At the instant its time was moved on to this frame, not a moment
         // later.
         let now = o.frame;
-        let blended = o.render_over(dt, now, under, effect_engine)?;
+        let blended = o.render_over(dt, under, effect_engine)?;
         effect_engine.set_shown(Some((
             o.engine.shown_fixture_states().clone(),
             o.engine.shown_poses().clone(),

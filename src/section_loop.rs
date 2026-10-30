@@ -460,12 +460,18 @@ pub fn publish_jumps(publisher: JumpPublisher) {
     // nothing: a show caught part way through being written (emptied, or
     // short) is not the show it is becoming.
     let mut seen = end;
+    // Nothing read at the start may be a show caught being written too: the
+    // song is not over on it until a second read agrees.
+    let mut settled = !end.is_some_and(|end| end.is_zero());
     let mut trigger = SectionLoopTrigger::new();
     while !finished() {
         if read_at.elapsed() >= REREAD {
             let (read, read_whole) = read_end();
-            if read != end && read == seen && read.is_some_and(|end| !end.is_zero()) {
-                (end, whole_song) = (read, read_whole);
+            if read == seen {
+                if read != end && (read.is_some_and(|end| !end.is_zero()) || !settled) {
+                    (end, whole_song) = (read, read_whole);
+                }
+                settled = true;
             }
             seen = read;
             read_at = std::time::Instant::now();
@@ -482,7 +488,7 @@ pub fn publish_jumps(publisher: JumpPublisher) {
         }
         // Played to its end with nothing to take it back: the song is over.
         if effective.is_none()
-            && (end.is_some_and(|end| elapsed.saturating_sub(trigger.consumed()) >= end)
+            && (end.is_some_and(|end| settled && elapsed.saturating_sub(trigger.consumed()) >= end)
                 || loop_control.loop_break.load(Ordering::Relaxed))
         {
             break;

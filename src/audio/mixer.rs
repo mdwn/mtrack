@@ -419,16 +419,19 @@ impl AudioMixer {
             };
             // Its own envelope until the cut, followed in short steps, then
             // down from where that leaves it.
+            // From now, or from `at` if that has passed already (a cut
+            // scheduled late), so the fade and the cancel end together.
+            let base = now.min(at);
             let step = u64::from(self.sample_rate / 500).max(1);
-            let span = at.saturating_sub(now);
+            let span = at - base;
             let mut knots: Vec<(u64, f32)> = (0..span)
                 .step_by(step as usize)
-                .map(|offset| (offset, own(now + offset)))
+                .map(|offset| (offset, own(base + offset)))
                 .collect();
             knots.push((span, own(at)));
             knots.push((span + samples.max(1), 0.0));
             source.gain_envelope = Some(Arc::new(
-                GainEnvelope::piecewise(knots.into()).with_start_sample(now),
+                GainEnvelope::piecewise(knots.into()).with_start_sample(base),
             ));
             if let Some(cancel_at) = &source.cancel_at_sample {
                 let end = at + samples;
@@ -1447,13 +1450,6 @@ mod tests {
         assert!(out[now as usize + 4_010..].iter().all(|v| *v == 0.0));
     }
 
-    /// The audio schedules a section's switch under the jump gate, but its
-    /// incoming sources reach the mixer through the output manager's channel
-    /// (`OutputManager::add_source`), drained only at the next callback. A
-    /// loop break taking the gate in between fades and cancels the playback
-    /// before they are in the mixer: they arrive cancelled with no break
-    /// envelope and are dropped, while the pass playing out is still cut at
-    /// the switch. The fade falls silent there instead of carrying on.
     #[test]
     fn a_section_cut_follows_a_fade_under_way_to_the_cut() {
         use crate::audio::crossfade::{CrossfadeCurve, GainEnvelope};

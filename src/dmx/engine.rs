@@ -425,13 +425,14 @@ impl Engine {
         // and notify the waiting thread if so
         self.effects_loop_phase.store(5, Ordering::Relaxed);
         if !self.timeline_finished.load(Ordering::Relaxed) {
-            let midi_dmx_done = self.midi_dmx_playbacks_finished();
             // Read and marked under the timeline's lock, which a loop jump's
-            // restart marks it unfinished under in turn: the mark of a show
-            // over can never land after a restart has started it again.
-            let finished = midi_dmx_done && {
+            // restart (timeline and MIDI DMX alike) marks it unfinished under
+            // in turn: the mark of a show over can never land after a restart
+            // has started it again.
+            let finished = {
                 let timeline = self.current_song_timeline.lock();
-                let done = timeline.as_ref().is_none_or(|tl| tl.is_finished());
+                let done = timeline.as_ref().is_none_or(|tl| tl.is_finished())
+                    && self.midi_dmx_playbacks_finished();
                 if done {
                     self.timeline_finished.store(true, Ordering::Relaxed);
                 }
