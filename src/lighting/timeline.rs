@@ -118,6 +118,8 @@ struct Settled {
     arrived: HashSet<String>,
     /// When the latest effect taken out ended.
     ended: Duration,
+    /// When each effect taken out ended, a move when it arrived.
+    ends: Vec<Duration>,
 }
 
 /// Takes the effects on `layer` that have run their course by `time` out
@@ -153,7 +155,9 @@ fn settle_layer(
         };
         // Not before it started, nor before the change it ran under.
         let floor = since.max(effect.cue_time.unwrap_or(Duration::ZERO));
-        settled.ended = settled.ended.max(now.saturating_sub(past).max(floor));
+        let ended = now.saturating_sub(past).max(floor);
+        settled.ended = settled.ended.max(ended);
+        settled.ends.push(ended);
         if is_move(effect) {
             settled.arrived.insert(id.clone());
         }
@@ -402,15 +406,26 @@ fn replay(cues: &[Cue]) -> Replay {
     replay
 }
 
-/// When the show's last effect ends, by its own elapsed: those over by the
+/// When a show's effects end, by their own elapsed (see [`running_ends`]).
+#[derive(Default)]
+struct Ends {
+    /// When each effect that ends of itself does so. One a clear or a stop
+    /// cuts short ends at that cue instead, and is not here.
+    each: Vec<Duration>,
+    /// When the last of them ends, or is cut short.
+    last: Duration,
+    /// Whether one is on a layer the show leaves frozen, which holds it for
+    /// good: that one has no end, and the others' still count.
+    open_ended: bool,
+}
+
+/// When the show's effects end, by their own elapsed: those over by the
 /// last cue when the replay took them out, and those still running then
 /// on from there: a slowed layer stretches an effect past its authored end, and a
-/// freeze holds it there for as long as it lasts. With whether one is on a
-/// layer the show leaves frozen, which holds it for good: that one has no
-/// end, and the others' still count.
-fn running_end(cues: &[Cue]) -> (Duration, bool) {
+/// freeze holds it there for as long as it lasts.
+fn running_ends(cues: &[Cue]) -> Ends {
     let Some(last) = cues.last().map(|cue| cue.time) else {
-        return (Duration::ZERO, false);
+        return Ends::default();
     };
     let Replay {
         mut result,
@@ -433,6 +448,7 @@ fn running_end(cues: &[Cue]) -> (Duration, bool) {
         );
     }
     let mut end = settled.ended;
+    let mut each = settled.ends;
     let mut open_ended = false;
     for (id, (effect, _)) in &result.effects_with_elapsed {
         if settled.arrived.contains(id) {
@@ -456,11 +472,18 @@ fn running_end(cues: &[Cue]) -> (Duration, bool) {
         };
         // So slow it never ends in any time there is: as good as frozen.
         match remaining.and_then(|remaining| last.checked_add(remaining)) {
-            Some(at) => end = end.max(at),
+            Some(at) => {
+                end = end.max(at);
+                each.push(at);
+            }
             None => open_ended = true,
         }
     }
-    (end, open_ended)
+    Ends {
+        each,
+        last: end,
+        open_ended,
+    }
 }
 
 /// A timeline arming's [`LightingTimeline::epoch`]: unique across every
@@ -573,7 +596,11 @@ impl LightingTimeline {
             .iter()
             .any(|cue| cue.layer_commands.iter().any(times_layer));
         if holds {
-            let (end, open_ended) = running_end(&timeline.cues);
+            let Ends {
+                last: end,
+                open_ended,
+                ..
+            } = running_ends(&timeline.cues);
             // A look held for good has no end to wait for. Without audio
             // to run to, the show keeps at least the end it was written
             // with: an ambient show loops then, the frozen look up until it
@@ -837,6 +864,15 @@ impl LightingTimeline {
         self.cues
             .iter()
             .map(|cue| (cue.time, cue.effects.as_slice()))
+    }
+
+    /// When each effect the show cues ends of itself, as the show's end
+    /// reckons it: a freeze holds an effect past its authored end and the
+    /// speed master moves it, so the authored end is not when the rig
+    /// changes. One a clear or a stop cuts short ends at that cue, and one
+    /// left frozen for good never does; neither is here.
+    pub(crate) fn effect_ends(&self) -> Vec<Duration> {
+        running_ends(&self.cues).each
     }
 
     /// Get all cues with their times and indices

@@ -90,16 +90,26 @@ impl Analysis {
 pub fn analyze_show(shows: Vec<LightShow>, fallback_tempo_map: Option<&TempoMap>) -> Analysis {
     let cue_count: usize = shows.iter().map(|s| s.cues.len()).sum();
 
-    let mut timeline = LightingTimeline::new(shows);
-    let tempo_map = timeline
-        .tempo_map()
-        .cloned()
-        .or_else(|| fallback_tempo_map.cloned());
-
+    let timeline = LightingTimeline::new(shows);
     // The state can only change where a cue fires or an effect ends, so those
     // are the only boundaries worth testing. Sampling on a fixed grid instead
     // would quantise every window to the step size and still cost more.
     let boundaries = boundaries(&timeline);
+    analyze_between(timeline, cue_count, fallback_tempo_map, &boundaries)
+}
+
+/// Analyses `timeline`, its running set probed once between each pair of
+/// `boundaries`.
+fn analyze_between(
+    mut timeline: LightingTimeline,
+    cue_count: usize,
+    fallback_tempo_map: Option<&TempoMap>,
+    boundaries: &[Duration],
+) -> Analysis {
+    let tempo_map = timeline
+        .tempo_map()
+        .cloned()
+        .or_else(|| fallback_tempo_map.cloned());
     if boundaries.is_empty() {
         return Analysis {
             cue_count,
@@ -222,14 +232,20 @@ fn stand_in_fixture(name: &str) -> FixtureInfo {
 
 /// Every instant the running set can change: each cue time, and each effect's
 /// end. Sorted and deduplicated.
+///
+/// The ends are the ones the show really has: a freeze holds an effect past
+/// its authored end, and the speed master moves it, so splitting at the
+/// authored ends probed a frozen look's extra time nowhere and a sped-up
+/// look's early end in the middle of a lit interval (#598). The show's end
+/// is one too: a look left frozen for good has no end of its own, and the
+/// show keeps at least the one it was written with.
 fn boundaries(timeline: &LightingTimeline) -> Vec<Duration> {
-    let mut times: Vec<Duration> = Vec::new();
-    for (time, effects) in timeline.cue_effects() {
-        times.push(time);
-        for effect in effects {
-            times.push(time + effect.total_duration());
-        }
+    let mut times: Vec<Duration> = timeline.cue_effects().map(|(time, _)| time).collect();
+    if times.is_empty() {
+        return times;
     }
+    times.extend(timeline.effect_ends());
+    times.push(timeline.show_end());
     times.sort();
     times.dedup();
     times
@@ -597,5 +613,135 @@ show "T" {
         assert_eq!(analysis.span, Duration::ZERO);
         assert!(analysis.dark_windows.is_empty());
         assert!(analysis.per_group_seconds.is_empty());
+    }
+
+    /// A freeze holds a look past its authored end: the span and the group's
+    /// time run to where it really ends (#598).
+    #[test]
+    fn a_frozen_look_counts_its_time_held() {
+        let analysis = analyze(
+            r#"
+show "T" {
+    @00:00.000
+    wash: static color: "blue", duration: 4s
+
+    @00:02.000
+    freeze(layer: background)
+
+    @00:03.000
+    unfreeze(layer: background)
+}
+"#,
+        );
+        assert_eq!(analysis.span, Duration::from_secs(5));
+        assert_eq!(analysis.per_group_seconds["wash"], 5.0);
+        assert!(
+            analysis.dark_windows.is_empty(),
+            "{:?}",
+            analysis.dark_windows
+        );
+    }
+
+    /// A look sped up to end early leaves the rig dark until the next cue,
+    /// and that one ends early too (#598).
+    #[test]
+    fn a_sped_up_look_leaves_a_gap_where_it_really_ends() {
+        let analysis = analyze(
+            r#"
+show "T" {
+    @00:00.000
+    master(layer: background, speed: 2)
+    wash: static color: "blue", duration: 4s
+
+    @00:03.000
+    wash: static color: "red", duration: 1s
+}
+"#,
+        );
+        assert_eq!(windows(&analysis), [(2.0, 3.0)]);
+        assert_eq!(analysis.span, Duration::from_millis(3500));
+        assert_eq!(analysis.per_group_seconds["wash"], 2.5);
+    }
+
+    /// The analysis split only at cue times and authored ends, as before the
+    /// real ends were used.
+    fn analyze_at_authored_ends(source: &str) -> Analysis {
+        let shows = shows(source);
+        let cue_count = shows.iter().map(|s| s.cues.len()).sum();
+        let timeline = LightingTimeline::new(shows);
+        let mut times: Vec<Duration> = Vec::new();
+        for (time, effects) in timeline.cue_effects() {
+            times.push(time);
+            times.extend(effects.iter().map(|effect| time + effect.total_duration()));
+        }
+        times.sort();
+        times.dedup();
+        analyze_between(timeline, cue_count, None, &times)
+    }
+
+    /// Without a freeze or a speed master, an effect's real end is its
+    /// authored one or a cue that cuts it, so the analysis is what it was.
+    #[test]
+    fn a_show_without_holds_analyses_as_before() {
+        let sources = [
+            "show \"T\" {\n    @00:00.000\n    wash: static color: \"blue\", duration: 4s\n    \
+             @00:06.000\n    wash: static color: \"red\", duration: 4s\n}\n",
+            "show \"T\" {\n    @00:00.000\n    wash: static color: \"blue\", duration: 60s\n    \
+             spot: static color: \"red\", duration: 3s, layer: foreground\n    \
+             @00:05.000\n    clear(layer: background)\n    \
+             @00:08.000\n    wash: static color: \"red\", duration: 2s\n    \
+             @00:09.000\n    clear()\n    \
+             @00:12.000\n    beam: strobe frequency: 4, duration: 2s\n}\n",
+            "sequence \"q\" {\n    @0.000\n    spot: static color: \"blue\", duration: 1s\n    \
+             @1.500\n    beam: static color: \"green\", duration: 1s, layer: midground\n}\n\n\
+             show \"T\" {\n    @00:00.000\n    sequence \"q\", loop: 6\n    \
+             wash: static color: \"red\", duration: 20s, layer: foreground\n    \
+             @00:07.000\n    stop sequence \"q\"\n    \
+             @00:15.000\n    clear(layer: foreground)\n    \
+             @00:16.000\n    sequence \"q\"\n}\n",
+            "tempo {\n    start: 0ms\n    bpm: 80\n    time_signature: 4/4\n    changes: [\n        \
+             @2/1 { time_signature: 2/4 },\n        @3/1 { time_signature: 4/4 }\n    ]\n}\n\n\
+             show \"T\" {\n    @1/1\n    wash: static color: \"blue\", duration: 1measures\n    \
+             @3/1\n    wash: static color: \"red\", duration: 1measures\n}\n",
+        ];
+        for source in sources {
+            let now = analyze(source);
+            let before = analyze_at_authored_ends(source);
+            assert_eq!(now.span, before.span, "{source}");
+            assert_eq!(now.dark_windows, before.dark_windows, "{source}");
+            for (now, before) in [
+                (
+                    now.per_group_seconds
+                        .clone()
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                    before
+                        .per_group_seconds
+                        .clone()
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                ),
+                (
+                    now.per_layer_seconds
+                        .iter()
+                        .map(|(layer, s)| (format!("{layer:?}"), *s))
+                        .collect(),
+                    before
+                        .per_layer_seconds
+                        .iter()
+                        .map(|(layer, s)| (format!("{layer:?}"), *s))
+                        .collect(),
+                ),
+            ] {
+                assert_eq!(now.len(), before.len(), "{source}");
+                for ((name, now), (was, before)) in now.iter().zip(&before) {
+                    assert_eq!(name, was, "{source}");
+                    assert!(
+                        (now - before).abs() < 1e-9,
+                        "{name}: {now} vs {before}\n{source}"
+                    );
+                }
+            }
+        }
     }
 }

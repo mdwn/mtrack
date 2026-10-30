@@ -119,6 +119,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the ambient show's start, which stalled DMX output. Clears and stops are now looked up by
   layer and by sequence, and the same show builds in 40 ms. The lint's past-end and overlapping
   `replace` checks use the same lookup.
+- **Show analysis counts freezes and the speed master (#598)**: `analyze_show` (MCP
+  `analyze_show`) split a show at its effects' authored ends, so a look frozen for a second was
+  missing that second from the span and its group's time, and a look sped up to end early hid the
+  dark gap after it. It now splits at the ends the show really has, as worked out for the show's
+  end and for seeks.
 - **A malformed OSC address no longer stops OSC control (#574)**: one bad packet ended the OSC
   driver until a restart. It is logged and skipped.
 - **A burst of OSC messages no longer deadlocks the driver (#575)**: with both its queues full,
