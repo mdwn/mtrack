@@ -656,7 +656,9 @@ impl LightingTimeline {
         self.tempo_map.as_ref()
     }
 
-    /// Sorts cues by time
+    /// Sorts cues by time, stably: same-time cues keep the order they came
+    /// in, their shows' file order and their place in each, and fire in it
+    /// the same way at every build of the timeline (#597).
     fn sort_cues(&mut self) {
         self.cues.sort_by(|a, b| a.time.cmp(&b.time));
     }

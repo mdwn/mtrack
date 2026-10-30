@@ -28,10 +28,7 @@ fn tree(files: &[(&str, &str)]) -> tempfile::TempDir {
     dir
 }
 
-fn parse_at(
-    dir: &Path,
-    file: &str,
-) -> Result<std::collections::HashMap<String, LightShow>, String> {
+fn parse_at(dir: &Path, file: &str) -> Result<crate::lighting::parser::LightShows, String> {
     let path: PathBuf = dir.join(file);
     let content = std::fs::read_to_string(&path).unwrap();
     parse_light_file(&content, Some(&path), None).map_err(|e| e.to_string())

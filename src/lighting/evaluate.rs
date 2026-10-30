@@ -207,17 +207,15 @@ where
         .collect()
 }
 
-/// The shows a song registers: every show its `.light` files hold, sorted by
-/// name so the order does not depend on hash iteration. Empty when the song
+/// The shows a song registers: every show its `.light` files hold, in file
+/// order and then their order in the file, as the player has them -- the
+/// order same-time cues from different shows fire in. Empty when the song
 /// has no DSL lighting loaded.
 pub fn registered_shows(song: &crate::songs::Song) -> Vec<LightShow> {
-    let mut shows: Vec<LightShow> = song
-        .dsl_lighting_shows()
+    song.dsl_lighting_shows()
         .iter()
         .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
-        .collect();
-    shows.sort_by(|a, b| a.name.cmp(&b.name));
-    shows
+        .collect()
 }
 
 /// An offline evaluation against the loaded lighting system, plus what the

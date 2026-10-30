@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -25,7 +25,9 @@ use super::grammar::{LightingParser, Rule};
 use super::include::{add_included, Include, IncludingFile};
 use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
-use super::types::{Cue, LayerCommand, LayerCommandType, LightShow, ParseContext, Sequence};
+use super::types::{
+    Cue, LayerCommand, LayerCommandType, LightShow, LightShows, ParseContext, Sequence,
+};
 use super::types::{SequenceCall, SequenceLoop, UnexpandedSequenceCue};
 use super::utils::{parse_duration_string, parse_measure_time, parse_time_string};
 use pest::iterators::Pair;
@@ -47,7 +49,7 @@ type ParseCueResult =
     Result<(Vec<Cue>, Option<f64>, Option<u32>, Option<Duration>), Box<dyn Error>>;
 
 /// Parses light shows from DSL content.
-pub fn parse_light_shows(content: &str) -> Result<HashMap<String, LightShow>, Box<dyn Error>> {
+pub fn parse_light_shows(content: &str) -> Result<LightShows, Box<dyn Error>> {
     parse_light_shows_with_tempo(content, None)
 }
 
@@ -61,7 +63,7 @@ pub fn parse_light_shows(content: &str) -> Result<HashMap<String, LightShow>, Bo
 pub fn parse_light_shows_with_tempo(
     content: &str,
     external: Option<&TempoMap>,
-) -> Result<HashMap<String, LightShow>, Box<dyn Error>> {
+) -> Result<LightShows, Box<dyn Error>> {
     parse_light_file(content, None, external)
 }
 
@@ -72,7 +74,7 @@ pub fn parse_light_file(
     content: &str,
     path: Option<&Path>,
     external: Option<&TempoMap>,
-) -> Result<HashMap<String, LightShow>, Box<dyn Error>> {
+) -> Result<LightShows, Box<dyn Error>> {
     parse_light_file_within(content, path, None, external)
 }
 
@@ -84,7 +86,7 @@ pub fn parse_light_file_within(
     path: Option<&Path>,
     root: Option<&Path>,
     external: Option<&TempoMap>,
-) -> Result<HashMap<String, LightShow>, Box<dyn Error>> {
+) -> Result<LightShows, Box<dyn Error>> {
     let root = match root {
         Some(root) => Some(
             root.canonicalize()
@@ -95,7 +97,7 @@ pub fn parse_light_file_within(
     let pairs =
         LightingParser::parse(Rule::file, content).map_err(|e| describe_pest_error(&e, content))?;
 
-    let mut shows = HashMap::new();
+    let mut shows = LightShows::new();
     // Seeded with the song's map so a file with no tempo block inherits it; a
     // file-level `tempo { }` overwrites this below.
     let mut global_tempo: Option<TempoMap> = external.cloned();
@@ -1779,6 +1781,25 @@ mod tests {
     fn parse_empty_content() {
         let shows = parse_light_shows("").unwrap();
         assert!(shows.is_empty());
+    }
+
+    #[test]
+    fn parse_keeps_the_shows_in_file_order() {
+        // #597: the shows came back in a HashMap, in an order that changed
+        // from one parse to the next.
+        let names = ["m", "c", "x", "a", "q", "b", "z", "k"];
+        let content: String = names
+            .iter()
+            .map(|name| {
+                format!(
+                    "show \"{name}\" {{\n    @0.000\n    wash: static color: \"red\", \
+                     duration: 1s\n}}\n"
+                )
+            })
+            .collect();
+        let shows = parse_light_shows(&content).unwrap();
+        let parsed: Vec<&str> = shows.keys().map(String::as_str).collect();
+        assert_eq!(parsed, names);
     }
 
     #[test]

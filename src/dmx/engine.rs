@@ -4176,6 +4176,23 @@ mod test {
         }
 
         #[test]
+        fn same_time_cues_from_two_shows_fire_in_file_order() -> Result<(), Box<dyn Error>> {
+            // #597: the shows were taken in a HashMap's order, which differs
+            // from one timeline build to the next, so which of two looks
+            // cued at once in different shows won changed from run to run.
+            // The later show's goes in last, and wins, every time.
+            let show = "show \"later\" {\n    @1.500\n    wash: static, color: \"red\", \
+                duration: 5s, layer: midground, blend_mode: replace\n}\n\n\
+                show \"earlier\" {\n    @1.500\n    wash: static, color: \"green\", \
+                duration: 5s, layer: midground, blend_mode: replace\n}\n";
+            for _ in 0..16 {
+                assert_eq!(played_frame(show, 2.0)?, GREEN);
+                assert_eq!(seek_frame(show, 2.0)?, GREEN, "seek to 2 s");
+            }
+            Ok(())
+        }
+
+        #[test]
         fn cues_less_than_a_frame_apart_apply_in_turn() -> Result<(), Box<dyn Error>> {
             // #592: cues that land in one frame were applied all layer
             // commands first, then all effects, so a clear or a sequence

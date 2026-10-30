@@ -28,6 +28,11 @@ pub(crate) struct ParseContext {
     pub unshifted_score_time: Option<Duration>,
 }
 
+/// A file's shows by name, in the order the file has them: the timeline
+/// fires same-time cues from different shows in that order, so it must not
+/// change from one parse to the next as a `HashMap`'s does (#597).
+pub type LightShows = indexmap::IndexMap<String, LightShow>;
+
 // Light show DSL data structures
 #[derive(Debug, Clone)]
 pub struct LightShow {

@@ -108,6 +108,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Same-time cues from different shows fire in a steady order (#597)**: a file's shows came back
+  in hash order, which changed from one timeline build to the next -- every section loop pass and
+  crossfaded loop pass builds one -- so of two cues at the same time in different shows (a `stop
+  sequence` and a `sequence`, two moves on one head) either could go first. Shows now keep their
+  files' order and their order in each file, in the player, ambient light, `evaluate_show` and
+  the MCP tools alike.
 - **A stopped looping sequence no longer stretches the show's end (#594)**: the show's end counted
   every pass of a sequence, even those cued after a `stop sequence` ended it, which never play. A
   `loop: loop` sequence stopped part way put the end at its 10,000th pass, so a song with no audio

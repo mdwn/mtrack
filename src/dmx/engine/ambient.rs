@@ -770,9 +770,8 @@ impl Engine {
             crate::lighting::validation::validate_light_shows(&shows, Some(lighting_config))
                 .map_err(|e| e.to_string())?;
         }
-        let mut shows: Vec<_> = shows.into_iter().collect();
-        shows.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok((content, shows.into_iter().map(|(_, show)| show).collect()))
+        // In the file's order, as a song's shows are.
+        Ok((content, shows.into_values().collect()))
     }
 }
 

@@ -42,7 +42,7 @@ fn rgb_at(show: &LightShow, at: Duration, group: &str) -> (f64, f64, f64) {
     }
 }
 
-fn parse(body: &str) -> Result<std::collections::HashMap<String, LightShow>, String> {
+fn parse(body: &str) -> Result<crate::lighting::parser::LightShows, String> {
     parse_light_shows(&format!("{TEMPO}{body}")).map_err(|e| e.to_string())
 }
 

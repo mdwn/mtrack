@@ -18,7 +18,7 @@ extern crate mtrack;
 use mtrack::lighting::{
     effects::{EffectInstance, FixtureInfo},
     engine::EffectEngine,
-    parser::{parse_light_shows, LayerCommandType, LightShow},
+    parser::{parse_light_shows, LayerCommandType, LightShow, LightShows},
     timeline::{LightingTimeline, TimelineUpdate},
 };
 use std::collections::HashMap;
@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Load and parse the DSL file
     let content = fs::read_to_string(&args.file)?;
-    let shows: std::collections::HashMap<String, LightShow> = parse_light_shows(&content)?;
+    let shows: LightShows = parse_light_shows(&content)?;
 
     if shows.is_empty() {
         return Err("No light shows found in file".into());
@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Create timeline and effect engine
-    // parse_light_shows returns HashMap<String, LightShow>, convert to Vec
+    // parse_light_shows returns the shows by name, convert to Vec
     let shows_vec: Vec<LightShow> = shows.values().cloned().collect();
     let mut timeline = LightingTimeline::new(shows_vec);
     let mut effect_engine = EffectEngine::new();
@@ -278,7 +278,7 @@ fn apply_layer_commands(effect_engine: &mut EffectEngine, timeline_update: &Time
     }
 }
 
-fn collect_fixture_names(shows: &std::collections::HashMap<String, LightShow>) -> Vec<String> {
+fn collect_fixture_names(shows: &LightShows) -> Vec<String> {
     let mut names = std::collections::HashSet::new();
     for show in shows.values() {
         for cue in &show.cues {

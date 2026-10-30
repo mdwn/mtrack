@@ -561,12 +561,13 @@ impl McpServer {
                 .songs()
                 .get(name)
                 .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-            let mut shows: Vec<_> = song
+            // In file order, then their order in the file, as the player
+            // has them.
+            let shows: Vec<_> = song
                 .dsl_lighting_shows()
                 .iter()
                 .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
                 .collect();
-            sort_shows(&mut shows);
 
             // Merged and time-sorted, the way the player's own timeline
             // combines a song's shows. Concatenating per show would restart
@@ -1363,8 +1364,7 @@ impl McpServer {
         .map_err(|e| e.to_string());
         match parsed_shows {
             Ok(shows) => {
-                let mut parsed: Vec<_> = shows.values().cloned().collect();
-                sort_shows(&mut parsed);
+                let parsed: Vec<_> = shows.values().cloned().collect();
                 let warnings = self.lint_warnings(&parsed, args.song.as_deref()).await?;
                 let mut summary: Vec<Value> = shows
                     .iter()
@@ -1479,8 +1479,7 @@ impl McpServer {
                     tempo.as_ref(),
                 )
                 .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let mut shows: Vec<_> = shows.into_values().collect();
-                sort_shows(&mut shows);
+                let shows: Vec<_> = shows.into_values().collect();
                 Ok((shows, tempo))
             }
             (None, None) => Err(McpError::invalid_params(
@@ -1516,8 +1515,7 @@ impl McpServer {
                         None,
                     )
                 })?;
-                let mut shows: Vec<_> = shows.into_values().collect();
-                sort_shows(&mut shows);
+                let shows: Vec<_> = shows.into_values().collect();
                 Ok((shows, None))
             }
         }
@@ -3111,15 +3109,6 @@ fn cue_timeline(show: &crate::lighting::parser::LightShow) -> Vec<Value> {
             })
         })
         .collect()
-}
-
-/// Orders shows by name so evaluation is reproducible.
-///
-/// Shows arrive from a `HashMap`, so without this both the cue order for
-/// identically-timed cues and — because `LightingTimeline` takes the first
-/// show's tempo map — which tempo block wins would vary between runs.
-fn sort_shows(shows: &mut [crate::lighting::parser::LightShow]) {
-    shows.sort_by(|a, b| a.name.cmp(&b.name));
 }
 
 /// Returns a successful tool result wrapping a JSON value as pretty-printed text.

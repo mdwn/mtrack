@@ -58,7 +58,7 @@ pub struct DslLightingShow {
 
 /// One parse of a DSL file.
 struct ParsedFile {
-    shows: Arc<HashMap<String, ParsedLightShow>>,
+    shows: Arc<crate::lighting::parser::LightShows>,
     modified: Option<FileStamp>,
     /// Bumped by every parse after the first, for what is worked out from
     /// the shows to tell it is stale.
@@ -103,7 +103,7 @@ fn modified_time(path: &Path) -> Option<FileStamp> {
 fn parse_dsl_file(
     file_path: &Path,
     tempo_map: Option<&crate::tempo::TempoMap>,
-) -> Result<HashMap<String, ParsedLightShow>, Box<dyn Error>> {
+) -> Result<crate::lighting::parser::LightShows, Box<dyn Error>> {
     let content = std::fs::read_to_string(file_path).map_err(|e| {
         format!(
             "Failed to read DSL lighting show {}: {}",
@@ -163,7 +163,7 @@ impl DslLightingShow {
     /// it was read (`None`: never parsed again).
     fn with_shows(
         file_path: PathBuf,
-        shows: HashMap<String, ParsedLightShow>,
+        shows: crate::lighting::parser::LightShows,
         tempo_map: Option<&crate::tempo::TempoMap>,
         modified: Option<FileStamp>,
     ) -> Self {
@@ -187,7 +187,7 @@ impl DslLightingShow {
     /// changed on disk since. A file that no longer parses keeps the last
     /// good parse (the error is logged once per change), as the engine's
     /// hot reload does.
-    pub fn shows(&self) -> Arc<HashMap<String, ParsedLightShow>> {
+    pub fn shows(&self) -> Arc<crate::lighting::parser::LightShows> {
         self.refresh().0
     }
 
@@ -197,7 +197,7 @@ impl DslLightingShow {
         self.refresh().1
     }
 
-    fn refresh(&self) -> (Arc<HashMap<String, ParsedLightShow>>, u64) {
+    fn refresh(&self) -> (Arc<crate::lighting::parser::LightShows>, u64) {
         let mut parsed = self.parsed.lock();
         if parsed.modified.is_some() {
             let modified = modified_time(&self.file_path);
