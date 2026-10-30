@@ -3388,20 +3388,15 @@ mod test {
 
             let notes: Vec<u8> = sender.sent.iter().map(|(_, note)| *note).collect();
             assert_eq!(notes, vec![60, 61, 60, 61, 60, 61], "{:?}", sender.sent);
-            // Timed from the first note, which a loaded runner starts late.
-            // Looping on the first play's end instead would put these 0.2 s
-            // late.
-            let first = sender.sent[0].0;
-            assert!(
-                (sender.sent[2].0 - first - 0.3).abs() < 0.08,
-                "{:?}",
-                sender.sent
-            );
-            assert!(
-                (sender.sent[4].0 - first - 0.6).abs() < 0.08,
-                "{:?}",
-                sender.sent
-            );
+            // The repeats come on the section's grid, from the clock's start:
+            // 0.3 s and 0.6 s, where looping on the first play's end would put
+            // them at 0.5 s and 1.0 s. A loaded runner (CI runs under
+            // coverage) can send any note late, the first included, so the
+            // bounds only rule that out; timing them from the first note
+            // failed when it alone was late.
+            let at = |i: usize| sender.sent[i].0;
+            assert!(at(2) >= 0.28 && at(2) < 0.48, "{:?}", sender.sent);
+            assert!(at(4) >= 0.58 && at(4) < 0.95, "{:?}", sender.sent);
         }
 
         /// Once a section loop is broken (as `stop_section_loop` breaks it:

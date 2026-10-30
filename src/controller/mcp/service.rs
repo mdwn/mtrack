@@ -122,12 +122,14 @@ impl Drop for SubscriptionHandle {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PlayFromArgs {
     /// Time to start playback from, formatted as `mm:ss.mmm` or `Ns` (e.g. `1:23.456`, `45.5s`).
     pub start_time: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PlaySongFromArgs {
     /// Name of the song in the active playlist (or all-songs registry).
     pub song_name: String,
@@ -137,6 +139,7 @@ pub struct PlaySongFromArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SwitchPlaylistArgs {
     /// Name of the playlist to switch to.
     pub name: String,
@@ -155,24 +158,28 @@ pub enum AmbientModeArg {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetAmbientModeArgs {
     /// `auto`, `on` or `off`.
     pub mode: AmbientModeArg,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LoopSectionArgs {
     /// Name of the section to loop. Must match a section defined on the current song.
     pub section_name: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SeekArgs {
     /// Position to seek to, formatted as `mm:ss.mmm` or `Ns` (e.g. `1:23.456`, `45.5s`).
     pub position: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SeekToSectionArgs {
     /// Name of the section to seek to. Must match a section defined on the current song.
     pub section_name: String,
@@ -198,6 +205,7 @@ fn update_body_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 /// Common shape for any subsection-update tool. The `body` is the JSON form of
 /// the subsection (e.g. an `Audio` block, an array of controllers, a profile).
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateConfigArgs {
     /// JSON payload for the subsection being updated. Use `null` to clear an
     /// optional subsection (e.g. `audio: null`).
@@ -209,6 +217,7 @@ pub struct UpdateConfigArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileIndexArgs {
     /// Index of the profile in the `profiles` list.
     pub index: u32,
@@ -220,6 +229,7 @@ pub struct ProfileIndexArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RemoveProfileArgs {
     /// Index of the profile to remove.
     pub index: u32,
@@ -228,12 +238,14 @@ pub struct RemoveProfileArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SongNameArgs {
     /// Name of the song as listed by `list_songs`.
     pub name: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WriteSongArgs {
     /// Name of the song. If the song doesn't yet exist, a new directory is
     /// created under the songs root with this name (after sanity-checking).
@@ -243,6 +255,7 @@ pub struct WriteSongArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PlaylistNameArgs {
     /// Optional playlist name. If omitted, returns the top-level `playlist:`
     /// file referenced from the mtrack config.
@@ -251,6 +264,7 @@ pub struct PlaylistNameArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WritePlaylistArgs {
     /// Playlist name. Required when writing into the `playlists_dir`. If only
     /// the top-level `playlist:` file is configured and `name` is omitted, that
@@ -262,6 +276,7 @@ pub struct WritePlaylistArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ValidateLightingArgs {
     /// `.light` DSL source to validate.
     pub source: String,
@@ -283,12 +298,14 @@ pub struct ValidateLightingArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SuggestGroupTagsArgs {
     /// A group name some song's show targets (see `list_groups`).
     pub group: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct EvaluateShowArgs {
     /// Song name as listed by `list_songs`. Alone, evaluates the song's
     /// registered lighting shows. Passed with `source`, supplies that song's
@@ -310,6 +327,7 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AnalyzeShowArgs {
     /// Song name as listed by `list_songs`. Alone, analyses the song's
     /// registered lighting shows. Passed with `source`, supplies that song's
@@ -321,6 +339,7 @@ pub struct AnalyzeShowArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetCuesArgs {
     /// Song to read cues from. Omit for the song the player currently has
     /// loaded. Naming a song reads it without making it current — inspecting
@@ -329,6 +348,7 @@ pub struct GetCuesArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DiffShowsArgs {
     /// Baseline: a song name, whose registered shows are used. With
     /// `a_source`, supplies the tempo map that `a_source` is parsed against.
@@ -343,6 +363,7 @@ pub struct DiffShowsArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SongLightingArgs {
     /// Song name as listed by `list_songs`.
     pub song: String,
@@ -351,12 +372,14 @@ pub struct SongLightingArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ListGdtfModesArgs {
     /// Path to a .gdtf archive, relative to the project directory.
     pub path: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ImportGdtfArgs {
     /// Path to a .gdtf archive, relative to the project directory.
     pub path: String,
@@ -366,6 +389,7 @@ pub struct ImportGdtfArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ImportMvrArgs {
     /// Path to an .mvr archive, relative to the project directory.
     pub path: String,
@@ -378,6 +402,7 @@ pub struct ImportMvrArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ExportMvrArgs {
     /// The venue to export, by name.
     pub venue: String,
@@ -389,6 +414,7 @@ pub struct ExportMvrArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WriteSongLightingArgs {
     /// Song name as listed by `list_songs`.
     pub song: String,
@@ -401,12 +427,14 @@ pub struct WriteSongLightingArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LightingFileArgs {
     /// Basename of a `.light` file (no path separators).
     pub file: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WriteLightingFileArgs {
     /// Basename of the `.light` file to write (no path separators).
     pub file: String,
@@ -419,6 +447,9 @@ pub struct WriteLightingFileArgs {
 /// applies only when `old_string` occurs exactly once, forcing the caller to
 /// expand context until the match is unambiguous; `replace_all` opts into
 /// blanket replacement.
+///
+/// Each patch tool takes these three fields itself rather than through
+/// `#[serde(flatten)]`, which unknown-field rejection does not work with.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PatchFields {
     /// Exact text to replace. Must occur in the file.
@@ -432,39 +463,67 @@ pub struct PatchFields {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PatchSongArgs {
     /// Name of the song as listed by `list_songs`.
     pub name: String,
-    #[serde(flatten)]
-    pub patch: PatchFields,
+    /// Exact text to replace. Must occur in the file.
+    pub old_string: String,
+    /// Replacement text.
+    pub new_string: String,
+    /// If true, replace every occurrence. If false (default), the tool errors
+    /// when `old_string` occurs more than once.
+    #[serde(default)]
+    pub replace_all: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PatchPlaylistArgs {
     /// Optional playlist name. With `null`/omitted, edits the top-level
     /// `playlist:` file.
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(flatten)]
-    pub patch: PatchFields,
+    /// Exact text to replace. Must occur in the file.
+    pub old_string: String,
+    /// Replacement text.
+    pub new_string: String,
+    /// If true, replace every occurrence. If false (default), the tool errors
+    /// when `old_string` occurs more than once.
+    #[serde(default)]
+    pub replace_all: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PatchSongLightingArgs {
     /// Name of the song as listed by `list_songs`.
     pub song: String,
     /// Lighting file basename, e.g. `main.light`.
     pub file: String,
-    #[serde(flatten)]
-    pub patch: PatchFields,
+    /// Exact text to replace. Must occur in the file.
+    pub old_string: String,
+    /// Replacement text.
+    pub new_string: String,
+    /// If true, replace every occurrence. If false (default), the tool errors
+    /// when `old_string` occurs more than once.
+    #[serde(default)]
+    pub replace_all: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PatchLightingFileArgs {
     /// Basename of the `.light` file under the configured directory.
     pub file: String,
-    #[serde(flatten)]
-    pub patch: PatchFields,
+    /// Exact text to replace. Must occur in the file.
+    pub old_string: String,
+    /// Replacement text.
+    pub new_string: String,
+    /// If true, replace every occurrence. If false (default), the tool errors
+    /// when `old_string` occurs more than once.
+    #[serde(default)]
+    pub replace_all: bool,
 }
 
 #[tool_router]
@@ -2626,7 +2685,10 @@ impl McpServer {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| song.base_path().join("song.yaml"));
         let original = read_text(&path).await?;
-        let updated = apply_patch(&original, &args.patch)?;
+        let updated = apply_patch(
+            &original,
+            &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
+        )?;
         let _: crate::config::Song = serde_yaml_from_str(&updated)?;
         staged_write_string(&path, &updated).await?;
         self.reload_songs_from_config().await?;
@@ -2647,7 +2709,10 @@ impl McpServer {
         // a save between it and the write is not lost.
         let _writing = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
         let original = read_text(&path).await?;
-        let updated = apply_patch(&original, &args.patch)?;
+        let updated = apply_patch(
+            &original,
+            &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
+        )?;
         self.validate_playlist(&updated)?;
         staged_write_string(&path, &updated).await?;
         self.reload_songs_from_config().await?;
@@ -2684,7 +2749,10 @@ impl McpServer {
             )
         })?;
         let original = read_text(&path).await?;
-        let updated = apply_patch(&original, &args.patch)?;
+        let updated = apply_patch(
+            &original,
+            &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
+        )?;
         // Validate against the tempo this song loads it with, matching
         // `write_song_lighting`. Otherwise a patch to a tempo-inheriting show
         // is rejected here and would have loaded fine.
@@ -2714,7 +2782,10 @@ impl McpServer {
         // Held from the read, as patch_song holds its own.
         let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         let original = read_text(&path).await?;
-        let updated = apply_patch(&original, &args.patch)?;
+        let updated = apply_patch(
+            &original,
+            &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
+        )?;
         crate::lighting::parser::parse_venues(&updated).map_err(|e| {
             McpError::invalid_params(format!("patched venue is invalid: {e}"), None)
         })?;
@@ -2747,7 +2818,10 @@ impl McpServer {
         // the venues' lock: held from the read, as patch_venue holds it.
         let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         let original = read_text(&path).await?;
-        let updated = apply_patch(&original, &args.patch)?;
+        let updated = apply_patch(
+            &original,
+            &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
+        )?;
         let types = crate::lighting::parser::parse_fixture_types(&updated).map_err(|e| {
             McpError::invalid_params(format!("patched fixture type is invalid: {e}"), None)
         })?;
@@ -4242,6 +4316,16 @@ impl LightingDirKind {
 /// `Edit` tool: `old_string` must be present; if it occurs more than once and
 /// `replace_all` is false, the patch is rejected so the caller can disambiguate
 /// by adding context. Returns the new file contents.
+impl PatchFields {
+    fn of(old_string: &str, new_string: &str, replace_all: bool) -> Self {
+        PatchFields {
+            old_string: old_string.to_string(),
+            new_string: new_string.to_string(),
+            replace_all,
+        }
+    }
+}
+
 pub(crate) fn apply_patch(content: &str, patch: &PatchFields) -> Result<String, McpError> {
     if patch.old_string.is_empty() {
         return Err(McpError::invalid_params(
@@ -4648,6 +4732,45 @@ mod register_lighting_tests {
 
 #[cfg(test)]
 mod bpm_tests {
+
+    /// An argument a tool does not take is refused, naming the ones it does:
+    /// `play_song_from` took `position` for `start_time` without a word and
+    /// played from the top.
+    #[test]
+    fn an_unknown_argument_is_refused() {
+        let refused = serde_json::from_value::<crate::controller::mcp::service::PlaySongFromArgs>(
+            serde_json::json!({
+                "song_name": "Song",
+                "position": "0:52",
+            }),
+        )
+        .expect_err("an unknown argument was accepted");
+        let message = refused.to_string();
+        assert!(message.contains("position"), "{message}");
+        assert!(message.contains("start_time"), "{message}");
+
+        // The patch tools too, which take the patch fields themselves.
+        let refused = serde_json::from_value::<crate::controller::mcp::service::PatchSongArgs>(
+            serde_json::json!({
+                "name": "Song",
+                "old_string": "a",
+                "new_string": "b",
+                "replace_al": true,
+            }),
+        )
+        .expect_err("an unknown patch argument was accepted");
+        assert!(refused.to_string().contains("replace_al"));
+        let patch = serde_json::from_value::<crate::controller::mcp::service::PatchSongArgs>(
+            serde_json::json!({
+                "name": "Song",
+                "old_string": "a",
+                "new_string": "b",
+            }),
+        )
+        .expect("the patch fields are taken");
+        assert!(!patch.replace_all);
+    }
+
     use super::{
         compute_bpm_from_beats, compute_bpm_from_intervals, compute_tempo_segments,
         compute_tempo_segments_from, quarter_note_intervals,

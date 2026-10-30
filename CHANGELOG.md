@@ -142,6 +142,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that keeps looping is re-cued each time round, and a section armed after a song's last MIDI
   note plays its notes again. A song without loops ends as it did.
 
+- **MCP tools refuse arguments they do not take**: an unknown argument was dropped without a word,
+  so `play_song_from` given `position` instead of `start_time` played from the top. Each tool now
+  refuses it, naming the arguments it takes.
 - **The beat clock follows section loops, and keeps with the audio over long loops** (#604): a
   section loop took the notes and audio back to the section's start at its end, but the clock ran
   on along the song. It now goes back with them, and plays on once the loop is broken. And the
