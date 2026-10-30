@@ -75,7 +75,9 @@ export function loopEndFade(next: NextUp | null | undefined): FadeInfo | null {
 
 /** Whether the playlist is at its first entry, with nothing for Previous to
  *  move back to, and at its last, with nothing for Next. Off the list, it
- *  sits before the entry at its position, which Next lands on. */
+ *  sits before the entry at its position, which Next lands on; Previous
+ *  lands on the one before, or on the first entry itself, so off the list
+ *  is never the first. */
 export function playlistEnds(
   state: Pick<
     PlaybackState,
@@ -84,7 +86,7 @@ export function playlistEnds(
 ): { atFirst: boolean; atLast: boolean } {
   const lastEntry = state.playlist_songs.length - 1;
   return {
-    atFirst: state.playlist_position <= 0,
+    atFirst: !state.playlist_off_list && state.playlist_position <= 0,
     atLast: state.playlist_off_list
       ? state.playlist_position > lastEntry
       : state.playlist_position >= lastEntry,

@@ -365,4 +365,67 @@ test.describe("Dashboard: next up", () => {
     await expect(rows.nth(1)).toHaveClass(/playlist-card__row--active/);
     await expect(nextButton).toBeDisabled();
   });
+
+  test("Previous stays on off the list before the first entry", async ({
+    page,
+  }) => {
+    // #579: off the list at position 0, Previous lands on the first entry,
+    // but the dashboard and the mini player took it as the start of the
+    // list and turned Previous off.
+    const wsId = `off-list-first-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/`);
+    await expect(page.locator(".playback-card__title")).toBeVisible();
+
+    const frame = {
+      type: "playback",
+      is_playing: false,
+      elapsed_ms: 0,
+      song_name: "Daegrima",
+      song_duration_ms: 60000,
+      playlist_name: "setlist",
+      playlist_position: 0,
+      playlist_off_list: true,
+      playlist_songs: ["Opener", "Encore"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      looping: true,
+      next: { song: "Opener", breaks_loop: false, auto_play_ms: null },
+    };
+    const prevButton = page.getByRole("button", { name: "Prev", exact: true });
+    await sendWsMessage(page, wsId, frame);
+    await expect(prevButton).toBeEnabled();
+    // Playing, with no fade out of its own to end on: still a move.
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      is_playing: true,
+      next: {
+        song: "Opener",
+        breaks_loop: true,
+        fade_out: null,
+        fade_in: null,
+        auto_play_ms: null,
+      },
+    });
+    await expect(prevButton).toBeEnabled();
+
+    // The mini player, on a narrow screen away from the dashboard, agrees.
+    await page.setViewportSize({ width: 600, height: 800 });
+    await page.evaluate(() => (window.location.hash = "#/status"));
+    const miniPrev = page
+      .locator(".miniplayer")
+      .getByRole("button", { name: "Prev", exact: true });
+    await expect(miniPrev).toBeEnabled();
+
+    // On the first entry, it is the start of the list again.
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      song_name: "Opener",
+      playlist_off_list: false,
+      looping: false,
+      next: { song: "Encore", breaks_loop: false, auto_play_ms: null },
+    });
+    await expect(miniPrev).toBeDisabled();
+  });
 });

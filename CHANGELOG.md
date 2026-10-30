@@ -280,8 +280,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turned those buttons off there, so the ending could only be reached from MCP, OSC or gRPC.
   They now stay on while such a song plays, the next-up line reads "Next ends the loop: fades
   out over 2 measures" rather than "End of playlist", and Previous's tooltip says the same on
-  the first entry. With no `fade_out`, where the press would only cut, they stay off. The
-  playback feed's `next` carries `ends_loop` and the `fade_out` at the end of the list.
+  the first entry. With no `fade_out`, where the press would only cut, they stay off. Previous
+  also stays on for a song an edit took off the list before the first entry, which it moves onto,
+  and breaks such a looping song's loop onto that entry rather than ending it. The playback
+  feed's `next` carries `ends_loop` and the `fade_out` at the end of the list.
 
 ## [0.17.4] - 2026-10-26
 

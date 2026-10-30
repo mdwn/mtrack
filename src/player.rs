@@ -4382,4 +4382,21 @@ mod test {
         assert_eq!(current_name(&player).await, "C");
         Ok(())
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn off_the_list_before_the_first_entry_previous_goes_to_it() -> Result<(), Box<dyn Error>>
+    {
+        // #579: the web UI took position 0 as the start of the list, and
+        // turned Previous off, though Previous goes on to the entry there.
+        let (player, dir) = player_looping_b_with("songs:\n- B\n- A\n- C\n").await?;
+        edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+        let pl = player.get_playlist();
+        assert_eq!(pl.entry(), None);
+        assert_eq!(pl.position(), 0);
+        assert!(pl.can_move(true));
+        let prev = player.prev().await.map(|s| s.name().to_string());
+        player.stop().await;
+        assert_eq!(prev.as_deref(), Some("A"));
+        Ok(())
+    }
 }

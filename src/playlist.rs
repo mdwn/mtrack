@@ -338,10 +338,13 @@ impl Playlist {
 
     /// Whether there is an entry before the current one (`back`) or after
     /// it: false at either end of the list, where next and previous clamp.
+    /// Off the list, previous always has an entry to land on, the one at
+    /// its position included.
     pub fn can_move(&self, back: bool) -> bool {
         let cursor = self.position.read();
         match (back, &cursor.off_list) {
-            (true, _) => cursor.index > 0,
+            (true, Some(_)) => !self.songs.is_empty(),
+            (true, None) => cursor.index > 0,
             (false, Some(_)) => cursor.index < self.songs.len(),
             (false, None) => cursor.index + 1 < self.songs.len(),
         }
@@ -762,6 +765,21 @@ mod test {
         playlist.navigate_to("B");
         assert!(playlist.can_move(true));
         assert!(!playlist.can_move(false));
+    }
+
+    #[test]
+    fn off_the_list_before_the_first_entry_previous_can_move_onto_it() {
+        // #579: off the list at position 0, previous lands on entry 0, so
+        // it is no end of the list for previous.
+        let old = playlist_from("songs:\n- B\n- A\n- C\n").unwrap();
+        let new = playlist_from("songs:\n- A\n- C\n").unwrap();
+        new.follow(&old, true);
+        assert_eq!((new.entry(), new.position()), (None, 0));
+        assert!(new.can_move(true));
+        assert_eq!(new.peek_prev().unwrap().name(), "A");
+        assert_eq!(new.prev().unwrap().name(), "A");
+        assert_eq!(new.entry(), Some(0));
+        assert!(!new.can_move(true));
     }
 
     #[test]
