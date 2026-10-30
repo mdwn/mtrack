@@ -103,6 +103,12 @@ impl Player {
         start_time: Duration,
         join: &mut Option<PlayHandles>,
     ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
+        // Asked again under the join lock: a hardware reload resets the
+        // hardware under it, and one that ran since the caller asked would
+        // have this start on hardware still being brought up.
+        if !*self.init_done_tx.borrow() {
+            return Err("Hardware is still initializing".into());
+        }
         // The song counts as playing from before the playlist is read for
         // it: a reload either swaps the playlist in first, so the song read
         // is the new one's, or sees it playing and keeps it current.
@@ -113,6 +119,7 @@ impl Player {
         let started = self.start_locked(start_time, join).await;
         if join.is_none() {
             self.song_playing.store(false, Ordering::Relaxed);
+            self.reload_deferred_hardware();
         }
         started
     }
@@ -295,6 +302,7 @@ impl Player {
                     if let Some(current) = playlist.current().filter(|_| settled) {
                         player.emit_song_change(&current);
                     }
+                    player.reload_deferred_hardware();
                     return;
                 }
 
@@ -348,7 +356,10 @@ impl Player {
 
                     match auto_play {
                         Some(gap) => player.schedule_auto_play(gap),
-                        None => player.idle_ambient(true),
+                        None => {
+                            player.idle_ambient(true);
+                            player.reload_deferred_hardware();
+                        }
                     }
                 }
                 // A loop broken by play or navigation starts the song it
@@ -363,6 +374,7 @@ impl Player {
                         if let Err(e) = rt.block_on(player.play_locked(&mut join)) {
                             *player.start_fade.lock() = None;
                             error!(err = %e, "Failed to auto-play next song after loop break");
+                            player.reload_deferred_hardware();
                         }
                     });
                 }
@@ -604,6 +616,7 @@ impl Player {
         // ending is "now": ambient comes in at once, over its lights going
         // dark, rather than after the rest of its delay.
         self.idle_ambient(!ending);
+        self.reload_deferred_hardware();
         song
     }
 
@@ -741,6 +754,7 @@ impl Player {
             }
             if let Err(e) = player.play_locked(&mut join).await {
                 error!(err = %e, "Auto play failed to start the song");
+                player.reload_deferred_hardware();
             }
         });
     }

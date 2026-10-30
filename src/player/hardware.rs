@@ -16,7 +16,7 @@ use std::{
     collections::HashMap,
     error::Error,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{atomic::Ordering, Arc},
     thread,
     time::Duration,
 };
@@ -554,24 +554,37 @@ impl Player {
 
     /// Reinitializes all hardware devices from the current config.
     ///
-    /// Rejects the request if the player is currently playing. Cancels any
-    /// in-flight init, resets hardware to empty, and spawns a new async init
-    /// round. Returns immediately — does not wait for devices to be found.
+    /// Cancels any in-flight init, resets hardware to empty, and spawns a new
+    /// async init round. Returns immediately — does not wait for devices to be
+    /// found.
+    ///
+    /// While a song plays, the reload is deferred rather than refused, and runs once the player is idle. The
+    /// callers check for playback before saving a config, but a play can
+    /// still land between that check and this reload: refusing it then left
+    /// the save acknowledged and the rig running the old config until
+    /// something else reloaded it (#578).
     pub async fn reload_hardware(self: &Arc<Self>) -> Result<(), Box<dyn Error>> {
-        if self.is_playing().await {
-            return Err("Cannot reload hardware during playback".into());
-        }
+        let store = self.config_store().ok_or("No config store available")?;
 
         // Held until this reload has spawned its round, so a concurrent reload
         // cannot read a newer config, spawn, and then be cancelled by an older
         // one that had already read its own.
         let _reload_guard = self.reload_lock.clone().lock_owned().await;
 
-        let config = self
-            .config_store()
-            .ok_or("No config store available")?
-            .read_config()
-            .await;
+        let config = store.read_config().await;
+
+        // Held through the reset and the spawn, so a song cannot start on the
+        // hardware this tears down: a start checks the hardware is ready under
+        // this lock, and finds it not ready once this lets go. Taken after the
+        // reload lock, never before it, as the deferred reload takes them too.
+        let join = self.join.lock().await;
+        if join.is_some() {
+            self.hardware_reload_pending.store(true, Ordering::Relaxed);
+            info!("Hardware reload deferred until playback ends");
+            return Ok(());
+        }
+        // This reload covers one deferred before it.
+        self.hardware_reload_pending.store(false, Ordering::Relaxed);
 
         // Cancel the previous init round and take the replacement token here,
         // so the round spawned below carries it from the start.
@@ -619,9 +632,33 @@ impl Player {
         tokio::spawn(async move {
             init_player.init_hardware_async(config, bp, cancel).await;
         });
+        drop(join);
 
         info!("Hardware reload initiated");
         Ok(())
+    }
+
+    /// Runs a hardware reload deferred by playback, if one is pending, now
+    /// that the player may be idle. Called wherever a song stops; the reload looks again under the join lock, and
+    /// defers once more if the player is not idle after all — a song a loop
+    /// break moves to, or one started in the meantime.
+    pub(super) fn reload_deferred_hardware(&self) {
+        if !self.hardware_reload_pending.load(Ordering::Relaxed) {
+            return;
+        }
+        // On a task of its own: callers hold the join lock the reload takes.
+        // The clone shares all of this player's state, so the reload is this
+        // player's.
+        let player = Arc::new(self.clone());
+        tokio::spawn(async move {
+            if !player.hardware_reload_pending.load(Ordering::Relaxed) {
+                return;
+            }
+            info!("Playback has ended: running the deferred hardware reload");
+            if let Err(e) = player.reload_hardware().await {
+                warn!("Deferred hardware reload failed: {}", e);
+            }
+        });
     }
 
     /// Whether the audio device this player holds open is the one `name` names.

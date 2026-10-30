@@ -291,6 +291,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the hardware, as a profile save does, and like one is refused during playback. A save the
   player cannot load (a broken profile in its `profiles_dir`, say) puts the file back as it was
   and reports that it was not saved.
+- **A config save raced by a play applies when the song stops (#578)**: a song started between a
+  save's playback check and its hardware reload had the reload refused, while the save still
+  answered "saved" and the rig ran on the old config until something else reloaded it. The
+  reload now waits for the player to go idle and runs then.
 - **The dashboard can end a looping song at either end of the list (#579)**: Next on the last
   entry, or Previous on the first, ends a looping song over its `fade_out`, but the dashboard
   turned those buttons off there, so the ending could only be reached from MCP, OSC or gRPC.

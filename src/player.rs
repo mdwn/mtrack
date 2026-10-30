@@ -366,6 +366,10 @@ pub struct Player {
     /// superseded. Serializing means the last reload to run is the one that
     /// read the newest config.
     reload_lock: Arc<tokio::sync::Mutex<()>>,
+    /// A hardware reload asked for while a song played or an auto play
+    /// waited, which runs once the player is idle. Refusing it instead left
+    /// a config save acknowledged while the rig kept the old config (#578).
+    hardware_reload_pending: Arc<AtomicBool>,
     /// Broadcast channel sender, stored so async init can wire DMX engine.
     broadcast_tx: Arc<parking_lot::Mutex<Option<tokio::sync::broadcast::Sender<String>>>>,
     /// Watch channel to signal hardware init completion.
@@ -652,6 +656,7 @@ impl Player {
             default_metronome: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             init_cancel: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
             reload_lock: Arc::new(tokio::sync::Mutex::new(())),
+            hardware_reload_pending: Arc::new(AtomicBool::new(false)),
             broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
             init_done_tx: Arc::new(init_done_tx),
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
@@ -3199,39 +3204,93 @@ mod test {
         Ok(())
     }
 
+    /// Sets a config store on `player` whose profile has no audio, so a
+    /// reload that has run shows as the audio device going away.
+    fn set_store_without_audio(player: &Player) -> Result<tempfile::TempDir, Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        let yaml = "songs: songs\nprofiles:\n  - midi:\n      device: mock-midi-device\n";
+        std::fs::write(&path, yaml)?;
+        let cfg = config::Player::deserialize(&path)?;
+        player.set_config_store(std::sync::Arc::new(config::ConfigStore::new(cfg, path)));
+        Ok(dir)
+    }
+
+    /// A reload asked for during playback was refused, and the config save
+    /// that asked for it answered as saved while the rig kept the old config
+    /// (#578). It waits for the song to stop instead.
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_reload_hardware_during_playback_rejected() -> Result<(), Box<dyn Error>> {
+    async fn test_reload_hardware_during_playback_is_deferred() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
         let device = binding.to_mock()?;
-
-        // Set up config store (needed for reload_hardware).
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("config.yaml");
-        let yaml = "songs: songs\nprofiles:\n  - audio:\n      device: mock-device\n      track_mappings:\n        click: [1]\n";
-        std::fs::write(&path, yaml)?;
-        let cfg = config::Player::deserialize(&path)?;
-        let store = std::sync::Arc::new(config::ConfigStore::new(cfg, path));
-        player.set_config_store(store);
+        let _dir = set_store_without_audio(&player)?;
 
         player.play().await?;
         eventually(|| device.is_playing(), "Song never started playing");
 
-        // reload_hardware should fail during playback.
-        let result = player.reload_hardware().await;
-        assert!(
-            result.is_err(),
-            "reload_hardware should fail during playback"
-        );
-        assert!(
-            result.unwrap_err().to_string().contains("during playback"),
-            "error should mention playback"
-        );
+        // Deferred, not refused, and the song keeps its hardware. A second
+        // request while one waits just keeps it waiting.
+        player.reload_hardware().await?;
+        player.reload_hardware().await?;
+        assert!(player.audio_device().is_some(), "reloaded under the song");
+        assert!(*player.init_done_tx.borrow(), "reset under the song");
+        assert!(player.is_playing().await);
 
         player.stop().await;
         eventually(|| !device.is_playing(), "Song never stopped playing");
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        player.await_hardware_ready().await;
+        assert!(!player.hardware_reload_pending.load(Ordering::Relaxed));
+        Ok(())
+    }
+
+    /// The deferred reload runs when a song ends by itself, too.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_runs_when_the_song_ends() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player_with_playlist("songs:\n- Song 1\n").await?;
+        let _dir = set_store_without_audio(&player)?;
+        player.play().await?;
+        player.reload_hardware().await?;
+        assert!(player.audio_device().is_some(), "reloaded under the song");
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        Ok(())
+    }
+
+    /// A reload waiting for the player to go idle cannot run in the middle
+    /// of a start: the start holds the join lock, and the reload takes it
+    /// and finds the song playing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_waits_for_a_start_under_way() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _dir = set_store_without_audio(&player)?;
+        let mut join = player.join.lock().await;
+        player
+            .hardware_reload_pending
+            .store(true, Ordering::Relaxed);
+        player.reload_deferred_hardware();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(player.audio_device().is_some(), "reloaded under the start");
+        player.play_from_locked(Duration::ZERO, &mut join).await?;
+        drop(join);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(player.audio_device().is_some(), "reloaded under the song");
+        assert!(player.is_playing().await);
+        assert!(player.hardware_reload_pending.load(Ordering::Relaxed));
+
+        player.stop().await;
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
         Ok(())
     }
 

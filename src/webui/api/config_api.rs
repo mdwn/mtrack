@@ -206,6 +206,8 @@ pub(super) async fn reject_if_playing(state: &WebUiState) -> Option<axum::respon
 /// Reloads hardware and controllers from the updated config. Non-blocking —
 /// spawns async device discovery and returns immediately. The broadcast channel
 /// is already stored on the Player and will be wired when the DMX engine comes up.
+/// A song started since `reject_if_playing` defers the hardware reload until
+/// playback ends, so the save still answers 200: it takes effect then.
 pub(super) async fn reload_hardware_after_mutation(state: &WebUiState) {
     if let Err(e) = state.player.reload_hardware().await {
         warn!("Hardware reload failed: {}", e);
@@ -1252,6 +1254,38 @@ mod test {
         assert!(
             state.player.audio_device().is_some(),
             "the saved audio device was not set up"
+        );
+    }
+
+    /// Sets a config store on the state's player, from its config file.
+    fn set_store(state: &crate::webui::server::WebUiState) {
+        let path = state.config_path.clone();
+        let cfg = crate::config::Player::deserialize(&path).unwrap();
+        let store = std::sync::Arc::new(crate::config::ConfigStore::new(cfg, path));
+        state.player.set_config_store(store);
+    }
+
+    /// A play landing between a save's playback check and its hardware
+    /// reload had the reload refused, and the save answered 200 while the
+    /// rig ran the old config (#578). The reload runs once the song stops.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_raced_by_a_play_reloads_the_hardware_once_it_stops() {
+        // The config holds no audio, so the reload shows as the device going.
+        let (state, _dir) = test_state_with_audio_device("mock-device");
+        set_store(&state);
+
+        assert!(super::reject_if_playing(&state).await.is_none());
+        state.player.play().await.unwrap();
+        super::reload_hardware_after_mutation(&state).await;
+        assert!(
+            state.player.audio_device().is_some(),
+            "the hardware was reset under the song"
+        );
+
+        state.player.stop().await;
+        crate::testutil::eventually(
+            || state.player.audio_device().is_none(),
+            "the saved config was never applied",
         );
     }
 

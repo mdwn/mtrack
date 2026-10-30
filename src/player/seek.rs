@@ -64,10 +64,15 @@ impl Player {
             // go to ambient as after a stop.
             self.song_playing.store(false, Ordering::Relaxed);
             self.idle_ambient(true);
+            self.reload_deferred_hardware();
             return Ok(None);
         }
         let position = self.keep_paused_position(position);
         self.song_playing.store(false, Ordering::Relaxed);
+        // Paused counts as idle, as it does for a config save's own check: a
+        // resume while the hardware comes back up is refused, as at startup,
+        // rather than the reload waiting on a resume that may never come.
+        self.reload_deferred_hardware();
         Ok(Some(position))
     }
 
@@ -167,6 +172,7 @@ impl Player {
                 // The song a seek takes out of `join` counts as playing
                 // until it restarts; abandoned, it is not.
                 self.song_playing.store(false, Ordering::Relaxed);
+                self.reload_deferred_hardware();
                 warn!(
                     timeout = ?SEEK_WINDDOWN_TIMEOUT,
                     "Playback did not wind down in time during seek; abandoning it"

@@ -184,12 +184,13 @@ impl PlayerServer {
             .await
             .map_err(|e| e.to_string())
         {
-            // Reported, not just logged. The most common cause is playback —
-            // `reload_hardware` refuses during it — and answering with a fresh
-            // checksum while nothing was applied is precisely the "acknowledged
-            // and quietly ineffective" behaviour this helper exists to end. The
-            // config *is* persisted at this point, so the message has to say so
-            // rather than implying the write was rolled back.
+            // Reported, not just logged. Playback is not a cause —
+            // `reload_hardware` defers until it ends — but answering with a
+            // fresh checksum while nothing was applied or deferred is
+            // precisely the "acknowledged and quietly ineffective" behaviour
+            // this helper exists to end. The config *is* persisted at this
+            // point, so the message has to say so rather than implying the
+            // write was rolled back.
             warn!("Hardware reload after config update failed: {}", e);
             return Err(Status::failed_precondition(format!(
                 "the config was saved but the running hardware was not reloaded, so it \
