@@ -1333,6 +1333,10 @@ fn beat_clock_engine_loop(
         if interrupted || play.cancel.is_cancelled() {
             continue;
         }
+        let started_at = play
+            .clock
+            .started_at()
+            .unwrap_or_else(std::time::Instant::now);
 
         // Sleep the playback delay, matching the note thread -- still holding
         // the tempo, for the same reason as above, and hearing a command as
@@ -1340,8 +1344,9 @@ fn beat_clock_engine_loop(
         if !play.playback_delay.is_zero() {
             const COMMAND_CHECK: Duration = Duration::from_millis(50);
             let mut hold = held.map(|interval| hold_at(&mut hold, interval));
-            let delay = PlaybackClock::wall();
-            delay.start();
+            // From the playback clock's start, as the notes count it, not
+            // from when this thread noticed it (#600).
+            let delay = PlaybackClock::wall_from(started_at);
             let mut interrupted = false;
             while delay.elapsed() < play.playback_delay && !play.cancel.is_cancelled() {
                 let left = play.playback_delay.saturating_sub(delay.elapsed());
@@ -1373,8 +1378,10 @@ fn beat_clock_engine_loop(
         // playback clock: the audio clock only updates once per buffer callback
         // (~23ms at 1024/44.1kHz), which would make the beat clock's spin_sleep
         // overshoot by variable amounts. A wall clock is smooth and sub-ms.
-        let wall = PlaybackClock::wall();
-        wall.start();
+        //
+        // Its zero is the playback clock's start plus the delay: the notes'
+        // zero, not wherever this thread got to after noticing the start.
+        let wall = PlaybackClock::wall_from(started_at + play.playback_delay);
 
         let outcome = run_beat_clock(
             sender,
@@ -2085,6 +2092,62 @@ mod test {
             crate::midi::Device::held_tempo(&device),
             Some(Duration::from_millis(20))
         );
+    }
+
+    /// The playback delay counts from the playback clock's start, as the
+    /// notes count it, not from when the engine noticed the start (#600): an
+    /// engine told of a song well after its clock started still has its first
+    /// clock out a delay after that start.
+    #[test]
+    fn the_playback_delay_counts_from_the_clocks_start() {
+        struct FirstClock {
+            clock: PlaybackClock,
+            at: Arc<Mutex<Option<Duration>>>,
+        }
+        impl MidiSender for FirstClock {
+            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                if bytes == [0xF8] {
+                    let mut at = self.at.lock().unwrap();
+                    at.get_or_insert(self.clock.elapsed());
+                }
+                Ok(())
+            }
+        }
+        let clock = PlaybackClock::wall();
+        clock.start();
+        // The engine hears of the song 600ms into it.
+        std::thread::sleep(Duration::from_millis(600));
+        let at = Arc::new(Mutex::new(None));
+        let (tx, rx) = mpsc::channel();
+        let cancel = CancelHandle::new();
+        tx.send(BeatClockCommand::Play(BeatClockPlay {
+            ticks: Arc::new((0..48).map(|k| Duration::from_millis(k * 20)).collect()),
+            start_time: Duration::ZERO,
+            playback_delay: Duration::from_secs(1),
+            cancel: cancel.clone(),
+            clock: clock.clone(),
+            passes: None,
+        }))
+        .unwrap();
+        let join = std::thread::spawn({
+            let at = at.clone();
+            let clock = clock.clone();
+            move || {
+                let tempo = Mutex::new(None);
+                beat_clock_engine_loop(&mut FirstClock { clock, at }, false, &tempo, &rx);
+            }
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while at.lock().unwrap().is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        cancel.cancel();
+        drop(tx);
+        join.join().unwrap();
+        let first = at.lock().unwrap().expect("no clock was sent");
+        assert!(first >= Duration::from_secs(1), "{first:?}");
+        // Counted from the notice, it would be 1.6s in.
+        assert!(first < Duration::from_millis(1_450), "{first:?}");
     }
 
     /// A reopen while a song's beat clock schedule still runs (a clock

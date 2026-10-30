@@ -33,6 +33,10 @@ pub struct PlaybackClock {
 
 struct ClockShared {
     source: ClockSource,
+    /// When `start()` was called, on the wall clock, whatever the source: for
+    /// a thread that times itself on the wall clock and must count from the
+    /// start, not from when it noticed it.
+    started_at: parking_lot::Mutex<Option<Instant>>,
     /// Condvar+Mutex used to wake threads waiting for `start()`.
     start_condvar: Condvar,
     start_mutex: Mutex<bool>,
@@ -64,6 +68,7 @@ impl PlaybackClock {
                     sample_rate,
                     start_sample: AtomicU64::new(u64::MAX),
                 },
+                started_at: parking_lot::Mutex::new(None),
                 start_condvar: Condvar::new(),
                 start_mutex: Mutex::new(false),
             }),
@@ -77,6 +82,7 @@ impl PlaybackClock {
                 source: ClockSource::Wall {
                     start_instant: parking_lot::Mutex::new(None),
                 },
+                started_at: parking_lot::Mutex::new(None),
                 start_condvar: Condvar::new(),
                 start_mutex: Mutex::new(false),
             }),
@@ -87,6 +93,8 @@ impl PlaybackClock {
     /// Called by `play_files` once all subsystems have signaled readiness.
     /// Subsystems wait for `elapsed() > Duration::ZERO` as the "go" signal.
     pub fn start(&self) {
+        let now = Instant::now();
+        *self.inner.started_at.lock() = Some(now);
         match &self.inner.source {
             ClockSource::Audio {
                 sample_counter,
@@ -98,7 +106,7 @@ impl PlaybackClock {
             }
             ClockSource::Wall { start_instant } => {
                 let mut guard = start_instant.lock();
-                *guard = Some(Instant::now());
+                *guard = Some(now);
             }
         }
         // Wake any threads blocked in wait_for_start_or_cancel.
@@ -107,6 +115,24 @@ impl PlaybackClock {
             *started = true;
         }
         self.inner.start_condvar.notify_all();
+    }
+
+    /// A wall clock that started at `at`, which may be in the past: a clock
+    /// counting from another's start (see [`PlaybackClock::started_at`]).
+    pub fn wall_from(at: Instant) -> Self {
+        let clock = Self::wall();
+        *clock.inner.started_at.lock() = Some(at);
+        if let ClockSource::Wall { start_instant } = &clock.inner.source {
+            *start_instant.lock() = Some(at);
+        }
+        *clock.inner.start_mutex.lock().unwrap() = true;
+        clock
+    }
+
+    /// When [`PlaybackClock::start`] was called, on the wall clock; `None`
+    /// before it has been.
+    pub fn started_at(&self) -> Option<Instant> {
+        *self.inner.started_at.lock()
     }
 
     /// Whether [`PlaybackClock::start`] has been called.
