@@ -959,6 +959,10 @@ fn run_beat_clock(
     if let Err(e) = sender.send(&start_msg) {
         debug!("MIDI beat clock start send failed: {:?}", e);
     }
+    // The MIDI spec asks for a millisecond between Start and the first clock,
+    // which with a pulse due at once would follow it back to back.
+    let start_sent = std::time::Instant::now();
+    let mut first_clock = true;
 
     let clock_bytes = realtime_bytes(SystemRealtime::TimingClock);
     let stop_bytes = realtime_bytes(SystemRealtime::Stop);
@@ -1014,6 +1018,12 @@ fn run_beat_clock(
             return ScheduleOutcome::Finished(last_interval);
         }
 
+        if std::mem::take(&mut first_clock) {
+            let since = start_sent.elapsed();
+            if since < START_TO_CLOCK {
+                spin_sleep::sleep(START_TO_CLOCK - since);
+            }
+        }
         if let Err(e) = sender.send(&clock_bytes) {
             debug!("MIDI beat clock send failed: {:?}", e);
         }
@@ -1028,6 +1038,9 @@ fn run_beat_clock(
     let _ = sender.send(&stop_bytes);
     ScheduleOutcome::Finished(last_interval)
 }
+
+/// The least time between a Start or Continue and the first clock after it.
+const START_TO_CLOCK: Duration = Duration::from_millis(1);
 
 /// When each of a schedule's ticks falls due, as time on the song's timeline
 /// from a start at `start` (so due `time - start` after it), and whether it
@@ -1066,6 +1079,22 @@ impl<'a> PassTicks<'a> {
     }
 }
 
+impl PassTicks<'_> {
+    /// Whether the tick under way belongs to this pass rather than falling on
+    /// the next one's first: at least half a pulse before the period. A loop's
+    /// length is whole samples, so a loop of whole pulses can come out a hair
+    /// long, which put a pass's last pulse microseconds before the next pass's
+    /// first -- a pulse too many at every seam -- or a hair short.
+    fn in_pass(&self, tick: Duration, period: Duration) -> bool {
+        let pulse = match self.index {
+            0 => self.ticks.get(1).map(|next| next.saturating_sub(tick)),
+            index => Some(tick.saturating_sub(self.ticks[index - 1])),
+        }
+        .unwrap_or_default();
+        tick + pulse / 2 < period
+    }
+}
+
 impl Iterator for PassTicks<'_> {
     type Item = (Duration, bool);
 
@@ -1073,7 +1102,7 @@ impl Iterator for PassTicks<'_> {
         loop {
             let tick = self.ticks.get(self.index).copied();
             match (tick, self.period) {
-                (Some(tick), period) if period.is_none_or(|period| tick < period) => {
+                (Some(tick), period) if period.is_none_or(|period| self.in_pass(tick, period)) => {
                     self.index += 1;
                     let at = self.offset + tick;
                     if at >= self.start {
@@ -3471,6 +3500,99 @@ mod test {
             let played = pass_ticks(&every_10ms(500), 125, Some(300), 20);
             assert_eq!(played[0], (130, false));
             assert_eq!(played[17], (300, true));
+        }
+
+        /// A loop of one bar at 128 BPM is 1.875 s, 82_687.5 samples at
+        /// 44.1 kHz; the audio's length rounds to 82_688 samples, 11 us over.
+        /// Each pass ended with a pulse 11 us before the next pass's first: a
+        /// doubled pulse a seam, and gear counting pulses gained one a pass.
+        #[test]
+        fn a_loop_a_sample_over_whole_pulses_keeps_its_count() {
+            // 480 tpb, 128 BPM (468_750 us/beat), 4 beats.
+            let entries = [crate::midi::playback::TempoEntry {
+                tick: 0,
+                micros_per_tick: 468_750.0 / 480.0,
+            }];
+            let length = Duration::from_nanos(82_688u64 * 1_000_000_000 / 44_100);
+            let midi = crate::midi::beat_clock::PrecomputedBeatClock::from_tempo_info_until(
+                &entries, 480, 1920, length,
+            )
+            .ticks_from(Duration::ZERO)
+            .to_vec();
+            let map = crate::tempo::TempoMap::new(
+                Duration::ZERO,
+                128.0,
+                crate::tempo::TimeSignature::new(4, 4),
+                vec![],
+            )
+            .beat_clock_ticks(length);
+            for (name, ticks) in [("MIDI-file", &midi), ("tempo-map", &map)] {
+                let played: Vec<Duration> = PassTicks::new(ticks, Duration::ZERO, Some(length))
+                    .map(|(at, _)| at)
+                    .take_while(|at| *at < length * 2)
+                    .collect();
+                let min_gap = played.windows(2).map(|w| w[1] - w[0]).min().unwrap();
+                assert_eq!(
+                    played.len(),
+                    192,
+                    "{name}: pulses in two passes; min gap {min_gap:?}"
+                );
+            }
+        }
+
+        /// A loop a hair short of whole pulses keeps its last pulse: it is
+        /// still nearly a whole pulse before the seam.
+        #[test]
+        fn a_loop_a_hair_short_of_whole_pulses_keeps_its_count() {
+            // 30 pulses of 10ms, a pass every 299.99ms.
+            let ticks = every_10ms(500);
+            let period = Duration::from_micros(299_990);
+            let played: Vec<Duration> = PassTicks::new(&ticks, Duration::ZERO, Some(period))
+                .map(|(at, _)| at)
+                .take_while(|at| *at < period * 2)
+                .collect();
+            assert_eq!(played.len(), 60, "{played:?}");
+        }
+
+        /// Start and the first clock are a millisecond apart, as the MIDI spec
+        /// asks, though the first is due at once.
+        #[test]
+        fn the_first_clock_follows_start_by_a_millisecond() {
+            struct Timed {
+                started: Option<std::time::Instant>,
+                first_clock: Option<Duration>,
+            }
+            impl MidiSender for Timed {
+                fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                    if bytes == realtime_bytes(SystemRealtime::Start).as_slice() {
+                        self.started = Some(std::time::Instant::now());
+                    } else if bytes == clock_bytes().as_slice() && self.first_clock.is_none() {
+                        self.first_clock = self.started.map(|at| at.elapsed());
+                    }
+                    Ok(())
+                }
+            }
+            let mut sender = Timed {
+                started: None,
+                first_clock: None,
+            };
+            let clock = PlaybackClock::wall();
+            clock.start();
+            let (_tx, rx) = mpsc::channel();
+            run_beat_clock(
+                &mut sender,
+                &[Duration::ZERO, ms(10)],
+                Duration::ZERO,
+                None,
+                &CancelHandle::new(),
+                &clock,
+                &rx,
+            );
+            assert!(
+                sender.first_clock.unwrap() >= START_TO_CLOCK,
+                "{:?}",
+                sender.first_clock
+            );
         }
 
         /// A looping song clocked from its MIDI file keeps every pulse across

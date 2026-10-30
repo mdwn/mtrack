@@ -15,12 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes and ramps included), else the click track's tempo as the lighting reads it. A count-in
   before bar 1 pulses in whole bars and whole quarters, so gear counting from Start has bar 1 on
   a downbeat. Every clock runs to the end of the song, a MIDI file's on at the file's last tempo
-  past where the file stops; its first pulse now falls at Start, beat 1, as the MIDI spec has it,
-  not a pulse (about 20ms at 120 BPM) after. A looping song with audio now has its clock loop with
-  it, a pass
-  every song length less its crossfade (at once for a start in the crossfade's tail), where it
-  used to play the first pass and stop; breaking the loop stops it. Section loops are not
-  followed yet (#604).
+  past where the file stops. A MIDI file's first pulse now falls at Start, beat 1, as the MIDI
+  spec has it, not a pulse (about 20ms at 120 BPM) after, and a millisecond after the Start
+  message, as the spec asks. A looping song with audio now has its clock loop with it, a pass
+  every song length less its crossfade (at once for a start in the crossfade's tail), keeping
+  whole pulses across each seam, where it used to play the first pass and stop; breaking the
+  loop stops it. Section loops are not followed yet (#604).
 
 - **Ending a looping song gracefully**: Stop on a looping song whose playlist entry has a
   `fade_out` now fades it out over that fade, lights included, instead of cutting; the playlist
