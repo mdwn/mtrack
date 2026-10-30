@@ -4707,4 +4707,41 @@ mod test {
         assert_eq!(current_name(&player).await, "C");
         Ok(())
     }
+
+    /// A pause queued behind a loop break's cleanup, which moves on to the
+    /// next song and starts it, pauses that song at its own position, not
+    /// the one before's.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_queued_behind_a_loop_breaks_cleanup_keeps_no_position_of_the_song_before(
+    ) -> Result<(), Box<dyn Error>> {
+        let (player, _dir) = player_looping_b().await?;
+        elapsed_eventually(&player).await?;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let pause = {
+            let join = player.join.lock().await;
+            // Next's break, as navigate asks it.
+            player.loop_break.store(true, Ordering::Relaxed);
+            join.as_ref().unwrap().cancel.cancel();
+            drop(join);
+            // B winds down, so its cleanup queues on the lock first...
+            let held = player.join.lock().await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            // ...then the pause queues after it.
+            let pausing = player.clone();
+            let pause =
+                tokio::spawn(async move { pausing.pause().await.map_err(|e| e.to_string()) });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(held);
+            pause
+        };
+        let paused = pause.await?;
+        assert_eq!(current_name(&player).await, "C");
+        assert!(!player.is_playing().await);
+        let kept = player.pending_start();
+        assert!(
+            kept.is_none_or(|k| k < Duration::from_millis(500)),
+            "C kept B's position: pause returned {paused:?}, pending {kept:?}"
+        );
+        Ok(())
+    }
 }

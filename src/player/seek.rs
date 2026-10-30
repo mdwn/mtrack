@@ -38,8 +38,17 @@ impl Player {
     /// break's target instead, as a stop does, and `None` is returned: there
     /// is nothing of that song to resume.
     pub async fn pause(&self) -> Result<Option<Duration>, Box<dyn Error>> {
-        let Some(position) = self.elapsed().await? else {
-            return Ok(None);
+        // The position is read under the join lock, from the playback the
+        // pause stops: read before it, a loop break's cleanup queued ahead
+        // could start the next song in between, and that song would be kept
+        // at the one before's position.
+        let mut join = self.join.lock().await;
+        // A song just started has no start time yet: it is at its very
+        // beginning.
+        let position = match self.elapsed().await? {
+            Some(position) => position,
+            None if join.is_some() => Duration::ZERO,
+            None => return Ok(None),
         };
         // The stop and the position kept for the next play are one step
         // under the join lock, and the song counts as playing throughout,
@@ -48,7 +57,6 @@ impl Player {
         // playing nor paused, and give an off-list song's place to the
         // entry after it, which play would then start at this song's
         // position (#576).
-        let mut join = self.join.lock().await;
         self.song_playing.store(true, Ordering::Relaxed);
         if !self.stop_for_pause(&mut join).await {
             // A loop break had the player on its way to the next song: the
