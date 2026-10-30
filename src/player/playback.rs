@@ -248,6 +248,13 @@ impl Player {
                     *join = None;
                     player.stop_run.store(false, Ordering::Relaxed);
                     *player.start_fade.lock() = None;
+                    // Stopped, a song an edit took off the list while it
+                    // ended gives way to the entry in its place, as at a
+                    // stop's cut, or Play would start it again (#576).
+                    let (playlist, settled) = player.move_playlist(|playlist| playlist.settle());
+                    if let Some(current) = playlist.current().filter(|_| settled) {
+                        player.emit_song_change(&current);
+                    }
                     return;
                 }
 

@@ -4343,4 +4343,43 @@ mod test {
         assert_eq!(left.current().unwrap().name(), "C");
         Ok(())
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_song_taken_off_the_list_while_ending_gives_way_once_stopped(
+    ) -> Result<(), Box<dyn Error>> {
+        // #576: an edit while a looping song ended over its fade_out kept it
+        // current, off the list, as playing; the ending's cleanup stopped
+        // the player but left it there, so Play would start it again.
+        let (player, dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 1s\n- C\n").await?;
+        let mut caught = false;
+        for _ in 0..10 {
+            let stopped = player.stop().await.map(|s| s.name().to_string());
+            assert_eq!(stopped.as_deref(), Some("B"));
+            assert!(player.ending_status().is_some(), "B fades out");
+            // Holding the join lock, the cleanup waits on it and the edit
+            // takes B as playing: the edit comes first, as on a busy machine.
+            let join = player.join.lock().await;
+            if join.is_none() {
+                // The cleanup was quicker: B ends again for another try.
+                drop(join);
+                player.play().await?;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+            assert_eq!(player.get_playlist().entry(), None, "B kept as playing");
+            caught = true;
+            break;
+        }
+        assert!(caught, "the ending's cleanup always ran before the edit");
+        eventually_async(|| async { !player.is_playing().await }, "never stopped").await;
+        eventually_async(
+            || async { player.get_playlist().entry() == Some(1) },
+            "B never gave way to C",
+        )
+        .await;
+        assert_eq!(current_name(&player).await, "C");
+        Ok(())
+    }
 }
