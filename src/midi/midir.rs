@@ -132,6 +132,11 @@ impl super::Device for Device {
         mem::drop(event_connection);
     }
 
+    /// Opened once, by [`get`]: [`Reopenable`] opens one afresh.
+    fn reopen(&self) -> Result<(), Box<dyn Error>> {
+        Err("a midir device cannot be reopened on its own".into())
+    }
+
     /// Plays the given song through the MIDI interface, starting from a specific time.
     fn play_from(
         &self,
@@ -474,6 +479,103 @@ pub fn get(config: &config::Midi) -> Result<Device, Box<dyn Error>> {
 
     // We've verified that there's only one element in the vector, so this should be safe.
     Ok(midi_device)
+}
+
+/// A midir device as the player holds it, which a hardware reload can open
+/// afresh in place.
+///
+/// The connections a device holds, its input watch and its beat clock's
+/// output, do not survive it being unplugged: plugged back in, it is not
+/// heard, and does not hear the clock, until opened afresh. It often comes
+/// back under the same port, so a reload cannot tell it was gone, and opens
+/// it afresh each time. Done in place, the MIDI controllers watching it and
+/// the notifiers sending to it keep it, and are not restarted.
+pub struct Reopenable {
+    config: config::Midi,
+    device: std::sync::RwLock<Arc<Device>>,
+    /// The sender of the watch going, if any, to keep it going on a device
+    /// opened afresh. Its lock also keeps a watch from starting or stopping
+    /// midway through a reopen.
+    watch: Mutex<Option<Sender<Vec<u8>>>>,
+}
+
+impl Reopenable {
+    /// Opens the device `config` names.
+    pub fn open(config: config::Midi) -> Result<Reopenable, Box<dyn Error>> {
+        let device = get(&config)?;
+        Ok(Reopenable::with_device(config, device))
+    }
+
+    fn with_device(config: config::Midi, device: Device) -> Reopenable {
+        Reopenable {
+            config,
+            device: std::sync::RwLock::new(Arc::new(device)),
+            watch: Mutex::new(None),
+        }
+    }
+
+    /// The device as last opened. Taken out of the lock, so that a song
+    /// playing on it does not hold a reopen off.
+    fn current(&self) -> Arc<Device> {
+        self.device.read().expect("unable to get lock").clone()
+    }
+}
+
+impl super::Device for Reopenable {
+    fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>> {
+        let mut watch = self.watch.lock().expect("unable to get lock");
+        self.current().watch_events(sender.clone())?;
+        *watch = Some(sender);
+        Ok(())
+    }
+
+    fn stop_watch_events(&self) {
+        let mut watch = self.watch.lock().expect("unable to get lock");
+        self.current().stop_watch_events();
+        *watch = None;
+    }
+
+    fn reopen(&self) -> Result<(), Box<dyn Error>> {
+        let watch = self.watch.lock().expect("unable to get lock");
+        let fresh = get(&self.config)?;
+        // The old watch goes first: both at once would hear every event
+        // twice for a moment, and a pedal press taken twice is worse than
+        // one missed during a config save.
+        if let Some(sender) = watch.as_ref() {
+            self.current().stop_watch_events();
+            fresh.watch_events(sender.clone())?;
+        }
+        info!(device = fresh.name, "Opened the MIDI device afresh.");
+        *self.device.write().expect("unable to get lock") = Arc::new(fresh);
+        Ok(())
+    }
+
+    fn play_from(
+        &self,
+        song: Arc<Song>,
+        sync: crate::playsync::PlaybackSync,
+    ) -> Result<(), Box<dyn Error>> {
+        self.current().play_from(song, sync)
+    }
+
+    fn emit(&self, midi_event: Option<LiveEvent<'static>>) -> Result<(), Box<dyn Error>> {
+        self.current().emit(midi_event)
+    }
+
+    fn emit_sysex(&self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+        self.current().emit_sysex(bytes)
+    }
+
+    #[cfg(test)]
+    fn to_mock(&self) -> Result<Arc<super::mock::Device>, Box<dyn Error>> {
+        Err("not a mock".into())
+    }
+}
+
+impl fmt::Display for Reopenable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.current().fmt(f)
+    }
 }
 
 /// Serializes a MIDI event to bytes, filtering out excluded channels.
@@ -1523,6 +1625,27 @@ mod test {
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("not a mock"));
+    }
+
+    /// A device that cannot be opened afresh fails to reopen, for the
+    /// reload to open a new one, and is left as it was, its watch included.
+    #[test]
+    fn reopen_of_a_device_gone_fails_and_leaves_it() {
+        use crate::midi::Device as _;
+
+        let device = Reopenable::with_device(
+            config::Midi::new("mtrack-test-no-such-midi-device", None),
+            Device::new_default("mtrack-test-no-such-midi-device".to_string()),
+        );
+        let before = device.current();
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+        device.watch_events(tx).unwrap();
+
+        assert!(device.reopen().is_err());
+        assert!(Arc::ptr_eq(&before, &device.current()));
+        assert!(device.watch.lock().unwrap().is_some());
+        device.stop_watch_events();
+        assert!(device.watch.lock().unwrap().is_none());
     }
 
     #[test]

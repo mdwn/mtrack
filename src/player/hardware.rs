@@ -142,11 +142,15 @@ impl Player {
     /// opens, two trigger engines, and whichever finished last winning, with
     /// the other's input stream stranded. The guard is only ever as good as
     /// the token the round is holding.
+    ///
+    /// `previous_midi` is the MIDI device a reload took down, with the config
+    /// it was opened with, kept if the profile's MIDI config is the same.
     pub(super) async fn init_hardware_async(
         self: &Arc<Self>,
         config: config::Player,
         base_path: Option<PathBuf>,
         cancel: CancellationToken,
+        previous_midi: Option<(String, Arc<dyn midi::Device>)>,
     ) {
         let hostname = config::resolve_hostname();
         info!(hostname = %hostname, "Resolved hostname for hardware profiles");
@@ -317,11 +321,46 @@ impl Player {
 
         // Phase 2: MIDI + Sample engine (needs Audio) — parallel.
         let midi_config = profile.midi().cloned();
+        let midi_fingerprint = midi_config
+            .as_ref()
+            .and_then(|c| crate::util::to_yaml_string(c).ok());
         let cancel3 = cancel.clone();
 
         let (midi_result, sample_engine) = tokio::join!(
             async {
                 if let Some(midi_config) = midi_config {
+                    // The device a reload took down, if its config is the
+                    // same: a new one would restart every MIDI controller,
+                    // which a save of anything else has no call to. It is
+                    // opened afresh in place all the same, as one unplugged
+                    // and plugged back in is heard again only then; if it
+                    // cannot be, it is gone, and a new one is opened.
+                    let kept = match previous_midi {
+                        Some((previous, device))
+                            if midi_fingerprint.as_ref() == Some(&previous) =>
+                        {
+                            let reopening = device.clone();
+                            match tokio::task::spawn_blocking(move || {
+                                reopening.reopen().map_err(|e| e.to_string())
+                            })
+                            .await
+                            {
+                                Ok(Ok(())) => Some(device),
+                                Ok(Err(e)) => {
+                                    info!(error = %e, "MIDI device could not be reopened; opening it anew");
+                                    None
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "Reopening the MIDI device panicked; opening it anew");
+                                    None
+                                }
+                            }
+                        }
+                        _ => None,
+                    };
+                    if kept.is_some() {
+                        return kept;
+                    }
                     let outcome = Self::retry_until_ready("midi device", cancel3, move || {
                         midi::get_device(Some(midi_config.clone())).map_err(|e| e.to_string())
                     })
@@ -353,6 +392,7 @@ impl Player {
         if let Some(ref midi_device) = midi_result {
             if !install_if_current(&self.hardware, &cancel, |hw| {
                 hw.midi_device = Some(midi_device.clone());
+                hw.midi_config = midi_fingerprint.clone();
             }) {
                 return;
             }
@@ -663,14 +703,19 @@ impl Player {
         // stop receiving song changes, with nothing logged. They are cleared
         // by `Controller::update` instead, at the point the controllers
         // that own them are actually torn down.
-        {
+        //
+        // The MIDI device is handed to the new round, which keeps it if the
+        // MIDI config is the same.
+        let previous_midi = {
             let mut hw = self.hardware.write();
             let notifiers = std::mem::take(&mut hw.song_change_notifiers);
+            let previous_midi = hw.midi_config.take().zip(hw.midi_device.take());
             *hw = HardwareState {
                 device: None,
                 mappings: None,
                 track_gains: None,
                 midi_device: None,
+                midi_config: None,
                 dmx_engine: None,
                 sample_engine: None,
                 trigger_engine: None,
@@ -680,7 +725,8 @@ impl Player {
                 hostname: None,
                 init_errors: HashMap::new(),
             };
-        }
+            previous_midi
+        };
         self.init_done_tx.send_modify(|v| *v = false);
 
         // Spawn new async init, handing it the token captured above rather
@@ -688,7 +734,9 @@ impl Player {
         let init_player = self.clone();
         let bp = self.base_path.clone();
         tokio::spawn(async move {
-            init_player.init_hardware_async(config, bp, cancel).await;
+            init_player
+                .init_hardware_async(config, bp, cancel, previous_midi)
+                .await;
         });
         drop(join);
 
@@ -1159,6 +1207,7 @@ mod test {
             mappings: None,
             track_gains: None,
             midi_device: None,
+            midi_config: None,
             dmx_engine: None,
             sample_engine: None,
             trigger_engine: None,

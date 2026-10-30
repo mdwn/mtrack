@@ -41,6 +41,8 @@ pub struct Device {
     emit_called: Arc<Mutex<Option<Vec<u8>>>>,
     sysex_called: Arc<Mutex<Option<Vec<u8>>>>,
     event_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Whether a test has unplugged it, so it cannot be reopened.
+    unplugged: Arc<AtomicBool>,
 }
 
 impl Device {
@@ -54,7 +56,14 @@ impl Device {
             emit_called: Arc::new(Mutex::new(None)),
             sysex_called: Arc::new(Mutex::new(None)),
             event_thread: Arc::new(Mutex::new(None)),
+            unplugged: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    #[cfg(test)]
+    /// Unplugs the device: it can no longer be reopened.
+    pub fn unplug(&self) {
+        self.unplugged.store(true, Ordering::Relaxed);
     }
 
     #[cfg(test)]
@@ -149,6 +158,14 @@ impl super::Device for Device {
         if !closed.swap(true, Ordering::Relaxed) {
             self.barrier.wait();
         }
+    }
+
+    /// Nothing to open afresh, unless unplugged.
+    fn reopen(&self) -> Result<(), Box<dyn Error>> {
+        if self.unplugged.load(Ordering::Relaxed) {
+            return Err(format!("no device found with name {}", self.name).into());
+        }
+        Ok(())
     }
 
     /// Plays the given song through the MIDI interface, starting from a specific time.

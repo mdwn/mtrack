@@ -108,6 +108,9 @@ struct HardwareState {
     /// track_mappings and track_gains. Also installed into the device mixer.
     track_gains: Option<Arc<crate::audio::track_gains::TrackGains>>,
     midi_device: Option<Arc<dyn midi::Device>>,
+    /// The MIDI config `midi_device` was opened with, as YAML: a reload of
+    /// the same config keeps the device, opened afresh in place.
+    midi_config: Option<String>,
     dmx_engine: Option<Arc<dmx::engine::Engine>>,
     sample_engine: Option<Arc<RwLock<SampleEngine>>>,
     trigger_engine: Option<Arc<TriggerEngine>>,
@@ -557,7 +560,7 @@ impl Player {
         let init_cancel = player.init_cancel.lock().clone();
         tokio::spawn(async move {
             init_player
-                .init_hardware_async(config, bp, init_cancel)
+                .init_hardware_async(config, bp, init_cancel, None)
                 .await;
         });
 
@@ -621,6 +624,7 @@ impl Player {
             mappings: devices.mappings,
             track_gains,
             midi_device: devices.midi,
+            midi_config: None,
             dmx_engine: devices.dmx_engine,
             sample_engine: devices.sample_engine,
             trigger_engine: devices.trigger_engine,

@@ -82,7 +82,8 @@ struct Entry {
     /// nothing, and does not count as a MIDI controller.
     duplicate: bool,
     /// The player's MIDI device when it started, which a MIDI controller
-    /// listens on. A hardware reload opens a new one.
+    /// listens on. A hardware reload opens a new one if the MIDI config
+    /// changed or the device is gone, and otherwise keeps it.
     midi_device: Option<Arc<dyn crate::midi::Device>>,
     /// Its task, when it started.
     handle: Option<JoinHandle<Result<(), io::Error>>>,
@@ -228,11 +229,12 @@ impl Controller {
     ///
     /// A controller that failed to start, or failed since, is started again,
     /// as nothing else would retry it. So is a MIDI controller started on
-    /// another MIDI device than the player's: a hardware reload opens the
-    /// device anew, and one kept for its unchanged config went on listening
-    /// to the old one, deaf to the pedalboard. MIDI controllers' song-change
-    /// notifiers can only be dropped all together, so if any MIDI controller
-    /// starts or stops, they all restart. `force` restarts every one.
+    /// another MIDI device than the player's: a hardware reload of a changed
+    /// MIDI config, or of a device gone, opens a new one, and one kept for
+    /// its unchanged config went on listening to the old one, deaf to the
+    /// pedalboard. MIDI controllers' song-change notifiers can only be
+    /// dropped all together, so if any MIDI controller starts or stops, they
+    /// all restart. `force` restarts every one.
     /// A MIDI controller after the first is refused, and stays refused
     /// without a retry: retrying it restarted the first one each time.
     /// Returns whether any started or stopped.
@@ -790,6 +792,88 @@ mod test {
         assert!(!changed, "an unchanged config restarted controllers");
         assert!(!restarted, "the working MIDI controller was torn down");
         assert!(running, "the working MIDI controller failed");
+        Ok(())
+    }
+
+    /// Runs a hardware reload of `player` to a config whose MIDI device is
+    /// named `midi`, and returns whether its one controller was restarted,
+    /// and whether the reload kept the MIDI device it had.
+    async fn reload_midi_player(
+        player: &Arc<Player>,
+        midi: &str,
+    ) -> Result<(bool, bool), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        player.set_config_store(Arc::new(config::ConfigStore::new(
+            midi_player_config(vec![midi_controller(0)], midi),
+            dir.path().join("config.yaml"),
+        )));
+        let device = player.midi_device().expect("a MIDI device");
+        let tasks = player.controller_tasks();
+        assert_eq!(tasks.len(), 1);
+        assert!(player.reload_hardware().await?.applied());
+        player.await_hardware_ready().await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let restarted = tasks[0].is_finished();
+        let kept = player
+            .midi_device()
+            .is_some_and(|now| Arc::ptr_eq(&now, &device));
+        Ok((restarted, kept))
+    }
+
+    /// Every hardware reload opened the MIDI device anew, so a save of
+    /// anything at all restarted every MIDI controller and its Morningstar
+    /// notifiers. A reload of the same MIDI config keeps the device, and
+    /// the controllers with it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_of_the_same_midi_config_keeps_the_midi_controllers(
+    ) -> Result<(), Box<dyn Error>> {
+        let midi = "mock-reload-same-midi";
+        let player = make_midi_player(vec![midi_controller(0)], midi).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let (restarted, kept) = reload_midi_player(&player, midi).await?;
+        player.shutdown_controllers();
+        assert!(kept, "the MIDI device was opened anew");
+        assert!(
+            !restarted,
+            "an unchanged MIDI controller was restarted by a reload that changed nothing"
+        );
+        Ok(())
+    }
+
+    /// A changed MIDI config still opens a new device, and the MIDI
+    /// controllers restart to listen on it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_of_a_changed_midi_config_restarts_the_midi_controllers(
+    ) -> Result<(), Box<dyn Error>> {
+        let player = make_midi_player(vec![midi_controller(0)], "mock-reload-old-midi").await?;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let (restarted, kept) = reload_midi_player(&player, "mock-reload-new-midi").await?;
+        player.shutdown_controllers();
+        assert!(!kept, "the old MIDI device was kept");
+        assert!(restarted, "the MIDI controller went on with the old device");
+        Ok(())
+    }
+
+    /// A device that cannot be opened afresh, unplugged say, is not kept:
+    /// a new one is opened, and the MIDI controllers restart on it, as a
+    /// reload did before it kept the device.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_opens_a_midi_device_gone_anew() -> Result<(), Box<dyn Error>> {
+        let midi = "mock-reload-gone-midi";
+        let player = make_midi_player(vec![midi_controller(0)], midi).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        player
+            .midi_device()
+            .expect("a MIDI device")
+            .to_mock()?
+            .unplug();
+        let (restarted, kept) = reload_midi_player(&player, midi).await?;
+        player.shutdown_controllers();
+        assert!(!kept, "the MIDI device gone was kept");
+        assert!(
+            restarted,
+            "the MIDI controller went on with the device gone"
+        );
         Ok(())
     }
 
