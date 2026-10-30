@@ -125,10 +125,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The beat clock follows section loops, and keeps with the audio over long loops** (#604): a
   section loop took the notes and audio back to the section's start at its end, but the clock ran
-  on along the song. It now goes back with them, and plays on from the section's end once the loop
-  is broken. And the clock, timed on the computer's clock for smoothness, is now steered onto the
-  playback clock the audio follows, at most 0.5ms every 2 seconds, so a loop played for minutes no
-  longer drifts off the audio by the few ms a minute the two clocks differ.
+  on along the song. It now goes back with them: with audio, by the jumps the audio commits to (so
+  the two cannot decide a moment apart), and without, by the same trigger the notes and lights
+  use; once the loop is broken it plays on. And the clock, timed on the computer's clock for
+  smoothness, is now steered onto the playback clock the audio follows, read at random points so
+  no tempo lines up with the audio buffers, and moved at most 0.5ms every 2 seconds, so a loop
+  played for minutes no longer drifts off the audio by the few ms a minute the two clocks differ.
+- **Section loops after a break, or another section armed while one loops**: arming a section
+  again after breaking a loop (as reactive looping does, section by section) left the audio's
+  trigger on the old section's grid, so it jumped at once or at the wrong moment; the lights
+  never looped again after the first break; and the notes stopped for good at the first break.
+  A section armed now loops from where playback reaches its end, counting the time loops so far
+  have put back, in the audio, lights, notes and beat clock alike, and each reports what it put
+  back as it went. The notes play on after a break, and their replays start on the loop point
+  rather than as much as 5ms early. A loop the audio had nothing ready for is made a moment
+  late rather than missed. A break before a section ever looped no longer moves the lights to
+  its end.
 - **The beat clock's playback delay counts from the start** (#600): it counted from whenever its
   thread noticed playback had started, so its Start and every clock could land a few ms after the
   notes and audio, by a different amount each time. It now counts from the playback clock's start,

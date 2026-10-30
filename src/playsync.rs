@@ -100,6 +100,12 @@ pub struct LoopControl {
     /// playlist `fade_in`), set by the player as it breaks the loop and taken
     /// by the audio device as the song starts.
     pub start_fade: Arc<parking_lot::Mutex<Option<StartFade>>>,
+    /// The section loop jumps the audio has committed to, for this playback,
+    /// as it commits to them: `None` when it plays no audio. The beat clock
+    /// follows them rather than deciding on its own a little before or after.
+    pub section_jumps: Option<
+        Arc<parking_lot::Mutex<std::collections::VecDeque<crate::section_loop::SectionJump>>>,
+    >,
 }
 
 impl LoopControl {
@@ -113,6 +119,7 @@ impl LoopControl {
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
+            section_jumps: None,
         }
     }
 }

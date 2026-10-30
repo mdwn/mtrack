@@ -367,21 +367,43 @@ impl Engine {
                         let song_time =
                             resume_song_time(resume_time, break_clock, start_time, clock.elapsed());
                         dmx_engine.update_song_time(song_time);
-                        thread::sleep(Duration::from_millis(10));
-                        continue;
+                        // A section armed again after the break (reactive
+                        // looping arms each as playback reaches it) loops in
+                        // its turn: watched below, this still writing the
+                        // time -- the tracker's would leave out the loops --
+                        // until it does.
+                        let rearmed = !section_loop_break.load(Ordering::Relaxed)
+                            && active_section.read().is_some();
+                        if !rearmed {
+                            thread::sleep(Duration::from_millis(10));
+                            continue;
+                        }
                     }
 
                     // Check for loop break first (before reading active_section,
                     // which may already be cleared by stop_section_loop).
                     if section_loop_break.load(Ordering::Relaxed) {
+                        let elapsed = start_time + clock.elapsed();
+                        // Broken before it ever went round: no jump to make.
+                        // Playback is where the time less the loops so far
+                        // say, and with none, the tracker's time is right.
+                        if iteration_start.is_none() {
+                            let consumed = section_monitor.consumed();
+                            if consumed.is_zero() {
+                                section_owns_time.store(false, Ordering::Relaxed);
+                            } else if continue_from.is_none() {
+                                section_owns_time.store(true, Ordering::Relaxed);
+                                continue_from = Some((elapsed.saturating_sub(consumed), elapsed));
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                            continue;
+                        }
                         if let Some(section) = section_monitor.cached_section().cloned() {
-                            let elapsed = start_time + clock.elapsed();
-                            let current_pos = if let Some(iter_start) = iteration_start {
+                            let current_pos = {
+                                let iter_start = iteration_start.unwrap_or(elapsed);
                                 let time_since = elapsed.saturating_sub(iter_start);
                                 let sd = section.end_time.saturating_sub(section.start_time);
                                 section.start_time + time_since.min(sd)
-                            } else {
-                                section.end_time
                             };
                             info!(
                                 position = ?current_pos,
@@ -395,6 +417,9 @@ impl Engine {
                                 super::timeline::MidiDmxStart::Seek,
                             );
                             continue_from = Some((current_pos, elapsed));
+                            // The broken loop's iterations are over: a
+                            // section armed next starts its own.
+                            iteration_start = None;
                         } else {
                             // No cached section — just hand back to tracker.
                             section_owns_time.store(false, Ordering::Relaxed);
@@ -419,7 +444,7 @@ impl Engine {
                                 dmx_engine.update_song_time(section.start_time + position);
                             }
                         }
-                        crate::section_loop::LoopPoll::Triggered(ref section) => {
+                        crate::section_loop::LoopPoll::Triggered(ref section, _) => {
                             info!(
                                 section = section.name,
                                 "DMX section loop: resetting for next iteration"
@@ -442,14 +467,16 @@ impl Engine {
                                 super::timeline::MidiDmxStart::Seek,
                             );
                             iteration_start = Some(elapsed);
+                            continue_from = None;
                         }
-                        crate::section_loop::LoopPoll::SectionCleared => {
+                        // The tracker has the time back only if no loop has
+                        // put any back; after one, this goes on writing it.
+                        crate::section_loop::LoopPoll::SectionCleared
+                        | crate::section_loop::LoopPoll::NoSection => {
                             iteration_start = None;
-                            section_owns_time.store(false, Ordering::Relaxed);
-                        }
-                        crate::section_loop::LoopPoll::NoSection => {
-                            iteration_start = None;
-                            section_owns_time.store(false, Ordering::Relaxed);
+                            if continue_from.is_none() {
+                                section_owns_time.store(false, Ordering::Relaxed);
+                            }
                         }
                     }
 

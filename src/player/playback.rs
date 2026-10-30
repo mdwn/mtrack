@@ -227,6 +227,8 @@ impl Player {
                     break_fade: self.break_fade.clone(),
                     break_fade_ids: self.break_fade_ids.clone(),
                     start_fade: self.start_fade.clone(),
+                    section_jumps: (hw.device.is_some() && hw.mappings.is_some())
+                        .then(|| Arc::new(parking_lot::Mutex::new(Default::default()))),
                 },
             };
             tokio::task::spawn_blocking(move || {
