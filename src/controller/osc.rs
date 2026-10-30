@@ -15,7 +15,6 @@
 use std::{
     collections::HashSet,
     error::Error,
-    io,
     net::{AddrParseError, Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
     time::Duration,
@@ -34,7 +33,7 @@ use tokio::{
     },
     task::JoinHandle,
 };
-use tracing::{error, info, span, Level};
+use tracing::{debug, error, info, span, Level};
 
 use crate::{config, player::Player, util};
 
@@ -256,10 +255,18 @@ impl super::Driver for Driver {
                 let tx_sender = tx_sender.clone();
 
                 if let Some(packet) = packet {
-                    if Self::handle_packet(&player, &osc_events, &packet)
-                        .await
-                        .map_err(|e| io::Error::other(e.to_string()))?
+                    // A bad packet (a malformed address, say) is one client's
+                    // mistake, so log it and carry on. Ending here would take
+                    // OSC control away from everyone until a restart.
+                    let recognized = match Self::handle_packet(&player, &osc_events, &packet).await
                     {
+                        Ok(recognized) => recognized,
+                        Err(e) => {
+                            error!(err = e, "Error handling OSC packet");
+                            false
+                        }
+                    };
+                    if recognized {
                         if let Err(e) = Self::broadcast(&player, &osc_events, &tx_sender).await {
                             error!(err = e, "Error broadcasting player status");
                         };
@@ -407,8 +414,20 @@ impl Driver {
             }
         }
 
+        // Never wait for room in the send queue. The UDP task drains it, but
+        // that task can itself be waiting for room in the receive queue, which
+        // only drains once this loop gets back to handling packets: waiting
+        // here would deadlock the driver during a burst. Status is resent on
+        // every periodic broadcast, so a packet dropped now is replaced soon.
         for packet in packets {
-            tx_sender.send(packet).await?;
+            match tx_sender.try_send(packet) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    debug!("OSC send queue full, dropping the rest of this status broadcast");
+                    break;
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
 
         Ok(())
@@ -1866,6 +1885,123 @@ mod test {
         eventually(
             || player.get_playlist().current().unwrap().name() == "Song 3",
             "Player never advanced via monitor_events with multicast",
+        );
+
+        handle.abort();
+        Ok(())
+    }
+
+    async fn make_monitor_player() -> Result<Arc<Player>, Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let pl = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone())?,
+        );
+        playlists.insert("playlist".to_string(), pl);
+        let player = Player::new(
+            playlists,
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        Ok(player)
+    }
+
+    /// Starts the OSC driver on a free local port, returning its task and the
+    /// port to send to.
+    async fn start_driver_on_free_port(
+        player: Arc<Player>,
+    ) -> Result<(tokio::task::JoinHandle<Result<(), std::io::Error>>, u16), Box<dyn Error>> {
+        let temp_socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        let port = temp_socket.local_addr()?.port();
+        drop(temp_socket);
+
+        let driver = Arc::new(Driver {
+            player,
+            addr: SocketAddr::V4(std::net::SocketAddrV4::new(
+                std::net::Ipv4Addr::UNSPECIFIED,
+                port,
+            )),
+            broadcast_addresses: vec![],
+            osc_events: Arc::new(make_default_osc_events()),
+        });
+        let handle = super::super::Driver::monitor_events(&*driver);
+
+        // Give the spawned tasks time to bind and start.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        Ok((handle, port))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_osc_monitor_events_survives_a_malformed_address() -> Result<(), Box<dyn Error>> {
+        let player = make_monitor_player().await?;
+        let (handle, port) = start_driver_on_free_port(player.clone()).await?;
+
+        // A trailing slash makes the address invalid. The packet still decodes,
+        // so it reaches the handler, which can't classify it.
+        let client = UdpSocket::bind("127.0.0.1:0").await?;
+        for addr in ["/mtrack/ambient/", "/mtrack/next"] {
+            let packet = OscPacket::Message(OscMessage {
+                addr: addr.to_string(),
+                args: vec![],
+            });
+            let encoded = rosc::encoder::encode(&packet)?;
+            client
+                .send_to(&encoded, format!("127.0.0.1:{}", port))
+                .await?;
+        }
+
+        eventually(
+            || player.get_playlist().current().unwrap().name() == "Song 3",
+            "OSC driver stopped handling messages after a malformed address",
+        );
+        assert!(!handle.is_finished(), "OSC driver task ended");
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_osc_monitor_events_survives_a_burst() -> Result<(), Box<dyn Error>> {
+        let player = make_monitor_player().await?;
+        let (handle, port) = start_driver_on_free_port(player.clone()).await?;
+
+        // Every recognized message queues a status broadcast back to the
+        // sender, so a burst from one client fills the receive and send queues
+        // together.
+        let client = UdpSocket::bind("127.0.0.1:0").await?;
+        let stop_samples = rosc::encoder::encode(&OscPacket::Message(OscMessage {
+            addr: "/mtrack/samples/stop".to_string(),
+            args: vec![],
+        }))?;
+        for _ in 0..50 {
+            client
+                .send_to(&stop_samples, format!("127.0.0.1:{}", port))
+                .await?;
+        }
+        let next = rosc::encoder::encode(&OscPacket::Message(OscMessage {
+            addr: "/mtrack/next".to_string(),
+            args: vec![],
+        }))?;
+        client.send_to(&next, format!("127.0.0.1:{}", port)).await?;
+
+        eventually(
+            || player.get_playlist().current().unwrap().name() == "Song 3",
+            "OSC driver stopped handling messages after a burst",
         );
 
         handle.abort();

@@ -108,6 +108,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A malformed OSC address no longer stops OSC control (#574)**: one bad packet ended the OSC
+  driver until a restart. It is logged and skipped.
+- **A burst of OSC messages no longer deadlocks the driver (#575)**: with both its queues full,
+  the receive task and the status broadcast each waited on the other. A status broadcast no longer
+  waits for room to send; what it drops is resent by the next periodic broadcast. Commands are
+  never dropped.
 - **MIDI DMX looks come back after a seek (#583)**: a seek, play-from or section loop started a MIDI
   DMX show past every event before its start point, and since #581 a channel nothing writes goes to
   0, so a look the show set once and held stayed dark. Those events are now put back as playback
