@@ -212,6 +212,10 @@ struct LayerState {
     /// The song time a frozen layer was frozen at, when there was one: what
     /// its cued effects hold at, and measure their time frozen from.
     frozen_song: HashMap<EffectLayer, Duration>,
+    /// The speed changes applied since the last frame rendered, each with
+    /// its song time and the speed before it: an effect cued before one but
+    /// started after it in the same frame ran at the old speed until then.
+    speed_changes: HashMap<EffectLayer, Vec<(Duration, f64)>>,
 }
 
 impl LayerState {
@@ -221,6 +225,7 @@ impl LayerState {
             speed_masters: HashMap::new(),
             frozen: HashMap::new(),
             frozen_song: HashMap::new(),
+            speed_changes: HashMap::new(),
         }
     }
 
@@ -230,6 +235,7 @@ impl LayerState {
         self.speed_masters.clear();
         self.frozen.clear();
         self.frozen_song.clear();
+        self.speed_changes.clear();
     }
 
     /// Reset a single layer back to defaults.
@@ -238,6 +244,7 @@ impl LayerState {
         self.speed_masters.remove(&layer);
         self.frozen.remove(&layer);
         self.frozen_song.remove(&layer);
+        self.speed_changes.remove(&layer);
     }
 
     fn intensity_master(&self, layer: &EffectLayer) -> f64 {
@@ -861,6 +868,7 @@ impl EffectEngine {
     }
 
     pub fn start_effect(&mut self, mut effect: EffectInstance) -> Result<(), EffectError> {
+        self.mark_speed_changes_since_cue(&mut effect);
         self.expand_cells(&mut effect);
         // Validate effect
         validation::validate_effect(self.fixtures.as_map(), &effect)?;
@@ -1065,6 +1073,8 @@ impl EffectEngine {
         self.current_time += dt;
         self.engine_elapsed += dt;
         self.last_song_time = song_time;
+        // The cues before this frame have started their effects.
+        self.layer_state.speed_changes.clear();
         self.last_dt = dt;
 
         // Fast path for MIDI-DMX-only frames: when no DSL effects are running,
@@ -1534,6 +1544,32 @@ impl EffectEngine {
         )
     }
 
+    /// An effect cued before a speed change in the frame it starts in -- the
+    /// cues fire together, layer commands first -- ran at the old speed
+    /// until the change, frozen if that was 0: it starts as if it had been
+    /// running then, as a seek's replay has it.
+    fn mark_speed_changes_since_cue(&self, effect: &mut EffectInstance) {
+        let (Some(cue), Some(changes)) = (
+            effect.cue_time,
+            self.layer_state.speed_changes.get(&effect.layer),
+        ) else {
+            return;
+        };
+        let (mut from, mut base, mut own) = (cue, Duration::ZERO, Duration::ZERO);
+        for &(at, before) in changes.iter().filter(|(at, _)| *at > cue) {
+            let stretch = at.saturating_sub(from);
+            if before == 0.0 {
+                effect.score_frozen += stretch;
+            } else {
+                base += stretch;
+                own += scale_by_speed(stretch, before);
+            }
+            from = at;
+        }
+        effect.speed_from = base;
+        effect.elapsed_from = own;
+    }
+
     /// [`Self::elapsed_at`] before the layer's speed master: song time
     /// since the cue less the time frozen, held while frozen.
     fn base_elapsed_at(&self, effect: &EffectInstance, song_time: Option<Duration>) -> Duration {
@@ -1656,6 +1692,14 @@ impl EffectEngine {
                 effect.speed_from = base;
                 effect.elapsed_from = own;
             }
+        }
+        if let Some(now) = now {
+            let before = self.get_layer_speed_master(layer);
+            self.layer_state
+                .speed_changes
+                .entry(layer)
+                .or_default()
+                .push((now, before));
         }
         let was_frozen = self.layer_state.frozen.contains_key(&layer);
         layers::set_layer_speed_master(

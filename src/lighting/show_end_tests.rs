@@ -425,3 +425,38 @@ fn show_end_zero_length_cued_on_frozen_layer() {
     assert_eq!(live.active_effects_count(), 0);
     assert_eq!(end(show), Duration::from_secs(2));
 }
+
+/// A look cued at 1.002 s and slowed to 0.1 at 1.008 s fire in the same
+/// frame, the speed change first: the look still ran its 6 ms at full speed
+/// before it, then 3.994 s at a tenth, over at 40.948 s -- played through,
+/// in the show's end and after a seek.
+#[test]
+fn show_end_slow_down_in_the_same_frame_as_the_cue() {
+    let show = "show \"s\" {\n    @1.002\n    a: static red: 100%, duration: 4s\n    \
+                @1.008\n    master(layer: background, speed: 0.1)\n}\n";
+    let live = live_end(show, 45000).expect("ends");
+    let head = end(show);
+    assert!(
+        head.abs_diff(Duration::from_millis(40948)) <= Duration::from_millis(1),
+        "show_end {head:?}"
+    );
+    assert!(
+        live.abs_diff(head) <= Duration::from_millis(10),
+        "live {live:?} show_end {head:?}"
+    );
+}
+
+/// The same with a fade sped up: played through it is where a seek has it.
+#[test]
+fn show_end_speed_up_in_the_same_frame_as_the_cue_plays_as_it_seeks() {
+    let show = "show \"s\" {\n    @2.001\n    a: static red: 100%, up_time: 2s, hold_time: 1s, \
+                layer: midground\n    @2.009\n    master(layer: midground, speed: 4)\n}\n";
+    for at in [2100u64, 2300, 2500] {
+        let live = rg(&played3(show, at));
+        let seek = rg(&seek3(show, at, at));
+        assert!(
+            (live.0 - seek.0).abs() < 0.002,
+            "at {at} ms: live {live:?} seek {seek:?}"
+        );
+    }
+}
