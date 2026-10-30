@@ -695,6 +695,39 @@ pub struct DiskWrite<'a> {
 impl DiskWrite<'_> {
     /// Re-reads the config from disk into the store, and lets go of it.
     pub async fn reload(mut self) -> Result<(), ConfigError> {
+        self.read_back().await?;
+        self.release();
+        Ok(())
+    }
+
+    /// As [`DiskWrite::reload`], but when the files written cannot be read
+    /// back in, `restore` puts them back as they were before the store is
+    /// let go. The store keeps its old copy and checksum then, and the files
+    /// match them again, so the failed write changes nothing; left as they
+    /// were written, the next mutation would persist the old copy over them.
+    pub async fn reload_or_restore<F>(mut self, restore: F) -> Result<(), ConfigError>
+    where
+        F: FnOnce() -> Result<(), String> + Send + 'static,
+    {
+        let Err(e) = self.read_back().await else {
+            self.release();
+            return Ok(());
+        };
+        let restored = tokio::task::spawn_blocking(restore)
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|restored| restored);
+        drop(self);
+        match restored {
+            Ok(()) => Err(e),
+            Err(restore_error) => Err(ConfigError::StoreIo(format!(
+                "{e}; and the file could not be put back as it was: {restore_error}"
+            ))),
+        }
+    }
+
+    /// Reads the config from disk into the store, still held.
+    async fn read_back(&mut self) -> Result<(), ConfigError> {
         // Read under the lock, never before it: a mutation committing between
         // a read and the swap would be overwritten in memory by the older
         // copy, and the next persist would write that copy back over its file.
@@ -703,10 +736,15 @@ impl DiskWrite<'_> {
             .await
             .map_err(|e| ConfigError::StoreSerialization(e.to_string()))??;
         *self.guard = config;
-        drop(self.guard);
-        // Ignored deliberately: no subscribers is normal.
-        let _ = self.store.change_tx.send(());
         Ok(())
+    }
+
+    /// Lets go of the store, with what was read back in it.
+    fn release(self) {
+        let DiskWrite { store, guard } = self;
+        drop(guard);
+        // Ignored deliberately: no subscribers is normal.
+        let _ = store.change_tx.send(());
     }
 }
 

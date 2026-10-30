@@ -81,23 +81,40 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
         None => None,
     };
     let path = state.config_path.clone();
-    if let Err(e) = super::helpers::spawn_blocking_io("write config", move || {
-        config_io::staged_write(&path, &body)
+    let previous = match super::helpers::spawn_blocking_io("write config", move || {
+        // A missing file has nothing to put back: a failed save removes it.
+        let previous = match crate::util::read_file(&path) {
+            Ok(previous) => Some(previous),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("failed to read the config before saving: {e}")),
+        };
+        config_io::staged_write(&path, &body)?;
+        Ok(previous)
     })
     .await
     {
-        return e;
-    }
+        Ok(previous) => previous,
+        Err(e) => return e,
+    };
     if let Some(disk_write) = disk_write {
-        if let Err(e) = disk_write.reload().await {
+        // The store keeps its own copy and checksum, and a failed reload
+        // leaves the old ones: the file goes back as it was, still under the
+        // store's lock, so a failed save changes nothing rather than waiting
+        // for the next settings change to write over it.
+        let path = state.config_path.clone();
+        let restore = move || {
+            match previous {
+                Some(previous) => crate::util::write_file(&path, &previous),
+                None => std::fs::remove_file(&path),
+            }
+            .map_err(|e| e.to_string())
+        };
+        if let Err(e) = disk_write.reload_or_restore(restore).await {
             warn!("Config reload after config write failed: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({
-                    "error": format!(
-                        "the config was written but the running config could not be \
-                         reloaded, and a later settings change would write over it: {e}"
-                    )
+                    "error": format!("the config could not be loaded, and was not saved: {e}")
                 })),
             )
                 .into_response();
@@ -1159,6 +1176,42 @@ mod test {
             written.contains("other-songs"),
             "the raw save was written over: {written}"
         );
+    }
+
+    /// A raw config save the store could not load back was written and left
+    /// on disk, with the store's old copy and checksum: the next settings
+    /// change wrote that copy over it, silently.
+    #[tokio::test]
+    async fn a_raw_config_save_that_cannot_be_loaded_changes_nothing() {
+        let (state, dir) = test_state_with_store();
+        let config_path = state.config_path.clone();
+        let before = std::fs::read_to_string(&config_path).unwrap();
+        let checksum = get_checksum(&state).await;
+        // Valid by itself, but its profiles directory holds a broken profile.
+        let profiles = dir.path().join("broken-profiles");
+        std::fs::create_dir(&profiles).unwrap();
+        std::fs::write(profiles.join("broken.yaml"), "audio: [[[").unwrap();
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from(
+                        "songs: other-songs\nprofiles_dir: broken-profiles\n",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let error = parsed["error"].as_str().unwrap();
+        assert!(error.contains("was not saved"), "{error}");
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+        assert_eq!(get_checksum(&state).await, checksum);
     }
 
     #[tokio::test]
