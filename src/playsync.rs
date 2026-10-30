@@ -185,6 +185,32 @@ impl SectionJumpLog {
         self.publisher.load(std::sync::atomic::Ordering::Acquire) == JumpPublisherRole::Audio as u8
     }
 
+    /// Where in the song the pass crossing out is, while a crossfading
+    /// song's latest pass has it playing on under the new one: the part of
+    /// the song (its crossfade) that plays only as a pass crosses out.
+    pub fn crossing_out(&self) -> Option<Duration> {
+        let now = self.now()?;
+        let due = self.put_back_by(now).1;
+        let jumps = self.jumps.lock();
+        let latest = jumps.get(..due)?.last()?;
+        let into = now.checked_sub(latest.at)?;
+        (latest.pass && into < latest.overlap).then(|| latest.from + into)
+    }
+
+    /// Whether a jump committed at or after `index` that `pick` picks has
+    /// fallen due.
+    pub fn due_since(
+        &self,
+        index: usize,
+        pick: impl Fn(&crate::section_loop::SectionJump) -> bool,
+    ) -> bool {
+        let due = self.put_back_now().1;
+        let jumps = self.jumps.lock();
+        jumps
+            .get(index..due.min(jumps.len()))
+            .is_some_and(|jumps| jumps.iter().any(pick))
+    }
+
     /// How many jumps have been committed, fallen due or not.
     pub fn committed(&self) -> usize {
         self.jumps.lock().len()
@@ -438,6 +464,39 @@ mod test {
     use std::thread;
 
     use super::*;
+
+    #[test]
+    fn the_log_tells_a_pass_crossing_out_and_whose_jumps_are_due() {
+        use crate::section_loop::SectionJump;
+        let secs = Duration::from_secs;
+        let log = SectionJumpLog::default();
+        let clock = crate::clock::PlaybackClock::wall();
+        clock.start();
+        // On the timeline at 97s: a pass at 96s with a 4s crossfade is 1s
+        // into crossing out; a section's jump comes later.
+        log.set_timeline(clock, secs(97));
+        log.push(SectionJump {
+            at: secs(96),
+            from: secs(96),
+            to: Duration::ZERO,
+            overlap: secs(4),
+            pass: true,
+        });
+        let out = log.crossing_out().expect("crossing out");
+        assert!(out >= secs(97) && out < secs(98), "{out:?}");
+        // The pass is due, but it is not the section's own jump.
+        assert!(log.due_since(0, |jump| jump.pass));
+        assert!(!log.due_since(0, |jump| !jump.pass));
+        assert!(!log.due_since(1, |_| true), "none due since it");
+        log.push(SectionJump {
+            at: secs(500),
+            from: secs(10),
+            to: secs(5),
+            overlap: Duration::ZERO,
+            pass: false,
+        });
+        assert!(!log.due_since(1, |_| true), "committed, not yet due");
+    }
 
     #[test]
     fn test_cancel_handle_cancelled() {

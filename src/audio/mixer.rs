@@ -386,11 +386,11 @@ impl AudioMixer {
 
     /// Cuts every source of the playback `playback` cancels at mixer sample
     /// `at`, over `samples`: a section's next time round taking over. Each
-    /// fades from the gain its own envelope will have reached there -- a
-    /// pass part way through crossing over goes down from where it is, not
-    /// from full -- and ends at `at + samples`, or sooner if it was to end
-    /// sooner anyway. Other playbacks' sources, and those `spare` names, are
-    /// left alone. Returns the ids cut.
+    /// follows its own envelope up to `at` -- a pass part way through
+    /// crossing over carries on crossing -- and fades from there, ending at
+    /// `at + samples`, or sooner if it was to end sooner anyway. Other
+    /// playbacks' sources, and those `spare` names, are left alone. Returns
+    /// the ids cut.
     pub fn cut_playback_at(
         &self,
         playback: &crate::playsync::CancelHandle,
@@ -398,7 +398,7 @@ impl AudioMixer {
         samples: u64,
         spare: &[u64],
     ) -> Vec<u64> {
-        use crate::audio::crossfade::{CrossfadeCurve, GainEnvelope};
+        use crate::audio::crossfade::GainEnvelope;
         let now = self.current_sample();
         let sources = self.active_sources.read();
         let mut cut = Vec::new();
@@ -407,16 +407,31 @@ impl AudioMixer {
             if !source.cancel_handle.same_as(playback) || spare.contains(&source.id) {
                 continue;
             }
-            let from = match source.gain_envelope.as_deref() {
-                // One that runs as the source renders gets as far by `at` as
-                // the mixer does.
+            // Its own envelope's gain at a mixer sample to come: one that
+            // runs as the source renders gets as far as the mixer does, from
+            // when the source starts.
+            let starts = source.start_at_sample.unwrap_or(now).max(now);
+            let own = |t: u64| match source.gain_envelope.as_deref() {
                 Some(env) if env.start_at_sample().is_none() && !env.is_finished() => {
-                    env.gain_at(env.position() + at.saturating_sub(now))
+                    env.gain_at(env.position() + t.saturating_sub(starts))
                 }
-                env => Self::envelope_gain(env, at),
+                env => Self::envelope_gain(env, t),
             };
+            // Its own envelope until the cut, followed in short steps, then
+            // down from where that leaves it.
+            // From now, or from `at` if that has passed already (a cut
+            // scheduled late), so the fade and the cancel end together.
+            let base = now.min(at);
+            let step = u64::from(self.sample_rate / 500).max(1);
+            let span = at - base;
+            let mut knots: Vec<(u64, f32)> = (0..span)
+                .step_by(step as usize)
+                .map(|offset| (offset, own(base + offset)))
+                .collect();
+            knots.push((span, own(at)));
+            knots.push((span + samples.max(1), 0.0));
             source.gain_envelope = Some(Arc::new(
-                GainEnvelope::new(from, 0.0, samples, CrossfadeCurve::Linear).with_start_sample(at),
+                GainEnvelope::piecewise(knots.into()).with_start_sample(base),
             ));
             if let Some(cancel_at) = &source.cancel_at_sample {
                 let end = at + samples;
@@ -1435,13 +1450,43 @@ mod tests {
         assert!(out[now as usize + 4_010..].iter().all(|v| *v == 0.0));
     }
 
-    /// The audio schedules a section's switch under the jump gate, but its
-    /// incoming sources reach the mixer through the output manager's channel
-    /// (`OutputManager::add_source`), drained only at the next callback. A
-    /// loop break taking the gate in between fades and cancels the playback
-    /// before they are in the mixer: they arrive cancelled with no break
-    /// envelope and are dropped, while the pass playing out is still cut at
-    /// the switch. The fade falls silent there instead of carrying on.
+    #[test]
+    fn a_section_cut_follows_a_fade_under_way_to_the_cut() {
+        use crate::audio::crossfade::{CrossfadeCurve, GainEnvelope};
+        let mixer = AudioMixer::new(1, 48_000);
+        let mut tm = HashMap::new();
+        tm.insert("t".to_string(), vec![1]);
+        let playback = CancelHandle::new();
+        let mut fading_in = make_active_source(
+            1,
+            create_test_source(vec![1.0; 8_000], 1, vec![vec!["t".to_string()]]),
+            tm.clone(),
+        );
+        fading_in.cancel_handle = playback.clone();
+        fading_in.cancel_at_sample = Some(Arc::new(AtomicU64::new(0)));
+        fading_in.gain_envelope = Some(Arc::new(GainEnvelope::fade_in(
+            2_000,
+            CrossfadeCurve::Linear,
+        )));
+        mixer.add_source(fading_in);
+        let mut out = render_mono(&mixer, 512);
+        let now = mixer.current_sample() as usize;
+        let at = now + 960;
+        mixer.cut_playback_at(&playback, at as u64, 10, &[]);
+        out.extend(render_mono(&mixer, 2_000));
+        // It goes on fading in, not held where the cut found it, right up to
+        // the cut; then it is gone.
+        for t in [now + 200, now + 600, at - 5] {
+            let expected = t as f32 / 2_000.0;
+            assert!(
+                (out[t] - expected).abs() < 0.02,
+                "{t}: {} vs {expected}",
+                out[t]
+            );
+        }
+        assert!(out[at + 20..].iter().all(|v| *v == 0.0));
+    }
+
     #[test]
     fn a_break_mid_crossover_lets_the_outgoing_pass_finish_crossing() {
         use crate::audio::crossfade::{CrossfadeCurve, GainEnvelope};

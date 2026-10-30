@@ -443,12 +443,39 @@ pub fn publish_jumps(publisher: JumpPublisher) {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    let end = song.as_deref().map(end_without_audio);
-    let whole_song = song
-        .as_deref()
-        .and_then(|song| WholeSongLoop::of(song, end.unwrap_or_default()));
+    // Where the song ends, read again every so often: a show edited while
+    // it plays (hot reload) moves the end of a song with no audio, and the
+    // loop point with it.
+    const REREAD: Duration = Duration::from_millis(250);
+    let read_end = || {
+        let end = song.as_deref().map(end_without_audio);
+        let whole_song = song
+            .as_deref()
+            .and_then(|song| WholeSongLoop::of(song, end.unwrap_or_default()));
+        (end, whole_song)
+    };
+    let (mut end, mut whole_song) = read_end();
+    let mut read_at = std::time::Instant::now();
+    // A new end is taken up once two reads in a row agree on it, and never
+    // nothing: a show caught part way through being written (emptied, or
+    // short) is not the show it is becoming.
+    let mut seen = end;
+    // Nothing read at the start may be a show caught being written too: the
+    // song is not over on it until a second read agrees.
+    let mut settled = !end.is_some_and(|end| end.is_zero());
     let mut trigger = SectionLoopTrigger::new();
     while !finished() {
+        if read_at.elapsed() >= REREAD {
+            let (read, read_whole) = read_end();
+            if read == seen {
+                if read != end && (read.is_some_and(|end| !end.is_zero()) || !settled) {
+                    (end, whole_song) = (read, read_whole);
+                }
+                settled = true;
+            }
+            seen = read;
+            read_at = std::time::Instant::now();
+        }
         let elapsed = start_time + clock.elapsed();
         let effective = effective_section(
             loop_control.active_section.read().clone(),
@@ -461,7 +488,7 @@ pub fn publish_jumps(publisher: JumpPublisher) {
         }
         // Played to its end with nothing to take it back: the song is over.
         if effective.is_none()
-            && (end.is_some_and(|end| elapsed.saturating_sub(trigger.consumed()) >= end)
+            && (end.is_some_and(|end| settled && elapsed.saturating_sub(trigger.consumed()) >= end)
                 || loop_control.loop_break.load(Ordering::Relaxed))
         {
             break;

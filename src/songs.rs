@@ -1160,8 +1160,21 @@ impl Song {
         let end_secs = if end_measure < grid.measure_starts.len() {
             grid.beat_time(end_measure, section.end_beat.unwrap_or(1.0))?
         } else {
-            // End measure is past the last measure — use the last beat time.
-            *grid.beats.last()?
+            // End measure is past the last measure: the end of the last one,
+            // a beat on from its last beat (no later than the song's end), so
+            // a section can end on the song's end.
+            let last = *grid.beats.last()?;
+            let beat = match grid.beats.len() {
+                n if n >= 2 => last - grid.beats[n - 2],
+                _ => 0.0,
+            };
+            let end = last + beat.max(0.0);
+            let duration = self.length().as_secs_f64();
+            if duration > last {
+                end.min(duration)
+            } else {
+                end
+            }
         };
 
         // Config validation orders boundaries without the grid in hand, so
@@ -4772,10 +4785,11 @@ pilot:
             "chorus start should be ~2.0, got {}",
             start.as_secs_f64()
         );
-        // end_measure=3 is past the last measure, so it should use the last beat.
+        // end_measure=3 is past the last measure: it ends where the last
+        // measure does, a beat after its last beat.
         assert!(
-            (end.as_secs_f64() - 3.5).abs() < 0.001,
-            "chorus end should be ~3.5 (last beat), got {}",
+            (end.as_secs_f64() - 4.0).abs() < 0.001,
+            "chorus end should be ~4.0 (the end of the last measure), got {}",
             end.as_secs_f64()
         );
     }
@@ -4913,21 +4927,22 @@ pilot:
     }
 
     #[test]
-    fn resolve_section_refuses_a_range_that_is_not_forward() {
-        // Reachable with every beat inside its measure and validation happy:
-        // the start is the grid's final beat (3.5s), and an end measure past
-        // the grid clamps to that same final beat. Zero length, so the loop
-        // would arm and never fire.
+    fn a_section_from_the_last_beat_ends_with_its_measure() {
+        // The start is the grid's final beat (3.5s) and the end measure is
+        // past the grid: the section runs to the end of the last measure, a
+        // beat on, rather than collapsing to nothing on the final beat.
         let mut song = make_song_with_beat_grid();
         song.sections = vec![crate::config::Section {
-            name: "empty".to_string(),
+            name: "last".to_string(),
             start_measure: 2,
             end_measure: 5,
             start_beat: Some(4.0),
             end_beat: None,
             color: None,
         }];
-        assert!(song.resolve_section("empty").is_none());
+        let (start, end) = song.resolve_section("last").unwrap();
+        assert!((start.as_secs_f64() - 3.5).abs() < 0.001, "{start:?}");
+        assert!((end.as_secs_f64() - 4.0).abs() < 0.001, "{end:?}");
     }
 
     #[test]

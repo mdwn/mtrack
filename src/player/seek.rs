@@ -167,11 +167,16 @@ impl Player {
         // startup stamps play_start_time under that lock and skips the stamp
         // when cancelled, so this ordering keeps it from writing the pre-seek
         // position back after we clear it.
-        self.fade_out_current_audio();
-        self.cut_break_fade();
         {
             let mut play_start_time = self.play_start_time.lock().await;
+            // Between the playback's loop jumps, as a loop break: one
+            // already scheduled fades with the rest, and none is scheduled
+            // between the fade and the cancel, to be cut without one.
+            let jumps = handles.cancel.hold_jumps();
+            self.fade_out_current_audio(&handles.cancel);
+            self.cut_break_fade();
             handles.cancel.cancel();
+            drop(jumps);
             *play_start_time = None;
         }
 

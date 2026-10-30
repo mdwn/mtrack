@@ -359,8 +359,13 @@ impl Engine {
                             dmx_engine.update_song_time_for_generation(position, generation);
                         }
                         // A show restarted runs again, however long ago its
-                        // last cue went.
-                        dmx_engine.timeline_finished.store(false, Ordering::Relaxed);
+                        // last cue went: marked under the timeline's lock,
+                        // after the restart, so the effects loop cannot mark
+                        // it over on the strength of the show before.
+                        {
+                            let _timeline = dmx_engine.current_song_timeline.lock();
+                            dmx_engine.timeline_finished.store(false, Ordering::Relaxed);
+                        }
                     }
                     let position = elapsed.saturating_sub(jumps.consumed());
                     if let Some(next) = jumps.peek() {
