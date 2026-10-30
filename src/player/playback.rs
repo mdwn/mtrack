@@ -643,11 +643,10 @@ impl Player {
         })
     }
 
-    /// Stops the song playing, if one is, for a pause: the lights hold
-    /// rather than go to ambient.
-    pub(super) async fn stop_for_pause(&self) -> Option<Arc<Song>> {
-        let mut join = self.join.lock().await;
-        self.stop_locked(&mut join).await
+    /// Stops the song playing, if one is, for a pause, with the join lock
+    /// held: the lights hold rather than go to ambient.
+    pub(super) async fn stop_for_pause(&self, join: &mut Option<PlayHandles>) -> Option<Arc<Song>> {
+        self.stop_locked(join).await
     }
 
     /// Starts the song at the playlist's position by itself after `gap`,

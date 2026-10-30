@@ -4304,4 +4304,43 @@ mod test {
         }
         Ok(())
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_paused_song_taken_off_the_list_stays_current_to_resume() -> Result<(), Box<dyn Error>>
+    {
+        // #576: pause left no playback, so the edit gave B's place to C, and
+        // play then started C at B's paused position.
+        let (player, dir) = player_looping_b().await?;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let paused_at = player.pause().await?.expect("paused");
+        assert!(paused_at > Duration::ZERO);
+        edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+        assert_eq!(current_name(&player).await, "B");
+        assert_eq!(player.get_playlist().entry(), None);
+        assert_eq!(player.pending_start(), Some(paused_at));
+        // Play resumes B where it was.
+        let played = player.play().await?.map(|s| s.name().to_string());
+        assert_eq!(played.as_deref(), Some("B"));
+        let elapsed = elapsed_eventually(&player).await?;
+        assert!(elapsed >= paused_at, "{elapsed:?} < {paused_at:?}");
+        player.stop().await;
+        // Stopped, it gives way to the entry that took its place.
+        assert_eq!(player.get_playlist().entry(), Some(1));
+        assert_eq!(current_name(&player).await, "C");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_paused_song_taken_off_the_list_gives_way_on_a_playlist_switch(
+    ) -> Result<(), Box<dyn Error>> {
+        let (player, dir) = player_looping_b().await?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        player.pause().await?.expect("paused");
+        edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+        let left = player.get_playlist();
+        player.switch_to_playlist("all_songs").await?;
+        assert_eq!(left.entry(), Some(1));
+        assert_eq!(left.current().unwrap().name(), "C");
+        Ok(())
+    }
 }

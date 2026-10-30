@@ -253,11 +253,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kept the position's index and pointed it at whatever entry then sat there, so status, Stop,
   Next and the loop ending all acted on another song: a song moved under a playing one got the
   looping song's fade-out, and a looping song lost its graceful ending. Every playlist now keeps
-  its place by song across a reload, and a song an edit takes away while it plays stays current
-  until the playlist moves on: Next goes to the entry that took its place, as Stop or its end
-  does, and the dashboard shows it as none of the list's entries. Deleting or renaming the
-  active playlist keeps the song playing current in all songs. A song or playlist edit no longer
-  sends any playlist back to its first entry.
+  its place by song across a reload, and a song an edit takes away while it plays or is paused
+  stays current until the playlist moves on: Play resumes a paused one where it was, and Next
+  goes to the entry that took its place, as Stop or its end does; the dashboard shows it as none
+  of the list's entries. Deleting or renaming the active playlist keeps the song playing current
+  in all songs. A song or playlist edit no longer sends any playlist back to its first entry.
 - **A playlist fade can't outlast the song it plays under (#577)**: a `fade_out` in measures or
   beats had no bound, so `1000000measures` saved and gave a 33-day ending, the prelude playing on
   at full level under the next song. A fade now lasts at most the song it plays under, counted on

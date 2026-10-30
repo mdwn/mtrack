@@ -36,7 +36,13 @@ impl Player {
         let Some(position) = self.elapsed().await? else {
             return Ok(None);
         };
-        self.stop_for_pause().await;
+        // The stop and the position kept for the next play are one step
+        // under the join lock. A playlist edit between them would find
+        // neither playing nor paused, and give an off-list song's place to
+        // the entry after it, which play would then start at this song's
+        // position (#576).
+        let mut join = self.join.lock().await;
+        self.stop_for_pause(&mut join).await;
         let Some(song) = self.get_playlist().current() else {
             return Ok(Some(position));
         };
@@ -48,7 +54,8 @@ impl Player {
         if check_start_position(&song, position, "").is_err() {
             return Ok(Some(position));
         }
-        self.seek_to(position).await?;
+        info!(song = song.name(), position = ?position, "Paused; play resumes here");
+        *self.pending_start.lock() = Some(position);
         Ok(Some(position))
     }
 

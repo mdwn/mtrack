@@ -187,6 +187,10 @@ impl Player {
             }
         }
 
+        // A paused song an edit took off the list stays current only to be
+        // resumed, which the switch calls off: the playlist left goes on to
+        // the entry that took its place.
+        self.move_playlist(|playlist| playlist.settle());
         *self.active_playlist.write() = name.to_string();
         self.clear_pending_start();
         self.cancel_auto_play();
@@ -325,10 +329,14 @@ impl Player {
         // Each playlist keeps its place by song, not by index: the song
         // playing stays current through an edit that moves it, or takes it
         // off the list, and the ending, loop-break and status logic, which
-        // read the active playlist's current song, keep to it (#576). A join
-        // lock held elsewhere is a control call under way, which may be
-        // starting a song: taken as playing, so it is not lost.
-        let playing = self.join.try_lock().map_or(true, |join| join.is_some());
+        // read the active playlist's current song, keep to it (#576). A
+        // paused song counts as playing: play resumes it where it was, and
+        // the entry after it is not the song to resume. A join lock held
+        // elsewhere is a control call under way, which may be starting a
+        // song: taken as playing, so it is not lost.
+        let playing = self.join.try_lock().map_or(true, |join| {
+            join.is_some() || self.pending_start().is_some()
+        });
         {
             let old_playlists = self.playlists.read();
             for (name, playlist) in &new_playlists {
