@@ -533,36 +533,18 @@ impl LightingTimeline {
         // when the cleared bed would have run out. Same reckoning as the
         // lint's; a freeze or the speed master then carries it on (below),
         // which the lint does not know.
-        let clears: Vec<(Option<crate::lighting::effects::EffectLayer>, Duration)> = cues
-            .iter()
-            .flat_map(|cue| {
-                cue.layer_commands
-                    .iter()
-                    .filter(|cmd| cmd.command_type == LayerCommandType::Clear)
-                    .map(move |cmd| (cmd.layer, cue.time))
-            })
-            .collect();
-        let stops: Vec<(String, Duration)> = cues
-            .iter()
-            .flat_map(|cue| {
-                cue.stop_sequences
-                    .iter()
-                    .map(move |name| (name.clone(), cue.time))
-            })
-            .collect();
-        let (clears, stops) = (&clears, &stops);
+        let cuts = crate::lighting::lint::Cuts::new(&cues);
         let show_end = cues
             .iter()
             .flat_map(|cue| {
+                let cuts = &cuts;
                 cue.effects.iter().map(move |e| {
-                    crate::lighting::lint::effective_end(
+                    cuts.effective_end(
                         cue.time + e.total_duration(),
                         cue.time,
                         e.layer
                             .unwrap_or(crate::lighting::effects::EffectLayer::Background),
                         e.sequence_name.as_deref(),
-                        clears,
-                        stops,
                     )
                 })
             })

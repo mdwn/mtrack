@@ -90,19 +90,31 @@ fn lint_end(source: &str) -> Duration {
                 .map(move |n| (n.clone(), cue.time))
         })
         .collect();
+    // Every clear and stop scanned for each effect, as the lint did before
+    // it looked them up (#595): what the lookup must still come to.
     cues.iter()
         .flat_map(|cue| {
             let (clears, stops) = (&clears, &stops);
             cue.effects.iter().map(move |e| {
-                crate::lighting::lint::effective_end(
-                    cue.time + e.total_duration(),
-                    cue.time,
-                    e.layer
-                        .unwrap_or(crate::lighting::effects::EffectLayer::Background),
-                    e.sequence_name.as_deref(),
-                    clears,
-                    stops,
-                )
+                let layer = e
+                    .layer
+                    .unwrap_or(crate::lighting::effects::EffectLayer::Background);
+                let authored_end = cue.time + e.total_duration();
+                let cleared_at = clears
+                    .iter()
+                    .filter(|(cleared, at)| *at > cue.time && cleared.is_none_or(|l| l == layer))
+                    .map(|(_, at)| *at);
+                let stopped_at = stops
+                    .iter()
+                    .filter(|(name, at)| {
+                        Some(name.as_str()) == e.sequence_name.as_deref() && *at > cue.time
+                    })
+                    .map(|(_, at)| *at);
+                cleared_at
+                    .chain(stopped_at)
+                    .filter(|at| *at < authored_end)
+                    .min()
+                    .unwrap_or(authored_end)
             })
         })
         .max()
@@ -550,4 +562,74 @@ fn show_end_same_frame_speed_change_then_freeze_unfreeze_in_the_cues_frame() {
         (live.0 - seek.0).abs() < 0.005,
         "live {live:?} seek {seek:?}"
     );
+}
+
+/// A show with a sequence on `loop:` `passes`, as the band's are: a 4-bar
+/// verse looping under a long bed and beat hits, stopped at bar `stop` if
+/// given, with `extra` cues after.
+fn looping_show(passes: &str, stop: Option<u32>, extra: &str) -> String {
+    let mut s =
+        String::from("tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n}\n\n");
+    s.push_str("sequence \"verse\" {\n");
+    for bar in 1..=4 {
+        for beat in 1..=4 {
+            s.push_str(&format!(
+                "    @{bar}/{beat}\n    a: static red: 100%, duration: 1beats, layer: midground\n"
+            ));
+        }
+    }
+    s.push_str(&format!(
+        "}}\n\nshow \"s\" {{\n    @1/1\n    sequence \"verse\", loop: {passes}\n    \
+         b: static blue: 100%, duration: 400measures\n"
+    ));
+    if let Some(bar) = stop {
+        s.push_str(&format!("    @{bar}/1\n    stop sequence \"verse\"\n"));
+    }
+    for i in 0..60u32 {
+        s.push_str(&format!(
+            "    @{}/{}\n    c: static green: 100%, duration: 1beats, layer: foreground\n",
+            2 + (i * 37) % 300,
+            1 + i % 4
+        ));
+    }
+    s.push_str(extra);
+    s.push_str("}\n");
+    s
+}
+
+/// Looked up rather than scanned, a show's clears and stops cut its effects
+/// where they did (#595): the show's end is still the scan's.
+#[test]
+fn show_end_of_looping_shows_is_the_scans() {
+    let sources = [
+        looping_show("300", Some(100), ""),
+        looping_show("300", None, ""),
+        looping_show(
+            "300",
+            Some(40),
+            "    @200/1\n    clear(layer: background)\n",
+        ),
+        looping_show("300", None, "    @250/3\n    clear()\n"),
+        looping_show("300", None, "    @120/1\n    clear(layer: midground)\n"),
+        looping_show("2", None, "    @3/1\n    stop sequence \"verse\"\n"),
+    ];
+    for src in &sources {
+        assert_eq!(end(src), lint_end(src), "{src}");
+    }
+}
+
+/// A sequence on `loop: loop` expands to 10,000 passes, each stopping the
+/// one before. Scanning every stop for each effect they start took seconds
+/// to build the timeline, holding up a crossfaded loop's next pass and the
+/// ambient show's start (#595). A second or so in a debug build now, where
+/// the scan took minutes.
+#[test]
+fn a_show_looping_for_good_builds_its_timeline_quickly() {
+    let parsed = shows(&looping_show("loop", Some(100), ""));
+    assert!(parsed[0].cues.len() > 160_000);
+    let started = std::time::Instant::now();
+    let timeline = LightingTimeline::new(parsed);
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(10), "took {took:?}");
+    assert!(timeline.show_end() > Duration::ZERO);
 }

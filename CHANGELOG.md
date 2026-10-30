@@ -112,6 +112,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `playback_delay`, a hot reload of the `.light` file rebuilt the show at the song's time rather
   than the lights' one, the delay ahead of the rig: cues in between were skipped, effects jumped
   ahead and a freeze held at the wrong point. It now rebuilds at the same point a seek does.
+- **A show that loops a sequence for good builds at once (#595)**: a `loop: loop` sequence expands
+  to 10,000 passes, each stopping the one before, and working out the show's end checked every
+  effect against every one of those stops: seconds for a looping verse under a long bed (10 s
+  for 160,000 cues on a loaded x86 machine). That held up each pass of a crossfaded looping song
+  and the ambient show's start, which stalled DMX output. Clears and stops are now looked up by
+  layer and by sequence, and the same show builds in 40 ms. The lint's past-end and overlapping
+  `replace` checks use the same lookup.
 - **A malformed OSC address no longer stops OSC control (#574)**: one bad packet ended the OSC
   driver until a restart. It is logged and skipped.
 - **A burst of OSC messages no longer deadlocks the driver (#575)**: with both its queues full,

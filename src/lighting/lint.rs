@@ -28,7 +28,7 @@ use std::time::Duration;
 use crate::audio::click_analysis::BeatGrid;
 use crate::lighting::effects::{BlendMode, EffectLayer, EffectType};
 use crate::lighting::parser::LightShow;
-use crate::lighting::parser::{Effect, LayerCommandType};
+use crate::lighting::parser::{Cue, Effect, LayerCommandType};
 
 /// A non-fatal finding.
 #[derive(Clone, Debug, PartialEq)]
@@ -496,21 +496,18 @@ fn effects_past_end_of_song(shows: &[LightShow], ctx: &LintContext, out: &mut Ve
     if song_end.is_zero() {
         return;
     }
-    let clears: Vec<(Option<EffectLayer>, Duration)> = shows.iter().flat_map(clear_times).collect();
-    let stops: Vec<(String, Duration)> = shows.iter().flat_map(stop_times).collect();
+    let cuts = Cuts::new(shows.iter().flat_map(|show| show.cues.iter()));
     for cue in shows.iter().flat_map(|show| show.cues.iter()) {
         for effect in &cue.effects {
             // The authored end is not the real one. A long bed cut by a
             // `clear` or a `stop sequence` does not overrun the song, and
             // warning that it does is a false positive.
             let layer = effect.layer.unwrap_or(EffectLayer::Background);
-            let end = effective_end(
+            let end = cuts.effective_end(
                 cue.time + effect.total_duration(),
                 cue.time,
                 layer,
                 effect.sequence_name.as_deref(),
-                &clears,
-                &stops,
             );
             // Under a frame past the end is rounding against the audio's
             // length, not an effect cut short: nothing that brief can be seen.
@@ -552,8 +549,7 @@ type Span<'a> = (Duration, Duration, &'a Effect);
 /// writer wins with no diagnostic, which is the easiest way to author a cue
 /// that appears to do nothing because something else is stomping it.
 fn stomping_replace_effects(shows: &[LightShow], out: &mut Vec<Warning>) {
-    let clears: Vec<(Option<EffectLayer>, Duration)> = shows.iter().flat_map(clear_times).collect();
-    let stops: Vec<(String, Duration)> = shows.iter().flat_map(stop_times).collect();
+    let cuts = Cuts::new(shows.iter().flat_map(|show| show.cues.iter()));
 
     // (layer, group) -> the spans replace-blend effects occupy on it, with the
     // effect occupying each.
@@ -572,13 +568,11 @@ fn stomping_replace_effects(shows: &[LightShow], out: &mut Vec<Warning>) {
             // or a `stop sequence` naming this effect's sequence, ends it
             // there. Comparing authored spans would report a stomp between two
             // effects that never coexist.
-            let end = effective_end(
+            let end = cuts.effective_end(
                 cue.time + effect.total_duration(),
                 cue.time,
                 layer,
                 effect.sequence_name.as_deref(),
-                &clears,
-                &stops,
             );
             if end <= cue.time {
                 continue;
@@ -632,70 +626,75 @@ fn restates(earlier: &Effect, later: &Effect) -> bool {
         && earlier.spread == later.spread
 }
 
-/// When each layer is cleared. `None` as the layer key means `clear()` with no
-/// argument, which clears every layer.
-fn clear_times(show: &LightShow) -> Vec<(Option<EffectLayer>, Duration)> {
-    let mut times: Vec<(Option<EffectLayer>, Duration)> = show
-        .cues
-        .iter()
-        .flat_map(|cue| {
-            cue.layer_commands
-                .iter()
-                .filter(|cmd| cmd.command_type == LayerCommandType::Clear)
-                .map(move |cmd| (cmd.layer, cue.time))
-        })
-        .collect();
-    times.sort_by_key(|(_, at)| *at);
-    times
+/// When each layer is cleared and each sequence stopped, in time order and
+/// looked up by layer and by name, so that an effect's real end is a search
+/// rather than a scan of every clear and stop. A sequence on `loop: loop`
+/// stops itself at each of its 10,000 passes, and scanning those for every
+/// effect it starts took seconds to build a timeline (#595).
+#[derive(Default)]
+pub(crate) struct Cuts {
+    /// `clear()` with no layer, which clears every layer.
+    all: Vec<Duration>,
+    layers: HashMap<EffectLayer, Vec<Duration>>,
+    stops: HashMap<String, Vec<Duration>>,
 }
 
-/// When each named sequence is explicitly stopped.
-fn stop_times(show: &LightShow) -> Vec<(String, Duration)> {
-    let mut times: Vec<(String, Duration)> = show
-        .cues
-        .iter()
-        .flat_map(|cue| {
-            cue.stop_sequences
-                .iter()
-                .map(move |name| (name.clone(), cue.time))
-        })
-        .collect();
-    times.sort_by_key(|(_, at)| *at);
-    times
-}
+impl Cuts {
+    pub(crate) fn new<'a>(cues: impl IntoIterator<Item = &'a Cue>) -> Self {
+        let mut cuts = Self::default();
+        for cue in cues {
+            for cmd in &cue.layer_commands {
+                if cmd.command_type != LayerCommandType::Clear {
+                    continue;
+                }
+                match cmd.layer {
+                    Some(layer) => cuts.layers.entry(layer).or_default().push(cue.time),
+                    None => cuts.all.push(cue.time),
+                }
+            }
+            for name in &cue.stop_sequences {
+                cuts.stops.entry(name.clone()).or_default().push(cue.time);
+            }
+        }
+        cuts.all.sort();
+        for times in cuts.layers.values_mut().chain(cuts.stops.values_mut()) {
+            times.sort();
+        }
+        cuts
+    }
 
-/// An effect's real end: the earliest of its authored end, a `clear` affecting
-/// its layer, and a `stop sequence` naming the sequence it came from.
-///
-/// Both callers go through here rather than each capping by the mechanisms it
-/// happens to remember. They did not always: the stomp check capped by clears
-/// and stops while the past-end check capped by clears alone, so the two
-/// disagreed about the same effect — one treating a stopped bed as ending at
-/// the stop, the other warning that it overran the song by the difference.
-pub(crate) fn effective_end(
-    authored_end: Duration,
-    start: Duration,
-    layer: EffectLayer,
-    sequence: Option<&str>,
-    clears: &[(Option<EffectLayer>, Duration)],
-    stops: &[(String, Duration)],
-) -> Duration {
-    let cleared_at = clears
-        .iter()
-        .filter(|(cleared, at)| *at > start && cleared.is_none_or(|l| l == layer))
-        .map(|(_, at)| *at);
-    // `LightingEngine::stop_sequence` drops every effect carrying the
-    // sequence's id prefix, so a stop really is an end.
-    let stopped_at = stops
-        .iter()
-        .filter(|(name, at)| Some(name.as_str()) == sequence && *at > start)
-        .map(|(_, at)| *at);
-
-    cleared_at
-        .chain(stopped_at)
-        .filter(|at| *at < authored_end)
-        .min()
-        .unwrap_or(authored_end)
+    /// An effect's real end: the earliest of its authored end, a `clear`
+    /// affecting its layer, and a `stop sequence` naming the sequence it came
+    /// from.
+    ///
+    /// The lint's checks and the show's end all go through here rather than
+    /// each capping by the mechanisms it happens to remember. They did not
+    /// always: the stomp check capped by clears and stops while the past-end
+    /// check capped by clears alone, so the two disagreed about the same
+    /// effect — one treating a stopped bed as ending at the stop, the other
+    /// warning that it overran the song by the difference.
+    pub(crate) fn effective_end(
+        &self,
+        authored_end: Duration,
+        start: Duration,
+        layer: EffectLayer,
+        sequence: Option<&str>,
+    ) -> Duration {
+        // The first of `times` after the effect starts: one at its very
+        // start does not cut it.
+        let next =
+            |times: &Vec<Duration>| times.get(times.partition_point(|at| *at <= start)).copied();
+        // `LightingEngine::stop_sequence` drops every effect carrying the
+        // sequence's id prefix, so a stop really is an end.
+        let stopped = sequence.and_then(|name| self.stops.get(name));
+        [Some(&self.all), self.layers.get(&layer), stopped]
+            .into_iter()
+            .flatten()
+            .filter_map(next)
+            .filter(|at| *at < authored_end)
+            .min()
+            .unwrap_or(authored_end)
+    }
 }
 
 /// A `tempo` block that disagrees with the click-derived grid. Silent, and
