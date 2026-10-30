@@ -108,6 +108,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The latest move takes a mover, whatever its layer (#599)**: two moves on different layers
+  over one head blended by layer, and where the head came to rest depended on how you got there:
+  played through, after a seek and in `evaluate_show` it could land on three different poses. A
+  move now takes its heads from any move already on them, on any layer, and the head carries on
+  from where it is (unless the move has a `from`); the move it took them from runs on its other
+  fixtures, or ends. Played through, after a seek and in `evaluate_show` alike, the head rests
+  where the latest move leaves it, and a show whose last move was taken over ends when the one
+  that took it does.
 - **A mover cut part way through a move keeps its pose after a seek (#596)**: a layer `clear` or a
   `stop sequence` part way through a move leaves the head where it was, as the song plays, but a
   seek past the cut (or `evaluate_show`) left the head with no pose at all, so the next move

@@ -258,7 +258,10 @@ pub(super) fn reload_timeline(
 
     // Calculate the timeline update before acquiring the engine lock.
     let mut timeline_update = if song_time > Duration::ZERO {
-        new_timeline.start_at(song_time)
+        // A move takes its heads from another by the fixtures they share.
+        new_timeline.start_at_resolving(song_time, &mut |effect| {
+            resolve_effect_groups(lighting_system, effect.clone()).target_fixtures
+        })
     } else {
         new_timeline.start();
         crate::lighting::timeline::TimelineUpdate::default()

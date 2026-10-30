@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::{error::Error, time::Duration};
+use std::{collections::HashMap, error::Error, time::Duration};
 
 use tracing::{debug, error, warn};
 
@@ -570,6 +570,20 @@ impl Engine {
         // loop break's fade carries on over this song's start.
         self.drop_pass_crossfade();
 
+        // A move takes its heads from another by the fixtures they share,
+        // so the history needs its moves' groups resolved: here, with no
+        // timeline lock held, as the effects' groups are below.
+        let heads = if start_time == Duration::ZERO {
+            HashMap::new()
+        } else {
+            let groups = self
+                .current_song_timeline
+                .lock()
+                .as_ref()
+                .map(|timeline| timeline.move_groups())
+                .unwrap_or_default();
+            self.resolve_groups(groups)
+        };
         let mut timeline_update = {
             let mut current_timeline = self.current_song_timeline.lock();
             if let Some(timeline) = current_timeline.as_mut() {
@@ -580,7 +594,9 @@ impl Engine {
                     crate::lighting::timeline::TimelineUpdate::default()
                 } else {
                     // Process historical cues to ensure deterministic state
-                    timeline.start_at(start_time)
+                    timeline.start_at_resolving(start_time, &mut |effect| {
+                        resolved_fixtures(&heads, effect)
+                    })
                 }
             } else {
                 crate::lighting::timeline::TimelineUpdate::default()
@@ -705,6 +721,26 @@ impl Engine {
         }
     }
 
+    /// Each of `groups` resolved to its fixtures, as
+    /// [`Self::resolve_effect_groups`] resolves an effect's. Empty with no
+    /// lighting system, where groups are fixtures by name.
+    pub(super) fn resolve_groups(
+        &self,
+        groups: impl IntoIterator<Item = String>,
+    ) -> HashMap<String, Vec<String>> {
+        let Some(lighting_system) = &self.lighting_system else {
+            return HashMap::new();
+        };
+        let mut lighting_system = lighting_system.lock();
+        groups
+            .into_iter()
+            .map(|group| {
+                let fixtures = lighting_system.resolve_logical_group_graceful(&group);
+                (group, fixtures)
+            })
+            .collect()
+    }
+
     /// Stops the lighting timeline
     pub fn stop_lighting_timeline(&self) {
         // A pass being faded out stops with the playback; the song time that
@@ -818,4 +854,22 @@ impl Engine {
             Vec::new()
         }
     }
+}
+
+/// The fixtures `effect`'s groups stand for, by `resolved` (see
+/// `Engine::resolve_groups`): a group it does not have is a fixture by name.
+pub(super) fn resolved_fixtures(
+    resolved: &HashMap<String, Vec<String>>,
+    effect: &crate::lighting::EffectInstance,
+) -> Vec<String> {
+    effect
+        .target_fixtures
+        .iter()
+        .flat_map(|group| {
+            resolved
+                .get(group)
+                .cloned()
+                .unwrap_or_else(|| vec![group.clone()])
+        })
+        .collect()
 }

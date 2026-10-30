@@ -143,7 +143,11 @@ where
             // Replay everything before `time`, then fire the cues landing exactly
             // on it. `start_at` stops short of `time` by design, so both halves
             // are needed for a cue at the requested instant to count.
-            let history = timeline.start_at(time);
+            // A move takes its heads from another by the fixtures they
+            // share, so the history needs the groups resolved too.
+            let history = timeline.start_at_resolving(time, &mut |effect| {
+                resolve_groups(effect.clone()).target_fixtures
+            });
             // A freeze in the history holds at `time`, as the live start
             // paths have it.
             engine.set_song_time(time);

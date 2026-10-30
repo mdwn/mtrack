@@ -26,6 +26,7 @@
 
 use std::{
     borrow::Cow,
+    collections::HashMap,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -183,6 +184,11 @@ pub(super) struct Overlay {
     level: Level,
     /// The ambient show this one replaced, still under it while it fades in.
     inner: Option<Box<Overlay>>,
+    /// The fixtures its moves' groups stand for: a pass starting part way
+    /// replays its history with them, a move taking its heads from another
+    /// by the fixtures they share, under the overlay's lock (see
+    /// `Engine::resolve_groups`).
+    heads: HashMap<String, Vec<String>>,
 }
 
 /// What one overlay's timeline fired in a tick: a restart's state (the show
@@ -213,6 +219,7 @@ impl Overlay {
             length,
             level,
             inner: None,
+            heads: HashMap::new(),
         }
     }
 
@@ -232,7 +239,10 @@ impl Overlay {
                     self.timeline.start();
                     TimelineUpdate::default()
                 } else {
-                    self.timeline.start_at(elapsed)
+                    let heads = &self.heads;
+                    self.timeline.start_at_resolving(elapsed, &mut |effect| {
+                        super::timeline::resolved_fixtures(heads, effect)
+                    })
                 },
                 elapsed,
             ));
@@ -605,6 +615,7 @@ impl Engine {
         // Locked in the effects loop's order: the engine, then the overlay.
         let engine = self.effect_engine.lock().sibling();
         let mut fresh = Overlay::new(ambient.clone(), engine, now);
+        fresh.heads = self.resolve_groups(fresh.timeline.move_groups());
         let mut overlay = self.ambient_overlay.lock();
         fresh.inner = overlay.take().map(Box::new);
         *overlay = Some(fresh);

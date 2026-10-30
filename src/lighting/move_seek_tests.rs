@@ -442,6 +442,12 @@ fn move_seek_show_end() {
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
+fn mover_at(name: &str, address: u16) -> FixtureInfo {
+    let mut info = mover(name);
+    info.address = address;
+    info
+}
+
 /// A head's pan as the engine remembers it: where it was last shown.
 fn pan_in(engine: &EffectEngine, name: &str) -> Option<f64> {
     engine.poses().get(name).map(|pose| pose.pan)
@@ -541,6 +547,68 @@ fn a_full_clear_part_way_through_a_move_releases_the_pose_after_a_seek() {
         &src,
         &f,
         &[(3500, 3500), (4500, 4500), (3500, 4500), (5000, 5000)],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+const LAYERED_MOVES: &str = "show \"s\" {\n    @6.587\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 180deg, tilt: 30deg, duration: 2772ms, layer: foreground\n    \
+    @6.993\n    m: move from_pan: 45deg, from_tilt: 0deg, pan: -45deg, tilt: 30deg, duration: 1505ms, layer: midground\n}\n";
+
+/// Two moves on different layers over one head: the later takes it, and
+/// the head rests where that one ends, however it is reached (#599).
+#[test]
+fn the_latest_move_takes_a_head_whatever_its_layer() {
+    let f = [mover("m")];
+    assert_eq!(pan_in(&played(LAYERED_MOVES, &f, 9900), "m"), Some(-45.0));
+    let live = played(LAYERED_MOVES, &f, 7500);
+    assert_eq!(
+        live.get_active_effects().len(),
+        1,
+        "the earlier move is over"
+    );
+    let bad = compare_heads(
+        "layered moves",
+        LAYERED_MOVES,
+        &f,
+        &[
+            (6800, 6800),
+            (7500, 7500),
+            (7000, 8000),
+            (9000, 9000),
+            (9900, 9900),
+            (6800, 10500),
+        ],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+    // Over when the later move ends, not when the earlier would have.
+    let end = LightingTimeline::new(shows(LAYERED_MOVES)).show_end();
+    assert_eq!(end, Duration::from_millis(6993 + 1505));
+}
+
+/// A move over one of a two-head move's fixtures takes just that one: the
+/// other runs on to its end, and the head taken carries on from where it
+/// was, as the later move has no `from` (#599).
+#[test]
+fn a_move_takes_one_head_of_a_two_head_move() {
+    let src = "show \"s\" {\n    @00:02.000\n    m1, m2: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:03.000\n    m2: move pan: -90deg, tilt: 0deg, duration: 2s, layer: background\n}\n";
+    let f = [mover_at("m1", 1), mover_at("m2", 11)];
+    let live = played(src, &f, 4500);
+    assert_eq!(pan_in(&live, "m1"), Some(90.0));
+    let m2 = pan_in(&live, "m2").expect("a pose");
+    assert!(m2 > -90.0 && m2 < 45.0, "m2 sweeping from the cut, at {m2}");
+    assert_eq!(pan_in(&played(src, &f, 5500), "m2"), Some(-90.0));
+    let bad = compare_heads(
+        "one head of two",
+        src,
+        &f,
+        &[
+            (3500, 3500),
+            (4500, 4500),
+            (3010, 4500),
+            (5500, 5500),
+            (2500, 6000),
+        ],
     );
     assert!(bad.is_empty(), "{bad:#?}");
 }

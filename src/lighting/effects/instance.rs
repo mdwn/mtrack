@@ -65,7 +65,8 @@ pub struct EffectInstance {
     /// takes out the effects of that sequence by name, and only those.
     pub sequence: Option<String>,
     /// For a move a seek's history cut short before it arrived -- by a
-    /// clear or a stop of its sequence -- where each cut left it. Live, a cut head holds the last pose it was
+    /// clear, a stop of its sequence or a later move on the same heads --
+    /// where each cut left it. Live, a cut head holds the last pose it was
     /// shown at, so the engine commits that pose for the fixtures cut and
     /// runs the move on the rest, if any. Empty otherwise.
     pub cuts: Vec<MoveCut>,

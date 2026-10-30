@@ -860,11 +860,37 @@ impl EffectEngine {
         effect.target_fixtures = targets;
     }
 
+    /// A move takes its heads from any move already on them, on any layer:
+    /// the latest move wins (#599). The head carries on from where it is,
+    /// since the new move starts from pose memory; the move it took them
+    /// from runs on its other fixtures, and ends if it has none left.
+    fn take_heads(&mut self, effect: &EffectInstance) {
+        if !matches!(effect.effect_type, EffectType::Move { .. }) {
+            return;
+        }
+        let mut took = false;
+        self.active_effects.retain(|id, other| {
+            if *id == effect.id || !matches!(other.effect_type, EffectType::Move { .. }) {
+                return true;
+            }
+            let before = other.target_fixtures.len();
+            other
+                .target_fixtures
+                .retain(|name| !effect.target_fixtures.contains(name));
+            took |= other.target_fixtures.len() != before;
+            !other.target_fixtures.is_empty()
+        });
+        if took {
+            self.cache.invalidate();
+        }
+    }
+
     pub fn start_effect(&mut self, mut effect: EffectInstance) -> Result<(), EffectError> {
         self.expand_cells(&mut effect);
         // Validate effect
         validation::validate_effect(self.fixtures.as_map(), &effect)?;
         self.capture_start_poses(&mut effect);
+        self.take_heads(&effect);
 
         // Log effect parameters
         let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
@@ -1032,6 +1058,9 @@ impl EffectEngine {
                 return Ok(());
             }
         }
+        // Only the heads it still has: the history already gave the rest to
+        // later moves, which may be started before it on the same cue.
+        self.take_heads(&effect);
 
         // A move that had already finished by the time it is started — a
         // seek past it, or an offline evaluation — is its destination: the
