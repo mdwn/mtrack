@@ -151,13 +151,18 @@ impl SectionJumpLog {
     /// read on the playback's own clock, the jumps' timeline. None due before
     /// it has started.
     pub fn put_back_now(&self) -> (Duration, usize) {
-        let now = self
-            .timeline
+        self.now()
+            .map_or((Duration::ZERO, 0), |now| self.put_back_by(now))
+    }
+
+    /// Where the playback is on its timeline (the start position plus its
+    /// clock), once its clock has started.
+    pub fn now(&self) -> Option<Duration> {
+        self.timeline
             .lock()
             .as_ref()
             .filter(|(clock, _)| clock.has_started())
-            .map(|(clock, start_time)| *start_time + clock.elapsed());
-        now.map_or((Duration::ZERO, 0), |now| self.put_back_by(now))
+            .map(|(clock, start_time)| *start_time + clock.elapsed())
     }
 
     /// The time the jumps falling due by `at` (on the playback timeline) put

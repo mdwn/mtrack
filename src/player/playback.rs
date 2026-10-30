@@ -1022,12 +1022,19 @@ impl Player {
         let play_start_time = self.play_start_time.lock().await;
         Ok(match *play_start_time {
             Some(play_start_time) => {
-                let raw = play_start_time.elapsed()?;
-                // Section loops by the playback's log, as they fall due on
-                // its own clock (the counter was bumped up to a monitor poll
-                // late, so just past a loop point the position read past the
-                // section's end); whole-song passes by the counter.
-                let (sections, _) = self.section_jumps.lock().put_back_now();
+                // On the playback's own clock, once it runs: the timeline the
+                // section loop jumps are on, counted from the log as they fall
+                // due (the counter was bumped up to a monitor poll late, so
+                // just past a loop point the position read past the section's
+                // end; and the wall clock, stamped a moment after the playback
+                // clock starts, read before the section's start at a jump).
+                // Whole-song passes by the counter.
+                let log = self.section_jumps.lock().clone();
+                let raw = match log.now() {
+                    Some(now) => now,
+                    None => play_start_time.elapsed()?,
+                };
+                let (sections, _) = log.put_back_by(raw);
                 let consumed = *self.loop_time_consumed.lock() + sections;
                 Some(raw.saturating_sub(consumed))
             }
