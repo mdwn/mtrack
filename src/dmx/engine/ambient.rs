@@ -189,6 +189,11 @@ pub(super) struct Overlay {
     /// by the fixtures they share, under the overlay's lock (see
     /// `Engine::resolve_groups`).
     heads: HashMap<String, Vec<String>>,
+    /// The instant its time was last moved on to: the frame renders there
+    /// too, so the frame and its cues agree on where the show is (rendered
+    /// a moment later, a frame could fall past the show's end before the
+    /// show started again, and go dark).
+    frame: Instant,
 }
 
 /// What one overlay's timeline fired in a tick: a restart's state (the show
@@ -220,6 +225,7 @@ impl Overlay {
             level,
             inner: None,
             heads: HashMap::new(),
+            frame: now,
         }
     }
 
@@ -227,6 +233,7 @@ impl Overlay {
     /// end, as a looping song does -- and an inner one's, collecting what
     /// they fire: this one's first.
     fn advance(&mut self, now: Instant, out: &mut Vec<OverlayUpdate>) {
+        self.frame = now;
         let mut elapsed = now.saturating_duration_since(self.started);
         let mut restart = None;
         if !self.length.is_zero() && elapsed >= self.length {
@@ -595,7 +602,9 @@ impl Engine {
         let Some(o) = overlay.as_mut() else {
             return Ok(None);
         };
-        let now = Instant::now();
+        // At the instant its time was moved on to this frame, not a moment
+        // later.
+        let now = o.frame;
         let blended = o.render_over(dt, now, under, effect_engine)?;
         effect_engine.set_shown(Some((
             o.engine.shown_fixture_states().clone(),

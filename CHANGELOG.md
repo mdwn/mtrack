@@ -154,6 +154,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   but no audio went round at the length its show had when it started, whatever the show was
   edited to while it played; it now follows the edit.
 
+- **Ambient light no longer flashes dark as its show starts again**: under load, a frame could
+  render a moment after the show's time was moved on, past the show's end before it started
+  again, and go dark for a frame. The frame now renders where the show's time was moved to.
+
 - **Notes held across a section's loop point**: a section's jump lets go of the notes it cuts,
   which were left hanging.
 
