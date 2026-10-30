@@ -117,17 +117,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server answering it, and its sessions with it. Controllers whose config is unchanged now keep
   running, a web UI config save included; MIDI controllers, whose song-change notifiers go
   together, restart together, and also when a reload opens a new MIDI device, for a changed MIDI
-  config or a device gone, so they listen on the new one. A reload of an unchanged MIDI config
-  keeps the device and the MIDI controllers on it, opening it afresh in place, so one unplugged
-  and plugged back in is heard again. "Restart controllers" still restarts them all, and a MIDI
-  controller restarted on the device it had now hears it again. A changed controller waits for
-  the one it replaces to let go of its port, and one that cannot bind its port shows the error
-  in the status rather than "running", and is retried on the next reload. So is one whose
-  predecessor has still not stopped after five seconds: it is not started on top of it, nor is
-  the one replacing it, or its retry, while that predecessor still holds on. A second
-  MIDI controller, which could never watch the one MIDI device, is refused by config validation;
-  one that gets past it reads as that error, and is no longer retried, which restarted the
-  working one each time.
+  config or a device gone, so they listen on the new one. A reload of an unchanged MIDI config,
+  or two in quick succession, keeps the device and the MIDI controllers on it, opening it afresh
+  in place, so one unplugged and plugged back in is heard again. "Restart controllers" still
+  restarts them all, and a MIDI controller restarted on the device it had now hears it again. A
+  changed controller waits for the one it replaces to let go of its port, and one that cannot
+  bind its port shows the error in the status rather than "running", and is retried on the next
+  reload. So is one whose predecessor has still not stopped after five seconds: it is not started
+  on top of it, nor is the one replacing it, or its retry, while that predecessor still holds on.
+  A second MIDI controller, which could never watch the one MIDI device, is refused by config
+  validation; one that gets past it reads as that error, and is no longer retried, which
+  restarted the working one each time.
 - **A config change the next start would refuse is refused (#578)**: changes made over MCP,
   gRPC or the web UI (`update_controllers`, the profile tools and the other section updates)
   were saved without the checks a load runs, so a second MIDI controller, say, was written and

@@ -858,6 +858,41 @@ mod test {
         Ok(())
     }
 
+    /// Two saves in quick succession, both of the same MIDI config. The
+    /// first round took the device and was cancelled before it reached
+    /// MIDI, and the second, finding none to keep, opened one anew and
+    /// restarted the MIDI controllers. The device waits for a round that
+    /// gets that far.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_quick_reloads_of_the_same_midi_config_keep_the_midi_device(
+    ) -> Result<(), Box<dyn Error>> {
+        let midi = "mock-reload-twice-midi";
+        let player = make_midi_player(vec![midi_controller(0)], midi).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let dir = tempfile::tempdir()?;
+        player.set_config_store(Arc::new(config::ConfigStore::new(
+            midi_player_config(vec![midi_controller(0)], midi),
+            dir.path().join("config.yaml"),
+        )));
+        let device = player.midi_device().expect("a MIDI device");
+        let tasks = player.controller_tasks();
+        assert!(player.reload_hardware().await?.applied());
+        assert!(player.reload_hardware().await?.applied());
+        player.await_hardware_ready().await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let restarted = tasks[0].is_finished();
+        let kept = player
+            .midi_device()
+            .is_some_and(|now| Arc::ptr_eq(&now, &device));
+        player.shutdown_controllers();
+        assert!(
+            kept,
+            "the MIDI device was opened anew by the second of two quick reloads"
+        );
+        assert!(!restarted, "the MIDI controller was restarted");
+        Ok(())
+    }
+
     /// A changed MIDI config still opens a new device, and the MIDI
     /// controllers restart to listen on it.
     #[tokio::test(flavor = "multi_thread")]

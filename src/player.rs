@@ -111,6 +111,11 @@ struct HardwareState {
     /// The MIDI config `midi_device` was opened with, as YAML: a reload of
     /// the same config keeps the device, opened afresh in place.
     midi_config: Option<String>,
+    /// The MIDI device a reload took down, with its config, until a round
+    /// keeps it, opens another or finds no MIDI config. Handed to the round
+    /// itself, it was lost with a round cancelled before its MIDI phase, and
+    /// the round after opened the device anew (#578).
+    midi_handoff: Option<(String, Arc<dyn midi::Device>)>,
     dmx_engine: Option<Arc<dmx::engine::Engine>>,
     sample_engine: Option<Arc<RwLock<SampleEngine>>>,
     trigger_engine: Option<Arc<TriggerEngine>>,
@@ -560,7 +565,7 @@ impl Player {
         let init_cancel = player.init_cancel.lock().clone();
         tokio::spawn(async move {
             init_player
-                .init_hardware_async(config, bp, init_cancel, None)
+                .init_hardware_async(config, bp, init_cancel)
                 .await;
         });
 
@@ -625,6 +630,7 @@ impl Player {
             track_gains,
             midi_device: devices.midi,
             midi_config: None,
+            midi_handoff: None,
             dmx_engine: devices.dmx_engine,
             sample_engine: devices.sample_engine,
             trigger_engine: devices.trigger_engine,
