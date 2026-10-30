@@ -89,8 +89,6 @@ pub struct LoopControl {
     pub active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
     /// Shared flag to break out of a section loop.
     pub section_loop_break: Arc<AtomicBool>,
-    /// Accumulated time consumed by section loop iterations.
-    pub loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
     /// A loop break's fade-out (a playlist `fade_out`), set by the player as it
     /// breaks the loop.
     pub break_fade: Arc<parking_lot::Mutex<Option<BreakFade>>>,
@@ -265,7 +263,6 @@ impl LoopControl {
             loop_break: Arc::new(AtomicBool::new(false)),
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
-            loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
             start_fade: Arc::new(parking_lot::Mutex::new(None)),

@@ -442,10 +442,6 @@ pub struct Player {
     /// Signal to stop section looping. The current iteration finishes and
     /// the song continues from the section end.
     section_loop_break: Arc<AtomicBool>,
-    /// Accumulated real time consumed by section loop iterations.
-    /// Each completed loop iteration adds section_duration to this value.
-    /// Subtracted from raw elapsed to get the true song position.
-    loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
     /// The section loop jumps due when the section loop now armed was
     /// armed: the loop is going round once more have fallen due.
     jumps_at_arm: Arc<parking_lot::Mutex<usize>>,
@@ -702,7 +698,6 @@ impl Player {
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
-            loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
             jumps_at_arm: Arc::new(parking_lot::Mutex::new(0)),
             section_jumps: Arc::new(parking_lot::Mutex::new(Default::default())),
             reactive_loop_state: Arc::new(parking_lot::RwLock::new(ReactiveLoopState::Idle)),
@@ -3820,23 +3815,6 @@ mod test {
             position >= Duration::from_secs(4),
             "before the section: {position:?}"
         );
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_add_loop_time_consumed() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player().await?;
-
-        // Initially zero.
-        assert_eq!(*player.loop_time_consumed.lock(), Duration::ZERO);
-
-        // Accumulates correctly.
-        player.add_loop_time_consumed(Duration::from_secs(2));
-        assert_eq!(*player.loop_time_consumed.lock(), Duration::from_secs(2));
-
-        player.add_loop_time_consumed(Duration::from_secs(3));
-        assert_eq!(*player.loop_time_consumed.lock(), Duration::from_secs(5));
-
         Ok(())
     }
 

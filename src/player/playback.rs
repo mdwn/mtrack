@@ -204,9 +204,6 @@ impl Player {
         let cancel_handle_for_cleanup = cancel_handle.clone();
         let (play_tx, play_rx) = oneshot::channel::<Result<(), String>>();
 
-        // Reset loop time consumed for the new song.
-        *self.loop_time_consumed.lock() = Duration::ZERO;
-
         let join_handle = {
             let clock = hw.clock_source.new_clock();
             let ctx = PlaybackContext {
@@ -224,7 +221,6 @@ impl Player {
                     loop_break: self.loop_break.clone(),
                     active_section: self.active_section.clone(),
                     section_loop_break: self.section_loop_break.clone(),
-                    loop_time_consumed: self.loop_time_consumed.clone(),
                     break_fade: self.break_fade.clone(),
                     break_fade_ids: self.break_fade_ids.clone(),
                     start_fade: self.start_fade.clone(),
@@ -470,6 +466,7 @@ impl Player {
             let ready_tx = crate::playsync::ReadyGuard::new(ready_tx.clone());
             let clock = clock.clone();
             let loop_control = loop_control.clone();
+            let jumps = loop_control.section_jumps.clone();
             expected_ready += 1;
 
             Some(thread::spawn(move || {
@@ -491,6 +488,13 @@ impl Player {
                         song = song_name,
                         "Error while playing song"
                     );
+                }
+                // Done playing, the audio makes no more jumps: the notes and
+                // lights, following on past their own ends while it played,
+                // end too. (If it never took the jumps on, its stand-in
+                // closes the log when it is done.)
+                if jumps.claimed_by_audio() {
+                    jumps.close();
                 }
                 if let Some(gone) = &audio_gone {
                     gone.store(true, Ordering::Release);
@@ -619,6 +623,7 @@ impl Player {
         }
 
         subsystems_done.store(true, Ordering::Relaxed);
+        loop_control.section_jumps.close();
         let outcome = resolve_playback_outcome(has_audio, audio_outcome.lock().take());
         if play_tx.send(outcome).is_err() {
             error!("Error while sending to finish channel (receiver dropped).")
@@ -1029,14 +1034,14 @@ impl Player {
                 // just past a loop point the position read past the section's
                 // end; and the wall clock, stamped a moment after the playback
                 // clock starts, read before the section's start at a jump).
-                // Whole-song passes by the counter.
+                // A looping song's passes are jumps in the log too, so the
+                // position wraps exactly as each falls due.
                 let log = self.section_jumps.lock().clone();
                 let raw = match log.now() {
                     Some(now) => now,
                     None => play_start_time.elapsed()?,
                 };
-                let (sections, _) = log.put_back_by(raw);
-                let consumed = *self.loop_time_consumed.lock() + sections;
+                let (consumed, _) = log.put_back_by(raw);
                 Some(raw.saturating_sub(consumed))
             }
             None => self.pending_start(),
@@ -1046,13 +1051,6 @@ impl Player {
     /// How many of the playing song's section loop jumps have fallen due.
     fn section_jumps_due(&self) -> usize {
         self.section_jumps.lock().put_back_now().1
-    }
-
-    /// Adds time consumed by a section loop iteration. Called by subsystems
-    /// when a section loop triggers to keep the reported elapsed time correct.
-    pub fn add_loop_time_consumed(&self, duration: Duration) {
-        let mut consumed = self.loop_time_consumed.lock();
-        *consumed += duration;
     }
 
     /// Activates section looping for the named section in the current song.
