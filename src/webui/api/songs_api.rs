@@ -2425,4 +2425,56 @@ mod test {
         assert_eq!(parsed["file"], "show.light");
         assert!(state.songs_path.join("LightSong/show.light").exists());
     }
+
+    #[tokio::test]
+    async fn post_song_refuses_a_song_dir_name_new_songs_may_not_have() {
+        // #578: the song directory was made by any safe name, the new-name
+        // rules unchecked, and the song loader then skipped a hidden one.
+        for (uri, dirname) in [
+            ("/songs/.hidden", ".hidden"),
+            ("/songs/%20lead", " lead"),
+            ("/songs/Artist%2F.hidden", "Artist/.hidden"),
+        ] {
+            let (state, _dir) = test_state();
+            let app = router().with_state(state.clone());
+            let response = app
+                .oneshot(
+                    http::Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .body(Body::from("name: X\ntracks: []\n"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+            // Nothing made, not even the "Artist" above the bad name.
+            let first = dirname.split('/').next().unwrap();
+            assert!(
+                !state.songs_path.join(first).exists(),
+                "{uri}: created {first:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn track_upload_to_a_new_song_refuses_a_hidden_song_dir() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/.hidden/tracks/t.wav")
+                    .body(Body::from(vec![0u8; 16]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            !state.songs_path.join(".hidden").exists(),
+            ".hidden song dir created"
+        );
+    }
 }
