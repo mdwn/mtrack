@@ -248,6 +248,7 @@ fn create_looping_source(
         cancel_at_sample: None,
         gain: Default::default(),
         gain_envelope: None,
+        break_envelope: None,
     };
 
     (active_source, is_finished, cancel_handle)

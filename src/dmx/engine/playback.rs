@@ -302,6 +302,10 @@ impl Engine {
             let stop_following = stop_following.clone();
             let mut jumps = crate::playsync::JumpCursor::new(section_jumps.clone());
             thread::spawn(move || {
+                // Only while this playback has the lights: one started since
+                // (a song that follows before this one's threads are all
+                // down) owns the timeline and the song time.
+                let ours = || dmx_engine.playback_generation() == generation;
                 while !cancel_handle.is_cancelled() && !stop_following.load(Ordering::Relaxed) {
                     // Closed first: a jump committed before it closed is then
                     // seen by the peek below.
@@ -309,7 +313,10 @@ impl Engine {
                     // Section bounds are song-absolute; the clock counts from
                     // this playback's start, so offset by the start position.
                     let elapsed = start_time + clock.elapsed();
-                    while let Some(jump) = jumps.due(elapsed) {
+                    if !ours() {
+                        break;
+                    }
+                    while let Some(jump) = jumps.due(elapsed).filter(|_| ours()) {
                         let position = elapsed.saturating_sub(jumps.consumed());
                         info!(
                             from = ?jump.from,
@@ -326,7 +333,7 @@ impl Engine {
                         // since the cue pointer never moves backwards.
                         section_owns_time.store(true, Ordering::Relaxed);
                         if jump.overlap.is_zero() {
-                            dmx_engine.update_song_time(position);
+                            dmx_engine.update_song_time_for_generation(position, generation);
                             // The restart clears the MIDI DMX store: what the
                             // events before the section set goes back with it
                             // (#583).
@@ -347,7 +354,7 @@ impl Engine {
                             // the crossfade; MIDI DMX starts over from the
                             // beginning.
                             dmx_engine.rewind_midi_dmx_playbacks();
-                            dmx_engine.update_song_time(position);
+                            dmx_engine.update_song_time_for_generation(position, generation);
                         }
                         // A show restarted runs again, however long ago its
                         // last cue went.
@@ -361,16 +368,21 @@ impl Engine {
                         // past the section's end, and a cue on it played for
                         // a frame before the restart.
                         section_owns_time.store(true, Ordering::Relaxed);
-                        dmx_engine.update_song_time(position.min(next.from));
+                        dmx_engine
+                            .update_song_time_for_generation(position.min(next.from), generation);
                     } else {
                         if !jumps.consumed().is_zero() {
-                            dmx_engine.update_song_time(position);
+                            dmx_engine.update_song_time_for_generation(position, generation);
                         }
                         if closed {
                             follow_done.store(true, Ordering::Relaxed);
                         }
                     }
                     thread::sleep(Duration::from_millis(10));
+                }
+                // Superseded, it has no more to follow.
+                if !ours() {
+                    follow_done.store(true, Ordering::Relaxed);
                 }
             })
         };

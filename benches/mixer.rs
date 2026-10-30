@@ -74,6 +74,7 @@ fn build_source(spec: &SourceSpec, frames: usize) -> ActiveSource {
         cancel_at_sample: None,
         gain: Default::default(),
         gain_envelope: None,
+        break_envelope: None,
     }
 }
 

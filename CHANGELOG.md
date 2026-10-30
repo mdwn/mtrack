@@ -129,6 +129,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A loop break fades whatever the loop was doing**: a loop break's `fade_out` replaced each
+  source's own envelope, so a break part way through a `loop_crossfade` held both passes where
+  they stood and then cut the outgoing one dead where its crossfade would have ended, and a break
+  in the last moments before a section's jump (or a pass's start) dropped the jump the notes and
+  lights had already made, cutting the audio at the section's end. The fade now runs over what
+  the playback was doing: a crossover carries on crossing, a jump already scheduled is made, and
+  no new one is scheduled once the break has begun.
+
+- **Notes held across a section's loop point**: a section's jump lets go of the notes it cuts,
+  which were left hanging.
+
 - **A looping song's passes are decided once, and followed by everything** (#606): the audio
   (or, with no audio, the playback's own publisher) now decides a looping song's passes as it
   decides section loop jumps, on the same trigger, and puts them in the same log, each with its

@@ -78,8 +78,10 @@ impl PassCrossover {
     }
 
     /// The envelope an incoming source in `group` fades in with, and the
-    /// sample it starts at. A cut source is built from the song time the
-    /// midpoint falls on, so it starts there in step.
+    /// sample it starts at. Every source of the pass starts with it, from
+    /// the top, so the cut tracks keep step with the fading ones however
+    /// long the overlap turns out to be; a cut source stays silent until
+    /// the midpoint.
     pub(crate) fn cross_in(&self, group: PassGroup) -> (GainEnvelope, u64) {
         match group {
             PassGroup::Fade => (
@@ -87,8 +89,9 @@ impl PassCrossover {
                 self.start_sample,
             ),
             PassGroup::Cut => (
-                GainEnvelope::fade_in(self.crossfade_samples, CrossfadeCurve::Linear),
-                self.cut_sample(),
+                GainEnvelope::fade_in(self.crossfade_samples, CrossfadeCurve::Linear)
+                    .with_start_sample(self.cut_sample()),
+                self.start_sample,
             ),
         }
     }
@@ -261,6 +264,7 @@ mod tests {
             cancel_at_sample: Some(Arc::new(AtomicU64::new(0))),
             gain: Default::default(),
             gain_envelope: None,
+            break_envelope: None,
         }
     }
 
@@ -328,6 +332,37 @@ mod tests {
         assert_eq!(out[cut - 10].1, 1.0, "old click to the midpoint");
         assert_eq!(out[cut + 600].1, 0.5, "new click after it");
         assert!(out[start + 10].1 == 1.0 && out[end - 10].1 == 0.5);
+    }
+
+    #[test]
+    fn a_shortened_overlap_keeps_the_cut_tracks_in_step() {
+        // A pass begun inside the crossfade crosses less of it. Its cut
+        // tracks still start with the pass, from the top, as its fading
+        // tracks do, and only sound from the shorter overlap's midpoint.
+        for overlap_samples in [8_192, 2_000, 0] {
+            let crossover = PassCrossover {
+                start_sample: 2_048,
+                overlap_samples,
+                crossfade_samples: 480,
+            };
+            let (fade_env, fade_start) = crossover.cross_in(PassGroup::Fade);
+            let (cut_env, cut_start) = crossover.cross_in(PassGroup::Cut);
+            assert_eq!(cut_start, fade_start, "overlap {overlap_samples}");
+            assert_eq!(cut_start, crossover.start_sample);
+            let _ = fade_env;
+
+            let mixer = AudioMixer::new(2, 48_000);
+            let mut incoming = source(1, "click", 1.0, 20_000);
+            incoming.gain_envelope = Some(Arc::new(cut_env));
+            incoming.start_at_sample = Some(cut_start);
+            mixer.add_source(incoming);
+            let out = render(&mixer, 14_000);
+            let cut = crossover.cut_sample() as usize;
+            if cut > crossover.start_sample as usize + 300 {
+                assert_eq!(out[cut - 300].1, 0.0, "silent before the midpoint");
+            }
+            assert_eq!(out[cut + 1_000].1, 1.0, "sounding after it");
+        }
     }
 
     /// The gain `knots` give `at` samples from their start.

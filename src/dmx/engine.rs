@@ -2281,6 +2281,7 @@ mod test {
             from: Duration::from_millis(600),
             to: Duration::ZERO,
             overlap: Duration::ZERO,
+            pass: false,
         });
         wait_for_clock(&clock, Duration::from_millis(700));
         let song_time = engine.get_song_time();
@@ -2321,6 +2322,7 @@ mod test {
                 from: Duration::from_millis(300),
                 to: Duration::ZERO,
                 overlap,
+                pass: true,
             });
             let (_dir, cancel_handle, clock, thread) = play_logged_show(
                 &engine,

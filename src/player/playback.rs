@@ -72,6 +72,9 @@ impl Player {
             // task sees loop_broken and auto-plays the next song.
             if self.is_current_song_looping() {
                 info!("Breaking out of song loop to advance playlist.");
+                // Between the playback's loop jumps: one already scheduled
+                // is made under the fade, and none is after it.
+                let _jumps = join.as_ref().map(|handles| handles.cancel.hold_jumps());
                 if let Some(ref handles) = *join {
                     self.fade_out_for_loop_break(&handles.cancel, false);
                 }
@@ -470,6 +473,29 @@ impl Player {
             expected_ready += 1;
 
             Some(thread::spawn(move || {
+                // Done playing, the audio makes no more jumps: the notes and
+                // lights, following on past their own ends while it played,
+                // end too. (If it never took the jumps on, its stand-in
+                // closes the log when it is done.) On its way out however it
+                // goes, a panic included, so nothing waits on it.
+                struct AudioDone {
+                    jumps: Arc<crate::playsync::SectionJumpLog>,
+                    gone: Option<Arc<std::sync::atomic::AtomicBool>>,
+                }
+                impl Drop for AudioDone {
+                    fn drop(&mut self) {
+                        if self.jumps.claimed_by_audio() {
+                            self.jumps.close();
+                        }
+                        if let Some(gone) = &self.gone {
+                            gone.store(true, Ordering::Release);
+                        }
+                    }
+                }
+                let done = AudioDone {
+                    jumps,
+                    gone: audio_gone,
+                };
                 let song_name = song.name().to_string();
                 let result = device.play_from(
                     song,
@@ -489,16 +515,7 @@ impl Player {
                         "Error while playing song"
                     );
                 }
-                // Done playing, the audio makes no more jumps: the notes and
-                // lights, following on past their own ends while it played,
-                // end too. (If it never took the jumps on, its stand-in
-                // closes the log when it is done.)
-                if jumps.claimed_by_audio() {
-                    jumps.close();
-                }
-                if let Some(gone) = &audio_gone {
-                    gone.store(true, Ordering::Release);
-                }
+                drop(done);
                 let outcome = result.map_err(|e| e.to_string());
                 let mut guard = audio_outcome.lock();
                 *guard = Some(outcome);
@@ -696,6 +713,8 @@ impl Player {
             .fade_out
             .and_then(|fade| song.fade_out_into(&fade, next.as_deref()))?;
         *self.start_fade.lock() = None;
+        // Between the playback's loop jumps, as a loop break.
+        let jumps = handles.cancel.hold_jumps();
         self.fade_out_playback(&handles.cancel, Some(&fade));
         let over = fade.length.max(fade.lights);
         info!(
@@ -709,6 +728,7 @@ impl Player {
         self.loop_end.store(true, Ordering::Relaxed);
         self.loop_break.store(true, Ordering::Relaxed);
         handles.cancel.cancel();
+        drop(jumps);
         Some(song)
     }
 

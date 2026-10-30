@@ -310,6 +310,10 @@ pub struct CancelHandle {
     cancelled: Arc<Mutex<CancelState>>,
     /// The condvar will handle notification of cancelling.
     condvar: Arc<Condvar>,
+    /// Held while the audio schedules a loop jump, and while a loop break
+    /// fades the playback out and says it is breaking: a jump is either
+    /// scheduled before the break, and made under its fade, or not at all.
+    jumps: Arc<Mutex<()>>,
 }
 
 impl CancelHandle {
@@ -318,6 +322,7 @@ impl CancelHandle {
         CancelHandle {
             cancelled: Arc::new(Mutex::new(CancelState::Untouched)),
             condvar: Arc::new(Condvar::new()),
+            jumps: Arc::new(Mutex::new(())),
         }
     }
 }
@@ -336,6 +341,13 @@ impl CancelHandle {
     /// cleanup cares about the difference.
     pub fn is_cancelled(&self) -> bool {
         *self.cancelled.lock() != CancelState::Untouched
+    }
+
+    /// Holds off the playback's loop jumps until the guard is dropped: the
+    /// audio takes it to schedule one, a loop break to fade and break
+    /// between them.
+    pub fn hold_jumps(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.jumps.lock()
     }
 
     /// Whether `other` is a clone of this handle: the same playback.

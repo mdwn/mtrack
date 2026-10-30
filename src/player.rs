@@ -3757,6 +3757,7 @@ mod test {
                 from: Duration::from_secs(100),
                 to: Duration::from_secs(4),
                 overlap: Duration::ZERO,
+                pass: false,
             });
             log.set_timeline(
                 crate::clock::PlaybackClock::wall_from(std::time::Instant::now() - since),
@@ -3799,6 +3800,7 @@ mod test {
             from: Duration::from_secs(100),
             to: Duration::from_secs(4),
             overlap: Duration::ZERO,
+            pass: false,
         });
         // Clock 10ms ahead of the wall: it reads 100.005s, the wall 99.995s.
         log.set_timeline(
@@ -3833,6 +3835,7 @@ mod test {
                 from: Duration::from_secs(96),
                 to: Duration::ZERO,
                 overlap: Duration::from_secs(4),
+                pass: true,
             });
         }
         // 200s into the playback: 8s into its third pass.
@@ -4045,6 +4048,7 @@ mod test {
             from: a_end,
             to: a_start,
             overlap: Duration::ZERO,
+            pass: false,
         });
         // Now in b, mid-way: raw = a's pass put back + b's middle.
         let mid_b = b_start + (b_end - b_start) / 2;

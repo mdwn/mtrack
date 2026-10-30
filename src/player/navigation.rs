@@ -101,6 +101,9 @@ impl Player {
             // one still fading out (#545).
             if self.is_current_song_looping() {
                 info!("Breaking out of song loop via {} navigation.", direction);
+                // Between the playback's loop jumps: one already scheduled
+                // is made under the fade, and none is after it.
+                let jumps = join.as_ref().map(|handles| handles.cancel.hold_jumps());
                 let target = join.as_ref().and_then(|handles| {
                     self.fade_out_for_loop_break(
                         &handles.cancel,
@@ -113,6 +116,7 @@ impl Player {
                 if let Some(ref handles) = *join {
                     handles.cancel.cancel();
                 }
+                drop(jumps);
                 return target;
             }
             let current = self.get_playlist().current();

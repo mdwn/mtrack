@@ -58,6 +58,11 @@ pub struct SectionJump {
     /// (less what is left of it, for a pass begun inside it), zero for a
     /// section, or a whole song looping without one, which switch at once.
     pub overlap: Duration,
+    /// Whether it starts a pass of the whole song, not a section's next
+    /// time round: the pass it leaves plays its own notes out to their end
+    /// (a note-off on or after the loop point included), where a section's
+    /// is cut at `from`.
+    pub pass: bool,
 }
 
 impl SectionJump {
@@ -220,6 +225,7 @@ impl SectionLoopTrigger {
             overlap: section
                 .overlap
                 .min((bounds.end_time + section.overlap).saturating_sub(from)),
+            pass: section.is_whole_song(),
         };
         self.consumed += jump.amount();
         self.next_trigger = Some(at + bounds.end_time.saturating_sub(bounds.start_time));
@@ -574,6 +580,7 @@ mod tests {
                 from: Duration::from_secs(18),
                 to: Duration::from_secs(10),
                 overlap: Duration::ZERO,
+                pass: false,
             }
         );
         // 8s put back: B's end is reached at 38s, not at A's next boundary
@@ -760,6 +767,7 @@ mod tests {
                 from: secs(96),
                 to: Duration::ZERO,
                 overlap: secs(4),
+                pass: true,
             }
         );
         assert_eq!(
@@ -850,6 +858,7 @@ mod tests {
                 from: secs(97),
                 to: Duration::ZERO,
                 overlap: secs(3),
+                pass: true,
             }
         );
         // Broken earlier in the song, the pass waits for the crossfade.

@@ -660,6 +660,52 @@ impl fmt::Display for Device {
 }
 
 impl Device {
+    /// Takes in the next pass of a crossfading song loop if its build has
+    /// finished.
+    fn collect_pass(song_loop: &mut SongLoopCrossfade) {
+        if let Some(rx) = song_loop.build_rx.take() {
+            match rx.try_recv() {
+                Ok(Ok(sources)) => song_loop.prebuilt = Some(sources),
+                Ok(Err(e)) => {
+                    error!(err = %e, "Failed to pre-build the next loop pass; will retry")
+                }
+                Err(mpsc::TryRecvError::Empty) => song_loop.build_rx = Some(rx),
+                Err(mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+    }
+
+    /// Has the next pass of a crossfading song loop built, from the top, if
+    /// it is not built or building already.
+    fn prebuild_pass(
+        song: &Arc<Song>,
+        song_loop: &mut SongLoopCrossfade,
+        playback_context: &crate::audio::PlaybackContext,
+        mappings: &HashMap<String, Vec<u16>>,
+    ) {
+        Self::collect_pass(song_loop);
+        if song_loop.prebuilt.is_some() || song_loop.build_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let song = song.clone();
+        let context = playback_context.clone();
+        let mappings = mappings.clone();
+        let _ = thread::Builder::new()
+            .name("mtrack-loop-pass-prebuild".into())
+            .spawn(move || {
+                let _ = tx.send(build_pass_sources(
+                    &song,
+                    &context,
+                    &mappings,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    song.loop_crossfade_cut(),
+                ));
+            });
+        song_loop.build_rx = Some(rx);
+    }
+
     /// Builds the next pass of a crossfading song loop ahead of its boundary,
     /// and schedules it once the boundary is within the lookahead: the
     /// fading tracks cross over the whole overlap on an equal-power curve,
@@ -676,46 +722,15 @@ impl Device {
         cancel_handle: &CancelHandle,
         source_finish_flags: &mut Vec<Arc<AtomicBool>>,
     ) -> bool {
-        // Collect a finished build.
-        if let Some(rx) = song_loop.build_rx.take() {
-            match rx.try_recv() {
-                Ok(Ok(sources)) => song_loop.prebuilt = Some(sources),
-                Ok(Err(e)) => {
-                    error!(err = %e, "Failed to pre-build the next loop pass; will retry")
-                }
-                Err(mpsc::TryRecvError::Empty) => song_loop.build_rx = Some(rx),
-                Err(mpsc::TryRecvError::Disconnected) => {}
-            }
-        }
-
-        let half_overlap = song_loop.overlap / 2;
-        // A pass begun late, inside the crossfade (after a section loop
-        // broken there), has less of it to cross. Its cut tracks were built
-        // ahead to start half the full overlap in, so they switch a little
-        // off the shorter crossfade's midpoint: left as it is, for so rare a
-        // case.
+        // A pass begun late, inside the crossfade (a start or a section loop
+        // broken there, or a slow build), has less of it to cross. Every
+        // track of it is built from the top, so its cut tracks stay in step
+        // whatever the overlap comes to.
         let overlap = timing.overlap.min(song_loop.overlap);
-        if timing.now + PASS_PREBUILD_AHEAD >= timing.target
-            && song_loop.prebuilt.is_none()
-            && song_loop.build_rx.is_none()
-        {
-            let (tx, rx) = mpsc::channel();
-            let song = song.clone();
-            let context = playback_context.clone();
-            let mappings = mappings.clone();
-            let _ = thread::Builder::new()
-                .name("mtrack-loop-pass-prebuild".into())
-                .spawn(move || {
-                    let _ = tx.send(build_pass_sources(
-                        &song,
-                        &context,
-                        &mappings,
-                        Duration::ZERO,
-                        half_overlap,
-                        song.loop_crossfade_cut(),
-                    ));
-                });
-            song_loop.build_rx = Some(rx);
+        if timing.now + PASS_PREBUILD_AHEAD >= timing.target {
+            Self::prebuild_pass(song, song_loop, playback_context, mappings);
+        } else {
+            Self::collect_pass(song_loop);
         }
 
         if timing.now + timing.lookahead < timing.target {
@@ -791,9 +806,9 @@ impl Device {
     /// Sees out a loop break's fade that the pass playing out does not, as
     /// `carry` plans: the pass's sources (`pass_ids`, those of them fading)
     /// cross out over its last overlap, and as many more passes as it takes
-    /// start from the top and carry the fade on, each source from where its
-    /// gain stood at the break. The fade's excluded tracks, cut at the break,
-    /// stay out. The new sources join the ones a stop cuts.
+    /// start from the top and carry the fade on. The fade's excluded tracks,
+    /// cut at the break, stay out. The new sources join the ones a stop
+    /// cuts.
     #[allow(clippy::too_many_arguments)]
     fn carry_break_fade(
         &self,
@@ -809,60 +824,25 @@ impl Device {
     ) {
         use crate::audio::crossfade::GainEnvelope;
         let mixer = &self.output_manager.mixer;
-        let fading = break_fade_ids.lock().clone();
-        let ids: Vec<u64> = pass_ids
-            .iter()
-            .filter(|id| fading.contains(id))
-            .copied()
-            .collect();
-        // Where each source stood at the break: the fade has taken it down
-        // from there to where it is now.
-        let into =
-            timing.now.saturating_sub(timing.break_sample) as f32 / timing.fade.max(1) as f32;
-        let so_far = timing.curve.gains(into).0;
-        let levels: Vec<(u64, f32)> = mixer
-            .source_gains(&ids, cancel_handle)
-            .into_iter()
-            .map(|(id, gain)| {
-                (
-                    id,
-                    if so_far > 1e-3 {
-                        (gain / so_far).min(1.0)
-                    } else {
-                        1.0
-                    },
-                )
-            })
-            .collect();
-        let level = if levels.is_empty() {
-            1.0
-        } else {
-            levels.iter().map(|&(_, l)| l).fold(0.0, f32::max)
-        };
-        if level <= 0.0 {
-            return;
-        }
-        let scaled = |knots: &crate::audio::song_loop::Knots, by: f32| -> Arc<[(u64, f32)]> {
-            knots.iter().map(|&(at, gain)| (at, gain * by)).collect()
-        };
+        // The pass playing out keeps its own envelope (a crossover under
+        // way goes on); its break fade becomes the one that crosses it out.
+        // The fade's excluded tracks, cut at the break, stay out.
         if let Some(outgoing) = &carry.outgoing {
-            mixer.replace_gain_envelopes(
-                levels
-                    .iter()
-                    .map(|&(id, l)| {
-                        (
-                            id,
-                            GainEnvelope::piecewise(scaled(outgoing, l))
-                                .with_start_sample(timing.now),
-                        )
-                    })
-                    .collect(),
+            let fading = break_fade_ids.lock().clone();
+            let ids: Vec<u64> = pass_ids
+                .iter()
+                .filter(|id| fading.contains(id))
+                .copied()
+                .collect();
+            mixer.replace_break_envelopes(
+                &ids,
+                &GainEnvelope::piecewise(outgoing.clone().into()).with_start_sample(timing.now),
+                |labels| !crate::audio::song_loop::only_tracks_in(labels, &fade.exclude),
             );
         }
         info!(
             song = song.name(),
             passes = carry.passes.len(),
-            level,
             "Loop break: carrying the fade-out into more passes"
         );
         for (start, knots) in &carry.passes {
@@ -880,7 +860,7 @@ impl Device {
                     return;
                 }
             };
-            let knots = scaled(knots, level);
+            let knots: Arc<[(u64, f32)]> = knots.clone().into();
             let start = (*start).max(mixer.current_sample());
             for (source, group) in sources {
                 if group == PassGroup::Cut {
@@ -913,8 +893,10 @@ impl Device {
         use crate::audio::crossfade::{CrossfadeCurve, GainEnvelope};
         let mixer = &self.output_manager.mixer;
         let now_sample = mixer.current_sample();
+        // A loop break lets a pass already scheduled start, under its fade:
+        // the notes and lights make that jump too.
         if let Some((start_sample, ids)) = &song_loop.latest_start {
-            if now_sample < *start_sample {
+            if !loop_broken && now_sample < *start_sample {
                 mixer.set_cancel_at_sample(ids, now_sample.max(1));
             }
         }
@@ -1300,6 +1282,7 @@ fn build_active_source(
         cancel_at_sample: Some(Arc::new(std::sync::atomic::AtomicU64::new(0))),
         gain: Default::default(),
         gain_envelope,
+        break_envelope: None,
     };
     (active, flag)
 }
@@ -1590,12 +1573,9 @@ impl AudioDevice for Device {
         let mut loop_iteration: u64 = 0;
 
         // Where the pass playing ends on the playback timeline (the song's
-        // end plus what the jumps have put back), the one before it, and the
-        // sample the latest jump plays at: where a loop break's fade would
-        // need carrying on into another pass.
+        // end plus what the jumps have put back): where a loop break's fade
+        // would need carrying on into another pass.
         let mut pass_end = song.duration();
-        let mut previous_pass_end = pass_end;
-        let mut latest_jump_sample = 0u64;
 
         // Playing now, the audio commits the playback's loop jumps, section
         // and whole-song alike, which the notes, lights and beat clock follow.
@@ -1830,6 +1810,15 @@ impl AudioDevice for Device {
                     if let Some(jump) = &jump {
                         timing.overlap = jump.overlap;
                     }
+                    // A loop break fades and breaks between jumps, never
+                    // between scheduling one and committing it.
+                    let _jumps = cancel_handle.hold_jumps();
+                    if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
+                        if let Some(jump) = &jump {
+                            section_trigger.retract(jump);
+                        }
+                        break 'monitor;
+                    }
                     let scheduled = self.song_loop_boundary(
                         &song,
                         song_loop,
@@ -1841,12 +1830,7 @@ impl AudioDevice for Device {
                     );
                     match jump {
                         Some(jump) if scheduled => {
-                            previous_pass_end = pass_end;
                             pass_end = song.duration() + section_trigger.consumed();
-                            latest_jump_sample = song_loop
-                                .latest_start
-                                .as_ref()
-                                .map_or(0, |(sample, _)| *sample);
                             if publishes_jumps {
                                 section_jumps.push(jump);
                             }
@@ -1857,8 +1841,21 @@ impl AudioDevice for Device {
                         Some(jump) => section_trigger.retract(&jump),
                         None => {}
                     }
+                    drop(_jumps);
                     thread::sleep(Duration::from_millis(10));
                     continue 'monitor;
+                }
+            }
+
+            // Under a section of a crossfading song that runs into the
+            // crossfade, the song's next pass is kept built: broken there,
+            // the section hands over to it at once.
+            if let (Some(song_loop), Some(section)) = (song_loop.as_mut(), effective.as_ref()) {
+                if !section.is_whole_song()
+                    && section.bounds.end_time + PASS_PREBUILD_AHEAD + song_loop.overlap
+                        >= song.duration()
+                {
+                    Self::prebuild_pass(&song, song_loop, &playback_context, mappings);
                 }
             }
 
@@ -1882,6 +1879,13 @@ impl AudioDevice for Device {
                             continue 'monitor;
                         }
                     };
+                    // As for a pass: scheduled and committed before a break,
+                    // or not at all.
+                    let _jumps = cancel_handle.hold_jumps();
+                    if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
+                        section_trigger.retract(&jump);
+                        break 'monitor;
+                    }
 
                     // Map the ideal trigger time to an exact mixer sample.
                     // We use the live sample counter plus the remaining
@@ -1996,9 +2000,7 @@ impl AudioDevice for Device {
                     if let Some(song_loop) = song_loop.as_mut() {
                         song_loop.latest_start = Some((loop_sample, incoming_ids));
                     }
-                    previous_pass_end = pass_end;
                     pass_end = song.duration() + section_trigger.consumed();
-                    latest_jump_sample = loop_sample;
 
                     // The position counts the jump from the log as it falls
                     // due, so it does not wrap before the listener crosses
@@ -2041,24 +2043,15 @@ impl AudioDevice for Device {
             let samples = |d: Duration| (d.as_secs_f64() * rate).round() as u64;
             let now_sample = self.output_manager.mixer.current_sample();
             let break_sample = now_sample.saturating_sub(samples(fade.started.elapsed()));
-            // The pass playing out, and its sources: a jump not yet made when
-            // the break came never was.
-            let not_made = latest_jump_sample > break_sample;
-            let pass_end = if not_made {
-                previous_pass_end
-            } else {
-                pass_end
-            };
+            // The pass playing out, and its sources: the latest, a jump
+            // scheduled before the break made under its fade.
             let pass_ids: Vec<u64> = match song_loop.as_ref() {
-                Some(song_loop) => match &song_loop.latest_start {
-                    Some((start, _)) if *start > break_sample => song_loop.outgoing_ids.clone(),
-                    _ => song_loop
-                        .fade_ids
-                        .iter()
-                        .chain(&song_loop.cut_ids)
-                        .copied()
-                        .collect(),
-                },
+                Some(song_loop) => song_loop
+                    .fade_ids
+                    .iter()
+                    .chain(&song_loop.cut_ids)
+                    .copied()
+                    .collect(),
                 None => break_fade_ids.lock().clone(),
             };
             let timing = crate::audio::song_loop::BreakCarryTiming {
