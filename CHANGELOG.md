@@ -21,8 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   audio now has its clock loop with it, a pass every song length less its crossfade (at once for
   a start in the crossfade's tail), where it used to play the first pass and stop; a loop of
   whole pulses keeps them across each seam, though a count-in's leftover before its first whole
-  bar has no pulses in later passes either (nor in a crossfade's tail over it). Breaking the loop stops the clock. Section loops are
-  not followed yet (#604).
+  bar has no pulses in later passes either (nor in a crossfade's tail over it). Breaking the loop
+  stops the clock.
 
 - **Ending a looping song gracefully**: Stop on a looping song whose playlist entry has a
   `fade_out` now fades it out over that fade, lights included, instead of cutting; the playlist
@@ -123,6 +123,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The beat clock follows section loops, and keeps with the audio over long loops** (#604): a
+  section loop took the notes and audio back to the section's start at its end, but the clock ran
+  on along the song. It now goes back with them, and plays on from the section's end once the loop
+  is broken. And the clock, timed on the computer's clock for smoothness, is now steered onto the
+  playback clock the audio follows, at most 0.5ms every 2 seconds, so a loop played for minutes no
+  longer drifts off the audio by the few ms a minute the two clocks differ.
 - **The beat clock's playback delay counts from the start** (#600): it counted from whenever its
   thread noticed playback had started, so its Start and every clock could land a few ms after the
   notes and audio, by a different amount each time. It now counts from the playback clock's start,

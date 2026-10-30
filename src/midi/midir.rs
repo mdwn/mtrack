@@ -120,6 +120,7 @@ impl Device {
         cancel: &CancelHandle,
         clock: &PlaybackClock,
         loop_break: &Arc<AtomicBool>,
+        sections: &BeatClockSections,
     ) -> bool {
         let Some(engine) = &self.beat_clock_engine else {
             return false;
@@ -144,6 +145,7 @@ impl Device {
             cancel: cancel.clone(),
             clock: clock.clone(),
             passes,
+            sections: Some(sections.clone()),
         });
         true
     }
@@ -238,6 +240,10 @@ impl super::Device for Device {
             section_loop_break,
             ..
         } = loop_control;
+        let sections = BeatClockSections {
+            active_section: active_section.clone(),
+            section_loop_break: section_loop_break.clone(),
+        };
         let span = span!(Level::INFO, "play song (midir)");
         let _enter = span.enter();
 
@@ -252,6 +258,7 @@ impl super::Device for Device {
                     &cancel_handle,
                     &clock,
                     &loop_break,
+                    &sections,
                 ) {
                     info!(
                         song = song.name(),
@@ -302,6 +309,7 @@ impl super::Device for Device {
             &cancel_handle,
             &clock,
             &loop_break,
+            &sections,
         );
 
         let join_handle = {
@@ -953,6 +961,8 @@ fn run_beat_clock(
     ticks: &[Duration],
     start_time: Duration,
     passes: Option<&BeatClockPasses>,
+    sections: Option<&BeatClockSections>,
+    reference: Option<&ReferenceClock>,
     cancel_handle: &CancelHandle,
     clock: &PlaybackClock,
     rx: &mpsc::Receiver<BeatClockCommand>,
@@ -982,7 +992,26 @@ fn run_beat_clock(
     let mut last_interval: Option<Duration> = None;
 
     let period = passes.map(|passes| passes.period);
-    for (tick_time, seam) in PassTicks::new(ticks, start_time, period) {
+    let mut schedule = PassTicks::new(ticks, start_time, period);
+    // How far section loops have put the song back: a tick at song time `t`
+    // falls due `t + looped - start_time` into the schedule.
+    let mut looped = Duration::ZERO;
+    let mut jumped = false;
+    let mut discipline = Discipline::default();
+    while let Some((tick_time, seam)) = schedule.next() {
+        // A section loop armed, and not being broken, takes the song back to
+        // its start at its end, as the notes and audio go: the tick due at
+        // the end (or past it, for a section armed late) is the start's.
+        if let Some(section) = sections.and_then(BeatClockSections::looping) {
+            let position = tick_time.saturating_sub(schedule.offset);
+            if position >= section.end_time && section.start_time < section.end_time {
+                looped += position - section.start_time;
+                schedule.seek(section.start_time);
+                jumped = true;
+                continue;
+            }
+        }
+        let seam = seam || std::mem::take(&mut jumped);
         // A broken loop ends the clock, as it ends the notes: the player
         // stops the song with it.
         if passes.is_some_and(|passes| passes.loop_break.load(Ordering::Relaxed))
@@ -1016,7 +1045,12 @@ fn run_beat_clock(
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
 
-        let target_wall = tick_time - start_time;
+        // Due on the wall clock, steered toward the playback clock the notes
+        // and audio follow, so a long loop does not drift off them.
+        if let Some(reference) = reference {
+            discipline.observe(clock.elapsed(), reference.offset_from(clock));
+        }
+        let target_wall = discipline.steer((tick_time + looped).saturating_sub(start_time));
         let elapsed = clock.elapsed();
         if target_wall > elapsed {
             spin_sleep::sleep(target_wall - elapsed);
@@ -1037,10 +1071,11 @@ fn run_beat_clock(
             debug!("MIDI beat clock send failed: {:?}", e);
         }
 
+        let due = tick_time + looped;
         if let Some(prev) = prev_tick {
-            last_interval = Some(tick_time.saturating_sub(prev));
+            last_interval = Some(due.saturating_sub(prev));
         }
-        prev_tick = Some(tick_time);
+        prev_tick = Some(due);
     }
 
     // Send STOP when finished
@@ -1066,6 +1101,8 @@ const START_TO_CLOCK: Duration = Duration::from_millis(1);
 struct PassTicks<'a> {
     ticks: &'a [Duration],
     start: Duration,
+    /// Ticks before this song time are skipped: the start, until a seek.
+    skip_before: Duration,
     period: Option<Duration>,
     /// Where on the song's timeline the pass under way began.
     offset: Duration,
@@ -1089,6 +1126,7 @@ impl<'a> PassTicks<'a> {
         PassTicks {
             ticks,
             start,
+            skip_before: start,
             period,
             offset: Duration::ZERO,
             index: 0,
@@ -1098,6 +1136,14 @@ impl<'a> PassTicks<'a> {
 }
 
 impl PassTicks<'_> {
+    /// Goes back (or on) within the pass under way to its first tick at or
+    /// after `position`, for a section loop: what comes next is played
+    /// however early it lies in the song.
+    fn seek(&mut self, position: Duration) {
+        self.index = self.ticks.partition_point(|tick| *tick < position);
+        self.skip_before = Duration::ZERO;
+    }
+
     /// Whether the tick under way belongs to this pass rather than falling on
     /// the next one's first: at least half a pulse before it, at `period`
     /// past this pass's first tick, and never past the period: what lies
@@ -1126,7 +1172,7 @@ impl Iterator for PassTicks<'_> {
                 (Some(tick), period) if period.is_none_or(|period| self.in_pass(tick, period)) => {
                     self.index += 1;
                     let at = self.offset + tick;
-                    if at >= self.start {
+                    if at >= self.skip_before {
                         return Some((at, self.passes > 0 && self.index == 1));
                     }
                 }
@@ -1180,6 +1226,8 @@ struct BeatClockPlay {
     clock: PlaybackClock,
     /// A looping song's passes, which the clock repeats as its notes do.
     passes: Option<BeatClockPasses>,
+    /// The song's section loop, which the clock follows as its notes do.
+    sections: Option<BeatClockSections>,
 }
 
 /// How a looping song's beat clock repeats: a pass every `period` (the song's
@@ -1189,6 +1237,99 @@ struct BeatClockPlay {
 struct BeatClockPasses {
     period: Duration,
     loop_break: Arc<AtomicBool>,
+}
+
+/// A song's section loop, which the clock follows as its notes and audio do:
+/// the player's handles, shared with them.
+#[derive(Clone)]
+struct BeatClockSections {
+    active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+    section_loop_break: Arc<AtomicBool>,
+}
+
+impl BeatClockSections {
+    /// The section looping now: armed, and not being broken out of.
+    fn looping(&self) -> Option<crate::player::SectionBounds> {
+        if self.section_loop_break.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.active_section.read().clone()
+    }
+}
+
+/// The playback clock the notes and audio follow (on a rig with audio, the
+/// interface's sample counter), and the playback delay between its zero and
+/// the schedule's.
+struct ReferenceClock {
+    clock: PlaybackClock,
+    delay: Duration,
+}
+
+impl ReferenceClock {
+    /// How far ahead of `wall` it reads, in seconds, for a schedule timed on
+    /// `wall`.
+    fn offset_from(&self, wall: &PlaybackClock) -> f64 {
+        let reference = self.clock.elapsed().as_secs_f64() - self.delay.as_secs_f64();
+        reference - wall.elapsed().as_secs_f64()
+    }
+}
+
+/// Steers a schedule timed on the wall clock toward the playback clock, which
+/// on a rig with audio counts the interface's samples and so runs at its
+/// crystal's rate, not the computer's: tens of ppm apart, a few ms a minute,
+/// which a loop played for minutes builds up against the audio.
+///
+/// The playback clock moves only once an audio buffer, so a reading of it
+/// lags by up to a buffer; the most it reads ahead over a window is a fair
+/// measure. The first window sets where it started, and from then on the
+/// schedule follows how far that has moved, a little at a time so no tick
+/// jumps.
+#[derive(Default)]
+struct Discipline {
+    window_start: Option<Duration>,
+    window_max: Option<f64>,
+    baseline: Option<f64>,
+    correction: f64,
+}
+
+impl Discipline {
+    const WINDOW: Duration = Duration::from_secs(2);
+    /// The most the correction moves a window: 0.5ms in 2s, 250ppm.
+    const MAX_STEP: f64 = 0.0005;
+
+    /// Takes a reading, at `wall` time into the schedule, of how far ahead of
+    /// it the playback clock reads.
+    fn observe(&mut self, wall: Duration, ahead: f64) {
+        if !ahead.is_finite() {
+            return;
+        }
+        self.window_max = Some(self.window_max.map_or(ahead, |max| max.max(ahead)));
+        let window_start = *self.window_start.get_or_insert(wall);
+        if wall.saturating_sub(window_start) < Self::WINDOW {
+            return;
+        }
+        let measured = self.window_max.take().unwrap_or(ahead);
+        self.window_start = Some(wall);
+        match self.baseline {
+            None => self.baseline = Some(measured),
+            Some(baseline) => {
+                let drift = measured - baseline;
+                self.correction += (drift - self.correction).clamp(-Self::MAX_STEP, Self::MAX_STEP);
+            }
+        }
+    }
+
+    /// When a tick due `due` into the schedule goes out on the wall clock:
+    /// as much earlier as the playback clock has run ahead of it, or later as
+    /// it has fallen behind.
+    fn steer(&self, due: Duration) -> Duration {
+        let correction = Duration::from_secs_f64(self.correction.abs());
+        if self.correction >= 0.0 {
+            due.saturating_sub(correction)
+        } else {
+            due + correction
+        }
+    }
 }
 
 /// A command sent to the beat clock engine thread.
@@ -1383,11 +1524,17 @@ fn beat_clock_engine_loop(
         // zero, not wherever this thread got to after noticing the start.
         let wall = PlaybackClock::wall_from(started_at + play.playback_delay);
 
+        let reference = ReferenceClock {
+            clock: play.clock.clone(),
+            delay: play.playback_delay,
+        };
         let outcome = run_beat_clock(
             sender,
             &play.ticks,
             play.start_time,
             play.passes.as_ref(),
+            play.sections.as_ref(),
+            Some(&reference),
             &play.cancel,
             &wall,
             rx,
@@ -2127,6 +2274,7 @@ mod test {
             cancel: cancel.clone(),
             clock: clock.clone(),
             passes: None,
+            sections: None,
         }))
         .unwrap();
         let join = std::thread::spawn({
@@ -2189,6 +2337,7 @@ mod test {
             cancel: cancel.clone(),
             clock,
             passes: None,
+            sections: None,
         }))
         .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -2307,6 +2456,7 @@ mod test {
             cancel: CancelHandle::new(),
             clock,
             passes: None,
+            sections: None,
         }))
         .unwrap();
         std::thread::sleep(Duration::from_millis(200));
@@ -2352,6 +2502,7 @@ mod test {
             cancel: cancel.clone(),
             clock: PlaybackClock::wall(),
             passes: None,
+            sections: None,
         }))
         .unwrap();
         std::thread::sleep(Duration::from_millis(50));
@@ -3865,6 +4016,8 @@ mod test {
                 &[Duration::ZERO, ms(10)],
                 Duration::ZERO,
                 None,
+                None,
+                None,
                 &CancelHandle::new(),
                 &clock,
                 &rx,
@@ -3928,11 +4081,148 @@ mod test {
                     period: ms(300),
                     loop_break,
                 }),
+                None,
+                None,
                 &CancelHandle::new(),
                 &clock,
                 &rx,
             );
             assert_eq!(sender.clocks.len(), 35);
+        }
+
+        fn section(start: u64, end: u64) -> (BeatClockSections, Arc<AtomicBool>) {
+            let section_loop_break = Arc::new(AtomicBool::new(false));
+            (
+                BeatClockSections {
+                    active_section: Arc::new(parking_lot::RwLock::new(Some(
+                        crate::player::SectionBounds {
+                            name: "loop".to_string(),
+                            start_time: ms(start),
+                            end_time: ms(end),
+                        },
+                    ))),
+                    section_loop_break: section_loop_break.clone(),
+                },
+                section_loop_break,
+            )
+        }
+
+        /// Plays `ticks` from `start` with a section loop, breaking it once
+        /// `break_after` clocks have gone out; how many went out in all.
+        fn play_section(
+            ticks: &[Duration],
+            start: u64,
+            sections: &BeatClockSections,
+            loop_break: Arc<AtomicBool>,
+            break_after: usize,
+        ) -> usize {
+            /// Breaks the section loop at the `break_after`th clock; a clock
+            /// that never stopped looping fails rather than hangs.
+            struct SectionSender {
+                sent: usize,
+                break_after: usize,
+                section_loop_break: Arc<AtomicBool>,
+            }
+            impl MidiSender for SectionSender {
+                fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                    if bytes == clock_bytes().as_slice() {
+                        self.sent += 1;
+                        assert!(self.sent < 1_000, "the section break was not heard");
+                        if self.sent == self.break_after {
+                            self.section_loop_break.store(true, Ordering::Relaxed);
+                        }
+                    }
+                    Ok(())
+                }
+            }
+            let clock = PlaybackClock::wall();
+            clock.start();
+            let mut sender = SectionSender {
+                sent: 0,
+                break_after,
+                section_loop_break: loop_break,
+            };
+            let (_tx, rx) = mpsc::channel();
+            run_beat_clock(
+                &mut sender,
+                ticks,
+                ms(start),
+                None,
+                Some(sections),
+                None,
+                &CancelHandle::new(),
+                &clock,
+                &rx,
+            );
+            sender.sent
+        }
+
+        /// A section loop takes the clock back to the section's start at its
+        /// end, as it takes the notes and audio, until it is broken; then the
+        /// clock plays on from the section's end (#604).
+        #[test]
+        fn a_section_loop_takes_the_clock_back_until_it_is_broken() {
+            // 10ms clocks to 500ms; the section is 100-300ms. 30 clocks to
+            // its end, then round from 100ms; broken at the 50th clock (at
+            // 290ms, the second time round), then on to the end: 20 more.
+            let (sections, section_loop_break) = section(100, 300);
+            let sent = play_section(&every_10ms(500), 0, &sections, section_loop_break, 50);
+            assert_eq!(sent, 30 + 20 + 20);
+        }
+
+        /// A section armed after the clock has passed its end goes back at
+        /// once, as the notes do.
+        #[test]
+        fn a_section_armed_past_its_end_goes_back_at_once() {
+            // Started at 350ms, past the 100-300ms section: round from 100ms
+            // straight away, 20 clocks a time round; broken at the 25th.
+            let (sections, section_loop_break) = section(100, 300);
+            let sent = play_section(&every_10ms(500), 350, &sections, section_loop_break, 25);
+            // The 25th is at 140ms the second time round; then on to 490ms.
+            assert_eq!(sent, 25 + 35);
+        }
+
+        /// A seek within the pass under way goes to its first tick at or after
+        /// the position, however early in the song.
+        #[test]
+        fn pass_ticks_seek_goes_back_within_the_pass() {
+            let ticks = every_10ms(500);
+            let mut schedule = PassTicks::new(&ticks, ms(250), None);
+            assert_eq!(schedule.next(), Some((ms(250), false)));
+            schedule.seek(ms(95));
+            assert_eq!(schedule.next(), Some((ms(100), false)));
+        }
+
+        /// The drift steering follows a playback clock running fast or slow
+        /// against the wall, read through its buffer-sized steps, and holds
+        /// still for one keeping time with it.
+        #[test]
+        fn the_schedule_is_steered_onto_the_playback_clocks_drift() {
+            // Two minutes of readings every 20ms; the playback clock moves in
+            // 5.33ms steps (256 frames at 48kHz), so a reading lags by up to
+            // that much.
+            let step = 256.0 / 48_000.0;
+            for ppm in [-100.0, 0.0, 50.0, 100.0] {
+                let mut discipline = Discipline::default();
+                let mut previous = 0.0;
+                for k in 0..6_000u64 {
+                    let wall = k as f64 * 0.02;
+                    let true_ahead = wall * ppm * 1e-6;
+                    let reading = ((wall + true_ahead) / step).floor() * step;
+                    discipline.observe(Duration::from_secs_f64(wall), reading - wall);
+                    // No tick moves more than the most a window allows.
+                    assert!(
+                        (discipline.correction - previous).abs() <= Discipline::MAX_STEP + 1e-12
+                    );
+                    previous = discipline.correction;
+                }
+                let drift = 120.0 * ppm * 1e-6;
+                assert!(
+                    (discipline.correction - drift).abs() < 0.002,
+                    "{ppm} ppm: corrected {:.4}s for a drift of {drift:.4}s",
+                    discipline.correction
+                );
+            }
         }
 
         /// A stop just past a seam hands back the song's tempo to hold, not
@@ -3974,6 +4264,8 @@ mod test {
                     period: Duration::from_millis(291),
                     loop_break: Arc::new(AtomicBool::new(false)),
                 }),
+                None,
+                None,
                 &cancel,
                 &clock,
                 &rx,
@@ -4004,6 +4296,8 @@ mod test {
                 &ticks,
                 Duration::ZERO,
                 None,
+                None,
+                None,
                 &cancel,
                 &clock,
                 &rx,
@@ -4032,6 +4326,8 @@ mod test {
                 &ticks,
                 Duration::from_millis(100),
                 None,
+                None,
+                None,
                 &cancel,
                 &clock,
                 &rx,
@@ -4055,6 +4351,8 @@ mod test {
                 &mut sender,
                 &ticks,
                 Duration::ZERO,
+                None,
+                None,
                 None,
                 &cancel,
                 &clock,
@@ -4080,6 +4378,8 @@ mod test {
                 &mut sender,
                 &ticks,
                 Duration::ZERO,
+                None,
+                None,
                 None,
                 &cancel,
                 &clock,
@@ -4112,6 +4412,8 @@ mod test {
                 &ticks,
                 Duration::ZERO,
                 None,
+                None,
+                None,
                 &cancel,
                 &clock,
                 &rx,
@@ -4135,6 +4437,8 @@ mod test {
                 &mut sender,
                 &ticks,
                 Duration::ZERO,
+                None,
+                None,
                 None,
                 &cancel,
                 &clock,
@@ -4200,6 +4504,7 @@ mod test {
                 cancel,
                 clock,
                 passes: None,
+                sections: None,
             }
         }
 
@@ -4217,6 +4522,7 @@ mod test {
                 cancel: cancel.clone(),
                 clock: PlaybackClock::wall(),
                 passes: None,
+                sections: None,
             };
             thread::spawn(move || {
                 let mut sender = SharedSender::new();
@@ -4451,6 +4757,7 @@ mod test {
                 cancel: CancelHandle::new(),
                 clock: slow_clock.clone(),
                 passes: None,
+                sections: None,
             }))
             .unwrap();
 
@@ -4764,6 +5071,7 @@ mod test {
                 cancel,
                 clock,
                 passes: None,
+                sections: None,
             }))
             .unwrap();
 
@@ -4799,6 +5107,7 @@ mod test {
                 cancel,
                 clock: clock.clone(),
                 passes: None,
+                sections: None,
             }))
             .unwrap();
 
