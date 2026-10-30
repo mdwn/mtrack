@@ -407,7 +407,13 @@ pub(super) mod test_helpers {
         let mut map = HashMap::new();
         map.insert(
             "Song A".to_string(),
-            std::sync::Arc::new(Song::new_for_test("Song A", &["kick", "snare"])),
+            // An hour long: the tests that play it look while it plays, and a
+            // zero-length song has often ended by then on a loaded machine.
+            std::sync::Arc::new(Song::new_for_test_lasting(
+                "Song A",
+                &["kick", "snare"],
+                std::time::Duration::from_secs(3600),
+            )),
         );
         test_state_inner(
             std::sync::Arc::new(Songs::new(map)),

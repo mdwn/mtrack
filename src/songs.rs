@@ -1523,6 +1523,18 @@ impl Song {
         }
     }
 
+    /// Test helper: a song whose tracks last `duration`, for a test that needs
+    /// the song still playing when it looks; a zero-length one has often ended.
+    #[cfg(test)]
+    pub fn new_for_test_lasting(name: &str, track_names: &[&str], duration: Duration) -> Song {
+        let mut song = Self::new_for_test(name, track_names);
+        for track in &mut song.tracks {
+            track.duration = duration;
+        }
+        song.duration = duration;
+        song
+    }
+
     /// Test helper: a looping song with the given track names.
     #[cfg(test)]
     pub fn new_for_test_looping(name: &str, track_names: &[&str]) -> Song {
