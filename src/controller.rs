@@ -28,6 +28,14 @@ pub trait Driver: Send + Sync + 'static {
     fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>>;
 }
 
+/// How long a controller starting waits for those it replaces to be gone. A
+/// driver stuck in blocking code, which an abort cannot interrupt, may never
+/// end, and its replacement would wait on it for good while reading "running".
+#[cfg(not(test))]
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(test)]
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Aborts a child task when the owning controller task is cancelled.
 ///
 /// Tokio does not automatically cancel tasks spawned by a parent task. Without
@@ -83,7 +91,8 @@ struct Entry {
 
 impl Entry {
     /// Runs `driver` on a task of its own, once `after` is cancelled: the
-    /// controllers stopped before it may still hold the port it binds.
+    /// controllers stopped before it may still hold the port it binds. If
+    /// they are not gone within [`STOP_WAIT`], it does not run, and fails.
     fn run(
         driver: Arc<dyn Driver>,
         after: Option<CancellationToken>,
@@ -101,9 +110,23 @@ impl Entry {
                     // Waited out even when stopped first: those started
                     // after this one wait for its end, and may bind the
                     // port of the controllers it was waiting for.
-                    after.cancelled().await;
+                    let gone = tokio::time::timeout(STOP_WAIT, after.cancelled())
+                        .await
+                        .is_ok();
                     if stop.is_cancelled() {
                         return Ok(());
+                    }
+                    // Not started at all: one still holding its port or its
+                    // MIDI watch would only have this one fail, or worse,
+                    // both run. As an error, the next update tries again.
+                    if !gone {
+                        let e = format!(
+                            "not started: the controller it replaces had not stopped after {}s",
+                            STOP_WAIT.as_secs()
+                        );
+                        tracing::warn!(error = %e, "Controller not started");
+                        *failure.lock() = Some(e.clone());
+                        return Err(io::Error::other(e));
                     }
                 }
                 let mut task = AbortOnDrop(driver.monitor_events());
@@ -780,6 +803,52 @@ mod test {
             "the second update's listener started while the original still held the port"
         );
         assert!(started, "the second update's listener never started");
+    }
+
+    /// A driver stuck in blocking code for a while, which an abort cannot
+    /// interrupt, counting the times it was started.
+    struct Stuck {
+        starts: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Driver for Stuck {
+        fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>> {
+            self.starts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::spawn(async {
+                std::thread::sleep(super::STOP_WAIT * 3);
+                Ok(())
+            })
+        }
+    }
+
+    /// A controller replacing one that never ended waited on it for good,
+    /// reading "running". It gives up after a while, without starting, and
+    /// reads as an error, which the next update retries.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_controller_replacing_one_that_never_ends_reads_as_an_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let starts = Arc::new(AtomicUsize::new(0));
+        let driver = Arc::new(Stuck {
+            starts: starts.clone(),
+        });
+        let old = super::Entry::run(driver.clone(), None, None, false, None);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let stopped = super::Entry::stop_all(vec![old]);
+        let new = super::Entry::run(driver.clone(), stopped, None, false, None);
+        let waited = std::time::Instant::now();
+        crate::testutil::eventually(
+            || new.failure.lock().is_some(),
+            "the replacement waited on for good",
+        );
+        assert!(waited.elapsed() < super::STOP_WAIT * 2);
+        assert!(new
+            .failure
+            .lock()
+            .as_deref()
+            .is_some_and(|e| e.contains("had not stopped")));
+        assert_eq!(starts.load(Ordering::SeqCst), 1, "the replacement started");
     }
 
     /// A controller whose listener could not bind its port, which happens on
