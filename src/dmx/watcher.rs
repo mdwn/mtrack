@@ -305,11 +305,12 @@ fn reload_timeline(
         // The show's effects only: the MIDI DMX store goes on as MIDI set
         // it, which nothing would put back mid-song (#583).
         engine.stop_show_effects();
+        // A freeze in the history holds where the reload starts from.
+        engine.set_song_time(song_time);
 
         if song_time > Duration::ZERO {
-            for cmd in &timeline_update.layer_commands {
-                engine.apply_layer_command(cmd);
-            }
+            // A history: its freezes hold at the reload point, set above.
+            engine.apply_layer_commands(&timeline_update.layer_commands, &[]);
             for seq_name in &timeline_update.stop_sequences {
                 engine.stop_sequence(seq_name);
             }

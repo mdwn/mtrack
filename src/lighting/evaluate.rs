@@ -144,6 +144,9 @@ where
             // on it. `start_at` stops short of `time` by design, so both halves
             // are needed for a cue at the requested instant to count.
             let history = timeline.start_at(time);
+            // A freeze in the history holds at `time`, as the live start
+            // paths have it.
+            engine.set_song_time(time);
             apply_timeline_update(&mut engine, history, &mut resolve_groups);
             let now = timeline.update(time);
             apply_timeline_update(&mut engine, now, &mut resolve_groups);
@@ -168,10 +171,9 @@ where
                         id: effect.id.clone(),
                         effect_type: effect.effect_type.name(),
                         layer: effect.layer,
-                        elapsed: effect
-                            .cue_time
-                            .map(|cue| time.saturating_sub(cue))
-                            .unwrap_or(Duration::ZERO),
+                        // As the engine renders it: less its time frozen,
+                        // at its layer's speed (#589).
+                        elapsed: engine.elapsed_at(effect, Some(time)),
                         duration: effect.total_duration(),
                         fixtures,
                     }
@@ -367,8 +369,8 @@ fn fill_dark_fixtures<'a>(
 ///
 /// `at` is the time to label the snapshot with — normally the song's elapsed
 /// time. It does not drive the reading; effect elapsed values come from the
-/// engine's own clock, which is what makes this a measurement rather than a
-/// prediction.
+/// engine's own state -- the song time it last rendered at, as it renders
+/// them -- which is what makes this a measurement rather than a prediction.
 pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
     let has_dimmer: HashMap<String, bool> = engine
         .get_fixture_registry()
@@ -430,9 +432,7 @@ pub(crate) fn apply_timeline_update<F>(
 ) where
     F: FnMut(EffectInstance) -> EffectInstance,
 {
-    for cmd in &update.layer_commands {
-        engine.apply_layer_command(cmd);
-    }
+    engine.apply_layer_commands(&update.layer_commands, &update.layer_command_times);
 
     for sequence_name in &update.stop_sequences {
         engine.stop_sequence(sequence_name);
@@ -586,6 +586,97 @@ show "t" {
         assert_eq!(results[0].active_effects[0].elapsed, Duration::ZERO);
         assert_eq!(results[1].active_effects[0].elapsed, Duration::from_secs(2));
         assert_eq!(results[2].active_effects[0].elapsed, Duration::from_secs(4));
+    }
+
+    #[test]
+    fn evaluate_at_a_slow_down_on_a_looks_last_instant_has_it_over() {
+        let fixtures = vec![rgb_fixture("wash", 1)];
+        let results = eval(
+            "show \"s\" {\n    @00:00.000\n    wash: static, color: \"blue\", duration: 4s\n    \
+             @00:04.000\n    master(layer: background, speed: 0.5)\n}\n",
+            &fixtures,
+            &[4.0],
+        );
+        assert_eq!(
+            results[0].active_effects.len(),
+            0,
+            "over at its end: the slow-down applies from there"
+        );
+    }
+
+    #[test]
+    fn evaluate_keeps_a_look_frozen_on_its_last_instant_over() {
+        let fixtures = vec![rgb_fixture("wash", 1)];
+        let results = eval(
+            "show \"s\" {\n    @00:00.000\n    wash: static, color: \"blue\", duration: 4s\n    \
+             @00:04.000\n    freeze(layer: background)\n    \
+             @00:06.000\n    master(layer: background, speed: 0.5)\n}\n",
+            &fixtures,
+            &[8.0],
+        );
+        assert_eq!(results[0].active_effects.len(), 0, "live: over at 4 s");
+    }
+
+    /// A speed change applies from where a look is: a fade-in slowed half
+    /// way carries on from half way, more slowly, with no step back.
+    #[test]
+    fn a_fade_slowed_part_way_carries_on_from_where_it_was() {
+        let fixtures = vec![rgb_fixture("wash", 1)];
+        let results = eval(
+            "show \"s\" {\n    @00:00.000\n    wash: static, color: \"red\", up_time: 4s, \
+             hold_time: 1s\n    @00:02.000\n    master(layer: background, speed: 0.5)\n}\n",
+            &fixtures,
+            &[1.99, 2.01, 4.0],
+        );
+        let red: Vec<i32> = results
+            .iter()
+            .map(|r| i32::from(channel(r, "wash", "red")))
+            .collect();
+        assert!(
+            (red[0] - red[1]).abs() <= 2,
+            "no step at the change: {red:?}"
+        );
+        // 2 s in at 2 s, then 1 s more of fade in the 2 s to 4 s: 3/4 up.
+        assert!((red[2] - 191).abs() <= 2, "3/4 of the fade at 4 s: {red:?}");
+    }
+
+    #[test]
+    fn evaluate_has_a_look_slowed_part_way_play_on_from_where_it_was() {
+        // Slowed to half 2 s into a 4 s look: 2 s left at half speed, so
+        // it ends at 6 s, 3 s into it at 4 s.
+        let fixtures = vec![rgb_fixture("wash", 1)];
+        let results = eval(
+            "show \"s\" {\n    @00:00.000\n    wash: static, color: \"blue\", duration: 4s\n    \
+             @00:02.000\n    master(layer: background, speed: 0.5)\n}\n",
+            &fixtures,
+            &[4.0, 5.9, 6.1],
+        );
+        assert_eq!(results[0].active_effects.len(), 1);
+        assert_eq!(results[0].active_effects[0].elapsed, Duration::from_secs(3));
+        assert_eq!(results[1].active_effects.len(), 1, "still up at 5.9 s");
+        assert_eq!(results[2].active_effects.len(), 0, "over at 6 s");
+    }
+
+    #[test]
+    fn elapsed_counts_a_freeze_and_the_speed_master() {
+        // #589: elapsed is how far into itself the effect is, as the engine
+        // renders it, not score time since its cue -- a frozen effect is
+        // still where it froze, a slowed one half way along.
+        let fixtures = vec![rgb_fixture("wash", 1)];
+        let frozen = eval(
+            "show \"s\" {\n    @00:00.000\n    wash: static, color: \"blue\", duration: 12s\n    \
+             @00:08.000\n    freeze(layer: background)\n}\n",
+            &fixtures,
+            &[20.0],
+        );
+        assert_eq!(frozen[0].active_effects[0].elapsed, Duration::from_secs(8));
+        let slowed = eval(
+            "show \"s\" {\n    @00:00.000\n    master(layer: background, speed: 0.5)\n    \
+             wash: static, color: \"blue\", duration: 12s\n}\n",
+            &fixtures,
+            &[6.0],
+        );
+        assert_eq!(slowed[0].active_effects[0].elapsed, Duration::from_secs(3));
     }
 
     #[test]
@@ -982,3 +1073,15 @@ show "T" {
         assert_eq!(lit.is_dark(), Some(false));
     }
 }
+
+#[cfg(test)]
+#[path = "move_seek_tests.rs"]
+mod move_seek_tests;
+
+#[cfg(test)]
+#[path = "show_end_tests.rs"]
+mod show_end_tests;
+
+#[cfg(test)]
+#[path = "sweep_fuzz_tests.rs"]
+mod sweep_fuzz_tests;

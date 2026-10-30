@@ -625,3 +625,80 @@ fn a_pitched_lens_does_not_mistake_an_ordinary_target_for_the_pan_axis() {
     assert!((pose.pan - 90.0).abs() < 1e-6, "{pose:?}");
     assert!((pose.tilt - (14.04 - 30.0)).abs() < 0.01, "{pose:?}");
 }
+
+/// A move started part way on a slowed layer is judged at that speed (#589):
+/// 2 s of base time on a half-speed layer is 1 s of a 1.5 s move, still on
+/// its way, not arrived.
+#[test]
+fn a_move_started_part_way_on_a_slowed_layer_still_runs() {
+    let mut engine = engine_with(mover("m", [0.0; 3], [0.0; 3]), &[]);
+    engine.set_layer_speed_master(EffectLayer::Background, 0.5);
+    let mut effect = move_to(
+        "slow",
+        MoveTarget::Angles {
+            pan: Some(170.0),
+            tilt: Some(90.0),
+        },
+        None,
+        1.5,
+    );
+    effect.layer = EffectLayer::Background;
+    engine
+        .start_effect_with_elapsed(effect, Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        !engine.get_active_effects().is_empty(),
+        "committed as arrived on a half-speed layer"
+    );
+}
+
+/// A seek onto a speed change at the very instant a move ends agrees with
+/// playing through: the change applies from where the move is, its end, so
+/// the head is at its destination either way.
+#[test]
+fn a_seek_onto_a_slow_down_at_a_moves_last_instant_plays_as_through() {
+    use crate::lighting::evaluate::apply_timeline_update;
+    use crate::lighting::timeline::LightingTimeline;
+    let shows = || {
+        crate::lighting::parser::parse_light_shows(
+            "show \"s\" {\n    @00:00.000\n    m: move pan: 0deg, tilt: 90deg, duration: 100ms\n    \
+             @00:00.500\n    m: move pan: 90deg, tilt: 90deg, duration: 4s\n    \
+             @00:04.500\n    master(layer: background, speed: 0.5)\n}\n",
+        )
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>()
+    };
+    // The pan at 6.5 s, from a start at `from` played on in 10 ms frames.
+    let pan_at = |from: f64| {
+        let mut engine = engine_with(mover("m", [0.0; 3], [0.0; 3]), &[]);
+        let mut timeline = LightingTimeline::new(shows());
+        let start = Duration::from_secs_f64(from);
+        engine.set_song_time(start);
+        apply_timeline_update(&mut engine, timeline.start_at(start), &mut |e| e);
+        let mut at = from;
+        let mut pan = 0.0;
+        while at <= 6.5 + 1e-9 {
+            let now = Duration::from_secs_f64(at);
+            apply_timeline_update(&mut engine, timeline.update(now), &mut |e| e);
+            let commands = engine
+                .update(Duration::from_millis(10), Some(now))
+                .unwrap()
+                .to_vec();
+            if !commands.is_empty() {
+                pan = engine.poses()["m"].pan;
+            }
+            at += 0.01;
+        }
+        pan
+    };
+    let played = pan_at(0.0);
+    for from in [4.5, 5.0] {
+        let sought = pan_at(from);
+        assert!(
+            (played - sought).abs() < 0.5,
+            "from {from} s: played {played:.2}°, sought {sought:.2}°"
+        );
+    }
+    assert!((played - 90.0).abs() < 0.5, "arrived: {played:.2}°");
+}

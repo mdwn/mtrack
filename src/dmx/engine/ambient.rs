@@ -188,7 +188,8 @@ pub(super) struct Overlay {
 /// What one overlay's timeline fired in a tick: a restart's state (the show
 /// starting again) and the cues now due.
 struct OverlayUpdate {
-    restart: Option<TimelineUpdate>,
+    /// A new pass's history, and where in the show it starts.
+    restart: Option<(TimelineUpdate, Duration)>,
     update: TimelineUpdate,
 }
 
@@ -226,12 +227,15 @@ impl Overlay {
             self.started += self.length * passes;
             elapsed = now.saturating_duration_since(self.started);
             // Its first cues fire before this frame renders.
-            restart = Some(if elapsed.is_zero() {
-                self.timeline.start();
-                TimelineUpdate::default()
-            } else {
-                self.timeline.start_at(elapsed)
-            });
+            restart = Some((
+                if elapsed.is_zero() {
+                    self.timeline.start();
+                    TimelineUpdate::default()
+                } else {
+                    self.timeline.start_at(elapsed)
+                },
+                elapsed,
+            ));
         }
         let update = self.timeline.update(elapsed);
         out.push(OverlayUpdate { restart, update });
@@ -244,9 +248,12 @@ impl Overlay {
     /// the same order.
     fn apply(&mut self, updates: &mut impl Iterator<Item = OverlayUpdate>) {
         if let Some(OverlayUpdate { restart, update }) = updates.next() {
-            if let Some(restart) = restart {
+            if let Some((restart, at)) = restart {
                 // Its own show only: the MIDI DMX store is every engine's.
                 self.engine.stop_show_effects();
+                // A freeze in the history holds where the pass starts from,
+                // not where the last one ended.
+                self.engine.set_song_time(at);
                 apply_update(&mut self.engine, restart);
             }
             apply_update(&mut self.engine, update);
@@ -311,9 +318,7 @@ impl Overlay {
 /// Applies a timeline update, its groups resolved, to `engine`, as
 /// [`Engine::apply_timeline_update`] does to the main one.
 fn apply_update(engine: &mut EffectEngine, update: TimelineUpdate) {
-    for cmd in &update.layer_commands {
-        engine.apply_layer_command(cmd);
-    }
+    engine.apply_layer_commands(&update.layer_commands, &update.layer_command_times);
     for sequence_name in &update.stop_sequences {
         engine.stop_sequence(sequence_name);
     }
@@ -724,7 +729,7 @@ impl Engine {
         let mut resolved = updates
             .into_iter()
             .map(|mut u| {
-                if let Some(restart) = u.restart.as_mut() {
+                if let Some((restart, _)) = u.restart.as_mut() {
                     self.resolve_update_groups(restart);
                 }
                 self.resolve_update_groups(&mut u.update);
@@ -973,6 +978,26 @@ mod tests {
         assert_eq!(tick(&engine), (0.0, 255.0, 0.0), "its second cue");
         sleep(Duration::from_millis(500));
         assert_eq!(tick(&engine), (0.0, 0.0, 255.0), "round again");
+        Ok(())
+    }
+
+    #[test]
+    fn an_ambient_show_ending_on_a_freeze_holds_it() -> Result<(), Box<dyn Error>> {
+        // Blue 0-1 s, then green, frozen at 1.5 s for good. The loop length
+        // is the show's end: cut to the last cue, the show started again at
+        // 1.5 s, the freeze never fired and green was never held.
+        let show = "show \"ambient\" {\n    @0.000\n    wash: static, color: \"blue\", \
+                    duration: 1s, layer: midground, blend_mode: replace\n    \
+                    @1.000\n    wash: static, color: \"green\", duration: 5s, \
+                    layer: midground, blend_mode: replace\n    \
+                    @1.500\n    freeze(layer: midground)\n}\n";
+        let (_dir, engine) = ambient_engine(show, ("0s", "0s", "0s"))?;
+        engine.idle_ambient(None, false);
+        assert_eq!(tick(&engine), (0.0, 0.0, 255.0));
+        sleep(Duration::from_millis(1200));
+        assert_eq!(tick(&engine), (0.0, 255.0, 0.0), "green at 1.2 s");
+        sleep(Duration::from_millis(600));
+        assert_eq!(tick(&engine), (0.0, 255.0, 0.0), "green held at 1.8 s");
         Ok(())
     }
 
@@ -2440,5 +2465,32 @@ mod tests {
         }
         assert_eq!(AmbientMode::parse(" ON "), Some(AmbientMode::On));
         assert_eq!(AmbientMode::parse("dim"), None);
+    }
+
+    #[test]
+    fn an_ambient_show_ending_on_a_freeze_runs_its_written_length() -> Result<(), Box<dyn Error>> {
+        let show = "show \"ambient\" {\n    @0.000\n    wash: static, color: \"blue\", \
+                    up_time: 1s, hold_time: 1s, layer: midground\n    \
+                    @0.500\n    freeze(layer: midground)\n}\n";
+        // The loop runs the look's written 2 s. Cut to the freeze's 500 ms,
+        // the overlay would restart on the frame the freeze is due, and the
+        // freeze would never fire.
+        let length = timeline(show).show_end();
+        let (_dir, engine) = ambient_engine(show, ("0s", "0s", "0s"))?;
+        engine.idle_ambient(None, false);
+        sleep(Duration::from_millis(700));
+        let until = Instant::now() + Duration::from_millis(1000);
+        let mut seen = Vec::new();
+        while Instant::now() < until {
+            seen.push(tick(&engine).2);
+            sleep(Duration::from_millis(20));
+        }
+        // Once up at the frozen ~50 %, it must stay there.
+        let peak = seen.iter().position(|v| *v >= 120.0).expect("ramps up");
+        assert!(
+            seen[peak..].iter().all(|v| *v >= 120.0),
+            "loop length {length:?}; frozen look dropped back to dark: {seen:?}"
+        );
+        Ok(())
     }
 }

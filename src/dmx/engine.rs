@@ -2917,6 +2917,651 @@ mod test {
         const RED_THEN_GREEN: &str = "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", \
              duration: 10s\n    @2.000\n    wash: static, color: \"green\", duration: 1s\n}\n";
 
+        /// The wash's (red, green, blue) after a seek to `secs` in `source`.
+        fn seek_frame(source: &str, secs: f64) -> Result<(f64, f64, f64), Box<dyn Error>> {
+            let (engine, _cancel_handle) = wash_running(source)?;
+            let at = Duration::from_secs_f64(secs);
+            engine.update_song_time(at);
+            engine.start_lighting_timeline_at(at);
+            engine.update_effects()?;
+            let universe = engine.get_universe(5).unwrap();
+            Ok((
+                universe.get_target_value(0),
+                universe.get_target_value(1),
+                universe.get_target_value(2),
+            ))
+        }
+
+        /// The wash's (red, green, blue) at `secs` in `source`, played
+        /// through to it in 10 ms frames.
+        fn played_frame(source: &str, secs: f64) -> Result<(f64, f64, f64), Box<dyn Error>> {
+            let (engine, _cancel_handle) = wash_running(source)?;
+            let mut at = 1.0;
+            let mut frame = frame_at(&engine, at);
+            while at + 0.01 <= secs + 1e-9 {
+                at += 0.01;
+                frame = frame_at(&engine, at);
+            }
+            Ok(frame)
+        }
+
+        const GREEN: (f64, f64, f64) = (0.0, 255.0, 0.0);
+        const DARK: (f64, f64, f64) = (0.0, 0.0, 0.0);
+
+        #[test]
+        fn a_seek_past_a_freeze_never_undone_keeps_the_look() -> Result<(), Box<dyn Error>> {
+            // #589 A: a seek kept a history effect only while its score
+            // time was short of its duration, so a look frozen for good
+            // went dark after a seek past its normal end.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 12s, layer: midground, blend_mode: replace\n    @8.000\n    \
+                freeze(layer: midground)\n}\n";
+            assert_eq!(played_frame(show, 20.0)?, GREEN);
+            assert_eq!(seek_frame(show, 20.0)?, GREEN, "seek to 20 s");
+            assert_eq!(seek_frame(show, 30.0)?, GREEN, "seek to 30 s");
+            Ok(())
+        }
+
+        #[test]
+        fn a_seek_counts_a_freeze_and_unfreeze_before_it() -> Result<(), Box<dyn Error>> {
+            // #589 B: frozen 2-7 s, a 4 s look ends at 9 s.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @2.000\n    \
+                freeze(layer: midground)\n    @7.000\n    unfreeze(layer: midground)\n}\n";
+            assert_eq!(seek_frame(show, 5.0)?, GREEN, "seek into the freeze");
+            assert_eq!(seek_frame(show, 8.5)?, GREEN, "seek after the unfreeze");
+            assert_eq!(seek_frame(show, 9.5)?, DARK, "seek past its end");
+            Ok(())
+        }
+
+        #[test]
+        fn a_seek_counts_the_speed_master_before_it() -> Result<(), Box<dyn Error>> {
+            // #589 C: at half speed a 4 s look lasts 8 s.
+            let show = "show \"a\" {\n    @0.000\n    master(layer: midground, speed: 0.5)\n    \
+                wash: static, color: \"green\", duration: 4s, layer: midground, \
+                blend_mode: replace\n}\n";
+            assert_eq!(played_frame(show, 6.0)?, GREEN);
+            assert_eq!(seek_frame(show, 6.0)?, GREEN, "seek to 6 s");
+            assert_eq!(seek_frame(show, 8.5)?, DARK, "seek past its slowed end");
+            Ok(())
+        }
+
+        #[test]
+        fn a_seek_into_a_freeze_holds_what_it_froze_on() -> Result<(), Box<dyn Error>> {
+            // #589 D: a rainbow frozen 3-6 s held the colour at the seek
+            // point, not the one it froze on.
+            let show = "show \"a\" {\n    @0.000\n    wash: rainbow, speed: 0.2, \
+                duration: 20s, layer: midground\n    @3.000\n    freeze(layer: midground)\n    \
+                @6.000\n    unfreeze(layer: midground)\n}\n";
+            for secs in [5.0, 8.0] {
+                let played = played_frame(show, secs)?;
+                let sought = seek_frame(show, secs)?;
+                let diff = (played.0 - sought.0)
+                    .abs()
+                    .max((played.1 - sought.1).abs())
+                    .max((played.2 - sought.2).abs());
+                assert!(
+                    diff <= 8.0,
+                    "at {secs} s: played {played:?}, sought {sought:?}"
+                );
+            }
+            Ok(())
+        }
+
+        /// The wash after a seek to `seek` in `source`, then played on in
+        /// 10 ms frames to `secs`.
+        fn seek_then_play(
+            source: &str,
+            seek: f64,
+            secs: f64,
+        ) -> Result<(f64, f64, f64), Box<dyn Error>> {
+            let (engine, _cancel_handle) = wash_running(source)?;
+            let at = Duration::from_secs_f64(seek);
+            engine.update_song_time(at);
+            engine.start_lighting_timeline_at(at);
+            let mut now = seek;
+            let mut frame = frame_at(&engine, now);
+            while now + 0.01 <= secs + 1e-9 {
+                now += 0.01;
+                frame = frame_at(&engine, now);
+            }
+            Ok(frame)
+        }
+
+        #[test]
+        fn a_seek_into_a_freeze_ends_on_time_after_the_unfreeze() -> Result<(), Box<dyn Error>> {
+            // Frozen 2-7 s, a 4 s look ends at 9 s: from a seek into the
+            // freeze too, through the live unfreeze.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @2.000\n    \
+                freeze(layer: midground)\n    @7.000\n    unfreeze(layer: midground)\n}\n";
+            assert_eq!(seek_then_play(show, 5.0, 8.9)?, GREEN, "ended early");
+            assert_eq!(seek_then_play(show, 5.0, 9.1)?, DARK, "ran past 9 s");
+            Ok(())
+        }
+
+        #[test]
+        fn the_timeline_runs_on_until_an_unfrozen_look_ends() -> Result<(), Box<dyn Error>> {
+            // Song time stops once the timeline finishes. One that finished
+            // at its last cue, the unfreeze, left the look stuck at the time
+            // it froze on for good (#590).
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @2.000\n    \
+                freeze(layer: midground)\n    @7.000\n    unfreeze(layer: midground)\n}\n";
+            let finished = |engine: &Engine| {
+                engine
+                    .current_song_timeline
+                    .lock()
+                    .as_ref()
+                    .is_none_or(|timeline| timeline.is_finished())
+            };
+            let (engine, _cancel_handle) = wash_running(show)?;
+            let mut at = 1.0;
+            while at < 8.9 {
+                at += 0.01;
+                frame_at(&engine, at);
+            }
+            assert!(!finished(&engine), "finished with the look still up");
+            assert_eq!(frame_at(&engine, 8.95), GREEN);
+            frame_at(&engine, 9.05);
+            assert!(finished(&engine), "ran on past the look's end");
+            assert_eq!(frame_at(&engine, 9.1), DARK);
+            Ok(())
+        }
+
+        #[test]
+        fn a_seek_counts_speed_zero_and_back_as_a_freeze() -> Result<(), Box<dyn Error>> {
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @2.000\n    \
+                master(layer: midground, speed: 0)\n    @7.000\n    \
+                master(layer: midground, speed: 1)\n}\n";
+            assert_eq!(seek_frame(show, 5.0)?, GREEN, "seek into the stop");
+            assert_eq!(seek_frame(show, 8.5)?, GREEN, "seek after it");
+            assert_eq!(seek_frame(show, 9.5)?, DARK, "seek past its end");
+            Ok(())
+        }
+
+        #[test]
+        fn a_seek_matches_a_speed_change_made_part_way() -> Result<(), Box<dyn Error>> {
+            // Slowed to half 2 s into a 4 s look: its 2 s left take 4 s, so
+            // as played it lasts to 6 s.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @2.000\n    \
+                master(layer: midground, speed: 0.5)\n}\n";
+            assert_eq!(played_frame(show, 5.9)?, GREEN);
+            assert_eq!(played_frame(show, 6.1)?, DARK);
+            for secs in [4.0, 5.9, 6.1] {
+                assert_eq!(
+                    seek_frame(show, secs)?,
+                    played_frame(show, secs)?,
+                    "at {secs} s"
+                );
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn a_seek_past_a_clear_does_not_carry_the_freeze() -> Result<(), Box<dyn Error>> {
+            // A clear unfreezes the layer: a look cued after it plays out.
+            let show = "show \"a\" {\n    @2.000\n    freeze(layer: midground)\n    \
+                @3.000\n    clear(layer: midground)\n    @4.000\n    wash: static, \
+                color: \"green\", duration: 4s, layer: midground, blend_mode: replace\n}\n";
+            assert_eq!(seek_frame(show, 7.0)?, GREEN);
+            assert_eq!(seek_frame(show, 9.0)?, DARK, "held frozen past its end");
+            Ok(())
+        }
+
+        #[test]
+        fn a_freeze_in_a_seeks_history_holds_at_the_seek_point() -> Result<(), Box<dyn Error>> {
+            // A freeze replayed from a seek's history took the song time of
+            // the last frame before the seek: back from 60 s to 20 s, it held
+            // the look 55 s in, past its end, and the look went.
+            let (engine, _cancel_handle) = wash_running(
+                "show \"a\" {\n    @5.000\n    wash: static, color: \"red\", duration: 30s, \
+                 layer: midground\n    @8.000\n    freeze(layer: midground)\n}\n",
+            )?;
+            assert_eq!(
+                frame_at(&engine, 60.0).0,
+                255.0,
+                "held by the freeze at 60 s"
+            );
+
+            engine.update_song_time(Duration::from_secs(20));
+            engine.start_lighting_timeline_at(Duration::from_secs(20));
+            engine.update_effects()?;
+            assert_eq!(
+                engine.get_universe(5).unwrap().get_target_value(0),
+                255.0,
+                "the frozen look is gone after the seek"
+            );
+            Ok(())
+        }
+
+        fn timeline_finished(engine: &Engine) -> bool {
+            engine
+                .current_song_timeline
+                .lock()
+                .as_ref()
+                .is_none_or(|timeline| timeline.is_finished())
+        }
+
+        #[test]
+        fn a_slow_down_on_a_looks_last_instant_ends_it() -> Result<(), Box<dyn Error>> {
+            // A 4 s look, slowed to half at 4 s, the instant it ends: the
+            // change applies from where it is, its end, so it is over -- it
+            // does not go back to half way and play its second half again.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
+                master(layer: midground, speed: 0.5)\n}\n";
+            let played = played_frame(show, 6.0)?;
+            let sought = seek_frame(show, 6.0)?;
+            assert_eq!(played, DARK);
+            assert_eq!(played, sought, "played {played:?} vs sought {sought:?}");
+            Ok(())
+        }
+
+        #[test]
+        fn the_timeline_waits_for_a_look_slowed_part_way() -> Result<(), Box<dyn Error>> {
+            // Slowed to half 2 s into a 4 s look: 2 s of it left, at half
+            // speed, so it ends at 6 s -- and the timeline, whose end is when
+            // song time stops, runs until then.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @2.000\n    \
+                master(layer: midground, speed: 0.5)\n}\n";
+            let (engine, _cancel_handle) = wash_running(show)?;
+            let mut at = 1.0;
+            while at < 5.9 {
+                at += 0.01;
+                frame_at(&engine, at);
+            }
+            assert_eq!(frame_at(&engine, 5.95), GREEN, "slowed, still up");
+            assert!(
+                !timeline_finished(&engine),
+                "finished (song time stops) with the look still up"
+            );
+            frame_at(&engine, 6.05);
+            assert_eq!(frame_at(&engine, 6.1), DARK, "over at 6 s");
+            assert!(timeline_finished(&engine));
+            Ok(())
+        }
+
+        #[test]
+        fn a_sequence_started_and_stopped_at_once_by_two_shows() -> Result<(), Box<dyn Error>> {
+            // Show "b" starts sequence "x" at 5 s; show "a" stops "x" at 5 s.
+            // Live, the stop lands before the start, so "x" plays; a seek
+            // took the stop for the whole time and dropped it.
+            let cues_of = |src: &str| {
+                crate::lighting::parser::parse_light_shows(src)
+                    .unwrap()
+                    .into_values()
+                    .next()
+                    .unwrap()
+                    .cues
+            };
+            let mut cues = cues_of(
+                "sequence \"x\" {\n    @00:00.000\n    wash: static, color: \"green\", \
+                 duration: 10s, layer: midground, blend_mode: replace\n}\n\n\
+                 show \"b\" {\n    @00:05.000\n    sequence \"x\"\n}\n",
+            );
+            cues.extend(cues_of(
+                "show \"a\" {\n    @00:05.000\n    stop sequence \"x\"\n}\n",
+            ));
+            let run = |seek: Option<f64>, until: f64| -> (f64, f64, f64) {
+                let (engine, _c) = wash_running("show \"z\" {\n}\n").unwrap();
+                *engine.current_song_timeline.lock() = Some(
+                    crate::lighting::timeline::LightingTimeline::new_with_cues(cues.clone()),
+                );
+                let start = seek.unwrap_or(1.0);
+                engine.update_song_time(Duration::from_secs_f64(start));
+                engine.start_lighting_timeline_at(Duration::from_secs_f64(start));
+                let mut at = start;
+                let mut frame = frame_at(&engine, at);
+                while at + 0.01 <= until + 1e-9 {
+                    at += 0.01;
+                    frame = frame_at(&engine, at);
+                }
+                frame
+            };
+            let played = run(None, 7.0);
+            let sought = run(Some(7.0), 7.0);
+            assert_eq!(played, GREEN);
+            assert_eq!(played, sought, "played {played:?} vs sought {sought:?}");
+            Ok(())
+        }
+
+        #[test]
+        fn a_look_frozen_on_its_last_instant_stays_over_through_a_slow_down(
+        ) -> Result<(), Box<dyn Error>> {
+            // A 4 s look, frozen at 4 s (the instant it ends: live it is
+            // over), its layer then slowed at 6 s while still frozen.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
+                freeze(layer: midground)\n    @6.000\n    \
+                master(layer: midground, speed: 0.5)\n}\n";
+            let played = played_frame(show, 8.0)?;
+            let sought = seek_frame(show, 8.0)?;
+            assert_eq!(played, DARK, "live: over at its freeze");
+            assert_eq!(played, sought, "played {played:?} vs sought {sought:?}");
+            Ok(())
+        }
+
+        #[test]
+        fn a_look_frozen_on_its_last_instant_does_not_carry_the_show_end() {
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
+                freeze(layer: midground)\n    @6.000\n    \
+                master(layer: midground, speed: 0.5)\n    @8.000\n    \
+                unfreeze(layer: midground)\n}\n";
+            // Live the look is over at 4 s, and so is the show's end; the
+            // timeline still waits for its last cue at 8 s to fire.
+            assert_eq!(timeline(show).show_end(), Duration::from_secs(4));
+        }
+
+        #[test]
+        fn a_seek_onto_a_slow_down_on_a_looks_last_instant_ends_it() -> Result<(), Box<dyn Error>> {
+            // A speed change applies from where the look is: at its end, it
+            // stays over, played or sought onto the cue.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
+                master(layer: midground, speed: 0.5)\n}\n";
+            let played = played_frame(show, 6.0)?;
+            let sought = seek_then_play(show, 4.0, 6.0)?;
+            assert_eq!(played, DARK);
+            assert_eq!(
+                played, sought,
+                "played {played:?} vs seek to 4 s then played {sought:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_freeze_on_a_looks_last_instant_agrees_with_a_seek() -> Result<(), Box<dyn Error>> {
+            // A freeze holds from its cue's time: on the instant a 4 s look
+            // ends, it is over, played or sought. Live used to freeze at the
+            // frame before, and held it for good.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
+                freeze(layer: midground)\n}\n";
+            let played = played_frame(show, 10.0)?;
+            let sought = seek_frame(show, 10.0)?;
+            assert_eq!(played, DARK);
+            assert_eq!(played, sought, "played {played:?} vs sought {sought:?}");
+            Ok(())
+        }
+
+        const RV_TEMPO: &str =
+            "tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n}\n\n";
+
+        fn close_enough(a: (f64, f64, f64), b: (f64, f64, f64)) -> bool {
+            (a.0 - b.0).abs() <= 3.0 && (a.1 - b.1).abs() <= 3.0 && (a.2 - b.2).abs() <= 3.0
+        }
+
+        #[test]
+        fn a_tempo_cycle_frozen_over_a_break() -> Result<(), Box<dyn Error>> {
+            // A 4-bar cycle from bar 2 (2-10 s), frozen bar 3 to bar 4
+            // (4-6 s): it ends at 12 s.
+            let show = format!(
+                "{RV_TEMPO}show \"a\" {{\n    @2/1\n    wash: cycle color: \"red\", color: \"green\", \
+                 color: \"blue\", speed: 0.5, duration: 4measures, layer: midground, \
+                 blend_mode: replace\n    @3/1\n    freeze(layer: midground)\n    @4/1\n    \
+                 unfreeze(layer: midground)\n}}\n"
+            );
+            let mut bad = Vec::new();
+            for secs in [5.0, 7.3, 9.0, 11.9] {
+                let played = played_frame(&show, secs)?;
+                let sought = seek_frame(&show, secs)?;
+                if played == DARK || !close_enough(played, sought) {
+                    bad.push(format!("{secs}: played {played:?} sought {sought:?}"));
+                }
+            }
+            let played = played_frame(&show, 12.1)?;
+            let sought = seek_frame(&show, 12.1)?;
+            if played != DARK || sought != DARK {
+                bad.push(format!("12.1: played {played:?} sought {sought:?}"));
+            }
+            assert!(bad.is_empty(), "{bad:#?}");
+            Ok(())
+        }
+
+        #[test]
+        fn a_look_cued_during_a_freeze_plays_through_as_it_seeks() -> Result<(), Box<dyn Error>> {
+            // Frozen 2-4 s; green cued at 3 s for 2 s: held from 3 to 4 s,
+            // so it ends at 6 s.
+            let show = "show \"a\" {\n    @2.000\n    freeze(layer: midground)\n    @3.000\n    \
+                wash: static, color: \"green\", duration: 2s, layer: midground, \
+                blend_mode: replace\n    @4.000\n    unfreeze(layer: midground)\n}\n";
+            let mut bad = Vec::new();
+            for (secs, want) in [(3.5, GREEN), (5.9, GREEN), (6.1, DARK)] {
+                let played = played_frame(show, secs)?;
+                let sought = seek_frame(show, secs)?;
+                if played != want || sought != want {
+                    bad.push(format!("{secs}: played {played:?} sought {sought:?}"));
+                }
+            }
+            for (secs, want) in [(5.9, GREEN), (6.1, DARK)] {
+                let from_seek = seek_then_play(show, 3.5, secs)?;
+                if from_seek != want {
+                    bad.push(format!("seek 3.5 then {secs}: {from_seek:?}"));
+                }
+            }
+            assert!(bad.is_empty(), "{bad:#?}");
+            Ok(())
+        }
+
+        #[test]
+        fn an_outgoing_pass_once_frozen_look_ends_on_its_time() -> Result<(), Box<dyn Error>> {
+            // 8 s song, 2 s crossfade. Red 0-6 s, frozen 2-3 s: ends at 7 s
+            // of the outgoing pass, 1 s into the new one.
+            let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", \
+                duration: 6s, layer: midground, blend_mode: replace\n    @2.000\n    \
+                freeze(layer: midground)\n    @3.000\n    unfreeze(layer: midground)\n}\n";
+            let (engine, _c) = wash_running(show)?;
+            let mut at = 1.0;
+            while at < 5.99 {
+                at += 0.01;
+                frame_at(&engine, at);
+            }
+            engine.begin_loop_crossfade(
+                Some(timeline(
+                    "show \"b\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 8s\n}\n",
+                )),
+                Duration::from_secs(6),
+                Duration::from_secs(2),
+            );
+            let mut seen = Vec::new();
+            let mut t = 0.0;
+            while t < 1.6 {
+                seen.push((t, frame_at(&engine, t)));
+                t += 0.01;
+            }
+            let red_at = |x: f64| {
+                seen.iter()
+                    .min_by(|a, b| (a.0 - x).abs().partial_cmp(&(b.0 - x).abs()).unwrap())
+                    .unwrap()
+                    .1
+                     .0
+            };
+            assert!(
+                red_at(0.9) > 0.0,
+                "outgoing red gone early: {:?}",
+                &seen[85..95]
+            );
+            assert_eq!(
+                red_at(1.1),
+                0.0,
+                "outgoing red ran late: {:?}",
+                &seen[105..115]
+            );
+            // No frame of the hand-over dark.
+            assert!(
+                seen.iter().all(|(_, f)| *f != DARK),
+                "dark frame: {:?}",
+                seen.iter().find(|(_, f)| *f == DARK)
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_seek_exactly_on_freeze_and_unfreeze_cues() -> Result<(), Box<dyn Error>> {
+            let show = "show \"a\" {\n    @0.000\n    wash: rainbow, speed: 0.2, \
+                duration: 20s, layer: midground\n    @3.000\n    freeze(layer: midground)\n    \
+                @6.000\n    unfreeze(layer: midground)\n}\n";
+            let mut bad = Vec::new();
+            for (seek, to) in [(3.0, 5.0), (6.0, 8.0), (3.0, 3.0), (6.0, 6.0)] {
+                let played = played_frame(show, to)?;
+                let sought = seek_then_play(show, seek, to)?;
+                if !close_enough(played, sought) {
+                    bad.push(format!(
+                        "seek {seek} to {to}: played {played:?} sought {sought:?}"
+                    ));
+                }
+            }
+            assert!(bad.is_empty(), "{bad:#?}");
+            Ok(())
+        }
+
+        #[test]
+        fn a_freeze_inside_a_looping_sequence() -> Result<(), Box<dyn Error>> {
+            // A 2-bar (4 s) sequence looping 4 times from 1 s: a rainbow on
+            // the midground, frozen on beat 3 of bar 1 to beat 1 of bar 2.
+            let show = format!(
+                "{RV_TEMPO}sequence \"v\" {{\n    @1/1\n    wash: rainbow, speed: 0.3, \
+                 duration: 6beats, layer: midground\n    @1/3\n    freeze(layer: midground)\n    \
+                 @2/1\n    unfreeze(layer: midground)\n}}\n\nshow \"a\" {{\n    @1.000\n    \
+                 sequence \"v\", loop: 4\n}}\n"
+            );
+            let mut bad = Vec::new();
+            for secs in [2.5, 4.2, 5.5, 6.3, 9.1, 12.7, 16.9, 17.5] {
+                let played = played_frame(&show, secs)?;
+                let sought = seek_frame(&show, secs)?;
+                if !close_enough(played, sought) {
+                    bad.push(format!("{secs}: played {played:?} sought {sought:?}"));
+                }
+            }
+            assert!(bad.is_empty(), "{bad:#?}");
+            Ok(())
+        }
+
+        #[test]
+        #[ignore = "slow: 300 random shows; run with --ignored"]
+        fn random_shows_play_through_as_they_seek() -> Result<(), Box<dyn Error>> {
+            let mut seed: u64 = 0x9e3779b97f4a7c15;
+            let mut rnd = |n: u64| {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (seed >> 33) % n
+            };
+            let layers = ["background", "midground", "foreground"];
+            let mut bad = Vec::new();
+            for case in 0..300 {
+                let mut cues: Vec<(u64, String)> = Vec::new();
+                for _ in 0..(3 + rnd(4)) {
+                    let at = 4 + rnd(40); // quarter seconds, from 1 s
+                    let layer = layers[rnd(3) as usize];
+                    let dur = 1 + rnd(16);
+                    let body = match rnd(2) {
+                        0 => format!(
+                            "wash: rainbow, speed: 0.2, duration: {}ms, layer: {layer}, blend_mode: replace",
+                            dur * 250
+                        ),
+                        _ => format!(
+                            "wash: static, color: \"{}\", duration: {}ms, layer: {layer}, blend_mode: replace",
+                            ["red", "green", "blue"][rnd(3) as usize],
+                            dur * 250
+                        ),
+                    };
+                    cues.push((at, body));
+                }
+                for _ in 0..(1 + rnd(4)) {
+                    let at = 4 + rnd(44);
+                    let layer = layers[rnd(3) as usize];
+                    let body = match rnd(5) {
+                        0 => format!("freeze(layer: {layer})"),
+                        1 => format!("unfreeze(layer: {layer})"),
+                        2 => format!("master(layer: {layer}, speed: 0.5)"),
+                        3 => format!("master(layer: {layer}, speed: 1)"),
+                        _ => format!("master(layer: {layer}, speed: 0)"),
+                    };
+                    cues.push((at, body));
+                }
+                cues.sort_by_key(|c| c.0);
+                let mut show = String::from("show \"a\" {\n");
+                for (at, body) in &cues {
+                    show.push_str(&format!("    @{:.3}\n    {body}\n", *at as f64 / 4.0));
+                }
+                show.push_str("}\n");
+                {
+                    // Once the timeline is finished song time stops: nothing
+                    // may still be changing then.
+                    let (engine, _c) = wash_running(&show)?;
+                    let mut at = 1.0;
+                    while !timeline_finished(&engine) && at < 60.0 {
+                        at += 0.01;
+                        frame_at(&engine, at);
+                    }
+                    let a = frame_at(&engine, at + 0.02);
+                    let b = frame_at(&engine, at + 5.0);
+                    if (a.0 - b.0).abs() > 2.0 || (a.1 - b.1).abs() > 2.0 || (a.2 - b.2).abs() > 2.0
+                    {
+                        bad.push(format!(
+                            "case {case}: finished at {at:.2} with {a:?}, at +5 s {b:?}\n{show}"
+                        ));
+                    }
+                }
+                for _ in 0..3 {
+                    let secs = 1.5 + rnd(1400) as f64 / 100.0 + 0.003;
+                    let played = played_frame(&show, secs)?;
+                    let sought = seek_frame(&show, secs)?;
+                    if (played.0 - sought.0).abs() > 8.0
+                        || (played.1 - sought.1).abs() > 8.0
+                        || (played.2 - sought.2).abs() > 8.0
+                    {
+                        bad.push(format!(
+                            "case {case} at {secs}: played {played:?} sought {sought:?}\n{show}"
+                        ));
+                    }
+                }
+            }
+            assert!(
+                bad.is_empty(),
+                "{} mismatches:\n{}",
+                bad.len(),
+                bad.join("\n")
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn slowed_hits_over_a_bed() -> Result<(), Box<dyn Error>> {
+            // A blue bed; red hits on every beat on the foreground, slowed
+            // to half from bar 3 to bar 5.
+            let mut show = format!(
+                "{RV_TEMPO}show \"a\" {{\n    @1/1\n    wash: static, color: \"blue\", \
+                 duration: 8measures, layer: background\n"
+            );
+            for bar in 1..=6 {
+                for beat in 1..=4 {
+                    show.push_str(&format!(
+                        "    @{bar}/{beat}\n    wash: static, color: \"red\", duration: 0.5beats, \
+                         layer: foreground, blend_mode: replace\n"
+                    ));
+                }
+            }
+            show.push_str("    @3/1\n    master(layer: foreground, speed: 0.5)\n");
+            show.push_str("    @5/1\n    master(layer: foreground, speed: 1)\n}\n");
+            let mut bad = Vec::new();
+            for secs in [2.1, 2.4, 4.1, 4.4, 4.6, 6.8, 8.05, 8.3, 9.9] {
+                let played = played_frame(&show, secs)?;
+                let sought = seek_frame(&show, secs)?;
+                if played != sought {
+                    bad.push(format!("{secs}: played {played:?} sought {sought:?}"));
+                }
+            }
+            assert!(bad.is_empty(), "{bad:#?}");
+            Ok(())
+        }
+
         #[test]
         fn a_cue_taken_before_a_restart_does_not_land_after_it() -> Result<(), Box<dyn Error>> {
             // A cue the effects loop took from the timeline just before a
@@ -4670,6 +5315,7 @@ mod test {
                     speed: None,
                 }],
                 stop_sequences: vec![],
+                layer_command_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -4685,6 +5331,7 @@ mod test {
                 effects_with_elapsed: std::collections::HashMap::new(),
                 layer_commands: vec![],
                 stop_sequences: vec!["test_seq".to_string()],
+                layer_command_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -4738,6 +5385,7 @@ mod test {
                 effects_with_elapsed,
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                layer_command_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -4784,6 +5432,7 @@ mod test {
                 effects_with_elapsed: std::collections::HashMap::new(),
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                layer_command_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());

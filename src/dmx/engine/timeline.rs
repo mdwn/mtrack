@@ -221,9 +221,8 @@ impl OutgoingPass {
     /// resolved, to this pass's engine and each inner one's.
     fn apply_updates(&mut self, updates: &mut PassUpdates) {
         if let Some((update, effects)) = updates.remove(&self.id) {
-            for cmd in &update.layer_commands {
-                self.effect_engine.apply_layer_command(cmd);
-            }
+            self.effect_engine
+                .apply_layer_commands(&update.layer_commands, &update.layer_command_times);
             for sequence_name in &update.stop_sequences {
                 self.effect_engine.stop_sequence(sequence_name);
             }
@@ -641,6 +640,9 @@ impl Engine {
             .collect();
         let mut effect_engine = self.effect_engine.lock();
         effect_engine.stop_all_effects();
+        // A freeze in the history holds at the start point, where the
+        // effects it replays are started from.
+        effect_engine.set_song_time(start_time);
         match midi {
             MidiDmxStart::Leave => {}
             MidiDmxStart::Install(playbacks) => {
@@ -650,9 +652,7 @@ impl Engine {
             MidiDmxStart::Seek => self.seek_midi_dmx_playbacks(start_time),
         }
         if start_time > Duration::ZERO {
-            for cmd in &timeline_update.layer_commands {
-                effect_engine.apply_layer_command(cmd);
-            }
+            effect_engine.apply_layer_commands(&timeline_update.layer_commands, &[]);
             for sequence_name in &timeline_update.stop_sequences {
                 effect_engine.stop_sequence(sequence_name);
             }
@@ -692,6 +692,7 @@ impl Engine {
             effects,
             effects_with_elapsed,
             layer_commands,
+            layer_command_times,
             stop_sequences,
         } = timeline_update;
         if effects.is_empty()
@@ -726,9 +727,7 @@ impl Engine {
 
         let apply = |engine: &mut crate::lighting::EffectEngine| {
             // Layer commands first: they affect the effects after them.
-            for cmd in &layer_commands {
-                engine.apply_layer_command(cmd);
-            }
+            engine.apply_layer_commands(&layer_commands, &layer_command_times);
             for sequence_name in &stop_sequences {
                 engine.stop_sequence(sequence_name);
             }

@@ -70,7 +70,6 @@ pub(crate) fn unfreeze_layer(
                     let frozen_for = current_time.duration_since(start_time.max(frozen_at));
                     effect.start_time = Some(start_time + frozen_for);
                 }
-                effect.engine_timed = true;
             }
         }
     }

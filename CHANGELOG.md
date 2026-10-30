@@ -128,6 +128,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layer was cut off at its full-speed end. Both now end on the time they play on. An effect cued
   during a freeze now starts from its beginning at the unfreeze, without waiting out the freeze
   again.
+- **A seek counts freezes and the speed master before it (#589)**: a seek, play-from or section
+  loop rebuilt the show from its history on score time alone, so a look frozen for good went dark
+  after a seek past its normal end, a seek into a freeze or into a slowed effect dropped it, and a
+  frozen rainbow held the colour at the seek point rather than the one it froze on. The history now
+  plays its freezes, unfreezes and speed masters as the engine does live.
+- **An effect that has been frozen keeps to the song afterwards**: once unfrozen, a cued effect was
+  timed on the lighting engine's own clock, which steps a fixed frame each tick and falls behind
+  the song where frames run long, so it ended late -- 100-140 ms after a 5 s freeze on a Pi, and
+  more the longer it ran. It now plays on song time less the time it spent frozen.
+- **A slowed or frozen effect at the end of a show runs its course (#590)**: song time stops once
+  the show is over, and the show's end was its effects' authored ends. An effect slowed by the speed
+  master, or frozen with its unfreeze as the show's last cue, outlasted that end and stayed lit for
+  the rest of the song. The show now runs until such an effect has really ended; one left frozen
+  for good holds to the end of the song's audio.
+- **A speed change applies from where a look is**: the layer speed master scaled a look's whole
+  time since its cue, so slowing a fade half way dropped it back to a quarter in one frame, and a
+  slow-down on a look's last instant brought it back to half way to play its second half again. A
+  speed change now applies from the moment it lands: the look carries on from where it was, faster
+  or slower. A look cued just before a speed change, freeze or unfreeze in the same frame runs as
+  its layer did until then, as a seek has it.
+- **A freeze or speed change lands on its cue's own time**: a freeze held from the frame before the
+  one its cue fired in, so a look frozen on the very instant it ended was held for good, and a seek
+  to the same point had it over. Freezes and unfreezes (speed 0 and back too) now take their cue's
+  song time.
+  A seek's rebuild of the show also follows the cues at one time as they fire live, layer commands
+  and stops before effects: an effect cued at the same time as a clear of its layer or a stop of its
+  sequence (from another show or file, say) now survives a seek as it does when played, and a
+  sequence stopped and restarted at once comes back as it played.
 - **A cue at a loop restart lands on the right pass**: a cue fired just as a section loop restarted
   could also play on top of the restarted state. One fired just as a looping song started its next
   pass could land on the new pass instead of the one fading out.
