@@ -1091,7 +1091,9 @@ impl<'a> PassTicks<'a> {
 impl PassTicks<'_> {
     /// Whether the tick under way belongs to this pass rather than falling on
     /// the next one's first: at least half a pulse before it, at `period`
-    /// past this pass's first tick. A loop's length is whole samples, so a
+    /// past this pass's first tick. A tick past the period but before that
+    /// (in a crossfade's tail, for a clock whose first pulse is late) is on
+    /// the grid the next pass continues, and is kept. A loop's length is whole samples, so a
     /// loop of whole pulses can come out a hair long, which put a pass's last
     /// pulse microseconds before the next pass's first -- a pulse too many at
     /// every seam -- or a hair short.
@@ -1101,7 +1103,7 @@ impl PassTicks<'_> {
             index => Some(tick.saturating_sub(self.ticks[index - 1])),
         }
         .unwrap_or_default();
-        tick < period && tick + pulse / 2 < period + self.ticks[0]
+        tick + pulse / 2 < period + self.ticks[0]
     }
 }
 
@@ -3582,6 +3584,112 @@ mod test {
             // Generous: the computation is microseconds when it terminates.
             let played = rx.recv_timeout(Duration::from_secs(60));
             assert_eq!(played, Ok(10), "PassTicks::next never returned, or looped");
+        }
+
+        /// Exhaustive small inputs -- unsorted, duplicate, zero gaps, any
+        /// period and start: every `next` yields or ends within a bounded
+        /// number of steps, and every looping pass yields its first tick.
+        #[test]
+        fn pass_ticks_always_terminates_and_each_pass_keeps_a_tick() {
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let vals = [0u64, 1, 3, 5, 9];
+                let mut sets: Vec<Vec<u64>> = vec![vec![]];
+                for a in vals {
+                    sets.push(vec![a]);
+                    for b in vals {
+                        sets.push(vec![a, b]);
+                        for c in vals {
+                            sets.push(vec![a, b, c]);
+                        }
+                    }
+                }
+                for set in &sets {
+                    let ticks: Vec<Duration> = set.iter().map(|t| ms(*t)).collect();
+                    for period in [
+                        None,
+                        Some(0),
+                        Some(1),
+                        Some(2),
+                        Some(4),
+                        Some(6),
+                        Some(10),
+                        Some(100),
+                    ] {
+                        for start in [0u64, 2, 7, 50, 1_000_000] {
+                            let it = PassTicks::new(&ticks, ms(start), period.map(ms));
+                            let looping = it.period.is_some();
+                            let n = 4 * ticks.len() + 4;
+                            let got: Vec<(Duration, bool)> = it.take(n).collect();
+                            if looping {
+                                assert_eq!(got.len(), n, "{set:?} {period:?} {start}");
+                                assert!(
+                                    got.iter().filter(|(_, s)| *s).count() >= 2,
+                                    "{set:?} {period:?} {start} {got:?}"
+                                );
+                            } else {
+                                assert!(got.len() <= ticks.len());
+                            }
+                        }
+                    }
+                }
+                let _ = tx.send(());
+            });
+            assert!(
+                rx.recv_timeout(Duration::from_secs(120)).is_ok(),
+                "hung or panicked"
+            );
+        }
+
+        /// Whole-pulse loops (exact, a hair long, a hair short) with the
+        /// first pulse anywhere in the first pulse: every gap is a pulse.
+        #[test]
+        fn whole_pulse_loops_keep_every_seam_a_pulse() {
+            let p = Duration::from_micros(20_833);
+            for t0_us in [0u64, 1, 5_000, 10_416, 10_417, 20_000, 20_820] {
+                let t0 = Duration::from_micros(t0_us);
+                for m in [1u32, 2, 3, 96] {
+                    for eps in [-11i64, 0, 11] {
+                        let len = (p * m).as_nanos() as i64 + eps * 1000;
+                        let len = Duration::from_nanos(len as u64);
+                        let ticks: Vec<Duration> =
+                            (0..).map(|k| t0 + p * k).take_while(|t| *t < len).collect();
+                        if ticks.is_empty() {
+                            continue;
+                        }
+                        let played: Vec<Duration> =
+                            PassTicks::new(&ticks, Duration::ZERO, Some(len))
+                                .map(|(at, _)| at)
+                                .take(m as usize * 4)
+                                .collect();
+                        for w in played.windows(2) {
+                            let gap = w[1] - w[0];
+                            assert!(
+                                gap + Duration::from_micros(12) > p
+                                    && gap < p + Duration::from_micros(12),
+                                "t0 {t0_us}us m {m} eps {eps}us: gap {gap:?} in {played:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        /// A whole-pulse loop with a crossfade and a first pulse a pulse or
+        /// more in (a tempo start that is not whole bars): the old pass's
+        /// ticks in the crossfade's tail are on the grid the next pass
+        /// continues, and are played, not a pulse lost a seam.
+        #[test]
+        fn crossfade_tail_pulses_on_the_grid_are_played() {
+            // Pulses every 20ms from 30ms; song 1200ms, crossfade 200ms.
+            let ticks: Vec<Duration> = (0..)
+                .map(|k| ms(30 + 20 * k))
+                .take_while(|t| *t < ms(1200))
+                .collect();
+            let played = pass_ticks(&ticks, 0, Some(1000), 52);
+            assert_eq!(played[48], (990, false));
+            // 1010 is in the schedule (the old pass's tail) and on the grid.
+            assert_eq!(played[49], (1010, false), "{:?}", &played[45..]);
         }
 
         /// A clock whose first pulse is late (a tempo start that is not whole
