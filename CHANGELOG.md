@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   audio now has its clock loop with it, a pass every song length less its crossfade (at once for
   a start in the crossfade's tail), where it used to play the first pass and stop; a loop of
   whole pulses keeps them across each seam, though a count-in's leftover before its first whole
-  bar has no pulses in later passes either. Breaking the loop stops the clock. Section loops are
+  bar has no pulses in later passes either (nor in a crossfade's tail over it). Breaking the loop stops the clock. Section loops are
   not followed yet (#604).
 
 - **Ending a looping song gracefully**: Stop on a looping song whose playlist entry has a

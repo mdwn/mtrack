@@ -704,7 +704,12 @@ mod test {
         let mcp_task = task(&controller, 1);
         assert!(!controller.update(vec![grpc(), mcp()], player.clone(), false));
         assert!(controller.update(vec![mcp()], player.clone(), false));
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Aborted, it finishes when its runtime gets to it: under load, and
+        // under coverage on CI, that can be well past a fixed sleep.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !grpc_task.is_finished() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         assert!(grpc_task.is_finished(), "the removed controller still runs");
         assert!(
             !mcp_task.is_finished(),

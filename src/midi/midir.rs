@@ -1091,9 +1091,9 @@ impl<'a> PassTicks<'a> {
 impl PassTicks<'_> {
     /// Whether the tick under way belongs to this pass rather than falling on
     /// the next one's first: at least half a pulse before it, at `period`
-    /// past this pass's first tick. A tick past the period but before that
-    /// (in a crossfade's tail, for a clock whose first pulse is late) is on
-    /// the grid the next pass continues, and is kept. A loop's length is whole samples, so a
+    /// past this pass's first tick, and never past the period: what lies
+    /// between (a crossfade's tail, for a clock whose first pulse is late)
+    /// is the next pass's count-in leftover, which has no pulses. A loop's length is whole samples, so a
     /// loop of whole pulses can come out a hair long, which put a pass's last
     /// pulse microseconds before the next pass's first -- a pulse too many at
     /// every seam -- or a hair short.
@@ -1103,7 +1103,7 @@ impl PassTicks<'_> {
             index => Some(tick.saturating_sub(self.ticks[index - 1])),
         }
         .unwrap_or_default();
-        tick + pulse / 2 < period + self.ticks[0]
+        tick < period && tick + pulse / 2 < period + self.ticks[0]
     }
 }
 
@@ -3675,21 +3675,77 @@ mod test {
             }
         }
 
-        /// A whole-pulse loop with a crossfade and a first pulse a pulse or
-        /// more in (a tempo start that is not whole bars): the old pass's
-        /// ticks in the crossfade's tail are on the grid the next pass
-        /// continues, and are played, not a pulse lost a seam.
+        /// Sweeping starts (the crossfade's tail included), first pulses and
+        /// periods (whole pulses and not) for an even schedule running to the
+        /// song's end: played times strictly increase and no two are within
+        /// half a pulse.
         #[test]
-        fn crossfade_tail_pulses_on_the_grid_are_played() {
-            // Pulses every 20ms from 30ms; song 1200ms, crossfade 200ms.
+        fn even_schedules_never_double_or_reorder_across_seams() {
+            let p = 20_000u64; // us
+            for t0 in [0u64, 5_000, 10_000, 30_000, 300_000] {
+                for period in [1_000_000u64, 1_005_000, 1_011_000, 1_019_900] {
+                    for xf in [0u64, 15_000, 200_000, 600_000] {
+                        let len = period + xf;
+                        let ticks: Vec<Duration> = (0..)
+                            .map(|k| Duration::from_micros(t0 + p * k))
+                            .take_while(|t| *t < Duration::from_micros(len))
+                            .collect();
+                        for start in (0..len).step_by(2_500) {
+                            let start = Duration::from_micros(start);
+                            let played: Vec<Duration> =
+                                PassTicks::new(&ticks, start, Some(Duration::from_micros(period)))
+                                    .map(|(at, _)| at)
+                                    .take(200)
+                                    .collect();
+                            for w in played.windows(2) {
+                                assert!(
+                                    w[1] > w[0] && w[1] - w[0] > Duration::from_micros(p / 2),
+                                    "t0 {t0} period {period} xf {xf} start {start:?}: {w:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /// A start in the crossfade's tail of a clock whose first pulse is
+        /// late: the next pass starts at once, and its grid is the clock's,
+        /// with nothing of the old pass's tail played before it.
+        #[test]
+        fn a_start_in_the_tail_with_a_late_first_pulse_takes_the_next_pass() {
             let ticks: Vec<Duration> = (0..)
                 .map(|k| ms(30 + 20 * k))
                 .take_while(|t| *t < ms(1200))
                 .collect();
-            let played = pass_ticks(&ticks, 0, Some(1000), 52);
-            assert_eq!(played[48], (990, false));
-            // 1010 is in the schedule (the old pass's tail) and on the grid.
-            assert_eq!(played[49], (1010, false), "{:?}", &played[45..]);
+            let played = pass_ticks(&ticks, 1005, Some(1000), 3);
+            assert_eq!(played, vec![(1035, true), (1055, false), (1075, false)]);
+            let played = pass_ticks(&ticks, 1000, Some(1000), 2);
+            assert_eq!(played, vec![(1030, true), (1050, false)]);
+        }
+
+        /// A schedule whose crossfade tail runs faster than its start (a tempo
+        /// change up near the end), first pulse late: the tail's pulses past
+        /// the period are not played, so none lands a few ms before the next
+        /// pass's first, a doubled pulse to gear counting them.
+        #[test]
+        fn a_faster_tail_puts_no_pulse_against_the_next_pass() {
+            // 20ms pulses from 30ms to 990ms, then 10ms pulses from 1004ms.
+            let mut ticks: Vec<Duration> = (0..)
+                .map(|k| ms(30 + 20 * k))
+                .take_while(|t| *t < ms(1000))
+                .collect();
+            ticks.extend((0..20).map(|k| ms(1004 + 10 * k)));
+            let played: Vec<Duration> = PassTicks::new(&ticks, Duration::ZERO, Some(ms(1000)))
+                .map(|(at, _)| at)
+                .take(60)
+                .collect();
+            let incoming = ticks[1] - ticks[0];
+            let min_gap = played.windows(2).map(|w| w[1] - w[0]).min().unwrap();
+            assert!(
+                min_gap * 2 >= incoming,
+                "min gap {min_gap:?} under half the next pass's pulse: {played:?}"
+            );
         }
 
         /// A clock whose first pulse is late (a tempo start that is not whole
