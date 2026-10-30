@@ -188,9 +188,11 @@ fn require_config_store(
     })
 }
 
-/// Returns a 409 Conflict response if the player is currently playing.
+/// Returns a 409 Conflict response if the player is currently playing, or an
+/// auto play is waiting out its gap: the reload a save makes would leave the
+/// hardware initializing when the gap ends, and the song would not start.
 pub(super) async fn reject_if_playing(state: &WebUiState) -> Option<axum::response::Response> {
-    if state.player.is_playing().await {
+    if state.player.is_playing().await || state.player.auto_play_status().is_some() {
         Some(
             (
                 StatusCode::CONFLICT,
@@ -1287,6 +1289,44 @@ mod test {
             || state.player.audio_device().is_none(),
             "the saved config was never applied",
         );
+    }
+
+    /// A save in an auto play's gap reset the hardware, and the song failed
+    /// to start when the gap ended (#578): the gap counts as playing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_while_an_auto_play_waits_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("playlist.yaml");
+        std::fs::write(
+            &path,
+            "songs:\n- Song 1\n- song: Song 3\n  auto_play: 10s\n",
+        )
+        .unwrap();
+        let songs = crate::songs::get_all_songs(std::path::Path::new("assets/songs")).unwrap();
+        let playlist = crate::playlist::Playlist::new(
+            "playlist",
+            &crate::config::Playlist::deserialize(&path).unwrap(),
+            songs,
+        )
+        .unwrap();
+        let (state, _dir) = test_state_with_playlist(playlist);
+        set_store(&state);
+        state.player.next().await;
+        assert!(state.player.auto_play_status().is_some(), "waiting");
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from("songs: songs\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(state.player.cancel_waiting_auto_play());
     }
 
     #[tokio::test]

@@ -3294,6 +3294,53 @@ mod test {
         Ok(())
     }
 
+    /// A reload in an auto play's gap set the hardware initializing, and the
+    /// song failed to start when the gap ended, with nothing to retry it
+    /// (#578). The gap counts as playing: the reload waits for the song.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_in_an_auto_plays_gap_waits_for_its_song() -> Result<(), Box<dyn Error>> {
+        let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 300ms\n";
+        let player = make_test_player_with_playlist(yaml).await?;
+        let _dir = set_store_without_audio(&player)?;
+        player.next().await;
+        assert!(player.auto_play_status().is_some(), "waiting");
+
+        player.reload_hardware().await?;
+        assert!(player.audio_device().is_some(), "reloaded in the gap");
+        eventually_async(
+            || async { player.is_playing().await },
+            "Song 3 never started",
+        )
+        .await;
+        assert!(player.audio_device().is_some(), "reloaded under the song");
+
+        player.stop().await;
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        Ok(())
+    }
+
+    /// An auto play called off leaves the player idle: a reload waiting for
+    /// it runs then.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_runs_when_an_auto_play_is_called_off() -> Result<(), Box<dyn Error>>
+    {
+        let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 10s\n";
+        let player = make_test_player_with_playlist(yaml).await?;
+        let _dir = set_store_without_audio(&player)?;
+        player.next().await;
+        player.reload_hardware().await?;
+        assert!(player.audio_device().is_some(), "reloaded in the gap");
+        assert!(player.cancel_waiting_auto_play());
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_reload_hardware_no_config_store() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;

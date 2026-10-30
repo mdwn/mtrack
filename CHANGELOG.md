@@ -295,6 +295,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   save's playback check and its hardware reload had the reload refused, while the save still
   answered "saved" and the rig ran on the old config until something else reloaded it. The
   reload now waits for the player to go idle and runs then.
+- **A config save no longer drops a waiting auto play (#578)**: a save while an `auto_play` entry
+  waited out its gap reloaded the hardware, and when the gap ended the song failed to start
+  ("Hardware is still initializing") and was not retried. The gap now counts as playing: the web
+  UI's config and profile saves are refused with 409, and a reload from elsewhere waits for the
+  song.
 - **The dashboard can end a looping song at either end of the list (#579)**: Next on the last
   entry, or Previous on the first, ends a looping song over its `fade_out`, but the dashboard
   turned those buttons off there, so the ending could only be reached from MCP, OSC or gRPC.

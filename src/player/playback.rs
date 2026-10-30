@@ -761,10 +761,18 @@ impl Player {
 
     /// Calls off an auto play waiting out its gap. Returns whether one was.
     pub(super) fn cancel_auto_play(&self) -> bool {
-        let mut state = self.auto_play.lock();
-        state.generation += 1;
-        state.waiting = None;
-        std::mem::replace(&mut state.pending, false)
+        let called_off = {
+            let mut state = self.auto_play.lock();
+            state.generation += 1;
+            state.waiting = None;
+            std::mem::replace(&mut state.pending, false)
+        };
+        // A hardware reload deferred for it can run now, unless a start is
+        // what called it off: the reload then waits for that song in turn.
+        if called_off {
+            self.reload_deferred_hardware();
+        }
+        called_off
     }
 
     /// The song an auto play is waiting to start, and how long until it

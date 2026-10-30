@@ -442,8 +442,40 @@ pub(super) mod test_helpers {
         audio: Option<std::sync::Arc<dyn crate::audio::Device>>,
         dmx_engine: Option<std::sync::Arc<crate::dmx::engine::Engine>>,
     ) -> (WebUiState, tempfile::TempDir) {
+        let all_songs_playlist = crate::playlist::from_songs(songs).unwrap();
+        let mut playlists = std::collections::HashMap::new();
+        playlists.insert("all_songs".to_string(), all_songs_playlist);
+        test_state_with_playlists(playlists, "all_songs", audio, dmx_engine)
+    }
+
+    /// Creates a WebUiState whose player has `playlist` active, with a mock
+    /// audio device to play it on.
+    pub fn test_state_with_playlist(
+        playlist: std::sync::Arc<crate::playlist::Playlist>,
+    ) -> (WebUiState, tempfile::TempDir) {
+        let mut playlists = std::collections::HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            crate::playlist::from_songs(playlist.registry().clone()).unwrap(),
+        );
+        playlists.insert(playlist.name().to_string(), playlist.clone());
+        test_state_with_playlists(
+            playlists,
+            playlist.name(),
+            Some(std::sync::Arc::new(crate::audio::mock::Device::get(
+                "mock-device",
+            ))),
+            None,
+        )
+    }
+
+    fn test_state_with_playlists(
+        playlists: std::collections::HashMap<String, std::sync::Arc<crate::playlist::Playlist>>,
+        active: &str,
+        audio: Option<std::sync::Arc<dyn crate::audio::Device>>,
+        dmx_engine: Option<std::sync::Arc<crate::dmx::engine::Engine>>,
+    ) -> (WebUiState, tempfile::TempDir) {
         use crate::player::PlayerDevices;
-        use crate::playlist;
         use tokio::sync::{broadcast, watch};
 
         let dir = tempfile::tempdir().unwrap();
@@ -460,8 +492,6 @@ pub(super) mod test_helpers {
         let songs_path = dir.path().join("songs");
         std::fs::create_dir(&songs_path).unwrap();
 
-        let all_songs_playlist = playlist::from_songs(songs.clone()).unwrap();
-
         let devices = PlayerDevices {
             audio,
             mappings: None,
@@ -470,16 +500,9 @@ pub(super) mod test_helpers {
             sample_engine: None,
             trigger_engine: None,
         };
-        let mut playlists = std::collections::HashMap::new();
-        playlists.insert("all_songs".to_string(), all_songs_playlist);
         let player = std::sync::Arc::new(
-            crate::player::Player::new_with_devices(
-                devices,
-                playlists,
-                "all_songs".to_string(),
-                None,
-            )
-            .unwrap(),
+            crate::player::Player::new_with_devices(devices, playlists, active.to_string(), None)
+                .unwrap(),
         );
 
         let (broadcast_tx, _) = broadcast::channel(16);
