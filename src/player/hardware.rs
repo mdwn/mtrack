@@ -161,6 +161,13 @@ impl Player {
                 }) {
                     return;
                 }
+                // With no profile there are no controllers either: those a
+                // profile removed by this reload stop, as they would have
+                // had it named another.
+                if cancel.is_cancelled() {
+                    return;
+                }
+                self.start_controllers(Vec::new());
                 // Re-checked under the lock for the same reason as the tail.
                 if !install_if_current(&self.hardware, &cancel, |_| {}) {
                     return;
@@ -861,9 +868,10 @@ impl Player {
             return;
         }
         // A controller that failed to start is started again by the next
-        // call. A reload restarts controllers *before* the init round has
-        // installed any devices -- so the MIDI driver finds no device and
-        // errors -- and the init round's own call then heals it.
+        // call. Controllers restarted *before* an init round has installed
+        // its devices -- say, from "restart controllers" during a reload --
+        // leave the MIDI driver with no device, and the init round's own
+        // call then heals it.
         let failed: Vec<&str> = controller
             .statuses()
             .iter()
@@ -902,8 +910,8 @@ impl Player {
             .unwrap_or_default();
 
         // Forced: this is only reached from the operator's explicit "restart
-        // controllers", and from the config paths that have just changed them.
-        // Both mean "do it", not "do it if you think something changed".
+        // controllers", which means "do it", not "do it if you think something
+        // changed". A config change leaves it to the hardware reload.
         self.restart_controllers_forced(controllers);
         Ok(())
     }
@@ -912,6 +920,15 @@ impl Player {
     pub fn controller_statuses(&self) -> Vec<crate::controller::ControllerStatus> {
         match self.controller.lock().as_ref() {
             Some(controller) => controller.statuses().to_vec(),
+            None => vec![],
+        }
+    }
+
+    /// The tasks of the running controllers.
+    #[cfg(test)]
+    pub(crate) fn controller_tasks(&self) -> Vec<tokio::task::AbortHandle> {
+        match self.controller.lock().as_ref() {
+            Some(controller) => controller.tasks(),
             None => vec![],
         }
     }

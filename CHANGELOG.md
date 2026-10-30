@@ -115,7 +115,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A controller change restarts only the controllers it changes (#578)**: a change to any one
   controller restarted them all, so adding an OSC or gRPC controller over MCP tore down the MCP
   server answering it, and its sessions with it. Controllers whose config is unchanged now keep
-  running; MIDI controllers, whose song-change notifiers go together, restart together.
+  running, a web UI config save included; MIDI controllers, whose song-change notifiers go
+  together, restart together, and also whenever a reload reopens the MIDI device, so they
+  listen on the new one. "Restart controllers" still restarts them all, and a MIDI controller
+  restarted on the device it had now hears it again.
 - **The latest move takes a mover, whatever its layer (#599)**: two moves on different layers
   over one head blended by layer, and where the head came to rest depended on how you got there:
   played through, after a seek and in `evaluate_show` it could land on three different poses. A

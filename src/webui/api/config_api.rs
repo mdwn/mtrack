@@ -233,9 +233,10 @@ pub(super) async fn reload_hardware_after_mutation(
         .reload_hardware()
         .await
         .map_err(|e| e.to_string());
-    if let Err(e) = state.player.reload_controllers().await {
-        warn!("Controller reload failed: {}", e);
-    }
+    // The reload brings the controllers in line with the config itself,
+    // restarting only those it changed, or whose MIDI device it reopened.
+    // Forcing them all here as well tore down every OSC, gRPC and MCP
+    // client for a change that was not theirs.
     let mut fields = serde_json::Map::new();
     match reload {
         Ok(reload) => {
@@ -1347,6 +1348,42 @@ mod test {
             || state.player.audio_device().is_none(),
             "the saved config was never applied",
         );
+    }
+
+    /// A save restarted every controller after its reload had left the
+    /// unchanged ones running: each OSC, gRPC and MCP client lost its
+    /// connection over a change that was not its own.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_leaves_the_unchanged_controllers_running() {
+        let (state, dir) = test_state_with_audio_device("mock-device");
+        let grpc = crate::config::Controller::Grpc(crate::config::GrpcController::new(0));
+        state
+            .player
+            .set_config_store(std::sync::Arc::new(crate::config::ConfigStore::new(
+                crate::config::Player::new(
+                    vec![grpc.clone()],
+                    None,
+                    None,
+                    None,
+                    std::collections::HashMap::new(),
+                    "songs",
+                ),
+                dir.path().join("config.yaml"),
+            )));
+        state.player.start_controllers(vec![grpc]);
+        let tasks = state.player.controller_tasks();
+        assert_eq!(tasks.len(), 1);
+
+        let reload = super::reload_hardware_after_mutation(&state).await;
+        assert_eq!(reload["applied"], serde_json::json!(true), "{reload:?}");
+        state.player.await_hardware_ready().await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !tasks[0].is_finished(),
+            "an unchanged controller was restarted by a save"
+        );
+        assert_eq!(state.player.controller_statuses()[0].status, "running");
+        state.player.shutdown_controllers();
     }
 
     /// A save in an auto play's gap reset the hardware, and the song failed

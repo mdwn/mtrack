@@ -54,6 +54,9 @@ struct Entry {
     /// Whether it is a MIDI controller, which registers song-change
     /// notifiers on the player.
     midi: bool,
+    /// The player's MIDI device when it started, which a MIDI controller
+    /// listens on. A hardware reload opens a new one.
+    midi_device: Option<Arc<dyn crate::midi::Device>>,
     /// Its task, when it started.
     handle: Option<JoinHandle<Result<(), io::Error>>>,
 }
@@ -80,16 +83,24 @@ impl Controller {
     /// restarting them all for a change to another dropped the reply (#578).
     ///
     /// A controller that failed to start is started again, as nothing else
-    /// would retry it. MIDI controllers' song-change notifiers can only be
-    /// dropped all together, so if any MIDI controller starts or stops, they
-    /// all restart. `force` restarts every one. Returns whether any started
-    /// or stopped.
+    /// would retry it. So is a MIDI controller started on another MIDI
+    /// device than the player's: a hardware reload opens the device anew,
+    /// and one kept for its unchanged config went on listening to the old
+    /// one, deaf to the pedalboard. MIDI controllers' song-change notifiers
+    /// can only be dropped all together, so if any MIDI controller starts or
+    /// stops, they all restart. `force` restarts every one. Returns whether
+    /// any started or stopped.
     pub fn update(
         &mut self,
         config: Vec<config::Controller>,
         player: Arc<Player>,
         force: bool,
     ) -> bool {
+        let midi_device = player.midi_device();
+        let on_midi_device = |entry: &Entry| {
+            matches!((&entry.midi_device, &midi_device),
+                (Some(started), Some(current)) if Arc::ptr_eq(started, current))
+        };
         // Which running controller, if any, each one in the config keeps.
         let mut taken = vec![false; self.entries.len()];
         let mut kept: Vec<Option<usize>> = config
@@ -103,6 +114,7 @@ impl Controller {
                     !taken[i]
                         && self.statuses[i].status == "running"
                         && self.entries[i].fingerprint == fingerprint
+                        && (!self.entries[i].midi || on_midi_device(&self.entries[i]))
                 })?;
                 taken[found] = true;
                 Some(found)
@@ -165,6 +177,9 @@ impl Controller {
     fn start(&mut self, config: config::Controller, player: Arc<Player>) {
         let fingerprint = crate::util::to_yaml_string(&config).ok();
         let midi = matches!(config, config::Controller::Midi(_));
+        // Read before the driver reads it: should a reload swap the device in
+        // between, this names the older one, and the next update restarts it.
+        let midi_device = if midi { player.midi_device() } else { None };
         let (kind, detail) = match &config {
             config::Controller::Grpc(c) => ("grpc".to_string(), Some(format!("port {}", c.port()))),
             config::Controller::Mcp(c) => (
@@ -216,6 +231,7 @@ impl Controller {
         self.entries.push(Entry {
             fingerprint,
             midi,
+            midi_device,
             handle,
         });
         self.statuses.push(status);
@@ -229,6 +245,7 @@ impl Controller {
                 .map(|driver| Entry {
                     fingerprint: None,
                     midi: false,
+                    midi_device: None,
                     handle: Some(driver.monitor_events()),
                 })
                 .collect(),
@@ -247,6 +264,16 @@ impl Controller {
     /// Returns the status of all controllers.
     pub fn statuses(&self) -> &[ControllerStatus] {
         &self.statuses
+    }
+
+    /// The tasks of the controllers that started, for a test to tell one
+    /// left running from one restarted.
+    #[cfg(test)]
+    pub(crate) fn tasks(&self) -> Vec<tokio::task::AbortHandle> {
+        self.entries
+            .iter()
+            .filter_map(|entry| entry.handle.as_ref().map(JoinHandle::abort_handle))
+            .collect()
     }
 
     /// Shuts down all controller tasks by aborting their handles.

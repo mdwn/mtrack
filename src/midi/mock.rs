@@ -33,7 +33,10 @@ use crate::songs::Song;
 pub struct Device {
     name: String,
     barrier: Arc<Barrier>,
-    closed: Arc<AtomicBool>,
+    /// Whether the current watch has been stopped. Each watch has a flag of
+    /// its own, so a watch started after a stop is not taken for stopped,
+    /// and the stopped one's thread still sees its own flag set.
+    closed: Arc<Mutex<Arc<AtomicBool>>>,
     event: Arc<Mutex<Vec<u8>>>,
     emit_called: Arc<Mutex<Option<Vec<u8>>>>,
     sysex_called: Arc<Mutex<Option<Vec<u8>>>>,
@@ -45,7 +48,7 @@ impl Device {
     pub fn get(name: &str) -> Device {
         Device {
             name: name.to_string(),
-            closed: Arc::new(AtomicBool::new(false)),
+            closed: Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))),
             barrier: Arc::new(Barrier::new(2)),
             event: Arc::new(Mutex::new(Vec::new())),
             emit_called: Arc::new(Mutex::new(None)),
@@ -106,13 +109,19 @@ impl super::Device for Device {
     /// Watches MIDI input for events and sends them to the given sender.
     fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>> {
         let mut event_thread = self.event_thread.lock().expect("unable to get lock");
+        let mut closed = self.closed.lock().expect("unable to get lock");
         if event_thread.is_some() {
-            return Err("Already watching events.".into());
+            // A stopped watch may be followed by another, as a restarted
+            // MIDI controller watches the device its predecessor did.
+            if !closed.load(Ordering::Relaxed) {
+                return Err("Already watching events.".into());
+            }
+            *closed = Arc::new(AtomicBool::new(false));
         }
 
         let barrier = self.barrier.clone();
         let event = self.event.clone();
-        let closed = self.closed.clone();
+        let closed = Arc::clone(&*closed);
         *event_thread = Some(tokio::task::spawn_blocking(move || loop {
             barrier.wait();
 
@@ -136,7 +145,8 @@ impl super::Device for Device {
         // Only signal the barrier if we're the first caller. A second call
         // (e.g. from the monitor task after the event thread has exited)
         // would deadlock because the other barrier party is gone.
-        if !self.closed.swap(true, Ordering::Relaxed) {
+        let closed = self.closed.lock().expect("unable to get lock").clone();
+        if !closed.swap(true, Ordering::Relaxed) {
             self.barrier.wait();
         }
     }

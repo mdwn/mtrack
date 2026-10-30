@@ -5062,4 +5062,106 @@ mod test {
         );
         Ok(())
     }
+
+    /// A MIDI controller listening for the pedalboard's footswitches.
+    fn midi_controller() -> config::Controller {
+        config::Controller::Midi(config::MidiController::new(
+            config::midi::note_on(16, 0, 127),
+            config::midi::note_on(16, 1, 127),
+            config::midi::note_on(16, 2, 127),
+            config::midi::note_on(16, 3, 127),
+            config::midi::note_on(16, 4, 127),
+            config::midi::note_on(16, 5, 127),
+        ))
+    }
+
+    /// A player with a MIDI controller on the given MIDI device.
+    fn midi_controller_config(midi: &str) -> config::Player {
+        config::Player::new(
+            vec![midi_controller()],
+            Some(config::Audio::new("mock-device")),
+            Some(config::Midi::new(midi, None)),
+            None,
+            HashMap::new(),
+            "assets/songs",
+        )
+    }
+
+    /// A player whose MIDI controller has started on the given MIDI device.
+    async fn make_midi_controller_player(midi: &str) -> Result<Arc<Player>, Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let mut playlists = HashMap::new();
+        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
+        let player = Player::new(
+            playlists,
+            "all_songs".to_string(),
+            &midi_controller_config(midi),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        Ok(player)
+    }
+
+    /// Presses Next on the player's MIDI device, and waits for the playlist
+    /// to move on. A mock event waits for a watcher to take it, forever if
+    /// there is none, so it is sent from a thread of its own.
+    fn press_next_on_midi_device(player: &Arc<Player>) -> Result<(), Box<dyn Error>> {
+        use crate::config::midi::ToMidiEvent;
+
+        let midi = player.midi_device().expect("midi device").to_mock()?;
+        let before = player.get_playlist().current().unwrap().name().to_string();
+        let mut next = Vec::new();
+        config::midi::note_on(16, 2, 127)
+            .to_midi_event()?
+            .write(&mut next)?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            midi.mock_event(&next);
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_secs(3)).is_ok(),
+            "nothing watches the player's MIDI device"
+        );
+        eventually(
+            || player.get_playlist().current().unwrap().name() != before,
+            "Next on the MIDI device was ignored",
+        );
+        Ok(())
+    }
+
+    /// A hardware reload opens the MIDI device anew, and an unchanged MIDI
+    /// controller was kept listening to the old one, as gRPC and MCP
+    /// reload: a pedalboard moved to another interface went unheard.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unchanged_midi_controller_follows_a_reloaded_midi_device(
+    ) -> Result<(), Box<dyn Error>> {
+        let player = make_midi_controller_player("mock-midi-a").await?;
+        assert_eq!(player.controller_statuses()[0].status, "running");
+        // The pedalboard moves to another MIDI interface; the controller is
+        // unchanged.
+        let dir = tempfile::tempdir()?;
+        player.set_config_store(Arc::new(config::ConfigStore::new(
+            midi_controller_config("mock-midi-b"),
+            dir.path().join("config.yaml"),
+        )));
+        assert!(player.reload_hardware().await?.applied());
+        player.await_hardware_ready().await;
+        assert_eq!(player.controller_statuses()[0].status, "running");
+        assert!(player
+            .midi_device()
+            .is_some_and(|d| d.to_string().contains("mock-midi-b")));
+        press_next_on_midi_device(&player)
+    }
+
+    /// A restarted MIDI controller watches the device its predecessor did.
+    /// The predecessor was aborted with its watch still on, the device
+    /// refused a second, and the restarted controller heard nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_restarted_midi_controller_watches_its_device_again() -> Result<(), Box<dyn Error>> {
+        let player = make_midi_controller_player("mock-midi-device").await?;
+        player.restart_controllers_forced(vec![midi_controller()]);
+        assert_eq!(player.controller_statuses()[0].status, "running");
+        press_next_on_midi_device(&player)
+    }
 }

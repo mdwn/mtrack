@@ -82,6 +82,15 @@ fn classify_midi_event(events: &MidiEvents, event: &LiveEvent<'_>) -> MidiAction
     }
 }
 
+/// Stops a device's event watch when dropped.
+struct StopWatchOnDrop(Arc<dyn Device>);
+
+impl Drop for StopWatchOnDrop {
+    fn drop(&mut self) {
+        self.0.stop_watch_events();
+    }
+}
+
 /// A controller that controls a player using MIDI.
 pub struct Driver {
     /// The player.
@@ -153,28 +162,32 @@ impl super::Driver for Driver {
             cancel_auto_play: self.events.cancel_auto_play,
         };
 
-        tokio::task::spawn_blocking(move || {
+        // Watched before the task below exists, so that the task only ever
+        // stops a watch that has started.
+        {
             let span = span!(Level::INFO, "MIDI driver");
             let _enter = span.enter();
 
             info!("MIDI driver started.");
 
-            if let Err(e) = device
-                .watch_events(midi_events_tx)
-                .map_err(|e| io::Error::other(e.to_string()))
-            {
+            if let Err(e) = device.watch_events(midi_events_tx) {
                 error!(err = e.to_string(), "Error watching MIDI events");
+                let e = io::Error::other(e.to_string());
+                return tokio::spawn(async move { Err(e) });
             }
-        });
+        }
 
-        let device = self.midi_device.clone();
         tokio::spawn(async move {
+            // Stops the watch however this task ends. A restart aborts it,
+            // and the device's watcher ran on: nothing could watch that
+            // device again, and a mock device's watcher thread kept the
+            // runtime from shutting down.
+            let _watch = StopWatchOnDrop(device);
             loop {
                 let raw_event = match midi_events_rx.recv().await {
                     Some(raw_event) => raw_event,
                     None => {
                         info!("MIDI watcher closed.");
-                        device.stop_watch_events();
                         return Ok(());
                     }
                 };
