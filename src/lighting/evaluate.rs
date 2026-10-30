@@ -1081,3 +1081,7 @@ mod move_seek_tests;
 #[cfg(test)]
 #[path = "show_end_tests.rs"]
 mod show_end_tests;
+
+#[cfg(test)]
+#[path = "sweep_fuzz_tests.rs"]
+mod sweep_fuzz_tests;
