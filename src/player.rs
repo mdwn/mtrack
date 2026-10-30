@@ -4446,4 +4446,131 @@ mod test {
         assert_eq!(current_name(&player).await, "B");
         Ok(())
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_seek_racing_a_songs_own_end_moves_the_playlist_on_once() -> Result<(), Box<dyn Error>>
+    {
+        // No subsystems: every playback ends by itself at once, so a seek
+        // straight after play races the song's own end. The end's cleanup
+        // moved the playlist on and dropped the seek's restart, whose own
+        // end then moved it on again.
+        let mut doubled = 0;
+        for _ in 0..200 {
+            let player = make_test_player_with_config(None, None, None).await?;
+            let first = player.get_playlist().entry().unwrap();
+            player.play().await?;
+            let _ = player.seek_to(Duration::ZERO).await;
+            // Let every cleanup run.
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while player.join.lock().await.is_some() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let at = player.get_playlist().entry().unwrap();
+            if at as i64 - first as i64 != 1 {
+                doubled += 1;
+                eprintln!("moved {}", at as i64 - first as i64);
+            }
+        }
+        assert_eq!(
+            doubled, 0,
+            "one play and one seek moved the playlist on twice {doubled}/200 times"
+        );
+        Ok(())
+    }
+
+    /// Plays the current song with no subsystems, so that it ends by itself
+    /// at once, and returns the join lock taken before its cleanup could
+    /// take it: the cleanup is left waiting on it, as behind a pause or a
+    /// stop on a busy machine.
+    async fn hold_join_over_a_songs_own_end(
+        player: &Arc<Player>,
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<PlayHandles>>, Box<dyn Error>> {
+        for _ in 0..50 {
+            player.play().await?;
+            let join = player.join.lock().await;
+            if join.is_some() {
+                // The song ends, and its cleanup comes to wait on the lock.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                return Ok(join);
+            }
+            // The cleanup was quicker: back to the song to try again.
+            drop(join);
+            player.prev().await;
+        }
+        Err("the song's cleanup always took the join lock first".into())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_racing_a_songs_own_end_keeps_its_position_for_that_song(
+    ) -> Result<(), Box<dyn Error>> {
+        // The end's cleanup, behind the pause, moved the playlist on: the
+        // next song inherited the paused position.
+        let player = make_test_player_with_config(None, None, None).await?;
+        let first = player.get_playlist().entry();
+        let paused_at = Duration::from_millis(100);
+        {
+            // As pause() does it, under the lock.
+            let mut join = hold_join_over_a_songs_own_end(&player).await?;
+            player.stop_for_pause(&mut join).await;
+            *player.pending_start.lock() = Some(paused_at);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            player.get_playlist().entry(),
+            first,
+            "the playlist moved on"
+        );
+        assert_eq!(player.pending_start(), Some(paused_at));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_racing_a_songs_own_end_leaves_the_playlist_where_it_stopped(
+    ) -> Result<(), Box<dyn Error>> {
+        // The end's cleanup, behind the stop, moved the playlist on past the
+        // song the stop stopped on.
+        let player = make_test_player_with_config(None, None, None).await?;
+        let first = player.get_playlist().entry();
+        {
+            // As stop() does it, under the lock.
+            let mut join = hold_join_over_a_songs_own_end(&player).await?;
+            player.cut_locked(&mut join).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            player.get_playlist().entry(),
+            first,
+            "the playlist moved on"
+        );
+        assert!(!player.is_playing().await);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_after_a_loop_break_leaves_no_break_for_the_next_play(
+    ) -> Result<(), Box<dyn Error>> {
+        // Next breaks looping B's loop and a stop comes before the break's
+        // cleanup. The cleanup moved on to C and played it regardless. Now
+        // it leaves the playback the stop took alone, so the stop clears the
+        // break, or B played again would read it as its own and leave its
+        // loop at the end of the pass.
+        let (player, _dir) = player_looping_b().await?;
+        elapsed_eventually(&player).await?;
+        {
+            // Next's break and the stop, the stop first to the lock.
+            let mut join = player.join.lock().await;
+            player.loop_break.store(true, Ordering::Relaxed);
+            join.as_ref().unwrap().cancel.cancel();
+            player.cut_locked(&mut join).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!player.is_playing().await, "the stop held");
+        assert_eq!(current_name(&player).await, "B");
+        assert!(
+            !player.loop_break.load(Ordering::Relaxed),
+            "the break outlived the stop"
+        );
+        Ok(())
+    }
 }

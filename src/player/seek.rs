@@ -103,6 +103,8 @@ impl Player {
             }
             Some(handles) => handles,
         };
+        // A seek restarts this song: a break asked of it is called off.
+        self.forget_loop_break();
 
         info!(song = song.name(), position = ?position, "Seeking");
 

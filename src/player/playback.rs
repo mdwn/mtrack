@@ -233,14 +233,26 @@ impl Player {
                 };
 
                 let succeeded = matches!(result, PlaybackResult::Success);
+                // Whoever took this playback out of `join` -- a stop, a pause,
+                // a seek -- cleaned up after it, and a seek or a play since may
+                // have put its own there. A song ending by itself while one of
+                // them waits for the lock must leave it all alone, or it moves
+                // the playlist on under a seek's restart or a pause's kept
+                // position, and drops the playback that follows. What it ended
+                // by is read under the lock too: a loop break comes in under
+                // it, and the flags belong to whichever playback holds it.
+                let mut join = player.join.lock().await;
+                if !join
+                    .as_ref()
+                    .is_some_and(|handles| handles.cancel.same_as(&cancel_handle_for_cleanup))
+                {
+                    return;
+                }
                 let cancelled = cancel_handle_for_cleanup.is_cancelled();
                 // Playback that ended itself, as distinct from one that stop()
                 // or a seek ended: only the former has nobody to clean up after
                 // it. See decide_cleanup_action.
                 let self_cancelled = cancel_handle_for_cleanup.cancelled_due_to_failure();
-                // `loop_end` before `loop_break`, the reverse of the order a
-                // stop's cut clears them in: a break caught between the two
-                // reads as no break at all, never as one to move on from.
                 let ended = player.loop_end.swap(false, Ordering::Relaxed);
                 let loop_broken = player.loop_break.swap(false, Ordering::Relaxed);
                 let back = player.loop_break_to_prev.swap(false, Ordering::Relaxed);
@@ -254,15 +266,7 @@ impl Player {
 
                 if loop_broken && ended {
                     // A looping song ending: stopped where it is, as a stop
-                    // leaves it, while its fade plays out. Unless a stop has
-                    // cut it since, and cleaned up itself.
-                    let mut join = player.join.lock().await;
-                    if !join
-                        .as_ref()
-                        .is_some_and(|handles| handles.cancel.same_as(&cancel_handle_for_cleanup))
-                    {
-                        return;
-                    }
+                    // leaves it, while its fade plays out.
                     *player.play_start_time.lock().await = None;
                     *join = None;
                     player.song_playing.store(false, Ordering::Relaxed);
@@ -280,15 +284,14 @@ impl Player {
 
                 let action = decide_cleanup_action(result, cancelled, loop_broken, self_cancelled);
                 if action == CleanupAction::StopCancelled {
-                    // stop() already cleared join and play_start_time.
-                    // Touching them here would clobber state from a new play() that
-                    // may have started after stop() returned.
+                    // stop() already cleared join and play_start_time, and
+                    // took the playback out of `join` as it did, so the check
+                    // above has returned already. Kept as a backstop.
                     return;
                 }
 
                 // Natural finish or loop break: advance playlist and clean up.
                 // A loop broken by previous goes back instead.
-                let mut join = player.join.lock().await;
                 // The playlist as it is now, not as it was when the song
                 // started: an edit since replaces it, the place it had got to
                 // carried over (#576).
@@ -567,13 +570,6 @@ impl Player {
     /// the end of the list without a `fade_out` to end on.
     pub(super) async fn cut_locked(&self, join: &mut Option<PlayHandles>) -> Option<Arc<Song>> {
         let ending = self.end_ending();
-        // A song still winding down from its ending: it is stopped now, and
-        // a song played next must not read its break as its own. See the
-        // cleanup in `play_from_locked` for the order.
-        if self.loop_end.load(Ordering::Relaxed) {
-            self.loop_break.store(false, Ordering::Relaxed);
-            self.loop_end.store(false, Ordering::Relaxed);
-        }
         let song = self.stop_locked(join).await;
         self.song_playing.store(false, Ordering::Relaxed);
         // A song an edit took off the list is current only while it plays:
@@ -810,6 +806,7 @@ impl Player {
                 return None;
             }
         };
+        self.forget_loop_break();
 
         self.cut_break_fade();
         let song = match self.get_playlist().current() {
@@ -835,6 +832,17 @@ impl Player {
         drop(play_handles.join);
 
         Some(song)
+    }
+
+    /// Forgets a loop break, or a looping song's ending, asked of the
+    /// playback just taken out of `join`. Its cleanup finds `join` no longer
+    /// its own and leaves the flags be, so whoever took it clears them, or
+    /// the next song played would read the break as its own and leave its
+    /// loop at the end of its pass. Called with the join lock held.
+    pub(super) fn forget_loop_break(&self) {
+        self.loop_end.store(false, Ordering::Relaxed);
+        self.loop_break.store(false, Ordering::Relaxed);
+        self.loop_break_to_prev.store(false, Ordering::Relaxed);
     }
 
     /// Returns true if a song is currently playing.
