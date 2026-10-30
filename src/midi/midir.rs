@@ -85,6 +85,15 @@ impl Device {
     fn held_tempo(&self) -> Option<Duration> {
         self.beat_clock_engine.as_ref()?.held_tempo()
     }
+
+    /// Tells its beat clock to stop, without waiting for it: a device about
+    /// to be replaced goes quiet before its successor's clock starts, so the
+    /// port never carries two clocks at once.
+    fn silence_beat_clock(&self) {
+        if let Some(engine) = &self.beat_clock_engine {
+            let _ = engine.tx.send(BeatClockCommand::Shutdown);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -565,7 +574,15 @@ impl Reopenable {
         use super::Device as _;
 
         let mut watch = self.watch.lock().expect("unable to get lock");
-        let fresh = open(self.current().held_tempo())?;
+        // The old clock stops before the fresh one starts with the tempo it
+        // held: both at once double every clock pulse the gear following
+        // them sees. Should the fresh device not open, the reload opens one
+        // anew, with a clock of its own.
+        let current = self.current();
+        let held = current.held_tempo();
+        current.silence_beat_clock();
+        drop(current);
+        let fresh = open(held)?;
         // The old watch goes first: both at once would hear every event
         // twice for a moment, and a pedal press taken twice is worse than
         // one missed during a config save.
@@ -574,8 +591,11 @@ impl Reopenable {
             if let Err(e) = fresh.watch_events(sender.clone()) {
                 // Nothing watches now. Its sender dropped, the controller
                 // hears its channel close and ends, rather than read as
-                // running while deaf.
+                // running while deaf. The fresh device goes outside the lock,
+                // as an old one does below.
                 *watch = None;
+                drop(watch);
+                drop(fresh);
                 return Err(e);
             }
         }
@@ -1739,6 +1759,70 @@ mod test {
     /// A device opened afresh started its beat clock knowing no tempo, so
     /// one free-running the tempo held between songs went silent until the
     /// next song. The fresh one is opened holding it.
+    /// REVIEW: the fresh device now starts its beat clock free-running the
+    /// held tempo, and it is opened while the old one's engine still runs:
+    /// for the rest of the reopen both send timing clocks to the same port.
+    #[test]
+    fn reopen_stops_the_old_beat_clock_before_the_fresh_one_runs() {
+        let (tx, rx) = mpsc::channel();
+        let mut old = Device::new_default("test".to_string());
+        old.beat_clock_engine = Some(Arc::new(BeatClockEngine {
+            tx,
+            join: Mutex::new(None),
+            tempo: Arc::new(Mutex::new(Some(Duration::from_millis(20)))),
+        }));
+        let device = Reopenable::with_device(config::Midi::new("test", None), old);
+        let mut old_running_at_open = None;
+        device
+            .reopen_with(|tempo| {
+                old_running_at_open =
+                    Some(!matches!(rx.try_recv(), Ok(BeatClockCommand::Shutdown)));
+                Ok(device_holding("test", tempo))
+            })
+            .unwrap();
+        assert_eq!(
+            old_running_at_open,
+            Some(false),
+            "the fresh engine (holding {:?}) started while the old one still ran",
+            device.current().held_tempo()
+        );
+    }
+
+    /// REVIEW: on a fresh device that cannot take the watch over, the fresh
+    /// device (and its beat clock thread's join) is dropped with the watch
+    /// lock still held.
+    #[test]
+    fn a_refused_fresh_device_is_dropped_outside_the_watch_lock() {
+        use crate::midi::Device as _;
+        let reopenable: Arc<std::sync::OnceLock<std::sync::Weak<Reopenable>>> = Arc::default();
+        let free = Arc::new(Mutex::new(None));
+        let device = Arc::new(Reopenable::with_device(
+            config::Midi::new("test", None),
+            Device::new_default("test".to_string()),
+        ));
+        reopenable.set(Arc::downgrade(&device)).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+        device.watch_events(tx).unwrap();
+        let _ = device.reopen_with(|_| {
+            let mut fresh = Device::new_default("test".to_string());
+            fresh.refuse_watch = true;
+            fresh.on_drop = Some(Box::new({
+                let reopenable = reopenable.clone();
+                let free = free.clone();
+                move || {
+                    let device = reopenable.get().and_then(std::sync::Weak::upgrade);
+                    *free.lock().unwrap() = device.map(|d| d.watch.try_lock().is_ok());
+                }
+            }));
+            Ok(fresh)
+        });
+        assert_eq!(
+            *free.lock().unwrap(),
+            Some(true),
+            "dropped under the watch lock"
+        );
+    }
+
     #[test]
     fn reopen_carries_the_held_tempo_over() {
         let held = Duration::from_millis(20);
