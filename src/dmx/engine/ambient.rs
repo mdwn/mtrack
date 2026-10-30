@@ -743,9 +743,7 @@ impl Engine {
             }
         };
         let path = resolve_show_path(self.base_path.as_deref(), &settings.show);
-        let read = confine_show_path(self.base_path.as_deref(), &path)
-            .and_then(|path| self.read_ambient_shows(&path));
-        match read {
+        match self.read_ambient_shows(&path) {
             Ok((content, shows)) => Some(LoadedAmbient {
                 settings,
                 path,
@@ -789,21 +787,6 @@ fn resolve_show_path(base: Option<&Path>, show: &str) -> PathBuf {
         Some(base) if path.is_relative() => base.join(path),
         _ => path.to_path_buf(),
     }
-}
-
-/// `path`, an ambient show's, checked to be inside the project `base`, as a
-/// light show's `include`s are: a playlist written over the web names it,
-/// and it must not read files elsewhere on the machine (#578).
-fn confine_show_path(base: Option<&Path>, path: &Path) -> Result<PathBuf, String> {
-    let Some(base) = base else {
-        return Ok(path.to_path_buf());
-    };
-    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
-    let base = base.canonicalize().map_err(|e| e.to_string())?;
-    if !canonical.starts_with(&base) {
-        return Err("the show is outside the project directory".to_string());
-    }
-    Ok(canonical)
 }
 
 #[cfg(test)]
@@ -940,6 +923,48 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn the_profiles_ambient_show_loads_from_outside_the_project() -> Result<(), Box<dyn Error>> {
+        // #578 refused an ambient show outside the project, the operator's
+        // own too: one named by absolute path in a shared directory, or
+        // reached through a symlinked one. Only a playlist's needs keeping
+        // in, and its writes refuse an absolute path or "..".
+        let shared = tempfile::tempdir()?;
+        let project = tempfile::tempdir()?;
+        std::fs::write(shared.path().join("ambient.light"), BLUE)?;
+        std::os::unix::fs::symlink(shared.path(), project.path().join("lighting"))?;
+        let groups = std::collections::HashMap::from([(
+            "wash".to_string(),
+            config::lighting::LogicalGroup::new("wash".to_string(), vec![]),
+        )]);
+        let absolute = shared.path().join("ambient.light").display().to_string();
+        for show in [absolute.as_str(), "lighting/ambient.light"] {
+            let lighting = config::Lighting::new(None, Some(groups.clone()), None).with_ambient(
+                Some(config::ambient::Ambient::new(
+                    Some(show.to_string()),
+                    Some("0s".to_string()),
+                    Some("0s".to_string()),
+                    Some("0s".to_string()),
+                )),
+            );
+            let engine = Engine::new(
+                &config::Dmx::new(
+                    None,
+                    None,
+                    Some(9011),
+                    vec![config::Universe::new(5, "universe1".to_string())],
+                    None,
+                ),
+                Some(&lighting),
+                Some(project.path()),
+                OlaClientFactory::create_mock_client(),
+            )?;
+            assert!(engine.load_ambient(None).is_some(), "{show} was refused");
+        }
+        Ok(())
+    }
+
     #[test]
     fn the_delay_holds_the_last_frame() -> Result<(), Box<dyn Error>> {
         let (_dir, engine) = ambient_engine(BLUE, ("1s", "0s", "0s"))?;
@@ -973,26 +998,6 @@ mod tests {
         assert_eq!(tick(&engine), (0.0, 255.0, 0.0), "its second cue");
         sleep(Duration::from_millis(500));
         assert_eq!(tick(&engine), (0.0, 0.0, 255.0), "round again");
-        Ok(())
-    }
-
-    #[test]
-    fn an_ambient_show_must_be_inside_the_project() -> Result<(), Box<dyn Error>> {
-        // #578: a playlist's `../../etc/passwd` was read.
-        let root = tempfile::tempdir()?;
-        let project = root.path().join("project");
-        std::fs::create_dir_all(project.join("lighting"))?;
-        std::fs::write(project.join("lighting/a.light"), "")?;
-        std::fs::write(root.path().join("secret"), "")?;
-        let inside = resolve_show_path(Some(&project), "lighting/a.light");
-        assert!(confine_show_path(Some(&project), &inside).is_ok());
-        for show in ["../secret", "lighting/../../secret"] {
-            let outside = resolve_show_path(Some(&project), show);
-            let err = confine_show_path(Some(&project), &outside).unwrap_err();
-            assert!(err.contains("outside the project"), "{show}: {err}");
-        }
-        let absolute = root.path().join("secret");
-        assert!(confine_show_path(Some(&project), &absolute).is_err());
         Ok(())
     }
 
