@@ -580,11 +580,14 @@ fn add_aim_points_blocking(
         venues_dir: venues_dir.to_string(),
         ..MvrExportOptions::for_venue(venue_name)
     };
+    // Held from the analysis below, which reads the venue: a save linking a
+    // fixture between it and the write would get an aim point it no longer
+    // needs.
+    let _guard = VENUE_WRITES.blocking_lock();
     // The export's own analysis says which fixtures are fixed and which are
     // already linked, so this can never disagree with the summary.
     let (_, report) =
         lighting::export::export_mvr_bytes(&options, project).map_err(|e| e.to_string())?;
-    let _guard = VENUE_WRITES.blocking_lock();
     let unlinked: Vec<&str> = report
         .fixed_fixtures
         .iter()

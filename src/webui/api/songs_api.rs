@@ -354,6 +354,12 @@ pub(super) async fn delete_song(
         }
     }
 
+    // In turn with the song's edits, which would write a deleted song back,
+    // and with the playlists' saves, whose files this edits too. Held from
+    // the lookup, so the song found is the one on disk.
+    let _song_writes = SONG_WRITES.lock().await;
+    let _playlist_writes = super::playlists::PLAYLIST_WRITES.lock().await;
+
     // Resolve the song directory through the registry with path verification.
     let song_dir = match resolve_song_dir(&state.player, &state.songs_path, &name) {
         Ok(p) => p,
@@ -369,10 +375,6 @@ pub(super) async fn delete_song(
             .into_response();
     }
 
-    // In turn with the song's edits, which would write a deleted song back,
-    // and with the playlists' saves, whose files this edits too.
-    let _song_writes = SONG_WRITES.lock().await;
-    let _playlist_writes = super::playlists::PLAYLIST_WRITES.lock().await;
     let cp = config_path.clone();
     let song_name = name.clone();
     let pl_dir = state.playlists_dir.clone();
@@ -662,6 +664,10 @@ pub(super) async fn post_song(
         return e;
     }
 
+    // Held from the check that the song is new: two creates of one name, or
+    // a create beside an MCP write making it, would both find it missing
+    // and the later would replace the earlier.
+    let _writing = SONG_WRITES.lock().await;
     let song_dir = match SafePath::create_dir_nested(&name, &root) {
         Ok(p) => p,
         Err(e) => return e.into_response(),
@@ -676,7 +682,6 @@ pub(super) async fn post_song(
             .into_response();
     }
 
-    let _writing = SONG_WRITES.lock().await;
     let cp = config_path;
     let body_owned = body;
     if let Err(e) = super::helpers::spawn_blocking_io("write song config", move || {
@@ -707,6 +712,9 @@ pub(super) async fn put_song(
     Path(name): Path<String>,
     body: String,
 ) -> impl IntoResponse {
+    // Held from the lookup: a song deleted before the lock was taken is
+    // not written back.
+    let _writing = SONG_WRITES.lock().await;
     // Look up the song in the registry to get its actual path (handles nested dirs).
     let song_dir = match resolve_song_dir(&state.player, &state.songs_path, &name) {
         Ok(p) => p,
@@ -720,7 +728,6 @@ pub(super) async fn put_song(
         return e;
     }
 
-    let _writing = SONG_WRITES.lock().await;
     let cp = config_path;
     let body_owned = body;
     if let Err(e) = super::helpers::spawn_blocking_io("write song config", move || {

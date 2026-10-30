@@ -3950,6 +3950,66 @@ async fn mcp_playlist_writes_take_turns_with_the_web_ui() -> Result<(), Box<dyn 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_write_playlist_checks_its_songs_in_turn_with_a_song_delete(
+) -> Result<(), Box<dyn Error>> {
+    // A web song delete holds SONG_WRITES + PLAYLIST_WRITES while it takes the
+    // song off every playlist file and reloads. An MCP write_playlist that
+    // validated before waiting for PLAYLIST_WRITES then writes the deleted
+    // song back into the playlist.
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+    let path = fixture.root.join("playlist.yaml");
+
+    // The web delete, as delete_song does it.
+    let song_writes = crate::webui::api::songs_api::SONG_WRITES.lock().await;
+    let web_delete = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
+    let yaml = "kind: playlist\nsongs:\n- DSL Light Show Song\n";
+    let write = tokio::spawn({
+        let (client, url, session) = (client.clone(), url.clone(), session.clone());
+        async move {
+            call_tool(
+                &client,
+                &url,
+                &session,
+                1700,
+                "write_playlist",
+                json!({"yaml": yaml}),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    std::fs::remove_file(fixture.root.join("songs/dsl-light-show-song/song.yaml"))?;
+    std::fs::write(&path, "kind: playlist\nsongs: []\n")?;
+    player.reload_songs(&fixture.root.join("songs"), None, Some(&path));
+    assert!(player.songs().get("DSL Light Show Song").is_err());
+    drop(web_delete);
+    drop(song_writes);
+    let response = write.await?;
+    let refused =
+        response.get("error").is_some() || response["result"]["isError"].as_bool() == Some(true);
+    let on_disk = std::fs::read_to_string(&path)?;
+    assert!(
+        refused || !on_disk.contains("DSL Light Show Song"),
+        "the deleted song was written back: {on_disk}\n{response}"
+    );
+    controller.shutdown();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_write_playlist_keeps_names_already_on_disk() -> Result<(), Box<dyn Error>> {
     // A name the rules for new names refuse is still written to when the
     // playlist is already there, from before those rules.

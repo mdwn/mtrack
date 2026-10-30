@@ -354,6 +354,9 @@ pub(super) async fn put_lighting_file(
         Err(e) => return e.into_response(),
     };
 
+    // Held from reading the song's tempo: a song save changing it reloads
+    // the songs under this lock.
+    let _writing = super::songs_api::SONG_WRITES.lock().await;
     // Validate against the tempo the owning song loads this file with. A show
     // inheriting its song's tempo is valid content that a tempo-less parse
     // rejects, so writing it through the UI would fail for no real reason.
@@ -367,7 +370,6 @@ pub(super) async fn put_lighting_file(
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
 
-    let _writing = super::songs_api::SONG_WRITES.lock().await;
     let vp = verified_path;
     let body_owned = body;
     match super::helpers::spawn_blocking_io("write lighting file", move || {
@@ -412,6 +414,9 @@ pub(super) async fn delete_lighting_file(
 
     // codeql[rust/path-injection] safe is verified via SafePath::resolve against songs_path root.
     let path = safe.as_path().to_path_buf();
+    // In turn with the file's writes: an MCP patch reading it before the
+    // delete would write it back after.
+    let _writing = super::songs_api::SONG_WRITES.lock().await;
     match super::helpers::spawn_blocking_io("delete lighting file", move || {
         std::fs::remove_file(&path)
     })
@@ -1641,6 +1646,10 @@ pub(super) async fn put_fixture_type(
     require_declared_name("fixture type", &name, &types)?;
     validate_referential_archives(&project_root(&state.config_path)?, &types)?;
 
+    // Held from finding the file to writing it, as MCP's patch holds it: a
+    // type added to a shared file between the two would pass the check on
+    // the file's other types below, and be lost to the form's save.
+    let _writing = VENUE_WRITES.lock().await;
     // Read against the resolved directory rather than the created one: every
     // refusal below should land before anything is made on disk.
     let located = locate_fixture_type_file(&dir, &name).await?;
@@ -1739,7 +1748,6 @@ pub(super) async fn put_fixture_type(
     let fp = file_path;
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write fixture type", move || {
-        let _guard = VENUE_WRITES.blocking_lock();
         config_io::staged_write(&fp, &dsl_owned)?;
         if let Some(twin) = stale_twin {
             // Best effort: the save is durable already, and a leftover twin

@@ -1279,14 +1279,17 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<WritePlaylistArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.validate_playlist(&args.yaml)?;
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
-        if let Some(name) = &args.name {
-            validate_name_to_write(&path, name)?;
-        }
         // Taken turns with the web UI's playlist saves, which read the file
         // to keep what the editor does not send.
         let _writing = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
+        // Checked under the lock, against the songs and the file as they
+        // are: a web song delete holds it while it takes the song off every
+        // playlist, and a check before it would write the deleted song back.
+        self.validate_playlist(&args.yaml)?;
+        if let Some(name) = &args.name {
+            validate_name_to_write(&path, name)?;
+        }
         // Same rule as the web UI's playlist write and every other configured
         // root: created only when it is inside the project. A `playlists_dir:`
         // pointing elsewhere is the operator's to set up.
@@ -2246,10 +2249,11 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::Venues, &args.file)
             .await?;
-        validate_name_to_write(&path, &args.file)?;
         // Taken turns with the web UI's venue saves, which check the file's
-        // version before writing.
+        // version before writing. Held from the check on the file's name,
+        // which goes by whether the file is there.
         let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
+        validate_name_to_write(&path, &args.file)?;
         staged_write_string(&path, &args.source).await?;
         let (reloaded, venue_error) = self.reload_venue_if_current().await;
         let mut body = json!({
@@ -2335,6 +2339,10 @@ impl McpServer {
         Parameters(args): Parameters<SongLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
         validate_lighting_filename(&args.file)?;
+        // Held from looking the song up: a web song save or delete reloads
+        // the songs under it, and the file and reference found before it
+        // could be ones the song no longer has.
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self
             .player
             .songs()
@@ -2360,7 +2368,6 @@ impl McpServer {
             .to_string_lossy()
             .replace('\\', "/");
 
-        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let original = read_text(&config_path).await?;
         let referenced = references_lighting_file(&original, &reference);
         let unregistered = match unregister_lighting_file(&original, &reference) {
@@ -2444,8 +2451,9 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
             .await?;
-        validate_name_to_write(&path, &args.file)?;
+        // Held from the check on the file's name, as write_venue holds it.
         let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
+        validate_name_to_write(&path, &args.file)?;
         staged_write_string(&path, &args.source).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
@@ -2471,6 +2479,10 @@ impl McpServer {
         Parameters(args): Parameters<WriteSongLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
         validate_lighting_filename(&args.file)?;
+        // As patch_song: the registration below edits song.yaml. Held from
+        // looking the song up, so the tempo the show is checked against and
+        // the place it is written are the song's as a web save left them.
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self
             .player
             .songs()
@@ -2534,8 +2546,6 @@ impl McpServer {
                 lighting_dir.join(&args.file)
             }
         };
-        // As patch_song: the registration below edits song.yaml.
-        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         staged_write_string(&path, &args.source).await?;
 
         // Writing the file is not enough: without a `lighting:` entry pointing
@@ -2603,6 +2613,9 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<PatchSongArgs>,
     ) -> Result<CallToolResult, McpError> {
+        // Held from the lookup and the read, so a save between them and the
+        // write, such as the web UI's song editor, is not lost.
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self
             .player
             .songs()
@@ -2612,9 +2625,6 @@ impl McpServer {
             .config_path()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| song.base_path().join("song.yaml"));
-        // Held from the read, so a save between it and the write, such as
-        // the web UI's song editor, is not lost.
-        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
         let _: crate::config::Song = serde_yaml_from_str(&updated)?;
@@ -2655,6 +2665,9 @@ impl McpServer {
         Parameters(args): Parameters<PatchSongLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
         validate_lighting_filename(&args.file)?;
+        // Held from looking the song up, so the tempo the patch is checked
+        // against is the song's as a web save left it.
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self
             .player
             .songs()
@@ -2670,7 +2683,6 @@ impl McpServer {
                 None,
             )
         })?;
-        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
         // Validate against the tempo this song loads it with, matching
