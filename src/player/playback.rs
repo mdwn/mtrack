@@ -222,6 +222,7 @@ impl Player {
         *join = Some(PlayHandles {
             join: join_handle,
             cancel: cancel_handle.clone(),
+            start_time,
         });
 
         // Spawn section boundary polling task for reactive looping.

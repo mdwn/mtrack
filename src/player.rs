@@ -174,6 +174,10 @@ impl From<&ReactiveLoopState> for ReactiveLoopStateKind {
 struct PlayHandles {
     join: JoinHandle<()>,
     cancel: CancelHandle,
+    /// Where in the song the playback started: where it still is until
+    /// `play_files` stamps `play_start_time`, which a pause in that window
+    /// reads instead of the clock.
+    start_time: Duration,
 }
 
 /// Groups the parameters needed for `play_files` to avoid excessive argument counts.
@@ -4847,6 +4851,62 @@ mod test {
         assert!(
             kept.is_none_or(|k| k < Duration::from_millis(500)),
             "C kept B's position: pause returned {paused:?}, pending {kept:?}"
+        );
+        Ok(())
+    }
+
+    /// A pause before `play_files` has stamped the start time kept 0, so a
+    /// resume restarted the song: until the stamp, the song is where it
+    /// started (#576).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_before_the_start_is_stamped_keeps_the_start_position(
+    ) -> Result<(), Box<dyn Error>> {
+        let (player, _dir) = player_looping_b().await?;
+        player.stop().await;
+        eventually(
+            || player.join.try_lock().is_ok_and(|j| j.is_none()),
+            "stopped",
+        );
+        // Resume at 5 s (as after a pause), then pause again before
+        // play_files has stamped play_start_time. Simulated by clearing
+        // the stamp under the join lock once the start has gone in.
+        {
+            let mut join = player.join.lock().await;
+            player
+                .play_from_locked(Duration::from_secs(5), &mut join)
+                .await?;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            *player.play_start_time.lock().await = None;
+        }
+        let paused = player.pause().await?;
+        assert_eq!(
+            paused,
+            Some(Duration::from_secs(5)),
+            "a pause before the stamp kept {paused:?}, pending {:?}",
+            player.pending_start()
+        );
+        Ok(())
+    }
+
+    /// A pause straight after a seek lands in that window as a matter of
+    /// course: it keeps the seek's position.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_straight_after_a_seek_keeps_the_seek() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) = player_looping_b().await?;
+        elapsed_eventually(&player).await?;
+        let mut zeros = 0;
+        for _ in 0..10 {
+            player.seek_to(Duration::from_secs(5)).await?;
+            let paused = player.pause().await?;
+            if paused == Some(Duration::ZERO) {
+                zeros += 1;
+            }
+            player.play().await?;
+            elapsed_eventually(&player).await?;
+        }
+        assert_eq!(
+            zeros, 0,
+            "{zeros}/10 pauses straight after a seek to 5 s kept 0"
         );
         Ok(())
     }

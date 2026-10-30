@@ -43,12 +43,12 @@ impl Player {
         // could start the next song in between, and that song would be kept
         // at the one before's position.
         let mut join = self.join.lock().await;
-        // A song just started has no start time yet: it is at its very
-        // beginning.
-        let position = match self.elapsed().await? {
-            Some(position) => position,
-            None if join.is_some() => Duration::ZERO,
-            None => return Ok(None),
+        // A song just started has no start time yet: it is where it
+        // started, which after a seek or a resume is not its beginning.
+        let position = match (self.elapsed().await?, join.as_ref()) {
+            (Some(position), _) => position,
+            (None, Some(handles)) => handles.start_time,
+            (None, None) => return Ok(None),
         };
         // The stop and the position kept for the next play are one step
         // under the join lock, and the song counts as playing throughout,
