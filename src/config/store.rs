@@ -673,12 +673,19 @@ impl ConfigStore {
         // configured-but-empty directory falls back to inline profiles at load
         // time, and looking for an owning file in it would fail with "no
         // profile file matches" on a config that loaded perfectly well.
-        if let Some(dir) = self.directory_profiles(&guard) {
-            persist_gains_to_profile_file(&dir, hostname, &gains)?;
+        // A gain that could not be written is not served from memory either:
+        // it would be lost at the next start, and the checksum would have
+        // moved under the operator's next save.
+        let written = if let Some(dir) = self.directory_profiles(&guard) {
+            persist_gains_to_profile_file(&dir, hostname, &gains)
         } else {
-            let new_yaml = to_yaml_string(&*guard)
-                .map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
-            staged_write(&self.path, &new_yaml).map_err(ConfigError::StoreIo)?;
+            to_yaml_string(&*guard)
+                .map_err(|e| ConfigError::StoreSerialization(e.to_string()))
+                .and_then(|yaml| staged_write(&self.path, &yaml).map_err(ConfigError::StoreIo))
+        };
+        if let Err(e) = written {
+            *guard = rollback;
+            return Err(e);
         }
 
         let _ = self.change_tx.send(());
@@ -938,6 +945,30 @@ profiles:
     /// MIDI controller, through `update_controllers` or a profile, was
     /// written and applied, and the config then failed to load. It is
     /// refused, and neither the file nor the store changes.
+    /// REVIEW: set_track_gains now keeps a rollback for a refused gain, but
+    /// a gain that validates and then fails to persist stays in memory: the
+    /// store serves gains the file does not have, lost at the next restart.
+    #[tokio::test]
+    async fn track_gains_that_cannot_be_written_are_rolled_back() {
+        let yaml = "songs: songs\nprofiles:\n  - audio:\n      device: a\n      track_mappings:\n        click: [1]\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        let player = Player::deserialize(&path).unwrap();
+        // Its directory is gone, so the write fails.
+        let store = ConfigStore::new(player, dir.path().join("gone").join("config.yaml"));
+        let before = store.read().await.unwrap().checksum;
+        let mut gains = indexmap::IndexMap::new();
+        gains.insert("click".to_string(), -6.0f32);
+        let result = store.set_track_gains("anyhost", gains).await;
+        assert!(result.is_err(), "the write did not fail");
+        assert_eq!(
+            store.read().await.unwrap().checksum,
+            before,
+            "a gain that was never written is served from memory"
+        );
+    }
+
     #[tokio::test]
     async fn a_mutation_the_next_load_would_refuse_is_not_written() {
         let yaml = "songs: songs\nprofiles:\n  - audio:\n      device: a\n      track_mappings:\n        click: [1]\n";
