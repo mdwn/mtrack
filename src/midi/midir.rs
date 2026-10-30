@@ -1367,7 +1367,9 @@ fn run_idle_until_command(
 /// tick-sized slices with the tempo still running underneath it.
 ///
 /// Without a tempo to hold (persistence off, or no song has established one
-/// yet) this is a plain blocking wait, matching the original behavior.
+/// yet) it sends nothing while it waits. Either way it waits in slices of at
+/// most 50 ms, taking any command off the channel between them: a command
+/// gives the wait up (see [`heard_command`]). True if one did.
 fn wait_for_start_holding_tempo(
     sender: &mut dyn MidiSender,
     play: &BeatClockPlay,
