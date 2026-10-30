@@ -258,9 +258,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the songs were laid over the entries by position. Both are now refused with a 422, as is an
   ambient show outside the project (`../`, or an absolute path). MCP `write_playlist` and
   `patch_playlist` refuse an unknown song too. Saves of one file at once no longer fail with a
-  500: every config write now holds the file's lock while it stages the new content, not only
-  while it rewrites the file, and the playlist editor's saves take turns from reading the file to
-  reloading the player.
+  500: writers of one file now take turns while they stage the new content, not only while they
+  rewrite the file, and a write that fails leaves no empty file behind. The playlist editor's
+  saves take turns from reading the file to reloading the player.
 - **The dashboard can end a looping song at either end of the list (#579)**: Next on the last
   entry, or Previous on the first, ends a looping song over its `fade_out`, but the dashboard
   turned those buttons off there, so the ending could only be reached from MCP, OSC or gRPC.

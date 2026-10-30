@@ -125,15 +125,35 @@ fn json_to_yaml(value: &serde_json::Value) -> Yaml {
 /// The suffix mtrack stages a pending write under, alongside its destination.
 ///
 /// Deliberately appended rather than substituted for the extension, so a staged
-/// `01-main.yaml.mtrack-new` is not picked up by the directory scans that look
-/// for `.yaml` and `.light` files.
+/// `01-main.yaml.1234.mtrack-new` is not picked up by the directory scans that
+/// look for `.yaml` and `.light` files.
 const STAGED_SUFFIX: &str = ".mtrack-new";
 
-/// The path a pending write to `path` is staged under.
+/// The path a pending write to `path` from this process is staged under. The
+/// process id keeps two mtrack processes writing one file from sharing it;
+/// within one, [`write_file`] has writers of a file take turns.
 pub fn staged_path(path: &Path) -> std::path::PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(STAGED_SUFFIX);
+    name.push(format!(".{}{STAGED_SUFFIX}", std::process::id()));
     path.with_file_name(name)
+}
+
+/// The lock writers of `path` in this process take turns on. Keyed by the
+/// path with its directory resolved, so two spellings of one file share it.
+/// One per file ever written, which the files of a project bound.
+fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let key = parent_of(path)
+        .unwrap_or(Path::new("."))
+        .canonicalize()
+        .ok()
+        .zip(path.file_name())
+        .map(|(dir, name)| dir.join(name))
+        .unwrap_or_else(|| path.to_path_buf());
+    let mut locks = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    std::sync::Arc::clone(locks.entry(key).or_default())
 }
 
 /// Writes `contents` to `path`, preserving who owns the file and leaving a
@@ -156,31 +176,27 @@ pub fn staged_path(path: &Path) -> std::path::PathBuf {
 /// completed, and holds the content it was trying to write. Recovery is
 /// currently manual: copy the sidecar over the destination.
 ///
-/// The destination is locked for the duration, sidecar and all, so two writers
-/// of the same file serialise rather than interleave -- whether two mtrack
-/// processes or two requests in one: the lock is taken on a file description
-/// of each writer's own. It is advisory and only binds cooperating writers,
-/// which is all we need — the racing writer this guards against is mtrack.
+/// Writers of the same file serialise rather than interleave. Within one
+/// process they take turns for the whole write, sidecar and all, since they
+/// share the sidecar; two mtrack processes each stage their own, and take
+/// turns on a lock on the destination for the rewrite. That lock is advisory
+/// and only binds cooperating writers, which is all we need — the racing
+/// writer this guards against is mtrack. Nothing is created at `path` until
+/// the new content is staged, so a write that fails before then (a full
+/// disk, say) leaves no empty file where there was none.
 pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
+
+    // Take turns from before staging: a writer staging while another
+    // rewrites would overwrite its sidecar, and whichever removed it first
+    // left the other's removal to fail (#578).
+    let writer_lock = writer_lock(path);
+    let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
 
     // Read the ownership we are aiming for before creating anything, since
     // creating the destination would otherwise answer the question with the
     // freshly created file's own ownership.
     let intended = intended_ownership(path)?;
-
-    // Lock before staging, not just before the rewrite: the sidecar has one
-    // name per destination, so a writer staging while another rewrites would
-    // overwrite its sidecar, and whichever removed it first left the other's
-    // removal to fail (#578). Lock before truncating, too, not as part of the
-    // open: opening with truncation would discard a competing writer's
-    // content before we had any claim to the file.
-    let mut destination = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(path)?;
-    destination.lock()?;
 
     // Stage the complete new content beside the destination and get it on disk,
     // so the rewrite below always has something to recover from.
@@ -200,6 +216,15 @@ pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         std::fs::File::open(parent)?.sync_all()?;
     }
 
+    // Lock before truncating, not as part of the open: opening with
+    // truncation would discard another process's content before we had any
+    // claim to the file.
+    let mut destination = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+    destination.lock()?;
     if let Some(ownership) = intended {
         ownership.apply(&destination, path)?;
     }
@@ -981,7 +1006,11 @@ mod ownership_test {
         // Directory scans pick files by extension, so the sidecar must not keep
         // the one it was staged from.
         let staged = staged_path(Path::new("/cfg/profiles/01-main.yaml"));
-        assert_eq!(staged.file_name().unwrap(), "01-main.yaml.mtrack-new");
+        let pid = std::process::id();
+        assert_eq!(
+            staged.file_name().unwrap().to_str().unwrap(),
+            format!("01-main.yaml.{pid}.mtrack-new")
+        );
         assert_ne!(staged.extension().unwrap(), "yaml");
         assert_ne!(
             staged_path(Path::new("/cfg/show.light"))
@@ -1027,6 +1056,21 @@ mod ownership_test {
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
         assert_eq!(mode_of(&path), 0o604);
+    }
+
+    #[test]
+    fn a_write_that_fails_to_stage_leaves_no_new_empty_file() {
+        // Created first to lock it, the destination was left empty where
+        // there was none when staging failed (a full disk, say).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.yaml");
+        std::fs::create_dir(staged_path(&path)).unwrap(); // staging cannot open it
+        assert!(write_file(&path, b"songs: [A]\n").is_err());
+        assert!(
+            !path.exists(),
+            "an empty {} was left behind",
+            path.display()
+        );
     }
 
     #[test]
