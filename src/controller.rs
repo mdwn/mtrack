@@ -89,6 +89,11 @@ struct Entry {
     handle: Option<JoinHandle<Result<(), io::Error>>>,
     /// Stops its task, which ends once the driver's own task is gone.
     stop: CancellationToken,
+    /// What its task waited on before running the driver, cancelled once
+    /// the controllers it replaced are gone. Its own end does not say they
+    /// are: a wait that timed out ends it while they may still hold the
+    /// port, so those waiting on it wait on this too.
+    after: Option<CancellationToken>,
     /// Why its task ended, when it failed after it started: a listener
     /// binds its port on the task, not before it.
     failure: Arc<parking_lot::Mutex<Option<String>>>,
@@ -110,17 +115,15 @@ impl Entry {
         let handle = {
             let stop = stop.clone();
             let failure = failure.clone();
+            let after = after.clone();
             tokio::spawn(async move {
                 if let Some(after) = after {
-                    // Waited out even when stopped first: those started
-                    // after this one wait for its end, and may bind the
-                    // port of the controllers it was waiting for.
-                    let gone = tokio::time::timeout(STOP_WAIT, after.cancelled())
-                        .await
-                        .is_ok();
-                    if stop.is_cancelled() {
-                        return Ok(());
-                    }
+                    // A stop ends the wait at once: those started after
+                    // this one wait for `after` as well as for its end.
+                    let gone = tokio::select! {
+                        gone = tokio::time::timeout(STOP_WAIT, after.cancelled()) => gone.is_ok(),
+                        _ = stop.cancelled() => return Ok(()),
+                    };
                     // Not started at all: one still holding its port or its
                     // MIDI watch would only have this one fail, or worse,
                     // both run. As an error, the next update tries again.
@@ -160,21 +163,28 @@ impl Entry {
             midi_device,
             handle: Some(handle),
             stop,
+            after,
             failure,
         }
     }
 
     /// Stops the tasks of `entries`. Returns, if any had one, a token
-    /// cancelled once they are all gone, for those starting to wait on.
+    /// cancelled once they are all gone, and so are the controllers they
+    /// waited on, for those starting to wait on. One that gave up waiting
+    /// on a controller stuck holding its port ends long before that one
+    /// does: taking its end for the stuck one's started the next on top of
+    /// it (#578).
     fn stop_all(entries: Vec<Entry>) -> Option<CancellationToken> {
+        let mut afters = Vec::new();
         let handles: Vec<_> = entries
             .into_iter()
             .filter_map(|entry| {
                 entry.stop.cancel();
+                afters.extend(entry.after);
                 entry.handle
             })
             .collect();
-        if handles.is_empty() {
+        if handles.is_empty() && afters.is_empty() {
             return None;
         }
         let stopped = CancellationToken::new();
@@ -182,6 +192,11 @@ impl Entry {
         tokio::spawn(async move {
             for handle in handles {
                 let _ = handle.await;
+            }
+            // Not bounded here: those waiting on this token bound their own
+            // wait, and read as an error if it runs out.
+            for after in afters {
+                after.cancelled().await;
             }
             done.cancel();
         });
@@ -400,6 +415,9 @@ impl Controller {
                         midi_device,
                         handle: None,
                         stop: CancellationToken::new(),
+                        // Never waited on, but what it was to wait on is
+                        // what its retry must wait on.
+                        after,
                         failure: Arc::new(parking_lot::Mutex::new(None)),
                     },
                     ControllerStatus {
@@ -913,6 +931,101 @@ mod test {
             "the restarted controller lost the race for its own port {failures}/10 times"
         );
         Ok(())
+    }
+
+    /// A driver whose first listener is stuck in blocking code holding its
+    /// port for a while, and which notes a later one started while it still
+    /// holds it.
+    struct StuckThenHeld {
+        starts: Arc<std::sync::atomic::AtomicUsize>,
+        held: Arc<std::sync::atomic::AtomicBool>,
+        overlapped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Driver for StuckThenHeld {
+        fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>> {
+            use std::sync::atomic::Ordering;
+            let n = self.starts.fetch_add(1, Ordering::SeqCst);
+            if self.held.load(Ordering::SeqCst) {
+                self.overlapped.store(true, Ordering::SeqCst);
+            }
+            if n == 0 {
+                self.held.store(true, Ordering::SeqCst);
+                let held = self.held.clone();
+                tokio::spawn(async move {
+                    std::thread::sleep(super::STOP_WAIT * 3);
+                    held.store(false, Ordering::SeqCst);
+                    Ok(())
+                })
+            } else {
+                tokio::spawn(async { std::future::pending::<Result<(), io::Error>>().await })
+            }
+        }
+    }
+
+    /// Three updates: A is stuck, B gives up waiting on it and ends, and C
+    /// waits on B. C took B's end for A's and started while A still held
+    /// the port. It waits on A too, and gives up in turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_wait_past_a_timed_out_one_waits_for_the_stuck_controller() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let overlapped = Arc::new(AtomicBool::new(false));
+        let driver = Arc::new(StuckThenHeld {
+            starts: Arc::new(AtomicUsize::new(0)),
+            held: Arc::new(AtomicBool::new(false)),
+            overlapped: overlapped.clone(),
+        });
+        let a = super::Entry::run(driver.clone(), None, None, false, None);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let stopped = super::Entry::stop_all(vec![a]);
+        let b = super::Entry::run(driver.clone(), stopped, None, false, None);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let stopped = super::Entry::stop_all(vec![b]);
+        let c = super::Entry::run(driver.clone(), stopped, None, false, None);
+        tokio::time::sleep(super::STOP_WAIT * 2).await;
+        let c_failure = c.failure.lock().clone();
+        super::Entry::stop_all(vec![c]);
+        assert!(
+            !overlapped.load(Ordering::SeqCst),
+            "C started while the stuck A still held the port (C failure: {c_failure:?})"
+        );
+    }
+
+    /// A controller that gave up waiting on a stuck one, as an error, is
+    /// retried by the next update. The retry waits on the stuck one too, and
+    /// reads as the same error if it is still there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_retry_of_a_timed_out_controller_waits_for_the_stuck_one() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let overlapped = Arc::new(AtomicBool::new(false));
+        let driver = Arc::new(StuckThenHeld {
+            starts: Arc::new(AtomicUsize::new(0)),
+            held: Arc::new(AtomicBool::new(false)),
+            overlapped: overlapped.clone(),
+        });
+        let a = super::Entry::run(driver.clone(), None, None, false, None);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let stopped = super::Entry::stop_all(vec![a]);
+        let b = super::Entry::run(driver.clone(), stopped, None, false, None);
+        crate::testutil::eventually(|| b.failure.lock().is_some(), "B never gave up");
+        let stopped = super::Entry::stop_all(vec![b]);
+        let retry = super::Entry::run(driver.clone(), stopped, None, false, None);
+        crate::testutil::eventually(
+            || retry.failure.lock().is_some() || driver.starts.load(Ordering::SeqCst) > 1,
+            "the retry neither started nor gave up",
+        );
+        let failure = retry.failure.lock().clone();
+        super::Entry::stop_all(vec![retry]);
+        assert!(
+            !overlapped.load(Ordering::SeqCst),
+            "the retry started while the stuck one still held the port"
+        );
+        assert!(
+            failure
+                .as_deref()
+                .is_some_and(|e| e.contains("had not stopped")),
+            "the retry did not read as an error: {failure:?}"
+        );
     }
 
     /// A driver whose listener is slow to let go of its port, and which

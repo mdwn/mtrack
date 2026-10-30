@@ -123,7 +123,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controller restarted on the device it had now hears it again. A changed controller waits for
   the one it replaces to let go of its port, and one that cannot bind its port shows the error
   in the status rather than "running", and is retried on the next reload. So is one whose
-  predecessor has still not stopped after five seconds: it is not started on top of it. A second
+  predecessor has still not stopped after five seconds: it is not started on top of it, nor is
+  the one replacing it, or its retry, while that predecessor still holds on. A second
   MIDI controller, which could never watch the one MIDI device, is refused by config validation;
   one that gets past it reads as that error, and is no longer retried, which restarted the
   working one each time.
