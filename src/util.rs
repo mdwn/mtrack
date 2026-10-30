@@ -138,9 +138,10 @@ pub fn staged_path(path: &Path) -> std::path::PathBuf {
     path.with_file_name(name)
 }
 
-/// The lock writers of `path` in this process take turns on. Keyed by the
-/// path with its directory resolved, so two spellings of one file share it.
-/// One per file ever written, which the files of a project bound.
+/// The lock writers of `path` in this process take turns on, and readers
+/// through [`read_file`] with them. Keyed by the path with its directory
+/// resolved, so two spellings of one file share it. One per file ever
+/// written or read so, which the files of a project bound.
 fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     static LOCKS: std::sync::LazyLock<
         std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>,
@@ -174,7 +175,9 @@ fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
 /// flushed to disk, and only removed once the destination is durable. A sidecar
 /// left behind therefore means the last write to that file may not have
 /// completed, and holds the content it was trying to write. Recovery is
-/// currently manual: copy the sidecar over the destination.
+/// currently manual: copy the sidecar over the destination. A reader can see
+/// the short file too, while the rewrite is under way, unless it reads
+/// through [`read_file`].
 ///
 /// Writers of the same file serialise rather than interleave. Within one
 /// process they take turns for the whole write, sidecar and all, since they
@@ -236,6 +239,48 @@ pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     // Leaving it behind would falsely advertise an interrupted write. The
     // lock goes with the file, after.
     std::fs::remove_file(&staged)
+}
+
+/// Reads all of `path`, as [`write_file`] last wrote it, never the empty or
+/// partial file its rewrite in place passes through on the way.
+///
+/// The reader takes its turn with the writers: in this process on their
+/// lock, which also covers the moment a new file exists but is not yet
+/// locked, and with another mtrack process on a shared lock on the file,
+/// which its rewrite holds exclusively. A loader that read a file midway
+/// through a save would take it for broken: a playlist so read is skipped,
+/// and an active one falls back to all songs (#578).
+pub fn read_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    let writer_lock = writer_lock(path);
+    let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut file = std::fs::File::open(path)?;
+    file.lock_shared()?;
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)?;
+    Ok(contents)
+}
+
+/// [`read_file`], as text.
+pub fn read_to_string(path: &Path) -> std::io::Result<String> {
+    String::from_utf8(read_file(path)?)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// A YAML config source with the content of `path`, read by [`read_file`]
+/// rather than by the config crate, which reads the file as it finds it.
+pub fn yaml_source(
+    path: &Path,
+) -> Result<::config::File<::config::FileSourceString, ::config::FileFormat>, ::config::ConfigError>
+{
+    let text = read_to_string(path).map_err(|e| {
+        ::config::ConfigError::Foreign(Box::new(std::io::Error::new(
+            e.kind(),
+            format!("{}: {e}", path.display()),
+        )))
+    })?;
+    Ok(::config::File::from_str(&text, ::config::FileFormat::Yaml))
 }
 
 /// Explains a write failure whose cause is not the file's own permissions.
@@ -1901,5 +1946,35 @@ mod create_dir_within_tests {
             &elsewhere.path().join("songs"),
             project
         )));
+    }
+
+    #[test]
+    fn a_reader_never_sees_a_half_written_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.yaml");
+        let body = "songs:\n".to_string() + &"- Some Song Name\n".repeat(2000);
+        crate::util::write_file(&path, body.as_bytes()).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (path, body, stop) = (path.clone(), body.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    crate::util::write_file(&path, body.as_bytes()).unwrap();
+                }
+            })
+        };
+        let mut torn = 0;
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(2) {
+            if crate::util::read_to_string(&path).unwrap() != body {
+                torn += 1;
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        assert_eq!(
+            torn, 0,
+            "a reader saw an empty or partial file {torn} times"
+        );
     }
 }

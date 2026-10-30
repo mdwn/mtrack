@@ -104,7 +104,7 @@ fn parse_dsl_file(
     file_path: &Path,
     tempo_map: Option<&crate::tempo::TempoMap>,
 ) -> Result<crate::lighting::parser::LightShows, Box<dyn Error>> {
-    let content = std::fs::read_to_string(file_path).map_err(|e| {
+    let content = crate::util::read_to_string(file_path).map_err(|e| {
         format!(
             "Failed to read DSL lighting show {}: {}",
             file_path.display(),

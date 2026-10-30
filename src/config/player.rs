@@ -349,9 +349,8 @@ impl Player {
 
         let mut dir_profiles: Vec<Profile> = Vec::new();
         for path in &yaml_paths {
-            let profile = Config::builder()
-                .add_source(File::from(path.as_path()))
-                .build()
+            let profile = crate::util::yaml_source(path)
+                .and_then(|source| Config::builder().add_source(source).build())
                 .and_then(|c| c.try_deserialize::<Profile>())
                 .map_err(|source| ConfigError::ProfileParse {
                     path: path.clone(),

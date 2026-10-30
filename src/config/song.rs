@@ -13,7 +13,7 @@
 //
 use std::{collections::HashMap, error::Error, io::Write, path::Path};
 
-use config::{Config, File};
+use config::Config;
 use midly::live::LiveEvent;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -229,7 +229,7 @@ impl Song {
     /// Deserializes a file from the path into a song configuration struct.
     pub fn deserialize(path: &Path) -> Result<Song, crate::config::ConfigError> {
         Ok(Config::builder()
-            .add_source(File::from(path))
+            .add_source(crate::util::yaml_source(path)?)
             .build()?
             .try_deserialize::<Song>()?)
     }

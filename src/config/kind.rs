@@ -44,7 +44,7 @@ pub fn peek_kind(path: &Path) -> Option<ConfigKind> {
     }
 
     config::Config::builder()
-        .add_source(config::File::from(path))
+        .add_source(crate::util::yaml_source(path).ok()?)
         .build()
         .ok()?
         .try_deserialize::<KindOnly>()

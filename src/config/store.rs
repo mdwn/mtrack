@@ -692,9 +692,8 @@ fn persist_gains_to_profile_file(
     // skipping an unparseable file could write the gains into the wrong
     // profile when the broken file is the active profile's.
     for path in &yaml_paths {
-        let mut profile = config::Config::builder()
-            .add_source(config::File::from(path.as_path()))
-            .build()
+        let mut profile = crate::util::yaml_source(path)
+            .and_then(|source| config::Config::builder().add_source(source).build())
             .and_then(|c| c.try_deserialize::<Profile>())
             .map_err(|source| ConfigError::ProfileParse {
                 path: path.clone(),
