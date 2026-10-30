@@ -4568,30 +4568,105 @@ mod test {
         Ok(())
     }
 
+    /// Runs `then` while a Next (or, `back`, a Previous) on looping B breaks
+    /// its loop, before the break's cleanup: both wait on the join lock held
+    /// here, Next first, and the cleanup comes to it only once B, cancelled
+    /// by Next, has wound down. Returns the song Next named, and `then`'s.
+    async fn during_a_loop_break<T: Send + 'static>(
+        player: &Arc<Player>,
+        back: bool,
+        then: impl FnOnce(Arc<Player>) -> tokio::task::JoinHandle<T>,
+    ) -> Result<(Option<String>, T), Box<dyn Error>> {
+        let held = player.join.lock().await;
+        let navigating = player.clone();
+        let navigation = tokio::spawn(async move {
+            let target = if back {
+                navigating.prev().await
+            } else {
+                navigating.next().await
+            };
+            target.map(|song| song.name().to_string())
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let then = then(player.clone());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(held);
+        let target = navigation.await?;
+        Ok((target, then.await?))
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_stop_after_a_loop_break_leaves_no_break_for_the_next_play(
-    ) -> Result<(), Box<dyn Error>> {
-        // Next breaks looping B's loop and a stop comes before the break's
-        // cleanup. The cleanup moved on to C and played it regardless. Now
-        // it leaves the playback the stop took alone, so the stop clears the
-        // break, or B played again would read it as its own and leave its
-        // loop at the end of the pass.
-        let (player, _dir) = player_looping_b().await?;
+    async fn a_stop_during_a_loop_break_stops_on_its_target() -> Result<(), Box<dyn Error>> {
+        // #576: Next on looping B had named C and begun fading into it, and
+        // a stop before the break's cleanup left the player stopped on B --
+        // with a `fade_out` on B's entry, ending B over it instead.
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 2s\n- C\n").await?;
         elapsed_eventually(&player).await?;
-        {
-            // Next's break and the stop, the stop first to the lock.
-            let mut join = player.join.lock().await;
-            player.loop_break.store(true, Ordering::Relaxed);
-            join.as_ref().unwrap().cancel.cancel();
-            player.cut_locked(&mut join).await;
-        }
+        let (target, stopped) = during_a_loop_break(&player, false, |player| {
+            tokio::spawn(async move { player.stop().await.map(|song| song.name().to_string()) })
+        })
+        .await?;
+        assert_eq!(target.as_deref(), Some("C"));
+        assert_eq!(stopped.as_deref(), Some("B"));
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(!player.is_playing().await, "the stop held");
-        assert_eq!(current_name(&player).await, "B");
+        assert!(!player.is_playing().await, "C started after the stop");
+        assert_eq!(current_name(&player).await, "C");
+        assert_eq!(player.pending_start(), None);
+        assert!(player.ending_status().is_none(), "B ended instead");
+        // Nor is the break left for the next song played to take as its own.
         assert!(
             !player.loop_break.load(Ordering::Relaxed),
             "the break outlived the stop"
         );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_during_a_loop_break_stops_on_its_target() -> Result<(), Box<dyn Error>> {
+        // #576: Previous on looping B had named A, and a pause before the
+        // break's cleanup kept B's position on B instead.
+        let (player, _dir) = player_looping_b().await?;
+        elapsed_eventually(&player).await?;
+        let (target, paused) = during_a_loop_break(&player, true, |player| {
+            tokio::spawn(async move { player.pause().await.map_err(|e| e.to_string()) })
+        })
+        .await?;
+        assert_eq!(target.as_deref(), Some("A"));
+        assert_eq!(paused, Ok(None), "nothing to resume");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!player.is_playing().await, "A started after the pause");
+        assert_eq!(current_name(&player).await, "A");
+        assert_eq!(player.pending_start(), None, "a position kept for A");
+        assert!(!player.loop_break.load(Ordering::Relaxed));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_seek_during_a_loop_break_calls_it_off_and_seeks_the_looping_song(
+    ) -> Result<(), Box<dyn Error>> {
+        // A seek is asked of the song playing: it restarts B there, and the
+        // break is called off rather than moving on once B is restarted.
+        let (player, _dir) = player_looping_b().await?;
+        elapsed_eventually(&player).await?;
+        let (target, seeked) = during_a_loop_break(&player, false, |player| {
+            tokio::spawn(async move {
+                player
+                    .seek_to(Duration::from_secs(5))
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        })
+        .await?;
+        assert_eq!(target.as_deref(), Some("C"));
+        assert_eq!(seeked, Ok(()));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(player.is_playing().await);
+        assert_eq!(current_name(&player).await, "B");
+        let elapsed = player.elapsed().await?.expect("playing");
+        assert!(elapsed >= Duration::from_secs(5), "{elapsed:?}");
+        assert!(!player.loop_break.load(Ordering::Relaxed));
+        player.stop().await;
         Ok(())
     }
 

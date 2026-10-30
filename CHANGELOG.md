@@ -259,6 +259,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   goes to the entry that took its place, as Stop or its end does; the dashboard shows it as none
   of the list's entries. Deleting or renaming the active playlist keeps the song playing current
   in all songs. A song or playlist edit no longer sends any playlist back to its first entry.
+- **A Stop or pause during a loop break stops on the song it was going to (#576)**: Next or
+  Previous on a looping song names the song it moves to and starts fading into it, but a Stop or
+  pause in the moment before the player moved on left it on the looping song (with a `fade_out`,
+  a Stop ended that song over it instead), and one just after could not keep the next song from
+  starting. The player now stops on the song the break was going to, with no paused position, and
+  a Stop at any point after keeps it from starting; so does a Stop as an auto play's gap runs
+  out. A seek in that moment still calls the break off and seeks in the looping song.
 - **A playlist fade can't outlast the song it plays under (#577)**: a `fade_out` in measures or
   beats had no bound, so `1000000measures` saved and gave a 33-day ending, the prelude playing on
   at full level under the next song. A fade now lasts at most the song it plays under, counted on

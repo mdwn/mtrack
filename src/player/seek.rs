@@ -33,6 +33,10 @@ impl Player {
     /// than a native paused state. Capture elapsed first, stop all synchronized
     /// subsystems, then persist that position through the normal stopped seek
     /// path so the next `play()` resumes from it.
+    ///
+    /// During a loop break, before it has moved on, the player stops on the
+    /// break's target instead, as a stop does, and `None` is returned: there
+    /// is nothing of that song to resume.
     pub async fn pause(&self) -> Result<Option<Duration>, Box<dyn Error>> {
         let Some(position) = self.elapsed().await? else {
             return Ok(None);
@@ -46,7 +50,14 @@ impl Player {
         // position (#576).
         let mut join = self.join.lock().await;
         self.song_playing.store(true, Ordering::Relaxed);
-        self.stop_for_pause(&mut join).await;
+        if !self.stop_for_pause(&mut join).await {
+            // A loop break had the player on its way to the next song: the
+            // pause stops it there, with nothing to resume, and the lights
+            // go to ambient as after a stop.
+            self.song_playing.store(false, Ordering::Relaxed);
+            self.idle_ambient(true);
+            return Ok(None);
+        }
         let position = self.keep_paused_position(position);
         self.song_playing.store(false, Ordering::Relaxed);
         Ok(Some(position))
@@ -78,7 +89,10 @@ impl Player {
     /// at the target position fully re-synchronized. While stopped, the
     /// position is stored and consumed by the next `play()`.
     ///
-    /// Seeking clears any active section loop.
+    /// Seeking clears any active section loop. A seek during a loop break,
+    /// before the break has moved on, calls the break off and seeks in the
+    /// looping song still playing: a seek is asked of the song it can see,
+    /// unlike a stop or pause, which stop on the break's target.
     pub async fn seek_to(&self, position: Duration) -> Result<(), Box<dyn Error>> {
         let mut join = self.join.lock().await;
 

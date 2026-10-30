@@ -574,6 +574,8 @@ impl Player {
     ///
     /// A looping song whose playlist entry has a `fade_out` ends over it
     /// instead ([`Player::end_looping_song`]); a stop while it does cuts it.
+    /// A stop during a loop break, before it has moved on, stops on the
+    /// song the break was going to.
     pub async fn stop(&self) -> Option<Arc<Song>> {
         let mut join = self.join.lock().await;
         if let Some(song) = self.end_looping_song(&join) {
@@ -586,7 +588,7 @@ impl Player {
     /// the end of the list without a `fade_out` to end on.
     pub(super) async fn cut_locked(&self, join: &mut Option<PlayHandles>) -> Option<Arc<Song>> {
         let ending = self.end_ending();
-        let song = self.stop_locked(join).await;
+        let (song, _) = self.stop_locked(join).await;
         self.song_playing.store(false, Ordering::Relaxed);
         // A song an edit took off the list is current only while it plays:
         // stopped, the playlist goes on to the entry that took its place, or
@@ -613,7 +615,12 @@ impl Player {
     /// not end this way.
     pub(super) fn end_looping_song(&self, join: &Option<PlayHandles>) -> Option<Arc<Song>> {
         let handles = join.as_ref()?;
-        if self.loop_end.load(Ordering::Relaxed) || !self.is_current_song_looping() {
+        // A loop break under way is on its way to another song: a stop then
+        // cuts, and stops on that song, rather than ending this one.
+        if self.loop_end.load(Ordering::Relaxed)
+            || self.loop_break.load(Ordering::Relaxed)
+            || !self.is_current_song_looping()
+        {
             return None;
         }
         let playlist = self.get_playlist();
@@ -687,9 +694,12 @@ impl Player {
     /// Stops the song playing, if one is, for a pause, with the join lock
     /// held: the lights hold rather than go to ambient. The song still
     /// counts as playing until the pause has kept its position, and the
-    /// caller clears `song_playing` then.
-    pub(super) async fn stop_for_pause(&self, join: &mut Option<PlayHandles>) -> Option<Arc<Song>> {
-        self.stop_locked(join).await
+    /// caller clears `song_playing` then. Returns whether there is a
+    /// position to keep: none when a loop break asked of the song took the
+    /// playlist on to its target.
+    pub(super) async fn stop_for_pause(&self, join: &mut Option<PlayHandles>) -> bool {
+        let (_, moved) = self.stop_locked(join).await;
+        !moved
     }
 
     /// Starts the song at the playlist's position by itself after `gap`,
@@ -808,7 +818,10 @@ impl Player {
         called_off
     }
 
-    async fn stop_locked(&self, join: &mut Option<PlayHandles>) -> Option<Arc<Song>> {
+    /// Stops the playback in `join`, if there is one, with the join lock
+    /// held. Returns the song stopped, and whether a loop break asked of it
+    /// took the playlist on to the break's target.
+    async fn stop_locked(&self, join: &mut Option<PlayHandles>) -> (Option<Arc<Song>>, bool) {
         // A stop calls off an auto play waiting out its gap.
         self.cancel_auto_play();
         let play_handles = match join.take() {
@@ -819,10 +832,10 @@ impl Player {
                 // position so the next play begins at zero.
                 self.clear_pending_start();
                 info!("Player is not active, cleared any preserved position.");
-                return None;
+                return (None, false);
             }
         };
-        self.forget_loop_break();
+        let broken_to_prev = self.take_loop_break();
 
         self.cut_break_fade();
         let song = match self.get_playlist().current() {
@@ -831,7 +844,7 @@ impl Player {
                 info!("Playlist is empty, nothing to stop.");
                 play_handles.cancel.cancel();
                 drop(play_handles.join);
-                return None;
+                return (None, false);
             }
         };
         info!(song = song.name(), "Stopping playback.");
@@ -847,7 +860,47 @@ impl Player {
 
         drop(play_handles.join);
 
-        Some(song)
+        // A loop break asked of this playback has already told whoever asked
+        // for it where it goes (#545), and begun fading toward it. A stop or
+        // pause before its cleanup ran keeps the playlist move, without the
+        // start: the player stops on the break's target, with nothing kept
+        // to resume.
+        let moved = match broken_to_prev {
+            Some(back) => {
+                self.clear_pending_start();
+                let (_, target) = self.move_playlist(|playlist| {
+                    let moved = if back {
+                        playlist.prev()
+                    } else {
+                        playlist.next()
+                    };
+                    playlist.settle();
+                    moved.and_then(|_| playlist.current())
+                });
+                if let Some(target) = &target {
+                    info!(song = target.name(), "Stopped on the loop break's target.");
+                    self.emit_song_change(target);
+                    self.load_song_samples(target);
+                }
+                true
+            }
+            None => false,
+        };
+
+        (Some(song), moved)
+    }
+
+    /// Takes a loop break asked of the playback just taken out of `join`,
+    /// and returns whether it goes back, or `None` when there was none, or
+    /// it was a looping song's ending, which stays where it is. Its cleanup
+    /// finds `join` no longer its own and leaves the flags be, so whoever
+    /// took it clears them. Called with the join lock held.
+    fn take_loop_break(&self) -> Option<bool> {
+        let ending = self.loop_end.load(Ordering::Relaxed);
+        let broken = self.loop_break.load(Ordering::Relaxed);
+        let back = self.loop_break_to_prev.load(Ordering::Relaxed);
+        self.forget_loop_break();
+        (broken && !ending).then_some(back)
     }
 
     /// Forgets a loop break, or a looping song's ending, asked of the
