@@ -1169,7 +1169,7 @@ impl Song {
                 _ => 0.0,
             };
             let end = last + beat.max(0.0);
-            let duration = self.duration().as_secs_f64();
+            let duration = self.length().as_secs_f64();
             if duration > last {
                 end.min(duration)
             } else {

@@ -456,10 +456,18 @@ pub fn publish_jumps(publisher: JumpPublisher) {
     };
     let (mut end, mut whole_song) = read_end();
     let mut read_at = std::time::Instant::now();
+    // A new end is taken up once two reads in a row agree on it, and never
+    // nothing: a show caught part way through being written (emptied, or
+    // short) is not the show it is becoming.
+    let mut seen = end;
     let mut trigger = SectionLoopTrigger::new();
     while !finished() {
         if read_at.elapsed() >= REREAD {
-            (end, whole_song) = read_end();
+            let (read, read_whole) = read_end();
+            if read != end && read == seen && read.is_some_and(|end| !end.is_zero()) {
+                (end, whole_song) = (read, read_whole);
+            }
+            seen = read;
             read_at = std::time::Instant::now();
         }
         let elapsed = start_time + clock.elapsed();
