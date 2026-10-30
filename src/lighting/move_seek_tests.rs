@@ -612,3 +612,58 @@ fn a_move_takes_one_head_of_a_two_head_move() {
     );
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+// ---- adversarial review ----
+
+/// A show's own move and a sequence's move on one head at one time: live,
+/// `apply_timeline_update` starts sequence effects first, so the show's own
+/// move starts last and takes the head. The seek replay supersedes in cue
+/// order, so the sequence's move, listed after it, takes the head instead.
+const SAME_TIME_SEQ_AND_SHOW_MOVE: &str = "sequence \"q\" {\n    @00:00.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: -90deg, tilt: 0deg, duration: 4s\n}\n\n\
+    show \"s\" {\n    @00:02.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s\n    sequence \"q\"\n}\n";
+
+#[test]
+fn a_show_move_beats_a_sequence_move_at_one_time_after_a_seek() {
+    let f = [mover("m")];
+    let live = pan_in(&played(SAME_TIME_SEQ_AND_SHOW_MOVE, &f, 7000), "m");
+    let seek = pan_in(&seek_play(SAME_TIME_SEQ_AND_SHOW_MOVE, &f, 7000, 7000), "m");
+    let mid_live = pan_in(&played(SAME_TIME_SEQ_AND_SHOW_MOVE, &f, 3000), "m");
+    let mid_seek = pan_in(&seek_play(SAME_TIME_SEQ_AND_SHOW_MOVE, &f, 3000, 3000), "m");
+    let eval = eval_pan(SAME_TIME_SEQ_AND_SHOW_MOVE, &f, 7000, "m");
+    assert_eq!(
+        (mid_seek, seek, eval),
+        (mid_live, live, live),
+        "seek/eval vs live (mid, rest, eval)"
+    );
+}
+
+#[test]
+fn a_show_move_beats_a_sequence_move_at_one_time_in_the_show_end() {
+    let f = [mover("m")];
+    // Live, the show's own 2 s move takes the head; nothing runs after 4 s.
+    let live = played(SAME_TIME_SEQ_AND_SHOW_MOVE, &f, 4500);
+    assert!(live.get_active_effects().is_empty(), "live idle at 4.5 s");
+    let end = LightingTimeline::new(shows(SAME_TIME_SEQ_AND_SHOW_MOVE)).show_end();
+    assert_eq!(end, Duration::from_secs(4));
+}
+
+#[test]
+fn a_move_takes_a_head_from_one_frozen_or_slowed() {
+    let f = [mover_at("m1", 1), mover_at("m2", 11)];
+    let frozen = "show \"s\" {\n    @00:02.000\n    m1, m2: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:02.500\n    freeze(layer: foreground)\n    @00:03.000\n    m2: move pan: -90deg, tilt: 0deg, duration: 2s, layer: background\n    \
+        @00:04.000\n    unfreeze(layer: foreground)\n}\n";
+    let slowed = "show \"s\" {\n    @00:02.000\n    m1, m2: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:02.500\n    master(layer: foreground, speed: 0.5)\n    @00:03.000\n    m2: move pan: -90deg, tilt: 0deg, duration: 2s, layer: background\n}\n";
+    let pairs = [
+        (2800, 2800),
+        (3500, 3500),
+        (4500, 4500),
+        (3010, 6000),
+        (6000, 6000),
+        (8000, 8000),
+    ];
+    let mut bad = compare_heads("frozen", frozen, &f, &pairs);
+    bad.extend(compare_heads("slowed", slowed, &f, &pairs));
+    assert!(bad.is_empty(), "{bad:#?}");
+}

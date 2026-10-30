@@ -518,6 +518,10 @@ fn replay(cues: &[Cue], resolve: ResolveFixtures) -> Replay {
                 );
             }
         }
+        // In the order the engine starts them at one time: a sequence's
+        // effects before the show's own, so a show's own move there takes
+        // the head (#599), as played through.
+        fired.sort_by_key(|effect| effect.sequence.is_none());
         for effect_instance in fired {
             if is_move(&effect_instance) {
                 let fixtures = resolve(&effect_instance);

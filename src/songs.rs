@@ -582,7 +582,10 @@ impl Song {
 
     /// Create a song from a directory without a configuration file
     pub fn initialize(song_directory: &PathBuf) -> Result<Self, Box<dyn Error>> {
-        let song_files = fs::read_dir(song_directory)?;
+        // By name: a directory lists its files in no set order, and a song's
+        // light shows fire same-time cues in the order its files come (#597).
+        let mut song_files: Vec<_> = fs::read_dir(song_directory)?.collect::<Result<_, _>>()?;
+        song_files.sort_by_key(|entry: &fs::DirEntry| entry.file_name());
         let name = filename_display(song_directory).to_string();
 
         let mut light_shows = vec![];
@@ -590,8 +593,7 @@ impl Song {
         let mut light_paths: Vec<PathBuf> = vec![];
         let mut midi_playback = None;
         let mut tracks = vec![];
-        for song_file in song_files {
-            let entry = song_file?;
+        for entry in song_files {
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
                 warn!("Song directory {song_directory:?} has a subdirectory called '{entry:?}'. It will be ignored for initialization.");
