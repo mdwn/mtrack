@@ -32,9 +32,9 @@ use crate::config::trigger::{AudioTriggerInput, TriggerConfig, TriggerInput, Tri
 use crate::samples::TriggerAction;
 use crate::thread_priority::{callback_thread_priority, promote_to_realtime, rt_audio_enabled};
 
-/// Shared condvar notify for signalling stream errors from the error callback
-/// to the recovery thread.
-type ErrorNotify = Arc<(Mutex<bool>, Condvar)>;
+/// Set by a stream's error callback for the recovery thread, which it wakes
+/// through the shutdown signal's condvar (see [`wake`]).
+type ErrorNotify = Arc<Mutex<bool>>;
 
 /// Whether a backend error means this stream is finished and must be replaced.
 ///
@@ -175,7 +175,7 @@ impl TriggerEngine {
             inputs: config.inputs().to_vec(),
         };
 
-        let error_notify: ErrorNotify = Arc::new((Mutex::new(false), Condvar::new()));
+        let error_notify: ErrorNotify = Arc::new(Mutex::new(false));
         let shutdown: ShutdownNotify = Arc::new((Mutex::new(false), Condvar::new()));
 
         // Build the initial stream before spawning the recovery thread.
@@ -347,7 +347,7 @@ impl TriggerEngine {
                     error = %err,
                     "Trigger input stream error (will attempt to recover)"
                 );
-                *error_notify.0.lock() = true;
+                *error_notify.lock() = true;
                 wake(&waker);
             },
             None,
@@ -426,7 +426,7 @@ impl RecoveryThread {
                         drop(stream);
                         return;
                     }
-                    if *error_notify.0.lock() {
+                    if *error_notify.lock() {
                         break;
                     }
                     shut_condvar.wait(&mut shut);
@@ -455,7 +455,7 @@ impl RecoveryThread {
                 // round again, and that discarded stream still holds the signal.
                 // A fresh one has nobody to inherit from. Same fix as the output
                 // path in #370.
-                let attempt_notify: ErrorNotify = Arc::new((Mutex::new(false), Condvar::new()));
+                let attempt_notify: ErrorNotify = Arc::new(Mutex::new(false));
                 match rebuild(attempt_notify.clone()) {
                     Ok(new_stream) => {
                         stream = new_stream;
@@ -649,7 +649,7 @@ mod test {
 
         fn signals() -> (ErrorNotify, ShutdownNotify) {
             (
-                Arc::new((Mutex::new(false), Condvar::new())),
+                Arc::new(Mutex::new(false)),
                 Arc::new((Mutex::new(false), Condvar::new())),
             )
         }
@@ -709,16 +709,22 @@ mod test {
             std::thread::sleep(Duration::from_millis(50));
 
             // As the stream's error callback does.
-            *error_notify.0.lock() = true;
+            *error_notify.lock() = true;
             wake(&shutdown);
             let deadline = Instant::now() + Duration::from_millis(200);
             while builds.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
             }
+            assert!(
+                builds.load(Ordering::SeqCst) >= 1,
+                "an error should rebuild at once"
+            );
+            // A stale error flag, still set on the replacement, rebuilds again.
+            std::thread::sleep(Duration::from_millis(50));
             assert_eq!(
                 builds.load(Ordering::SeqCst),
                 1,
-                "an error should rebuild at once"
+                "the replacement was torn down by the error that replaced the first"
             );
             assert!(
                 first.load(Ordering::SeqCst),
@@ -742,20 +748,24 @@ mod test {
         fn drop_interrupts_the_retry_backoff() {
             let (error_notify, shutdown) = signals();
             let attempts = Arc::new(AtomicUsize::new(0));
+            // Owned by the rebuild closure, so dropped when the thread exits.
+            let exited = Arc::new(AtomicBool::new(false));
             let thread = RecoveryThread::spawn(
                 FakeStream(Arc::new(AtomicBool::new(false))),
                 error_notify.clone(),
                 shutdown.clone(),
                 {
                     let attempts = attempts.clone();
+                    let exit_marker = FakeStream(exited.clone());
                     move |_| -> Result<FakeStream, ()> {
+                        let _ = &exit_marker;
                         attempts.fetch_add(1, Ordering::SeqCst);
                         Err(())
                     }
                 },
             )
             .unwrap();
-            *error_notify.0.lock() = true;
+            *error_notify.lock() = true;
             wake(&shutdown);
             let deadline = Instant::now() + Duration::from_millis(500);
             while attempts.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
@@ -770,6 +780,11 @@ mod test {
                 "drop waited out the backoff: {:?}",
                 started.elapsed()
             );
+            assert!(
+                exited.load(Ordering::SeqCst),
+                "the thread outlived the drop"
+            );
+            assert_eq!(attempts.load(Ordering::SeqCst), 1, "retried after shutdown");
         }
     }
 
