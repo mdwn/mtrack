@@ -87,7 +87,11 @@ impl SafePath {
     }
 
     /// Validates a single path segment (filename or directory name) is safe.
-    /// Rejects empty strings, "..", and path separators.
+    /// Rejects empty strings, "..", and path separators. Also a name that is
+    /// blank or has space at either end, which reads as a different name or
+    /// none in a list; one starting with a dot, which the song loader skips as
+    /// hidden, so what was saved vanishes; and control characters. Names
+    /// Windows reserves (`CON`) are fine on the systems mtrack runs on.
     pub fn validate_name(name: &str) -> Result<(), SafePathError> {
         if name.is_empty()
             || name == "."
@@ -95,6 +99,9 @@ impl SafePath {
             || name.contains('/')
             || name.contains('\\')
             || name.contains('\0')
+            || name.trim() != name
+            || name.starts_with('.')
+            || name.chars().any(char::is_control)
         {
             return Err(SafePathError::InvalidName);
         }
@@ -242,6 +249,19 @@ impl SafePathError {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn validate_name_refuses_names_that_read_wrong_or_vanish() {
+        // #578: names like these were saved, then shown blank, as another
+        // name, or (a hidden song directory) not loaded at all.
+        for name in [" ", "  ", " lead", "trail ", ".hidden", "tab\there", "nl\n"] {
+            assert!(SafePath::validate_name(name).is_err(), "{name:?}");
+        }
+        for name in ["Battle Scarred", "show.light", "CON", "a_b-c (2)"] {
+            assert!(SafePath::validate_name(name).is_ok(), "{name:?}");
+        }
+    }
+
     use super::*;
 
     #[test]
