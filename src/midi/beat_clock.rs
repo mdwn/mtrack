@@ -49,7 +49,9 @@ impl PrecomputedBeatClock {
     ) -> Self {
         // A bound for a degenerate file: an hour at 300 BPM is ~430k pulses.
         const MAX_PULSES: usize = 2_000_000;
-        let until_micros = until.as_secs_f64() * 1e6;
+        if ticks_per_beat == 0 {
+            return PrecomputedBeatClock { ticks: Vec::new() };
+        }
         let tpb = ticks_per_beat as f64;
         // Default tempo: 120 BPM = 500_000 microseconds per beat
         let default_micros_per_tick = 500_000.0 / tpb;
@@ -63,10 +65,21 @@ impl PrecomputedBeatClock {
         let mut current_tick: f64 = 0.0;
         let mut tempo_idx: usize = 0;
 
-        // Walk through the entire MIDI timeline, generating clock ticks
-        while ((current_tick as u64) < total_ticks || elapsed_micros < until_micros)
-            && ticks.len() < MAX_PULSES
-        {
+        // Walk through the entire MIDI timeline, generating clock ticks: one
+        // at the start of the file, the first after Start falling on beat 1
+        // as the MIDI spec has it and as a tempo's clock does, and one a
+        // pulse on from each, short of the file's end -- and past it, while
+        // the song lasts, at the file's last tempo. A tempo of no length
+        // never gets anywhere, so it is not run on.
+        while ticks.len() < MAX_PULSES {
+            let at = Duration::from_micros(elapsed_micros.round() as u64);
+            let in_file = (current_tick as u64) < total_ticks;
+            let running_on = at < until && micros_per_tick.is_finite() && micros_per_tick > 0.0;
+            if !in_file && !running_on {
+                break;
+            }
+            ticks.push(at);
+
             let next_clock_tick = current_tick + clock_interval_ticks_f;
 
             // Check if any tempo changes occur before the next clock tick
@@ -88,11 +101,6 @@ impl PrecomputedBeatClock {
                 elapsed_micros += (next_clock_tick - current_tick) * micros_per_tick;
             }
             current_tick = next_clock_tick;
-
-            let at = Duration::from_micros(elapsed_micros.round() as u64);
-            if (current_tick as u64) <= total_ticks || at < until {
-                ticks.push(at);
-            }
         }
 
         PrecomputedBeatClock { ticks }
@@ -130,14 +138,17 @@ mod tests {
         let beat_clock = PrecomputedBeatClock::from_tempo_info(&[], 480, 480);
         assert_eq!(beat_clock.ticks().len(), 24);
 
-        // First tick should be at ~20_833 µs (one clock interval)
+        // The first tick is at the start: the first clock after Start is
+        // beat 1. The next is one clock interval on.
         let expected_interval = Duration::from_micros((500_000.0_f64 / 24.0).round() as u64);
-        assert_eq!(beat_clock.ticks()[0], expected_interval);
+        assert_eq!(beat_clock.ticks()[0], Duration::ZERO);
+        assert_eq!(beat_clock.ticks()[1], expected_interval);
 
-        // Last tick should be at ~500_000 µs (one beat)
+        // The last is one interval short of the beat's end, which is the
+        // next beat's first.
         let last = beat_clock.ticks()[23];
         assert!(
-            last >= Duration::from_micros(499_000) && last <= Duration::from_micros(501_000),
+            last >= Duration::from_micros(478_000) && last <= Duration::from_micros(480_000),
             "last tick at {:?}",
             last
         );
@@ -184,10 +195,14 @@ mod tests {
         // Seek to the start
         assert_eq!(beat_clock.ticks_from(Duration::ZERO).len(), 48);
 
-        // Seek past one beat (500_001 µs) — should skip the first 24 ticks
-        // (the 24th tick lands at exactly 500_000 µs)
-        let from_half = beat_clock.ticks_from(Duration::from_micros(500_001));
+        // Seek to the second beat (500_000 µs): its first tick is on it, so
+        // the first beat's 24 are skipped.
+        let from_half = beat_clock.ticks_from(Duration::from_micros(500_000));
         assert_eq!(from_half.len(), 24);
+        assert_eq!(
+            beat_clock.ticks_from(Duration::from_micros(500_001)).len(),
+            23
+        );
     }
 
     #[test]

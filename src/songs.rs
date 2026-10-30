@@ -3385,9 +3385,8 @@ mod test {
             let sheet = sheet_of(track)?;
             let song = Song::new_for_test_lasting("test", &["click"], Duration::from_secs(300));
             let ticks = song.beat_clock(Some(&sheet)).unwrap();
-            // A MIDI file's clock has its first pulse one pulse in.
             let k = ticks.len() - 1;
-            let want = (k + 1) as f64 * 0.468_75 / 24.0;
+            let want = k as f64 * 0.468_75 / 24.0;
             let err = (ticks[k].as_secs_f64() - want).abs();
             assert!(err < 1e-3, "pulse {k} off by {err}s");
             Ok(())

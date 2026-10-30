@@ -166,7 +166,8 @@ midi:
   # Real-Time messages (Start, Timing Clock, Stop) to synchronize external gear to the song's
   # tempo. The clock follows, in order of precedence: the tempo events in the song's MIDI
   # playback file; else the song-level `tempo:` block in song.yaml (changes and ramps included,
-  # bar 1 on a clock pulse, any count-in before it pulsing at the starting tempo); else the
+  # bar 1 on a clock pulse, the whole bars of any count-in before it pulsing at the starting
+  # tempo, rounded down to whole quarter notes); else the
   # tempo of the song's click track, as the lighting uses it (each click counts as a quarter
   # note, so a song clicking eighths wants a `tempo:` block). A song with none of these sends
   # no beat clock. The clock runs to the end of the song, past where its click or MIDI stops,

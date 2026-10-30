@@ -3473,6 +3473,36 @@ mod test {
             assert_eq!(played[17], (300, true));
         }
 
+        /// A looping song clocked from its MIDI file keeps every pulse across
+        /// a seam, as one clocked from its tempo does: gear counting pulses
+        /// from Start fell 1/24 of a beat behind every pass.
+        #[test]
+        fn a_midi_files_looping_clock_keeps_every_pulse() {
+            // A MIDI file: 96 tpb, default 120 BPM, 4 beats; song lasts 2 s.
+            let midi = crate::midi::beat_clock::PrecomputedBeatClock::from_tempo_info_until(
+                &[],
+                96,
+                384,
+                ms(2_000),
+            )
+            .ticks_from(Duration::ZERO)
+            .to_vec();
+            let in_pass = |ticks: &[Duration]| {
+                PassTicks::new(ticks, Duration::ZERO, Some(ms(2_000)))
+                    .take_while(|(at, _)| *at < ms(4_000))
+                    .count()
+            };
+            let map = crate::tempo::TempoMap::new(
+                Duration::ZERO,
+                120.0,
+                crate::tempo::TimeSignature::new(4, 4),
+                vec![],
+            )
+            .beat_clock_ticks(ms(2_000));
+            assert_eq!(in_pass(&map), 192, "tempo-map clock");
+            assert_eq!(in_pass(&midi), 192, "MIDI-file clock");
+        }
+
         /// The engine plays the passes, and a broken loop ends the clock with
         /// a Stop, as the player ends the song with it.
         #[test]
