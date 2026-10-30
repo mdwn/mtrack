@@ -108,6 +108,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A show edited during playback reloads where the lights are (#593)**: with a lighting
+  `playback_delay`, a hot reload of the `.light` file rebuilt the show at the song's time rather
+  than the lights' one, the delay ahead of the rig: cues in between were skipped, effects jumped
+  ahead and a freeze held at the wrong point. It now rebuilds at the same point a seek does.
 - **A malformed OSC address no longer stops OSC control (#574)**: one bad packet ended the OSC
   driver until a restart. It is logged and skipped.
 - **A burst of OSC messages no longer deadlocks the driver (#575)**: with both its queues full,

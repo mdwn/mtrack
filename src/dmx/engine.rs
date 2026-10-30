@@ -4518,6 +4518,62 @@ mod test {
             );
             Ok(())
         }
+
+        /// A live edit rebuilds the show where the lights are, as a seek does:
+        /// at the transport's time it came up the delay ahead of the rig,
+        /// skipping a cue just past the lights' time (#593).
+        #[test]
+        fn a_reload_rebuilds_at_the_delayed_time() -> Result<(), Box<dyn Error>> {
+            let engine = engine_with_delay("200ms")?;
+            let mut channels = std::collections::HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "test_fixture".to_string(),
+                    1,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+            let tmp_dir = tempfile::tempdir()?;
+            let dsl_path = tmp_dir.path().join("show.light");
+            std::fs::write(
+                &dsl_path,
+                r#"show "test" {
+    @00:00.000
+    test_fixture: static dimmer: 50%, duration: 30s
+    @00:09.900
+    test_fixture: static dimmer: 100%, duration: 5s
+}"#,
+            )?;
+            engine.update_song_time(Duration::from_secs(10));
+
+            crate::dmx::watcher::reload_timeline(
+                std::slice::from_ref(&dsl_path),
+                &engine.effect_engine,
+                &engine.current_song_timeline,
+                &engine.current_song_time,
+                engine.playback_delay,
+                None,
+                None,
+                None,
+            )?;
+            let next_cue = |engine: &Engine| engine.lighting_arming_state().and_then(|s| s.3);
+            assert_eq!(
+                next_cue(&engine),
+                Some(Duration::from_millis(9900)),
+                "the reload skipped the cue the lights have yet to reach"
+            );
+            assert_eq!(engine.effect_engine.lock().active_effects_count(), 1);
+
+            // A seek to the same point lands on the same state.
+            engine.start_lighting_timeline_at(Duration::from_secs(10));
+            assert_eq!(next_cue(&engine), Some(Duration::from_millis(9900)));
+            assert_eq!(engine.effect_engine.lock().active_effects_count(), 1);
+            Ok(())
+        }
     }
 
     mod song_time_tracker_tests {

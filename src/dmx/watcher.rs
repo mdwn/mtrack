@@ -38,7 +38,7 @@ pub struct WatcherHandle {
 /// 1. Re-parses the .light file
 /// 2. Builds a new LightingTimeline
 /// 3. Swaps it into current_song_timeline
-/// 4. Reconstructs state at current_song_time
+/// 4. Reconstructs state at current_song_time, less `playback_delay`
 /// 5. Sends a reload notification over WebSocket
 #[allow(clippy::too_many_arguments)]
 pub fn start_watching(
@@ -46,6 +46,7 @@ pub fn start_watching(
     effect_engine: Arc<Mutex<EffectEngine>>,
     current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
     current_song_time: Arc<AtomicU64>,
+    playback_delay: Duration,
     lighting_system: Option<Arc<Mutex<LightingSystem>>>,
     lighting_config: Option<crate::config::Lighting>,
     fallback_tempo_map: Option<crate::tempo::TempoMap>,
@@ -167,6 +168,7 @@ pub fn start_watching(
                         &effect_engine,
                         &current_song_timeline,
                         &current_song_time,
+                        playback_delay,
                         lighting_system.as_ref(),
                         lighting_config.as_ref(),
                         fallback_tempo_map.as_ref(),
@@ -203,12 +205,16 @@ pub fn start_watching(
 }
 
 /// Re-parses light show files, builds a new timeline, and swaps it in.
+///
+/// `current_song_time` is the transport's clock; the show is rebuilt at it
+/// less `playback_delay`, the delayed time base frames render on.
 #[allow(clippy::too_many_arguments)]
-fn reload_timeline(
+pub(super) fn reload_timeline(
     file_paths: &[PathBuf],
     effect_engine: &Arc<Mutex<EffectEngine>>,
     current_song_timeline: &Arc<Mutex<Option<LightingTimeline>>>,
     current_song_time: &Arc<AtomicU64>,
+    playback_delay: Duration,
     lighting_system: Option<&Arc<Mutex<LightingSystem>>>,
     lighting_config: Option<&crate::config::Lighting>,
     fallback_tempo_map: Option<&crate::tempo::TempoMap>,
@@ -243,8 +249,12 @@ fn reload_timeline(
 
     let mut new_timeline = LightingTimeline::new(all_shows);
 
-    // Get current song time
-    let song_time = Duration::from_nanos(current_song_time.load(Ordering::Relaxed));
+    // Where the lights are, not the transport: rebuilding at the undelayed
+    // time put the show the delay ahead of the rig, skipping the cues in
+    // between (#593). As `Engine::to_delayed_song_time`, a reload inside the
+    // delay window starts from the top.
+    let song_time = Duration::from_nanos(current_song_time.load(Ordering::Relaxed))
+        .saturating_sub(playback_delay);
 
     // Calculate the timeline update before acquiring the engine lock.
     let timeline_update = if song_time > Duration::ZERO {
@@ -373,6 +383,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -411,6 +422,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -446,6 +458,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -465,6 +478,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -487,6 +501,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -526,6 +541,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             Some(&lighting_config),
             None,
@@ -565,6 +581,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             Some(&lighting_config),
             None,
@@ -601,6 +618,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             Some(&lighting_system),
             None,
             None,
@@ -625,6 +643,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -661,6 +680,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -704,6 +724,7 @@ show "test" {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -780,6 +801,7 @@ show "test" {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -810,6 +832,7 @@ show "test" {
             effect_engine,
             timeline.clone(),
             song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -886,6 +909,7 @@ show "test" {
             Arc::new(Mutex::new(EffectEngine::new())),
             timeline.clone(),
             Arc::new(AtomicU64::new(0)),
+            Duration::ZERO,
             None,
             None,
             None,
@@ -939,6 +963,7 @@ show "test" {
             effect_engine,
             timeline,
             song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -995,6 +1020,7 @@ show "test" {
             effect_engine,
             timeline,
             song_time,
+            Duration::ZERO,
             None,
             None,
             None,
