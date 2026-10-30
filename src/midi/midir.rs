@@ -127,8 +127,12 @@ impl Device {
         let Some(ticks) = song.beat_clock(sheet) else {
             return;
         };
-        // Passes on the song's own grid, as its audio and lights loop.
-        let period = song.loop_period();
+        // Passes on the song's own grid, as its audio, lights and notes loop:
+        // every song length less its crossfade. A song with no audio has no
+        // grid to loop on (its lights do not loop), and its clock plays once.
+        let period = song
+            .duration()
+            .saturating_sub(song.loop_crossfade().unwrap_or_default());
         let passes = (song.loop_playback() && !period.is_zero()).then(|| BeatClockPasses {
             period,
             loop_break: loop_break.clone(),
@@ -3375,6 +3379,11 @@ mod test {
         impl MidiSender for LoopingSender {
             fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
                 if bytes == clock_bytes().as_slice() {
+                    // A clock that ignored the break would go round for ever.
+                    assert!(
+                        self.clocks.len() <= self.break_after,
+                        "the loop break was not heard"
+                    );
                     self.clocks.push(self.clock.elapsed());
                     if self.clocks.len() == self.break_after {
                         self.loop_break.store(true, Ordering::Relaxed);

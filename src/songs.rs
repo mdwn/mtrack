@@ -833,21 +833,12 @@ impl Song {
             .map(|event| event.time)
             .unwrap_or_default();
         let end = self.length().max(midi_end);
-        if let Some(beat_clock) = sheet.and_then(|sheet| sheet.beat_clock.as_ref()) {
-            // A MIDI file's clock stops where the file does: on to the
-            // song's end at its last tempo, as a tempo's clock runs.
-            let mut ticks = beat_clock.ticks_from(Duration::ZERO).to_vec();
-            if let [.., before, last] = ticks[..] {
-                let interval = last.saturating_sub(before);
-                if !interval.is_zero() {
-                    let mut at = last + interval;
-                    while at < end && ticks.len() < 2_000_000 {
-                        ticks.push(at);
-                        at += interval;
-                    }
-                }
+        // A MIDI file's clock runs on past the file's end at its last tempo.
+        if let Some(tempo) = sheet.and_then(|sheet| sheet.beat_clock.as_ref()) {
+            let ticks = tempo.ticks_until(end);
+            if !ticks.is_empty() {
+                return Some(ticks);
             }
-            return Some(ticks);
         }
         let ticks = self.lighting_tempo_map()?.beat_clock_ticks(end);
         (!ticks.is_empty()).then_some(ticks)
@@ -1679,17 +1670,11 @@ fn parse_midi(midi_file: &PathBuf) -> Result<MidiSheet, Box<dyn Error>> {
     // Only generate beat clock when the MIDI file contains explicit tempo events.
     // Files without tempo maps have no tempo opinion, so mtrack stays out of the way
     // and lets musicians control their own tempo.
-    let beat_clock = if tempo_map.is_empty() {
-        None
-    } else {
-        Some(
-            crate::midi::beat_clock::PrecomputedBeatClock::from_tempo_info(
-                &tempo_map,
-                tpb,
-                total_ticks,
-            ),
-        )
-    };
+    let beat_clock = (!tempo_map.is_empty()).then_some(MidiTempo {
+        entries: tempo_map,
+        ticks_per_beat: tpb,
+        total_ticks,
+    });
     Ok(MidiSheet {
         precomputed,
         beat_clock,
@@ -1945,7 +1930,30 @@ fn deduplicate_track_names(tracks: &mut [Track]) {
 /// Contains a pre-computed MIDI timeline for playback.
 pub struct MidiSheet {
     pub(crate) precomputed: crate::midi::playback::PrecomputedMidi,
-    pub(crate) beat_clock: Option<crate::midi::beat_clock::PrecomputedBeatClock>,
+    /// The file's tempo, when it has tempo events to drive a beat clock.
+    pub(crate) beat_clock: Option<MidiTempo>,
+}
+
+/// A MIDI file's tempo events, from which its beat clock is laid out.
+pub(crate) struct MidiTempo {
+    entries: Vec<crate::midi::playback::TempoEntry>,
+    ticks_per_beat: u16,
+    total_ticks: u64,
+}
+
+impl MidiTempo {
+    /// The clock's pulse times over the file, and on past its end at its
+    /// last tempo until `until`.
+    pub(crate) fn ticks_until(&self, until: Duration) -> Vec<Duration> {
+        crate::midi::beat_clock::PrecomputedBeatClock::from_tempo_info_until(
+            &self.entries,
+            self.ticks_per_beat,
+            self.total_ticks,
+            until,
+        )
+        .ticks_from(Duration::ZERO)
+        .to_vec()
+    }
 }
 
 /// A song that failed to load from disk.
@@ -3277,6 +3285,112 @@ mod test {
             let ticks = song.beat_clock(None).unwrap();
             assert!((pulse(&ticks) - 0.25 / 24.0).abs() < 1e-6, "{ticks:?}");
             assert!(*ticks.last().unwrap() < Duration::from_secs(2));
+        }
+
+        /// Parses a one-track MIDI file, 96 ticks to the beat, from raw
+        /// track bytes (end of track included).
+        fn sheet_of(track: Vec<u8>) -> Result<MidiSheet, Box<dyn Error>> {
+            let tempdir = tempfile::tempdir()?;
+            let mut bytes = vec![
+                0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+                0x4D, 0x54, 0x72, 0x6B,
+            ];
+            bytes.extend((track.len() as u32).to_be_bytes());
+            bytes.extend(track);
+            fs::write(tempdir.path().join("test.mid"), &bytes)?;
+            let config = crate::config::Song::new(
+                "test",
+                None,
+                Some("test.mid".to_string()),
+                None,
+                None,
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                vec![],
+            );
+            crate::songs::MidiPlayback::new(tempdir.path(), config.midi_playback().unwrap())?
+                .midi_sheet()
+        }
+
+        /// A file whose last event is a tempo change (120 BPM, then 60 BPM at
+        /// beat 2, where it ends) clocks the rest of the song at 60, not at
+        /// the 120 it has just left.
+        #[test]
+        fn a_closing_tempo_change_sets_the_tempo_past_the_file() -> Result<(), Box<dyn Error>> {
+            let track = vec![
+                0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20, // 500_000 us/beat
+                0x81, 0x40, 0xFF, 0x51, 0x03, 0x0F, 0x42, 0x40, // +192: 1_000_000
+                0x00, 0xFF, 0x2F, 0x00,
+            ];
+            let sheet = sheet_of(track)?;
+            let song = Song::new_for_test_lasting("test", &["click"], Duration::from_secs(4));
+            let ticks = song.beat_clock(Some(&sheet)).unwrap();
+            let last = ticks.len() - 1;
+            let gap = (ticks[last] - ticks[last - 1]).as_secs_f64();
+            assert!(
+                (gap - 1.0 / 24.0).abs() < 1e-5,
+                "extended at {gap}s a pulse"
+            );
+            Ok(())
+        }
+
+        /// A tempo change between the file's last two pulses does not blend
+        /// the two tempos into the clock past the file.
+        #[test]
+        fn a_change_inside_the_last_pulse_is_not_blended() -> Result<(), Box<dyn Error>> {
+            // 96 tpb: a pulse is 4 ticks. 120 BPM, then 60 BPM at tick 190
+            // (between pulses at 188 and 192), file ends at 192.
+            let track = vec![
+                0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20, // 500_000 us/beat
+                0x81, 0x3E, 0xFF, 0x51, 0x03, 0x0F, 0x42, 0x40, // +190: 1_000_000
+                0x02, 0xFF, 0x2F, 0x00,
+            ];
+            let sheet = sheet_of(track)?;
+            let song = Song::new_for_test_lasting("test", &["click"], Duration::from_secs(4));
+            let ticks = song.beat_clock(Some(&sheet)).unwrap();
+            let last = ticks.len() - 1;
+            let gap = (ticks[last] - ticks[last - 1]).as_secs_f64();
+            assert!(
+                (gap - 1.0 / 24.0).abs() < 1e-5,
+                "extended at {gap}s a pulse"
+            );
+            Ok(())
+        }
+
+        /// A MIDI file that only declares a tempo, of no length, clocks the
+        /// song at that tempo.
+        #[test]
+        fn a_tempo_only_file_of_no_length_still_clocks() -> Result<(), Box<dyn Error>> {
+            let track = vec![
+                0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20, 0x00, 0xFF, 0x2F, 0x00,
+            ];
+            let sheet = sheet_of(track)?;
+            let ticks = song(Some(60.0)).beat_clock(Some(&sheet));
+            assert!(
+                ticks.as_ref().is_some_and(|ticks| ticks.len() > 1),
+                "{ticks:?}"
+            );
+            Ok(())
+        }
+
+        /// The clock past the file's end keeps to its tempo exactly, with no
+        /// drift: a one-beat tempo file at 128 BPM under a five-minute song.
+        #[test]
+        fn past_the_files_end_the_clock_keeps_to_its_tempo() -> Result<(), Box<dyn Error>> {
+            // 468_750 us/beat = 128 BPM; one beat long.
+            let track = vec![
+                0x00, 0xFF, 0x51, 0x03, 0x07, 0x27, 0x0E, 0x60, 0xFF, 0x2F, 0x00,
+            ];
+            let sheet = sheet_of(track)?;
+            let song = Song::new_for_test_lasting("test", &["click"], Duration::from_secs(300));
+            let ticks = song.beat_clock(Some(&sheet)).unwrap();
+            // A MIDI file's clock has its first pulse one pulse in.
+            let k = ticks.len() - 1;
+            let want = (k + 1) as f64 * 0.468_75 / 24.0;
+            let err = (ticks[k].as_secs_f64() - want).abs();
+            assert!(err < 1e-3, "pulse {k} off by {err}s");
+            Ok(())
         }
 
         /// No tempo anywhere: no clock, as before.

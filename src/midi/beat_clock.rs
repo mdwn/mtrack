@@ -30,11 +30,26 @@ impl PrecomputedBeatClock {
     /// Walks through the tempo map, computing the absolute time of every clock tick
     /// (24 per quarter note). Between tempo changes, ticks are evenly spaced at the
     /// current tempo's interval.
+    #[cfg(test)]
     pub(crate) fn from_tempo_info(
         tempo_map: &[TempoEntry],
         ticks_per_beat: u16,
         total_ticks: u64,
     ) -> Self {
+        Self::from_tempo_info_until(tempo_map, ticks_per_beat, total_ticks, Duration::ZERO)
+    }
+
+    /// As [`Self::from_tempo_info`], and on past the file's end at its last
+    /// tempo until `until`: for a song that lasts longer than its MIDI file.
+    pub(crate) fn from_tempo_info_until(
+        tempo_map: &[TempoEntry],
+        ticks_per_beat: u16,
+        total_ticks: u64,
+        until: Duration,
+    ) -> Self {
+        // A bound for a degenerate file: an hour at 300 BPM is ~430k pulses.
+        const MAX_PULSES: usize = 2_000_000;
+        let until_micros = until.as_secs_f64() * 1e6;
         let tpb = ticks_per_beat as f64;
         // Default tempo: 120 BPM = 500_000 microseconds per beat
         let default_micros_per_tick = 500_000.0 / tpb;
@@ -49,7 +64,9 @@ impl PrecomputedBeatClock {
         let mut tempo_idx: usize = 0;
 
         // Walk through the entire MIDI timeline, generating clock ticks
-        while (current_tick as u64) < total_ticks {
+        while ((current_tick as u64) < total_ticks || elapsed_micros < until_micros)
+            && ticks.len() < MAX_PULSES
+        {
             let next_clock_tick = current_tick + clock_interval_ticks_f;
 
             // Check if any tempo changes occur before the next clock tick
@@ -72,8 +89,9 @@ impl PrecomputedBeatClock {
             }
             current_tick = next_clock_tick;
 
-            if (current_tick as u64) <= total_ticks {
-                ticks.push(Duration::from_micros(elapsed_micros.round() as u64));
+            let at = Duration::from_micros(elapsed_micros.round() as u64);
+            if (current_tick as u64) <= total_ticks || at < until {
+                ticks.push(at);
             }
         }
 
