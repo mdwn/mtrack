@@ -115,6 +115,9 @@ pub struct SectionJumpLog {
     /// Who commits the jumps: nobody yet, the audio, or the playback's own
     /// publisher. One only, whatever happens to the audio at the start.
     publisher: std::sync::atomic::AtomicU8,
+    /// The playback's clock and start position: the timeline the jumps are
+    /// timed on, read to know which have fallen due.
+    timeline: parking_lot::Mutex<Option<(crate::clock::PlaybackClock, Duration)>>,
 }
 
 /// Who commits a playback's section loop jumps.
@@ -136,6 +139,25 @@ impl SectionJumpLog {
             Ok(_) => true,
             Err(current) => current == role as u8,
         }
+    }
+
+    /// Sets the playback's clock and start position, which the jumps are
+    /// timed on.
+    pub fn set_timeline(&self, clock: crate::clock::PlaybackClock, start_time: Duration) {
+        *self.timeline.lock() = Some((clock, start_time));
+    }
+
+    /// The time the jumps fallen due by now put back, and how many they are:
+    /// read on the playback's own clock, the jumps' timeline. None due before
+    /// it has started.
+    pub fn put_back_now(&self) -> (Duration, usize) {
+        let now = self
+            .timeline
+            .lock()
+            .as_ref()
+            .filter(|(clock, _)| clock.has_started())
+            .map(|(clock, start_time)| *start_time + clock.elapsed());
+        now.map_or((Duration::ZERO, 0), |now| self.put_back_by(now))
     }
 
     /// The time the jumps falling due by `at` (on the playback timeline) put

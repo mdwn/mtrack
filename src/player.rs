@@ -3754,25 +3754,38 @@ mod test {
     async fn the_position_counts_a_section_loop_jump_as_it_falls_due() -> Result<(), Box<dyn Error>>
     {
         let player = make_test_player().await?;
-        let log = Arc::new(crate::playsync::SectionJumpLog::default());
-        log.push(crate::section_loop::SectionJump {
-            at: Duration::from_secs(8),
-            from: Duration::from_secs(8),
-            to: Duration::from_secs(4),
-        });
+        // Gaps of tens of seconds, so a slow runner cannot cross them.
+        let at = |since: Duration| {
+            let log = Arc::new(crate::playsync::SectionJumpLog::default());
+            log.push(crate::section_loop::SectionJump {
+                at: Duration::from_secs(100),
+                from: Duration::from_secs(100),
+                to: Duration::from_secs(4),
+            });
+            log.set_timeline(
+                crate::clock::PlaybackClock::wall_from(std::time::Instant::now() - since),
+                Duration::ZERO,
+            );
+            (log, std::time::SystemTime::now() - since)
+        };
+        // Just past the jump: back in the section, not 96s past its end.
+        let (log, start) = at(Duration::from_millis(100_003));
         *player.section_jumps.lock() = log;
-        *player.play_start_time.lock().await =
-            Some(std::time::SystemTime::now() - Duration::from_millis(8_003));
+        *player.play_start_time.lock().await = Some(start);
         let position = player.elapsed().await?.unwrap();
         assert!(
-            position >= Duration::from_secs(4) && position < Duration::from_millis(4_100),
+            position >= Duration::from_secs(4) && position < Duration::from_secs(50),
             "{position:?}"
         );
-        // Before it falls due, the song is where the clock says.
-        *player.play_start_time.lock().await =
-            Some(std::time::SystemTime::now() - Duration::from_millis(7_900));
+        // Well before it falls due, the song is where the clock says.
+        let (log, start) = at(Duration::from_secs(50));
+        *player.section_jumps.lock() = log;
+        *player.play_start_time.lock().await = Some(start);
         let position = player.elapsed().await?.unwrap();
-        assert!(position >= Duration::from_millis(7_900), "{position:?}");
+        assert!(
+            position >= Duration::from_secs(50) && position < Duration::from_secs(100),
+            "{position:?}"
+        );
         Ok(())
     }
 
@@ -3872,6 +3885,85 @@ mod test {
             "{state:?}"
         );
         assert!(player.section_ack().await.is_ok());
+        Ok(())
+    }
+
+    /// Arming while another task holds `play_start_time` (a status poll in
+    /// `elapsed()`, a seek) counts the jumps due as any other time: it read
+    /// none (a `try_lock` that failed), so a section armed after an earlier
+    /// loop in the same playback showed Looping at once, before it had gone
+    /// round.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn arming_under_contention_does_not_report_looping_early() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let songs_dir = dir.path().join("songs");
+        let song_dir = songs_dir.join("S");
+        std::fs::create_dir_all(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("t.wav"), vec![vec![0_i32; 8000 * 10]], 8000)?;
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: S\ntracks:\n  - name: t\n    file: t.wav\ntempo:\n  bpm: 120\n  \
+             time_signature: 4/4\nsections:\n  - name: a\n    start_measure: 1\n    \
+             end_measure: 2\n  - name: b\n    start_measure: 2\n    end_measure: 3\n",
+        )?;
+        let playlist_path = dir.path().join("playlist.yaml");
+        std::fs::write(&playlist_path, "songs:\n- S\n")?;
+        let songs = songs::get_all_songs(&songs_dir)?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(&playlist_path)?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                songs_dir.to_str().unwrap(),
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let song = player.get_playlist().current().unwrap();
+        let (a_start, a_end) = song.resolve_section("a").unwrap();
+        let (b_start, b_end) = song.resolve_section("b").unwrap();
+        // a looped once, long ago on the playback timeline.
+        let log = Arc::new(crate::playsync::SectionJumpLog::default());
+        log.push(crate::section_loop::SectionJump {
+            at: a_end,
+            from: a_end,
+            to: a_start,
+        });
+        // Now in b, mid-way: raw = a's pass put back + b's middle.
+        let mid_b = b_start + (b_end - b_start) / 2;
+        let raw = mid_b + (a_end - a_start);
+        log.set_timeline(
+            crate::clock::PlaybackClock::wall_from(std::time::Instant::now() - raw),
+            Duration::ZERO,
+        );
+        *player.section_jumps.lock() = log;
+        *player.play_start_time.lock().await = Some(std::time::SystemTime::now() - raw);
+        let b = SectionBounds {
+            name: "b".to_string(),
+            start_time: b_start,
+            end_time: b_end,
+        };
+        *player.reactive_loop_state.write() = ReactiveLoopState::SectionOffered(b);
+        {
+            // Another task in elapsed() / a seek, holding the lock.
+            let _held = player.play_start_time.lock().await;
+            assert!(player.section_ack().await.is_ok());
+        }
+        player.check_section_boundaries(mid_b);
+        let state = player.reactive_loop_state();
+        assert!(
+            matches!(&state, ReactiveLoopState::LoopArmed(_)),
+            "b has not gone round, yet: {state:?}"
+        );
         Ok(())
     }
 

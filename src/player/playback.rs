@@ -208,12 +208,13 @@ impl Player {
         *self.loop_time_consumed.lock() = Duration::ZERO;
 
         let join_handle = {
+            let clock = hw.clock_source.new_clock();
             let ctx = PlaybackContext {
                 device: hw.device.clone(),
                 mappings: hw.mappings.clone(),
                 midi_device: hw.midi_device.clone(),
                 dmx_engine: hw.dmx_engine.clone(),
-                clock: hw.clock_source.new_clock(),
+                clock: clock.clone(),
                 song: song.clone(),
                 cancel_handle: cancel_handle.clone(),
                 play_tx,
@@ -229,6 +230,7 @@ impl Player {
                     start_fade: self.start_fade.clone(),
                     section_jumps: {
                         let log = Arc::new(crate::playsync::SectionJumpLog::default());
+                        log.set_timeline(clock.clone(), start_time);
                         *self.section_jumps.lock() = log.clone();
                         log
                     },
@@ -1021,11 +1023,11 @@ impl Player {
         Ok(match *play_start_time {
             Some(play_start_time) => {
                 let raw = play_start_time.elapsed()?;
-                // Section loops by the playback's log, as they fall due (the
-                // counter was bumped up to a monitor poll late, so just past
-                // a loop point the position read past the section's end);
-                // whole-song passes by the counter.
-                let (sections, _) = self.section_jumps.lock().put_back_by(raw);
+                // Section loops by the playback's log, as they fall due on
+                // its own clock (the counter was bumped up to a monitor poll
+                // late, so just past a loop point the position read past the
+                // section's end); whole-song passes by the counter.
+                let (sections, _) = self.section_jumps.lock().put_back_now();
                 let consumed = *self.loop_time_consumed.lock() + sections;
                 Some(raw.saturating_sub(consumed))
             }
@@ -1035,13 +1037,7 @@ impl Player {
 
     /// How many of the playing song's section loop jumps have fallen due.
     fn section_jumps_due(&self) -> usize {
-        let raw = self
-            .play_start_time
-            .try_lock()
-            .ok()
-            .and_then(|start| (*start).and_then(|start| start.elapsed().ok()))
-            .unwrap_or_default();
-        self.section_jumps.lock().put_back_by(raw).1
+        self.section_jumps.lock().put_back_now().1
     }
 
     /// Adds time consumed by a section loop iteration. Called by subsystems
