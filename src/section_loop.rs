@@ -206,6 +206,11 @@ pub struct JumpPublisher {
     pub cancel: crate::playsync::CancelHandle,
     /// Set once the playback's subsystems have finished.
     pub done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// For a playback with audio, set once the audio has stopped: if it
+    /// stopped without taking on the jumps (it failed at the start), this
+    /// does. `None` for a playback without, which this commits from the
+    /// start.
+    pub audio_gone: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub loop_control: crate::playsync::LoopControl,
 }
 
@@ -220,6 +225,7 @@ pub fn publish_jumps(publisher: JumpPublisher) {
         start_time,
         cancel,
         done,
+        audio_gone,
         loop_control,
     } = publisher;
     let finished = || cancel.is_cancelled() || done.load(Ordering::Relaxed);
@@ -227,6 +233,21 @@ pub fn publish_jumps(publisher: JumpPublisher) {
         if finished() {
             return;
         }
+    }
+    // With audio, it commits the jumps once it plays; this only if it never
+    // does.
+    let log = &loop_control.section_jumps;
+    loop {
+        if finished() || log.claimed_by_audio() {
+            return;
+        }
+        let audio_failed = audio_gone
+            .as_ref()
+            .is_none_or(|gone| gone.load(Ordering::Acquire));
+        if audio_failed && log.claim(crate::playsync::JumpPublisherRole::Fallback) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
     let mut trigger = SectionLoopTrigger::new();
     // Each jump's time put back, counted in the player's position as it falls.
@@ -501,6 +522,62 @@ mod tests {
         assert_eq!(
             (again.from, again.to),
             (Duration::from_millis(18_010), Duration::from_secs(10))
+        );
+    }
+
+    /// The publisher commits jumps only when the audio does not: not while
+    /// the audio may yet play, and not once it has taken them on; but if the
+    /// audio stops without taking them on (it failed at the start), it does.
+    #[test]
+    fn the_publisher_stands_in_only_for_audio_that_never_plays() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let run = |audio_takes_them: bool| {
+            let mut loop_control = crate::playsync::LoopControl::new();
+            loop_control.active_section = Arc::new(parking_lot::RwLock::new(Some(SectionBounds {
+                name: "a".to_string(),
+                start_time: Duration::ZERO,
+                end_time: Duration::from_millis(50),
+            })));
+            let clock = crate::clock::PlaybackClock::wall();
+            let audio_gone = Arc::new(AtomicBool::new(false));
+            let done = Arc::new(AtomicBool::new(false));
+            let log = loop_control.section_jumps.clone();
+            let publisher = JumpPublisher {
+                clock: clock.clone(),
+                start_time: Duration::ZERO,
+                cancel: crate::playsync::CancelHandle::new(),
+                done: done.clone(),
+                audio_gone: Some(audio_gone.clone()),
+                loop_control,
+            };
+            let thread = std::thread::spawn(move || publish_jumps(publisher));
+            clock.start();
+            std::thread::sleep(Duration::from_millis(150));
+            let while_pending = crate::playsync::JumpCursor::new(log.clone())
+                .peek()
+                .is_some();
+            if audio_takes_them {
+                assert!(log.claim(crate::playsync::JumpPublisherRole::Audio));
+            }
+            audio_gone.store(true, Ordering::Release);
+            std::thread::sleep(Duration::from_millis(150));
+            done.store(true, Ordering::Relaxed);
+            thread.join().unwrap();
+            (
+                while_pending,
+                crate::playsync::JumpCursor::new(log).peek().is_some(),
+            )
+        };
+        assert_eq!(
+            run(false),
+            (false, true),
+            "the audio failed: the publisher commits"
+        );
+        assert_eq!(
+            run(true),
+            (false, false),
+            "the audio commits: the publisher does not"
         );
     }
 

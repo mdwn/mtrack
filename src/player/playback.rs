@@ -431,16 +431,18 @@ impl Player {
             return;
         }
 
-        // With no audio to commit to section loop jumps, a thread of their
-        // own does, for the notes, lights and beat clock to follow.
+        // The audio commits to section loop jumps as it plays them; with no
+        // audio, or none that starts, a thread of their own does, for the
+        // notes, lights and beat clock to follow.
         let subsystems_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        // (A song with no tracks makes the audio give up at once.)
-        if !has_audio || song.tracks().is_empty() {
+        let audio_gone = has_audio.then(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        {
             let publisher = crate::section_loop::JumpPublisher {
                 clock: clock.clone(),
                 start_time,
                 cancel: cancel_handle.clone(),
                 done: subsystems_done.clone(),
+                audio_gone: audio_gone.clone(),
                 loop_control: loop_control.clone(),
             };
             thread::spawn(move || crate::section_loop::publish_jumps(publisher));
@@ -482,6 +484,9 @@ impl Player {
                         song = song_name,
                         "Error while playing song"
                     );
+                }
+                if let Some(gone) = &audio_gone {
+                    gone.store(true, Ordering::Release);
                 }
                 let outcome = result.map_err(|e| e.to_string());
                 let mut guard = audio_outcome.lock();

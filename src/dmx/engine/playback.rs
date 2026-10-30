@@ -359,8 +359,16 @@ impl Engine {
                             super::timeline::MidiDmxStart::Seek,
                         );
                     }
-                    if !jumps.consumed().is_zero() {
-                        dmx_engine.update_song_time(elapsed.saturating_sub(jumps.consumed()));
+                    let position = elapsed.saturating_sub(jumps.consumed());
+                    if let Some(next) = jumps.peek() {
+                        // A jump committed and coming: the lights are held
+                        // at its end until it falls due. Left to the tracker,
+                        // the time went on past it, and a cue on the
+                        // section's end played for a frame before the restart.
+                        section_owns_time.store(true, Ordering::Relaxed);
+                        dmx_engine.update_song_time(position.min(next.from));
+                    } else if !jumps.consumed().is_zero() {
+                        dmx_engine.update_song_time(position);
                     }
                     thread::sleep(Duration::from_millis(10));
                 }

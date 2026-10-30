@@ -2149,6 +2149,7 @@ mod test {
                 start_time: Duration::ZERO,
                 cancel: cancel_handle.clone(),
                 done: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                audio_gone: None,
                 loop_control: loop_control.clone(),
             };
             std::thread::spawn(move || crate::section_loop::publish_jumps(publisher));
@@ -2254,6 +2255,51 @@ mod test {
             song_time >= Duration::from_millis(450) && song_time <= Duration::from_millis(800),
             "lights at {song_time:?}, the song at 0.6s"
         );
+        Ok(())
+    }
+
+    /// The lights' song time never passes an armed section's end: a cue on
+    /// the boundary (the next section's first look, as most are) would fire
+    /// for a frame before the lights go back. The first jump of a playback
+    /// is made when it falls due, up to the section thread's poll late,
+    /// while the song-time tracker still owns the time and writes on past
+    /// the end. Several playbacks at once, as each overruns by chance.
+    #[test]
+    fn the_lights_do_not_pass_the_section_end_before_going_back() -> Result<(), Box<dyn Error>> {
+        let section = crate::player::SectionBounds {
+            name: "a".to_string(),
+            start_time: Duration::from_millis(400),
+            end_time: Duration::from_millis(1_000),
+        };
+        let runs: Vec<_> = (0..8)
+            .map(|_| {
+                let section = section.clone();
+                std::thread::spawn(move || -> Result<Duration, String> {
+                    let (engine, _) = create_engine().map_err(|e| e.to_string())?;
+                    let loop_control = crate::playsync::LoopControl::new();
+                    *loop_control.active_section.write() = Some(section);
+                    let (_dir, cancel_handle, clock, thread) =
+                        play_section_show(&engine, loop_control).map_err(|e| e.to_string())?;
+                    clock.start();
+                    wait_for_clock(&clock, Duration::from_millis(900));
+                    let mut most = Duration::ZERO;
+                    while clock.elapsed() < Duration::from_millis(1_100) {
+                        most = most.max(engine.get_song_time());
+                        std::thread::sleep(Duration::from_micros(200));
+                    }
+                    cancel_handle.cancel();
+                    thread.join().unwrap();
+                    Ok(most)
+                })
+            })
+            .collect();
+        for run in runs {
+            let most = run.join().unwrap()?;
+            assert!(
+                most <= Duration::from_millis(1_000),
+                "lights reached {most:?}, past the section end at 1s"
+            );
+        }
         Ok(())
     }
 

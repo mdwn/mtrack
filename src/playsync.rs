@@ -112,9 +112,37 @@ pub struct LoopControl {
 #[derive(Default)]
 pub struct SectionJumpLog {
     jumps: parking_lot::Mutex<Vec<crate::section_loop::SectionJump>>,
+    /// Who commits the jumps: nobody yet, the audio, or the playback's own
+    /// publisher. One only, whatever happens to the audio at the start.
+    publisher: std::sync::atomic::AtomicU8,
+}
+
+/// Who commits a playback's section loop jumps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JumpPublisherRole {
+    Audio = 1,
+    Fallback = 2,
 }
 
 impl SectionJumpLog {
+    /// Takes on committing the jumps, unless another has already: true if
+    /// `role` has it now.
+    pub fn claim(&self, role: JumpPublisherRole) -> bool {
+        use std::sync::atomic::Ordering;
+        match self
+            .publisher
+            .compare_exchange(0, role as u8, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => true,
+            Err(current) => current == role as u8,
+        }
+    }
+
+    /// Whether the audio has taken on committing the jumps.
+    pub fn claimed_by_audio(&self) -> bool {
+        self.publisher.load(std::sync::atomic::Ordering::Acquire) == JumpPublisherRole::Audio as u8
+    }
+
     /// Records a jump committed to.
     pub fn push(&self, jump: crate::section_loop::SectionJump) {
         self.jumps.lock().push(jump);

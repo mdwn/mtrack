@@ -849,7 +849,7 @@ fn run_playback(sender: &mut dyn MidiSender, mut ctx: PlaybackContext<'_>) {
                 exclude_channels: ctx.exclude_channels,
                 clock: ctx.clock,
             },
-            Some((&mut jumps, ctx.start_time)),
+            Some((&mut jumps, ctx.start_time, &ctx.active_section)),
             sender,
         );
         let jumped = match played {
@@ -2020,11 +2020,16 @@ enum Played {
 /// from), up to the next that falls due before a note, at its time.
 fn play_precomputed(
     params: &MidiPlaybackParams<'_>,
-    mut jumps: Option<(&mut crate::playsync::JumpCursor, Duration)>,
+    mut jumps: Option<(
+        &mut crate::playsync::JumpCursor,
+        Duration,
+        &parking_lot::RwLock<Option<crate::player::SectionBounds>>,
+    )>,
     sender: &mut dyn MidiSender,
 ) -> Played {
     // Waits on the clock in steps this long while a jump may be committed.
     const JUMP_CHECK: Duration = Duration::from_millis(10);
+    const IDLE_CHECK: Duration = Duration::from_millis(25);
     let events = params.precomputed.events_from(params.start_time);
     let mut buf = Vec::with_capacity(8);
 
@@ -2046,7 +2051,7 @@ fn play_precomputed(
         loop {
             // A jump falling due before this note: the song goes on from
             // there, at its time.
-            if let Some((cursor, song_start)) = jumps.as_mut() {
+            if let Some((cursor, song_start, _)) = jumps.as_mut() {
                 if let Some(next) = cursor.peek() {
                     let at = next.at.saturating_sub(*song_start);
                     if at <= target_wall {
@@ -2067,11 +2072,19 @@ fn play_precomputed(
                 break;
             }
             let wait = target_wall - elapsed;
-            if jumps.is_none() {
+            let Some((cursor, _, armed)) = jumps.as_ref() else {
                 spin_sleep::sleep(wait);
                 break;
-            }
-            spin_sleep::sleep(wait.min(JUMP_CHECK));
+            };
+            // In short steps while a jump could come (one committed, or a
+            // section armed); otherwise in steps still shorter than the 30ms
+            // a jump is committed ahead, so one armed meanwhile is not missed.
+            let step = if cursor.peek().is_some() || armed.read().is_some() {
+                JUMP_CHECK
+            } else {
+                IDLE_CHECK
+            };
+            spin_sleep::sleep(wait.min(step));
             if params.cancel_handle.is_cancelled() {
                 return Played::Cancelled;
             }
@@ -2130,6 +2143,7 @@ mod test {
             start_time,
             cancel: CancelHandle::new(),
             done: done.clone(),
+            audio_gone: None,
             loop_control,
         };
         thread::spawn(move || crate::section_loop::publish_jumps(publisher));

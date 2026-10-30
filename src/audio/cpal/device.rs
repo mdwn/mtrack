@@ -1588,6 +1588,10 @@ impl AudioDevice for Device {
         // DIAGNOSTIC: per-swap counter to compare the first loop against later ones.
         let mut loop_iteration: u64 = 0;
 
+        // Playing now, the audio commits the playback's section loop jumps,
+        // which the notes, lights and beat clock follow.
+        let publishes_jumps = section_jumps.claim(crate::playsync::JumpPublisherRole::Audio);
+
         'monitor: loop {
             if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
                 break;
@@ -1904,7 +1908,9 @@ impl AudioDevice for Device {
                         // actually crosses the boundary, so the user-visible
                         // elapsed doesn't briefly jump backwards.
                         pending_consumption.push((loop_sample, jump.amount()));
-                        section_jumps.push(jump.clone());
+                        if publishes_jumps {
+                            section_jumps.push(jump.clone());
+                        }
 
                         continue 'monitor;
                     }
