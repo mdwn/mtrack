@@ -2151,6 +2151,7 @@ mod test {
                 done: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 audio_gone: None,
                 loop_control: loop_control.clone(),
+                song: None,
             };
             std::thread::spawn(move || crate::section_loop::publish_jumps(publisher));
         }

@@ -450,6 +450,7 @@ impl Player {
                 done: subsystems_done.clone(),
                 audio_gone: audio_gone.clone(),
                 loop_control: loop_control.clone(),
+                song: Some(song.clone()),
             };
             thread::spawn(move || crate::section_loop::publish_jumps(publisher));
         }

@@ -36,7 +36,7 @@ pub struct SectionLoopTrigger {
     next_trigger: Option<Duration>,
     /// The section `next_trigger` was set for: arming another, or the same
     /// one again after a break, starts afresh from where playback is.
-    armed: Option<SectionBounds>,
+    armed: Option<EffectiveSection>,
     /// How much time the loops so far have put back: playback time less
     /// this is the position in the song.
     consumed: Duration,
@@ -53,6 +53,11 @@ pub struct SectionJump {
     pub from: Duration,
     /// Where in the song it jumps to: the section's start.
     pub to: Duration,
+    /// How long the playback it jumps from plays on under the one it jumps
+    /// to: a looping song's `loop_crossfade` for a pass of the whole song
+    /// (less what is left of it, for a pass begun inside it), zero for a
+    /// section, or a whole song looping without one, which switch at once.
+    pub overlap: Duration,
 }
 
 impl SectionJump {
@@ -60,6 +65,77 @@ impl SectionJump {
     pub fn amount(&self) -> Duration {
         self.from.saturating_sub(self.to)
     }
+}
+
+/// The name the whole song goes by as a section ([`EffectiveSection`]): none
+/// a song config can give one of its own.
+pub const WHOLE_SONG: &str = "\u{0}whole song";
+
+/// A looping song's passes, as they go round when no section loop is armed:
+/// each starts `overlap` (its `loop_crossfade`, zero without one) before the
+/// last ends, `length` after it started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WholeSongLoop {
+    pub length: Duration,
+    pub overlap: Duration,
+}
+
+impl WholeSongLoop {
+    /// How `song` loops as a whole, `length` long (its audio's duration with
+    /// audio, how long its lights play without): `None` if it does not loop.
+    pub fn of(song: &crate::songs::Song, length: Duration) -> Option<WholeSongLoop> {
+        song.loop_playback().then(|| WholeSongLoop {
+            length,
+            overlap: song.loop_crossfade().unwrap_or_default().min(length),
+        })
+    }
+}
+
+/// The one section a playback loops on at a time: the section loop armed,
+/// or, with none (or one being broken out of), the whole song for a song
+/// that loops and whose loop is not broken, starting each pass its overlap
+/// before the last ends.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectiveSection {
+    pub bounds: SectionBounds,
+    /// How long the pass a jump leaves plays on under the next.
+    pub overlap: Duration,
+}
+
+impl EffectiveSection {
+    /// Whether this is the whole song going round rather than a section.
+    pub fn is_whole_song(&self) -> bool {
+        self.bounds.name == WHOLE_SONG
+    }
+}
+
+/// Which section loops now: an armed section always takes precedence, so a
+/// section reaching into a looping song's crossfade, or ending on its end,
+/// loops on its own seam with no pass starting under it; once it is broken
+/// (or with none armed), the whole song, if it loops and its loop is not
+/// broken; otherwise none.
+pub fn effective_section(
+    armed: Option<SectionBounds>,
+    section_broken: bool,
+    whole_song: Option<WholeSongLoop>,
+    loop_broken: bool,
+) -> Option<EffectiveSection> {
+    if let Some(bounds) = armed.filter(|_| !section_broken) {
+        return Some(EffectiveSection {
+            bounds,
+            overlap: Duration::ZERO,
+        });
+    }
+    let whole = whole_song.filter(|_| !loop_broken)?;
+    let end = whole.length.saturating_sub(whole.overlap);
+    (!end.is_zero()).then(|| EffectiveSection {
+        bounds: SectionBounds {
+            name: WHOLE_SONG.to_string(),
+            start_time: Duration::ZERO,
+            end_time: end,
+        },
+        overlap: whole.overlap,
+    })
 }
 
 impl SectionLoopTrigger {
@@ -107,8 +183,63 @@ impl SectionLoopTrigger {
         elapsed: Duration,
         margin: Duration,
     ) -> Option<SectionJump> {
-        let section_duration = section.end_time.saturating_sub(section.start_time);
-        if section_duration.is_zero() {
+        self.jump_effective(
+            Some(&EffectiveSection {
+                bounds: section.clone(),
+                overlap: Duration::ZERO,
+            }),
+            elapsed,
+            margin,
+        )
+    }
+
+    /// Returns the jump of the [`effective_section`] when it should fire, as
+    /// [`SectionLoopTrigger::jump`] does for a section; with none, forgets
+    /// the one armed ([`reset`]). The whole song's jump carries its overlap:
+    /// all of it at the grid, what is left of the song for a pass that
+    /// starts late, inside the crossfade (after a section loop broken there).
+    ///
+    /// [`reset`]: SectionLoopTrigger::reset
+    pub fn jump_effective(
+        &mut self,
+        section: Option<&EffectiveSection>,
+        elapsed: Duration,
+        margin: Duration,
+    ) -> Option<SectionJump> {
+        let at = self.arm(section, elapsed)?;
+        let section = self.armed.clone()?;
+        if elapsed + margin < at {
+            return None;
+        }
+        let bounds = &section.bounds;
+        let from = at.saturating_sub(self.consumed);
+        let jump = SectionJump {
+            at,
+            from,
+            to: bounds.start_time,
+            overlap: section
+                .overlap
+                .min((bounds.end_time + section.overlap).saturating_sub(from)),
+        };
+        self.consumed += jump.amount();
+        self.next_trigger = Some(at + bounds.end_time.saturating_sub(bounds.start_time));
+        Some(jump)
+    }
+
+    /// Arms the trigger for `section` (see [`SectionLoopTrigger::jump`]),
+    /// giving when on the playback timeline its next jump falls: `None` with
+    /// no section, or one of no length, which never loops.
+    pub fn arm(
+        &mut self,
+        section: Option<&EffectiveSection>,
+        elapsed: Duration,
+    ) -> Option<Duration> {
+        let Some(section) = section else {
+            self.reset();
+            return None;
+        };
+        let bounds = &section.bounds;
+        if bounds.end_time.saturating_sub(bounds.start_time).is_zero() {
             return None;
         }
         if self.armed.as_ref() != Some(section) {
@@ -116,23 +247,9 @@ impl SectionLoopTrigger {
             // Armed with playback past the end already: now. Only here: a
             // poll that comes late to a trigger set on the grid keeps the
             // grid.
-            self.next_trigger = Some((section.end_time + self.consumed).max(elapsed));
+            self.next_trigger = Some((bounds.end_time + self.consumed).max(elapsed));
         }
-
-        let at = self
-            .next_trigger
-            .unwrap_or(section.end_time + self.consumed);
-        if elapsed + margin < at {
-            return None;
-        }
-        let jump = SectionJump {
-            at,
-            from: at.saturating_sub(self.consumed),
-            to: section.start_time,
-        };
-        self.consumed += jump.amount();
-        self.next_trigger = Some(at + section_duration);
-        Some(jump)
+        self.next_trigger
     }
 
     /// How much playback time the loops so far have put back: playback time
@@ -212,12 +329,33 @@ pub struct JumpPublisher {
     /// start.
     pub audio_gone: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub loop_control: crate::playsync::LoopControl,
+    /// The song: how it loops as a whole, and where it ends. Without one
+    /// (in tests), nothing loops as a whole, and the log closes only once
+    /// the playback is done.
+    pub song: Option<std::sync::Arc<crate::songs::Song>>,
 }
 
-/// Commits a playback's section loop jumps when it plays no audio, which
-/// otherwise commits to them: armed and not broken, a section loops at its
-/// end, as the audio would loop it; the notes, lights and beat clock follow
-/// the jumps from the log, as does the player's position.
+/// Where a song played without audio ends, for [`publish_jumps`] to close
+/// the log there: its lights' end, or, with none, its MIDI's last event.
+fn end_without_audio(song: &crate::songs::Song) -> Duration {
+    let length = song.length();
+    if !length.is_zero() {
+        return length;
+    }
+    song.midi_playback()
+        .and_then(|midi| midi.midi_sheet().ok())
+        .and_then(|sheet| sheet.precomputed.events().last().map(|event| event.time))
+        .unwrap_or_default()
+}
+
+/// Commits a playback's loop jumps when it plays no audio, which otherwise
+/// commits to them, deciding as the audio would from the one
+/// [`effective_section`]: an armed section, not broken, loops at its end; a
+/// looping song with none goes round as a whole, each pass its
+/// `loop_crossfade` before the last ends. The notes, lights and beat clock
+/// follow the jumps from the log, as does the player's position. Once the
+/// song is over (nothing looping, and played to its end), the log is closed,
+/// which lets the followers end.
 pub fn publish_jumps(publisher: JumpPublisher) {
     use std::sync::atomic::Ordering;
     let JumpPublisher {
@@ -227,6 +365,7 @@ pub fn publish_jumps(publisher: JumpPublisher) {
         done,
         audio_gone,
         loop_control,
+        song,
     } = publisher;
     let finished = || cancel.is_cancelled() || done.load(Ordering::Relaxed);
     while !clock.wait_for_start_or_cancel_until(&cancel, Duration::from_millis(10)) {
@@ -249,20 +388,32 @@ pub fn publish_jumps(publisher: JumpPublisher) {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+    let end = song.as_deref().map(end_without_audio);
+    let whole_song = song
+        .as_deref()
+        .and_then(|song| WholeSongLoop::of(song, end.unwrap_or_default()));
     let mut trigger = SectionLoopTrigger::new();
     while !finished() {
         let elapsed = start_time + clock.elapsed();
-        let armed = loop_control.active_section.read().clone();
-        match armed {
-            Some(section) if !loop_control.section_loop_break.load(Ordering::Relaxed) => {
-                if let Some(jump) = trigger.jump(&section, elapsed, PUBLISH_LOOKAHEAD) {
-                    loop_control.section_jumps.push(jump);
-                }
-            }
-            _ => trigger.reset(),
+        let effective = effective_section(
+            loop_control.active_section.read().clone(),
+            loop_control.section_loop_break.load(Ordering::Relaxed),
+            whole_song,
+            loop_control.loop_break.load(Ordering::Relaxed),
+        );
+        if let Some(jump) = trigger.jump_effective(effective.as_ref(), elapsed, PUBLISH_LOOKAHEAD) {
+            log.push(jump);
+        }
+        // Played to its end with nothing to take it back: the song is over.
+        if effective.is_none()
+            && (end.is_some_and(|end| elapsed.saturating_sub(trigger.consumed()) >= end)
+                || loop_control.loop_break.load(Ordering::Relaxed))
+        {
+            break;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+    log.close();
 }
 
 #[cfg(test)]
@@ -421,7 +572,8 @@ mod tests {
             SectionJump {
                 at: Duration::from_secs(18),
                 from: Duration::from_secs(18),
-                to: Duration::from_secs(10)
+                to: Duration::from_secs(10),
+                overlap: Duration::ZERO,
             }
         );
         // 8s put back: B's end is reached at 38s, not at A's next boundary
@@ -539,6 +691,7 @@ mod tests {
                 done: done.clone(),
                 audio_gone: Some(audio_gone.clone()),
                 loop_control,
+                song: None,
             };
             let thread = std::thread::spawn(move || publish_jumps(publisher));
             clock.start();
@@ -567,6 +720,155 @@ mod tests {
             run(true),
             (false, false),
             "the audio commits: the publisher does not"
+        );
+    }
+
+    fn secs(s: u64) -> Duration {
+        Duration::from_secs(s)
+    }
+
+    /// A 100s song looping with a 4s crossfade.
+    fn whole_song() -> Option<WholeSongLoop> {
+        Some(WholeSongLoop {
+            length: secs(100),
+            overlap: secs(4),
+        })
+    }
+
+    /// With nothing armed, a looping song's passes are jumps in the log
+    /// like a section's: each from where the outgoing pass is, its overlap
+    /// before the end, back to the top, the outgoing pass playing on for the
+    /// overlap; every period (length less overlap) on.
+    #[test]
+    fn a_whole_song_pass_is_a_jump_with_its_overlap() {
+        let mut trigger = SectionLoopTrigger::new();
+        let effective = effective_section(None, false, whole_song(), false);
+        assert!(effective
+            .as_ref()
+            .is_some_and(EffectiveSection::is_whole_song));
+        assert_eq!(
+            trigger.jump_effective(effective.as_ref(), secs(95), Duration::ZERO),
+            None
+        );
+        let pass = trigger
+            .jump_effective(effective.as_ref(), secs(96), Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            pass,
+            SectionJump {
+                at: secs(96),
+                from: secs(96),
+                to: Duration::ZERO,
+                overlap: secs(4),
+            }
+        );
+        assert_eq!(
+            trigger.jump_effective(effective.as_ref(), secs(191), Duration::ZERO),
+            None
+        );
+        assert_eq!(
+            trigger
+                .jump_effective(effective.as_ref(), secs(192), Duration::ZERO)
+                .map(|jump| (jump.at, jump.from, jump.overlap)),
+            Some((secs(192), secs(96), secs(4)))
+        );
+        // A song that loops without a crossfade switches at its end.
+        let plain = effective_section(
+            None,
+            false,
+            Some(WholeSongLoop {
+                length: secs(100),
+                overlap: Duration::ZERO,
+            }),
+            false,
+        );
+        let mut trigger = SectionLoopTrigger::new();
+        assert_eq!(
+            trigger
+                .jump_effective(plain.as_ref(), secs(100), Duration::ZERO)
+                .map(|jump| (jump.from, jump.to, jump.overlap)),
+            Some((secs(100), Duration::ZERO, Duration::ZERO))
+        );
+        // Nor does a broken loop, or a song that does not loop, go round.
+        assert_eq!(effective_section(None, false, whole_song(), true), None);
+        assert_eq!(effective_section(None, false, None, false), None);
+    }
+
+    /// An armed section takes precedence over the whole song: one reaching
+    /// into the crossfade, or ending on the song's end, loops on its own
+    /// seam, and no pass starts under it at the crossfade's start.
+    #[test]
+    fn an_armed_section_keeps_the_whole_song_pass_from_firing() {
+        for (start, end) in [(90, 98), (90, 100)] {
+            let section = make_section(start, end);
+            let mut trigger = SectionLoopTrigger::new();
+            let mut jumps = Vec::new();
+            let mut elapsed = secs(80);
+            while elapsed < secs(200) {
+                let effective =
+                    effective_section(Some(section.clone()), false, whole_song(), false);
+                if let Some(jump) =
+                    trigger.jump_effective(effective.as_ref(), elapsed, Duration::ZERO)
+                {
+                    jumps.push(jump);
+                }
+                elapsed += Duration::from_millis(10);
+            }
+            assert!(!jumps.is_empty());
+            for jump in &jumps {
+                assert_eq!(
+                    (jump.from, jump.to, jump.overlap),
+                    (secs(end), secs(start), Duration::ZERO),
+                    "section {start}-{end}s: only its own jumps"
+                );
+            }
+        }
+    }
+
+    /// Broken out of a section past the crossfade's start, the whole song
+    /// goes round at once from where playback is, crossfading over what is
+    /// left of it; broken before, at the crossfade's start.
+    #[test]
+    fn after_a_break_the_pass_fires_where_playback_is() {
+        let section = make_section(90, 99);
+        let mut trigger = SectionLoopTrigger::new();
+        let armed = effective_section(Some(section.clone()), false, whole_song(), false);
+        let jump = trigger
+            .jump_effective(armed.as_ref(), secs(99), Duration::ZERO)
+            .unwrap();
+        assert_eq!(jump.amount(), secs(9));
+        // At 106s on the timeline: 97s into the song, past the crossfade's
+        // start (96s).
+        let broken = effective_section(Some(section), true, whole_song(), false);
+        let pass = trigger
+            .jump_effective(broken.as_ref(), secs(106), Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            pass,
+            SectionJump {
+                at: secs(106),
+                from: secs(97),
+                to: Duration::ZERO,
+                overlap: secs(3),
+            }
+        );
+        // Broken earlier in the song, the pass waits for the crossfade.
+        let section = make_section(10, 20);
+        let mut trigger = SectionLoopTrigger::new();
+        let armed = effective_section(Some(section.clone()), false, whole_song(), false);
+        trigger
+            .jump_effective(armed.as_ref(), secs(20), Duration::ZERO)
+            .unwrap();
+        let broken = effective_section(Some(section), true, whole_song(), false);
+        assert_eq!(
+            trigger.jump_effective(broken.as_ref(), secs(25), Duration::ZERO),
+            None
+        );
+        assert_eq!(
+            trigger
+                .jump_effective(broken.as_ref(), secs(106), Duration::ZERO)
+                .map(|jump| (jump.from, jump.overlap)),
+            Some((secs(96), secs(4)))
         );
     }
 

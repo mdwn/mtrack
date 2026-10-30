@@ -1349,6 +1349,7 @@ impl<'a> SectionFollow<'a> {
                             at: Duration::ZERO,
                             from: section.end_time,
                             to: section.start_time,
+                            overlap: Duration::ZERO,
                         },
                     )
                 })
@@ -2145,6 +2146,7 @@ mod test {
             done: done.clone(),
             audio_gone: None,
             loop_control,
+            song: None,
         };
         thread::spawn(move || crate::section_loop::publish_jumps(publisher));
         (log, done)
@@ -4687,6 +4689,7 @@ mod test {
                 at: ms(300),
                 from: ms(300),
                 to: ms(150),
+                overlap: Duration::ZERO,
             });
             sections.jumps = jumps.clone();
             // Broken once the audio's jump has been taken: the section's own

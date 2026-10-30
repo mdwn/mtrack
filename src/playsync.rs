@@ -118,6 +118,11 @@ pub struct SectionJumpLog {
     /// The playback's clock and start position: the timeline the jumps are
     /// timed on, read to know which have fallen due.
     timeline: parking_lot::Mutex<Option<(crate::clock::PlaybackClock, Duration)>>,
+    /// Set once whoever commits the jumps has stopped playing: no more will
+    /// come. Until then the followers follow, even past the end of their own
+    /// notes or cues, since a section armed late, or one looping past them,
+    /// takes them back.
+    closed: AtomicBool,
 }
 
 /// Who commits a playback's section loop jumps.
@@ -187,6 +192,17 @@ impl SectionJumpLog {
         self.jumps.lock().push(jump);
     }
 
+    /// Says no more jumps will come: the audio, or the publisher standing in
+    /// for it, has stopped playing.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+
+    /// Whether no more jumps will come.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
     /// The jump at `index`, if it has been committed to.
     fn get(&self, index: usize) -> Option<crate::section_loop::SectionJump> {
         self.jumps.lock().get(index).cloned()
@@ -228,6 +244,17 @@ impl JumpCursor {
     /// the position in the song.
     pub fn consumed(&self) -> Duration {
         self.consumed
+    }
+
+    /// Whether another jump may yet come: one committed and not passed, or
+    /// the log still open.
+    pub fn may_jump(&self) -> bool {
+        self.peek().is_some() || !self.log.is_closed()
+    }
+
+    /// The log followed.
+    pub fn log(&self) -> &Arc<SectionJumpLog> {
+        &self.log
     }
 }
 
