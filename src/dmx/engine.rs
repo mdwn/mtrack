@@ -2099,20 +2099,21 @@ mod test {
         Ok(())
     }
 
+    /// What `play_section_show` gives back: the show's directory, kept for
+    /// the playback's life, and its cancel handle, clock and thread.
+    type SectionShow = (
+        tempfile::TempDir,
+        crate::playsync::CancelHandle,
+        crate::clock::PlaybackClock,
+        std::thread::JoinHandle<()>,
+    );
+
     /// Plays a DSL show whose cues run long past the test, with the given
     /// section loop control, and returns the playback's handles.
     fn play_section_show(
         engine: &Arc<Engine>,
         loop_control: crate::playsync::LoopControl,
-    ) -> Result<
-        (
-            tempfile::TempDir,
-            crate::playsync::CancelHandle,
-            crate::clock::PlaybackClock,
-            std::thread::JoinHandle<()>,
-        ),
-        Box<dyn Error>,
-    > {
+    ) -> Result<SectionShow, Box<dyn Error>> {
         let tmp_dir = tempfile::tempdir()?;
         let dsl_path = tmp_dir.path().join("long.dsl");
         std::fs::write(

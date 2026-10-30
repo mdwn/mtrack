@@ -954,6 +954,7 @@ fn realtime_bytes(msg: midly::live::SystemRealtime) -> Vec<u8> {
 /// cancellation). Returns `None` if fewer than two ticks were sent, in which case
 /// the tempo can't be determined. Callers use this to keep the clock free-running
 /// at the last known tempo between songs.
+#[allow(clippy::too_many_arguments)]
 fn run_beat_clock(
     sender: &mut dyn MidiSender,
     ticks: &[Duration],

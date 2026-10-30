@@ -92,9 +92,9 @@ impl SectionLoopTrigger {
     ///
     /// Armed for a section (first, or another than before, or again after a
     /// [`reset`]), the trigger is set to when playback reaches the section's
-    /// end: its end plus the time loops so far have put back. When `elapsed
-    /// + margin` reaches it, the jump fires and the next is set a section's
-    /// length later (grid-locked). A section armed with playback already past
+    /// end: its end plus the time loops so far have put back. When
+    /// `elapsed` plus `margin` reaches it, the jump fires and the next is
+    /// set a section's length later (grid-locked). A section armed with playback already past
     /// its end fires at once, from where playback is.
     ///
     /// Returns `None` if the section has zero duration or the trigger time
