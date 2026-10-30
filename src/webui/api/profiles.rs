@@ -76,12 +76,15 @@ fn yaml_to_json(text: &str) -> Option<serde_json::Value> {
 /// compared case-insensitively, as the profile loader reads them. Only
 /// mappings are merged; list items are rewritten as the UI sent them.
 /// Comments are not carried: the YAML crate does not keep them.
-fn carry_unknown_keys(path: &std::path::Path, old_bytes: &[u8], new: &mut serde_json::Value) {
-    let Some(raw) = std::str::from_utf8(old_bytes).ok().and_then(yaml_to_json) else {
+fn carry_unknown_keys(old_bytes: &[u8], new: &mut serde_json::Value) {
+    let Some(text) = std::str::from_utf8(old_bytes).ok() else {
+        return;
+    };
+    let Some(raw) = yaml_to_json(text) else {
         return;
     };
     let typed = Config::builder()
-        .add_source(config::File::from(path))
+        .add_source(config::File::from_str(text, config::FileFormat::Yaml))
         .build()
         .and_then(|c| c.try_deserialize::<Profile>())
         .ok()
@@ -99,7 +102,7 @@ async fn existing_profile(profiles_dir: &std::path::Path, filename: &str) -> Opt
         .find(|p| p.is_file())?;
     tokio::task::spawn_blocking(move || {
         Config::builder()
-            .add_source(config::File::from(path.as_path()))
+            .add_source(crate::util::yaml_source(&path).ok()?)
             .build()
             .and_then(|c| c.try_deserialize::<Profile>())
             .ok()
@@ -169,8 +172,11 @@ pub(super) async fn get_profiles(State(state): State<WebUiState>) -> impl IntoRe
                 .to_string();
 
             // Parse the profile; skip unparseable files.
+            let Ok(source) = crate::util::yaml_source(&path) else {
+                continue;
+            };
             let profile = match Config::builder()
-                .add_source(config::File::from(path.as_path()))
+                .add_source(source)
                 .build()
                 .and_then(|c| c.try_deserialize::<Profile>())
             {
@@ -232,10 +238,12 @@ pub(super) async fn get_profile(
     // codeql[rust/path-injection] file_path is validated via resolve_resource_path.
     let fp = file_path.clone();
     let (raw, profile) = spawn_blocking_io("read profile", move || {
-        let raw =
-            std::fs::read_to_string(&fp).map_err(|e| format!("Failed to read profile: {}", e))?;
+        let raw = crate::util::read_to_string(&fp)
+            .map_err(|e| format!("Failed to read profile: {}", e))?;
+        // Parsed from the text read, not read again: the two could differ
+        // by a save between them.
         let profile: Profile = Config::builder()
-            .add_source(config::File::from(fp.as_path()))
+            .add_source(config::File::from_str(&raw, config::FileFormat::Yaml))
             .build()
             .and_then(|c| c.try_deserialize())
             .map_err(|e| format!("Failed to parse profile: {}", e))?;
@@ -333,7 +341,7 @@ pub(super) async fn put_profile(
     let fp = file_path;
     let outcome = spawn_blocking_io("write profile", move || {
         let _guard = PROFILE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
-        let old = std::fs::read(&fp).ok();
+        let old = crate::util::read_file(&fp).ok();
         if let Some(expected) = &expected {
             let current = old.as_deref().map(content_version);
             if current.as_deref() != Some(expected.as_str()) {
@@ -342,7 +350,7 @@ pub(super) async fn put_profile(
         }
         let mut merged = new_json;
         if let Some(old) = &old {
-            carry_unknown_keys(&fp, old, &mut merged);
+            carry_unknown_keys(old, &mut merged);
         }
         let yaml = crate::util::to_yaml_string(&merged).map_err(|e| e.to_string())?;
         config_io::staged_write(&fp, &yaml)?;

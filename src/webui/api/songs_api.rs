@@ -144,7 +144,7 @@ fn find_yaml_path(base: &std::path::Path) -> Option<std::path::PathBuf> {
 /// Reads a YAML file in a blocking task, returning a text/yaml response.
 async fn read_yaml_response(path: std::path::PathBuf) -> axum::response::Response {
     match super::helpers::spawn_blocking_io("read song config", move || {
-        std::fs::read_to_string(&path)
+        crate::util::read_to_string(&path)
     })
     .await
     {
@@ -369,6 +369,10 @@ pub(super) async fn delete_song(
             .into_response();
     }
 
+    // In turn with the song's edits, which would write a deleted song back,
+    // and with the playlists' saves, whose files this edits too.
+    let _song_writes = SONG_WRITES.lock().await;
+    let _playlist_writes = super::playlists::PLAYLIST_WRITES.lock().await;
     let cp = config_path.clone();
     let song_name = name.clone();
     let pl_dir = state.playlists_dir.clone();
@@ -630,6 +634,12 @@ pub(super) async fn get_song_files(
     (StatusCode::OK, Json(json!({"files": files}))).into_response()
 }
 
+/// Held by each write of a song's `song.yaml` or one of its lighting files,
+/// here and over MCP, and by an MCP edit from reading the file to writing
+/// it back, so the edit is not made on a copy a save has replaced since:
+/// that save would be lost (#578).
+pub(crate) static SONG_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// POST /api/songs/:name — creates a new song with the given config YAML.
 ///
 /// Creates the song directory and writes song.yaml. Returns 409 Conflict if the
@@ -666,6 +676,7 @@ pub(super) async fn post_song(
             .into_response();
     }
 
+    let _writing = SONG_WRITES.lock().await;
     let cp = config_path;
     let body_owned = body;
     if let Err(e) = super::helpers::spawn_blocking_io("write song config", move || {
@@ -709,6 +720,7 @@ pub(super) async fn put_song(
         return e;
     }
 
+    let _writing = SONG_WRITES.lock().await;
     let cp = config_path;
     let body_owned = body;
     if let Err(e) = super::helpers::spawn_blocking_io("write song config", move || {
@@ -985,7 +997,7 @@ fn remove_song_from_playlists(
         let filtered: Vec<String> = songs.iter().filter(|s| *s != song_name).cloned().collect();
         let updated = playlist_config.with_songs(&filtered);
         if let Ok(yaml) = crate::util::to_yaml_string(&updated) {
-            let _ = std::fs::write(path, yaml);
+            let _ = crate::util::write_file(path, yaml.as_bytes());
         }
     }
 }

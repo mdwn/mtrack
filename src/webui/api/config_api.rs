@@ -30,8 +30,10 @@ use crate::config;
 pub(super) async fn get_config_raw(State(state): State<WebUiState>) -> impl IntoResponse {
     // codeql[rust/path-injection] config_path is set at startup, not from user input.
     let path = state.config_path.clone();
-    match super::helpers::spawn_blocking_io("read config", move || std::fs::read_to_string(&path))
-        .await
+    match super::helpers::spawn_blocking_io("read config", move || {
+        crate::util::read_to_string(&path)
+    })
+    .await
     {
         Ok(content) => (
             StatusCode::OK,

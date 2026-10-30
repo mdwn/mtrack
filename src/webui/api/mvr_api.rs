@@ -581,7 +581,7 @@ fn add_aim_points_blocking(
     // already linked, so this can never disagree with the summary.
     let (_, report) =
         lighting::export::export_mvr_bytes(&options, project).map_err(|e| e.to_string())?;
-    let _guard = VENUE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = VENUE_WRITES.blocking_lock();
     let unlinked: Vec<&str> = report
         .fixed_fixtures
         .iter()
@@ -599,7 +599,7 @@ fn add_aim_points_blocking(
     for path in
         lighting::project_files::files_under(&dir, lighting::project_files::VENUE_EXTENSIONS)
     {
-        let Ok(content) = std::fs::read_to_string(&path) else {
+        let Ok(content) = crate::util::read_to_string(&path) else {
             continue;
         };
         if let Ok(mut venues) = lighting::parser::parse_venues(&content) {

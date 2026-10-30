@@ -132,7 +132,7 @@ pub(super) async fn get_settings(
     };
     let read = path.clone();
     let content = super::helpers::spawn_blocking_io("read fixture type", move || {
-        std::fs::read_to_string(&read)
+        crate::util::read_to_string(&read)
     })
     .await?;
     let Some(settings) = current_settings(&content, &name) else {
@@ -217,7 +217,7 @@ fn venue_files(dir: &FsPath) -> Result<Vec<(PathBuf, String)>, Refusal> {
     crate::lighting::project_files::files_under(dir, VENUE_EXTENSIONS)
         .into_iter()
         .map(|p| {
-            std::fs::read_to_string(&p)
+            crate::util::read_to_string(&p)
                 .map(|text| (p.clone(), text))
                 .map_err(|e| {
                     (
@@ -282,7 +282,7 @@ fn plan(
     let (type_path, content, type_version, new_record) =
         match existing_fixture_type_file(types_dir, name) {
             Some(path) => {
-                let content = std::fs::read_to_string(&path)
+                let content = crate::util::read_to_string(&path)
                     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
                 let version = content_version(content.as_bytes());
                 (path, content, version, false)
@@ -547,7 +547,7 @@ pub(super) async fn post_settings(
     let outcome = super::helpers::spawn_blocking_io("save fixture settings", move || {
         // The same lock as a venue save: a rename's venue writes and a drag
         // on the stage plot never interleave.
-        let _guard = write.then(|| VENUE_WRITES.lock().unwrap_or_else(|e| e.into_inner()));
+        let _guard = write.then(|| VENUE_WRITES.blocking_lock());
         let plan = match plan(
             &root,
             &types_dir,

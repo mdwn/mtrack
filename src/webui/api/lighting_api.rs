@@ -299,7 +299,7 @@ pub(super) async fn get_lighting_file(
 
     let path = safe.as_path().to_path_buf();
     match super::helpers::spawn_blocking_io("read lighting file", move || {
-        std::fs::read_to_string(&path)
+        crate::util::read_to_string(&path)
     })
     .await
     {
@@ -364,6 +364,7 @@ pub(super) async fn put_lighting_file(
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
 
+    let _writing = super::songs_api::SONG_WRITES.lock().await;
     let vp = verified_path;
     let body_owned = body;
     match super::helpers::spawn_blocking_io("write lighting file", move || {
@@ -481,7 +482,7 @@ const FIXTURE_TYPE_EXTENSIONS: &[&str] = lighting::project_files::FIXTURE_TYPE_E
 /// The fixture type names a file declares; none if it cannot be read or
 /// does not parse.
 fn declared_fixture_types(path: &std::path::Path) -> Vec<String> {
-    std::fs::read_to_string(path)
+    crate::util::read_to_string(path)
         .ok()
         .and_then(|content| lighting::parser::parse_fixture_types(&content).ok())
         .map(|types| types.into_keys().collect())
@@ -571,8 +572,13 @@ fn existing_venue_file(dir: &std::path::Path, name: &str) -> Option<std::path::P
 }
 
 /// Serialises every read-check-write of a venue file, so two saves cannot
-/// interleave between the version check and the write.
-pub(super) static VENUE_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// interleave between the version check and the write; and every write of a
+/// fixture type file, which a fixture's settings save rewrites with its
+/// venues. MCP's venue and fixture type writes take it too, and its edits
+/// hold it from their read to their write, or a save made between the two
+/// would be lost (#578). The saves here run on a blocking thread, and take
+/// it with `blocking_lock`.
+pub(crate) static VENUE_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The version of a venue file: a hash of its bytes. A client sends back the
 /// one it read (`If-Match`); a save whose version is no longer the file's is
@@ -636,8 +642,8 @@ pub(super) fn locate_venue_file(
     let paths = lighting::project_files::files_under(dir, VENUE_EXTENSIONS);
     let mut broken: Option<LocatedVenue> = None;
     for path in paths {
-        let bytes =
-            std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let bytes = crate::util::read_file(&path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         let problem = match std::str::from_utf8(&bytes) {
             Ok(text) => match lighting::parser::parse_venues(text) {
                 Ok(venues) if venues.contains_key(name) => {
@@ -1197,7 +1203,7 @@ pub(super) async fn get_fixture_type(
     };
     let fp = file_path.clone();
     let content = super::helpers::spawn_blocking_io("read fixture type", move || {
-        std::fs::read_to_string(&fp)
+        crate::util::read_to_string(&fp)
     })
     .await?;
     let types = lighting::parser::parse_fixture_types(&content).map_err(|e| {
@@ -1239,7 +1245,7 @@ async fn gdtf_source_of(
 ) -> Result<Option<lighting::types::GdtfSource>, axum::response::Response> {
     if let Some((file_path, _)) = locate_fixture_type_file(dir, name).await? {
         let content = super::helpers::spawn_blocking_io("read fixture type", move || {
-            std::fs::read_to_string(&file_path)
+            crate::util::read_to_string(&file_path)
         })
         .await?;
         let types = lighting::parser::parse_fixture_types(&content).map_err(|e| {
@@ -1730,6 +1736,7 @@ pub(super) async fn put_fixture_type(
     let fp = file_path;
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write fixture type", move || {
+        let _guard = VENUE_WRITES.blocking_lock();
         config_io::staged_write(&fp, &dsl_owned)?;
         if let Some(twin) = stale_twin {
             // Best effort: the save is durable already, and a leftover twin
@@ -1809,7 +1816,7 @@ pub(super) async fn delete_fixture_type(
         super::helpers::spawn_blocking_io("delete fixture type", move || {
             // A GDTF fixture's archive is mtrack's to keep, not the user's:
             // read which one this type uses before its record goes.
-            let archive = std::fs::read_to_string(&fp)
+            let archive = crate::util::read_to_string(&fp)
                 .ok()
                 .and_then(|text| lighting::parser::parse_fixture_types(&text).ok())
                 .and_then(|types| types.get(&deleted).and_then(|t| t.source().cloned()));
@@ -2402,7 +2409,7 @@ pub(super) async fn get_venues(
         let mut all = std::collections::HashMap::new();
         let mut versions = std::collections::HashMap::new();
         for declared in read.items {
-            if let Ok(bytes) = std::fs::read(&declared.file) {
+            if let Ok(bytes) = crate::util::read_file(&declared.file) {
                 versions.insert(declared.name.clone(), content_version(&bytes));
             }
             all.insert(declared.name, declared.item);
@@ -2532,7 +2539,7 @@ pub(super) async fn put_venue(
     let venue_name = name.clone();
     let outcome = super::helpers::spawn_blocking_io("write venue", move || {
         let name = venue_name;
-        let _guard = VENUE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = VENUE_WRITES.blocking_lock();
         let reply = |r: axum::response::Response| Ok::<_, String>(Err(r));
         let bad = |e: String| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
         let located = locate_venue_file(&dir, &name)?;

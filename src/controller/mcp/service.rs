@@ -1024,9 +1024,7 @@ impl McpServer {
             .config_path()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| song.base_path().join("song.yaml"));
-        let body = tokio::fs::read_to_string(&path).await.map_err(|e| {
-            McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
-        })?;
+        let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "name": song.name(),
             "path": path.display().to_string(),
@@ -1199,6 +1197,9 @@ impl McpServer {
         // Validate the YAML parses as a song config before we touch disk.
         let _: crate::config::Song = serde_yaml_from_str(&args.yaml)?;
 
+        // Taken turns with the song's other writers, here and in the web UI,
+        // whose edits read the file first.
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let songs_root = self.songs_root_verified().await?;
         let yaml_path = match self.player.songs().get(&args.name) {
             Ok(existing) => {
@@ -1246,9 +1247,7 @@ impl McpServer {
         Parameters(args): Parameters<PlaylistNameArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
-        let body = tokio::fs::read_to_string(&path).await.map_err(|e| {
-            McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
-        })?;
+        let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "yaml": body,
@@ -2002,9 +2001,12 @@ impl McpServer {
         Parameters(args): Parameters<ListGdtfModesArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve_in_project(&args.path)?;
-        let bytes = tokio::fs::read(&path).await.map_err(|e| {
-            McpError::invalid_params(format!("cannot read {}: {e}", args.path), None)
-        })?;
+        let bytes = tokio::task::spawn_blocking(move || crate::util::read_file(&path))
+            .await
+            .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
+            .map_err(|e| {
+                McpError::invalid_params(format!("cannot read {}: {e}", args.path), None)
+            })?;
         let description = crate::lighting::gdtf::parse_archive(&bytes)
             .map_err(|e| McpError::invalid_params(format!("not a parseable GDTF: {e}"), None))?;
         let modes: Vec<Value> = crate::lighting::gdtf::mode_summaries(&description)
@@ -2188,9 +2190,7 @@ impl McpServer {
                 None,
             )
         })?;
-        let body = tokio::fs::read_to_string(&path).await.map_err(|e| {
-            McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
-        })?;
+        let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "source": body,
@@ -2217,9 +2217,7 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::Venues, &args.file)
             .await?;
-        let body = tokio::fs::read_to_string(&path).await.map_err(|e| {
-            McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
-        })?;
+        let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "source": body,
@@ -2243,6 +2241,9 @@ impl McpServer {
             .resolve_lighting_file(LightingDirKind::Venues, &args.file)
             .await?;
         validate_name_to_write(&path, &args.file)?;
+        // Taken turns with the web UI's venue saves, which check the file's
+        // version before writing.
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         staged_write_string(&path, &args.source).await?;
         let (reloaded, venue_error) = self.reload_venue_if_current().await;
         let mut body = json!({
@@ -2298,6 +2299,7 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::Venues, &args.file)
             .await?;
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         remove_lighting_file(&path).await?;
         Ok(ok_json(json!({"deleted": path.display().to_string()})))
     }
@@ -2311,6 +2313,7 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
             .await?;
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         remove_lighting_file(&path).await?;
         Ok(ok_json(json!({"deleted": path.display().to_string()})))
     }
@@ -2351,6 +2354,7 @@ impl McpServer {
             .to_string_lossy()
             .replace('\\', "/");
 
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let original = read_text(&config_path).await?;
         let referenced = references_lighting_file(&original, &reference);
         let unregistered = match unregister_lighting_file(&original, &reference) {
@@ -2414,9 +2418,7 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
             .await?;
-        let body = tokio::fs::read_to_string(&path).await.map_err(|e| {
-            McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
-        })?;
+        let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "source": body,
@@ -2437,6 +2439,7 @@ impl McpServer {
             .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
             .await?;
         validate_name_to_write(&path, &args.file)?;
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         staged_write_string(&path, &args.source).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
@@ -2525,6 +2528,8 @@ impl McpServer {
                 lighting_dir.join(&args.file)
             }
         };
+        // As patch_song: the registration below edits song.yaml.
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         staged_write_string(&path, &args.source).await?;
 
         // Writing the file is not enough: without a `lighting:` entry pointing
@@ -2601,6 +2606,9 @@ impl McpServer {
             .config_path()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| song.base_path().join("song.yaml"));
+        // Held from the read, so a save between it and the write, such as
+        // the web UI's song editor, is not lost.
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
         let _: crate::config::Song = serde_yaml_from_str(&updated)?;
@@ -2656,6 +2664,7 @@ impl McpServer {
                 None,
             )
         })?;
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
         // Validate against the tempo this song loads it with, matching
@@ -2684,6 +2693,8 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::Venues, &args.file)
             .await?;
+        // Held from the read, as patch_song holds its own.
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
         crate::lighting::parser::parse_venues(&updated).map_err(|e| {
@@ -2714,6 +2725,9 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
             .await?;
+        // A fixture's settings save in the web UI rewrites its type under
+        // the venues' lock: held from the read, as patch_venue holds it.
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
         let types = crate::lighting::parser::parse_fixture_types(&updated).map_err(|e| {
@@ -4208,10 +4222,18 @@ pub(crate) fn patch_response(path: &std::path::Path, before: &str, after: &str) 
 }
 
 /// Reads a file as UTF-8, returning an MCP-friendly error on I/O failure.
+///
+/// Read as [`crate::util::read_file`] reads, in turn with the writers: a
+/// save rewrites a file in place, and a plain read midway through it finds
+/// the file empty or short (#578).
 pub(crate) async fn read_text(path: &std::path::Path) -> Result<String, McpError> {
-    tokio::fs::read_to_string(path).await.map_err(|e| {
-        McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
-    })
+    let owned = path.to_path_buf();
+    tokio::task::spawn_blocking(move || crate::util::read_to_string(&owned))
+        .await
+        .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
+        .map_err(|e| {
+            McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
+        })
 }
 
 /// Lists `.light` files directly under `dir` (no recursion). Subdirectories
@@ -4270,6 +4292,43 @@ pub(crate) async fn staged_write_string(
         }
         McpError::internal_error(message, None)
     })
+}
+
+#[cfg(test)]
+mod read_text_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_text_never_sees_a_file_midway_through_a_save() {
+        // #578: a plain read, between a save truncating the file and
+        // writing it back, found it empty or short.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.yaml");
+        let body =
+            "name: S\ntracks:\n".to_string() + &"  - name: t\n    file: t.wav\n".repeat(2000);
+        crate::util::write_file(&path, body.as_bytes()).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (path, body, stop) = (path.clone(), body.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    crate::util::write_file(&path, body.as_bytes()).unwrap();
+                }
+            })
+        };
+        let mut torn = 0;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(2) {
+            if super::read_text(&path).await.unwrap() != body {
+                torn += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        assert_eq!(torn, 0, "read_text read a torn song.yaml {torn} times");
+    }
 }
 
 #[cfg(test)]

@@ -5437,3 +5437,63 @@ async fn mcp_ambient_mode_and_cancel_auto_play() -> Result<(), Box<dyn Error>> {
     controller.shutdown();
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_patch_song_keeps_a_save_made_while_it_waits() -> Result<(), Box<dyn Error>> {
+    // #578: patch_song read song.yaml, and wrote back its edit of what it
+    // read, whatever the web UI's song editor had saved in between.
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let path = fixture.root.join("songs/dsl-light-show-song/song.yaml");
+    let loaded = std::fs::read_to_string(&path)?;
+    assert!(loaded.contains("    file_channel: 1"), "{loaded}");
+
+    // A save from the web UI under way, as its song PUT holds the lock.
+    let saving = crate::webui::api::songs_api::SONG_WRITES.lock().await;
+    let patch = {
+        let (client, url, session) = (client.clone(), url.clone(), session.clone());
+        tokio::spawn(async move {
+            call_tool(
+                &client,
+                &url,
+                &session,
+                1,
+                "patch_song",
+                json!({
+                    "name": "DSL Light Show Song",
+                    "old_string": "    file_channel: 1",
+                    "new_string": "    file_channel: 3",
+                }),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let saved = format!("# saved from the web UI\n{loaded}");
+    crate::util::write_file(&path, saved.as_bytes())?;
+    drop(saving);
+    let response = patch.await?;
+    assert!(!tool_is_error(&response), "{response}");
+
+    let after = std::fs::read_to_string(&path)?;
+    assert!(
+        after.contains("# saved from the web UI"),
+        "save lost: {after}"
+    );
+    assert!(after.contains("file_channel: 3"), "patch lost: {after}");
+    controller.shutdown();
+    Ok(())
+}
