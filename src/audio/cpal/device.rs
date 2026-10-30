@@ -1907,7 +1907,7 @@ impl AudioDevice for Device {
                         // Defer the consumed-time bump until the audio thread
                         // actually crosses the boundary, so the user-visible
                         // elapsed doesn't briefly jump backwards.
-                        pending_consumption.push((loop_sample, jump.amount()));
+                        // The position counts it from the log as it falls due.
                         if publishes_jumps {
                             section_jumps.push(jump.clone());
                         }

@@ -217,7 +217,7 @@ pub struct JumpPublisher {
 /// Commits a playback's section loop jumps when it plays no audio, which
 /// otherwise commits to them: armed and not broken, a section loops at its
 /// end, as the audio would loop it; the notes, lights and beat clock follow
-/// the jumps from the log. The player's position counts each as it falls.
+/// the jumps from the log, as does the player's position.
 pub fn publish_jumps(publisher: JumpPublisher) {
     use std::sync::atomic::Ordering;
     let JumpPublisher {
@@ -250,23 +250,12 @@ pub fn publish_jumps(publisher: JumpPublisher) {
         std::thread::sleep(Duration::from_millis(5));
     }
     let mut trigger = SectionLoopTrigger::new();
-    // Each jump's time put back, counted in the player's position as it falls.
-    let mut pending: Vec<(Duration, Duration)> = Vec::new();
     while !finished() {
         let elapsed = start_time + clock.elapsed();
-        pending.retain(|&(at, amount)| {
-            if at <= elapsed {
-                *loop_control.loop_time_consumed.lock() += amount;
-                false
-            } else {
-                true
-            }
-        });
         let armed = loop_control.active_section.read().clone();
         match armed {
             Some(section) if !loop_control.section_loop_break.load(Ordering::Relaxed) => {
                 if let Some(jump) = trigger.jump(&section, elapsed, PUBLISH_LOOKAHEAD) {
-                    pending.push((jump.at, jump.amount()));
                     loop_control.section_jumps.push(jump);
                 }
             }

@@ -227,7 +227,11 @@ impl Player {
                     break_fade: self.break_fade.clone(),
                     break_fade_ids: self.break_fade_ids.clone(),
                     start_fade: self.start_fade.clone(),
-                    section_jumps: Default::default(),
+                    section_jumps: {
+                        let log = Arc::new(crate::playsync::SectionJumpLog::default());
+                        *self.section_jumps.lock() = log.clone();
+                        log
+                    },
                 },
             };
             tokio::task::spawn_blocking(move || {
@@ -1017,11 +1021,27 @@ impl Player {
         Ok(match *play_start_time {
             Some(play_start_time) => {
                 let raw = play_start_time.elapsed()?;
-                let consumed = *self.loop_time_consumed.lock();
+                // Section loops by the playback's log, as they fall due (the
+                // counter was bumped up to a monitor poll late, so just past
+                // a loop point the position read past the section's end);
+                // whole-song passes by the counter.
+                let (sections, _) = self.section_jumps.lock().put_back_by(raw);
+                let consumed = *self.loop_time_consumed.lock() + sections;
                 Some(raw.saturating_sub(consumed))
             }
             None => self.pending_start(),
         })
+    }
+
+    /// How many of the playing song's section loop jumps have fallen due.
+    fn section_jumps_due(&self) -> usize {
+        let raw = self
+            .play_start_time
+            .try_lock()
+            .ok()
+            .and_then(|start| (*start).and_then(|start| start.elapsed().ok()))
+            .unwrap_or_default();
+        self.section_jumps.lock().put_back_by(raw).1
     }
 
     /// Adds time consumed by a section loop iteration. Called by subsystems
@@ -1081,7 +1101,7 @@ impl Player {
             "Activating section loop"
         );
 
-        *self.consumed_at_arm.lock() = *self.loop_time_consumed.lock();
+        *self.jumps_at_arm.lock() = self.section_jumps_due();
         {
             let mut active = self.active_section.write();
             *active = Some(super::SectionBounds {
@@ -1153,7 +1173,7 @@ impl Player {
                 *state = ReactiveLoopState::LoopArmed(bounds.clone());
 
                 // Set active_section to engage the existing loop machinery.
-                *self.consumed_at_arm.lock() = *self.loop_time_consumed.lock();
+                *self.jumps_at_arm.lock() = self.section_jumps_due();
                 {
                     let mut active = self.active_section.write();
                     *active = Some(bounds);
@@ -1272,11 +1292,9 @@ impl Player {
             // actually begins looping. We detect this by checking if
             // active_section is set and we've wrapped around.
             (ReactiveLoopState::LoopArmed(bounds), Some(_)) => {
-                // Check if the audio engine has started looping: loop time
-                // put back since it was armed (any before is an earlier
-                // loop's).
-                let loop_consumed = *self.loop_time_consumed.lock();
-                if loop_consumed > *self.consumed_at_arm.lock() {
+                // Check if the audio engine has started looping: a jump due
+                // since it was armed (any before is an earlier loop's).
+                if self.section_jumps_due() > *self.jumps_at_arm.lock() {
                     *state = ReactiveLoopState::Looping(bounds.clone());
                 }
             }

@@ -138,6 +138,18 @@ impl SectionJumpLog {
         }
     }
 
+    /// The time the jumps falling due by `at` (on the playback timeline) put
+    /// back, and how many they are.
+    pub fn put_back_by(&self, at: Duration) -> (Duration, usize) {
+        self.jumps
+            .lock()
+            .iter()
+            .take_while(|jump| jump.at <= at)
+            .fold((Duration::ZERO, 0), |(time, count), jump| {
+                (time + jump.amount(), count + 1)
+            })
+    }
+
     /// Whether the audio has taken on committing the jumps.
     pub fn claimed_by_audio(&self) -> bool {
         self.publisher.load(std::sync::atomic::Ordering::Acquire) == JumpPublisherRole::Audio as u8

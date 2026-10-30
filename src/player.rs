@@ -446,9 +446,12 @@ pub struct Player {
     /// Each completed loop iteration adds section_duration to this value.
     /// Subtracted from raw elapsed to get the true song position.
     loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
-    /// `loop_time_consumed` when the section loop now armed was armed: the
-    /// loop is going round once it has grown past this.
-    consumed_at_arm: Arc<parking_lot::Mutex<Duration>>,
+    /// The section loop jumps due when the section loop now armed was
+    /// armed: the loop is going round once more have fallen due.
+    jumps_at_arm: Arc<parking_lot::Mutex<usize>>,
+    /// The playing song's section loop jumps (its playback's log): the
+    /// position counts them as they fall due, exactly.
+    section_jumps: Arc<parking_lot::Mutex<Arc<crate::playsync::SectionJumpLog>>>,
     /// Reactive loop state machine.
     reactive_loop_state: Arc<parking_lot::RwLock<ReactiveLoopState>>,
     /// Start position for the next play(), set by a pause or by seeking
@@ -700,7 +703,8 @@ impl Player {
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
             loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
-            consumed_at_arm: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
+            jumps_at_arm: Arc::new(parking_lot::Mutex::new(0)),
+            section_jumps: Arc::new(parking_lot::Mutex::new(Default::default())),
             reactive_loop_state: Arc::new(parking_lot::RwLock::new(ReactiveLoopState::Idle)),
             pending_start: Arc::new(parking_lot::Mutex::new(None)),
             notification_engine: Arc::new(crate::notification::NotificationEngine::with_defaults(
@@ -3738,6 +3742,37 @@ mod test {
         assert!(player.active_section().is_none());
         assert!(player.section_loop_break.load(Ordering::Relaxed));
 
+        Ok(())
+    }
+
+    /// Just past a section loop's jump, the position is already back in the
+    /// section: it counts the jumps from the playback's log as they fall
+    /// due, not from the counter the audio bumped up to a monitor poll late,
+    /// which read past the section's end and flipped the reactive offer to
+    /// the next section and back at every loop.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_position_counts_a_section_loop_jump_as_it_falls_due() -> Result<(), Box<dyn Error>>
+    {
+        let player = make_test_player().await?;
+        let log = Arc::new(crate::playsync::SectionJumpLog::default());
+        log.push(crate::section_loop::SectionJump {
+            at: Duration::from_secs(8),
+            from: Duration::from_secs(8),
+            to: Duration::from_secs(4),
+        });
+        *player.section_jumps.lock() = log;
+        *player.play_start_time.lock().await =
+            Some(std::time::SystemTime::now() - Duration::from_millis(8_003));
+        let position = player.elapsed().await?.unwrap();
+        assert!(
+            position >= Duration::from_secs(4) && position < Duration::from_millis(4_100),
+            "{position:?}"
+        );
+        // Before it falls due, the song is where the clock says.
+        *player.play_start_time.lock().await =
+            Some(std::time::SystemTime::now() - Duration::from_millis(7_900));
+        let position = player.elapsed().await?.unwrap();
+        assert!(position >= Duration::from_millis(7_900), "{position:?}");
         Ok(())
     }
 

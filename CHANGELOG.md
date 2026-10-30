@@ -143,7 +143,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loops so far have put back;
   a loop the audio had nothing ready for goes round a moment late rather than not at all, and the
   section the playhead is in is ready to loop after a break too. The notes' replays start on the
-  loop point rather than as much as 5ms early.
+  loop point rather than as much as 5ms early. The reported position counts each loop as it
+  falls due: it used to read past the section's end for a few ms after every loop, which with
+  sections back to back flipped the reactive offer to the next section and back each time.
 - **Reactive looping after a break**: breaking a loop straight into the next section (sections
   back to back) left the state on the broken loop for the rest of the song, so no section was
   offered again; and once any loop had gone round, a section armed afterwards showed as looping
