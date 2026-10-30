@@ -1285,6 +1285,9 @@ impl McpServer {
         if let Some(name) = &args.name {
             validate_name_to_write(&path, name)?;
         }
+        // Taken turns with the web UI's playlist saves, which read the file
+        // to keep what the editor does not send.
+        let _writing = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
         // Same rule as the web UI's playlist write and every other configured
         // root: created only when it is inside the project. A `playlists_dir:`
         // pointing elsewhere is the operator's to set up.
@@ -2616,6 +2619,9 @@ impl McpServer {
         Parameters(args): Parameters<PatchPlaylistArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
+        // As write_playlist, with the web UI's saves; held from the read, so
+        // a save between it and the write is not lost.
+        let _writing = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
         self.validate_playlist(&updated)?;

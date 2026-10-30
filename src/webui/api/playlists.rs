@@ -149,10 +149,10 @@ where
 }
 
 /// Held by each playlist save and delete from reading the file to reloading
-/// the player, so two at once (two editor tabs, say) take turns: a save reads
-/// the file to keep what the editor does not send, and one reading it while
-/// another rewrote it found it short and refused (#578).
-static PLAYLIST_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// the player, here and over MCP, so two at once (two editor tabs, say) take
+/// turns: a save reads the file to keep what the editor does not send, and
+/// one reading it while another rewrote it found it short and refused (#578).
+pub(crate) static PLAYLIST_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// PUT /api/playlists/:name — create or update a playlist.
 pub(super) async fn put_playlist_by_name(
