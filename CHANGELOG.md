@@ -273,10 +273,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ambient show outside the project (`../`, or an absolute path). MCP `write_playlist` and
   `patch_playlist` refuse an unknown song too. Saves of one file at once no longer fail with a
   500: writers of one file now take turns while they stage the new content, not only while they
-  rewrite the file, and a write that fails leaves no empty file behind. The playlist editor's
-  saves, and MCP's, take turns from reading the file to reloading the player. The player reads a
-  playlist, song, profile or lighting file whole, never caught midway through a save, which it
-  took for broken: a playlist so read was skipped, an active one falling back to all songs.
+  rewrite the file, and a write that fails before it rewrites the file leaves no empty file or
+  staged copy behind. The playlist editor's saves, and MCP's, take turns from reading the file
+  to reloading the player. The player reads a playlist, song, profile or lighting file whole,
+  never caught midway through a save, which it took for broken: a playlist so read was skipped,
+  an active one falling back to all songs.
 - **The dashboard can end a looping song at either end of the list (#579)**: Next on the last
   entry, or Previous on the first, ends a looping song over its `fade_out`, but the dashboard
   turned those buttons off there, so the ending could only be reached from MCP, OSC or gRPC.

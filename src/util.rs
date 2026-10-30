@@ -204,33 +204,52 @@ pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     // Stage the complete new content beside the destination and get it on disk,
     // so the rewrite below always has something to recover from.
     let staged = staged_path(path);
-    {
+    let stage = || -> std::io::Result<()> {
         let mut file = std::fs::File::create(&staged)?;
         if let Some(ownership) = intended {
             ownership.apply(&file, &staged)?;
         }
         file.write_all(contents)?;
+        #[cfg(test)]
+        if FAIL_STAGING.get() {
+            return Err(std::io::Error::other("injected staging failure"));
+        }
         file.sync_all()?;
-    }
-    // Flushing the file is not enough on its own: without syncing the directory
-    // too, the sidecar's *name* may not survive a crash, and an unnamed file is
-    // no use to recover from.
-    if let Some(parent) = parent_of(path) {
-        std::fs::File::open(parent)?.sync_all()?;
-    }
+        // Flushing the file is not enough on its own: without syncing the
+        // directory too, the sidecar's *name* may not survive a crash, and
+        // an unnamed file is no use to recover from.
+        if let Some(parent) = parent_of(path) {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
+        Ok(())
+    };
 
     // Lock before truncating, not as part of the open: opening with
     // truncation would discard another process's content before we had any
     // claim to the file.
-    let mut destination = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(path)?;
-    destination.lock()?;
-    if let Some(ownership) = intended {
-        ownership.apply(&destination, path)?;
-    }
+    let claim = || -> std::io::Result<std::fs::File> {
+        let destination = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(path)?;
+        destination.lock()?;
+        if let Some(ownership) = intended {
+            ownership.apply(&destination, path)?;
+        }
+        Ok(destination)
+    };
+
+    // Until the truncation the destination is as it was, so a failure up to
+    // then takes the sidecar with it: left, it would claim a write that never
+    // touched the destination may not have completed (#578).
+    let mut destination = match stage().and_then(|()| claim()) {
+        Ok(destination) => destination,
+        Err(e) => {
+            let _ = std::fs::remove_file(&staged);
+            return Err(e);
+        }
+    };
     destination.set_len(0)?;
     destination.write_all(contents)?;
     destination.sync_all()?;
@@ -239,6 +258,13 @@ pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     // Leaving it behind would falsely advertise an interrupted write. The
     // lock goes with the file, after.
     std::fs::remove_file(&staged)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Fails [`write_file`]'s staging on this thread once the sidecar holds
+    /// the content, as a full disk would fail its flush.
+    static FAIL_STAGING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Reads all of `path`, as [`write_file`] last wrote it, never the empty or
@@ -1044,6 +1070,35 @@ mod ownership_test {
         // a successful write must not leave one lying about.
         assert!(!staged_path(&dest).exists());
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "contents");
+    }
+
+    #[test]
+    fn write_file_takes_the_staged_copy_with_a_failed_staging() {
+        // #578: a staging that failed left its sidecar, which reads as a
+        // write to the destination that may not have completed.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("config.yaml");
+        std::fs::write(&dest, "before").unwrap();
+
+        super::FAIL_STAGING.set(true);
+        let result = write_file(&dest, b"after");
+        super::FAIL_STAGING.set(false);
+
+        assert!(result.is_err());
+        assert!(!staged_path(&dest).exists());
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "before");
+    }
+
+    #[test]
+    fn write_file_takes_the_staged_copy_with_a_destination_it_cannot_open() {
+        // Staged, but the destination is a directory: it was never touched,
+        // so nothing is left to recover.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("config.yaml");
+        std::fs::create_dir(&dest).unwrap();
+
+        assert!(write_file(&dest, b"after").is_err());
+        assert!(!staged_path(&dest).exists());
     }
 
     #[test]
