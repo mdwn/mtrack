@@ -393,10 +393,6 @@ pub struct Player {
     locked: Arc<AtomicBool>,
     /// Active controllers (gRPC, OSC, MIDI). Replaced on reload.
     controller: Arc<parking_lot::Mutex<Option<crate::controller::Controller>>>,
-    /// The controller config the running controllers were started from,
-    /// serialized. Lets a reload leave them alone when nothing about them
-    /// changed — see [`Player::start_controllers`].
-    controller_config: Arc<parking_lot::Mutex<Option<String>>>,
     /// Signal to break out of a song loop gracefully (not a hard cancel).
     /// Set by play()/next() when the current song is looping. The playback
     /// loop checks this flag and exits cleanly, allowing the cleanup task
@@ -673,7 +669,6 @@ impl Player {
             gain_persist_task: Arc::new(parking_lot::Mutex::new(None)),
             locked: Arc::new(AtomicBool::new(true)),
             controller: Arc::new(parking_lot::Mutex::new(None)),
-            controller_config: Arc::new(parking_lot::Mutex::new(None)),
             loop_break: Arc::new(AtomicBool::new(false)),
             loop_break_to_prev: Arc::new(AtomicBool::new(false)),
             loop_end: Arc::new(AtomicBool::new(false)),

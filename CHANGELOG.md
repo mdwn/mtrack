@@ -112,6 +112,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `update_controllers` and the profile tools saved the change but never reloaded the hardware, so it
   did nothing until something else reloaded it or mtrack restarted. They now reload it, as the gRPC
   and web config changes do; during playback the reload waits for it to end.
+- **A controller change restarts only the controllers it changes (#578)**: a change to any one
+  controller restarted them all, so adding an OSC or gRPC controller over MCP tore down the MCP
+  server answering it, and its sessions with it. Controllers whose config is unchanged now keep
+  running; MIDI controllers, whose song-change notifiers go together, restart together.
 - **The latest move takes a mover, whatever its layer (#599)**: two moves on different layers
   over one head blended by layer, and where the head came to rest depended on how you got there:
   played through, after a seek and in `evaluate_show` it could land on three different poses. A

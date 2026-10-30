@@ -5745,6 +5745,58 @@ async fn mcp_config_update_reloads_the_hardware() -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
+/// Adding a controller over MCP restarted every controller, the MCP server
+/// answering included, which lost its sessions. Only the controller added
+/// starts; the MCP server keeps running, and its session with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_controller_change_leaves_the_mcp_server_running() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let mcp = json!({"kind": "mcp", "port": port});
+    player.start_controllers(vec![serde_json::from_value(mcp.clone())?]);
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let cfg = tool_json(&call_tool(&client, &url, &session, 10, "get_config", json!({})).await);
+    let checksum = cfg["checksum"].as_str().expect("checksum").to_string();
+    let grpc = json!({"kind": "grpc", "port": pick_free_port()});
+    let updated = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            11,
+            "update_controllers",
+            json!({"body": [mcp, grpc], "expected_checksum": checksum}),
+        )
+        .await,
+    );
+    assert_eq!(updated["applied"], json!(true), "{updated}");
+    tokio::time::timeout(Duration::from_secs(10), player.await_hardware_ready())
+        .await
+        .expect("the hardware never came back up");
+    let kinds: Vec<String> = player
+        .controller_statuses()
+        .into_iter()
+        .filter(|s| s.status == "running")
+        .map(|s| s.kind)
+        .collect();
+    assert_eq!(kinds, ["mcp", "grpc"], "the controllers running");
+
+    // The same session still answers: the server was not restarted.
+    let after = tool_json(&call_tool(&client, &url, &session, 12, "get_config", json!({})).await);
+    assert_eq!(after["checksum"], updated["checksum"]);
+    player.shutdown_controllers();
+    Ok(())
+}
+
 /// A config change made over MCP while a song plays or is paused is saved,
 /// and the hardware reload waits for the song: the reply says it has not
 /// been applied yet, rather than reading as a change that took effect.

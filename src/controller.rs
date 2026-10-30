@@ -42,8 +42,20 @@ pub struct ControllerStatus {
 
 /// Controls a playlist.
 pub struct Controller {
-    handles: Vec<JoinHandle<Result<(), io::Error>>>,
+    entries: Vec<Entry>,
     statuses: Vec<ControllerStatus>,
+}
+
+/// One controller from the config, as started.
+struct Entry {
+    /// Its config, as YAML: what tells an unchanged controller from a
+    /// changed one on the next start.
+    fingerprint: Option<String>,
+    /// Whether it is a MIDI controller, which registers song-change
+    /// notifiers on the player.
+    midi: bool,
+    /// Its task, when it started.
+    handle: Option<JoinHandle<Result<(), io::Error>>>,
 }
 
 impl Controller {
@@ -51,76 +63,175 @@ impl Controller {
     /// failures are logged and tracked but do not prevent other controllers
     /// from starting.
     pub fn new(config: Vec<config::Controller>, player: Arc<Player>) -> Controller {
-        let mut controller_drivers = Vec::new();
-        let mut statuses = Vec::new();
+        let mut controller = Controller {
+            entries: Vec::new(),
+            statuses: Vec::new(),
+        };
         for config in config {
-            let player = player.clone();
-            let (kind, detail) = match &config {
-                config::Controller::Grpc(c) => {
-                    ("grpc".to_string(), Some(format!("port {}", c.port())))
+            controller.start(config, player.clone());
+        }
+        controller
+    }
+
+    /// Starts the controllers in `config`, leaving those already running
+    /// with the same config as they are, and stops the rest. Restarting one
+    /// tears down its transport, and a config change asked for over MCP or
+    /// gRPC is answered on the transport of a controller that is running:
+    /// restarting them all for a change to another dropped the reply (#578).
+    ///
+    /// A controller that failed to start is started again, as nothing else
+    /// would retry it. MIDI controllers' song-change notifiers can only be
+    /// dropped all together, so if any MIDI controller starts or stops, they
+    /// all restart. `force` restarts every one. Returns whether any started
+    /// or stopped.
+    pub fn update(
+        &mut self,
+        config: Vec<config::Controller>,
+        player: Arc<Player>,
+        force: bool,
+    ) -> bool {
+        // Which running controller, if any, each one in the config keeps.
+        let mut taken = vec![false; self.entries.len()];
+        let mut kept: Vec<Option<usize>> = config
+            .iter()
+            .map(|c| {
+                let fingerprint = crate::util::to_yaml_string(c).ok();
+                if force || fingerprint.is_none() {
+                    return None;
                 }
-                config::Controller::Mcp(c) => (
-                    "mcp".to_string(),
-                    Some(format!("{}:{}", c.bind_address(), c.port())),
-                ),
-                config::Controller::Osc(c) => {
-                    ("osc".to_string(), Some(format!("port {}", c.port())))
+                let found = (0..self.entries.len()).find(|&i| {
+                    !taken[i]
+                        && self.statuses[i].status == "running"
+                        && self.entries[i].fingerprint == fingerprint
+                })?;
+                taken[found] = true;
+                Some(found)
+            })
+            .collect();
+        let midi_changes = config
+            .iter()
+            .zip(&kept)
+            .any(|(c, k)| k.is_none() && matches!(c, config::Controller::Midi(_)))
+            || self
+                .entries
+                .iter()
+                .zip(&taken)
+                .any(|(entry, taken)| entry.midi && !taken);
+        if midi_changes {
+            for (c, k) in config.iter().zip(kept.iter_mut()) {
+                if matches!(c, config::Controller::Midi(_)) {
+                    *k = None;
                 }
-                config::Controller::Midi(_) => ("midi".to_string(), None),
-                _ => ("unknown".to_string(), None),
-            };
-            let result: Result<Arc<dyn Driver>, Box<dyn Error>> = match config {
-                config::Controller::Grpc(config) => {
-                    grpc::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
+            }
+        }
+        if kept.iter().all(Option::is_some) && kept.len() == self.entries.len() {
+            return false;
+        }
+
+        // Those going stop before any starts, so a changed one can bind the
+        // port it had.
+        let mut old: Vec<Option<(Entry, ControllerStatus)>> = std::mem::take(&mut self.entries)
+            .into_iter()
+            .zip(std::mem::take(&mut self.statuses))
+            .map(Some)
+            .collect();
+        for (i, slot) in old.iter_mut().enumerate() {
+            if kept.contains(&Some(i)) {
+                continue;
+            }
+            if let Some((entry, status)) = slot.take() {
+                tracing::info!(kind = %status.kind, "Stopping controller");
+                if let Some(handle) = entry.handle {
+                    handle.abort();
                 }
-                config::Controller::Mcp(config) => {
-                    mcp::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
+            }
+        }
+        if midi_changes {
+            player.clear_song_change_notifiers();
+        }
+        for (config, kept) in config.into_iter().zip(kept) {
+            match kept.and_then(|i| old[i].take()) {
+                Some((entry, status)) => {
+                    self.entries.push(entry);
+                    self.statuses.push(status);
                 }
-                config::Controller::Osc(config) => {
-                    osc::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
-                }
-                config::Controller::Midi(config) => {
-                    midi::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
-                }
-                _ => Err("unexpected controller type".into()),
-            };
-            match result {
-                Ok(driver) => {
-                    controller_drivers.push(driver);
-                    statuses.push(ControllerStatus {
-                        kind,
-                        status: "running".to_string(),
-                        detail,
-                        error: None,
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!(kind = %kind, error = %e, "Controller failed to start");
-                    statuses.push(ControllerStatus {
+                None => self.start(config, player.clone()),
+            }
+        }
+        true
+    }
+
+    /// Starts one controller, recording it whether it started or not.
+    fn start(&mut self, config: config::Controller, player: Arc<Player>) {
+        let fingerprint = crate::util::to_yaml_string(&config).ok();
+        let midi = matches!(config, config::Controller::Midi(_));
+        let (kind, detail) = match &config {
+            config::Controller::Grpc(c) => ("grpc".to_string(), Some(format!("port {}", c.port()))),
+            config::Controller::Mcp(c) => (
+                "mcp".to_string(),
+                Some(format!("{}:{}", c.bind_address(), c.port())),
+            ),
+            config::Controller::Osc(c) => ("osc".to_string(), Some(format!("port {}", c.port()))),
+            config::Controller::Midi(_) => ("midi".to_string(), None),
+            _ => ("unknown".to_string(), None),
+        };
+        let result: Result<Arc<dyn Driver>, Box<dyn Error>> = match config {
+            config::Controller::Grpc(config) => {
+                grpc::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
+            }
+            config::Controller::Mcp(config) => {
+                mcp::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
+            }
+            config::Controller::Osc(config) => {
+                osc::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
+            }
+            config::Controller::Midi(config) => {
+                midi::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
+            }
+            _ => Err("unexpected controller type".into()),
+        };
+        let (handle, status) = match result {
+            Ok(driver) => (
+                Some(driver.monitor_events()),
+                ControllerStatus {
+                    kind,
+                    status: "running".to_string(),
+                    detail,
+                    error: None,
+                },
+            ),
+            Err(e) => {
+                tracing::warn!(kind = %kind, error = %e, "Controller failed to start");
+                (
+                    None,
+                    ControllerStatus {
                         kind,
                         status: "error".to_string(),
                         detail,
                         error: Some(e.to_string()),
-                    });
-                }
+                    },
+                )
             }
-        }
-
-        let mut handles = Vec::new();
-        for driver in controller_drivers {
-            handles.push(driver.monitor_events());
-        }
-        Controller { handles, statuses }
+        };
+        self.entries.push(Entry {
+            fingerprint,
+            midi,
+            handle,
+        });
+        self.statuses.push(status);
     }
 
     /// Creates a new controller from multiple drivers.
     pub fn new_from_drivers(drivers: Vec<Arc<dyn Driver>>) -> Controller {
-        let mut handles = Vec::new();
-        for driver in &drivers {
-            handles.push(driver.monitor_events());
-        }
         Controller {
-            handles,
+            entries: drivers
+                .iter()
+                .map(|driver| Entry {
+                    fingerprint: None,
+                    midi: false,
+                    handle: Some(driver.monitor_events()),
+                })
+                .collect(),
             statuses: drivers
                 .iter()
                 .map(|_| ControllerStatus {
@@ -140,7 +251,7 @@ impl Controller {
 
     /// Shuts down all controller tasks by aborting their handles.
     pub fn shutdown(self) {
-        for handle in self.handles {
+        for handle in self.entries.into_iter().filter_map(|entry| entry.handle) {
             handle.abort();
         }
     }
@@ -321,6 +432,59 @@ mod test {
         assert!(controller.statuses().iter().all(|s| s.status == "running"));
         controller.shutdown();
 
+        Ok(())
+    }
+
+    /// A change to one controller restarted them all, the one carrying the
+    /// request that made it included (#578). Only those whose config changed
+    /// start or stop; the rest keep running, until a forced restart.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_change_to_one_controller_leaves_the_others_running() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let mut playlists = HashMap::new();
+        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
+        let player = Player::new(
+            playlists,
+            "all_songs".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let grpc = || config::Controller::Grpc(config::GrpcController::new(0));
+        let mcp = || config::Controller::Mcp(config::McpController::new(0));
+        let task = |c: &super::Controller, i: usize| {
+            c.entries[i]
+                .handle
+                .as_ref()
+                .expect("running")
+                .abort_handle()
+        };
+
+        let mut controller = super::Controller::new(vec![grpc()], player.clone());
+        let grpc_task = task(&controller, 0);
+        assert!(controller.update(vec![grpc(), mcp()], player.clone(), false));
+        let mcp_task = task(&controller, 1);
+        assert!(!controller.update(vec![grpc(), mcp()], player.clone(), false));
+        assert!(controller.update(vec![mcp()], player.clone(), false));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(grpc_task.is_finished(), "the removed controller still runs");
+        assert!(
+            !mcp_task.is_finished(),
+            "an unchanged controller was restarted"
+        );
+        assert_eq!(controller.statuses().len(), 1);
+
+        assert!(controller.update(vec![mcp()], player.clone(), true));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(mcp_task.is_finished(), "a forced restart left it running");
+        controller.shutdown();
         Ok(())
     }
 

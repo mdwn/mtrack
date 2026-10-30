@@ -169,7 +169,7 @@ impl PlayerServer {
     /// acknowledged and quietly has no effect.
     ///
     /// Safe to do from inside a gRPC call because `start_controllers` leaves
-    /// controllers running when their config has not changed — otherwise this
+    /// each controller running whose config has not changed — otherwise this
     /// would tear down the very transport carrying the response.
     #[allow(clippy::result_large_err)]
     async fn reload_and_respond(
@@ -204,7 +204,7 @@ impl PlayerServer {
         // would tear down the transport carrying this response. The hardware
         // reload above already restarts controllers when their config actually
         // changed, and leaves them alone when it did not — so a caller is only
-        // disconnected by a change it made to the controllers themselves.
+        // disconnected by a change it made to its own controller.
         snapshot_to_update_response(snapshot, reload)
     }
 

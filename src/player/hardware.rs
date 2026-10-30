@@ -654,7 +654,7 @@ impl Player {
         // them keeps running left `emit_song_change` iterating an empty list
         // for the rest of the process — a Morningstar pedalboard would simply
         // stop receiving song changes, with nothing logged. They are cleared
-        // by `start_controllers_inner` instead, at the point the controllers
+        // by `Controller::update` instead, at the point the controllers
         // that own them are actually torn down.
         {
             let mut hw = self.hardware.write();
@@ -842,55 +842,47 @@ impl Player {
     }
 
     fn start_controllers_inner(self: &Arc<Self>, config: Vec<config::Controller>, force: bool) {
-        // Restarting controllers tears down the transport a caller may be
-        // speaking on: a config change requested over gRPC would drop that
-        // client's own connection mid-response. Since a hardware reload runs
-        // this every time, leaving unchanged controllers alone is what makes it
-        // safe for those paths to reload at all.
-        let fingerprint = crate::util::to_yaml_string(&config).ok();
-        if !force && fingerprint.is_some() && *self.controller_config.lock() == fingerprint {
+        // Restarting a controller tears down the transport a caller may be
+        // speaking on: a config change requested over gRPC or MCP would drop
+        // that client's own connection mid-response. Since a hardware reload
+        // runs this every time, restarting only the controllers whose config
+        // changed is what makes it safe for those paths to reload at all.
+        // Held throughout, so two starts cannot both bind the same ports.
+        let mut current = self.controller.lock();
+        let controller = current.get_or_insert_with(|| {
+            crate::controller::Controller::new(Vec::new(), Arc::clone(self))
+        });
+        if !controller.update(config, Arc::clone(self), force) {
             info!("Controllers unchanged; leaving them running");
             return;
         }
-
-        // Shut down any existing controllers, and drop the notifiers they
-        // registered — the replacements register their own.
-        if let Some(old) = self.controller.lock().take() {
-            info!("Shutting down existing controllers");
-            old.shutdown();
-        }
-        self.hardware.write().song_change_notifiers.clear();
-
-        if config.is_empty() {
+        if controller.statuses().is_empty() {
             info!("No controllers configured");
-            *self.controller_config.lock() = fingerprint;
             return;
         }
-
-        let controller = crate::controller::Controller::new(config, Arc::clone(self));
-        // Only a clean start is remembered. `Controller::new` records per-driver
-        // failures and carries on, and a reload restarts controllers *before*
-        // the init round has installed any devices — so the MIDI driver finds no
-        // device and errors. Recording the fingerprint there would make the next
-        // call, the init round's own, skip the restart that heals it, and the
-        // controller would stay dead with nothing logged until someone pressed
-        // Restart Controllers. A failed start stays retryable.
-        let healthy = controller.statuses().iter().all(|s| s.status != "error");
-        if !healthy {
-            let failed: Vec<&str> = controller
-                .statuses()
-                .iter()
-                .filter(|s| s.status == "error")
-                .map(|s| s.kind.as_str())
-                .collect();
+        // A controller that failed to start is started again by the next
+        // call. A reload restarts controllers *before* the init round has
+        // installed any devices -- so the MIDI driver finds no device and
+        // errors -- and the init round's own call then heals it.
+        let failed: Vec<&str> = controller
+            .statuses()
+            .iter()
+            .filter(|s| s.status == "error")
+            .map(|s| s.kind.as_str())
+            .collect();
+        if !failed.is_empty() {
             warn!(
                 failed = ?failed,
                 "Some controllers did not start; they will be retried on the next reload"
             );
         }
-        *self.controller.lock() = Some(controller);
-        *self.controller_config.lock() = healthy.then_some(fingerprint).flatten();
         info!("Controllers started");
+    }
+
+    /// Drops the song-change notifiers the MIDI controllers registered, as
+    /// they are restarted: the replacements register their own.
+    pub(crate) fn clear_song_change_notifiers(&self) {
+        self.hardware.write().song_change_notifiers.clear();
     }
 
     /// Reloads controllers from the current config store.
@@ -1170,11 +1162,11 @@ mod test {
     /// paths able to reload.
     #[test]
     fn unchanged_controllers_are_left_running() {
-        let a = vec![config::Controller::Grpc(config::GrpcController::new(7654))];
-        let b = vec![config::Controller::Grpc(config::GrpcController::new(7654))];
-        let different = vec![config::Controller::Grpc(config::GrpcController::new(7655))];
+        let a = config::Controller::Grpc(config::GrpcController::new(7654));
+        let b = config::Controller::Grpc(config::GrpcController::new(7654));
+        let different = config::Controller::Grpc(config::GrpcController::new(7655));
 
-        let fingerprint = |c: &Vec<config::Controller>| crate::util::to_yaml_string(c).ok();
+        let fingerprint = |c: &config::Controller| crate::util::to_yaml_string(c).ok();
         assert_eq!(
             fingerprint(&a),
             fingerprint(&b),
