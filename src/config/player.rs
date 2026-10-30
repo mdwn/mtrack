@@ -21,7 +21,7 @@ use super::samples::{SampleDefinition, SampleTrigger, SamplesConfig, DEFAULT_MAX
 use super::statusevents::StatusEvents;
 use super::trackmappings::TrackMappings;
 use super::trigger::{MidiTriggerInput, TriggerConfig, TriggerInput};
-use config::{Config, File};
+use config::Config;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -239,7 +239,7 @@ impl Player {
     /// Legacy configs (audio + track_mappings at top level) are normalized into profiles.
     pub fn deserialize(path: &Path) -> Result<Player, ConfigError> {
         let mut player = Config::builder()
-            .add_source(File::from(path))
+            .add_source(crate::util::yaml_source(path)?)
             .build()?
             .try_deserialize::<Player>()?;
         player.load_profiles_dir(path)?;
@@ -254,7 +254,7 @@ impl Player {
     /// retired field it exists to move (inline fixtures) is not an error.
     pub fn deserialize_for_migration(path: &Path) -> Result<Player, ConfigError> {
         let mut player = Config::builder()
-            .add_source(File::from(path))
+            .add_source(crate::util::yaml_source(path)?)
             .build()?
             .try_deserialize::<Player>()?;
         player.load_profiles_dir(path)?;
@@ -657,7 +657,7 @@ impl Player {
             info!(path = ?samples_path, "Loading external samples configuration");
 
             let external_config: SamplesConfig = Config::builder()
-                .add_source(File::from(samples_path.as_path()))
+                .add_source(crate::util::yaml_source(&samples_path)?)
                 .build()?
                 .try_deserialize()?;
 
@@ -801,7 +801,7 @@ impl Player {
     /// Used by the migrate command to inspect raw inline fields.
     pub fn deserialize_raw(path: &Path) -> Result<Player, ConfigError> {
         let player = Config::builder()
-            .add_source(File::from(path))
+            .add_source(crate::util::yaml_source(path)?)
             .build()?
             .try_deserialize::<Player>()?;
         Ok(player)

@@ -349,9 +349,8 @@ fn migrate_fixtures(
     // Profile files: each one that carries the field is rewritten without it.
     if let Some(dir) = raw.profiles_dir_resolved(config_path) {
         for path in config::list_profile_files(&dir).unwrap_or_default() {
-            let Ok(profile) = ::config::Config::builder()
-                .add_source(::config::File::from(path.as_path()))
-                .build()
+            let Ok(profile) = crate::util::yaml_source(&path)
+                .and_then(|source| ::config::Config::builder().add_source(source).build())
                 .and_then(|c| c.try_deserialize::<config::Profile>())
             else {
                 continue;

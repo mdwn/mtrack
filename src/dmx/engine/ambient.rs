@@ -797,7 +797,7 @@ impl Engine {
     }
 
     fn read_ambient_shows(&self, path: &Path) -> Result<(String, Vec<LightShow>), String> {
-        let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let content = crate::util::read_to_string(path).map_err(|e| e.to_string())?;
         let shows = crate::lighting::parser::parse_light_file(&content, Some(path), None)
             .map_err(|e| e.to_string())?;
         if shows.is_empty() {

@@ -196,7 +196,7 @@ pub fn included_files(path: &Path) -> Vec<PathBuf> {
 }
 
 fn collect(path: &Path, seen: &mut HashSet<PathBuf>, found: &mut Vec<PathBuf>) {
-    let Ok(content) = std::fs::read_to_string(path) else {
+    let Ok(content) = crate::util::read_to_string(path) else {
         return;
     };
     let Ok(pairs) = LightingParser::parse(Rule::file, &content) else {

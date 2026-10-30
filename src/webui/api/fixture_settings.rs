@@ -168,7 +168,7 @@ pub(super) async fn get_settings(
 /// archive that cannot be read is `null` too.
 async fn strobe_info(root: PathBuf, archive: String) -> serde_json::Value {
     tokio::task::spawn_blocking(move || {
-        let bytes = std::fs::read(root.join(&archive)).ok()?;
+        let bytes = crate::util::read_file(&root.join(&archive)).ok()?;
         let description = lighting::gdtf::parse_archive(&bytes).ok()?;
         let steps = lighting::gdtf::strobe_table_steps(&description)?;
         let automatic = StrobeCurve::automatic(true);
@@ -462,7 +462,7 @@ fn new_record_for(
     file_name_for: &str,
     claimed: &mut Vec<PathBuf>,
 ) -> Result<(PathBuf, String), Refusal> {
-    let bytes = std::fs::read(root.join(&library_type.archive)).map_err(|e| {
+    let bytes = crate::util::read_file(&root.join(&library_type.archive)).map_err(|e| {
         (
             StatusCode::CONFLICT,
             format!("{} cannot be read: {e}", library_type.file_name),

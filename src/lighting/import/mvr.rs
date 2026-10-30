@@ -490,7 +490,7 @@ fn plan(
     let mut write_archive = true;
     let mut previous_scene: Option<Scene> = None;
     if library_path.exists() {
-        let previous = std::fs::read(&library_path)
+        let previous = crate::util::read_file(&library_path)
             .map_err(|e| format!("cannot read existing {}: {e}", library_path.display()))?;
         if previous == bytes {
             write_archive = false;
@@ -1060,7 +1060,7 @@ fn find_existing_venue(
         if !path.exists() {
             continue;
         }
-        let content = std::fs::read_to_string(&path)
+        let content = crate::util::read_to_string(&path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         let mut venues = parse_venues(&content)
             .map_err(|e| format!("{} does not parse: {e}", path.display()))?;
@@ -1482,7 +1482,7 @@ fn patch_existing(
     kept: &[Fixture],
     kept_focus: &BTreeMap<String, Vec3>,
 ) -> Result<String, String> {
-    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let content = crate::util::read_to_string(path).map_err(|e| e.to_string())?;
     let desired = desired_venue(plan, kept, kept_focus);
     let by_name: HashMap<&str, &PlannedFixture> =
         plan.fixtures.iter().map(|f| (f.name.as_str(), f)).collect();

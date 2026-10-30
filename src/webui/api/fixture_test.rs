@@ -313,7 +313,8 @@ pub(super) async fn get_options(
         let gdtf = system.gdtf_archive(&name).map(str::to_string);
         let mode_names: Vec<Option<String>> = match &gdtf {
             Some(archive) => {
-                let bytes = std::fs::read(root.join(archive)).map_err(|e| e.to_string())?;
+                let bytes =
+                    crate::util::read_file(&root.join(archive)).map_err(|e| e.to_string())?;
                 let description =
                     lighting::gdtf::parse_archive(&bytes).map_err(|e| e.to_string())?;
                 description

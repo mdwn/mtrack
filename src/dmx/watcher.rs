@@ -222,7 +222,7 @@ pub(super) fn reload_timeline(
     let mut all_shows = Vec::new();
 
     for path in file_paths {
-        let content = std::fs::read_to_string(path)
+        let content = crate::util::read_to_string(path)
             .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
         // Parse with the same tempo this timeline will run under. Using the

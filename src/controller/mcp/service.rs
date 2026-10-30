@@ -1949,7 +1949,7 @@ impl McpServer {
                 .map(|(name, archive, curve)| {
                     let modes: Vec<String> = project
                         .as_ref()
-                        .and_then(|project| std::fs::read(project.join(&archive)).ok())
+                        .and_then(|project| crate::util::read_file(&project.join(&archive)).ok())
                         .and_then(|bytes| crate::lighting::gdtf::parse_archive(&bytes).ok())
                         .map(|d| d.modes.into_iter().map(|m| m.name).collect())
                         .unwrap_or_default();
@@ -2042,6 +2042,9 @@ impl McpServer {
         let path = self.resolve_in_project(&args.path)?;
         let project = crate::util::project_dir_of(self.config_store()?.path());
         let (types_dir, _) = self.project_lighting_dirs().await?;
+        // A pinned name writes a fixture type record: taken in turn with the
+        // web UI's fixture type and venue saves, as write_fixture_type is.
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         let report = tokio::task::spawn_blocking(move || {
             crate::lighting::import::import_gdtf(&path, args.name.as_deref(), &project, &types_dir)
                 .map_err(|e| e.to_string())
@@ -2123,6 +2126,9 @@ impl McpServer {
         let path = self.resolve_in_project(&args.path)?;
         let project = crate::util::project_dir_of(self.config_store()?.path());
         let options = self.mvr_options(&args).await?;
+        // A re-import merges into the venue file it reads, so it holds the
+        // lock from that read to its write, as patch_venue does.
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         let report = tokio::task::spawn_blocking(move || {
             crate::lighting::import::import_mvr(&path, &options, &project)
                 .map_err(|e| e.to_string())

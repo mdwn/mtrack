@@ -5497,3 +5497,141 @@ async fn mcp_patch_song_keeps_a_save_made_while_it_waits() -> Result<(), Box<dyn
     controller.shutdown();
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_import_gdtf_waits_for_a_venue_save() -> Result<(), Box<dyn Error>> {
+    // #578: import_gdtf wrote a fixture type record without the lock the web
+    // UI's fixture type and venue saves take.
+    let fixture = setup_standalone_fixture()?;
+    std::fs::create_dir_all(fixture.root.join("incoming"))?;
+    std::fs::write(
+        fixture.root.join("incoming/synth.gdtf"),
+        crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+        )]),
+    )?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // A save from the web UI under way, as its fixture type PUT holds the lock.
+    let saving = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
+    let import = {
+        let (client, url, session) = (client.clone(), url.clone(), session.clone());
+        tokio::spawn(async move {
+            call_tool(
+                &client,
+                &url,
+                &session,
+                1,
+                "import_gdtf",
+                json!({"path": "incoming/synth.gdtf", "name": "Brick"}),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let record = fixture.root.join("lighting/fixture_types/brick.fixture");
+    assert!(!record.exists(), "written mid-save");
+    drop(saving);
+    let response = import.await?;
+    assert!(!tool_is_error(&response), "{response}");
+    assert!(record.exists());
+    controller.shutdown();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_import_mvr_keeps_a_venue_save_made_while_it_waits() -> Result<(), Box<dyn Error>> {
+    // #578: a re-import merges into the venue file, and wrote back its merge
+    // of what it read, whatever the web UI's venue editor had saved since.
+    let fixture = setup_standalone_fixture()?;
+    let gdtf = crate::lighting::gdtf::build_zip(&[(
+        "description.xml",
+        crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+    )]);
+    let scene = r#"<GeneralSceneDescription verMajor="1" verMinor="6"><Scene><Layers>
+<Layer name="Front Truss"><ChildList>
+<Fixture name="Brick 1"><Matrix>{1,0,0}{0,1,0}{0,0,1}{-2000,3500,4200}</Matrix>
+<GDTFSpec>Astera_PB15.gdtf</GDTFSpec><GDTFMode>8: RGBS</GDTFMode>
+<Addresses><Address break="0">1.1</Address></Addresses></Fixture>
+</ChildList></Layer></Layers></Scene></GeneralSceneDescription>"#;
+    std::fs::create_dir_all(fixture.root.join("incoming"))?;
+    std::fs::write(
+        fixture.root.join("incoming/kellys.mvr"),
+        crate::lighting::gdtf::build_zip(&[
+            ("GeneralSceneDescription.xml", scene.as_bytes()),
+            ("Astera_PB15.gdtf", gdtf.as_slice()),
+        ]),
+    )?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let seeded = call_tool(
+        &client,
+        &url,
+        &session,
+        1,
+        "import_mvr",
+        json!({"path": "incoming/kellys.mvr", "origin_mm": [0, -3500, 0]}),
+    )
+    .await;
+    assert!(!tool_is_error(&seeded), "{seeded}");
+    let path = fixture.root.join("lighting/venues/kellys.venue");
+    let loaded = std::fs::read_to_string(&path)?;
+
+    // A save from the web UI under way, as its venue PUT holds the lock. The
+    // re-import moves the origin, so its merge rewrites the position.
+    let saving = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
+    let import = {
+        let (client, url, session) = (client.clone(), url.clone(), session.clone());
+        tokio::spawn(async move {
+            call_tool(
+                &client,
+                &url,
+                &session,
+                2,
+                "import_mvr",
+                json!({"path": "incoming/kellys.mvr", "origin_mm": [0, 0, 0]}),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let saved = format!("# saved from the web UI\n{loaded}");
+    crate::util::write_file(&path, saved.as_bytes())?;
+    drop(saving);
+    let response = import.await?;
+    assert!(!tool_is_error(&response), "{response}");
+
+    let after = std::fs::read_to_string(&path)?;
+    assert!(
+        after.contains("# saved from the web UI"),
+        "save lost: {after}"
+    );
+    assert_ne!(after, saved, "merge lost: {after}");
+    controller.shutdown();
+    Ok(())
+}

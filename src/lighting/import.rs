@@ -256,7 +256,7 @@ fn library_copy_of(project: &Path, bytes: &[u8]) -> Option<String> {
     paths.sort();
     paths
         .into_iter()
-        .find(|p| std::fs::read(p).is_ok_and(|b| b == bytes))
+        .find(|p| crate::util::read_file(p).is_ok_and(|b| b == bytes))
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
 }
 

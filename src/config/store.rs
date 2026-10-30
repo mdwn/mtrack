@@ -371,10 +371,15 @@ impl ConfigStore {
         *main.profiles_mut() = None;
         let yaml =
             to_yaml_string(&main).map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
-        if std::fs::read_to_string(&self.path).ok().as_deref() != Some(yaml.as_str()) {
+        if crate::util::read_to_string(&self.path).ok().as_deref() != Some(yaml.as_str()) {
             staged_write(&self.path, &yaml).map_err(ConfigError::StoreIo)?;
         }
 
+        // In turn with the web UI's profile saves, which read a file to keep
+        // what their editor does not send (#578).
+        let _writing = crate::webui::api::profiles::PROFILE_WRITES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         for (index, (before, after)) in profiles_before.iter().zip(&profiles_after).enumerate() {
             if before == after {
                 continue;
@@ -395,7 +400,7 @@ impl ConfigStore {
     /// the right content to write -- keeping a stale duplicate would be worse --
     /// but it removes something the operator wrote, so it is not done silently.
     fn warn_if_dropping_inline_profiles(&self) {
-        let Ok(current) = std::fs::read_to_string(&self.path) else {
+        let Ok(current) = crate::util::read_to_string(&self.path) else {
             return;
         };
         if current.lines().any(|l| l.trim_start() == "profiles:") {
@@ -687,6 +692,12 @@ fn persist_gains_to_profile_file(
     gains: &indexmap::IndexMap<String, f32>,
 ) -> Result<(), ConfigError> {
     let yaml_paths = super::player::list_profile_files(dir)?;
+
+    // Held from reading the file to writing it back, as the web UI's profile
+    // saves hold it, or a save between the two would be lost (#578).
+    let _writing = crate::webui::api::profiles::PROFILE_WRITES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     // A parse failure aborts (matching load behavior) rather than skipping:
     // skipping an unparseable file could write the gains into the wrong

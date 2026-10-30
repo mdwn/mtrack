@@ -184,6 +184,9 @@ pub(super) async fn import_gdtf(
     // archive, name collision, archive conflict) surfaces as the caller error
     // it is, not a 500.
     let report = super::helpers::spawn_blocking_io("import gdtf", move || {
+        // A pinned name writes a fixture type record, in turn with the
+        // other fixture type and venue saves (#578).
+        let _guard = VENUE_WRITES.blocking_lock();
         Ok::<_, String>(
             lighting::import::import_gdtf_bytes(
                 &bytes,
@@ -1315,7 +1318,7 @@ pub(super) async fn get_fixture_type_gdtf(
     // Reading, parsing, distilling every mode and (cold) writing the rig are
     // all blocking work. The inner Result is the parse failure, a 400.
     let outcome = super::helpers::spawn_blocking_io("inspect GDTF", move || {
-        let bytes = std::fs::read(&archive)?;
+        let bytes = crate::util::read_file(&archive)?;
         let description = match lighting::gdtf::parse_archive(&bytes) {
             Ok(description) => description,
             Err(e) => return Ok::<_, std::io::Error>(Err(e.to_string())),
@@ -1512,7 +1515,7 @@ impl ArchiveCache {
             .entry(source.path.clone())
             .or_insert_with(|| {
                 let archive = resolve_referential_archive(root, name, source).ok()?;
-                let bytes = std::fs::read(archive).ok()?;
+                let bytes = crate::util::read_file(&archive).ok()?;
                 let description = lighting::gdtf::parse_archive(&bytes).ok()?;
                 Some((bytes, description))
             })
@@ -1771,6 +1774,9 @@ pub(super) async fn delete_fixture_type(
         DEFAULT_FIXTURE_TYPES_DIR,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
+    // Held from finding the record to deleting it, as MCP's delete does: a
+    // save between the two would be deleted unseen (#578).
+    let _writing = VENUE_WRITES.lock().await;
     let Some((file_path, others)) = locate_fixture_type_file(&dir, &name).await? else {
         // A GDTF in the library with no record is a fixture of its own;
         // deleting it is deleting the archive.
@@ -2732,6 +2738,9 @@ pub(super) async fn delete_venue(
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
     let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    // Held from reading the file to deleting it, as MCP's delete does: a
+    // save adding another venue to it between the two would be lost (#578).
+    let _writing = VENUE_WRITES.lock().await;
     // By declaration, as GET and PUT find it: an MVR import names the file by
     // its own rule, so the stem need not be this API's spelling of the name.
     let located = {

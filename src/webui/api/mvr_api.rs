@@ -262,6 +262,9 @@ pub(super) async fn import_mvr(
         }
     }
     let outcome = super::helpers::spawn_blocking_io("import MVR", move || {
+        // A re-import merges into the venue file it reads: held from that
+        // read to its write, or a venue save between the two is lost (#578).
+        let _guard = write.then(|| VENUE_WRITES.blocking_lock());
         Ok::<_, String>(
             if write {
                 lighting::import::import_mvr_bytes(&form.bytes, &form.file_name, &options, &project)

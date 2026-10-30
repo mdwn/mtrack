@@ -34,8 +34,9 @@ use crate::config::Profile;
 use config::Config;
 
 /// Validates a profile filename for use in file paths.
-/// Serialises every read-check-write of a profile file.
-static PROFILE_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Serialises every read-check-write of a profile file, here and in the
+/// config store's writes of the profiles it loaded from a directory.
+pub(crate) static PROFILE_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A YAML document as JSON, for merging. `None` when it does not parse.
 fn yaml_to_json(text: &str) -> Option<serde_json::Value> {
