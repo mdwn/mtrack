@@ -1130,7 +1130,7 @@ impl TempoMap {
 
         // The lead-in is whole bars at the starting tempo: gear counts beats,
         // and bars, from the first pulse after Start, so bar 1 must be a whole
-        // number of bars of pulses in. What is left over before the first
+        // number of bars of pulses in, and of quarters. What is left over before the first
         // whole bar has no pulses. Snapped first, so a count-in of exactly
         // whole bars that floating point puts a hair short keeps its first.
         let interval = 60.0 / self.initial_bpm / PULSES_PER_QUARTER;
@@ -1139,7 +1139,10 @@ impl TempoMap {
             .max(1);
         let start = self.start_offset.as_secs_f64();
         let lead_bars = (start / (bar_pulses as f64 * interval) + 1e-9).floor() as usize;
-        let lead = lead_bars.saturating_mul(bar_pulses).min(MAX_PULSES);
+        // And whole quarters: gear knows nothing of the song's meter and
+        // counts its beats in them, so a bar of 7/8 rounds down to three.
+        let quarter = PULSES_PER_QUARTER as usize;
+        let lead = (lead_bars.saturating_mul(bar_pulses) / quarter * quarter).min(MAX_PULSES);
         for k in (1..=lead).rev() {
             let at = (start - k as f64 * interval).max(0.0);
             if at < until.as_secs_f64() {
@@ -1223,6 +1226,24 @@ mod tests {
                 for pair in secs(&ticks).windows(2) {
                     assert!((pair[1] - pair[0] - PULSE_120).abs() < 1e-6, "{pair:?}");
                 }
+            }
+        }
+
+        /// A count-in in a meter whose bar is not whole quarters keeps gear's
+        /// quarter grid: bar 1 lands on a quarter from the first pulse.
+        #[test]
+        fn an_odd_meters_count_in_keeps_whole_quarters() {
+            // 7/8 at 120 BPM: a bar is 3.5 quarters, 1.75 s, 84 pulses.
+            for (start_ms, lead) in [(1_750, 72), (3_500, 168), (5_250, 240)] {
+                let start = Duration::from_millis(start_ms);
+                let ticks = TempoMap::new(start, 120.0, TimeSignature::new(7, 8), vec![])
+                    .beat_clock_ticks(Duration::from_secs(8));
+                let bar_one = ticks
+                    .iter()
+                    .position(|at| *at == start)
+                    .expect("a pulse on bar 1");
+                assert_eq!(bar_one, lead, "start {start_ms}ms");
+                assert_eq!(bar_one % 24, 0);
             }
         }
 

@@ -827,17 +827,29 @@ impl Song {
     /// its MIDI file's tempo (`sheet`, the file parsed), else its `tempo:`,
     /// else its click track's, as its lighting is timed. `None` without any.
     pub(crate) fn beat_clock(&self, sheet: Option<&MidiSheet>) -> Option<Vec<Duration>> {
-        if let Some(beat_clock) = sheet.and_then(|sheet| sheet.beat_clock.as_ref()) {
-            return Some(beat_clock.ticks_from(Duration::ZERO).to_vec());
-        }
         // To the song's end, or its MIDI file's, for a song with no audio.
         let midi_end = sheet
             .and_then(|sheet| sheet.precomputed.events().last())
             .map(|event| event.time)
             .unwrap_or_default();
-        let ticks = self
-            .lighting_tempo_map()?
-            .beat_clock_ticks(self.length().max(midi_end));
+        let end = self.length().max(midi_end);
+        if let Some(beat_clock) = sheet.and_then(|sheet| sheet.beat_clock.as_ref()) {
+            // A MIDI file's clock stops where the file does: on to the
+            // song's end at its last tempo, as a tempo's clock runs.
+            let mut ticks = beat_clock.ticks_from(Duration::ZERO).to_vec();
+            if let [.., before, last] = ticks[..] {
+                let interval = last.saturating_sub(before);
+                if !interval.is_zero() {
+                    let mut at = last + interval;
+                    while at < end && ticks.len() < 2_000_000 {
+                        ticks.push(at);
+                        at += interval;
+                    }
+                }
+            }
+            return Some(ticks);
+        }
+        let ticks = self.lighting_tempo_map()?.beat_clock_ticks(end);
         (!ticks.is_empty()).then_some(ticks)
     }
 
@@ -3231,6 +3243,25 @@ mod test {
                 assert!((pulse(&ticks) - 1.0 / 24.0).abs() < 1e-6, "{ticks:?}");
                 // To the song's end, not the MIDI file's.
                 assert_eq!(ticks.len(), 48, "{ticks:?}");
+            }
+            Ok(())
+        }
+
+        /// A MIDI file's clock runs on to the song's end at its last tempo,
+        /// past where the file stops, as a tempo's clock does.
+        #[test]
+        fn a_midi_files_clock_runs_to_the_songs_end() -> Result<(), Box<dyn Error>> {
+            // The file is a second long at 120 BPM; the song two seconds.
+            let sheet = sheet(Some(500_000))?;
+            let ticks = song(None).beat_clock(Some(&sheet)).unwrap();
+            let last = *ticks.last().unwrap();
+            assert!(
+                last >= Duration::from_millis(1_970) && last < Duration::from_secs(2),
+                "{last:?}"
+            );
+            for pair in ticks.windows(2) {
+                let gap = (pair[1] - pair[0]).as_secs_f64();
+                assert!((gap - 0.5 / 24.0).abs() < 1e-5, "{pair:?}");
             }
             Ok(())
         }

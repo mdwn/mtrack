@@ -106,6 +106,44 @@ impl Drop for Device {
     }
 }
 
+impl Device {
+    /// Hands this song's beat clock schedule to the always-on device engine,
+    /// if there is one and the song has a tempo. The engine (not a per-song
+    /// thread) owns the clock output: it syncs to the shared playback clock's
+    /// "go" signal, plays this schedule, and then holds the last tempo until
+    /// the next song retunes it.
+    fn play_beat_clock(
+        &self,
+        song: &Song,
+        sheet: Option<&crate::songs::MidiSheet>,
+        start_time: Duration,
+        cancel: &CancelHandle,
+        clock: &PlaybackClock,
+        loop_break: &Arc<AtomicBool>,
+    ) {
+        let Some(engine) = &self.beat_clock_engine else {
+            return;
+        };
+        let Some(ticks) = song.beat_clock(sheet) else {
+            return;
+        };
+        // Passes on the song's own grid, as its audio and lights loop.
+        let period = song.loop_period();
+        let passes = (song.loop_playback() && !period.is_zero()).then(|| BeatClockPasses {
+            period,
+            loop_break: loop_break.clone(),
+        });
+        engine.play(BeatClockPlay {
+            ticks: Arc::new(ticks),
+            start_time,
+            playback_delay: self.playback_delay,
+            cancel: cancel.clone(),
+            clock: clock.clone(),
+            passes,
+        });
+    }
+}
+
 impl super::Device for Device {
     fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "wait for event (midir)");
@@ -199,53 +237,22 @@ impl super::Device for Device {
         let _enter = span.enter();
 
         // A song's tempo drives the beat clock without a MIDI file.
-        let tempo_clock = self.beat_clock_engine.is_some() && song.has_tempo();
-        if song.midi_playback().is_none() && !tempo_clock {
-            info!(song = song.name(), "Song has no MIDI sheet.");
+        let Some(midi_playback) = song.midi_playback() else {
+            // A song's tempo drives the beat clock without a MIDI file.
+            if self.beat_clock_engine.is_some() && song.has_tempo() {
+                self.play_beat_clock(&song, None, start_time, &cancel_handle, &clock, &loop_break);
+                info!(
+                    song = song.name(),
+                    "Song has no MIDI file; its beat clock runs from its tempo."
+                );
+            } else {
+                info!(song = song.name(), "Song has no MIDI sheet.");
+            }
             // Guard sends on drop, but explicit send is clearer.
             ready_tx.send();
             return Ok(());
-        }
-
-        let midi_sheet = song
-            .midi_playback()
-            .map(|midi_playback| midi_playback.midi_sheet())
-            .transpose()?;
-        let playback_delay = self.playback_delay;
-
-        // Hand this song's beat clock schedule to the always-on device engine. The
-        // engine (not a per-song thread) owns the clock output: it syncs to the
-        // shared playback clock's "go" signal, plays this schedule, and then holds
-        // the last tempo until the next song retunes it.
-        if let Some(engine) = &self.beat_clock_engine {
-            if let Some(ticks) = song.beat_clock(midi_sheet.as_ref()) {
-                // Passes on the song's own grid, as its notes loop.
-                let period = song
-                    .duration()
-                    .saturating_sub(song.loop_crossfade().unwrap_or_default());
-                let passes = (song.loop_playback() && !period.is_zero()).then(|| BeatClockPasses {
-                    period,
-                    loop_break: loop_break.clone(),
-                });
-                engine.play(BeatClockPlay {
-                    ticks: Arc::new(ticks),
-                    start_time,
-                    playback_delay,
-                    cancel: cancel_handle.clone(),
-                    clock: clock.clone(),
-                    passes,
-                });
-            }
-        }
-
-        let Some(midi_sheet) = midi_sheet else {
-            info!(
-                song = song.name(),
-                "Song has no MIDI file; its beat clock runs from its tempo."
-            );
-            ready_tx.send();
-            return Ok(());
         };
+
         let output_port = match self.output_port.as_ref() {
             Some(output_port) => output_port,
             None => {
@@ -257,7 +264,8 @@ impl super::Device for Device {
                 return Ok(());
             }
         };
-        let midi_playback = song.midi_playback().expect("a MIDI sheet comes from it");
+        let midi_sheet = midi_playback.midi_sheet()?;
+        let playback_delay = self.playback_delay;
         let output = MidiOutput::new("mtrack player output")?;
 
         let exclude_midi_channels = HashSet::from_iter(midi_playback.exclude_midi_channels());
@@ -273,6 +281,15 @@ impl super::Device for Device {
 
         let finished = Arc::new(AtomicBool::new(false));
         let mut connection = output.connect(output_port, "mtrack player")?;
+        // Once the notes can play: a song that fails here has no clock either.
+        self.play_beat_clock(
+            &song,
+            Some(&midi_sheet),
+            start_time,
+            &cancel_handle,
+            &clock,
+            &loop_break,
+        );
 
         let join_handle = {
             let cancel_handle = cancel_handle.clone();
@@ -947,95 +964,131 @@ fn run_beat_clock(
     let mut prev_tick: Option<Duration> = None;
     let mut last_interval: Option<Duration> = None;
 
-    // A looping song plays its ticks again each pass, offset by the passes
-    // before: each pass up to where the next begins, until the loop is broken,
-    // when the pass under way plays out to its end. A period with no tick in
-    // it would repeat nothing forever, so such a song plays once.
-    let passes = passes.filter(|passes| ticks.first().is_some_and(|first| *first < passes.period));
-    let mut pass_offset = Duration::ZERO;
-    loop {
-        let mut next_pass = false;
-        for tick in ticks {
-            if let Some(passes) = passes {
-                if *tick >= passes.period && !passes.loop_break.load(Ordering::Relaxed) {
-                    next_pass = true;
-                    break;
-                }
-            }
-            // Song time on the clock this schedule plays to.
-            let tick_time = pass_offset + *tick;
-            if tick_time < start_time {
-                continue;
-            }
+    let period = passes.map(|passes| passes.period);
+    for (tick_time, seam) in PassTicks::new(ticks, start_time, period) {
+        // A broken loop ends the clock, as it ends the notes: the player
+        // stops the song with it.
+        if passes.is_some_and(|passes| passes.loop_break.load(Ordering::Relaxed))
+            || cancel_handle.is_cancelled()
+        {
+            let _ = sender.send(&stop_bytes);
+            return ScheduleOutcome::Finished(last_interval);
+        }
+        // The gap across a seam is no tempo: a stop just past it would hold
+        // that as the tempo to keep.
+        if seam {
+            prev_tick = None;
+        }
 
-            if cancel_handle.is_cancelled() {
+        // A newer command supersedes this schedule. Nothing cancels the handle
+        // when a song ends naturally -- the cleanup path only clears the join
+        // and advances the playlist -- so a schedule that outlasts its audio
+        // (a MIDI file longer than the song) would otherwise keep running,
+        // dequeue the next song late, and shift its Start and every tick by the
+        // residual. This is also how Shutdown gets observed mid-schedule, so
+        // dropping the device does not block for the rest of the song.
+        match rx.try_recv() {
+            Ok(command) => {
+                let _ = sender.send(&stop_bytes);
+                return ScheduleOutcome::Preempted(command, last_interval);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 let _ = sender.send(&stop_bytes);
                 return ScheduleOutcome::Finished(last_interval);
             }
-
-            // A newer command supersedes this schedule. Nothing cancels the handle
-            // when a song ends naturally -- the cleanup path only clears the join
-            // and advances the playlist -- so a schedule that outlasts its audio
-            // (a MIDI file longer than the song) would otherwise keep running,
-            // dequeue the next song late, and shift its Start and every tick by the
-            // residual. This is also how Shutdown gets observed mid-schedule, so
-            // dropping the device does not block for the rest of the song.
-            match rx.try_recv() {
-                Ok(command) => {
-                    let _ = sender.send(&stop_bytes);
-                    return ScheduleOutcome::Preempted(command, last_interval);
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    let _ = sender.send(&stop_bytes);
-                    return ScheduleOutcome::Finished(last_interval);
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-
-            let target_wall = tick_time - start_time;
-            let elapsed = clock.elapsed();
-            if target_wall > elapsed {
-                spin_sleep::sleep(target_wall - elapsed);
-            }
-
-            if cancel_handle.is_cancelled() {
-                let _ = sender.send(&stop_bytes);
-                return ScheduleOutcome::Finished(last_interval);
-            }
-
-            if let Err(e) = sender.send(&clock_bytes) {
-                debug!("MIDI beat clock send failed: {:?}", e);
-            }
-
-            if let Some(prev) = prev_tick {
-                last_interval = Some(tick_time.saturating_sub(prev));
-            }
-            prev_tick = Some(tick_time);
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
-        // A pass whose ticks ran out short of its period (a click that stops
-        // before the song does) goes on to the next all the same.
-        let looping = passes.filter(|passes| !passes.loop_break.load(Ordering::Relaxed));
-        match looping {
-            Some(passes) if next_pass || ticks.last().is_some_and(|last| *last < passes.period) => {
-                // The second pass starts at the first boundary, or at once
-                // for a start already past it (in the crossfade's tail), as
-                // the audio's, lights' and notes' do (`Song::loop_pass_start`).
-                pass_offset = if pass_offset.is_zero() {
-                    passes.period.max(start_time)
-                } else {
-                    pass_offset + passes.period
-                };
-                // The gap across the seam is no tempo: a stop just past it
-                // would hold that as the tempo to keep.
-                prev_tick = None;
-            }
-            _ => break,
+
+        let target_wall = tick_time - start_time;
+        let elapsed = clock.elapsed();
+        if target_wall > elapsed {
+            spin_sleep::sleep(target_wall - elapsed);
         }
+
+        if cancel_handle.is_cancelled() {
+            let _ = sender.send(&stop_bytes);
+            return ScheduleOutcome::Finished(last_interval);
+        }
+
+        if let Err(e) = sender.send(&clock_bytes) {
+            debug!("MIDI beat clock send failed: {:?}", e);
+        }
+
+        if let Some(prev) = prev_tick {
+            last_interval = Some(tick_time.saturating_sub(prev));
+        }
+        prev_tick = Some(tick_time);
     }
 
     // Send STOP when finished
     let _ = sender.send(&stop_bytes);
     ScheduleOutcome::Finished(last_interval)
+}
+
+/// When each of a schedule's ticks falls due, as time on the song's timeline
+/// from a start at `start` (so due `time - start` after it), and whether it
+/// is the first of a new pass.
+///
+/// A looping song (`period`: its length less its crossfade) plays its ticks
+/// again each pass, each pass up to where the next begins: the second pass at
+/// the first boundary, or at once for a start already past it (in the
+/// crossfade's tail), and every period after that, as the audio, lights and
+/// notes go round (`Song::loop_pass_start`). A pass whose ticks run out short
+/// of the period (a click that stops before the song does) goes on to the
+/// next all the same. A period with no tick in it would repeat nothing for
+/// ever, so such a song plays once.
+struct PassTicks<'a> {
+    ticks: &'a [Duration],
+    start: Duration,
+    period: Option<Duration>,
+    /// Where on the song's timeline the pass under way began.
+    offset: Duration,
+    /// Its next tick.
+    index: usize,
+    passes: u32,
+}
+
+impl<'a> PassTicks<'a> {
+    fn new(ticks: &'a [Duration], start: Duration, period: Option<Duration>) -> Self {
+        let period = period.filter(|period| ticks.first().is_some_and(|first| first < period));
+        PassTicks {
+            ticks,
+            start,
+            period,
+            offset: Duration::ZERO,
+            index: 0,
+            passes: 0,
+        }
+    }
+}
+
+impl Iterator for PassTicks<'_> {
+    type Item = (Duration, bool);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let tick = self.ticks.get(self.index).copied();
+            match (tick, self.period) {
+                (Some(tick), period) if period.is_none_or(|period| tick < period) => {
+                    self.index += 1;
+                    let at = self.offset + tick;
+                    if at >= self.start {
+                        return Some((at, self.passes > 0 && self.index == 1));
+                    }
+                }
+                (_, Some(period)) => {
+                    self.offset = if self.passes == 0 {
+                        period.max(self.start)
+                    } else {
+                        self.offset + period
+                    };
+                    self.passes += 1;
+                    self.index = 0;
+                }
+                (_, None) => return None,
+            }
+        }
+    }
 }
 
 /// How a schedule ended, and the tempo it established.
@@ -1076,8 +1129,8 @@ struct BeatClockPlay {
 }
 
 /// How a looping song's beat clock repeats: a pass every `period` (the song's
-/// length less its crossfade), as its audio and notes loop, until the loop is
-/// broken, when the pass under way plays out to its end.
+/// length less its crossfade), as its audio and notes loop (see [`PassTicks`]),
+/// until the loop is broken, which ends it.
 #[derive(Clone)]
 struct BeatClockPasses {
     period: Duration,
@@ -3331,142 +3384,113 @@ mod test {
             }
         }
 
-        /// Plays `ticks` as a looping song with passes every `period`,
-        /// breaking the loop after `break_after` clocks; returns when each
-        /// clock went out.
-        fn play_looping(ticks: &[Duration], period: Duration, break_after: usize) -> Vec<Duration> {
-            let clock = PlaybackClock::wall();
-            clock.start();
-            let loop_break = Arc::new(AtomicBool::new(false));
-            let mut sender = LoopingSender {
-                clock: clock.clone(),
-                clocks: Vec::new(),
-                break_after,
-                loop_break: loop_break.clone(),
-            };
-            let (_tx, rx) = mpsc::channel();
-            run_beat_clock(
-                &mut sender,
-                ticks,
-                Duration::ZERO,
-                Some(&BeatClockPasses { period, loop_break }),
-                &CancelHandle::new(),
-                &clock,
-                &rx,
-            );
-            sender.clocks
-        }
-
         fn every_10ms(until_ms: u64) -> Vec<Duration> {
             (0..until_ms / 10)
                 .map(|i| Duration::from_millis(i * 10))
                 .collect()
         }
 
-        /// A looping song's clock goes round with it: each pass up to where
-        /// the next begins (its length less the crossfade), and once the loop
-        /// is broken, the pass under way to its end.
+        fn ms(ms: u64) -> Duration {
+            Duration::from_millis(ms)
+        }
+
+        /// The first `n` (song time in ms, a pass's first) a schedule plays.
+        fn pass_ticks(
+            ticks: &[Duration],
+            start: u64,
+            period: Option<u64>,
+            n: usize,
+        ) -> Vec<(u64, bool)> {
+            PassTicks::new(ticks, ms(start), period.map(ms))
+                .take(n)
+                .map(|(at, seam)| (at.as_millis() as u64, seam))
+                .collect()
+        }
+
+        /// A looping song's clock goes round with it, each pass up to where
+        /// the next begins: its length less the crossfade.
         #[test]
         fn a_looping_songs_clock_repeats_each_pass() {
-            // 500ms of clocks, a pass every 300ms: 30 a pass while looping;
-            // broken in the third pass, which plays all 50.
-            let clocks = play_looping(&every_10ms(500), Duration::from_millis(300), 65);
-            assert_eq!(clocks.len(), 30 + 30 + 50);
-            // In order and on time: the third pass's last clock is due at
-            // 600ms + 490ms.
-            for pair in clocks.windows(2) {
-                assert!(pair[1] >= pair[0], "{pair:?}");
+            // 500ms of clocks, a pass every 300ms.
+            let played = pass_ticks(&every_10ms(500), 0, Some(300), 70);
+            assert_eq!(played.len(), 70);
+            for (i, (at, seam)) in played.iter().enumerate() {
+                assert_eq!(*at, i as u64 * 10, "{played:?}");
+                assert_eq!(*seam, i > 0 && i % 30 == 0, "clock {i}");
             }
-            assert!(*clocks.last().unwrap() >= Duration::from_millis(1_090));
         }
 
         /// A click that stops short of the song's end leaves the clock quiet
-        /// until the next pass, which still starts on time.
+        /// until the next pass, which starts on time.
         #[test]
         fn a_pass_short_of_its_period_still_goes_round() {
-            // 200ms of clocks, a pass every 300ms: 20 a pass.
-            let clocks = play_looping(&every_10ms(200), Duration::from_millis(300), 30);
-            assert_eq!(clocks.len(), 40);
-            assert!(clocks[20] >= Duration::from_millis(300), "{:?}", clocks[20]);
+            let played = pass_ticks(&every_10ms(200), 0, Some(300), 25);
+            assert_eq!(played[19], (190, false));
+            assert_eq!(played[20], (300, true));
+            assert_eq!(played[24], (340, false));
         }
 
         /// A schedule with no clock inside the first period would repeat
-        /// nothing for ever: it plays once.
+        /// nothing for ever: it plays once. Without passes, too.
         #[test]
-        fn a_period_without_a_clock_in_it_plays_once() {
-            let ticks: Vec<Duration> = (40..45).map(|i| Duration::from_millis(i * 10)).collect();
-            let clocks = play_looping(&ticks, Duration::from_millis(300), usize::MAX);
-            assert_eq!(clocks.len(), 5);
+        fn a_schedule_that_does_not_loop_plays_once() {
+            let ticks: Vec<Duration> = (40..45).map(|i| ms(i * 10)).collect();
+            assert_eq!(pass_ticks(&ticks, 0, Some(300), 100).len(), 5);
+            assert_eq!(pass_ticks(&every_10ms(500), 0, None, 100).len(), 50);
         }
 
-        /// A seek into the crossfade tail past its last clock: audio, lights
-        /// and notes start the next pass at once (`Song::loop_pass_start`),
-        /// and the clock goes round with them rather than stopping.
-        #[test]
-        fn a_start_past_the_last_clock_in_the_tail_still_loops() {
-            let period = Duration::from_millis(300);
-            // After the last clock (490ms), before the song's end (500ms).
-            let start = Duration::from_millis(495);
-            let clock = PlaybackClock::wall();
-            clock.start();
-            let loop_break = Arc::new(AtomicBool::new(false));
-            let mut sender = LoopingSender {
-                clock: clock.clone(),
-                clocks: Vec::new(),
-                break_after: 45,
-                loop_break: loop_break.clone(),
-            };
-            let (_tx, rx) = mpsc::channel();
-            run_beat_clock(
-                &mut sender,
-                &every_10ms(500),
-                start,
-                Some(&BeatClockPasses { period, loop_break }),
-                &CancelHandle::new(),
-                &clock,
-                &rx,
-            );
-            // The audio goes on into pass 1 at once and keeps looping; the
-            // clock should go round with it (45 clocks, then the rest of
-            // the pass under way).
-            assert!(sender.clocks.len() >= 45, "{:?}", sender.clocks);
-        }
-
-        /// A seek into the crossfade tail before its last clock: the next pass
-        /// starts at once, on the song's grid, not a period after the tail's
-        /// start, which ran the clock ahead of the audio for the whole loop.
+        /// A seek into the crossfade tail: audio, lights and notes start the
+        /// next pass at once (`Song::loop_pass_start`), so the clock does too,
+        /// on the song's grid: song time 0 at the start, not a period after
+        /// the tail began, which ran it ahead of the audio for the whole loop
+        /// or, past the tail's last clock, left it silent.
         #[test]
         fn a_start_in_the_tail_starts_the_next_pass_at_once() {
+            for start in [350, 495] {
+                let played = pass_ticks(&every_10ms(500), start, Some(300), 31);
+                // Due `at - start` after the start: the pass from 0 at once.
+                assert_eq!(played[0], (start, true), "start {start}");
+                assert_eq!(played[29], (start + 290, false), "start {start}");
+                assert_eq!(played[30], (start + 300, true), "start {start}");
+            }
+        }
+
+        /// A start part way into a pass plays the rest of it, then the next
+        /// at the boundary.
+        #[test]
+        fn a_start_part_way_into_a_pass_meets_the_boundary() {
+            let played = pass_ticks(&every_10ms(500), 125, Some(300), 20);
+            assert_eq!(played[0], (130, false));
+            assert_eq!(played[17], (300, true));
+        }
+
+        /// The engine plays the passes, and a broken loop ends the clock with
+        /// a Stop, as the player ends the song with it.
+        #[test]
+        fn a_looping_clock_runs_across_seams_until_the_loop_is_broken() {
             let clock = PlaybackClock::wall();
             clock.start();
             let loop_break = Arc::new(AtomicBool::new(false));
             let mut sender = LoopingSender {
                 clock: clock.clone(),
                 clocks: Vec::new(),
-                break_after: 31,
+                break_after: 35,
                 loop_break: loop_break.clone(),
             };
             let (_tx, rx) = mpsc::channel();
             run_beat_clock(
                 &mut sender,
                 &every_10ms(500),
-                Duration::from_millis(350),
+                Duration::ZERO,
                 Some(&BeatClockPasses {
-                    period: Duration::from_millis(300),
+                    period: ms(300),
                     loop_break,
                 }),
                 &CancelHandle::new(),
                 &clock,
                 &rx,
             );
-            // Nothing of the tail; the next pass whole from its start (30
-            // clocks to the seam), then, broken, the one after to its end.
-            assert_eq!(sender.clocks.len(), 30 + 50, "{:?}", sender.clocks);
-            assert!(
-                sender.clocks[0] < Duration::from_millis(100),
-                "{:?}",
-                sender.clocks[0]
-            );
+            assert_eq!(sender.clocks.len(), 35);
         }
 
         /// A stop just past a seam hands back the song's tempo to hold, not
