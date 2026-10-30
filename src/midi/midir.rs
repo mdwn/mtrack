@@ -120,7 +120,6 @@ impl Device {
         start_time: Duration,
         cancel: &CancelHandle,
         clock: &PlaybackClock,
-        loop_break: &Arc<AtomicBool>,
         sections: &BeatClockSections,
     ) -> bool {
         let Some(engine) = &self.beat_clock_engine else {
@@ -129,23 +128,14 @@ impl Device {
         let Some(ticks) = song.beat_clock(sheet) else {
             return false;
         };
-        // Passes on the song's own grid, as its audio, lights and notes loop:
-        // every song length less its crossfade. A song with no audio has no
-        // grid to loop on (its lights do not loop), and its clock plays once.
-        let period = song
-            .duration()
-            .saturating_sub(song.loop_crossfade().unwrap_or_default());
-        let passes = (song.loop_playback() && !period.is_zero()).then(|| BeatClockPasses {
-            period,
-            loop_break: loop_break.clone(),
-        });
+        // A looping song's passes are jumps in the playback's log, as its
+        // sections' are: the clock follows them all from there.
         engine.play(BeatClockPlay {
             ticks: Arc::new(ticks),
             start_time,
             playback_delay: self.playback_delay,
             cancel: cancel.clone(),
             clock: clock.clone(),
-            passes,
             sections: Some(sections.clone()),
         });
         true
@@ -246,6 +236,8 @@ impl super::Device for Device {
             active_section: active_section.clone(),
             section_loop_break: section_loop_break.clone(),
             jumps: section_jumps.clone(),
+            loop_break: loop_break.clone(),
+            loops: song.loop_playback(),
         };
         let span = span!(Level::INFO, "play song (midir)");
         let _enter = span.enter();
@@ -254,15 +246,8 @@ impl super::Device for Device {
         let Some(midi_playback) = song.midi_playback() else {
             // A song's tempo drives the beat clock without a MIDI file.
             if self.beat_clock_engine.is_some() && song.has_tempo() {
-                if self.play_beat_clock(
-                    &song,
-                    None,
-                    start_time,
-                    &cancel_handle,
-                    &clock,
-                    &loop_break,
-                    &sections,
-                ) {
+                if self.play_beat_clock(&song, None, start_time, &cancel_handle, &clock, &sections)
+                {
                     info!(
                         song = song.name(),
                         "Song has no MIDI file; its beat clock runs from its tempo."
@@ -311,7 +296,6 @@ impl super::Device for Device {
             start_time,
             &cancel_handle,
             &clock,
-            &loop_break,
             &sections,
         );
 
@@ -959,7 +943,6 @@ fn run_beat_clock(
     sender: &mut dyn MidiSender,
     ticks: &[Duration],
     start_time: Duration,
-    passes: Option<&BeatClockPasses>,
     sections: Option<&BeatClockSections>,
     reference: Option<&ReferenceClock>,
     cancel_handle: &CancelHandle,
@@ -990,8 +973,7 @@ fn run_beat_clock(
     let mut prev_tick: Option<Duration> = None;
     let mut last_interval: Option<Duration> = None;
 
-    let period = passes.map(|passes| passes.period);
-    let mut schedule = PassTicks::new(ticks, start_time, period);
+    let mut schedule = PassTicks::new(ticks, start_time);
     // How far section loops have put the song back: a tick at song time `t`
     // falls due `t + looped - start_time` into the schedule.
     let mut looped = Duration::ZERO;
@@ -999,7 +981,7 @@ fn run_beat_clock(
     let mut discipline = Discipline::default();
     let mut follow = SectionFollow::new(sections);
     'ticks: loop {
-        let Some((tick_time, seam)) = schedule.next() else {
+        let Some(tick_time) = schedule.next() else {
             // Out of ticks with a section still going round (its end at or
             // past the last of them): its jump is still to come.
             loop {
@@ -1031,19 +1013,24 @@ fn run_beat_clock(
                 thread::sleep(Duration::from_millis(5));
             }
         };
-        // A section loop's jump due by this tick takes the song back, as it
-        // takes the notes and audio: the tick due there is the start's.
-        while let Some(jump) = follow.due(tick_time + looped) {
+        // A loop's jump due by this tick takes the song back, as it takes the
+        // notes and audio: the tick due there is the start's. Due within half
+        // a pulse of it, too: a loop's length is whole samples, so a loop of
+        // whole pulses can come out a hair long, which put the pass's last
+        // pulse microseconds before the next's first -- a pulse too many at
+        // every seam.
+        let half_pulse = schedule.pulse() / 2;
+        while let Some(jump) = follow.due(tick_time + looped + half_pulse) {
             if lands_in(ticks, &jump) {
                 looped = schedule.go_back(&jump);
                 jumped = true;
                 continue 'ticks;
             }
         }
-        let seam = seam || std::mem::take(&mut jumped);
+        let seam = std::mem::take(&mut jumped);
         // A broken loop ends the clock, as it ends the notes: the player
         // stops the song with it.
-        if passes.is_some_and(|passes| passes.loop_break.load(Ordering::Relaxed))
+        if sections.is_some_and(|sections| sections.loop_break.load(Ordering::Relaxed))
             || cancel_handle.is_cancelled()
         {
             let _ = sender.send(&stop_bytes);
@@ -1083,7 +1070,7 @@ fn run_beat_clock(
         }
         // A jump the audio committed to while this waited: the tick due at it
         // is the section start's.
-        while let Some(jump) = follow.due(tick_time + looped) {
+        while let Some(jump) = follow.due(tick_time + looped + half_pulse) {
             if lands_in(ticks, &jump) {
                 looped = schedule.go_back(&jump);
                 jumped = true;
@@ -1122,125 +1109,67 @@ fn run_beat_clock(
 const START_TO_CLOCK: Duration = Duration::from_millis(1);
 
 /// When each of a schedule's ticks falls due, as time on the song's timeline
-/// from a start at `start` (so due `time - start` after it), and whether it
-/// is the first of a new pass.
-///
-/// A looping song (`period`: its length less its crossfade) plays its ticks
-/// again each pass, each pass up to where the next begins: the second pass at
-/// the first boundary, or at once for a start already past it (in the
-/// crossfade's tail), and every period after that, as the audio, lights and
-/// notes go round (`Song::loop_pass_start`). A pass whose ticks run out short
-/// of the period (a click that stops before the song does) goes on to the
-/// next all the same. A period with no tick in it would repeat nothing for
-/// ever, so such a song plays once.
+/// from a start at `start` (so due `time - start` after it). A loop's jumps,
+/// sections and a looping song's passes alike, take it back
+/// ([`PassTicks::go_back`]): it keeps no passes of its own, but follows the
+/// playback's log, as the notes and lights do.
 #[derive(Clone)]
 struct PassTicks<'a> {
     ticks: &'a [Duration],
-    start: Duration,
     /// Ticks before this song time are skipped: the start, until a seek.
     skip_before: Duration,
-    period: Option<Duration>,
-    /// Where on the song's timeline the pass under way began.
-    offset: Duration,
     /// Its next tick.
     index: usize,
-    passes: u32,
 }
 
 impl<'a> PassTicks<'a> {
-    fn new(ticks: &'a [Duration], start: Duration, period: Option<Duration>) -> Self {
-        // A period no first tick fits in would keep none, pass after pass,
-        // for ever. Every pass that loops keeps its first tick at least.
-        let period = period.filter(|period| {
-            ticks.first().is_some_and(|first| {
-                let pulse = ticks
-                    .get(1)
-                    .map_or(Duration::ZERO, |next| next.saturating_sub(*first));
-                *first < *period && pulse / 2 < *period
-            })
-        });
+    fn new(ticks: &'a [Duration], start: Duration) -> Self {
         PassTicks {
             ticks,
-            start,
             skip_before: start,
-            period,
-            offset: Duration::ZERO,
             index: 0,
-            passes: 0,
         }
     }
 }
 
 impl PassTicks<'_> {
-    /// Goes back (or on) within the pass under way to its first tick at or
-    /// after `position`, for a section loop: what comes next is played
-    /// however early it lies in the song.
+    /// Goes back (or on) to the first tick at or after `position`, for a
+    /// loop: what comes next is played however early it lies in the song.
     fn seek(&mut self, position: Duration) {
         self.index = self.ticks.partition_point(|tick| *tick < position);
         self.skip_before = Duration::ZERO;
     }
 
-    /// Takes a section loop's jump: back to its target in the pass its
-    /// section is in -- the one under way, or, for a section ending on a
-    /// looping song's end, the one the ticks have just left -- giving how
-    /// far the song is then put back (`looped`), so that the target falls
-    /// due at the jump's time.
+    /// Takes a loop's jump: back to its target, giving how far the song is
+    /// then put back (`looped`), so that the target falls due at the jump's
+    /// time. A pass's overlap is no matter to the clock: its pulses switch to
+    /// the new pass at the jump.
     fn go_back(&mut self, jump: &crate::section_loop::SectionJump) -> Duration {
-        let rolled_on = self.index > 0
-            && self.passes > 0
-            && self.ticks[self.index - 1] < jump.to
-            && self.offset > Duration::ZERO;
-        if rolled_on {
-            if let Some(period) = self.period {
-                self.offset = self.offset.saturating_sub(period);
-            }
-        }
         self.seek(jump.to);
-        jump.at.saturating_sub(self.offset + jump.to)
+        jump.at.saturating_sub(jump.to)
     }
 
-    /// Whether the tick under way belongs to this pass rather than falling on
-    /// the next one's first: at least half a pulse before it, at `period`
-    /// past this pass's first tick, and never past the period: what lies
-    /// between (a crossfade's tail, for a clock whose first pulse is late)
-    /// is the next pass's count-in leftover, which has no pulses. A loop's length is whole samples, so a
-    /// loop of whole pulses can come out a hair long, which put a pass's last
-    /// pulse microseconds before the next pass's first -- a pulse too many at
-    /// every seam -- or a hair short.
-    fn in_pass(&self, tick: Duration, period: Duration) -> bool {
-        let pulse = match self.index {
-            0 => self.ticks.get(1).map(|next| next.saturating_sub(tick)),
-            index => Some(tick.saturating_sub(self.ticks[index - 1])),
+    /// The gap from the tick last given to the next (or, at the end, from the
+    /// one before it).
+    fn pulse(&self) -> Duration {
+        let index = self.index.max(1);
+        match (self.ticks.get(index - 1), self.ticks.get(index)) {
+            (Some(last), Some(next)) => next.saturating_sub(*last),
+            (Some(last), None) if index >= 2 => last.saturating_sub(self.ticks[index - 2]),
+            _ => Duration::ZERO,
         }
-        .unwrap_or_default();
-        tick < period && tick + pulse / 2 < period + self.ticks[0]
     }
 }
 
 impl Iterator for PassTicks<'_> {
-    type Item = (Duration, bool);
+    type Item = Duration;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let tick = self.ticks.get(self.index).copied();
-            match (tick, self.period) {
-                (Some(tick), period) if period.is_none_or(|period| self.in_pass(tick, period)) => {
-                    self.index += 1;
-                    let at = self.offset + tick;
-                    if at >= self.skip_before {
-                        return Some((at, self.passes > 0 && self.index == 1));
-                    }
-                }
-                (_, Some(period)) => {
-                    self.offset = if self.passes == 0 {
-                        period.max(self.start)
-                    } else {
-                        self.offset + period
-                    };
-                    self.passes += 1;
-                    self.index = 0;
-                }
-                (_, None) => return None,
+            let tick = *self.ticks.get(self.index)?;
+            self.index += 1;
+            if tick >= self.skip_before {
+                return Some(tick);
             }
         }
     }
@@ -1279,19 +1208,8 @@ struct BeatClockPlay {
     /// The shared playback clock whose `start()` is the "go" signal. The engine
     /// waits on it (cancel-aware) so its `Start` lands with the first note.
     clock: PlaybackClock,
-    /// A looping song's passes, which the clock repeats as its notes do.
-    passes: Option<BeatClockPasses>,
     /// The song's section loop, which the clock follows as its notes do.
     sections: Option<BeatClockSections>,
-}
-
-/// How a looping song's beat clock repeats: a pass every `period` (the song's
-/// length less its crossfade), as its audio and notes loop (see [`PassTicks`]),
-/// until the loop is broken, which ends it.
-#[derive(Clone)]
-struct BeatClockPasses {
-    period: Duration,
-    loop_break: Arc<AtomicBool>,
 }
 
 /// A song's section loop, which the clock follows as its notes and lights do:
@@ -1301,6 +1219,11 @@ struct BeatClockSections {
     active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
     section_loop_break: Arc<AtomicBool>,
     jumps: Arc<crate::playsync::SectionJumpLog>,
+    /// The song's loop broken: the clock ends, as the notes do.
+    loop_break: Arc<AtomicBool>,
+    /// Whether the song loops as a whole: out of ticks, its next pass is to
+    /// come while the log is open.
+    loops: bool,
 }
 
 impl BeatClockSections {
@@ -1334,11 +1257,20 @@ impl<'a> SectionFollow<'a> {
     }
 
     /// Whether a jump the schedule could follow may yet come: one committed,
-    /// or a section looping with a tick in it to go back to.
+    /// or, while the log is open, a looping song's next pass, or a section
+    /// looping with a tick in it to go back to.
     fn pending(&self, ticks: &[Duration]) -> bool {
-        self.cursor
-            .as_ref()
-            .is_some_and(|cursor| cursor.peek().is_some())
+        let Some(cursor) = self.cursor.as_ref() else {
+            return false;
+        };
+        if cursor.peek().is_some() {
+            return true;
+        }
+        if cursor.log().is_closed() {
+            return false;
+        }
+        self.sections
+            .is_some_and(|sections| sections.loops && !sections.loop_break.load(Ordering::Relaxed))
             || self
                 .sections
                 .and_then(BeatClockSections::looping)
@@ -1684,7 +1616,6 @@ fn beat_clock_engine_loop(
             sender,
             &play.ticks,
             play.start_time,
-            play.passes.as_ref(),
             play.sections.as_ref(),
             Some(&reference),
             &play.cancel,
@@ -2499,7 +2430,6 @@ mod test {
             playback_delay: Duration::from_secs(1),
             cancel: cancel.clone(),
             clock: clock.clone(),
-            passes: None,
             sections: None,
         }))
         .unwrap();
@@ -2562,7 +2492,6 @@ mod test {
             playback_delay: Duration::ZERO,
             cancel: cancel.clone(),
             clock,
-            passes: None,
             sections: None,
         }))
         .unwrap();
@@ -2681,7 +2610,6 @@ mod test {
             playback_delay: Duration::ZERO,
             cancel: CancelHandle::new(),
             clock,
-            passes: None,
             sections: None,
         }))
         .unwrap();
@@ -2727,7 +2655,6 @@ mod test {
             playback_delay: Duration::ZERO,
             cancel: cancel.clone(),
             clock: PlaybackClock::wall(),
-            passes: None,
             sections: None,
         }))
         .unwrap();
@@ -4095,325 +4022,6 @@ mod test {
             Duration::from_millis(ms)
         }
 
-        /// The first `n` (song time in ms, a pass's first) a schedule plays.
-        fn pass_ticks(
-            ticks: &[Duration],
-            start: u64,
-            period: Option<u64>,
-            n: usize,
-        ) -> Vec<(u64, bool)> {
-            PassTicks::new(ticks, ms(start), period.map(ms))
-                .take(n)
-                .map(|(at, seam)| (at.as_millis() as u64, seam))
-                .collect()
-        }
-
-        /// A looping song's clock goes round with it, each pass up to where
-        /// the next begins: its length less the crossfade.
-        #[test]
-        fn a_looping_songs_clock_repeats_each_pass() {
-            // 500ms of clocks, a pass every 300ms.
-            let played = pass_ticks(&every_10ms(500), 0, Some(300), 70);
-            assert_eq!(played.len(), 70);
-            for (i, (at, seam)) in played.iter().enumerate() {
-                assert_eq!(*at, i as u64 * 10, "{played:?}");
-                assert_eq!(*seam, i > 0 && i % 30 == 0, "clock {i}");
-            }
-        }
-
-        /// A click that stops short of the song's end leaves the clock quiet
-        /// until the next pass, which starts on time.
-        #[test]
-        fn a_pass_short_of_its_period_still_goes_round() {
-            let played = pass_ticks(&every_10ms(200), 0, Some(300), 25);
-            assert_eq!(played[19], (190, false));
-            assert_eq!(played[20], (300, true));
-            assert_eq!(played[24], (340, false));
-        }
-
-        /// A schedule with no clock inside the first period would repeat
-        /// nothing for ever: it plays once. Without passes, too.
-        #[test]
-        fn a_schedule_that_does_not_loop_plays_once() {
-            let ticks: Vec<Duration> = (40..45).map(|i| ms(i * 10)).collect();
-            assert_eq!(pass_ticks(&ticks, 0, Some(300), 100).len(), 5);
-            assert_eq!(pass_ticks(&every_10ms(500), 0, None, 100).len(), 50);
-        }
-
-        /// A seek into the crossfade tail: audio, lights and notes start the
-        /// next pass at once (`Song::loop_pass_start`), so the clock does too,
-        /// on the song's grid: song time 0 at the start, not a period after
-        /// the tail began, which ran it ahead of the audio for the whole loop
-        /// or, past the tail's last clock, left it silent.
-        #[test]
-        fn a_start_in_the_tail_starts_the_next_pass_at_once() {
-            for start in [350, 495] {
-                let played = pass_ticks(&every_10ms(500), start, Some(300), 31);
-                // Due `at - start` after the start: the pass from 0 at once.
-                assert_eq!(played[0], (start, true), "start {start}");
-                assert_eq!(played[29], (start + 290, false), "start {start}");
-                assert_eq!(played[30], (start + 300, true), "start {start}");
-            }
-        }
-
-        /// A start part way into a pass plays the rest of it, then the next
-        /// at the boundary.
-        #[test]
-        fn a_start_part_way_into_a_pass_meets_the_boundary() {
-            let played = pass_ticks(&every_10ms(500), 125, Some(300), 20);
-            assert_eq!(played[0], (130, false));
-            assert_eq!(played[17], (300, true));
-        }
-
-        /// A loop of one bar at 128 BPM is 1.875 s, 82_687.5 samples at
-        /// 44.1 kHz; the audio's length rounds to 82_688 samples, 11 us over.
-        /// Each pass ended with a pulse 11 us before the next pass's first: a
-        /// doubled pulse a seam, and gear counting pulses gained one a pass.
-        #[test]
-        fn a_loop_a_sample_over_whole_pulses_keeps_its_count() {
-            // 480 tpb, 128 BPM (468_750 us/beat), 4 beats.
-            let entries = [crate::midi::playback::TempoEntry {
-                tick: 0,
-                micros_per_tick: 468_750.0 / 480.0,
-            }];
-            let length = Duration::from_nanos(82_688u64 * 1_000_000_000 / 44_100);
-            let midi = crate::midi::beat_clock::PrecomputedBeatClock::from_tempo_info_until(
-                &entries, 480, 1920, length,
-            )
-            .ticks_from(Duration::ZERO)
-            .to_vec();
-            let map = crate::tempo::TempoMap::new(
-                Duration::ZERO,
-                128.0,
-                crate::tempo::TimeSignature::new(4, 4),
-                vec![],
-            )
-            .beat_clock_ticks(length);
-            for (name, ticks) in [("MIDI-file", &midi), ("tempo-map", &map)] {
-                let played: Vec<Duration> = PassTicks::new(ticks, Duration::ZERO, Some(length))
-                    .map(|(at, _)| at)
-                    .take_while(|at| *at < length * 2)
-                    .collect();
-                let min_gap = played.windows(2).map(|w| w[1] - w[0]).min().unwrap();
-                assert_eq!(
-                    played.len(),
-                    192,
-                    "{name}: pulses in two passes; min gap {min_gap:?}"
-                );
-            }
-        }
-
-        /// A loop a hair short of whole pulses keeps its last pulse: it is
-        /// still nearly a whole pulse before the seam.
-        #[test]
-        fn a_loop_a_hair_short_of_whole_pulses_keeps_its_count() {
-            // 30 pulses of 10ms, a pass every 299.99ms.
-            let ticks = every_10ms(500);
-            let period = Duration::from_micros(299_990);
-            let played: Vec<Duration> = PassTicks::new(&ticks, Duration::ZERO, Some(period))
-                .map(|(at, _)| at)
-                .take_while(|at| *at < period * 2)
-                .collect();
-            assert_eq!(played.len(), 60, "{played:?}");
-        }
-
-        /// A period too short to keep even the first tick (within half a
-        /// pulse of it) does not loop: passes with no tick spun `next` for
-        /// ever, never back to `run_beat_clock` to hear a cancel, a preempt
-        /// or a shutdown. It plays once.
-        #[test]
-        fn a_period_too_short_for_a_tick_plays_once_rather_than_spinning() {
-            let (tx, rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                // Pulses every 20ms from 0; a loop of 5ms.
-                let ticks: Vec<Duration> = (0..10).map(|i| ms(i * 20)).collect();
-                let n = PassTicks::new(&ticks, Duration::ZERO, Some(ms(5)))
-                    .take(100)
-                    .count();
-                let _ = tx.send(n);
-            });
-            // Generous: the computation is microseconds when it terminates.
-            let played = rx.recv_timeout(Duration::from_secs(60));
-            assert_eq!(played, Ok(10), "PassTicks::next never returned, or looped");
-        }
-
-        /// Exhaustive small inputs -- unsorted, duplicate, zero gaps, any
-        /// period and start: every `next` yields or ends within a bounded
-        /// number of steps, and every looping pass yields its first tick.
-        #[test]
-        fn pass_ticks_always_terminates_and_each_pass_keeps_a_tick() {
-            let (tx, rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                let vals = [0u64, 1, 3, 5, 9];
-                let mut sets: Vec<Vec<u64>> = vec![vec![]];
-                for a in vals {
-                    sets.push(vec![a]);
-                    for b in vals {
-                        sets.push(vec![a, b]);
-                        for c in vals {
-                            sets.push(vec![a, b, c]);
-                        }
-                    }
-                }
-                for set in &sets {
-                    let ticks: Vec<Duration> = set.iter().map(|t| ms(*t)).collect();
-                    for period in [
-                        None,
-                        Some(0),
-                        Some(1),
-                        Some(2),
-                        Some(4),
-                        Some(6),
-                        Some(10),
-                        Some(100),
-                    ] {
-                        for start in [0u64, 2, 7, 50, 1_000_000] {
-                            let it = PassTicks::new(&ticks, ms(start), period.map(ms));
-                            let looping = it.period.is_some();
-                            let n = 4 * ticks.len() + 4;
-                            let got: Vec<(Duration, bool)> = it.take(n).collect();
-                            if looping {
-                                assert_eq!(got.len(), n, "{set:?} {period:?} {start}");
-                                assert!(
-                                    got.iter().filter(|(_, s)| *s).count() >= 2,
-                                    "{set:?} {period:?} {start} {got:?}"
-                                );
-                            } else {
-                                assert!(got.len() <= ticks.len());
-                            }
-                        }
-                    }
-                }
-                let _ = tx.send(());
-            });
-            assert!(
-                rx.recv_timeout(Duration::from_secs(120)).is_ok(),
-                "hung or panicked"
-            );
-        }
-
-        /// Whole-pulse loops (exact, a hair long, a hair short) with the
-        /// first pulse anywhere in the first pulse: every gap is a pulse.
-        #[test]
-        fn whole_pulse_loops_keep_every_seam_a_pulse() {
-            let p = Duration::from_micros(20_833);
-            for t0_us in [0u64, 1, 5_000, 10_416, 10_417, 20_000, 20_820] {
-                let t0 = Duration::from_micros(t0_us);
-                for m in [1u32, 2, 3, 96] {
-                    for eps in [-11i64, 0, 11] {
-                        let len = (p * m).as_nanos() as i64 + eps * 1000;
-                        let len = Duration::from_nanos(len as u64);
-                        let ticks: Vec<Duration> =
-                            (0..).map(|k| t0 + p * k).take_while(|t| *t < len).collect();
-                        if ticks.is_empty() {
-                            continue;
-                        }
-                        let played: Vec<Duration> =
-                            PassTicks::new(&ticks, Duration::ZERO, Some(len))
-                                .map(|(at, _)| at)
-                                .take(m as usize * 4)
-                                .collect();
-                        for w in played.windows(2) {
-                            let gap = w[1] - w[0];
-                            assert!(
-                                gap + Duration::from_micros(12) > p
-                                    && gap < p + Duration::from_micros(12),
-                                "t0 {t0_us}us m {m} eps {eps}us: gap {gap:?} in {played:?}"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        /// Sweeping starts (the crossfade's tail included), first pulses and
-        /// periods (whole pulses and not) for an even schedule running to the
-        /// song's end: played times strictly increase and no two are within
-        /// half a pulse.
-        #[test]
-        fn even_schedules_never_double_or_reorder_across_seams() {
-            let p = 20_000u64; // us
-            for t0 in [0u64, 5_000, 10_000, 30_000, 300_000] {
-                for period in [1_000_000u64, 1_005_000, 1_011_000, 1_019_900] {
-                    for xf in [0u64, 15_000, 200_000, 600_000] {
-                        let len = period + xf;
-                        let ticks: Vec<Duration> = (0..)
-                            .map(|k| Duration::from_micros(t0 + p * k))
-                            .take_while(|t| *t < Duration::from_micros(len))
-                            .collect();
-                        for start in (0..len).step_by(2_500) {
-                            let start = Duration::from_micros(start);
-                            let played: Vec<Duration> =
-                                PassTicks::new(&ticks, start, Some(Duration::from_micros(period)))
-                                    .map(|(at, _)| at)
-                                    .take(200)
-                                    .collect();
-                            for w in played.windows(2) {
-                                assert!(
-                                    w[1] > w[0] && w[1] - w[0] > Duration::from_micros(p / 2),
-                                    "t0 {t0} period {period} xf {xf} start {start:?}: {w:?}"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        /// A start in the crossfade's tail of a clock whose first pulse is
-        /// late: the next pass starts at once, and its grid is the clock's,
-        /// with nothing of the old pass's tail played before it.
-        #[test]
-        fn a_start_in_the_tail_with_a_late_first_pulse_takes_the_next_pass() {
-            let ticks: Vec<Duration> = (0..)
-                .map(|k| ms(30 + 20 * k))
-                .take_while(|t| *t < ms(1200))
-                .collect();
-            let played = pass_ticks(&ticks, 1005, Some(1000), 3);
-            assert_eq!(played, vec![(1035, true), (1055, false), (1075, false)]);
-            let played = pass_ticks(&ticks, 1000, Some(1000), 2);
-            assert_eq!(played, vec![(1030, true), (1050, false)]);
-        }
-
-        /// A schedule whose crossfade tail runs faster than its start (a tempo
-        /// change up near the end), first pulse late: the tail's pulses past
-        /// the period are not played, so none lands a few ms before the next
-        /// pass's first, a doubled pulse to gear counting them.
-        #[test]
-        fn a_faster_tail_puts_no_pulse_against_the_next_pass() {
-            // 20ms pulses from 30ms to 990ms, then 10ms pulses from 1004ms.
-            let mut ticks: Vec<Duration> = (0..)
-                .map(|k| ms(30 + 20 * k))
-                .take_while(|t| *t < ms(1000))
-                .collect();
-            ticks.extend((0..20).map(|k| ms(1004 + 10 * k)));
-            let played: Vec<Duration> = PassTicks::new(&ticks, Duration::ZERO, Some(ms(1000)))
-                .map(|(at, _)| at)
-                .take(60)
-                .collect();
-            let incoming = ticks[1] - ticks[0];
-            let min_gap = played.windows(2).map(|w| w[1] - w[0]).min().unwrap();
-            assert!(
-                min_gap * 2 >= incoming,
-                "min gap {min_gap:?} under half the next pass's pulse: {played:?}"
-            );
-        }
-
-        /// A clock whose first pulse is late (a tempo start that is not whole
-        /// bars) has the next pass's first well past the seam: a pulse less
-        /// than half a pulse before the seam has nothing to double it, and
-        /// is kept.
-        #[test]
-        fn a_late_first_pulse_keeps_the_last_pulse_before_the_seam() {
-            // Pulses every 20ms from 300ms; a pass every 586ms. The pulse
-            // at 580ms is 6ms before the seam and the next pass's first is
-            // at 886ms.
-            let ticks: Vec<Duration> = (15..30).map(|i| ms(i * 20)).collect();
-            let played = pass_ticks(&ticks, 0, Some(586), 16);
-            assert_eq!(played[14], (580, false), "{played:?}");
-            assert_eq!(played[15], (886, true), "{played:?}");
-        }
-
         /// Start and the first clock are a millisecond apart, as the MIDI spec
         /// asks, though the first is due at once.
         #[test]
@@ -4445,7 +4053,6 @@ mod test {
                 Duration::ZERO,
                 None,
                 None,
-                None,
                 &CancelHandle::new(),
                 &clock,
                 &rx,
@@ -4457,65 +4064,87 @@ mod test {
             );
         }
 
-        /// A looping song clocked from its MIDI file keeps every pulse across
-        /// a seam, as one clocked from its tempo does: gear counting pulses
-        /// from Start fell 1/24 of a beat behind every pass.
-        #[test]
-        fn a_midi_files_looping_clock_keeps_every_pulse() {
-            // A MIDI file: 96 tpb, default 120 BPM, 4 beats; song lasts 2 s.
-            let midi = crate::midi::beat_clock::PrecomputedBeatClock::from_tempo_info_until(
-                &[],
-                96,
-                384,
-                ms(2_000),
-            )
-            .ticks_from(Duration::ZERO)
-            .to_vec();
-            let in_pass = |ticks: &[Duration]| {
-                PassTicks::new(ticks, Duration::ZERO, Some(ms(2_000)))
-                    .take_while(|(at, _)| *at < ms(4_000))
-                    .count()
-            };
-            let map = crate::tempo::TempoMap::new(
-                Duration::ZERO,
-                120.0,
-                crate::tempo::TimeSignature::new(4, 4),
-                vec![],
-            )
-            .beat_clock_ticks(ms(2_000));
-            assert_eq!(in_pass(&map), 192, "tempo-map clock");
-            assert_eq!(in_pass(&midi), 192, "MIDI-file clock");
-        }
-
-        /// The engine plays the passes, and a broken loop ends the clock with
-        /// a Stop, as the player ends the song with it.
-        #[test]
-        fn a_looping_clock_runs_across_seams_until_the_loop_is_broken() {
+        /// Plays `ticks` following the pass jumps of a looping song given in
+        /// a closed log; the clocks that went out, on the playback clock.
+        fn play_passes(
+            ticks: &[Duration],
+            jumps: &[(u64, u64)],
+            break_after: usize,
+        ) -> Vec<Duration> {
             let clock = PlaybackClock::wall();
             clock.start();
+            let log = Arc::new(crate::playsync::SectionJumpLog::default());
+            for &(at, overlap) in jumps {
+                log.push(crate::section_loop::SectionJump {
+                    at: ms(at),
+                    from: ms(400),
+                    to: Duration::ZERO,
+                    overlap: ms(overlap),
+                });
+            }
+            log.close();
             let loop_break = Arc::new(AtomicBool::new(false));
+            let sections = BeatClockSections {
+                active_section: Default::default(),
+                section_loop_break: Default::default(),
+                jumps: log,
+                loop_break: loop_break.clone(),
+                loops: true,
+            };
             let mut sender = LoopingSender {
                 clock: clock.clone(),
                 clocks: Vec::new(),
-                break_after: 35,
-                loop_break: loop_break.clone(),
+                break_after,
+                loop_break,
             };
             let (_tx, rx) = mpsc::channel();
             run_beat_clock(
                 &mut sender,
-                &every_10ms(500),
+                ticks,
                 Duration::ZERO,
-                Some(&BeatClockPasses {
-                    period: ms(300),
-                    loop_break,
-                }),
-                None,
+                Some(&sections),
                 None,
                 &CancelHandle::new(),
                 &clock,
                 &rx,
             );
-            assert_eq!(sender.clocks.len(), 35);
+            sender.clocks
+        }
+
+        /// A looping song's passes are jumps in the log, which the clock
+        /// follows as it does a section's: back to the top at each, its
+        /// pulses switching to the new pass there, the overlap no matter.
+        /// (It used to keep a pass grid of its own.)
+        #[test]
+        fn the_clock_follows_a_looping_songs_passes_from_the_log() {
+            // 500ms of clocks; passes start 100ms before the end (at 400ms
+            // and 800ms on the clock), crossfading over the last 100ms.
+            let clocks = play_passes(&every_10ms(500), &[(400, 100), (800, 100)], 1_000);
+            // 0-390ms, twice, then the last pass to its end.
+            assert_eq!(clocks.len(), 40 + 40 + 50, "{clocks:?}");
+            // The seam is a pulse, not two at once.
+            assert!(clocks[40] >= ms(400) && clocks[40] - clocks[39] >= ms(5));
+            assert!(clocks[80] >= ms(800) && clocks[80] - clocks[79] >= ms(5));
+        }
+
+        /// A broken loop ends the clock with a Stop, as the player ends the
+        /// song with it.
+        #[test]
+        fn a_looping_clock_runs_across_seams_until_the_loop_is_broken() {
+            let clocks = play_passes(&every_10ms(500), &[(400, 0), (800, 0)], 55);
+            assert_eq!(clocks.len(), 55);
+        }
+
+        /// A loop of whole pulses that comes out a hair long puts no pulse
+        /// against the next pass's first.
+        #[test]
+        fn a_pass_a_hair_long_keeps_every_seam_a_pulse() {
+            // Ticks every 10ms to 400ms inclusive: the pass jumps at 400ms
+            // from 400ms, a hair after its last pulse.
+            let mut ticks = every_10ms(400);
+            ticks.push(Duration::from_micros(399_990));
+            let clocks = play_passes(&ticks, &[(400, 0)], 1_000);
+            assert_eq!(clocks.len(), 40 + 41, "{clocks:?}");
         }
 
         fn section(start: u64, end: u64) -> (BeatClockSections, Arc<AtomicBool>) {
@@ -4531,6 +4160,8 @@ mod test {
                     ))),
                     section_loop_break: section_loop_break.clone(),
                     jumps: Default::default(),
+                    loop_break: Default::default(),
+                    loops: false,
                 },
                 section_loop_break,
             )
@@ -4592,7 +4223,6 @@ mod test {
                 &mut sender,
                 ticks,
                 ms(start),
-                None,
                 Some(sections),
                 None,
                 &CancelHandle::new(),
@@ -4639,10 +4269,10 @@ mod test {
         #[test]
         fn pass_ticks_seek_goes_back_within_the_pass() {
             let ticks = every_10ms(500);
-            let mut schedule = PassTicks::new(&ticks, ms(250), None);
-            assert_eq!(schedule.next(), Some((ms(250), false)));
+            let mut schedule = PassTicks::new(&ticks, ms(250));
+            assert_eq!(schedule.next(), Some(ms(250)));
             schedule.seek(ms(95));
-            assert_eq!(schedule.next(), Some((ms(100), false)));
+            assert_eq!(schedule.next(), Some(ms(100)));
         }
 
         /// The drift steering follows a playback clock running fast or slow
@@ -4721,7 +4351,6 @@ mod test {
                         &mut sender,
                         &every_10ms(500),
                         ms(110),
-                        None,
                         Some(&sections),
                         None,
                         &cancel,
@@ -4779,7 +4408,6 @@ mod test {
                 &mut sender,
                 &every_10ms(500),
                 Duration::ZERO,
-                None,
                 Some(&sections),
                 None,
                 &CancelHandle::new(),
@@ -4795,68 +4423,18 @@ mod test {
             );
         }
 
-        /// a looping song (no crossfade, so a section loop is allowed)
-        /// whose section ends on the song's end: the schedule has already
-        /// rolled into the next pass when the jump is seen, so the seek goes
-        /// to the section start of the *next* pass, a whole period late.
+        /// A section ending on the song's end, past its last pulse (as one in
+        /// a looping song may, which no pass interrupts: the section takes
+        /// precedence), goes back at its end with no silence and no spin.
+        /// The clock used to keep passes of its own, which had rolled into
+        /// the next when the jump came.
         #[test]
         fn a_section_ending_on_a_looping_songs_end_goes_back_in_its_pass() {
-            // Without audio the trigger then fires again at every fetch (each
-            // seek puts the tick a period on, past the next trigger): the
-            // thread spins without sending or hearing a cancel or command.
             let (sections, section_loop_break) = section(300, 500);
-            let loop_break = Arc::new(AtomicBool::new(false));
-            let handle = std::thread::spawn({
-                let sections = sections.clone();
-                let loop_break = loop_break.clone();
-                move || {
-                    let clock = PlaybackClock::wall();
-                    clock.start();
-                    let mut sender = LoopingSender {
-                        clock: clock.clone(),
-                        clocks: Vec::new(),
-                        break_after: 52,
-                        loop_break: loop_break.clone(),
-                    };
-                    let (_tx, rx) = mpsc::channel();
-                    run_beat_clock(
-                        &mut sender,
-                        &every_10ms(500),
-                        Duration::ZERO,
-                        Some(&BeatClockPasses {
-                            period: ms(500),
-                            loop_break,
-                        }),
-                        Some(&sections),
-                        None,
-                        &CancelHandle::new(),
-                        &clock,
-                        &rx,
-                    );
-                    sender.clocks
-                }
-            });
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            while !handle.is_finished() && std::time::Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            let returned = handle.is_finished();
-            // Free a spinning thread either way, so nothing hangs.
-            section_loop_break.store(true, Ordering::Relaxed);
-            loop_break.store(true, Ordering::Relaxed);
-            let clocks = handle.join().unwrap();
-            assert!(
-                returned,
-                "the clock spun at the jump after {} clocks",
-                clocks.len()
-            );
-            // The 51st clock (the section start, round again) is due 10ms
-            // after the 50th, not a period later.
-            let gap = clocks[50] - clocks[49];
-            assert!(
-                gap < ms(250),
-                "the clock went silent for {gap:?} at the jump"
-            );
+            let sent = play_section(&every_10ms(500), 0, &sections, section_loop_break, 52);
+            // 0-490ms, round from 300ms (the break at the 52nd, 310ms), and
+            // on to the end.
+            assert_eq!(sent, 50 + 2 + 18);
         }
 
         /// a start noticed late drops the pulses already due. A
@@ -4876,7 +4454,6 @@ mod test {
                 &mut sender,
                 &ticks,
                 Duration::ZERO,
-                None,
                 None,
                 None,
                 &CancelHandle::new(),
@@ -4968,10 +4545,6 @@ mod test {
                 &mut sender,
                 &every_10ms(500),
                 Duration::ZERO,
-                Some(&BeatClockPasses {
-                    period: Duration::from_millis(291),
-                    loop_break: Arc::new(AtomicBool::new(false)),
-                }),
                 None,
                 None,
                 &cancel,
@@ -5005,7 +4578,6 @@ mod test {
                 Duration::ZERO,
                 None,
                 None,
-                None,
                 &cancel,
                 &clock,
                 &rx,
@@ -5035,7 +4607,6 @@ mod test {
                 Duration::from_millis(100),
                 None,
                 None,
-                None,
                 &cancel,
                 &clock,
                 &rx,
@@ -5059,7 +4630,6 @@ mod test {
                 &mut sender,
                 &ticks,
                 Duration::ZERO,
-                None,
                 None,
                 None,
                 &cancel,
@@ -5086,7 +4656,6 @@ mod test {
                 &mut sender,
                 &ticks,
                 Duration::ZERO,
-                None,
                 None,
                 None,
                 &cancel,
@@ -5121,7 +4690,6 @@ mod test {
                 Duration::ZERO,
                 None,
                 None,
-                None,
                 &cancel,
                 &clock,
                 &rx,
@@ -5145,7 +4713,6 @@ mod test {
                 &mut sender,
                 &ticks,
                 Duration::ZERO,
-                None,
                 None,
                 None,
                 &cancel,
@@ -5211,7 +4778,6 @@ mod test {
                 playback_delay: Duration::ZERO,
                 cancel,
                 clock,
-                passes: None,
                 sections: None,
             }
         }
@@ -5229,7 +4795,6 @@ mod test {
                 playback_delay: Duration::ZERO,
                 cancel: cancel.clone(),
                 clock: PlaybackClock::wall(),
-                passes: None,
                 sections: None,
             };
             thread::spawn(move || {
@@ -5464,7 +5029,6 @@ mod test {
                 playback_delay: Duration::ZERO,
                 cancel: CancelHandle::new(),
                 clock: slow_clock.clone(),
-                passes: None,
                 sections: None,
             }))
             .unwrap();
@@ -5778,7 +5342,6 @@ mod test {
                 playback_delay: Duration::ZERO,
                 cancel,
                 clock,
-                passes: None,
                 sections: None,
             }))
             .unwrap();
@@ -5814,7 +5377,6 @@ mod test {
                 playback_delay: Duration::ZERO,
                 cancel,
                 clock: clock.clone(),
-                passes: None,
                 sections: None,
             }))
             .unwrap();
