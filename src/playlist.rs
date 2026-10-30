@@ -191,6 +191,19 @@ impl Playlist {
         *self.position.write() = cursor;
     }
 
+    /// Puts a playlist off the list back on an entry, for when its song
+    /// is no longer playing: the entry that took the song's place, where
+    /// next lands, or the last after the end of the list. Returns whether
+    /// it was off the list.
+    pub fn settle(&self) -> bool {
+        let mut cursor = self.position.write();
+        let off_list = cursor.off_list.take().is_some();
+        if off_list {
+            cursor.index = cursor.index.min(self.songs.len().saturating_sub(1));
+        }
+        off_list
+    }
+
     /// The song at `cursor`: the one playing off the list, or its entry's.
     fn song_at(&self, cursor: &Cursor) -> Option<Arc<Song>> {
         if let Some(song) = &cursor.off_list {
@@ -856,6 +869,28 @@ mod test {
         new.follow(&old, false);
         assert_eq!(new.current().unwrap().name(), "C");
         assert_eq!(new.entry(), Some(1));
+    }
+
+    #[test]
+    fn a_song_off_the_list_no_longer_playing_gives_way() {
+        // #576: stopped or finished, the song taken away stayed current, so
+        // Play started it again.
+        let old = playlist_from("songs:\n- A\n- B\n- C\n").unwrap();
+        old.navigate_to("B");
+        let new = playlist_from("songs:\n- A\n- C\n").unwrap();
+        new.follow(&old, true);
+        assert!(new.settle());
+        assert_eq!(new.current().unwrap().name(), "C");
+        assert_eq!(new.entry(), Some(1));
+        assert!(!new.settle(), "on an entry, it stays there");
+        assert_eq!(new.entry(), Some(1));
+
+        // Taken from the end, where next has nothing to land on: the last.
+        let new = playlist_from("songs:\n- A\n").unwrap();
+        new.follow(&old, true);
+        assert!(new.settle());
+        assert_eq!(new.current().unwrap().name(), "A");
+        assert_eq!(new.entry(), Some(0));
     }
 
     #[test]

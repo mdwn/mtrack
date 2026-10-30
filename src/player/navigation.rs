@@ -124,12 +124,15 @@ impl Player {
             }
             return current;
         }
-        let playlist = self.get_playlist();
-        let from = playlist.entry();
-        let song = match direction {
-            PlaylistDirection::Next => playlist.next()?,
-            PlaylistDirection::Prev => playlist.prev()?,
-        };
+        let (playlist, (from, song)) = self.move_playlist(|playlist| {
+            let from = playlist.entry();
+            let song = match direction {
+                PlaylistDirection::Next => playlist.next(),
+                PlaylistDirection::Prev => playlist.prev(),
+            };
+            (from, song)
+        });
+        let song = song?;
         self.clear_pending_start();
         self.emit_song_change(&song);
         // Navigating onto a song with `auto_play` starts it; navigating away
@@ -254,6 +257,16 @@ impl Player {
         }
     }
 
+    /// Moves the active playlist's place with `step`, returning the playlist
+    /// and what `step` returns. A reload cannot come between looking the
+    /// playlist up and moving it, so the move is not lost to it.
+    pub(super) fn move_playlist<T>(&self, step: impl FnOnce(&Playlist) -> T) -> (Arc<Playlist>, T) {
+        let _moves = self.playlist_moves.lock();
+        let playlist = self.get_playlist();
+        let result = step(&playlist);
+        (playlist, result)
+    }
+
     /// Returns the song registry from the all-songs playlist.
     pub fn songs(&self) -> Arc<Songs> {
         let playlists = self.playlists.read();
@@ -293,13 +306,20 @@ impl Player {
                 }
             };
 
+        // Copying each playlist's place and swapping the new ones in is one
+        // step to a move of the active playlist's place, such as a song's
+        // end advancing it: one made between the two would be made on the
+        // old playlist, and lost.
+        let _moves = self.playlist_moves.lock();
+
         // Preserve active playlist name if it still exists; fall back to all_songs.
-        let active = {
+        let (was_active, active) = {
             let mut active = self.active_playlist.write();
+            let was_active = active.clone();
             if !new_playlists.contains_key(active.as_str()) {
                 *active = "all_songs".to_string();
             }
-            active.clone()
+            (was_active, active.clone())
         };
 
         // Each playlist keeps its place by song, not by index: the song
@@ -312,7 +332,15 @@ impl Player {
         {
             let old_playlists = self.playlists.read();
             for (name, playlist) in &new_playlists {
-                if let Some(old) = old_playlists.get(name) {
+                // With the active playlist gone, deleted or renamed, the
+                // all_songs it falls back to takes over from it rather than
+                // from its own place, so the song playing stays current.
+                let from = if *name == active {
+                    old_playlists.get(&was_active)
+                } else {
+                    old_playlists.get(name)
+                };
+                if let Some(old) = from {
                     playlist.follow(old, playing && *name == active);
                 }
             }

@@ -265,13 +265,18 @@ impl Player {
                 // The playlist as it is now, not as it was when the song
                 // started: an edit since replaces it, the place it had got to
                 // carried over (#576).
-                let playlist = player.get_playlist();
-                let from = playlist.entry();
-                let moved = if loop_broken && back {
-                    playlist.prev()
-                } else {
-                    playlist.next()
-                };
+                let (playlist, (from, moved)) = player.move_playlist(|playlist| {
+                    let from = playlist.entry();
+                    let moved = if loop_broken && back {
+                        playlist.prev()
+                    } else {
+                        playlist.next()
+                    };
+                    // A song taken off the list ending after the last
+                    // entry has nothing to move on to, but no longer plays.
+                    playlist.settle();
+                    (from, moved.and_then(|_| playlist.current()))
+                });
                 if let Some(song) = moved {
                     player.emit_song_change(&song);
                 }
@@ -542,6 +547,13 @@ impl Player {
             self.loop_end.store(false, Ordering::Relaxed);
         }
         let song = self.stop_locked(join).await;
+        // A song an edit took off the list is current only while it plays:
+        // stopped, the playlist goes on to the entry that took its place, or
+        // Play would start it again.
+        let (playlist, settled) = self.move_playlist(|playlist| playlist.settle());
+        if let Some(current) = playlist.current().filter(|_| settled) {
+            self.emit_song_change(&current);
+        }
         if ending {
             self.cut_break_fade();
         }

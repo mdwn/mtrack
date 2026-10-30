@@ -328,6 +328,10 @@ pub struct Player {
     playlists: Arc<parking_lot::RwLock<HashMap<String, Arc<Playlist>>>>,
     /// The name of the currently active playlist.
     active_playlist: Arc<parking_lot::RwLock<String>>,
+    /// Held by a reload from copying each playlist's place to swapping the
+    /// new playlists in, and by a move of the active playlist's place, so
+    /// a move cannot land on a playlist a reload has already copied.
+    playlist_moves: Arc<parking_lot::Mutex<()>>,
     /// The persisted active playlist name (last non-all_songs choice). Used by
     /// MIDI/OSC `Playlist` action to return to the user's "real" playlist.
     persisted_playlist: Arc<parking_lot::RwLock<String>>,
@@ -626,6 +630,7 @@ impl Player {
             base_path: base_path.map(Path::to_path_buf),
             playlists: Arc::new(parking_lot::RwLock::new(playlists)),
             active_playlist: Arc::new(parking_lot::RwLock::new(resolved_active.clone())),
+            playlist_moves: Arc::new(parking_lot::Mutex::new(())),
             persisted_playlist: Arc::new(parking_lot::RwLock::new(
                 if resolved_active == "all_songs" {
                     "playlist".to_string()
@@ -3831,6 +3836,58 @@ mod test {
         let stopped = player.stop().await.map(|s| s.name().to_string());
         assert_eq!(stopped.as_deref(), Some("A"));
         assert!(player.ending_status().is_none(), "A is cut, not faded");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deleting_the_active_playlist_keeps_the_playing_song() -> Result<(), Box<dyn Error>> {
+        // #576: with "playlist" deleted or renamed while B plays from it, the
+        // player falls back to all_songs, which took up its own place, on A.
+        let (player, dir) = player_looping_b().await?;
+        let empty = dir.path().join("playlists");
+        std::fs::create_dir_all(&empty)?;
+        player.reload_songs(&dir.path().join("songs"), Some(&empty), None);
+        assert_eq!(player.get_playlist().name(), "all_songs");
+        assert_eq!(current_name(&player).await, "B", "B is still playing");
+        assert!(player.is_current_song_looping());
+        player.stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_song_taken_off_the_list_and_stopped_gives_way() -> Result<(), Box<dyn Error>> {
+        // #576: B, taken off the list while it plays, stayed current once
+        // stopped, so Play started it again. C took its place.
+        let (player, dir) = player_looping_b().await?;
+        edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+        player.stop().await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(current_name(&player).await, "C");
+        assert_eq!(player.get_playlist().entry(), Some(1));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_does_not_lose_a_move_made_while_it_runs() -> Result<(), Box<dyn Error>> {
+        // A reload copies each playlist's place, then swaps the new ones in.
+        // A song's end advancing the playlist between the two moved the old
+        // one, and the new one came in a song behind.
+        let (player, dir) = player_looping_b().await?;
+        player.stop().await;
+        let reload = {
+            let player = player.clone();
+            let songs = dir.path().join("songs");
+            let playlist = dir.path().join("playlist.yaml");
+            std::thread::spawn(move || player.reload_songs(&songs, None, Some(&playlist)))
+        };
+        let (_, moved) = player.move_playlist(|playlist| {
+            // The reload runs to its end here unless the move holds it off.
+            std::thread::sleep(Duration::from_millis(300));
+            playlist.next().map(|song| song.name().to_string())
+        });
+        reload.join().unwrap();
+        assert_eq!(moved.as_deref(), Some("C"));
+        assert_eq!(current_name(&player).await, "C");
         Ok(())
     }
 
