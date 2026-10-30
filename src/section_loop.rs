@@ -443,12 +443,25 @@ pub fn publish_jumps(publisher: JumpPublisher) {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    let end = song.as_deref().map(end_without_audio);
-    let whole_song = song
-        .as_deref()
-        .and_then(|song| WholeSongLoop::of(song, end.unwrap_or_default()));
+    // Where the song ends, read again every so often: a show edited while
+    // it plays (hot reload) moves the end of a song with no audio, and the
+    // loop point with it.
+    const REREAD: Duration = Duration::from_millis(250);
+    let read_end = || {
+        let end = song.as_deref().map(end_without_audio);
+        let whole_song = song
+            .as_deref()
+            .and_then(|song| WholeSongLoop::of(song, end.unwrap_or_default()));
+        (end, whole_song)
+    };
+    let (mut end, mut whole_song) = read_end();
+    let mut read_at = std::time::Instant::now();
     let mut trigger = SectionLoopTrigger::new();
     while !finished() {
+        if read_at.elapsed() >= REREAD {
+            (end, whole_song) = read_end();
+            read_at = std::time::Instant::now();
+        }
         let elapsed = start_time + clock.elapsed();
         let effective = effective_section(
             loop_control.active_section.read().clone(),

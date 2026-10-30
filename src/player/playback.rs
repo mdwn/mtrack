@@ -1068,11 +1068,6 @@ impl Player {
         })
     }
 
-    /// How many of the playing song's section loop jumps have fallen due.
-    fn section_jumps_due(&self) -> usize {
-        self.section_jumps.lock().put_back_now().1
-    }
-
     /// How many of the playing song's loop jumps have been committed, due
     /// or not: a section armed now has looped once more than this have
     /// fallen due, not a pass committed just before it.
@@ -1223,19 +1218,23 @@ impl Player {
             return;
         }
 
-        // Find which section the playhead is currently in.
-        let current_section = sections.iter().find_map(|s| {
-            let (start, end) = song.resolve_section(&s.name)?;
-            if elapsed >= start && elapsed < end {
-                Some(super::SectionBounds {
+        // Find which section the playhead is currently in: or, while a
+        // crossfading song's pass crosses out under the next, the one the
+        // outgoing pass is playing, if the playhead is in none (a section in
+        // the crossfade is only ever heard that way). Taken up, it loops the
+        // next time playback reaches it, the song's pass held off for it.
+        let crossing_out = self.section_jumps.lock().crossing_out();
+        let section_at = |at: Duration| {
+            sections.iter().find_map(|s| {
+                let (start, end) = song.resolve_section(&s.name)?;
+                (at >= start && at < end).then(|| super::SectionBounds {
                     name: s.name.clone(),
                     start_time: start,
                     end_time: end,
                 })
-            } else {
-                None
-            }
-        });
+            })
+        };
+        let current_section = section_at(elapsed).or_else(|| crossing_out.and_then(section_at));
 
         let mut state = self.reactive_loop_state.write();
 
@@ -1307,9 +1306,17 @@ impl Player {
             // actually begins looping. We detect this by checking if
             // active_section is set and we've wrapped around.
             (ReactiveLoopState::LoopArmed(bounds), Some(_)) => {
-                // Check if the audio engine has started looping: a jump due
-                // since it was armed (any before is an earlier loop's).
-                if self.section_jumps_due() > *self.jumps_at_arm.lock() {
+                // Check if the audio engine has started looping: one of its
+                // own jumps due since it was armed (any before is an earlier
+                // loop's, and a whole-song pass committed as it was armed is
+                // not this section going round).
+                let armed_at = *self.jumps_at_arm.lock();
+                let start = bounds.start_time;
+                let looped = self
+                    .section_jumps
+                    .lock()
+                    .due_since(armed_at, |jump| !jump.pass && jump.to == start);
+                if looped {
                     *state = ReactiveLoopState::Looping(bounds.clone());
                 }
             }
@@ -1476,27 +1483,22 @@ impl Player {
         }
     }
 
-    /// Sets fade-out envelopes on all current audio sources for a smooth
-    /// crossfade transition when breaking out of a loop.
-    pub(super) fn fade_out_current_audio(&self) {
+    /// Fades `playback`'s audio out over the short default crossfade, for
+    /// a seek: from where each source is, anchored to the mixer's samples,
+    /// so a source scheduled to start after it (a loop's next pass or time
+    /// round) never does, rather than starting later with a blip. Other
+    /// playbacks' sources (triggered samples, notifications) are left alone.
+    pub(super) fn fade_out_current_audio(&self, playback: &CancelHandle) {
         let hw = self.hardware.read();
-        if let Some(ref device) = hw.device {
-            if let Some(mixer) = device.mixer() {
-                let crossfade_samples =
-                    crate::audio::crossfade::default_crossfade_samples(mixer.sample_rate());
-                let source_ids: Vec<u64> = {
-                    let sources = mixer.get_active_sources();
-                    let guard = sources.read();
-                    guard.iter().map(|s| s.lock().id).collect()
-                };
-                if !source_ids.is_empty() {
-                    let fade_out = Arc::new(crate::audio::crossfade::GainEnvelope::fade_out(
-                        crossfade_samples,
-                        crate::audio::crossfade::CrossfadeCurve::Linear,
-                    ));
-                    mixer.set_gain_envelope(&source_ids, fade_out);
-                }
-            }
+        if let Some(mixer) = hw.device.as_ref().and_then(|device| device.mixer()) {
+            let samples = crate::audio::crossfade::default_crossfade_samples(mixer.sample_rate());
+            mixer.fade_out_playback(
+                playback,
+                samples,
+                crate::audio::crossfade::CrossfadeCurve::Linear,
+                samples,
+                |_| false,
+            );
         }
     }
 }

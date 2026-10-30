@@ -667,7 +667,12 @@ impl Device {
             match rx.try_recv() {
                 Ok(Ok((sources, took))) => {
                     song_loop.prebuilt = Some((from, sources));
-                    song_loop.build_took = Some(took);
+                    // A slow build is remembered for a few more: a fast
+                    // one (its files cached) is no promise the next will be.
+                    let remembered = song_loop
+                        .build_took
+                        .map_or(Duration::ZERO, |slowest| slowest.mul_f64(0.75));
+                    song_loop.build_took = Some(took.max(remembered));
                 }
                 Ok(Err(e)) => {
                     error!(err = %e, "Failed to pre-build the next loop pass; will retry")
@@ -1291,7 +1296,8 @@ struct SongLoopCrossfade {
     prebuilt: Option<(Duration, GroupedSources)>,
     /// A build of the next pass's sources in flight.
     build_rx: Option<PassBuild>,
-    /// How long the latest build took, timed where it was built.
+    /// How long builds have been taking, timed where they are built: the
+    /// latest, or a slower one before it, fading by a quarter a build.
     build_took: Option<Duration>,
     /// The sample the latest pass starts at, and its sources' ids, to cancel
     /// them outright if playback ends before they have started.
