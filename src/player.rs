@@ -339,6 +339,11 @@ pub struct Player {
     play_start_time: Arc<Mutex<Option<SystemTime>>>,
     /// Keeps track of the player joins. There should only be one task on here at a time.
     join: Arc<Mutex<Option<PlayHandles>>>,
+    /// Whether a song is playing: set as `join` becomes `Some`, and cleared
+    /// as it goes back to `None`, but readable without the join lock. A
+    /// playlist reload asks it rather than the lock, which every status
+    /// poll takes too, so a poll cannot pass for a song playing (#576).
+    song_playing: Arc<AtomicBool>,
     /// After stop is set, this will be set to true. This will prevent stop from being run again until
     /// it is unset, which should be handled by a cleanup async process after playback finishes.
     stop_run: Arc<AtomicBool>,
@@ -640,6 +645,7 @@ impl Player {
             )),
             play_start_time: Arc::new(Mutex::new(None)),
             join: Arc::new(Mutex::new(None)),
+            song_playing: Arc::new(AtomicBool::new(false)),
             stop_run: Arc::new(AtomicBool::new(false)),
             span: span!(Level::INFO, "player"),
             config_store: Arc::new(parking_lot::Mutex::new(None)),
@@ -4397,6 +4403,29 @@ mod test {
         let prev = player.prev().await.map(|s| s.name().to_string());
         player.stop().await;
         assert_eq!(prev.as_deref(), Some("A"));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stopped_song_taken_off_the_list_gives_way_during_a_status_poll(
+    ) -> Result<(), Box<dyn Error>> {
+        // #576: the edit took any holder of the join lock for a song
+        // starting, so a status poll under way kept stopped B current, off
+        // the list, and Play would start it again.
+        let (player, dir) = player_looping_b().await?;
+        player.stop().await;
+        rests_stopped_on(&player, "B").await;
+        assert_eq!(player.pending_start(), None);
+        // Held as `is_playing()` holds it.
+        let poll = player.join.lock().await;
+        assert!(poll.is_none(), "stopped");
+        edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+        drop(poll);
+        assert_eq!(
+            player.get_playlist().entry(),
+            Some(1),
+            "stopped B gives way to C"
+        );
         Ok(())
     }
 }

@@ -88,6 +88,25 @@ impl Player {
         start_time: Duration,
         join: &mut Option<PlayHandles>,
     ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
+        // The song counts as playing from before the playlist is read for
+        // it: a reload either swaps the playlist in first, so the song read
+        // is the new one's, or sees it playing and keeps it current.
+        {
+            let _moves = self.playlist_moves.lock();
+            self.song_playing.store(true, Ordering::Relaxed);
+        }
+        let started = self.start_locked(start_time, join).await;
+        if join.is_none() {
+            self.song_playing.store(false, Ordering::Relaxed);
+        }
+        started
+    }
+
+    async fn start_locked(
+        &self,
+        start_time: Duration,
+        join: &mut Option<PlayHandles>,
+    ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
         let _enter = self.span.enter();
 
         let playlist = self.get_playlist().clone();
@@ -246,6 +265,7 @@ impl Player {
                     }
                     *player.play_start_time.lock().await = None;
                     *join = None;
+                    player.song_playing.store(false, Ordering::Relaxed);
                     player.stop_run.store(false, Ordering::Relaxed);
                     *player.start_fade.lock() = None;
                     // Stopped, a song an edit took off the list while it
@@ -294,6 +314,7 @@ impl Player {
                 }
 
                 *join = None;
+                player.song_playing.store(false, Ordering::Relaxed);
                 player.stop_run.store(false, Ordering::Relaxed);
                 let should_auto_play = action == CleanupAction::LoopBreakAndPlay;
                 if !should_auto_play {
@@ -554,6 +575,7 @@ impl Player {
             self.loop_end.store(false, Ordering::Relaxed);
         }
         let song = self.stop_locked(join).await;
+        self.song_playing.store(false, Ordering::Relaxed);
         // A song an edit took off the list is current only while it plays:
         // stopped, the playlist goes on to the entry that took its place, or
         // Play would start it again.
@@ -651,7 +673,9 @@ impl Player {
     }
 
     /// Stops the song playing, if one is, for a pause, with the join lock
-    /// held: the lights hold rather than go to ambient.
+    /// held: the lights hold rather than go to ambient. The song still
+    /// counts as playing until the pause has kept its position, and the
+    /// caller clears `song_playing` then.
     pub(super) async fn stop_for_pause(&self, join: &mut Option<PlayHandles>) -> Option<Arc<Song>> {
         self.stop_locked(join).await
     }

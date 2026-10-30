@@ -331,12 +331,11 @@ impl Player {
         // off the list, and the ending, loop-break and status logic, which
         // read the active playlist's current song, keep to it (#576). A
         // paused song counts as playing: play resumes it where it was, and
-        // the entry after it is not the song to resume. A join lock held
-        // elsewhere is a control call under way, which may be starting a
-        // song: taken as playing, so it is not lost.
-        let playing = self.join.try_lock().map_or(true, |join| {
-            join.is_some() || self.pending_start().is_some()
-        });
+        // the entry after it is not the song to resume. Asked of the flag
+        // kept with `join`, not of the join lock: every status poll takes
+        // that lock, and a stopped song read as playing for one would keep
+        // its place off the list.
+        let playing = self.song_playing.load(Ordering::Relaxed) || self.pending_start().is_some();
         {
             let old_playlists = self.playlists.read();
             for (name, playlist) in &new_playlists {

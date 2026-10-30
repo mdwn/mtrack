@@ -13,6 +13,7 @@
 //
 
 use std::error::Error;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tracing::{info, warn};
@@ -37,14 +38,25 @@ impl Player {
             return Ok(None);
         };
         // The stop and the position kept for the next play are one step
-        // under the join lock. A playlist edit between them would find
-        // neither playing nor paused, and give an off-list song's place to
-        // the entry after it, which play would then start at this song's
+        // under the join lock, and the song counts as playing throughout,
+        // even one already paused, whose position the stop clears before
+        // it is kept again. A playlist edit between them would find neither
+        // playing nor paused, and give an off-list song's place to the
+        // entry after it, which play would then start at this song's
         // position (#576).
         let mut join = self.join.lock().await;
+        self.song_playing.store(true, Ordering::Relaxed);
         self.stop_for_pause(&mut join).await;
+        let position = self.keep_paused_position(position);
+        self.song_playing.store(false, Ordering::Relaxed);
+        Ok(Some(position))
+    }
+
+    /// Keeps `position` in the current song for the next play to resume
+    /// from, and returns it as a position in the pass it is on.
+    fn keep_paused_position(&self, position: Duration) -> Duration {
         let Some(song) = self.get_playlist().current() else {
-            return Ok(Some(position));
+            return position;
         };
         // A looping song's elapsed runs on over its passes: where it is in
         // the pass it is on is what to resume from.
@@ -52,11 +64,11 @@ impl Player {
         // Paused on the song's very end: there is nothing left to resume,
         // so the next play starts it over.
         if check_start_position(&song, position, "").is_err() {
-            return Ok(Some(position));
+            return position;
         }
         info!(song = song.name(), position = ?position, "Paused; play resumes here");
         *self.pending_start.lock() = Some(position);
-        Ok(Some(position))
+        position
     }
 
     /// Seeks to an absolute position within the current song.
@@ -78,7 +90,7 @@ impl Player {
 
         // A looping song ending: stopped a moment from now, and nothing to
         // restart.
-        if join.is_some() && self.loop_end.load(std::sync::atomic::Ordering::Relaxed) {
+        if join.is_some() && self.loop_end.load(Ordering::Relaxed) {
             return Err("Cannot seek: the song is ending".into());
         }
 
@@ -128,6 +140,9 @@ impl Player {
                 warn!(err = %e, "Error waiting for playback to wind down during seek");
             }
             Err(_) => {
+                // The song a seek takes out of `join` counts as playing
+                // until it restarts; abandoned, it is not.
+                self.song_playing.store(false, Ordering::Relaxed);
                 warn!(
                     timeout = ?SEEK_WINDDOWN_TIMEOUT,
                     "Playback did not wind down in time during seek; abandoning it"
