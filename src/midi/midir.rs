@@ -108,7 +108,7 @@ impl Drop for Device {
 
 impl Device {
     /// Hands this song's beat clock schedule to the always-on device engine,
-    /// if there is one and the song has a tempo. The engine (not a per-song
+    /// if there is one and the song has a tempo; whether it did. The engine (not a per-song
     /// thread) owns the clock output: it syncs to the shared playback clock's
     /// "go" signal, plays this schedule, and then holds the last tempo until
     /// the next song retunes it.
@@ -120,12 +120,12 @@ impl Device {
         cancel: &CancelHandle,
         clock: &PlaybackClock,
         loop_break: &Arc<AtomicBool>,
-    ) {
+    ) -> bool {
         let Some(engine) = &self.beat_clock_engine else {
-            return;
+            return false;
         };
         let Some(ticks) = song.beat_clock(sheet) else {
-            return;
+            return false;
         };
         // Passes on the song's own grid, as its audio, lights and notes loop:
         // every song length less its crossfade. A song with no audio has no
@@ -145,6 +145,7 @@ impl Device {
             clock: clock.clone(),
             passes,
         });
+        true
     }
 }
 
@@ -244,11 +245,19 @@ impl super::Device for Device {
         let Some(midi_playback) = song.midi_playback() else {
             // A song's tempo drives the beat clock without a MIDI file.
             if self.beat_clock_engine.is_some() && song.has_tempo() {
-                self.play_beat_clock(&song, None, start_time, &cancel_handle, &clock, &loop_break);
-                info!(
-                    song = song.name(),
-                    "Song has no MIDI file; its beat clock runs from its tempo."
-                );
+                if self.play_beat_clock(
+                    &song,
+                    None,
+                    start_time,
+                    &cancel_handle,
+                    &clock,
+                    &loop_break,
+                ) {
+                    info!(
+                        song = song.name(),
+                        "Song has no MIDI file; its beat clock runs from its tempo."
+                    );
+                }
             } else {
                 info!(song = song.name(), "Song has no MIDI sheet.");
             }

@@ -171,7 +171,7 @@ midi:
   # tempo of the song's click track, as the lighting uses it (each click counts as a quarter
   # note, so a song clicking eighths wants a `tempo:` block). A song with none of these sends
   # no beat clock. The clock runs to the end of the song, past where its click or MIDI stops,
-  # and a looping song's clock loops with it.
+  # and a looping song's clock loops with it (one with audio; see known limitations).
   #
   # The beat clock thread runs at elevated (real-time) thread priority to minimize timing jitter.
   # On Linux, this requires CAP_SYS_NICE (granted by the systemd service unit). On macOS, no

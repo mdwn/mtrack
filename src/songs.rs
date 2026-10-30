@@ -1667,9 +1667,9 @@ fn parse_midi(midi_file: &PathBuf) -> Result<MidiSheet, Box<dyn Error>> {
         ticks_per_beat,
         smf.header.format,
     );
-    // Only generate beat clock when the MIDI file contains explicit tempo events.
-    // Files without tempo maps have no tempo opinion, so mtrack stays out of the way
-    // and lets musicians control their own tempo.
+    // Only a file with explicit tempo events has a tempo of its own to clock.
+    // One without leaves the clock to the song's `tempo:` or click track, or,
+    // with neither, to nobody (`Song::beat_clock`).
     let beat_clock = (!tempo_map.is_empty()).then_some(MidiTempo {
         entries: tempo_map,
         ticks_per_beat: tpb,
