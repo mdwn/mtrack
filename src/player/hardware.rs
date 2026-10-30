@@ -235,9 +235,14 @@ impl Player {
             async {
                 if let Some(dmx_config) = dmx_config {
                     let bp = bp.clone();
+                    // Its wait for olad ends with the round: the next round
+                    // waits for this one to finish (`spawn_after`).
+                    let stop = cancel2.clone();
                     let outcome = Self::retry_until_ready("dmx engine", cancel2, move || {
-                        dmx::create_engine(Some(&dmx_config), bp.as_deref())
-                            .map_err(|e| e.to_string())
+                        dmx::create_engine_until(Some(&dmx_config), bp.as_deref(), &|| {
+                            stop.is_cancelled()
+                        })
+                        .map_err(|e| e.to_string())
                     })
                     .await;
                     self.record_init_outcome("dmx", outcome, &cancel).flatten()

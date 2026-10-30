@@ -1054,6 +1054,13 @@ fn run_beat_clock(
         let elapsed = clock.elapsed();
         if target_wall > elapsed {
             spin_sleep::sleep(target_wall - elapsed);
+        } else if schedule.clone().next().is_some_and(|(next, _)| {
+            discipline.steer((next + looped).saturating_sub(start_time)) <= elapsed
+        }) {
+            // Late enough that the next is due too (a start noticed late):
+            // skipped, not sent with it in a burst gear reads as a tempo spike.
+            prev_tick = None;
+            continue;
         }
 
         if cancel_handle.is_cancelled() {
@@ -1098,6 +1105,7 @@ const START_TO_CLOCK: Duration = Duration::from_millis(1);
 /// of the period (a click that stops before the song does) goes on to the
 /// next all the same. A period with no tick in it would repeat nothing for
 /// ever, so such a song plays once.
+#[derive(Clone)]
 struct PassTicks<'a> {
     ticks: &'a [Duration],
     start: Duration,
@@ -2296,6 +2304,60 @@ mod test {
         assert!(first >= Duration::from_secs(1), "{first:?}");
         // Counted from the notice, it would be 1.6s in.
         assert!(first < Duration::from_millis(1_450), "{first:?}");
+    }
+
+    /// A start noticed after the playback delay has run out (here no delay,
+    /// the default, and the engine hearing of the song 200ms in) does not
+    /// send the ticks already due back to back, a burst gear reads as a tempo
+    /// spike: it picks the schedule up where it is.
+    #[test]
+    fn a_late_notice_does_not_burst_the_ticks_already_due() {
+        struct Stamps(Arc<Mutex<Vec<std::time::Instant>>>);
+        impl MidiSender for Stamps {
+            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                if bytes == [0xF8] {
+                    self.0.lock().unwrap().push(std::time::Instant::now());
+                }
+                Ok(())
+            }
+        }
+        let clock = PlaybackClock::wall();
+        clock.start();
+        std::thread::sleep(Duration::from_millis(200));
+        let stamps = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::channel();
+        let cancel = CancelHandle::new();
+        tx.send(BeatClockCommand::Play(BeatClockPlay {
+            ticks: Arc::new((0..48).map(|k| Duration::from_millis(k * 20)).collect()),
+            start_time: Duration::ZERO,
+            playback_delay: Duration::ZERO,
+            cancel: cancel.clone(),
+            clock: clock.clone(),
+            passes: None,
+            sections: None,
+        }))
+        .unwrap();
+        let join = std::thread::spawn({
+            let stamps = stamps.clone();
+            move || {
+                let tempo = Mutex::new(None);
+                beat_clock_engine_loop(&mut Stamps(stamps), false, &tempo, &rx);
+            }
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while stamps.lock().unwrap().len() < 6 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        cancel.cancel();
+        drop(tx);
+        join.join().unwrap();
+        let stamps = stamps.lock().unwrap();
+        let gaps: Vec<Duration> = stamps.windows(2).take(5).map(|w| w[1] - w[0]).collect();
+        // Ticks are 20ms apart; none should go out within 5ms of the last.
+        assert!(
+            gaps.iter().all(|gap| *gap >= Duration::from_millis(5)),
+            "clocks sent in a burst: {gaps:?}"
+        );
     }
 
     /// A reopen while a song's beat clock schedule still runs (a clock
