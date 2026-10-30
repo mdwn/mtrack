@@ -371,6 +371,9 @@ pub struct Player {
     /// Cancellation token for the current hardware init round. On reload,
     /// the old token is cancelled and a new one is created.
     init_cancel: Arc<parking_lot::Mutex<CancellationToken>>,
+    /// The latest hardware init round's task. A round starts only once the
+    /// one before it has finished (see `hardware::spawn_after`).
+    init_round: Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Serializes `reload_hardware` from start to spawn.
     ///
     /// The config is read before the cancellation token is replaced, and that
@@ -563,7 +566,7 @@ impl Player {
         let config = config.clone();
         let bp = base_path.map(Path::to_path_buf);
         let init_cancel = player.init_cancel.lock().clone();
-        tokio::spawn(async move {
+        hardware::spawn_after(&player.init_round, async move {
             init_player
                 .init_hardware_async(config, bp, init_cancel)
                 .await;
@@ -671,6 +674,7 @@ impl Player {
             config_store: Arc::new(parking_lot::Mutex::new(None)),
             default_metronome: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             init_cancel: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
+            init_round: Arc::new(parking_lot::Mutex::new(None)),
             reload_lock: Arc::new(tokio::sync::Mutex::new(())),
             hardware_reload_pending: Arc::new(AtomicBool::new(false)),
             broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),

@@ -123,6 +123,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The beat clock's playback delay counts from the start** (#600): it counted from whenever its
+  thread noticed playback had started, so its Start and every clock could land a few ms after the
+  notes and audio, by a different amount each time. It now counts from the playback clock's start,
+  as the notes do.
+- **A reload no longer races the round it replaced for a device** (#603): a hardware reload cancels
+  the init round under way, but a device that round was opening stayed open until it finished, and
+  a new round opening the same device (the trigger input, say) was refused it as busy and went on
+  without it. A round now starts only once the one before it has finished.
 - **A hardware reload keeps the audio triggers**: dropping the trigger engine only signalled its
   input thread, which noticed up to half a second later, so the replacement opened the input device
   while the old stream still held it, failed with "device busy", and went on with no triggers until

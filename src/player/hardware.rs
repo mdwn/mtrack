@@ -756,7 +756,7 @@ impl Player {
         // than letting it read the shared cell when it is first polled.
         let init_player = self.clone();
         let bp = self.base_path.clone();
-        tokio::spawn(async move {
+        spawn_after(&self.init_round, async move {
             init_player.init_hardware_async(config, bp, cancel).await;
         });
         drop(join);
@@ -1104,6 +1104,29 @@ pub(super) fn init_sample_engine(
     Some(Arc::new(RwLock::new(engine)))
 }
 
+/// Spawns a hardware init round to run once the round before it, the task in
+/// `slot`, has finished, and puts it in `slot` for the next.
+///
+/// A cancelled round stops at its next check, but a device it was opening by
+/// then -- the trigger engine's cpal input, say -- stays open until the round
+/// drops it on its way out. A round run alongside it opened the same device
+/// and was refused it as busy, and went on without it (#603). Rounds run one
+/// after another, each opening nothing until its predecessor has let go.
+pub(super) fn spawn_after(
+    slot: &parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    round: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    let mut slot = slot.lock();
+    let previous = slot.take();
+    *slot = Some(tokio::spawn(async move {
+        if let Some(previous) = previous {
+            // A panic in the previous round has let go of its devices as well.
+            let _ = previous.await;
+        }
+        round.await;
+    }));
+}
+
 /// Initializes the trigger engine if configured and sample engine is available.
 /// Unlike audio/MIDI devices, triggers are non-essential — fail immediately
 /// rather than retrying indefinitely.
@@ -1191,6 +1214,38 @@ pub(super) fn init_trigger_engine(
 
 #[cfg(test)]
 mod test {
+
+    /// A round starts only once the round before it has finished, even when
+    /// the earlier one is still busy with a device it was opening (#603).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_init_round_waits_for_the_one_before_it() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let slot = parking_lot::Mutex::new(None);
+        let first_done = Arc::new(AtomicBool::new(false));
+        let second_saw = Arc::new(parking_lot::Mutex::new(None));
+        super::spawn_after(&slot, {
+            let first_done = first_done.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                first_done.store(true, Ordering::SeqCst);
+            }
+        });
+        super::spawn_after(&slot, {
+            let first_done = first_done.clone();
+            let second_saw = second_saw.clone();
+            async move {
+                *second_saw.lock() = Some(first_done.load(Ordering::SeqCst));
+            }
+        });
+        let last = slot.lock().take().unwrap();
+        last.await.unwrap();
+        assert_eq!(
+            *second_saw.lock(),
+            Some(true),
+            "the second round ran alongside the first"
+        );
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
