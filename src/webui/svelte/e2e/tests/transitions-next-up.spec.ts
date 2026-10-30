@@ -219,4 +219,99 @@ test.describe("Dashboard: next up", () => {
     await sendWsMessage(page, wsId, { ...frame, next: null });
     await expect(nextUp).toHaveCount(0);
   });
+
+  test("next and previous end a looping song at the ends of the list", async ({
+    page,
+  }) => {
+    // #579: they were disabled there, though pressing them ends the song
+    // over its fade out.
+    const wsId = `loop-end-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/`);
+    await expect(page.locator(".playback-card__title")).toBeVisible();
+
+    const nextUp = page.getByTestId("next-up");
+    const prevButton = page.getByRole("button", { name: "Prev", exact: true });
+    const nextButton = page.getByRole("button", { name: "Next", exact: true });
+    const fade = (length: string) => ({
+      length,
+      curve: "equal_power",
+      exclude: null,
+      lights: null,
+    });
+    const last = {
+      type: "playback",
+      is_playing: true,
+      elapsed_ms: 0,
+      song_name: "Daegrima",
+      song_duration_ms: 60000,
+      playlist_name: "setlist",
+      playlist_position: 1,
+      playlist_songs: ["Opener", "Daegrima"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      looping: true,
+    };
+
+    // The last entry, with a fade out: Next ends it.
+    await sendWsMessage(page, wsId, {
+      ...last,
+      next: { song: null, ends_loop: true, fade_out: fade("2measures") },
+    });
+    await expect(nextUp).toHaveText(
+      "Next ends the loop: fades out over 2 measures",
+    );
+    await expect(nextButton).toBeEnabled();
+
+    // Without one, the press would cut: still off.
+    await sendWsMessage(page, wsId, {
+      ...last,
+      next: { song: null, ends_loop: true, fade_out: null },
+    });
+    await expect(nextUp).toHaveText("End of playlist");
+    await expect(nextButton).toBeDisabled();
+
+    // The first entry: Previous ends it, and says so.
+    const first = {
+      ...last,
+      song_name: "Throneless Postlude",
+      playlist_position: 0,
+      playlist_songs: ["Throneless Postlude", "Thunar Prelude"],
+    };
+    await sendWsMessage(page, wsId, {
+      ...first,
+      next: {
+        song: "Thunar Prelude",
+        breaks_loop: true,
+        fade_out: fade("4s"),
+        fade_in: null,
+        auto_play_ms: null,
+      },
+    });
+    await expect(prevButton).toBeEnabled();
+    await expect(prevButton).toHaveAttribute(
+      "title",
+      "Previous ends the loop: fades out over 4s (Left Arrow)",
+    );
+    await sendWsMessage(page, wsId, {
+      ...first,
+      next: {
+        song: "Thunar Prelude",
+        breaks_loop: true,
+        fade_out: null,
+        fade_in: null,
+        auto_play_ms: null,
+      },
+    });
+    await expect(prevButton).toBeDisabled();
+
+    // Stopped, the ends of the list are the ends again.
+    await sendWsMessage(page, wsId, {
+      ...last,
+      is_playing: false,
+      next: { song: null },
+    });
+    await expect(nextButton).toBeDisabled();
+  });
 });

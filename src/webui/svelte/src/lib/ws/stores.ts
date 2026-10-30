@@ -90,6 +90,9 @@ export interface FadeInfo {
 export interface NextUp {
   song: string | null;
   breaks_loop?: boolean;
+  /** At the end of the playlist, a looping song playing: Next (or Previous
+   *  on the first entry) ends it over `fade_out` rather than moving on. */
+  ends_loop?: boolean;
   fade_out?: FadeInfo | null;
   fade_in?: FadeInfo | null;
   auto_play_ms?: number | null;

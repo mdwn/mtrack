@@ -347,14 +347,27 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
 
 /// What comes after the current song and how it arrives, for the
 /// dashboard: `null` with no current song, a `null` song at the end of the
-/// playlist. A looping song that is playing goes on only by a loop break
-/// (Play or Next), which takes the playlist's fades; otherwise the next song
-/// starts by itself after its auto-play gap, or waits for Play.
+/// playlist (with `ends_loop` and the `fade_out` it ends over, for a looping
+/// song playing there). A looping song that is playing goes on only by a
+/// loop break (Play or Next), which takes the playlist's fades; otherwise
+/// the next song starts by itself after its auto-play gap, or waits for
+/// Play.
 fn next_json(playlist: &crate::playlist::Playlist, is_playing: bool) -> serde_json::Value {
     let Some(current) = playlist.current() else {
         return serde_json::Value::Null;
     };
     let Some(position) = playlist.next_entry() else {
+        // A looping song playing at the end of the list: Next (or Previous
+        // on the first entry) ends it over its entry's `fade_out`, which the
+        // dashboard offers and names (#579).
+        if is_playing && current.loop_playback() {
+            let fade_out = playlist.loop_break(false).fade_out;
+            return json!({
+                "song": null,
+                "ends_loop": true,
+                "fade_out": fade_out.as_ref().map(crate::config::Fade::to_json),
+            });
+        }
         return json!({"song": null});
     };
     let song = &playlist.songs()[position];
@@ -1385,6 +1398,37 @@ metronome: {}
 
         pl.next();
         assert_eq!(next_json(&pl, true), json!({"song": null}));
+    }
+
+    #[test]
+    fn next_says_a_looping_song_at_the_end_ends_over_its_fade() {
+        // #579: "End of playlist" alone, though Next there ends the song
+        // over its fade out, and the dashboard turned Next off.
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "Opener".to_string(),
+            Arc::new(Song::new_for_test("Opener", &["kick"])),
+        );
+        map.insert(
+            "Daegrima".to_string(),
+            Arc::new(Song::new_for_test_looping("Daegrima", &["pad"])),
+        );
+        let songs = Arc::new(Songs::new(map));
+        let text = "songs:\n- Opener\n- song: Daegrima\n  fade_out: 2measures\n";
+        let config: crate::config::Playlist = ::config::Config::builder()
+            .add_source(::config::File::from_str(text, ::config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        let pl = playlist::Playlist::new("show", &config, songs).unwrap();
+        pl.navigate_to("Daegrima");
+        let next = next_json(&pl, true);
+        assert!(next["song"].is_null());
+        assert_eq!(next["ends_loop"], true);
+        assert_eq!(next["fade_out"]["length"], "2measures");
+        // Stopped, it is just the end of the playlist.
+        assert_eq!(next_json(&pl, false), json!({"song": null}));
     }
 
     #[test]
