@@ -441,3 +441,106 @@ fn move_seek_show_end() {
     }
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+/// A head's pan as the engine remembers it: where it was last shown.
+fn pan_in(engine: &EffectEngine, name: &str) -> Option<f64> {
+    engine.poses().get(name).map(|pose| pose.pan)
+}
+
+fn eval_pan(source: &str, fixtures: &[FixtureInfo], ms: u64, name: &str) -> Option<f64> {
+    eval_one(source, fixtures, ms as f64 / 1000.0)
+        .poses
+        .iter()
+        .find(|pose| pose.name == name)
+        .map(|pose| pose.pan)
+}
+
+/// Each head's pan played through, after a seek and from `evaluate_show`,
+/// at each `(seek, at)`: the seek plays on to `at`, and evaluate is asked
+/// for `at`. Within a frame's travel: live, a cut head holds the pose of
+/// the frame before the cut, a seek the pose at the cut itself.
+fn compare_heads(
+    name: &str,
+    src: &str,
+    fixtures: &[FixtureInfo],
+    pairs: &[(u64, u64)],
+) -> Vec<String> {
+    let close = |a: Option<f64>, b: Option<f64>| match (a, b) {
+        (Some(a), Some(b)) => (a - b).abs() <= 1.0,
+        (a, b) => a == b,
+    };
+    let mut bad = Vec::new();
+    for &(seek, at) in pairs {
+        let live = played(src, fixtures, at);
+        let sought = seek_play(src, fixtures, seek, at);
+        for head in fixtures.iter().map(|f| f.name.as_str()) {
+            let (l, s) = (pan_in(&live, head), pan_in(&sought, head));
+            if !close(l, s) {
+                bad.push(format!(
+                    "{name} {head} seek {seek} at {at}: live {l:?} seek {s:?}"
+                ));
+            }
+            // Evaluate reports a head with no pose at rest, at 0.
+            let e = eval_pan(src, fixtures, at, head);
+            if !close(l.or(Some(0.0)), e) {
+                bad.push(format!("{name} {head} eval at {at}: live {l:?} eval {e:?}"));
+            }
+        }
+    }
+    bad
+}
+
+/// A layer clear part way through a move leaves the head where the clear
+/// caught it, after a seek past the clear as played through (#596).
+#[test]
+fn a_layer_clear_part_way_through_a_move_holds_the_head_after_a_seek() {
+    let src = show(mv("00:02.000", "") + "    @00:03.000\n    clear(layer: background)\n");
+    let f = [mover("m")];
+    let held = pan_in(&played(&src, &f, 3500), "m").expect("a pose");
+    assert!(held > 30.0 && held < 60.0, "held at {held}");
+    let bad = compare_heads(
+        "layer clear",
+        &src,
+        &f,
+        &[(3500, 3500), (4500, 4500), (3010, 5000), (4500, 6000)],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// The same for `stop sequence` part way through a sequence's move (#596).
+#[test]
+fn a_stop_part_way_through_a_sequence_move_holds_the_head_after_a_seek() {
+    let src = "sequence \"q\" {\n    @00:00.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s\n}\n\n\
+        show \"s\" {\n    @00:02.000\n    sequence \"q\"\n    @00:03.000\n    stop sequence \"q\"\n}\n";
+    let f = [mover("m")];
+    let held = pan_in(&played(src, &f, 3500), "m").expect("a pose");
+    assert!(held > 30.0 && held < 60.0, "held at {held}");
+    let bad = compare_heads(
+        "stop sequence",
+        src,
+        &f,
+        &[(3500, 3500), (4500, 4500), (4500, 6000)],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A full `clear` part way through a move still lets the head go: the next
+/// move without `from` snaps to its target rather than sweeping from where
+/// the clear caught the head, after a seek as played through.
+#[test]
+fn a_full_clear_part_way_through_a_move_releases_the_pose_after_a_seek() {
+    let src = show(
+        mv("00:02.000", "")
+            + "    @00:03.000\n    clear()\n    @00:04.000\n    m: move pan: 180deg, tilt: 0deg, duration: 2s\n",
+    );
+    let f = [mover("m")];
+    assert_eq!(pan_in(&played(&src, &f, 3500), "m"), None);
+    assert_eq!(pan_in(&played(&src, &f, 4500), "m"), Some(180.0));
+    let bad = compare_heads(
+        "full clear",
+        &src,
+        &f,
+        &[(3500, 3500), (4500, 4500), (3500, 4500), (5000, 5000)],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}

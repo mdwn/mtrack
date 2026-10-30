@@ -108,6 +108,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A mover cut part way through a move keeps its pose after a seek (#596)**: a layer `clear` or a
+  `stop sequence` part way through a move leaves the head where it was, as the song plays, but a
+  seek past the cut (or `evaluate_show`) left the head with no pose at all, so the next move
+  without `from` snapped instead of sweeping from there. A seek now puts the head where the cut
+  caught it. A full `clear()` still lets the head go.
 - **Same-time cues from different shows fire in a steady order (#597)**: a file's shows came back
   in hash order, which changed from one timeline build to the next -- every section loop pass and
   crossfaded loop pass builds one -- so of two cues at the same time in different shows (a `stop

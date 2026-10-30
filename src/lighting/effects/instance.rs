@@ -64,6 +64,21 @@ pub struct EffectInstance {
     /// The sequence this effect was cued from, if any: `stop sequence`
     /// takes out the effects of that sequence by name, and only those.
     pub sequence: Option<String>,
+    /// For a move a seek's history cut short before it arrived -- by a
+    /// clear or a stop of its sequence -- where each cut left it. Live, a cut head holds the last pose it was
+    /// shown at, so the engine commits that pose for the fixtures cut and
+    /// runs the move on the rest, if any. Empty otherwise.
+    pub cuts: Vec<MoveCut>,
+}
+
+/// Where a seek's history cut a move short (see `EffectInstance::cuts`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoveCut {
+    /// The move's own elapsed at the cut. `None` for one cut on its own
+    /// cue's time, which never rendered: the heads stay where they were.
+    pub elapsed: Option<Duration>,
+    /// The fixtures cut, or every one it still has for `None`.
+    pub fixtures: Option<Vec<String>>,
 }
 
 impl EffectInstance {
@@ -114,6 +129,7 @@ impl EffectInstance {
             elapsed_from: Duration::ZERO,
             engine_timed: false,
             sequence: None,
+            cuts: Vec::new(),
         }
     }
 

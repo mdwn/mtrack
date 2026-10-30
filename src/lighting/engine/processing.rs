@@ -734,11 +734,40 @@ pub(crate) fn move_final_poses(
         .collect()
 }
 
-/// Apply a move effect: each target travels from its start pose to its
-/// target pose over the duration, eased, in degrees. The result is a
-/// physical intent per fixture; the engine slews and remembers it.
+/// Where a move has each of its targets at `elapsed` of its own: the pose
+/// a seek commits for a move cut short part way, as the head was shown at
+/// the cut.
+pub(crate) fn move_poses_at(
+    fixture_registry: &HashMap<String, FixtureInfo>,
+    focus_points: &HashMap<String, [f64; 3]>,
+    effect: &EffectInstance,
+    elapsed: Duration,
+) -> HashMap<String, Pose> {
+    let EffectType::Move {
+        to,
+        from,
+        easing,
+        duration,
+    } = &effect.effect_type
+    else {
+        return HashMap::new();
+    };
+    move_poses(
+        fixture_registry,
+        focus_points,
+        effect,
+        to,
+        from.as_ref(),
+        *easing,
+        *duration,
+        elapsed,
+    )
+}
+
+/// Each target's pose part way through a move: from its start pose to its
+/// target pose over the duration, eased, in degrees.
 #[allow(clippy::too_many_arguments)]
-fn apply_move(
+fn move_poses(
     fixture_registry: &HashMap<String, FixtureInfo>,
     focus_points: &HashMap<String, [f64; 3]>,
     effect: &EffectInstance,
@@ -747,7 +776,7 @@ fn apply_move(
     easing: Easing,
     duration: Duration,
     elapsed: Duration,
-) -> HashMap<String, FixtureState> {
+) -> HashMap<String, Pose> {
     let progress = if duration.is_zero() {
         1.0
     } else {
@@ -755,7 +784,7 @@ fn apply_move(
     };
     let travel = easing.apply(progress);
 
-    let mut states = HashMap::new();
+    let mut poses = HashMap::new();
     for name in &effect.target_fixtures {
         let Some(fixture) = fixture_registry.get(name) else {
             continue;
@@ -774,7 +803,37 @@ fn apply_move(
             .and_then(|from| target_pose(fixture, focus_points, from, remembered))
             .or(remembered)
             .unwrap_or(target);
-        let pose = lerp(start, target, travel);
+        poses.insert(name.clone(), lerp(start, target, travel));
+    }
+    poses
+}
+
+/// Apply a move effect: each target travels from its start pose to its
+/// target pose over the duration, eased, in degrees. The result is a
+/// physical intent per fixture; the engine slews and remembers it.
+#[allow(clippy::too_many_arguments)]
+fn apply_move(
+    fixture_registry: &HashMap<String, FixtureInfo>,
+    focus_points: &HashMap<String, [f64; 3]>,
+    effect: &EffectInstance,
+    to: &MoveTarget,
+    from: Option<&MoveTarget>,
+    easing: Easing,
+    duration: Duration,
+    elapsed: Duration,
+) -> HashMap<String, FixtureState> {
+    move_poses(
+        fixture_registry,
+        focus_points,
+        effect,
+        to,
+        from,
+        easing,
+        duration,
+        elapsed,
+    )
+    .into_iter()
+    .map(|(name, pose)| {
         let mut state = FixtureState::new();
         state.physical.set(
             PhysicalParameter::Pan,
@@ -790,9 +849,9 @@ fn apply_move(
                 layer: effect.layer,
             },
         );
-        states.insert(name.clone(), state);
-    }
-    states
+        (name, state)
+    })
+    .collect()
 }
 
 /// Apply a chase effect and return fixture states

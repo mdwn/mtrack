@@ -999,6 +999,40 @@ impl EffectEngine {
         validation::validate_effect(self.fixtures.as_map(), &effect)?;
         self.capture_start_poses(&mut effect);
 
+        // A move the history cut short before it arrived left its heads
+        // where they were shown at the cut, as pose memory holds them live
+        // (#596): commit that pose for the fixtures cut, in the order cut,
+        // and run the move on the rest. One cut on every fixture is over.
+        // Before any later move starts, which then picks up from there.
+        if !effect.cuts.is_empty() {
+            for cut in std::mem::take(&mut effect.cuts) {
+                let cut_fixtures = cut
+                    .fixtures
+                    .unwrap_or_else(|| effect.target_fixtures.clone());
+                if let Some(elapsed) = cut.elapsed {
+                    let poses = processing::move_poses_at(
+                        self.fixtures.as_map(),
+                        &self.focus_points,
+                        &effect,
+                        elapsed,
+                    );
+                    for (name, pose) in poses {
+                        if cut_fixtures.contains(&name) {
+                            self.goals.insert(name.clone(), pose);
+                            self.poses.insert(name, pose);
+                        }
+                    }
+                }
+                effect
+                    .target_fixtures
+                    .retain(|name| !cut_fixtures.contains(name));
+            }
+            self.cache.invalidate();
+            if effect.target_fixtures.is_empty() {
+                return Ok(());
+            }
+        }
+
         // A move that had already finished by the time it is started — a
         // seek past it, or an offline evaluation — is its destination: the
         // head is committed there and the effect never runs. Done here,

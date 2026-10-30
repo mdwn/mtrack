@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use crate::lighting::effects::EffectLayer;
+use crate::lighting::effects::{EffectLayer, MoveCut};
 use crate::lighting::{
     parser::{Cue, Effect, LayerCommand, LayerCommandType, LightShow},
     EffectInstance,
@@ -135,6 +135,9 @@ fn times_layer(cmd: &LayerCommand) -> bool {
 struct Settled {
     /// Moves that have arrived: they stay for their pose.
     arrived: HashSet<String>,
+    /// Moves cut short on every fixture before they arrived: they stay for
+    /// the pose they were cut at (see [`cut_move`]), but are over.
+    cut: HashSet<String>,
     /// When the latest effect taken out ended.
     ended: Duration,
     /// When each effect taken out ended, a move when it arrived.
@@ -158,8 +161,8 @@ fn settle_layer(
     let speed = state.map_or(1.0, |layer| layer.speed);
     let since = state.map_or(Duration::ZERO, |layer| layer.since);
     effects.retain(|id, (effect, _)| {
-        // An arrived move ended when it arrived.
-        if effect.layer != layer || settled.arrived.contains(id) {
+        // An arrived move ended when it arrived, and a cut one at its cut.
+        if effect.layer != layer || is_settled_move(id, settled) {
             return true;
         }
         let elapsed = own_elapsed(effect, layers, time);
@@ -182,6 +185,34 @@ fn settle_layer(
         }
         is_move(effect)
     });
+}
+
+/// Whether the replay keeps `id` only for the pose it left: a move that has
+/// arrived, or one cut short on every fixture.
+fn is_settled_move(id: &str, settled: &Settled) -> bool {
+    settled.arrived.contains(id) || settled.cut.contains(id)
+}
+
+/// Cuts a move that has not arrived short at `time`. Live, a head a clear
+/// or a stop takes a move off holds the pose it was last shown at (#596), so
+/// the cut goes on the move, at its own elapsed then, for the engine to
+/// commit that pose (see `EffectInstance::cuts`). The move stays for that
+/// pose, but ended at the cut.
+fn cut_move(
+    id: &str,
+    effect: &mut EffectInstance,
+    time: Duration,
+    layers: &HashMap<EffectLayer, ReplayLayer>,
+    settled: &mut Settled,
+) {
+    // One cut on its own cue's time never rendered, so moved nothing.
+    let elapsed = (effect.cue_time != Some(time)).then(|| own_elapsed(effect, layers, time));
+    effect.cuts.push(MoveCut {
+        elapsed,
+        fixtures: None,
+    });
+    settled.cut.insert(id.to_string());
+    settled.ended = settled.ended.max(time);
 }
 
 /// Moves a layer's freeze and speed on by a freeze, unfreeze or master at
@@ -244,7 +275,7 @@ fn replay_layer_command(
 /// Where a run through some cues leaves things, as the engine would have them
 /// live: the effects started and not yet cleared or stopped (their elapsed
 /// still to be worked out), the layers' freezes and speeds, the moves that
-/// have arrived, and the sequences stopped.
+/// have arrived or been cut short, and the sequences stopped.
 #[derive(Default)]
 struct Replay {
     result: TimelineUpdate,
@@ -255,7 +286,8 @@ struct Replay {
 
 /// Runs `cues`, in order, the way the engine runs them live: layer commands
 /// move the layers' freezes and speeds on, clears and stopped sequences take
-/// their effects out, and every effect cued goes in. The effects over by the
+/// their effects out (a move that has not arrived is cut short instead, see
+/// [`cut_move`]), and every effect cued goes in. The effects over by the
 /// last cue are still in; [`settle_layer`] takes them out.
 fn replay(cues: &[Cue]) -> Replay {
     let mut replay = Replay::default();
@@ -308,9 +340,15 @@ fn replay(cues: &[Cue]) -> Replay {
                             );
                             let mut cut = false;
                             result.effects_with_elapsed.retain(|id, (effect, _)| {
-                                let keep = effect.layer != layer || settled.arrived.contains(id);
-                                cut |= !keep;
-                                keep
+                                if effect.layer != layer || is_settled_move(id, settled) {
+                                    return true;
+                                }
+                                cut = true;
+                                if !is_move(effect) {
+                                    return false;
+                                }
+                                cut_move(id, effect, time, layers, settled);
+                                true
                             });
                             if cut {
                                 settled.ended = settled.ended.max(time);
@@ -335,13 +373,14 @@ fn replay(cues: &[Cue]) -> Replay {
                             if result
                                 .effects_with_elapsed
                                 .keys()
-                                .any(|id| !settled.arrived.contains(id))
+                                .any(|id| !is_settled_move(id, settled))
                             {
                                 settled.ended = settled.ended.max(time);
                             }
                             result.effects_with_elapsed.clear();
                             layers.clear();
                             settled.arrived.clear();
+                            settled.cut.clear();
                         }
                     }
                     _ => {
@@ -381,9 +420,15 @@ fn replay(cues: &[Cue]) -> Replay {
                 }
                 let mut cut = false;
                 result.effects_with_elapsed.retain(|id, (effect, _)| {
-                    let keep = !effect.is_from_sequence(seq_name) || settled.arrived.contains(id);
-                    cut |= !keep;
-                    keep
+                    if !effect.is_from_sequence(seq_name) || is_settled_move(id, settled) {
+                        return true;
+                    }
+                    cut = true;
+                    if !is_move(effect) {
+                        return false;
+                    }
+                    cut_move(id, effect, time, layers, settled);
+                    true
                 });
                 if cut {
                     settled.ended = settled.ended.max(time);
@@ -457,10 +502,10 @@ fn running_ends(cues: &[Cue]) -> Ends {
         );
     }
     let mut end = settled.ended;
-    let mut each = settled.ends;
+    let mut each = std::mem::take(&mut settled.ends);
     let mut open_ended = false;
     for (id, (effect, _)) in &result.effects_with_elapsed {
-        if settled.arrived.contains(id) {
+        if is_settled_move(id, &settled) {
             continue;
         }
         let state = layers.get(&effect.layer);
