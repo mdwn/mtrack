@@ -126,12 +126,23 @@ impl Player {
         }
         let (playlist, (from, song)) = self.move_playlist(|playlist| {
             let from = playlist.entry();
+            // A paused song an edit took off the list after the last entry
+            // has no entry to move on to: it stays paused, and current, as
+            // at the end of the list, rather than losing its pause and
+            // staying off the list (#576).
+            if from.is_none() && !playlist.can_move(direction == PlaylistDirection::Prev) {
+                return (from, None);
+            }
             let song = match direction {
                 PlaylistDirection::Next => playlist.next(),
                 PlaylistDirection::Prev => playlist.prev(),
             };
-            (from, song)
+            (from, Some(song))
         });
+        let Some(song) = song else {
+            info!("Nothing to go to {}: the paused song stays.", direction);
+            return playlist.current();
+        };
         let song = song?;
         self.clear_pending_start();
         self.emit_song_change(&song);

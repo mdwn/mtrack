@@ -4428,4 +4428,22 @@ mod test {
         );
         Ok(())
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn next_past_the_end_keeps_a_paused_song_off_the_list_paused(
+    ) -> Result<(), Box<dyn Error>> {
+        // #576: off the list after the last entry, Next had nowhere to go
+        // but cleared the pause anyway, and left B current off the list,
+        // neither paused nor on an entry.
+        let (player, dir) = player_looping_b().await?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let paused_at = player.pause().await?.expect("paused");
+        edit_playlist(&player, &dir, "songs:\n- A\n");
+        assert_eq!(player.get_playlist().entry(), None);
+        let next = player.next().await.map(|s| s.name().to_string());
+        assert_eq!(next.as_deref(), Some("B"), "nothing to go to");
+        assert_eq!(player.pending_start(), Some(paused_at), "still paused");
+        assert_eq!(current_name(&player).await, "B");
+        Ok(())
+    }
 }
