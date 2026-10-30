@@ -33,7 +33,7 @@ use tokio::{
     },
     task::JoinHandle,
 };
-use tracing::{debug, error, info, span, Level};
+use tracing::{error, info, span, Level};
 
 use crate::{config, player::Player, util};
 
@@ -302,8 +302,26 @@ impl Driver {
                             }
                             match rosc::decoder::decode_udp(&buf[..size]) {
                                 Ok((_, packet)) => {
-                                    if let Err(e) = rx_sender.send(packet).await {
-                                        error!(err = e.to_string(), "Error sending packet on channel.");
+                                    // Keep sending while waiting for room in the
+                                    // receive queue. The main loop drains that
+                                    // queue, but it can itself be waiting for room
+                                    // in the send queue to broadcast status, which
+                                    // only this task drains: waiting here alone
+                                    // would deadlock the driver during a burst.
+                                    let forward = rx_sender.send(packet);
+                                    tokio::pin!(forward);
+                                    loop {
+                                        select! {
+                                            result = &mut forward => {
+                                                if let Err(e) = result {
+                                                    error!(err = e.to_string(), "Error sending packet on channel.");
+                                                }
+                                                break;
+                                            }
+                                            Some(packet) = tx_receiver.recv() => {
+                                                Self::send_packet(&socket, &broadcast_addresses, &connected_clients, &packet).await;
+                                            }
+                                        }
                                     }
                                 }
                                 Err(e) => error!(err = e.to_string(), "Error decoding OSC message"),
@@ -314,28 +332,38 @@ impl Driver {
                 }
                 packet = tx_receiver.recv() => {
                     if let Some(packet) = packet {
-                        match rosc::encoder::encode(&packet) {
-                            Ok(buf) => {
-                                // Send to configured broadcast addresses
-                                for addr in broadcast_addresses.iter() {
-                                    if let Err(e) = socket.send_to(&buf, addr).await {
-                                        error!(err = e.to_string(), "Error sending UDP data.");
-                                    }
-                                }
-                                // Send to all connected clients
-                                let clients = connected_clients.lock().await;
-                                for addr in clients.iter() {
-                                    if let Err(e) = socket.send_to(&buf, addr).await {
-                                        error!(err = e.to_string(), "Error sending UDP data to client.");
-                                    }
-                                }
-                            }
-                            Err(e) => error!(err = e.to_string(), "Error encoding OSC message"),
-                        };
+                        Self::send_packet(&socket, &broadcast_addresses, &connected_clients, &packet).await;
                     }
                 }
             };
         }
+    }
+
+    /// Sends one packet to the broadcast addresses and every connected client.
+    async fn send_packet(
+        socket: &UdpSocket,
+        broadcast_addresses: &[SocketAddr],
+        connected_clients: &Mutex<HashSet<SocketAddr>>,
+        packet: &OscPacket,
+    ) {
+        match rosc::encoder::encode(packet) {
+            Ok(buf) => {
+                // Send to configured broadcast addresses
+                for addr in broadcast_addresses.iter() {
+                    if let Err(e) = socket.send_to(&buf, addr).await {
+                        error!(err = e.to_string(), "Error sending UDP data.");
+                    }
+                }
+                // Send to all connected clients
+                let clients = connected_clients.lock().await;
+                for addr in clients.iter() {
+                    if let Err(e) = socket.send_to(&buf, addr).await {
+                        error!(err = e.to_string(), "Error sending UDP data to client.");
+                    }
+                }
+            }
+            Err(e) => error!(err = e.to_string(), "Error encoding OSC message"),
+        };
     }
 
     /// Broadcasts various information to OSC clients.
@@ -414,20 +442,11 @@ impl Driver {
             }
         }
 
-        // Never wait for room in the send queue. The UDP task drains it, but
-        // that task can itself be waiting for room in the receive queue, which
-        // only drains once this loop gets back to handling packets: waiting
-        // here would deadlock the driver during a burst. Status is resent on
-        // every periodic broadcast, so a packet dropped now is replaced soon.
+        // The UDP task keeps draining the send queue even while it waits to
+        // hand the main loop an incoming packet, so waiting for room here
+        // cannot deadlock, and every packet of the broadcast goes out.
         for packet in packets {
-            match tx_sender.try_send(packet) {
-                Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    debug!("OSC send queue full, dropping the rest of this status broadcast");
-                    break;
-                }
-                Err(e) => return Err(e.into()),
-            }
+            tx_sender.send(packet).await?;
         }
 
         Ok(())
@@ -1972,6 +1991,71 @@ mod test {
         assert!(!handle.is_finished(), "OSC driver task ended");
 
         handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_broadcast_sends_every_track_gain_past_a_full_queue() -> Result<(), Box<dyn Error>>
+    {
+        // The driver's send queue holds 10. A rig with 8 tracks makes a
+        // broadcast of 4 status + timeline + 8 gains = 13 packets. Dropping
+        // what does not fit would lose the same tail on every broadcast, so a
+        // broadcast waits for the UDP task, here a late reader, to drain.
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let pl = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone())?,
+        );
+        playlists.insert("playlist".to_string(), pl);
+        let mappings: HashMap<String, Vec<u16>> = (1..=8)
+            .map(|i| (format!("trk{i}"), vec![i as u16]))
+            .collect();
+        let player = Player::new(
+            playlists,
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                mappings,
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let events = Arc::new(make_default_osc_events());
+        let (tx_sender, mut tx_receiver) = mpsc::channel::<OscPacket>(10);
+        for _ in 0..2 {
+            let drain = async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let mut buf = Vec::new();
+                while let Ok(Some(p)) =
+                    timeout(Duration::from_millis(200), tx_receiver.recv()).await
+                {
+                    buf.push(p);
+                }
+                buf
+            };
+            let (sent, buf) = tokio::join!(Driver::broadcast(&player, &events, &tx_sender), drain);
+            sent?;
+            let gains = buf
+                .iter()
+                .filter(|p| matches!(p, OscPacket::Message(m) if m.addr.contains("/track/")))
+                .count();
+            assert_eq!(
+                gains,
+                8,
+                "only {gains} of 8 track gains sent ({} packets)",
+                buf.len()
+            );
+        }
         Ok(())
     }
 
