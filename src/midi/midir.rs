@@ -2798,11 +2798,13 @@ mod test {
             ];
             let sent = &sender.sent;
             assert_eq!(sent.len(), expected.len(), "{sent:?}");
-            // Wall-clock playback on a loaded runner can start a few tens of
-            // milliseconds late; restarting on the MIDI's length instead
+            // Timed from the first note: wall-clock playback on a loaded
+            // runner (CI runs these under coverage) starts tens of
+            // milliseconds late. Restarting on the MIDI's length instead
             // would put the second and third passes 400 ms early.
+            let first = sent[0].0;
             for ((at, note), (want_at, want_note)) in sent.iter().zip(expected) {
-                assert!((at - want_at).abs() < 0.05, "{sent:?}");
+                assert!((at - first - want_at).abs() < 0.1, "{sent:?}");
                 assert_eq!(*note, want_note, "{sent:?}");
             }
         }
@@ -2863,8 +2865,20 @@ mod test {
 
             let notes: Vec<u8> = sender.sent.iter().map(|(_, note)| *note).collect();
             assert_eq!(notes, vec![60, 61, 60, 61, 60, 61], "{:?}", sender.sent);
-            assert!((sender.sent[2].0 - 0.3).abs() < 0.03, "{:?}", sender.sent);
-            assert!((sender.sent[4].0 - 0.6).abs() < 0.03, "{:?}", sender.sent);
+            // Timed from the first note, which a loaded runner starts late.
+            // Looping on the first play's end instead would put these 0.2 s
+            // late.
+            let first = sender.sent[0].0;
+            assert!(
+                (sender.sent[2].0 - first - 0.3).abs() < 0.08,
+                "{:?}",
+                sender.sent
+            );
+            assert!(
+                (sender.sent[4].0 - first - 0.6).abs() < 0.08,
+                "{:?}",
+                sender.sent
+            );
         }
 
         #[test]
