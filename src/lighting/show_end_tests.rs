@@ -70,9 +70,12 @@ fn live_end(source: &str, until_ms: u64) -> Option<Duration> {
     }
 }
 
-/// The show's end before holds counted: the lint's reckoning.
+/// The show's end before holds counted: the lint's reckoning, over the
+/// effects the timeline fires -- not those of a sequence stopped by their
+/// cue (#594).
 fn lint_end(source: &str) -> Duration {
-    let cues: Vec<_> = shows(source).into_iter().flat_map(|s| s.cues).collect();
+    let mut cues: Vec<_> = shows(source).into_iter().flat_map(|s| s.cues).collect();
+    cues.sort_by_key(|cue| cue.time);
     let clears: Vec<_> = cues
         .iter()
         .flat_map(|cue| {
@@ -90,35 +93,57 @@ fn lint_end(source: &str) -> Duration {
                 .map(move |n| (n.clone(), cue.time))
         })
         .collect();
-    // Every clear and stop scanned for each effect, as the lint did before
-    // it looked them up (#595): what the lookup must still come to.
-    cues.iter()
-        .flat_map(|cue| {
-            let (clears, stops) = (&clears, &stops);
-            cue.effects.iter().map(move |e| {
-                let layer = e
-                    .layer
-                    .unwrap_or(crate::lighting::effects::EffectLayer::Background);
-                let authored_end = cue.time + e.total_duration();
-                let cleared_at = clears
-                    .iter()
-                    .filter(|(cleared, at)| *at > cue.time && cleared.is_none_or(|l| l == layer))
-                    .map(|(_, at)| *at);
-                let stopped_at = stops
-                    .iter()
-                    .filter(|(name, at)| {
-                        Some(name.as_str()) == e.sequence_name.as_deref() && *at > cue.time
-                    })
-                    .map(|(_, at)| *at);
+    // The cues the timeline fires -- a sequence's passes after it was
+    // stopped never start (#594) -- each effect's end found by scanning
+    // every clear and stop, as the lint did before it looked them up (#595):
+    // what the timeline's reckoning must still come to.
+    let mut stopped = std::collections::HashSet::new();
+    let mut end = Duration::ZERO;
+    for cue in &cues {
+        for name in &cue.start_sequences {
+            stopped.remove(name);
+        }
+        for e in &cue.effects {
+            if e.sequence_name
+                .as_ref()
+                .is_some_and(|n| stopped.contains(n))
+            {
+                continue;
+            }
+            let layer = e
+                .layer
+                .unwrap_or(crate::lighting::effects::EffectLayer::Background);
+            let authored_end = cue.time + e.total_duration();
+            let cleared_at = clears
+                .iter()
+                .filter(|(cleared, at)| *at > cue.time && cleared.is_none_or(|l| l == layer))
+                .map(|(_, at)| *at);
+            let stopped_at = stops
+                .iter()
+                .filter(|(name, at)| {
+                    Some(name.as_str()) == e.sequence_name.as_deref() && *at > cue.time
+                })
+                .map(|(_, at)| *at);
+            end = end.max(
                 cleared_at
                     .chain(stopped_at)
                     .filter(|at| *at < authored_end)
                     .min()
-                    .unwrap_or(authored_end)
-            })
-        })
-        .max()
-        .unwrap_or(Duration::ZERO)
+                    .unwrap_or(authored_end),
+            );
+        }
+        // A stop at a pass's own boundary ends that pass only.
+        for name in &cue.stop_sequences {
+            if !cue
+                .effects
+                .iter()
+                .any(|e| e.sequence_name.as_ref() == Some(name))
+            {
+                stopped.insert(name.clone());
+            }
+        }
+    }
+    end
 }
 
 fn end(source: &str) -> Duration {
@@ -136,6 +161,23 @@ fn show_end_full_clear_after_effect_over_with_unrelated_freeze() {
     let live = live_end(show, 12000);
     assert_eq!(live, Some(Duration::from_secs(2)));
     assert_eq!(end(show), Duration::from_secs(2));
+}
+
+#[test]
+fn show_end_skips_the_passes_of_a_looping_sequence_once_stopped() {
+    // #594: `loop: loop` is 10,000 passes, and the show's end counted every
+    // one of them after the stop at 5 s, over 10,000 s, rather than the bed.
+    let show = "sequence \"v\" {\n    @0.000\n    b: static green: 100%, duration: 1s\n}\n\n\
+        show \"s\" {\n    @0.000\n    a: static red: 100%, duration: 20s\n    \
+        sequence \"v\", loop: loop\n    @5.500\n    stop sequence \"v\"\n}\n";
+    assert_eq!(end(show), Duration::from_secs(20));
+    // With a hold, too: the replay skips them already, but the end it was
+    // written with is the floor of a look held for good.
+    let held = show.replace(
+        "    @5.500\n",
+        "    @5.500\n    freeze(layer: background)\n",
+    );
+    assert_eq!(end(&held), Duration::from_secs(20));
 }
 
 struct Rng(u64);
@@ -205,10 +247,9 @@ fn gen_show(rng: &mut Rng, holds: bool) -> String {
     s
 }
 
-/// A show without holds keeps the lint's end exactly, as before them; one
-/// with holds ends within a frame of a played-through engine going idle.
-/// (Without holds the lint's end can run past the live one: it counts a
-/// stopped sequence's later cues, as it always has -- #594.)
+/// A show without holds keeps the lint's end exactly, as before them, but
+/// for the passes of a stopped sequence, which never start; one with holds
+/// ends within a frame of a played-through engine going idle.
 fn fails(src: &str, until_ms: u64, hold_free: bool) -> Option<String> {
     let parsed = parse_light_shows(src);
     if parsed.is_err() {

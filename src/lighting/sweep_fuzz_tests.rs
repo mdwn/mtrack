@@ -16,8 +16,7 @@
 //! sequences, cued off frame boundaries -- played through against a seek,
 //! `evaluate_show` and the show's end. Ignored by default: run with
 //! `--ignored` in release; `N`, `SEED` and the generator switches (`NEAR`,
-//! `CLEARS`, `MOVES`, `HOLDS`, `SEQS`) narrow it. Known gaps: #594, #596,
-//! #599.
+//! `CLEARS`, `MOVES`, `HOLDS`, `SEQS`) narrow it. Known gaps: #596, #599.
 
 use super::*;
 use crate::lighting::parser::{parse_light_shows, LayerCommandType};

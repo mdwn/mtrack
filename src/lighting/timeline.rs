@@ -278,18 +278,9 @@ fn replay(cues: &[Cue]) -> Replay {
         // after it. The effects start below, after the group's stops.
         let mut fired = Vec::new();
         for cue in group {
-            for seq_name in &cue.start_sequences {
-                stopped_sequences.remove(seq_name);
-            }
-            for effect in &cue.effects {
-                if let Some(ref seq_name) = effect.sequence_name {
-                    if stopped_sequences.contains(seq_name) {
-                        continue;
-                    }
-                }
+            for effect in fire_cue(stopped_sequences, cue, result) {
                 fired.push(LightingTimeline::create_effect_instance(effect, cue.time));
             }
-            process_stop_sequences(stopped_sequences, cue, result);
         }
 
         for cue in group {
@@ -569,28 +560,6 @@ impl LightingTimeline {
 
     /// Creates a new lighting timeline from DSL cues (for testing)
     pub(crate) fn new_with_cues(cues: Vec<Cue>) -> Self {
-        // The last effect's real end: a `clear` or a `stop sequence` cuts
-        // an effect short, and a show that ends on one is over then, not
-        // when the cleared bed would have run out. Same reckoning as the
-        // lint's; a freeze or the speed master then carries it on (below),
-        // which the lint does not know.
-        let cuts = crate::lighting::lint::Cuts::new(&cues);
-        let show_end = cues
-            .iter()
-            .flat_map(|cue| {
-                let cuts = &cuts;
-                cue.effects.iter().map(move |e| {
-                    cuts.effective_end(
-                        cue.time + e.total_duration(),
-                        cue.time,
-                        e.layer
-                            .unwrap_or(crate::lighting::effects::EffectLayer::Background),
-                        e.sequence_name.as_deref(),
-                    )
-                })
-            })
-            .max()
-            .unwrap_or(Duration::ZERO);
         let mut timeline = Self {
             cues,
             current_time: Duration::ZERO,
@@ -600,11 +569,37 @@ impl LightingTimeline {
             tempo_map: None,
             stopped_sequences: HashSet::new(),
             epoch: next_epoch(),
-            show_end,
+            show_end: Duration::ZERO,
             end_cap: None,
             open_ended: false,
         };
         timeline.sort_cues();
+        let cues = &timeline.cues;
+        // The last effect's real end: a `clear` or a `stop sequence` cuts
+        // an effect short, and a show that ends on one is over then, not
+        // when the cleared bed would have run out. Same reckoning as the
+        // lint's, but over the effects the timeline fires: a sequence's
+        // passes cued after it was stopped never start, and a looping one
+        // stopped part way otherwise ran the end out to its 10,000th pass
+        // (#594). A freeze or the speed master then carries it on (below),
+        // which the lint does not know.
+        let cuts = crate::lighting::lint::Cuts::new(cues);
+        let mut stopped_sequences = HashSet::new();
+        let mut fired = TimelineUpdate::default();
+        for cue in cues {
+            for e in fire_cue(&mut stopped_sequences, cue, &mut fired) {
+                timeline.show_end = timeline.show_end.max(
+                    cuts.effective_end(
+                        cue.time + e.total_duration(),
+                        cue.time,
+                        e.layer
+                            .unwrap_or(crate::lighting::effects::EffectLayer::Background),
+                        e.sequence_name.as_deref(),
+                    ),
+                );
+            }
+        }
+
         // A freeze or the speed master holds an effect past its authored
         // end, and the song's time stops once the show is over: an effect
         // still running then never ends (#590). So the show runs on until
@@ -830,18 +825,7 @@ impl LightingTimeline {
             let cue = &self.cues[self.next_cue_index];
 
             if cue.time <= song_time {
-                // Process start_sequences first: clear stopped status for new invocations
-                for seq_name in &cue.start_sequences {
-                    self.stopped_sequences.remove(seq_name);
-                }
-
-                // Process effects, skipping those from stopped sequences
-                for effect in &cue.effects {
-                    if let Some(ref seq_name) = effect.sequence_name {
-                        if self.stopped_sequences.contains(seq_name) {
-                            continue;
-                        }
-                    }
+                for effect in fire_cue(&mut self.stopped_sequences, cue, &mut result) {
                     let effect_instance = Self::create_effect_instance(effect, cue.time);
                     result.effects.push(effect_instance);
                 }
@@ -852,8 +836,6 @@ impl LightingTimeline {
                 result
                     .layer_command_times
                     .extend(cue.layer_commands.iter().map(|_| cue.time));
-
-                process_stop_sequences(&mut self.stopped_sequences, cue, &mut result);
                 result
                     .stop_sequence_times
                     .resize(result.stop_sequences.len(), cue.time);
@@ -943,14 +925,30 @@ impl LightingTimeline {
     }
 }
 
-/// Process stop_sequences for a cue: iteration-boundary stops (where the cue
-/// also starts effects from the same sequence) only go to the engine, while
-/// explicit stops also suppress future cues from that sequence.
-fn process_stop_sequences(
+/// Fires `cue` as the timeline does live, and gives the effects it starts:
+/// its sequence starts clear their stopped status first, an effect from a
+/// sequence stopped by then is skipped, and its stops then count for the
+/// cues after it. An iteration-boundary stop (where the cue also starts
+/// effects from the same sequence) only goes to the engine, while an
+/// explicit stop also suppresses future cues from that sequence.
+fn fire_cue<'a>(
     stopped_sequences: &mut HashSet<String>,
-    cue: &crate::lighting::parser::Cue,
+    cue: &'a Cue,
     result: &mut TimelineUpdate,
-) {
+) -> Vec<&'a Effect> {
+    for seq_name in &cue.start_sequences {
+        stopped_sequences.remove(seq_name);
+    }
+    let fired = cue
+        .effects
+        .iter()
+        .filter(|effect| {
+            effect
+                .sequence_name
+                .as_ref()
+                .is_none_or(|name| !stopped_sequences.contains(name))
+        })
+        .collect();
     let cue_sequence_names: HashSet<&String> = cue
         .effects
         .iter()
@@ -964,6 +962,7 @@ fn process_stop_sequences(
     result
         .stop_sequences
         .extend(cue.stop_sequences.iter().cloned());
+    fired
 }
 
 #[cfg(test)]

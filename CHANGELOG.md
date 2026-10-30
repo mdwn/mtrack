@@ -108,6 +108,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A stopped looping sequence no longer stretches the show's end (#594)**: the show's end counted
+  every pass of a sequence, even those cued after a `stop sequence` ended it, which never play. A
+  `loop: loop` sequence stopped part way put the end at its 10,000th pass, so a song with no audio
+  ran for hours (its length, seek bound and progress bar), and an ambient show waited that long to
+  loop. The end now counts only the passes that play.
 - **Cues less than a frame apart apply in turn (#592)**: cues that landed in the same frame were
   applied all their layer commands first, so a `clear` or `stop sequence` cued a few milliseconds
   after an effect ran before it, and the effect stayed on, though a seek to the same point had it
