@@ -35,23 +35,11 @@ use tokio::{
 };
 use tracing::{error, info, span, Level};
 
+use super::AbortOnDrop;
 use crate::{config, player::Player, util};
 
 /// This is the all hosts multicast address.
 const BROADCAST_SLEEP_DURATION: Duration = Duration::from_millis(500);
-
-/// Aborts a child task when the owning controller task is cancelled.
-///
-/// Tokio does not automatically cancel tasks spawned by a parent task. Without
-/// this guard, restarting controllers leaves the old UDP task alive and holding
-/// the OSC port while its channel receiver has already been dropped.
-struct AbortOnDrop<T>(JoinHandle<T>);
-
-impl<T> Drop for AbortOnDrop<T> {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
 
 /// Player status strings.
 const STATUS_STOPPED: &str = "Stopped";

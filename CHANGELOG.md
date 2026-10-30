@@ -118,7 +118,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running, a web UI config save included; MIDI controllers, whose song-change notifiers go
   together, restart together, and also whenever a reload reopens the MIDI device, so they
   listen on the new one. "Restart controllers" still restarts them all, and a MIDI controller
-  restarted on the device it had now hears it again.
+  restarted on the device it had now hears it again. A changed controller waits for the one it
+  replaces to let go of its port, and one that cannot bind its port shows the error in the
+  status rather than "running", and is retried on the next reload.
 - **The latest move takes a mover, whatever its layer (#599)**: two moves on different layers
   over one head blended by layer, and where the head came to rest depended on how you got there:
   played through, after a seek and in `evaluate_show` it could land on three different poses. A

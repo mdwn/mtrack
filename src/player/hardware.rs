@@ -872,11 +872,11 @@ impl Player {
         // its devices -- say, from "restart controllers" during a reload --
         // leave the MIDI driver with no device, and the init round's own
         // call then heals it.
-        let failed: Vec<&str> = controller
+        let failed: Vec<String> = controller
             .statuses()
-            .iter()
+            .into_iter()
             .filter(|s| s.status == "error")
-            .map(|s| s.kind.as_str())
+            .map(|s| s.kind)
             .collect();
         if !failed.is_empty() {
             warn!(
@@ -919,7 +919,7 @@ impl Player {
     /// Returns the status of all active controllers.
     pub fn controller_statuses(&self) -> Vec<crate::controller::ControllerStatus> {
         match self.controller.lock().as_ref() {
-            Some(controller) => controller.statuses().to_vec(),
+            Some(controller) => controller.statuses(),
             None => vec![],
         }
     }

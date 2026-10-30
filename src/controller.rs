@@ -17,6 +17,7 @@ use std::error::Error;
 use std::io;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 pub(crate) mod grpc;
 mod mcp;
@@ -25,6 +26,20 @@ mod osc;
 
 pub trait Driver: Send + Sync + 'static {
     fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>>;
+}
+
+/// Aborts a child task when the owning controller task is cancelled.
+///
+/// Tokio does not automatically cancel tasks spawned by a parent task. Without
+/// this guard, restarting controllers leaves the old UDP task alive and holding
+/// the OSC port while its channel receiver has already been dropped, and a
+/// controller shut down leaves its driver's task running.
+struct AbortOnDrop<T>(JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Status of a single controller.
@@ -59,6 +74,87 @@ struct Entry {
     midi_device: Option<Arc<dyn crate::midi::Device>>,
     /// Its task, when it started.
     handle: Option<JoinHandle<Result<(), io::Error>>>,
+    /// Stops its task, which ends once the driver's own task is gone.
+    stop: CancellationToken,
+    /// Why its task ended, when it failed after it started: a listener
+    /// binds its port on the task, not before it.
+    failure: Arc<parking_lot::Mutex<Option<String>>>,
+}
+
+impl Entry {
+    /// Runs `driver` on a task of its own, once `after` is cancelled: the
+    /// controllers stopped before it may still hold the port it binds.
+    fn run(
+        driver: Arc<dyn Driver>,
+        after: Option<CancellationToken>,
+        fingerprint: Option<String>,
+        midi: bool,
+        midi_device: Option<Arc<dyn crate::midi::Device>>,
+    ) -> Entry {
+        let stop = CancellationToken::new();
+        let failure = Arc::new(parking_lot::Mutex::new(None));
+        let handle = {
+            let stop = stop.clone();
+            let failure = failure.clone();
+            tokio::spawn(async move {
+                if let Some(after) = after {
+                    tokio::select! {
+                        _ = after.cancelled() => {}
+                        _ = stop.cancelled() => return Ok(()),
+                    }
+                }
+                let mut task = AbortOnDrop(driver.monitor_events());
+                let result = tokio::select! {
+                    result = &mut task.0 => result,
+                    _ = stop.cancelled() => {
+                        // Aborted and waited out, so that this task's end
+                        // means the driver's listener is gone too.
+                        task.0.abort();
+                        let _ = (&mut task.0).await;
+                        return Ok(());
+                    }
+                };
+                let result = result.unwrap_or_else(|e| Err(io::Error::other(e)));
+                if let Err(e) = &result {
+                    tracing::warn!(error = %e, "Controller stopped with an error");
+                    *failure.lock() = Some(e.to_string());
+                }
+                result
+            })
+        };
+        Entry {
+            fingerprint,
+            midi,
+            midi_device,
+            handle: Some(handle),
+            stop,
+            failure,
+        }
+    }
+
+    /// Stops the tasks of `entries`. Returns, if any had one, a token
+    /// cancelled once they are all gone, for those starting to wait on.
+    fn stop_all(entries: Vec<Entry>) -> Option<CancellationToken> {
+        let handles: Vec<_> = entries
+            .into_iter()
+            .filter_map(|entry| {
+                entry.stop.cancel();
+                entry.handle
+            })
+            .collect();
+        if handles.is_empty() {
+            return None;
+        }
+        let stopped = CancellationToken::new();
+        let done = stopped.clone();
+        tokio::spawn(async move {
+            for handle in handles {
+                let _ = handle.await;
+            }
+            done.cancel();
+        });
+        Some(stopped)
+    }
 }
 
 impl Controller {
@@ -71,7 +167,7 @@ impl Controller {
             statuses: Vec::new(),
         };
         for config in config {
-            controller.start(config, player.clone());
+            controller.start(config, player.clone(), None);
         }
         controller
     }
@@ -82,14 +178,14 @@ impl Controller {
     /// gRPC is answered on the transport of a controller that is running:
     /// restarting them all for a change to another dropped the reply (#578).
     ///
-    /// A controller that failed to start is started again, as nothing else
-    /// would retry it. So is a MIDI controller started on another MIDI
-    /// device than the player's: a hardware reload opens the device anew,
-    /// and one kept for its unchanged config went on listening to the old
-    /// one, deaf to the pedalboard. MIDI controllers' song-change notifiers
-    /// can only be dropped all together, so if any MIDI controller starts or
-    /// stops, they all restart. `force` restarts every one. Returns whether
-    /// any started or stopped.
+    /// A controller that failed to start, or failed since, is started again,
+    /// as nothing else would retry it. So is a MIDI controller started on
+    /// another MIDI device than the player's: a hardware reload opens the
+    /// device anew, and one kept for its unchanged config went on listening
+    /// to the old one, deaf to the pedalboard. MIDI controllers' song-change
+    /// notifiers can only be dropped all together, so if any MIDI controller
+    /// starts or stops, they all restart. `force` restarts every one.
+    /// Returns whether any started or stopped.
     pub fn update(
         &mut self,
         config: Vec<config::Controller>,
@@ -102,6 +198,7 @@ impl Controller {
                 (Some(started), Some(current)) if Arc::ptr_eq(started, current))
         };
         // Which running controller, if any, each one in the config keeps.
+        let statuses = self.statuses();
         let mut taken = vec![false; self.entries.len()];
         let mut kept: Vec<Option<usize>> = config
             .iter()
@@ -112,7 +209,7 @@ impl Controller {
                 }
                 let found = (0..self.entries.len()).find(|&i| {
                     !taken[i]
-                        && self.statuses[i].status == "running"
+                        && statuses[i].status == "running"
                         && self.entries[i].fingerprint == fingerprint
                         && (!self.entries[i].midi || on_midi_device(&self.entries[i]))
                 })?;
@@ -141,23 +238,25 @@ impl Controller {
         }
 
         // Those going stop before any starts, so a changed one can bind the
-        // port it had.
+        // port it had. A stop takes effect on the stopped task's worker,
+        // later: the controllers starting wait for those stopping to be gone,
+        // or one would find its old port still bound and fail.
         let mut old: Vec<Option<(Entry, ControllerStatus)>> = std::mem::take(&mut self.entries)
             .into_iter()
             .zip(std::mem::take(&mut self.statuses))
             .map(Some)
             .collect();
+        let mut stopping = Vec::new();
         for (i, slot) in old.iter_mut().enumerate() {
             if kept.contains(&Some(i)) {
                 continue;
             }
             if let Some((entry, status)) = slot.take() {
                 tracing::info!(kind = %status.kind, "Stopping controller");
-                if let Some(handle) = entry.handle {
-                    handle.abort();
-                }
+                stopping.push(entry);
             }
         }
+        let stopped = Entry::stop_all(stopping);
         if midi_changes {
             player.clear_song_change_notifiers();
         }
@@ -167,14 +266,20 @@ impl Controller {
                     self.entries.push(entry);
                     self.statuses.push(status);
                 }
-                None => self.start(config, player.clone()),
+                None => self.start(config, player.clone(), stopped.clone()),
             }
         }
         true
     }
 
-    /// Starts one controller, recording it whether it started or not.
-    fn start(&mut self, config: config::Controller, player: Arc<Player>) {
+    /// Starts one controller, recording it whether it started or not. Its
+    /// task runs the driver once `after` is cancelled.
+    fn start(
+        &mut self,
+        config: config::Controller,
+        player: Arc<Player>,
+        after: Option<CancellationToken>,
+    ) {
         let fingerprint = crate::util::to_yaml_string(&config).ok();
         let midi = matches!(config, config::Controller::Midi(_));
         // Read before the driver reads it: should a reload swap the device in
@@ -205,9 +310,9 @@ impl Controller {
             }
             _ => Err("unexpected controller type".into()),
         };
-        let (handle, status) = match result {
+        let (entry, status) = match result {
             Ok(driver) => (
-                Some(driver.monitor_events()),
+                Entry::run(driver, after, fingerprint, midi, midi_device),
                 ControllerStatus {
                     kind,
                     status: "running".to_string(),
@@ -218,7 +323,14 @@ impl Controller {
             Err(e) => {
                 tracing::warn!(kind = %kind, error = %e, "Controller failed to start");
                 (
-                    None,
+                    Entry {
+                        fingerprint,
+                        midi,
+                        midi_device,
+                        handle: None,
+                        stop: CancellationToken::new(),
+                        failure: Arc::new(parking_lot::Mutex::new(None)),
+                    },
                     ControllerStatus {
                         kind,
                         status: "error".to_string(),
@@ -228,12 +340,7 @@ impl Controller {
                 )
             }
         };
-        self.entries.push(Entry {
-            fingerprint,
-            midi,
-            midi_device,
-            handle,
-        });
+        self.entries.push(entry);
         self.statuses.push(status);
     }
 
@@ -242,12 +349,7 @@ impl Controller {
         Controller {
             entries: drivers
                 .iter()
-                .map(|driver| Entry {
-                    fingerprint: None,
-                    midi: false,
-                    midi_device: None,
-                    handle: Some(driver.monitor_events()),
-                })
+                .map(|driver| Entry::run(driver.clone(), None, None, false, None))
                 .collect(),
             statuses: drivers
                 .iter()
@@ -261,9 +363,22 @@ impl Controller {
         }
     }
 
-    /// Returns the status of all controllers.
-    pub fn statuses(&self) -> &[ControllerStatus] {
-        &self.statuses
+    /// Returns the status of all controllers. One that started and then
+    /// failed, a listener that could not bind its port say, reads as the
+    /// error it failed with.
+    pub fn statuses(&self) -> Vec<ControllerStatus> {
+        self.entries
+            .iter()
+            .zip(&self.statuses)
+            .map(|(entry, status)| match entry.failure.lock().clone() {
+                Some(error) => ControllerStatus {
+                    status: "error".to_string(),
+                    error: Some(error),
+                    ..status.clone()
+                },
+                None => status.clone(),
+            })
+            .collect()
     }
 
     /// The tasks of the controllers that started, for a test to tell one
@@ -511,6 +626,157 @@ mod test {
         assert!(controller.update(vec![mcp()], player.clone(), true));
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert!(mcp_task.is_finished(), "a forced restart left it running");
+        controller.shutdown();
+        Ok(())
+    }
+
+    /// A player with no controllers of its own, for tests that run some.
+    async fn make_controllerless_player() -> Result<Arc<Player>, Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let mut playlists = HashMap::new();
+        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
+        let player = Player::new(
+            playlists,
+            "all_songs".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        Ok(player)
+    }
+
+    /// A changed controller was stopped before its replacement started, but
+    /// a stop is an abort, which drops the old listener later, on its
+    /// worker: the replacement bound the same port at once, and lost the
+    /// race for it. It now starts once the old one is gone.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_changed_controller_binds_the_port_it_had() -> Result<(), Box<dyn Error>> {
+        let player = make_controllerless_player().await?;
+        let port = std::net::TcpListener::bind("127.0.0.1:0")?
+            .local_addr()?
+            .port();
+        let mcp = |token: &str| {
+            config::Controller::Mcp(config::McpController::with_bearer_token(port, token))
+        };
+        let mut failures = 0;
+        for round in 0..10 {
+            let mut controller = super::Controller::new(vec![mcp("old")], player.clone());
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // A new token: the same port, a changed config.
+            assert!(controller.update(vec![mcp(&format!("new{round}"))], player.clone(), false));
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if controller.entries[0]
+                .handle
+                .as_ref()
+                .expect("started")
+                .is_finished()
+            {
+                failures += 1;
+            }
+            controller.shutdown();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            failures, 0,
+            "the restarted controller lost the race for its own port {failures}/10 times"
+        );
+        Ok(())
+    }
+
+    /// A driver whose listener is slow to let go of its port, and which
+    /// notes a second listener started while the first still holds it.
+    struct SlowToRelease {
+        held: Arc<std::sync::atomic::AtomicBool>,
+        overlapped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Driver for SlowToRelease {
+        fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>> {
+            use std::sync::atomic::Ordering;
+
+            struct Release(Arc<std::sync::atomic::AtomicBool>);
+            impl Drop for Release {
+                fn drop(&mut self) {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    self.0.store(false, Ordering::SeqCst);
+                }
+            }
+
+            if self.held.swap(true, Ordering::SeqCst) {
+                self.overlapped.store(true, Ordering::SeqCst);
+            }
+            let release = Release(self.held.clone());
+            tokio::spawn(async move {
+                let _release = release;
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+        }
+    }
+
+    /// A controller restarted starts once the one it replaces is gone, not
+    /// while it may still hold the port they share.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_restarted_controller_waits_for_the_old_one_to_let_go() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let overlapped = Arc::new(AtomicBool::new(false));
+        let driver = Arc::new(SlowToRelease {
+            held: Arc::new(AtomicBool::new(false)),
+            overlapped: overlapped.clone(),
+        });
+        let old = super::Entry::run(driver.clone(), None, None, false, None);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let stopped = super::Entry::stop_all(vec![old]);
+        let new = super::Entry::run(driver.clone(), stopped, None, false, None);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !overlapped.load(Ordering::SeqCst),
+            "the new listener started while the old one still held the port"
+        );
+        assert!(
+            driver.held.load(Ordering::SeqCst),
+            "the new one never started"
+        );
+        super::Entry::stop_all(vec![new]);
+    }
+
+    /// A controller whose listener could not bind its port, which happens on
+    /// its task after it has started, read as running, and so was never
+    /// retried. It reads as the error, and the next update starts it again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_controller_that_cannot_bind_its_port_is_retried() -> Result<(), Box<dyn Error>> {
+        let player = make_controllerless_player().await?;
+        let taken = std::net::TcpListener::bind("0.0.0.0:0")?;
+        let port = taken.local_addr()?.port();
+        let grpc = || config::Controller::Grpc(config::GrpcController::new(port));
+
+        let mut controller = super::Controller::new(vec![grpc()], player.clone());
+        crate::testutil::eventually(
+            || controller.statuses()[0].status == "error",
+            "a controller that could not bind its port reads as running",
+        );
+        assert!(controller.statuses()[0].error.is_some());
+
+        drop(taken);
+        assert!(
+            controller.update(vec![grpc()], player.clone(), false),
+            "the failed controller was not retried"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(controller.statuses()[0].status, "running");
+        assert!(!controller.entries[0]
+            .handle
+            .as_ref()
+            .expect("started")
+            .is_finished());
         controller.shutdown();
         Ok(())
     }
