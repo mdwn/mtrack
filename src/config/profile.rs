@@ -354,6 +354,19 @@ impl Profile {
                 errors.extend(dmx_errors);
             }
         }
+        // A profile has one MIDI device, and a MIDI controller watches it
+        // whole: a second could only fail to.
+        let midi_controllers = self
+            .controllers
+            .iter()
+            .filter(|c| matches!(c, Controller::Midi(_)))
+            .count();
+        if midi_controllers > 1 {
+            errors.push(format!(
+                "controllers: {midi_controllers} MIDI controllers, but only one can watch the \
+                 MIDI device; put their events in one"
+            ));
+        }
 
         if errors.is_empty() {
             Ok(())
@@ -551,6 +564,32 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.contains("audio device")),
             "expected audio device error, got {errors:?}"
+        );
+    }
+
+    /// Only one MIDI controller can watch the profile's MIDI device: a
+    /// second was accepted, and failed to on every reload.
+    #[test]
+    fn a_second_midi_controller_fails_validation() {
+        let midi = || {
+            Controller::Midi(crate::config::MidiController::new(
+                super::super::midi::note_on(16, 0, 127),
+                super::super::midi::note_on(16, 1, 127),
+                super::super::midi::note_on(16, 2, 127),
+                super::super::midi::note_on(16, 3, 127),
+                super::super::midi::note_on(16, 4, 127),
+                super::super::midi::note_on(16, 5, 127),
+            ))
+        };
+        let mut profile = Profile::new(None, None, None, None);
+        profile.set_controllers(vec![midi()]);
+        assert!(profile.validate().is_ok());
+
+        profile.set_controllers(vec![midi(), midi()]);
+        let errors = profile.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("only one can watch")),
+            "expected a duplicate MIDI controller error, got {errors:?}"
         );
     }
 

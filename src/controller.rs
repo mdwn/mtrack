@@ -77,6 +77,10 @@ struct Entry {
     /// Whether it is a MIDI controller, which registers song-change
     /// notifiers on the player.
     midi: bool,
+    /// Whether it is a MIDI controller refused for coming after another:
+    /// the one MIDI device can be watched by only one. It registers
+    /// nothing, and does not count as a MIDI controller.
+    duplicate: bool,
     /// The player's MIDI device when it started, which a MIDI controller
     /// listens on. A hardware reload opens a new one.
     midi_device: Option<Arc<dyn crate::midi::Device>>,
@@ -151,6 +155,7 @@ impl Entry {
         Entry {
             fingerprint,
             midi,
+            duplicate: false,
             midi_device,
             handle: Some(handle),
             stop,
@@ -183,6 +188,22 @@ impl Entry {
     }
 }
 
+/// Whether each of `config` is a MIDI controller after the first. A MIDI
+/// controller watches the player's one MIDI device, which only one can: the
+/// watch of any other fails.
+fn midi_duplicates(config: &[config::Controller]) -> Vec<bool> {
+    let mut seen = false;
+    config
+        .iter()
+        .map(|c| {
+            let midi = matches!(c, config::Controller::Midi(_));
+            let duplicate = midi && seen;
+            seen |= midi;
+            duplicate
+        })
+        .collect()
+}
+
 impl Controller {
     /// Creates a new controller with the given config. Individual controller
     /// failures are logged and tracked but do not prevent other controllers
@@ -192,8 +213,9 @@ impl Controller {
             entries: Vec::new(),
             statuses: Vec::new(),
         };
-        for config in config {
-            controller.start(config, player.clone(), None);
+        let duplicates = midi_duplicates(&config);
+        for (config, duplicate) in config.into_iter().zip(duplicates) {
+            controller.start(config, player.clone(), None, duplicate);
         }
         controller
     }
@@ -211,6 +233,8 @@ impl Controller {
     /// to the old one, deaf to the pedalboard. MIDI controllers' song-change
     /// notifiers can only be dropped all together, so if any MIDI controller
     /// starts or stops, they all restart. `force` restarts every one.
+    /// A MIDI controller after the first is refused, and stays refused
+    /// without a retry: retrying it restarted the first one each time.
     /// Returns whether any started or stopped.
     pub fn update(
         &mut self,
@@ -225,36 +249,47 @@ impl Controller {
         };
         // Which running controller, if any, each one in the config keeps.
         let statuses = self.statuses();
+        let duplicates = midi_duplicates(&config);
         let mut taken = vec![false; self.entries.len()];
         let mut kept: Vec<Option<usize>> = config
             .iter()
-            .map(|c| {
+            .zip(&duplicates)
+            .map(|(c, &duplicate)| {
                 let fingerprint = crate::util::to_yaml_string(c).ok();
                 if force || fingerprint.is_none() {
                     return None;
                 }
                 let found = (0..self.entries.len()).find(|&i| {
+                    let entry = &self.entries[i];
                     !taken[i]
-                        && statuses[i].status == "running"
-                        && self.entries[i].fingerprint == fingerprint
-                        && (!self.entries[i].midi || on_midi_device(&self.entries[i]))
+                        && entry.fingerprint == fingerprint
+                        && if duplicate {
+                            entry.duplicate
+                        } else {
+                            statuses[i].status == "running"
+                                && (!entry.midi || on_midi_device(entry))
+                        }
                 })?;
                 taken[found] = true;
                 Some(found)
             })
             .collect();
+        let is_midi = |(c, duplicate): (&config::Controller, &bool)| {
+            matches!(c, config::Controller::Midi(_)) && !duplicate
+        };
         let midi_changes = config
             .iter()
+            .zip(&duplicates)
             .zip(&kept)
-            .any(|(c, k)| k.is_none() && matches!(c, config::Controller::Midi(_)))
+            .any(|(c, k)| k.is_none() && is_midi(c))
             || self
                 .entries
                 .iter()
                 .zip(&taken)
                 .any(|(entry, taken)| entry.midi && !taken);
         if midi_changes {
-            for (c, k) in config.iter().zip(kept.iter_mut()) {
-                if matches!(c, config::Controller::Midi(_)) {
+            for (c, k) in config.iter().zip(&duplicates).zip(kept.iter_mut()) {
+                if is_midi(c) {
                     *k = None;
                 }
             }
@@ -286,28 +321,30 @@ impl Controller {
         if midi_changes {
             player.clear_song_change_notifiers();
         }
-        for (config, kept) in config.into_iter().zip(kept) {
+        for ((config, duplicate), kept) in config.into_iter().zip(duplicates).zip(kept) {
             match kept.and_then(|i| old[i].take()) {
                 Some((entry, status)) => {
                     self.entries.push(entry);
                     self.statuses.push(status);
                 }
-                None => self.start(config, player.clone(), stopped.clone()),
+                None => self.start(config, player.clone(), stopped.clone(), duplicate),
             }
         }
         true
     }
 
     /// Starts one controller, recording it whether it started or not. Its
-    /// task runs the driver once `after` is cancelled.
+    /// task runs the driver once `after` is cancelled. A `duplicate` MIDI
+    /// controller is refused before its driver registers anything.
     fn start(
         &mut self,
         config: config::Controller,
         player: Arc<Player>,
         after: Option<CancellationToken>,
+        duplicate: bool,
     ) {
         let fingerprint = crate::util::to_yaml_string(&config).ok();
-        let midi = matches!(config, config::Controller::Midi(_));
+        let midi = matches!(config, config::Controller::Midi(_)) && !duplicate;
         // Read before the driver reads it: should a reload swap the device in
         // between, this names the older one, and the next update restarts it.
         let midi_device = if midi { player.midi_device() } else { None };
@@ -322,6 +359,11 @@ impl Controller {
             _ => ("unknown".to_string(), None),
         };
         let result: Result<Arc<dyn Driver>, Box<dyn Error>> = match config {
+            config::Controller::Midi(_) if duplicate => Err(
+                "only one MIDI controller can watch the MIDI device, and another comes \
+                 before this one; put its events in that one"
+                    .into(),
+            ),
             config::Controller::Grpc(config) => {
                 grpc::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
             }
@@ -352,6 +394,7 @@ impl Controller {
                     Entry {
                         fingerprint,
                         midi,
+                        duplicate,
                         midi_device,
                         handle: None,
                         stop: CancellationToken::new(),
@@ -676,6 +719,78 @@ mod test {
         )?;
         player.await_hardware_ready().await;
         Ok(player)
+    }
+
+    /// A MIDI controller whose six events are notes from `note` on.
+    fn midi_controller(note: u8) -> config::Controller {
+        config::Controller::Midi(config::MidiController::new(
+            config::midi::note_on(16, note, 127),
+            config::midi::note_on(16, note + 1, 127),
+            config::midi::note_on(16, note + 2, 127),
+            config::midi::note_on(16, note + 3, 127),
+            config::midi::note_on(16, note + 4, 127),
+            config::midi::note_on(16, note + 5, 127),
+        ))
+    }
+
+    /// A player config with a mock MIDI device named `midi`.
+    fn midi_player_config(controllers: Vec<config::Controller>, midi: &str) -> config::Player {
+        config::Player::new(
+            controllers,
+            Some(config::Audio::new("mock-device")),
+            Some(config::Midi::new(midi, None)),
+            None,
+            HashMap::new(),
+            "assets/songs",
+        )
+    }
+
+    /// A player with a mock MIDI device named `midi`, running `controllers`.
+    async fn make_midi_player(
+        controllers: Vec<config::Controller>,
+        midi: &str,
+    ) -> Result<Arc<Player>, Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let mut playlists = HashMap::new();
+        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
+        let player = Player::new(
+            playlists,
+            "all_songs".to_string(),
+            &midi_player_config(controllers, midi),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        Ok(player)
+    }
+
+    /// Two MIDI controllers on the one MIDI device: the second's watch
+    /// failed, so it read as an error, every later update retried it, and
+    /// as MIDI controllers restart together, the working first one was torn
+    /// down with it each time. The second is refused, says why, and is left
+    /// refused.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_second_midi_controller_is_refused_and_left_alone() -> Result<(), Box<dyn Error>> {
+        let player = make_midi_player(vec![], "mock-second-midi-controller").await?;
+        let configs = || vec![midi_controller(0), midi_controller(20)];
+        let mut controller = super::Controller::new(configs(), player.clone());
+        let statuses = controller.statuses();
+        assert_eq!(statuses[0].status, "running");
+        assert_eq!(statuses[1].status, "error");
+        assert!(statuses[1]
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("only one MIDI controller")));
+        let first = controller.tasks()[0].clone();
+
+        let changed = controller.update(configs(), player.clone(), false);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let restarted = first.is_finished();
+        let running = controller.statuses()[0].status == "running";
+        controller.shutdown();
+        assert!(!changed, "an unchanged config restarted controllers");
+        assert!(!restarted, "the working MIDI controller was torn down");
+        assert!(running, "the working MIDI controller failed");
+        Ok(())
     }
 
     /// A changed controller was stopped before its replacement started, but

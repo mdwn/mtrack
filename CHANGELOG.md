@@ -121,7 +121,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restarted on the device it had now hears it again. A changed controller waits for the one it
   replaces to let go of its port, and one that cannot bind its port shows the error in the
   status rather than "running", and is retried on the next reload. So is one whose predecessor
-  has still not stopped after five seconds: it is not started on top of it.
+  has still not stopped after five seconds: it is not started on top of it. A second MIDI
+  controller, which could never watch the one MIDI device, is refused by config validation; one
+  in a config loaded some other way reads as that error, and is no longer retried, which
+  restarted the working one each time.
 - **The latest move takes a mover, whatever its layer (#599)**: two moves on different layers
   over one head blended by layer, and where the head came to rest depended on how you got there:
   played through, after a seek and in `evaluate_show` it could land on three different poses. A

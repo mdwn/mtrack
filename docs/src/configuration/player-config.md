@@ -349,7 +349,8 @@ controllers:
   track_gain: /mtrack/track/*/gain
 
 
-# The MIDI controller configuration.
+# The MIDI controller configuration. It listens on the profile's MIDI device, which only one
+# MIDI controller can: a config with a second one is refused.
 - kind: midi
 
   # When mtrack recognizes this MIDI event, it will play the current song if no other song is
