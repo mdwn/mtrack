@@ -50,6 +50,14 @@ impl Engine {
         } = loop_control;
         // A song owns the lights: a fixture test stops when one starts.
         dmx_engine.release_test_output();
+
+        // Claim this playback's generation before anything else: before
+        // this song's timeline goes in, and for a song with no lights of its
+        // own too. The outgoing playback's tracker and jump follower may
+        // still be awake for up to their sleep interval, carrying the
+        // previous song's time and jumps; from here their writes are dropped
+        // rather than landing on this one's timeline.
+        let generation = dmx_engine.begin_playback_generation();
         let span = span!(Level::INFO, "play song (dmx)");
         let _enter = span.enter();
 
@@ -133,12 +141,6 @@ impl Engine {
                 *current_timeline = None;
             }
         }
-
-        // Claim this playback's generation before anything writes song time.
-        // The outgoing playback's tracker may still be awake for up to its
-        // sleep interval, carrying the previous start offset; from here its
-        // writes are dropped rather than landing on our freshly armed timeline.
-        let generation = dmx_engine.begin_playback_generation();
 
         // Reset song time to start time for new song BEFORE starting timeline
         // This ensures the effects loop uses the correct time when updating

@@ -14,8 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a crossfade, and reactive looping offered none of its sections. An armed section always
   takes precedence over the song's own loop: one reaching into the crossfade, or ending on the
   song's end, goes round on its own 10 ms seam, and the whole-song crossfade does not start
-  early under it. Once it is broken, the song goes round as a whole again from where playback
-  is, at once (over what is left of the crossfade) if that is already inside it.
+  early under it. Once it is broken, the song goes round as a whole again; broken inside the
+  crossfade, its next pass comes in half a second on, where a pass begun on time would be by then,
+  over what is left of the crossfade, so the click stays on the song's grid. Playback started or
+  sought inside the crossfade does the same.
 
 - **The beat clock follows a song's tempo without a MIDI file** (#602): the MIDI beat clock
   came only from tempo events in a song's MIDI file, so a song with a `tempo:` block, or only a

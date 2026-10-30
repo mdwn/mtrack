@@ -663,27 +663,44 @@ impl Device {
     /// Takes in the next pass of a crossfading song loop if its build has
     /// finished.
     fn collect_pass(song_loop: &mut SongLoopCrossfade) {
-        if let Some(rx) = song_loop.build_rx.take() {
+        if let Some((from, rx)) = song_loop.build_rx.take() {
             match rx.try_recv() {
-                Ok(Ok(sources)) => song_loop.prebuilt = Some(sources),
+                Ok(Ok(sources)) => song_loop.prebuilt = Some((from, sources)),
                 Ok(Err(e)) => {
                     error!(err = %e, "Failed to pre-build the next loop pass; will retry")
                 }
-                Err(mpsc::TryRecvError::Empty) => song_loop.build_rx = Some(rx),
+                Err(mpsc::TryRecvError::Empty) => song_loop.build_rx = Some((from, rx)),
                 Err(mpsc::TryRecvError::Disconnected) => {}
             }
         }
     }
 
-    /// Has the next pass of a crossfading song loop built, from the top, if
-    /// it is not built or building already.
+    /// Has the next pass of a crossfading song loop built from `from` in
+    /// the song (the top, or part way in for one begun late), if it is not
+    /// built or building already. One built or building from elsewhere is
+    /// dropped.
     fn prebuild_pass(
         song: &Arc<Song>,
         song_loop: &mut SongLoopCrossfade,
         playback_context: &crate::audio::PlaybackContext,
         mappings: &HashMap<String, Vec<u16>>,
+        from: Duration,
     ) {
         Self::collect_pass(song_loop);
+        if song_loop
+            .prebuilt
+            .as_ref()
+            .is_some_and(|(at, _)| *at != from)
+        {
+            song_loop.prebuilt = None;
+        }
+        if song_loop
+            .build_rx
+            .as_ref()
+            .is_some_and(|(at, _)| *at != from)
+        {
+            song_loop.build_rx = None;
+        }
         if song_loop.prebuilt.is_some() || song_loop.build_rx.is_some() {
             return;
         }
@@ -698,12 +715,12 @@ impl Device {
                     &song,
                     &context,
                     &mappings,
-                    Duration::ZERO,
-                    Duration::ZERO,
+                    from,
+                    from,
                     song.loop_crossfade_cut(),
                 ));
             });
-        song_loop.build_rx = Some(rx);
+        song_loop.build_rx = Some((from, rx));
     }
 
     /// Builds the next pass of a crossfading song loop ahead of its boundary,
@@ -728,7 +745,7 @@ impl Device {
         // whatever the overlap comes to.
         let overlap = timing.overlap.min(song_loop.overlap);
         if timing.now + PASS_PREBUILD_AHEAD >= timing.target {
-            Self::prebuild_pass(song, song_loop, playback_context, mappings);
+            Self::prebuild_pass(song, song_loop, playback_context, mappings, timing.from);
         } else {
             Self::collect_pass(song_loop);
         }
@@ -736,7 +753,7 @@ impl Device {
         if timing.now + timing.lookahead < timing.target {
             return false;
         }
-        let Some(incoming) = song_loop.prebuilt.take() else {
+        let Some((_, incoming)) = song_loop.prebuilt.take() else {
             if !song_loop.warned_late {
                 warn!(
                     song = song.name(),
@@ -795,9 +812,7 @@ impl Device {
             }
             incoming_ids.push(active_source.id);
             source_finish_flags.push(flag);
-            if let Err(e) = self.output_manager.add_source(active_source) {
-                error!(err = %e, "Failed to add song loop source");
-            }
+            self.output_manager.add_source_now(active_source);
         }
         song_loop.latest_start = Some((start_sample, incoming_ids));
         true
@@ -871,9 +886,7 @@ impl Device {
                     build_active_source(source, mappings, cancel_handle, Some(Arc::new(envelope)));
                 active_source.start_at_sample = Some(start);
                 break_fade_ids.lock().push(active_source.id);
-                if let Err(e) = self.output_manager.add_source(active_source) {
-                    error!(err = %e, "Failed to add a loop break's carried fade");
-                }
+                self.output_manager.add_source_now(active_source);
             }
         }
     }
@@ -1221,9 +1234,9 @@ struct SongLoopCrossfade {
     fade_ids: Vec<u64>,
     cut_ids: Vec<u64>,
     /// The next pass's sources, built and waiting for the boundary.
-    prebuilt: Option<GroupedSources>,
+    prebuilt: Option<(Duration, GroupedSources)>,
     /// A build of the next pass's sources in flight.
-    build_rx: Option<mpsc::Receiver<Result<GroupedSources, String>>>,
+    build_rx: Option<(Duration, mpsc::Receiver<Result<GroupedSources, String>>)>,
     /// The sample the latest pass starts at, and its sources' ids, to cancel
     /// them outright if playback ends before they have started.
     latest_start: Option<(u64, Vec<u64>)>,
@@ -1248,6 +1261,9 @@ struct SongLoopTiming {
     /// How long the outgoing pass plays on under the next: the song's
     /// `loop_crossfade`, or what is left of it for a pass begun inside it.
     overlap: Duration,
+    /// Where in the song the next pass starts: the top, or, begun late,
+    /// where one begun on time would be by then.
+    from: Duration,
     /// How far ahead of the boundary to schedule it.
     lookahead: Duration,
     /// The startup skew between the clock and the audio (see
@@ -1666,12 +1682,12 @@ impl AudioDevice for Device {
                 .is_some_and(crate::section_loop::EffectiveSection::is_whole_song);
 
             // Check if all sources have finished (EOF). A song going round as
-            // a whole waits for its next pass instead, should it not be built
-            // in time.
+            // a whole, or a section looping, waits for its next time round
+            // instead, should it not be built in time.
             let all_finished = source_finish_flags
                 .iter()
                 .all(|flag| flag.load(Ordering::Relaxed));
-            if all_finished && !looping_whole {
+            if all_finished && effective.is_none() {
                 break;
             }
 
@@ -1798,6 +1814,10 @@ impl AudioDevice for Device {
                         now: elapsed,
                         target,
                         overlap: section.overlap,
+                        // Begun late, a pass joins the grid part way in.
+                        from: target
+                            .saturating_sub(section_trigger.consumed())
+                            .saturating_sub(section.bounds.end_time),
                         lookahead: loop_trigger_lookahead,
                         skew_samples: audio_clock_skew_samples,
                         crossfade_samples,
@@ -1855,7 +1875,13 @@ impl AudioDevice for Device {
                     && section.bounds.end_time + PASS_PREBUILD_AHEAD + song_loop.overlap
                         >= song.duration()
                 {
-                    Self::prebuild_pass(&song, song_loop, &playback_context, mappings);
+                    Self::prebuild_pass(
+                        &song,
+                        song_loop,
+                        &playback_context,
+                        mappings,
+                        Duration::ZERO,
+                    );
                 }
             }
 
@@ -1934,30 +1960,15 @@ impl AudioDevice for Device {
                         "Audio section loop: scheduling crossfade"
                     );
 
-                    // Schedule fade-out + cut on currently-playing sources.
-                    // The envelope holds at 1.0 until loop_sample, then ramps
-                    // to 0 by fade_end_sample; cancel_at_sample removes them
-                    // once the fade completes.
-                    let current_ids: Vec<u64> = {
-                        let sources = self.output_manager.mixer.get_active_sources();
-                        let guard = sources.read();
-                        guard.iter().map(|s| s.lock().id).collect()
-                    };
-                    if !current_ids.is_empty() {
-                        let fade_out = Arc::new(
-                            crate::audio::crossfade::GainEnvelope::fade_out(
-                                crossfade_samples,
-                                crate::audio::crossfade::CrossfadeCurve::Linear,
-                            )
-                            .with_start_sample(loop_sample),
-                        );
-                        self.output_manager
-                            .mixer
-                            .set_gain_envelope(&current_ids, fade_out);
-                        self.output_manager
-                            .mixer
-                            .set_cancel_at_sample(&current_ids, fade_end_sample);
-                    }
+                    // Cut this playback's sources at loop_sample, each
+                    // fading out from where its own envelope has got to
+                    // by then over the short crossfade, and gone by
+                    // fade_end_sample.
+                    self.output_manager.mixer.cut_playback_at(
+                        &cancel_handle,
+                        loop_sample,
+                        fade_end_sample.saturating_sub(loop_sample),
+                    );
 
                     // Add the pre-built sources. Their own start_at_sample
                     // delays playback until loop_sample; the fade-in envelope
@@ -1993,9 +2004,7 @@ impl AudioDevice for Device {
                                 PassGroup::Cut => song_loop.cut_ids.push(active_source.id),
                             }
                         }
-                        if let Err(e) = self.output_manager.add_source(active_source) {
-                            error!(err = %e, "Failed to add section loop source");
-                        }
+                        self.output_manager.add_source_now(active_source);
                     }
                     if let Some(song_loop) = song_loop.as_mut() {
                         song_loop.latest_start = Some((loop_sample, incoming_ids));

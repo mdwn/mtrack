@@ -1073,6 +1073,13 @@ impl Player {
         self.section_jumps.lock().put_back_now().1
     }
 
+    /// How many of the playing song's loop jumps have been committed, due
+    /// or not: a section armed now has looped once more than this have
+    /// fallen due, not a pass committed just before it.
+    fn section_jumps_committed(&self) -> usize {
+        self.section_jumps.lock().committed()
+    }
+
     /// Activates section looping for the named section in the current song.
     /// The song must be playing and the section must exist with a valid beat grid.
     pub async fn loop_section(&self, section_name: &str) -> Result<(), Box<dyn Error>> {
@@ -1111,7 +1118,7 @@ impl Player {
             "Activating section loop"
         );
 
-        *self.jumps_at_arm.lock() = self.section_jumps_due();
+        *self.jumps_at_arm.lock() = self.section_jumps_committed();
         {
             let mut active = self.active_section.write();
             *active = Some(super::SectionBounds {
@@ -1183,7 +1190,7 @@ impl Player {
                 *state = ReactiveLoopState::LoopArmed(bounds.clone());
 
                 // Set active_section to engage the existing loop machinery.
-                *self.jumps_at_arm.lock() = self.section_jumps_due();
+                *self.jumps_at_arm.lock() = self.section_jumps_committed();
                 {
                     let mut active = self.active_section.write();
                     *active = Some(bounds);

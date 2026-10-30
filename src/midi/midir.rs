@@ -846,9 +846,14 @@ struct NoteStream {
     /// overlap. A whole-song pass plays all its notes, to the end of its
     /// MIDI.
     end: Option<Duration>,
-    /// The notes it has on, by channel and key: let go if it is cut.
+    /// The notes it has on, by channel and key, and the channels it holds
+    /// the sustain pedal down on: let go if it is cut.
     held: Vec<(u8, u8)>,
+    pedals: Vec<u8>,
 }
+
+/// The sustain pedal's controller.
+const SUSTAIN: u8 = 64;
 
 impl NoteStream {
     /// Notes what the stream sends of `event`, held or let go.
@@ -867,6 +872,19 @@ impl NoteStream {
                 self.held.push((event.channel, key));
             }
         }
+        if let MidiMessage::Controller { controller, value } = event.message {
+            if controller.as_int() == SUSTAIN {
+                self.pedals.retain(|&channel| channel != event.channel);
+                if value.as_int() >= 64 {
+                    self.pedals.push(event.channel);
+                }
+            }
+        }
+    }
+
+    /// Whether it has anything on to let go of.
+    fn holds(&self) -> bool {
+        !self.held.is_empty() || !self.pedals.is_empty()
     }
 
     /// When the stream next does something, in song time, and whether that
@@ -874,22 +892,35 @@ impl NoteStream {
     fn next(&self, events: &[super::playback::TimedMidiEvent]) -> Option<(Duration, bool)> {
         match events.get(self.index) {
             Some(event) if self.end.is_none_or(|end| event.time < end) => Some((event.time, false)),
-            _ => self
-                .end
-                .filter(|_| !self.held.is_empty())
-                .map(|end| (end, true)),
+            _ => self.end.filter(|_| self.holds()).map(|end| (end, true)),
         }
     }
 
-    /// Lets go of the notes the stream has on, cut where it ends.
+    /// Lets go of the notes the stream has on, and its sustain pedal, cut
+    /// where it ends (or where playback stops).
     fn let_go(&mut self, sender: &mut dyn MidiSender) {
-        for (channel, key) in self.held.drain(..) {
-            let off = LiveEvent::Midi {
-                channel: channel.into(),
-                message: midly::MidiMessage::NoteOff {
+        let notes = self.held.drain(..).map(|(channel, key)| {
+            (
+                channel,
+                midly::MidiMessage::NoteOff {
                     key: key.into(),
                     vel: 0.into(),
                 },
+            )
+        });
+        let pedals = self.pedals.drain(..).map(|channel| {
+            (
+                channel,
+                midly::MidiMessage::Controller {
+                    controller: SUSTAIN.into(),
+                    value: 0.into(),
+                },
+            )
+        });
+        for (channel, message) in notes.chain(pedals).collect::<Vec<_>>() {
+            let off = LiveEvent::Midi {
+                channel: channel.into(),
+                message,
             };
             let mut bytes = Vec::with_capacity(3);
             if off.write_std(&mut bytes).is_ok() {
@@ -925,6 +956,7 @@ fn play_streams(
         index: events.partition_point(|e| e.time < params.start_time),
         end: None,
         held: Vec::new(),
+        pedals: Vec::new(),
     }];
     let mut buf = Vec::with_capacity(8);
     // The newest stream's origin, kept for a jump that comes once every
@@ -932,7 +964,11 @@ fn play_streams(
     let mut last_origin = streams[0].origin;
 
     loop {
+        // Stopped, or the loop broken: nothing is left sounding.
         if params.cancel_handle.is_cancelled() || params.loop_break.load(Ordering::Relaxed) {
+            for stream in &mut streams {
+                stream.let_go(sender);
+            }
             return;
         }
         if let Some(current) = streams.last() {
@@ -945,7 +981,7 @@ fn play_streams(
         let mut i = 0;
         streams.retain(|stream| {
             let keep = stream.next(events).is_some()
-                || (i == newest && stream.end.is_none() && !stream.held.is_empty());
+                || (i == newest && stream.end.is_none() && stream.holds());
             i += 1;
             keep
         });
@@ -995,6 +1031,7 @@ fn play_streams(
                         index: events.partition_point(|e| e.time < jump.to),
                         end: None,
                         held: Vec::new(),
+                        pedals: Vec::new(),
                     });
                     continue;
                 }
@@ -3502,6 +3539,122 @@ mod test {
             for (at, _) in &sender.offs {
                 assert!(*at >= 0.29, "not before the cut: {at}");
             }
+        }
+
+        fn review_run(
+            midi: &PrecomputedMidi,
+            jumps: &[(u64, u64, u64, bool)],
+            exclude: &HashSet<u8>,
+        ) -> Vec<Vec<u8>> {
+            let cancel = CancelHandle::new();
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = PlaybackClock::wall();
+            clock.start();
+            let mut sender = MockSender::new();
+            let log = Arc::new(crate::playsync::SectionJumpLog::default());
+            for &(at, from, to, pass) in jumps {
+                log.push(crate::section_loop::SectionJump {
+                    at: Duration::from_millis(at),
+                    from: Duration::from_millis(from),
+                    to: Duration::from_millis(to),
+                    overlap: Duration::ZERO,
+                    pass,
+                });
+            }
+            log.close();
+            run_playback(
+                &mut sender,
+                PlaybackContext {
+                    precomputed: midi,
+                    start_time: Duration::ZERO,
+                    playback_delay: Duration::ZERO,
+                    cancel_handle: &cancel,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    finished: Arc::new(AtomicBool::new(false)),
+                    exclude_channels: exclude,
+                    clock: &clock,
+                    loop_break: Arc::new(AtomicBool::new(false)),
+                    active_section: Arc::new(parking_lot::RwLock::new(None)),
+                    section_jumps: log,
+                },
+            );
+            sender.sent.into_inner()
+        }
+
+        /// REVIEW: the cut's note-off goes before the new stream's note-on of
+        /// the same key at the seam.
+        #[test]
+        fn review_cut_off_precedes_restart_on() {
+            let midi = make_events(&[0]);
+            let sent = review_run(&midi, &[(300, 300, 0, false)], &HashSet::new());
+            let shape: Vec<(u8, u8)> = sent.iter().map(|b| (b[0] & 0xF0, b[1])).collect();
+            assert_eq!(shape, vec![(0x90, 60), (0x80, 60), (0x90, 60)]);
+        }
+
+        /// REVIEW: notes on an excluded channel are never sent, so never let go.
+        #[test]
+        fn review_cut_skips_excluded_channels() {
+            use crate::midi::playback::TimedMidiEvent;
+            let midi = PrecomputedMidi::from_events(vec![
+                TimedMidiEvent {
+                    time: Duration::ZERO,
+                    channel: 9,
+                    message: midly::MidiMessage::NoteOn {
+                        key: u7::new(36),
+                        vel: u7::new(100),
+                    },
+                },
+                TimedMidiEvent {
+                    time: Duration::ZERO,
+                    channel: 2,
+                    message: midly::MidiMessage::NoteOn {
+                        key: u7::new(60),
+                        vel: u7::new(100),
+                    },
+                },
+                TimedMidiEvent {
+                    time: Duration::from_millis(50),
+                    channel: 2,
+                    message: midly::MidiMessage::NoteOn {
+                        key: u7::new(61),
+                        vel: u7::new(0),
+                    },
+                },
+            ]);
+            let sent = review_run(&midi, &[(200, 200, 0, false)], &HashSet::from([9]));
+            let offs: Vec<Vec<u8>> = sent
+                .iter()
+                .filter(|b| b[0] & 0xF0 == 0x80)
+                .cloned()
+                .collect();
+            assert_eq!(offs, vec![vec![0x82, 60, 0]]);
+        }
+
+        /// REVIEW: a section jump right after a pass jump, the older pass
+        /// still playing its tail: the tail plays on, the section's stream is cut.
+        #[test]
+        fn review_section_after_pass_with_tail() {
+            // 200ms song: 60@0, 61@150 (held over the seam), 62@260 (tail past end).
+            let midi = make_events(&[0, 150, 260]);
+            // pass at 200 -> 0; then a section 0-100 of the new pass jumps at 300 (song 100).
+            let sent = review_run(
+                &midi,
+                &[(200, 200, 0, true), (300, 100, 0, false)],
+                &HashSet::new(),
+            );
+            let shape: Vec<(u8, u8)> = sent.iter().map(|b| (b[0] & 0xF0, b[1])).collect();
+            eprintln!("{shape:?}");
+            // pass 1: 60, 61; pass 2: 60 @200; pass1 tail 62 @260; cut at 300: off 60; restart 60 @300 ...
+            assert_eq!(
+                shape.iter().filter(|s| **s == (0x80, 60)).count(),
+                1,
+                "{shape:?}"
+            );
+            assert_eq!(
+                shape.iter().filter(|s| **s == (0x80, 61)).count(),
+                0,
+                "{shape:?}"
+            );
         }
 
         #[test]

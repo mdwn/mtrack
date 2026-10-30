@@ -112,7 +112,20 @@ impl EffectiveSection {
     pub fn is_whole_song(&self) -> bool {
         self.bounds.name == WHOLE_SONG
     }
+
+    /// Whether a pass begun late joins the song's grid rather than starting
+    /// from the top: a crossfading song's, whose passes overlap, so one
+    /// started part way into the crossfade picks up where a pass begun on
+    /// time would be.
+    fn joins_grid(&self) -> bool {
+        self.is_whole_song() && !self.overlap.is_zero()
+    }
 }
+
+/// How far ahead a crossfading song's pass begun late (a start, or a section
+/// broken, inside the crossfade) joins the song's grid: long enough for the
+/// audio to build its tracks from part way in.
+pub const JOIN_AHEAD: Duration = Duration::from_millis(500);
 
 /// Which section loops now: an armed section always takes precedence, so a
 /// section reaching into a looping song's crossfade, or ending on its end,
@@ -218,17 +231,24 @@ impl SectionLoopTrigger {
         }
         let bounds = &section.bounds;
         let from = at.saturating_sub(self.consumed);
+        // A crossfading song's pass begun late starts where one begun on
+        // time would be by then, keeping the song's grid.
+        let late = if section.joins_grid() {
+            from.saturating_sub(bounds.end_time)
+        } else {
+            Duration::ZERO
+        };
         let jump = SectionJump {
             at,
             from,
-            to: bounds.start_time,
+            to: bounds.start_time + late,
             overlap: section
                 .overlap
                 .min((bounds.end_time + section.overlap).saturating_sub(from)),
             pass: section.is_whole_song(),
         };
         self.consumed += jump.amount();
-        self.next_trigger = Some(at + bounds.end_time.saturating_sub(bounds.start_time));
+        self.next_trigger = Some(at + bounds.end_time.saturating_sub(jump.to));
         Some(jump)
     }
 
@@ -252,8 +272,15 @@ impl SectionLoopTrigger {
             self.armed = Some(section.clone());
             // Armed with playback past the end already: now. Only here: a
             // poll that comes late to a trigger set on the grid keeps the
-            // grid.
-            self.next_trigger = Some((bounds.end_time + self.consumed).max(elapsed));
+            // grid. A crossfading song's pass, past the start of its
+            // crossfade, joins its own grid a moment ahead instead (see
+            // `JOIN_AHEAD`), or at the song's end at the latest.
+            let grid = bounds.end_time + self.consumed;
+            self.next_trigger = Some(if section.joins_grid() && grid < elapsed {
+                (elapsed + JOIN_AHEAD).min(grid + section.overlap)
+            } else {
+                grid.max(elapsed)
+            });
         }
         self.next_trigger
     }
@@ -834,8 +861,8 @@ mod tests {
     }
 
     /// Broken out of a section past the crossfade's start, the whole song
-    /// goes round at once from where playback is, crossfading over what is
-    /// left of it; broken before, at the crossfade's start.
+    /// goes round a moment on, joining its grid there, crossfading over
+    /// what is left of it; broken before, at the crossfade's start.
     #[test]
     fn after_a_break_the_pass_fires_where_playback_is() {
         let section = make_section(90, 99);
@@ -848,16 +875,21 @@ mod tests {
         // At 106s on the timeline: 97s into the song, past the crossfade's
         // start (96s).
         let broken = effective_section(Some(section), true, whole_song(), false);
+        assert_eq!(
+            trigger.jump_effective(broken.as_ref(), secs(106), Duration::ZERO),
+            None
+        );
+        let join = secs(106) + JOIN_AHEAD;
         let pass = trigger
-            .jump_effective(broken.as_ref(), secs(106), Duration::ZERO)
+            .jump_effective(broken.as_ref(), join, Duration::ZERO)
             .unwrap();
         assert_eq!(
             pass,
             SectionJump {
-                at: secs(106),
-                from: secs(97),
-                to: Duration::ZERO,
-                overlap: secs(3),
+                at: join,
+                from: secs(97) + JOIN_AHEAD,
+                to: secs(1) + JOIN_AHEAD,
+                overlap: secs(3) - JOIN_AHEAD,
                 pass: true,
             }
         );
@@ -895,6 +927,92 @@ mod tests {
         assert_eq!(
             trigger.check(&section, Duration::from_secs(100), margin),
             None
+        );
+    }
+}
+
+#[cfg(test)]
+mod late_passes {
+    use super::*;
+
+    fn secs(s: u64) -> Duration {
+        Duration::from_secs(s)
+    }
+
+    /// L=100s, loop_crossfade X=4s: passes start at 96. A section [94, 98]
+    /// reaching into the crossfade is armed, then broken at 97 (inside the
+    /// tail). Played through, the next pass would have started at 96, so at
+    /// 97 it should come in 1s into itself (on the grid the crossfade
+    /// defines), crossing over the 3s left. The trigger starts it from the
+    /// top instead, 1s off the grid the outgoing tail plays on.
+    #[test]
+    fn pass_after_break_in_tail_keeps_the_grid() {
+        let whole = Some(WholeSongLoop {
+            length: secs(100),
+            overlap: secs(4),
+        });
+        let section = SectionBounds {
+            name: "out".into(),
+            start_time: secs(94),
+            end_time: secs(98),
+        };
+        let margin = Duration::from_millis(30);
+        let mut t = SectionLoopTrigger::new();
+        let armed = effective_section(Some(section.clone()), false, whole, false);
+        // Plays up to 97 with the section armed: no pass under it.
+        for ms in (90_000..97_000).step_by(10) {
+            assert_eq!(
+                t.jump_effective(armed.as_ref(), Duration::from_millis(ms), margin),
+                None
+            );
+        }
+        // Broken at 97: the pass joins its grid half a second on, 1.5s into
+        // itself, crossing over the 2.5s of the song left.
+        let after = effective_section(Some(section), true, whole, false);
+        assert_eq!(t.jump_effective(after.as_ref(), secs(97), margin), None);
+        let join = Duration::from_millis(97_500);
+        let jump = t
+            .jump_effective(after.as_ref(), join - margin, margin)
+            .expect("pass starts");
+        assert_eq!(
+            jump,
+            SectionJump {
+                at: join,
+                from: join,
+                to: Duration::from_millis(1_500),
+                overlap: Duration::from_millis(2_500),
+                pass: true,
+            }
+        );
+        // The pass after it is on the grid too: 96s of song on from its top.
+        let next = t
+            .jump_effective(after.as_ref(), join + secs(95), margin)
+            .expect("next pass");
+        assert_eq!(next.at, join + secs(96) - Duration::from_millis(1_500));
+        assert_eq!((next.to, next.overlap), (Duration::ZERO, secs(4)));
+    }
+
+    /// Begun so late the song ends before the join: it goes round at the
+    /// end, where a pass begun on time is 4s in.
+    #[test]
+    fn a_pass_begun_at_the_very_end_joins_at_the_end() {
+        let whole = Some(WholeSongLoop {
+            length: secs(100),
+            overlap: secs(4),
+        });
+        let mut t = SectionLoopTrigger::new();
+        let effective = effective_section(None, false, whole, false);
+        let at_end = Duration::from_millis(99_800);
+        assert_eq!(
+            t.jump_effective(effective.as_ref(), at_end, Duration::ZERO),
+            None
+        );
+        let jump = t
+            .jump_effective(effective.as_ref(), secs(100), Duration::ZERO)
+            .expect("pass at the end");
+        assert_eq!(
+            (jump.at, jump.to, jump.overlap),
+            (secs(100), secs(4), Duration::ZERO)
         );
     }
 }
