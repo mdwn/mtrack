@@ -1067,7 +1067,16 @@ struct PassTicks<'a> {
 
 impl<'a> PassTicks<'a> {
     fn new(ticks: &'a [Duration], start: Duration, period: Option<Duration>) -> Self {
-        let period = period.filter(|period| ticks.first().is_some_and(|first| first < period));
+        // A period no first tick fits in would keep none, pass after pass,
+        // for ever. Every pass that loops keeps its first tick at least.
+        let period = period.filter(|period| {
+            ticks.first().is_some_and(|first| {
+                let pulse = ticks
+                    .get(1)
+                    .map_or(Duration::ZERO, |next| next.saturating_sub(*first));
+                *first < *period && pulse / 2 < *period
+            })
+        });
         PassTicks {
             ticks,
             start,
@@ -1081,17 +1090,18 @@ impl<'a> PassTicks<'a> {
 
 impl PassTicks<'_> {
     /// Whether the tick under way belongs to this pass rather than falling on
-    /// the next one's first: at least half a pulse before the period. A loop's
-    /// length is whole samples, so a loop of whole pulses can come out a hair
-    /// long, which put a pass's last pulse microseconds before the next pass's
-    /// first -- a pulse too many at every seam -- or a hair short.
+    /// the next one's first: at least half a pulse before it, at `period`
+    /// past this pass's first tick. A loop's length is whole samples, so a
+    /// loop of whole pulses can come out a hair long, which put a pass's last
+    /// pulse microseconds before the next pass's first -- a pulse too many at
+    /// every seam -- or a hair short.
     fn in_pass(&self, tick: Duration, period: Duration) -> bool {
         let pulse = match self.index {
             0 => self.ticks.get(1).map(|next| next.saturating_sub(tick)),
             index => Some(tick.saturating_sub(self.ticks[index - 1])),
         }
         .unwrap_or_default();
-        tick + pulse / 2 < period
+        tick < period && tick + pulse / 2 < period + self.ticks[0]
     }
 }
 
@@ -3552,6 +3562,41 @@ mod test {
                 .take_while(|at| *at < period * 2)
                 .collect();
             assert_eq!(played.len(), 60, "{played:?}");
+        }
+
+        /// A period too short to keep even the first tick (within half a
+        /// pulse of it) does not loop: passes with no tick spun `next` for
+        /// ever, never back to `run_beat_clock` to hear a cancel, a preempt
+        /// or a shutdown. It plays once.
+        #[test]
+        fn a_period_too_short_for_a_tick_plays_once_rather_than_spinning() {
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                // Pulses every 20ms from 0; a loop of 5ms.
+                let ticks: Vec<Duration> = (0..10).map(|i| ms(i * 20)).collect();
+                let n = PassTicks::new(&ticks, Duration::ZERO, Some(ms(5)))
+                    .take(100)
+                    .count();
+                let _ = tx.send(n);
+            });
+            // Generous: the computation is microseconds when it terminates.
+            let played = rx.recv_timeout(Duration::from_secs(60));
+            assert_eq!(played, Ok(10), "PassTicks::next never returned, or looped");
+        }
+
+        /// A clock whose first pulse is late (a tempo start that is not whole
+        /// bars) has the next pass's first well past the seam: a pulse less
+        /// than half a pulse before the seam has nothing to double it, and
+        /// is kept.
+        #[test]
+        fn a_late_first_pulse_keeps_the_last_pulse_before_the_seam() {
+            // Pulses every 20ms from 300ms; a pass every 586ms. The pulse
+            // at 580ms is 6ms before the seam and the next pass's first is
+            // at 886ms.
+            let ticks: Vec<Duration> = (15..30).map(|i| ms(i * 20)).collect();
+            let played = pass_ticks(&ticks, 0, Some(586), 16);
+            assert_eq!(played[14], (580, false), "{played:?}");
+            assert_eq!(played[15], (886, true), "{played:?}");
         }
 
         /// Start and the first clock are a millisecond apart, as the MIDI spec
