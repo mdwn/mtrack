@@ -864,3 +864,67 @@ fn an_unfreeze_after_a_head_is_taken_runs_the_other_on_after_a_seek() {
     end_check("unfreeze after cut", src, &f, &mut bad);
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+/// A long show of overlapping moves over eight heads on three layers, with
+/// slow downs and clears now and then: `n` cues 50 ms apart.
+fn many_overlapping_moves(n: u64) -> String {
+    let mut body = String::new();
+    let layers = ["background", "midground", "foreground"];
+    for i in 0..n {
+        let ms = i * 50;
+        let head = i % 8;
+        body.push_str(&format!(
+            "    @{}.{:03}\n    h{head}, h{}: move from_pan: 0deg, from_tilt: 0deg, pan: {}deg, tilt: 0deg, duration: 3s, layer: {}\n",
+            ms / 1000,
+            ms % 1000,
+            (head + 1) % 8,
+            (i % 180) as i64 - 90,
+            layers[(i % 3) as usize]
+        ));
+        if i % 97 == 0 {
+            body.push_str("    master(layer: midground, speed: 0.7)\n");
+        }
+        if i % 211 == 0 {
+            body.push_str("    clear(layer: foreground)\n");
+        }
+    }
+    show(body)
+}
+
+/// Builds the timeline for `n` cues of [`many_overlapping_moves`] and seeks
+/// to near its end: how long each takes, and how many effects the seek
+/// hands the engine.
+fn build_and_seek(n: u64) -> (Duration, Duration, usize) {
+    let s = shows(&many_overlapping_moves(n));
+    let t = std::time::Instant::now();
+    let mut tl = LightingTimeline::new(s);
+    let built = t.elapsed();
+    let t = std::time::Instant::now();
+    let h = tl.start_at(Duration::from_millis(n * 50 - 100));
+    (built, t.elapsed(), h.effects_with_elapsed.len())
+}
+
+/// A move that sets a head's pose outright, over another's, leaves nothing
+/// of the earlier one's pose to keep, so the replay forgets that one:
+/// building the timeline and seeking stay linear in the cues, and the seek
+/// hands the engine only what still counts, not every move since the top
+/// (#596, #599). 8000 cues took about 4 s in release while they piled up.
+#[test]
+fn a_long_show_of_moves_builds_and_seeks_quickly() {
+    let (built, sought, resumed) = build_and_seek(8000);
+    assert!(resumed <= 16, "{resumed} effects handed over");
+    assert!(built < Duration::from_secs(5), "built in {built:?}");
+    assert!(sought < Duration::from_secs(5), "sought in {sought:?}");
+}
+
+/// The same, `R2N` cues (4000 by default), timed.
+#[test]
+#[ignore]
+fn time_a_long_show_of_moves() {
+    let n: u64 = std::env::var("R2N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4000);
+    let (built, sought, resumed) = build_and_seek(n);
+    eprintln!("{n} cues: new {built:?}, start_at {sought:?}, {resumed} effects handed over");
+}
