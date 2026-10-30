@@ -198,16 +198,54 @@ impl super::Device for Device {
         let span = span!(Level::INFO, "play song (midir)");
         let _enter = span.enter();
 
-        let midi_playback = match song.midi_playback() {
-            Some(midi_playback) => midi_playback,
-            None => {
-                info!(song = song.name(), "Song has no MIDI sheet.");
-                // Guard sends on drop, but explicit send is clearer.
-                ready_tx.send();
-                return Ok(());
-            }
-        };
+        // A song's tempo drives the beat clock without a MIDI file.
+        let tempo_clock = self.beat_clock_engine.is_some() && song.has_tempo();
+        if song.midi_playback().is_none() && !tempo_clock {
+            info!(song = song.name(), "Song has no MIDI sheet.");
+            // Guard sends on drop, but explicit send is clearer.
+            ready_tx.send();
+            return Ok(());
+        }
 
+        let midi_sheet = song
+            .midi_playback()
+            .map(|midi_playback| midi_playback.midi_sheet())
+            .transpose()?;
+        let playback_delay = self.playback_delay;
+
+        // Hand this song's beat clock schedule to the always-on device engine. The
+        // engine (not a per-song thread) owns the clock output: it syncs to the
+        // shared playback clock's "go" signal, plays this schedule, and then holds
+        // the last tempo until the next song retunes it.
+        if let Some(engine) = &self.beat_clock_engine {
+            if let Some(ticks) = song.beat_clock(midi_sheet.as_ref()) {
+                // Passes on the song's own grid, as its notes loop.
+                let period = song
+                    .duration()
+                    .saturating_sub(song.loop_crossfade().unwrap_or_default());
+                let passes = (song.loop_playback() && !period.is_zero()).then(|| BeatClockPasses {
+                    period,
+                    loop_break: loop_break.clone(),
+                });
+                engine.play(BeatClockPlay {
+                    ticks: Arc::new(ticks),
+                    start_time,
+                    playback_delay,
+                    cancel: cancel_handle.clone(),
+                    clock: clock.clone(),
+                    passes,
+                });
+            }
+        }
+
+        let Some(midi_sheet) = midi_sheet else {
+            info!(
+                song = song.name(),
+                "Song has no MIDI file; its beat clock runs from its tempo."
+            );
+            ready_tx.send();
+            return Ok(());
+        };
         let output_port = match self.output_port.as_ref() {
             Some(output_port) => output_port,
             None => {
@@ -219,7 +257,7 @@ impl super::Device for Device {
                 return Ok(());
             }
         };
-        let midi_sheet = midi_playback.midi_sheet()?;
+        let midi_playback = song.midi_playback().expect("a MIDI sheet comes from it");
         let output = MidiOutput::new("mtrack player output")?;
 
         let exclude_midi_channels = HashSet::from_iter(midi_playback.exclude_midi_channels());
@@ -234,26 +272,7 @@ impl super::Device for Device {
         );
 
         let finished = Arc::new(AtomicBool::new(false));
-        let playback_delay = self.playback_delay;
         let mut connection = output.connect(output_port, "mtrack player")?;
-
-        // Hand this song's beat clock schedule to the always-on device engine. The
-        // engine (not a per-song thread) owns the clock output: it syncs to the
-        // shared playback clock's "go" signal, plays this schedule, and then holds
-        // the last tempo until the next song retunes it.
-        if let (Some(engine), Some(beat_clock)) =
-            (&self.beat_clock_engine, midi_sheet.beat_clock.as_ref())
-        {
-            let ticks: Arc<Vec<Duration>> =
-                Arc::new(beat_clock.ticks_from(Duration::ZERO).to_vec());
-            engine.play(BeatClockPlay {
-                ticks,
-                start_time,
-                playback_delay,
-                cancel: cancel_handle.clone(),
-                clock: clock.clone(),
-            });
-        }
 
         let join_handle = {
             let cancel_handle = cancel_handle.clone();
@@ -903,6 +922,7 @@ fn run_beat_clock(
     sender: &mut dyn MidiSender,
     ticks: &[Duration],
     start_time: Duration,
+    passes: Option<&BeatClockPasses>,
     cancel_handle: &CancelHandle,
     clock: &PlaybackClock,
     rx: &mpsc::Receiver<BeatClockCommand>,
@@ -919,10 +939,6 @@ fn run_beat_clock(
         debug!("MIDI beat clock start send failed: {:?}", e);
     }
 
-    // Find ticks from start_time
-    let idx = ticks.partition_point(|t| *t < start_time);
-    let remaining_ticks = &ticks[idx..];
-
     let clock_bytes = realtime_bytes(SystemRealtime::TimingClock);
     let stop_bytes = realtime_bytes(SystemRealtime::Stop);
 
@@ -931,50 +947,80 @@ fn run_beat_clock(
     let mut prev_tick: Option<Duration> = None;
     let mut last_interval: Option<Duration> = None;
 
-    for tick_time in remaining_ticks {
-        if cancel_handle.is_cancelled() {
-            let _ = sender.send(&stop_bytes);
-            return ScheduleOutcome::Finished(last_interval);
-        }
-
-        // A newer command supersedes this schedule. Nothing cancels the handle
-        // when a song ends naturally -- the cleanup path only clears the join
-        // and advances the playlist -- so a schedule that outlasts its audio
-        // (a MIDI file longer than the song) would otherwise keep running,
-        // dequeue the next song late, and shift its Start and every tick by the
-        // residual. This is also how Shutdown gets observed mid-schedule, so
-        // dropping the device does not block for the rest of the song.
-        match rx.try_recv() {
-            Ok(command) => {
-                let _ = sender.send(&stop_bytes);
-                return ScheduleOutcome::Preempted(command, last_interval);
+    // A looping song plays its ticks again each pass, offset by the passes
+    // before: each pass up to where the next begins, until the loop is broken,
+    // when the pass under way plays out to its end. A period with no tick in
+    // it would repeat nothing forever, so such a song plays once.
+    let passes = passes.filter(|passes| ticks.first().is_some_and(|first| *first < passes.period));
+    let mut pass_offset = Duration::ZERO;
+    loop {
+        let mut next_pass = false;
+        for tick in ticks {
+            // Song time on the clock this schedule plays to.
+            let tick_time = pass_offset + *tick;
+            if tick_time < start_time {
+                continue;
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            if let Some(passes) = passes {
+                if *tick >= passes.period && !passes.loop_break.load(Ordering::Relaxed) {
+                    next_pass = true;
+                    break;
+                }
+            }
+
+            if cancel_handle.is_cancelled() {
                 let _ = sender.send(&stop_bytes);
                 return ScheduleOutcome::Finished(last_interval);
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-        }
 
-        let target_wall = *tick_time - start_time;
-        let elapsed = clock.elapsed();
-        if target_wall > elapsed {
-            spin_sleep::sleep(target_wall - elapsed);
-        }
+            // A newer command supersedes this schedule. Nothing cancels the handle
+            // when a song ends naturally -- the cleanup path only clears the join
+            // and advances the playlist -- so a schedule that outlasts its audio
+            // (a MIDI file longer than the song) would otherwise keep running,
+            // dequeue the next song late, and shift its Start and every tick by the
+            // residual. This is also how Shutdown gets observed mid-schedule, so
+            // dropping the device does not block for the rest of the song.
+            match rx.try_recv() {
+                Ok(command) => {
+                    let _ = sender.send(&stop_bytes);
+                    return ScheduleOutcome::Preempted(command, last_interval);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    let _ = sender.send(&stop_bytes);
+                    return ScheduleOutcome::Finished(last_interval);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
 
-        if cancel_handle.is_cancelled() {
-            let _ = sender.send(&stop_bytes);
-            return ScheduleOutcome::Finished(last_interval);
-        }
+            let target_wall = tick_time - start_time;
+            let elapsed = clock.elapsed();
+            if target_wall > elapsed {
+                spin_sleep::sleep(target_wall - elapsed);
+            }
 
-        if let Err(e) = sender.send(&clock_bytes) {
-            debug!("MIDI beat clock send failed: {:?}", e);
-        }
+            if cancel_handle.is_cancelled() {
+                let _ = sender.send(&stop_bytes);
+                return ScheduleOutcome::Finished(last_interval);
+            }
 
-        if let Some(prev) = prev_tick {
-            last_interval = Some(tick_time.saturating_sub(prev));
+            if let Err(e) = sender.send(&clock_bytes) {
+                debug!("MIDI beat clock send failed: {:?}", e);
+            }
+
+            if let Some(prev) = prev_tick {
+                last_interval = Some(tick_time.saturating_sub(prev));
+            }
+            prev_tick = Some(tick_time);
         }
-        prev_tick = Some(*tick_time);
+        // A pass whose ticks ran out short of its period (a click that stops
+        // before the song does) goes on to the next all the same.
+        let looping = passes.filter(|passes| !passes.loop_break.load(Ordering::Relaxed));
+        match looping {
+            Some(passes) if next_pass || ticks.last().is_some_and(|last| *last < passes.period) => {
+                pass_offset += passes.period;
+            }
+            _ => break,
+        }
     }
 
     // Send STOP when finished
@@ -1015,6 +1061,17 @@ struct BeatClockPlay {
     /// The shared playback clock whose `start()` is the "go" signal. The engine
     /// waits on it (cancel-aware) so its `Start` lands with the first note.
     clock: PlaybackClock,
+    /// A looping song's passes, which the clock repeats as its notes do.
+    passes: Option<BeatClockPasses>,
+}
+
+/// How a looping song's beat clock repeats: a pass every `period` (the song's
+/// length less its crossfade), as its audio and notes loop, until the loop is
+/// broken, when the pass under way plays out to its end.
+#[derive(Clone)]
+struct BeatClockPasses {
+    period: Duration,
+    loop_break: Arc<AtomicBool>,
 }
 
 /// A command sent to the beat clock engine thread.
@@ -1206,6 +1263,7 @@ fn beat_clock_engine_loop(
             sender,
             &play.ticks,
             play.start_time,
+            play.passes.as_ref(),
             &play.cancel,
             &wall,
             rx,
@@ -1950,6 +2008,7 @@ mod test {
             playback_delay: Duration::ZERO,
             cancel: cancel.clone(),
             clock,
+            passes: None,
         }))
         .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -2067,6 +2126,7 @@ mod test {
             playback_delay: Duration::ZERO,
             cancel: CancelHandle::new(),
             clock,
+            passes: None,
         }))
         .unwrap();
         std::thread::sleep(Duration::from_millis(200));
@@ -2111,6 +2171,7 @@ mod test {
             playback_delay: Duration::ZERO,
             cancel: cancel.clone(),
             clock: PlaybackClock::wall(),
+            passes: None,
         }))
         .unwrap();
         std::thread::sleep(Duration::from_millis(50));
@@ -2316,6 +2377,78 @@ mod test {
                 },
             );
             assert!(result.is_ok());
+        }
+
+        /// A song with a tempo and no MIDI file still drives the beat clock:
+        /// its schedule goes to the engine, and the song is ready at once.
+        #[test]
+        fn play_from_hands_a_tempo_only_songs_clock_to_the_engine() {
+            let (tx, rx) = mpsc::channel();
+            let mut device = Device::new_default("test".to_string());
+            device.beat_clock_enabled = true;
+            device.beat_clock_engine = Some(Arc::new(BeatClockEngine {
+                tx,
+                join: Mutex::new(None),
+                tempo: Arc::new(Mutex::new(None)),
+            }));
+            let song = Arc::new(crate::songs::Song::new_for_test_with_tempo(
+                "tempo only",
+                &["click"],
+                Duration::from_secs(1),
+                120.0,
+            ));
+            assert!(song.midi_playback().is_none());
+
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+            let result = <Device as crate::midi::Device>::play_from(
+                &device,
+                song,
+                crate::playsync::PlaybackSync {
+                    cancel_handle: CancelHandle::new(),
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    clock: PlaybackClock::wall(),
+                    start_time: Duration::from_millis(250),
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
+            );
+            assert!(result.is_ok(), "{result:?}");
+            assert!(ready_rx.try_recv().is_ok(), "the song was never ready");
+            let Ok(BeatClockCommand::Play(play)) = rx.try_recv() else {
+                panic!("no schedule reached the engine");
+            };
+            assert_eq!(play.ticks.len(), 48);
+            assert_eq!(
+                play.ticks[1] - play.ticks[0],
+                Duration::from_nanos(20_833_333)
+            );
+            assert_eq!(play.start_time, Duration::from_millis(250));
+        }
+
+        /// Without the beat clock, a song with no MIDI file has nothing for
+        /// the MIDI device to do.
+        #[test]
+        fn play_from_ignores_a_tempo_only_song_without_a_beat_clock() {
+            let device = Device::new_default("test".to_string());
+            let song = Arc::new(crate::songs::Song::new_for_test_with_tempo(
+                "tempo only",
+                &["click"],
+                Duration::from_secs(1),
+                120.0,
+            ));
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+            let result = <Device as crate::midi::Device>::play_from(
+                &device,
+                song,
+                crate::playsync::PlaybackSync {
+                    cancel_handle: CancelHandle::new(),
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    clock: PlaybackClock::wall(),
+                    start_time: Duration::ZERO,
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
+            );
+            assert!(result.is_ok());
+            assert!(ready_rx.try_recv().is_ok());
         }
 
         #[test]
@@ -3167,6 +3300,95 @@ mod test {
             }
         }
 
+        /// Records each clock as the song time it was due at, and breaks
+        /// the loop once it has sent `break_after` of them.
+        struct LoopingSender {
+            clock: PlaybackClock,
+            clocks: Vec<Duration>,
+            break_after: usize,
+            loop_break: Arc<AtomicBool>,
+        }
+
+        impl MidiSender for LoopingSender {
+            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                if bytes == clock_bytes().as_slice() {
+                    self.clocks.push(self.clock.elapsed());
+                    if self.clocks.len() == self.break_after {
+                        self.loop_break.store(true, Ordering::Relaxed);
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        /// Plays `ticks` as a looping song with passes every `period`,
+        /// breaking the loop after `break_after` clocks; returns when each
+        /// clock went out.
+        fn play_looping(ticks: &[Duration], period: Duration, break_after: usize) -> Vec<Duration> {
+            let clock = PlaybackClock::wall();
+            clock.start();
+            let loop_break = Arc::new(AtomicBool::new(false));
+            let mut sender = LoopingSender {
+                clock: clock.clone(),
+                clocks: Vec::new(),
+                break_after,
+                loop_break: loop_break.clone(),
+            };
+            let (_tx, rx) = mpsc::channel();
+            run_beat_clock(
+                &mut sender,
+                ticks,
+                Duration::ZERO,
+                Some(&BeatClockPasses { period, loop_break }),
+                &CancelHandle::new(),
+                &clock,
+                &rx,
+            );
+            sender.clocks
+        }
+
+        fn every_10ms(until_ms: u64) -> Vec<Duration> {
+            (0..until_ms / 10)
+                .map(|i| Duration::from_millis(i * 10))
+                .collect()
+        }
+
+        /// A looping song's clock goes round with it: each pass up to where
+        /// the next begins (its length less the crossfade), and once the loop
+        /// is broken, the pass under way to its end.
+        #[test]
+        fn a_looping_songs_clock_repeats_each_pass() {
+            // 500ms of clocks, a pass every 300ms: 30 a pass while looping;
+            // broken in the third pass, which plays all 50.
+            let clocks = play_looping(&every_10ms(500), Duration::from_millis(300), 65);
+            assert_eq!(clocks.len(), 30 + 30 + 50);
+            // In order and on time: the third pass's last clock is due at
+            // 600ms + 490ms.
+            for pair in clocks.windows(2) {
+                assert!(pair[1] >= pair[0], "{pair:?}");
+            }
+            assert!(*clocks.last().unwrap() >= Duration::from_millis(1_090));
+        }
+
+        /// A click that stops short of the song's end leaves the clock quiet
+        /// until the next pass, which still starts on time.
+        #[test]
+        fn a_pass_short_of_its_period_still_goes_round() {
+            // 200ms of clocks, a pass every 300ms: 20 a pass.
+            let clocks = play_looping(&every_10ms(200), Duration::from_millis(300), 30);
+            assert_eq!(clocks.len(), 40);
+            assert!(clocks[20] >= Duration::from_millis(300), "{:?}", clocks[20]);
+        }
+
+        /// A schedule with no clock inside the first period would repeat
+        /// nothing for ever: it plays once.
+        #[test]
+        fn a_period_without_a_clock_in_it_plays_once() {
+            let ticks: Vec<Duration> = (40..45).map(|i| Duration::from_millis(i * 10)).collect();
+            let clocks = play_looping(&ticks, Duration::from_millis(300), usize::MAX);
+            assert_eq!(clocks.len(), 5);
+        }
+
         #[test]
         fn sends_start_clocks_and_stop() {
             // 1 beat at default 120 BPM = 24 clock ticks
@@ -3184,7 +3406,15 @@ mod test {
             let clock = PlaybackClock::wall();
 
             let (_tx, rx) = mpsc::channel();
-            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock, &rx);
+            run_beat_clock(
+                &mut sender,
+                &ticks,
+                Duration::ZERO,
+                None,
+                &cancel,
+                &clock,
+                &rx,
+            );
 
             let sent = sender.sent.lock();
             // START + 24 clock ticks + STOP
@@ -3208,6 +3438,7 @@ mod test {
                 &mut sender,
                 &ticks,
                 Duration::from_millis(100),
+                None,
                 &cancel,
                 &clock,
                 &rx,
@@ -3227,7 +3458,15 @@ mod test {
             let clock = PlaybackClock::wall();
 
             let (_tx, rx) = mpsc::channel();
-            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock, &rx);
+            run_beat_clock(
+                &mut sender,
+                &ticks,
+                Duration::ZERO,
+                None,
+                &cancel,
+                &clock,
+                &rx,
+            );
 
             let sent = sender.sent.lock();
             assert_eq!(sent.len(), 2);
@@ -3244,7 +3483,15 @@ mod test {
             let clock = PlaybackClock::wall();
 
             let (_tx, rx) = mpsc::channel();
-            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock, &rx);
+            run_beat_clock(
+                &mut sender,
+                &ticks,
+                Duration::ZERO,
+                None,
+                &cancel,
+                &clock,
+                &rx,
+            );
 
             let sent = sender.sent.lock();
             // START + STOP (cancelled before any ticks)
@@ -3267,9 +3514,16 @@ mod test {
             let clock = PlaybackClock::wall();
 
             let (_tx, rx) = mpsc::channel();
-            let interval =
-                run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock, &rx)
-                    .interval();
+            let interval = run_beat_clock(
+                &mut sender,
+                &ticks,
+                Duration::ZERO,
+                None,
+                &cancel,
+                &clock,
+                &rx,
+            )
+            .interval();
 
             // Last two ticks: 6ms - 3ms = 3ms.
             assert_eq!(interval, Some(Duration::from_millis(3)));
@@ -3284,9 +3538,16 @@ mod test {
             let clock = PlaybackClock::wall();
 
             let (_tx, rx) = mpsc::channel();
-            let interval =
-                run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock, &rx)
-                    .interval();
+            let interval = run_beat_clock(
+                &mut sender,
+                &ticks,
+                Duration::ZERO,
+                None,
+                &cancel,
+                &clock,
+                &rx,
+            )
+            .interval();
 
             assert_eq!(interval, None);
         }
@@ -3345,6 +3606,7 @@ mod test {
                 playback_delay: Duration::ZERO,
                 cancel,
                 clock,
+                passes: None,
             }
         }
 
@@ -3361,6 +3623,7 @@ mod test {
                 playback_delay: Duration::ZERO,
                 cancel: cancel.clone(),
                 clock: PlaybackClock::wall(),
+                passes: None,
             };
             thread::spawn(move || {
                 let mut sender = SharedSender::new();
@@ -3594,6 +3857,7 @@ mod test {
                 playback_delay: Duration::ZERO,
                 cancel: CancelHandle::new(),
                 clock: slow_clock.clone(),
+                passes: None,
             }))
             .unwrap();
 
@@ -3906,6 +4170,7 @@ mod test {
                 playback_delay: Duration::ZERO,
                 cancel,
                 clock,
+                passes: None,
             }))
             .unwrap();
 
@@ -3940,6 +4205,7 @@ mod test {
                 playback_delay: Duration::ZERO,
                 cancel,
                 clock: clock.clone(),
+                passes: None,
             }))
             .unwrap();
 

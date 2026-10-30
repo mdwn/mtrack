@@ -416,7 +416,9 @@ impl Player {
 
         // Check if any subsystems are active.
         let has_audio = device.is_some() && mappings.is_some();
-        let has_midi = song.midi_playback().is_some() && midi_device.is_some();
+        // A song with a tempo plays on the MIDI device for its beat clock.
+        let has_midi =
+            midi_device.is_some() && (song.midi_playback().is_some() || song.has_tempo());
         let has_dmx = dmx_engine.is_some();
 
         if !has_audio && !has_midi && !has_dmx {

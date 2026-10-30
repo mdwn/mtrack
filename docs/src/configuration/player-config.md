@@ -164,9 +164,13 @@ midi:
 
   # (Optional) Enable MIDI beat clock output (24 ppqn). When enabled, mtrack sends MIDI System
   # Real-Time messages (Start, Timing Clock, Stop) to synchronize external gear to the song's
-  # tempo. The clock follows the tempo events in the song's MIDI playback file; a song whose
-  # MIDI file has no tempo events sends no beat clock, and the song-level `tempo:` block in
-  # song.yaml does not drive it.
+  # tempo. The clock follows, in order of precedence: the tempo events in the song's MIDI
+  # playback file; else the song-level `tempo:` block in song.yaml (changes and ramps included,
+  # bar 1 on a clock pulse, any count-in before it pulsing at the starting tempo); else the
+  # tempo of the song's click track, as the lighting uses it (each click counts as a quarter
+  # note, so a song clicking eighths wants a `tempo:` block). A song with none of these sends
+  # no beat clock. The clock runs to the end of the song, past where its click or MIDI stops,
+  # and a looping song's clock loops with it.
   #
   # The beat clock thread runs at elevated (real-time) thread priority to minimize timing jitter.
   # On Linux, this requires CAP_SYS_NICE (granted by the systemd service unit). On macOS, no

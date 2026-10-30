@@ -817,6 +817,23 @@ impl Song {
         self.tempo_map.as_ref()
     }
 
+    /// Whether the song has a tempo to drive a beat clock with, short of its
+    /// MIDI file's: an explicit `tempo:` or a click track's beat grid.
+    pub(crate) fn has_tempo(&self) -> bool {
+        self.tempo_map.is_some() || self.beat_grid.is_some()
+    }
+
+    /// The beat clock to play with this song, as pulse times from its start:
+    /// its MIDI file's tempo (`sheet`, the file parsed), else its `tempo:`,
+    /// else its click track's, as its lighting is timed. `None` without any.
+    pub(crate) fn beat_clock(&self, sheet: Option<&MidiSheet>) -> Option<Vec<Duration>> {
+        if let Some(beat_clock) = sheet.and_then(|sheet| sheet.beat_clock.as_ref()) {
+            return Some(beat_clock.ticks_from(Duration::ZERO).to_vec());
+        }
+        let ticks = self.lighting_tempo_map()?.beat_clock_ticks(self.length());
+        (!ticks.is_empty()).then_some(ticks)
+    }
+
     /// The tempo map this song's `.light` files are parsed with: its explicit
     /// `tempo:` block if it has one, otherwise one derived from the click
     /// track's beat grid.
@@ -1532,6 +1549,24 @@ impl Song {
             track.duration = duration;
         }
         song.duration = duration;
+        song
+    }
+
+    /// Test helper: a song lasting `duration` with a steady `tempo:` of `bpm`.
+    #[cfg(test)]
+    pub fn new_for_test_with_tempo(
+        name: &str,
+        track_names: &[&str],
+        duration: Duration,
+        bpm: f64,
+    ) -> Song {
+        let mut song = Self::new_for_test_lasting(name, track_names, duration);
+        song.tempo_map = Some(crate::tempo::TempoMap::new(
+            Duration::ZERO,
+            bpm,
+            crate::tempo::TimeSignature::new(4, 4),
+            vec![],
+        ));
         song
     }
 
@@ -3113,6 +3148,106 @@ mod test {
         // No tempo events in the MIDI file, so beat clock should be None
         assert!(sheet.beat_clock.is_none());
         Ok(())
+    }
+
+    mod beat_clock_source_tests {
+        use super::*;
+        use crate::songs::{MidiSheet, Song};
+        use std::time::Duration;
+
+        /// Parses a one-track MIDI file, 96 ticks to the beat, two beats
+        /// long; with a tempo event at `micros_per_beat` when given.
+        fn sheet(micros_per_beat: Option<u32>) -> Result<MidiSheet, Box<dyn Error>> {
+            let tempdir = tempfile::tempdir()?;
+            let mut track: Vec<u8> = Vec::new();
+            if let Some(micros) = micros_per_beat {
+                track.extend([0x00, 0xFF, 0x51, 0x03]);
+                track.extend(&micros.to_be_bytes()[1..]);
+            }
+            // Two beats on, end of track.
+            track.extend([0x81, 0x40, 0xFF, 0x2F, 0x00]);
+            let mut bytes = vec![
+                0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+                0x4D, 0x54, 0x72, 0x6B,
+            ];
+            bytes.extend((track.len() as u32).to_be_bytes());
+            bytes.extend(track);
+            fs::write(tempdir.path().join("test.mid"), &bytes)?;
+            let config = crate::config::Song::new(
+                "test",
+                None,
+                Some("test.mid".to_string()),
+                None,
+                None,
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                vec![],
+            );
+            crate::songs::MidiPlayback::new(tempdir.path(), config.midi_playback().unwrap())?
+                .midi_sheet()
+        }
+
+        fn song(tempo_bpm: Option<f64>) -> Song {
+            let mut song = Song::new_for_test_lasting("test", &["click"], Duration::from_secs(2));
+            song.tempo_map = tempo_bpm.map(|bpm| {
+                crate::tempo::TempoMap::new(
+                    Duration::ZERO,
+                    bpm,
+                    crate::tempo::TimeSignature::new(4, 4),
+                    vec![],
+                )
+            });
+            song
+        }
+
+        fn pulse(ticks: &[Duration]) -> f64 {
+            (ticks[1] - ticks[0]).as_secs_f64()
+        }
+
+        /// The MIDI file's tempo comes first, over the song's `tempo:`.
+        #[test]
+        fn a_midi_files_tempo_wins_over_the_songs() -> Result<(), Box<dyn Error>> {
+            let sheet = sheet(Some(500_000))?;
+            let ticks = song(Some(60.0)).beat_clock(Some(&sheet)).unwrap();
+            assert!((pulse(&ticks) - 0.5 / 24.0).abs() < 1e-6, "{ticks:?}");
+            Ok(())
+        }
+
+        /// A MIDI file with no tempo of its own leaves the clock to the
+        /// song's `tempo:`, as a song with no MIDI file does.
+        #[test]
+        fn without_a_midi_tempo_the_songs_tempo_drives_it() -> Result<(), Box<dyn Error>> {
+            let sheet = sheet(None)?;
+            for sheet in [Some(&sheet), None] {
+                let ticks = song(Some(60.0)).beat_clock(sheet).unwrap();
+                assert!((pulse(&ticks) - 1.0 / 24.0).abs() < 1e-6, "{ticks:?}");
+                // To the song's end, not the MIDI file's.
+                assert_eq!(ticks.len(), 48, "{ticks:?}");
+            }
+            Ok(())
+        }
+
+        /// With neither, the click track's beat grid, as the lights use it.
+        #[test]
+        fn without_a_tempo_the_click_track_drives_it() {
+            let mut song = song(None);
+            song.beat_grid = Some(crate::audio::click_analysis::BeatGrid {
+                beats: (0..8).map(|beat| beat as f64 * 0.25).collect(),
+                measure_starts: vec![0, 4],
+            });
+            let ticks = song.beat_clock(None).unwrap();
+            assert!((pulse(&ticks) - 0.25 / 24.0).abs() < 1e-6, "{ticks:?}");
+            assert!(*ticks.last().unwrap() < Duration::from_secs(2));
+        }
+
+        /// No tempo anywhere: no clock, as before.
+        #[test]
+        fn without_any_tempo_there_is_no_clock() -> Result<(), Box<dyn Error>> {
+            assert!(song(None).beat_clock(None).is_none());
+            assert!(song(None).beat_clock(Some(&sheet(None)?)).is_none());
+            Ok(())
+        }
     }
 
     #[test]

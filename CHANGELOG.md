@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The beat clock follows a song's tempo without a MIDI file** (#602): the MIDI beat clock
+  came only from tempo events in a song's MIDI file, so a song with a `tempo:` block, or only a
+  click track, sent none. It now follows the MIDI file's tempo, else the song's `tempo:` (tempo
+  changes and ramps included, bar 1 on a pulse, a count-in before it pulsing at the starting
+  tempo), else the click track's tempo as the lighting reads it, to the end of the song. A
+  looping song's clock now loops with it, a pass every song length less its crossfade, where it
+  used to play the first pass and stop.
+
 - **Ending a looping song gracefully**: Stop on a looping song whose playlist entry has a
   `fade_out` now fades it out over that fade, lights included, instead of cutting; the playlist
   stays put, nothing starts after it, and ambient light comes in over the fade's tail (its delay

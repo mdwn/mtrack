@@ -268,6 +268,8 @@ set a `fade_out` in the playlist: see [Transitions](../getting-started/playlists
 The optional `tempo:` block describes the song's tempo and meter explicitly. When present it
 is the canonical source of the song's beat grid, used for section resolution, the beat/measure
 display, pilot hints and metronome generation — taking precedence over click track analysis.
+It also drives the [MIDI beat clock](player-config.md) when that is on, unless the song's MIDI
+file has tempo events of its own, which come first.
 
 ```yaml
 tempo:

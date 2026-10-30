@@ -300,6 +300,27 @@ impl TempoChangePosition {
     }
 }
 
+/// Where [`TempoMap::integrate_through_segments`] stands just past a change:
+/// the beat position and time of the change, and the tempo from there.
+struct SegmentState {
+    beats: f64,
+    time: Duration,
+    bpm: f64,
+    ramp: Option<SegmentRamp>,
+}
+
+impl SegmentState {
+    /// The time of a beat position at or past this state's, before the next.
+    fn time_at(&self, beats: f64) -> Duration {
+        self.time
+            + Duration::from_secs_f64(segment_secs_for_beats(
+                self.ramp.as_ref(),
+                self.bpm,
+                beats - self.beats,
+            ))
+    }
+}
+
 /// Tempo map that tracks tempo and time signature changes over time
 #[derive(Debug, Clone)]
 pub struct TempoMap {
@@ -755,6 +776,54 @@ impl TempoMap {
         Some(result_time)
     }
 
+    /// The state [`TempoMap::integrate_through_segments`] reaches at each
+    /// change, from bar 1 on, so that the time of many beat positions can be
+    /// read off without walking the changes again for each. The arithmetic is
+    /// that walk's own, so a position lands exactly where it puts it. `None`
+    /// where that walk gives none.
+    fn segment_states(
+        &self,
+        ts_changes: &[(u32, f64, TimeSignature)],
+    ) -> Option<Vec<SegmentState>> {
+        let mut state = SegmentState {
+            beats: 0.0,
+            time: self.start_offset,
+            bpm: self.initial_bpm,
+            ramp: None,
+        };
+        let mut states = Vec::with_capacity(self.changes.len() + 1);
+        for change in &self.changes {
+            let change_time = change.position.absolute_time()?;
+            let change_beats = self.compute_change_beats(change, change_time, ts_changes)?;
+
+            let advanced_secs =
+                segment_secs_for_beats(state.ramp.as_ref(), state.bpm, change_beats - state.beats);
+            let bpm_at_change = match state.ramp.as_ref() {
+                Some(ramp) => ramp.bpm_after_secs(advanced_secs),
+                None => state.bpm,
+            };
+            let mut next = SegmentState {
+                beats: change_beats,
+                time: state.time + Duration::from_secs_f64(advanced_secs),
+                bpm: state.bpm,
+                ramp: state.ramp.and_then(|ramp| ramp.advanced_by(advanced_secs)),
+            };
+            if let Some(new_bpm) = change.bpm {
+                next.ramp = self.ramp_started_by(
+                    change,
+                    new_bpm,
+                    bpm_at_change,
+                    change_time,
+                    Duration::ZERO,
+                );
+                next.bpm = new_bpm;
+            }
+            states.push(std::mem::replace(&mut state, next));
+        }
+        states.push(state);
+        Some(states)
+    }
+
     /// The ramp a tempo change to `new_bpm` starts, given the BPM actually in
     /// effect when it is reached; `None` for a snap.
     fn ramp_started_by(
@@ -1037,11 +1106,249 @@ impl TempoMap {
         let start_beats = snap_beats(self.beats_at_measures(start_measures, &ts_changes));
         end.saturating_sub(self.score_time_at_beats(start_beats, &ts_changes))
     }
+
+    /// The times of a MIDI beat clock's pulses, 24 to the quarter note, from
+    /// the start of the song up to `until`.
+    ///
+    /// Bar 1 falls on a pulse, and the pulses follow every tempo change and
+    /// ramp from there. Any time before bar 1 (a count-in, a lead-in) pulses
+    /// at the starting tempo, in phase with it, so gear following the clock
+    /// is already on the beat when bar 1 comes.
+    pub(crate) fn beat_clock_ticks(&self, until: Duration) -> Vec<Duration> {
+        const PULSES_PER_QUARTER: f64 = 24.0;
+        // A bound for a degenerate map: an hour at 300 BPM is ~430k pulses.
+        const MAX_PULSES: usize = 2_000_000;
+
+        let mut ticks = Vec::new();
+        if !self.initial_bpm.is_finite() || self.initial_bpm <= 0.0 {
+            return ticks;
+        }
+        let ts_changes = self.build_time_signature_changes();
+        let Some(states) = self.segment_states(&ts_changes) else {
+            return ticks;
+        };
+
+        let interval = 60.0 / self.initial_bpm / PULSES_PER_QUARTER;
+        let start = self.start_offset.as_secs_f64();
+        let lead = (start / interval).floor() as usize;
+        for k in (1..=lead.min(MAX_PULSES)).rev() {
+            let at = start - k as f64 * interval;
+            if at >= 0.0 && at < until.as_secs_f64() {
+                ticks.push(Duration::from_secs_f64(at));
+            }
+        }
+
+        // Pulses only move forward, so the segment each falls in does too.
+        let mut segment = 0;
+        for k in 0..MAX_PULSES {
+            let beats = k as f64 / PULSES_PER_QUARTER;
+            while states
+                .get(segment + 1)
+                .is_some_and(|next| next.beats <= beats)
+            {
+                segment += 1;
+            }
+            let at = states[segment].time_at(beats);
+            if at >= until {
+                break;
+            }
+            ticks.push(at);
+        }
+        ticks
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod beat_clock_ticks_tests {
+        use super::*;
+
+        const PULSE_120: f64 = 0.5 / 24.0;
+
+        fn map(start: Duration, bpm: f64, changes: Vec<TempoChange>) -> TempoMap {
+            TempoMap::new(start, bpm, TimeSignature::new(4, 4), changes)
+        }
+
+        fn secs(ticks: &[Duration]) -> Vec<f64> {
+            ticks.iter().map(Duration::as_secs_f64).collect()
+        }
+
+        /// 24 pulses to the quarter note at the map's tempo, from the start
+        /// of the song and short of `until`.
+        #[test]
+        fn a_steady_tempo_pulses_evenly_up_to_the_end() {
+            let ticks = secs(
+                &map(Duration::ZERO, 120.0, vec![]).beat_clock_ticks(Duration::from_millis(990)),
+            );
+            assert_eq!(ticks.len(), 48, "{ticks:?}");
+            for (k, at) in ticks.iter().enumerate() {
+                assert!(
+                    (at - k as f64 * PULSE_120).abs() < 1e-6,
+                    "pulse {k} at {at}"
+                );
+            }
+        }
+
+        /// A count-in before bar 1 pulses at the starting tempo, in phase:
+        /// bar 1 falls exactly on a pulse.
+        #[test]
+        fn time_before_bar_one_pulses_in_phase_with_it() {
+            let ticks = secs(
+                &map(Duration::from_millis(1_010), 120.0, vec![])
+                    .beat_clock_ticks(Duration::from_secs(2)),
+            );
+            let bar_one = ticks
+                .iter()
+                .position(|at| (at - 1.010).abs() < 1e-6)
+                .expect("a pulse on bar 1");
+            // 1.010 s holds 48 whole pulses and a part one: the first pulse
+            // is that part in, not at zero.
+            assert_eq!(bar_one, 48);
+            assert!((ticks[0] - 0.010).abs() < 1e-6, "{}", ticks[0]);
+            for pair in ticks.windows(2) {
+                assert!((pair[1] - pair[0] - PULSE_120).abs() < 1e-6, "{pair:?}");
+            }
+        }
+
+        /// A tempo change lands on a pulse and the pulses after it run at
+        /// the new tempo.
+        #[test]
+        fn a_tempo_change_retunes_the_pulses_from_the_change() {
+            let ticks = secs(
+                &map(
+                    Duration::ZERO,
+                    120.0,
+                    vec![TempoChange {
+                        position: TempoChangePosition::Time(Duration::from_secs(5)),
+                        original_measure_beat: None,
+                        bpm: Some(180.0),
+                        time_signature: None,
+                        transition: TempoTransition::Snap,
+                    }],
+                )
+                .beat_clock_ticks(Duration::from_secs(7)),
+            );
+            // Ten beats at 120 BPM: the change is pulse 240.
+            assert!((ticks[240] - 5.0).abs() < 1e-6, "{}", ticks[240]);
+            assert!((ticks[240] - ticks[239] - PULSE_120).abs() < 1e-6);
+            let pulse_180 = 60.0 / 180.0 / 24.0;
+            assert!((ticks[241] - ticks[240] - pulse_180).abs() < 1e-6);
+            assert!((ticks.last().unwrap() - ticks[ticks.len() - 2] - pulse_180).abs() < 1e-6);
+        }
+
+        /// Through a ramp the pulses speed up steadily, and every 24th one
+        /// falls on the beat the tempo map (and the lighting) puts there.
+        #[test]
+        fn a_ramp_is_followed_pulse_by_pulse_and_stays_on_the_beat() {
+            let tempo = map(
+                Duration::from_millis(250),
+                120.0,
+                vec![TempoChange {
+                    position: TempoChangePosition::Time(Duration::from_secs(2)),
+                    original_measure_beat: None,
+                    bpm: Some(180.0),
+                    time_signature: None,
+                    transition: TempoTransition::Beats(8.0, TransitionCurve::Linear),
+                }],
+            );
+            let all = tempo.beat_clock_ticks(Duration::from_secs(10));
+            // Pulses from bar 1 on: the lead-in is 12 of them.
+            let lead = all
+                .iter()
+                .take_while(|at| **at < Duration::from_millis(250))
+                .count();
+            let ticks = secs(&all[lead..]);
+            for pair in ticks.windows(2) {
+                assert!(pair[1] > pair[0], "{pair:?}");
+            }
+            let gaps: Vec<f64> = ticks.windows(2).map(|p| p[1] - p[0]).collect();
+            let first = gaps.first().unwrap();
+            let last = gaps.last().unwrap();
+            assert!((first - PULSE_120).abs() < 1e-6);
+            assert!((last - 60.0 / 180.0 / 24.0).abs() < 1e-6);
+            for pair in gaps.windows(2) {
+                assert!(pair[1] <= pair[0] + 5e-9, "a ramp up slowed down: {pair:?}");
+            }
+            for quarter in (0..ticks.len()).step_by(24) {
+                let beat = quarter / 24;
+                let on_beat = tempo
+                    .measure_to_time_with_offset(
+                        beat as u32 / 4 + 1,
+                        (beat % 4) as f64 + 1.0,
+                        0,
+                        0.0,
+                    )
+                    .unwrap()
+                    .as_secs_f64();
+                assert!(
+                    (ticks[quarter] - on_beat).abs() < 1e-6,
+                    "beat {beat}: pulse at {}, beat at {on_beat}",
+                    ticks[quarter]
+                );
+            }
+        }
+
+        /// Pulses are in quarter notes whatever the bar: 6/8 does not change
+        /// their spacing, only where the bars fall.
+        #[test]
+        fn the_metre_does_not_change_the_pulse() {
+            let ticks = secs(
+                &TempoMap::new(Duration::ZERO, 120.0, TimeSignature::new(6, 8), vec![])
+                    .beat_clock_ticks(Duration::from_secs(1)),
+            );
+            for pair in ticks.windows(2) {
+                assert!((pair[1] - pair[0] - PULSE_120).abs() < 1e-6, "{pair:?}");
+            }
+        }
+
+        /// Snaps, ramps in beats and in bars, and metre changes: every pulse
+        /// is where the tempo map's own beat-to-time walk puts its position.
+        #[test]
+        fn every_pulse_is_where_the_tempo_map_puts_it() {
+            let changes = (1..40)
+                .map(|i| TempoChange {
+                    position: TempoChangePosition::Time(Duration::from_secs(i * 10)),
+                    original_measure_beat: None,
+                    bpm: Some(100.0 + (i % 7) as f64 * 10.0),
+                    time_signature: (i % 5 == 0).then(|| TimeSignature::new(7, 8)),
+                    transition: match i % 3 {
+                        0 => TempoTransition::Beats(4.0, TransitionCurve::Linear),
+                        1 => TempoTransition::Measures(2.0, TransitionCurve::Linear),
+                        _ => TempoTransition::Snap,
+                    },
+                })
+                .collect();
+            let tempo = TempoMap::new(
+                Duration::from_secs(2),
+                120.0,
+                TimeSignature::new(4, 4),
+                changes,
+            );
+            let ticks = tempo.beat_clock_ticks(Duration::from_secs(420));
+            let ts_changes = tempo.build_time_signature_changes();
+            let lead = ticks
+                .iter()
+                .take_while(|at| **at < Duration::from_secs(2))
+                .count();
+            assert!(ticks.len() > 20_000, "{}", ticks.len());
+            for (k, at) in ticks[lead..].iter().enumerate() {
+                let want = tempo
+                    .integrate_through_segments(k as f64 / 24.0, &ts_changes, Duration::ZERO)
+                    .unwrap();
+                assert_eq!(*at, want, "pulse {k}");
+            }
+        }
+
+        /// No time, no pulses.
+        #[test]
+        fn nothing_to_play_has_no_pulses() {
+            assert!(map(Duration::ZERO, 120.0, vec![])
+                .beat_clock_ticks(Duration::ZERO)
+                .is_empty());
+        }
+    }
 
     // ── TimeSignature ──────────────────────────────────────────────
 
