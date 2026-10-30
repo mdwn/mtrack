@@ -51,6 +51,36 @@ use super::{
 /// never reaches this path at all.
 const TERMINAL_GRACE: Duration = Duration::from_secs(30);
 
+/// What a hardware reload did: begun at once, or deferred until the player
+/// is idle. A config change's reply says which, or a change deferred under
+/// a song reads as one that has taken effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HardwareReload {
+    /// The hardware is coming up on the current config.
+    Applied,
+    /// A song is playing, paused or fading out, or an auto play is waiting:
+    /// the reload runs once the player is idle.
+    Deferred,
+}
+
+impl HardwareReload {
+    /// Whether the change has been applied to the running hardware.
+    pub fn applied(self) -> bool {
+        self == HardwareReload::Applied
+    }
+
+    /// What a config change's reply says of the reload, when deferred.
+    pub fn message(self) -> Option<&'static str> {
+        match self {
+            HardwareReload::Applied => None,
+            HardwareReload::Deferred => Some(
+                "The config was saved. A song is playing or paused, so the hardware \
+                 reload waits until the player is idle, and the change takes effect then.",
+            ),
+        }
+    }
+}
+
 /// How often an unchanged init failure is repeated in the log.
 const FAILURE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -565,8 +595,9 @@ impl Player {
     /// then left the save acknowledged and the rig running the old config
     /// until something else reloaded it (#578). A song still fading out, as
     /// a looping song ends or after a loop break, holds it too: the reset
-    /// would cut the fade short.
-    pub async fn reload_hardware(self: &Arc<Self>) -> Result<(), Box<dyn Error>> {
+    /// would cut the fade short. Returns which it did, for a config change's
+    /// reply to say.
+    pub async fn reload_hardware(self: &Arc<Self>) -> Result<HardwareReload, Box<dyn Error>> {
         let store = self.config_store().ok_or("No config store available")?;
 
         // Held until this reload has spawned its round, so a concurrent reload
@@ -601,7 +632,7 @@ impl Player {
                 });
             }
             info!("Hardware reload deferred until playback ends");
-            return Ok(());
+            return Ok(HardwareReload::Deferred);
         }
         // This reload covers one deferred before it.
         self.hardware_reload_pending.store(false, Ordering::Relaxed);
@@ -655,7 +686,7 @@ impl Player {
         drop(join);
 
         info!("Hardware reload initiated");
-        Ok(())
+        Ok(HardwareReload::Applied)
     }
 
     /// Runs a hardware reload deferred by playback, if one is pending, now

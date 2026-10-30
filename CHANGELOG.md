@@ -301,7 +301,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reload now waits for the player to go idle, and for a song still fading out (a looping song's
   ending, or after a loop break) to be out, and runs then. A paused song is not idle: it is a
   show in progress that must resume at once, so the reload waits for it to be stopped or moved
-  off, and the web UI's config and profile saves are refused with 409 while it is paused.
+  off, and the web UI's config and profile saves are refused with 409 while it is paused. A
+  config change's reply over MCP, gRPC or the web UI says which: `applied` is false while the
+  reload waits, with a `message` saying why.
 - **A config save no longer drops a waiting auto play (#578)**: a save while an `auto_play` entry
   waited out its gap reloaded the hardware, and when the gap ended the song failed to start
   ("Hardware is still initializing") and was not retried. The gap now counts as playing: the web

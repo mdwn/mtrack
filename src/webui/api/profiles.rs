@@ -24,7 +24,7 @@ use super::super::config_io;
 use super::super::server::WebUiState;
 use tracing::warn;
 
-use super::config_api::{reject_if_playing, reload_hardware_after_mutation};
+use super::config_api::{reject_if_playing, reload_hardware_after_mutation, with_reload};
 use super::helpers::{
     require_configured_dir, resolve_resource_path, spawn_blocking_io, validate_resource_name,
     validate_resource_name_to_write,
@@ -408,12 +408,15 @@ pub(super) async fn put_profile(
                 .into_response());
         }
     }
-    reload_hardware_after_mutation(&state).await;
+    let reload = reload_hardware_after_mutation(&state).await;
 
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({"status": "saved", "filename": filename, "version": version})),
+            Json(with_reload(
+                json!({"status": "saved", "filename": filename, "version": version}),
+                reload,
+            )),
         )
             .into_response(),
     )
@@ -483,12 +486,15 @@ pub(super) async fn delete_profile_file(
                 .into_response());
         }
     }
-    reload_hardware_after_mutation(&state).await;
+    let reload = reload_hardware_after_mutation(&state).await;
 
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({"status": "deleted", "filename": filename})),
+            Json(with_reload(
+                json!({"status": "deleted", "filename": filename}),
+                reload,
+            )),
         )
             .into_response(),
     )
@@ -714,6 +720,8 @@ mod test {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(body["applied"], serde_json::json!(true), "{body}");
 
         // The store — not just the file — must reflect the edit, because that
         // is what the hardware reload reads.

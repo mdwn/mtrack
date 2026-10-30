@@ -3977,37 +3977,50 @@ impl McpServer {
     /// Applies a saved config change to the running hardware and answers
     /// with the new snapshot, as the gRPC config updates do. A change saved
     /// here was otherwise not applied until something else reloaded the
-    /// hardware or mtrack restarted. During playback the reload waits for
-    /// it to end. Controllers are restarted only by a change to them.
+    /// hardware or mtrack restarted. While a song plays or is paused the
+    /// reload waits for the player to be idle, and the reply says so, with
+    /// `applied: false`. Controllers are restarted only by a change to them.
     async fn reload_and_respond(
         &self,
         snapshot: crate::config::store::ConfigSnapshot,
     ) -> Result<CallToolResult, McpError> {
-        if let Err(e) = self
+        let reload = match self
             .player
             .reload_hardware()
             .await
             .map_err(|e| e.to_string())
         {
-            tracing::warn!("Hardware reload after config update failed: {}", e);
-            return Err(McpError::internal_error(
-                format!(
-                    "the config was saved but the running hardware was not reloaded, so it \
-                     will not take effect until the next reload or restart: {e}"
-                ),
-                None,
-            ));
-        }
-        Ok(snapshot_response(&snapshot))
+            Ok(reload) => reload,
+            Err(e) => {
+                tracing::warn!("Hardware reload after config update failed: {}", e);
+                return Err(McpError::internal_error(
+                    format!(
+                        "the config was saved but the running hardware was not reloaded, so \
+                         it will not take effect until the next reload or restart: {e}"
+                    ),
+                    None,
+                ));
+            }
+        };
+        Ok(snapshot_response(&snapshot, reload))
     }
 }
 
-/// Returns a tool response containing the updated config YAML and new checksum.
-pub(crate) fn snapshot_response(snapshot: &crate::config::store::ConfigSnapshot) -> CallToolResult {
-    ok_json(json!({
+/// Returns a tool response containing the updated config YAML and new
+/// checksum, and whether the change has been applied to the hardware.
+pub(crate) fn snapshot_response(
+    snapshot: &crate::config::store::ConfigSnapshot,
+    reload: crate::player::HardwareReload,
+) -> CallToolResult {
+    let mut response = json!({
         "yaml": snapshot.yaml,
         "checksum": snapshot.checksum,
-    }))
+        "applied": reload.applied(),
+    });
+    if let Some(message) = reload.message() {
+        response["message"] = json!(message);
+    }
+    ok_json(response)
 }
 
 /// Parses a YAML string into `T`, returning an MCP `invalid_params` error.

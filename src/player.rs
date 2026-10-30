@@ -16,6 +16,8 @@ mod navigation;
 mod playback;
 mod seek;
 
+pub use hardware::HardwareReload;
+
 use midly::live::LiveEvent;
 use parking_lot::RwLock;
 use std::fmt;

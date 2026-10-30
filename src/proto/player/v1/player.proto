@@ -369,6 +369,12 @@ message UpdateConfigResponse {
     string yaml = 1;
     // New checksum after the update.
     string checksum = 2;
+    // Whether the change has been applied to the running hardware. False
+    // when it was saved but the hardware reload waits for the player to be
+    // idle: a song playing, paused or fading out.
+    bool applied = 3;
+    // Why the change has not been applied yet, when it has not.
+    string message = 4;
 }
 
 // LoopSectionRequest activates section looping for a named section.

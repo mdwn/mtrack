@@ -127,8 +127,12 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
     }
     // The running hardware was set up from the config before the save, and
     // matches it only once reloaded from the store's copy, which now holds it.
-    reload_hardware_after_mutation(&state).await;
-    (StatusCode::OK, Json(json!({"status": "saved"}))).into_response()
+    let reload = reload_hardware_after_mutation(&state).await;
+    (
+        StatusCode::OK,
+        Json(with_reload(json!({"status": "saved"}), reload)),
+    )
+        .into_response()
 }
 
 /// POST /api/config/validate — validates player config YAML without saving.
@@ -162,14 +166,19 @@ fn config_store_error_response(e: config::ConfigError) -> axum::response::Respon
     }
 }
 
-/// Helper to convert a ConfigSnapshot into a JSON response.
+/// Helper to convert a ConfigSnapshot into a JSON response, with what became
+/// of the hardware reload.
 fn config_snapshot_response(
     snapshot: config::store::ConfigSnapshot,
     status: StatusCode,
+    reload: serde_json::Map<String, serde_json::Value>,
 ) -> axum::response::Response {
     (
         status,
-        Json(json!({"yaml": snapshot.yaml, "checksum": snapshot.checksum})),
+        Json(with_reload(
+            json!({"yaml": snapshot.yaml, "checksum": snapshot.checksum}),
+            reload,
+        )),
     )
         .into_response()
 }
@@ -214,14 +223,50 @@ pub(super) async fn reject_if_playing(state: &WebUiState) -> Option<axum::respon
 /// spawns async device discovery and returns immediately. The broadcast channel
 /// is already stored on the Player and will be wired when the DMX engine comes up.
 /// A song started since `reject_if_playing` defers the hardware reload until
-/// playback ends, so the save still answers 200: it takes effect then.
-pub(super) async fn reload_hardware_after_mutation(state: &WebUiState) {
-    if let Err(e) = state.player.reload_hardware().await {
-        warn!("Hardware reload failed: {}", e);
-    }
+/// playback ends, so the save still answers 200: it takes effect then. Returns
+/// what the reply says of it: `applied`, and a `message` when it is not.
+pub(super) async fn reload_hardware_after_mutation(
+    state: &WebUiState,
+) -> serde_json::Map<String, serde_json::Value> {
+    let reload = state
+        .player
+        .reload_hardware()
+        .await
+        .map_err(|e| e.to_string());
     if let Err(e) = state.player.reload_controllers().await {
         warn!("Controller reload failed: {}", e);
     }
+    let mut fields = serde_json::Map::new();
+    match reload {
+        Ok(reload) => {
+            fields.insert("applied".into(), json!(reload.applied()));
+            if let Some(message) = reload.message() {
+                fields.insert("message".into(), json!(message));
+            }
+        }
+        Err(e) => {
+            warn!("Hardware reload failed: {}", e);
+            fields.insert("applied".into(), json!(false));
+            fields.insert(
+                "message".into(),
+                json!(format!(
+                    "The config was saved, but the hardware reload failed: {e}"
+                )),
+            );
+        }
+    }
+    fields
+}
+
+/// Adds what became of a save's hardware reload to its reply.
+pub(super) fn with_reload(
+    mut body: serde_json::Value,
+    reload: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
+    if let Some(body) = body.as_object_mut() {
+        body.extend(reload);
+    }
+    body
 }
 
 /// GET /api/config/store — returns config YAML + checksum via the ConfigStore.
@@ -331,8 +376,8 @@ async fn finish_config_update(
 ) -> axum::response::Response {
     match result {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(state).await;
-            config_snapshot_response(snapshot, StatusCode::OK)
+            let reload = reload_hardware_after_mutation(state).await;
+            config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -416,8 +461,8 @@ pub(super) async fn put_config_controllers(
     };
     match store.update_controllers(controllers, &checksum).await {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
-            config_snapshot_response(snapshot, StatusCode::OK)
+            let reload = reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -472,8 +517,8 @@ pub(super) async fn put_config_samples(
         .await
     {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
-            config_snapshot_response(snapshot, StatusCode::OK)
+            let reload = reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -521,7 +566,7 @@ pub(super) async fn put_config_metronome(
     let default_enabled = metronome.as_ref().is_some_and(|m| m.enabled);
     match store.update_metronome(metronome, &checksum).await {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
+            let reload = reload_hardware_after_mutation(&state).await;
             // The default-on flag is applied at song load; refresh both.
             state.player.set_default_metronome(default_enabled);
             state.player.reload_songs(
@@ -529,7 +574,7 @@ pub(super) async fn put_config_metronome(
                 state.playlists_dir.as_deref(),
                 state.legacy_playlist_path.as_deref(),
             );
-            config_snapshot_response(snapshot, StatusCode::OK)
+            config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -579,8 +624,8 @@ pub(super) async fn post_config_profile(
     };
     match store.add_profile(profile, &checksum).await {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
-            config_snapshot_response(snapshot, StatusCode::CREATED)
+            let reload = reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::CREATED, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -633,8 +678,8 @@ pub(super) async fn put_config_profile(
 
     match store.update_profile(index, profile, &checksum).await {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
-            config_snapshot_response(snapshot, StatusCode::OK)
+            let reload = reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -667,8 +712,8 @@ pub(super) async fn delete_config_profile(
     };
     match store.remove_profile(index, &checksum).await {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
-            config_snapshot_response(snapshot, StatusCode::OK)
+            let reload = reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -1147,6 +1192,7 @@ mod test {
         assert!(result["yaml"].is_string());
         assert!(result["checksum"].is_string());
         assert!(!result["checksum"].as_str().unwrap().is_empty());
+        assert_eq!(result["applied"], serde_json::json!(true), "{result}");
     }
 
     /// A raw config save wrote the file and left the store's copy as it
@@ -1252,6 +1298,8 @@ mod test {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(body["applied"], serde_json::json!(true), "{body}");
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
             state.player.await_hardware_ready(),
@@ -1283,7 +1331,12 @@ mod test {
 
         assert!(super::reject_if_playing(&state).await.is_none());
         state.player.play().await.unwrap();
-        super::reload_hardware_after_mutation(&state).await;
+        let reload = super::reload_hardware_after_mutation(&state).await;
+        // The save's reply says it has not been applied yet.
+        assert_eq!(reload["applied"], serde_json::json!(false), "{reload:?}");
+        assert!(reload["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("idle")));
         assert!(
             state.player.audio_device().is_some(),
             "the hardware was reset under the song"

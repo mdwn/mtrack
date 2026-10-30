@@ -5720,7 +5720,7 @@ async fn mcp_config_update_reloads_the_hardware() -> Result<(), Box<dyn Error>> 
 
     let cfg = tool_json(&call_tool(&client, &url, &session, 10, "get_config", json!({})).await);
     let checksum = cfg["checksum"].as_str().expect("checksum").to_string();
-    tool_json(
+    let updated = tool_json(
         &call_tool(
             &client,
             &url,
@@ -5731,6 +5731,8 @@ async fn mcp_config_update_reloads_the_hardware() -> Result<(), Box<dyn Error>> 
         )
         .await,
     );
+    assert_eq!(updated["applied"], json!(true), "{updated}");
+    assert!(updated.get("message").is_none(), "{updated}");
 
     tokio::time::timeout(Duration::from_secs(10), player.await_hardware_ready())
         .await
@@ -5739,6 +5741,60 @@ async fn mcp_config_update_reloads_the_hardware() -> Result<(), Box<dyn Error>> 
         player.audio_device().is_none(),
         "the audio removed over MCP is still set up"
     );
+    controller.shutdown();
+    Ok(())
+}
+
+/// A config change made over MCP while a song plays or is paused is saved,
+/// and the hardware reload waits for the song: the reply says it has not
+/// been applied yet, rather than reading as a change that took effect.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_config_update_while_paused_says_it_is_deferred() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // The fixture's show names fixtures its config does not have, so its
+    // song will not play; a paused one holds the reload as a playing one
+    // does, and a seek while stopped leaves it as a pause does.
+    player.seek_to(Duration::from_millis(100)).await?;
+    assert!(player.pending_start().is_some(), "paused");
+    let cfg = tool_json(&call_tool(&client, &url, &session, 10, "get_config", json!({})).await);
+    let checksum = cfg["checksum"].as_str().expect("checksum").to_string();
+    let updated = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            11,
+            "update_audio",
+            json!({"body": null, "expected_checksum": checksum}),
+        )
+        .await,
+    );
+    assert_eq!(updated["applied"], json!(false), "{updated}");
+    assert!(
+        updated["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("idle")),
+        "{updated}"
+    );
+    assert!(updated["checksum"].is_string(), "{updated}");
+    assert!(player.audio_device().is_some(), "reloaded under the pause");
+
+    player.stop().await;
     controller.shutdown();
     Ok(())
 }
