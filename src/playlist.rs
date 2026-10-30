@@ -415,6 +415,44 @@ pub fn validate_transitions(
     Ok(transitions)
 }
 
+/// Checks a playlist about to be written as [`validate_transitions`] does,
+/// and that no fade outlasts the song it plays under, counted on the grid
+/// it will be: a fade-out under the next entry's song (its own at the end
+/// of the list), a fade-in under its own. The player cuts such a fade short
+/// rather than drop the playlist on load, so it is refused here, where the
+/// one writing it can fix it (#577).
+pub fn validate_for_write(
+    config: &config::Playlist,
+    registry: &Songs,
+) -> Result<(), PlaylistError> {
+    let transitions = validate_transitions(config, registry)?;
+    let songs: Vec<Option<Arc<Song>>> = config
+        .songs()
+        .iter()
+        .map(|name| registry.get(name).ok())
+        .collect();
+    for (i, entry) in transitions.iter().enumerate() {
+        let Some(song) = &songs[i] else {
+            continue;
+        };
+        let next = songs.get(i + 1).cloned().flatten();
+        let fades = [
+            ("fade_out", entry.fade_out.as_ref(), false),
+            ("fade_in", entry.fade_in.as_ref(), true),
+        ];
+        for (field, fade, fade_in) in fades {
+            let Some(fade) = fade else {
+                continue;
+            };
+            song.check_fade(fade, next.as_deref(), fade_in)
+                .map_err(|e| {
+                    PlaylistError::InvalidTransition(format!("song {}: {field}: {e}", song.name()))
+                })?;
+        }
+    }
+    Ok(())
+}
+
 /// Creates an alphabetized playlist from all available songs.
 pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, PlaylistError> {
     // The easiest thing to do here is to gather the names of all of the songs and pass them
@@ -701,6 +739,60 @@ mod test {
         let new = playlist_from("songs:\n- C\n- A\n- A\n").unwrap();
         new.follow(&old, true);
         assert_eq!(new.entry(), Some(2));
+    }
+
+    /// A registry of 4-second songs on disk: A loops with no grid, B has
+    /// one at 120 bpm in 4/4.
+    fn songs_on_disk() -> (Arc<Songs>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, extra) in [
+            ("A", "loop_playback: true\n"),
+            ("B", "tempo:\n  bpm: 120\n  time_signature: 4/4\n"),
+        ] {
+            let song_dir = dir.path().join(name);
+            std::fs::create_dir_all(&song_dir).unwrap();
+            crate::testutil::write_wav(song_dir.join("t.wav"), vec![vec![0_i32; 8000 * 4]], 8000)
+                .unwrap();
+            std::fs::write(
+                song_dir.join("song.yaml"),
+                format!("name: {name}\ntracks:\n  - name: t\n    file: t.wav\n{extra}"),
+            )
+            .unwrap();
+        }
+        (songs::get_all_songs(dir.path()).unwrap(), dir)
+    }
+
+    /// The playlist written as `yaml`.
+    fn config_from(yaml: &str) -> config::Playlist {
+        ::config::Config::builder()
+            .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_write_refuses_a_fade_longer_than_the_song_under_it() {
+        // #577: seconds had a bound and measures none, so a million
+        // measures saved and made a 33-day ending.
+        let (registry, _dir) = songs_on_disk();
+        let long = config_from("songs:\n- song: A\n  fade_out: 1000000measures\n- B\n");
+        let err = super::validate_for_write(&long, &registry)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("song A: fade_out") && err.contains("B"),
+            "{err}"
+        );
+        // Loading it is another matter: the player cuts it short instead.
+        assert!(super::Playlist::new("p", &long, Arc::clone(&registry)).is_ok());
+
+        let fits =
+            config_from("songs:\n- song: A\n  fade_out: 1measure\n- song: B\n  fade_in: 1s\n");
+        assert!(super::validate_for_write(&fits, &registry).is_ok());
+        let long_in = config_from("songs:\n- A\n- song: B\n  fade_in: 3measures\n");
+        assert!(super::validate_for_write(&long_in, &registry).is_err());
     }
 
     #[test]

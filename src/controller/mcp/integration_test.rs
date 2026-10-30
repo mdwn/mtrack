@@ -3853,7 +3853,7 @@ async fn mcp_write_playlist_checks_transitions() -> Result<(), Box<dyn Error>> {
         assert_eq!(std::fs::read_to_string(&path)?, before, "nothing written");
     }
 
-    let good = "kind: playlist\nsongs:\n- song: DSL Light Show Song\n  fade_out: {length: 1measure, curve: linear, lights: 0s}\n  fade_in: 2s\n";
+    let good = "kind: playlist\nsongs:\n- song: DSL Light Show Song\n  fade_out: {length: 1measure, curve: linear, lights: 0s}\n  fade_in: 250ms\n";
     let response = call_tool(
         &client,
         &url,
@@ -3874,7 +3874,7 @@ async fn mcp_write_playlist_checks_transitions() -> Result<(), Box<dyn Error>> {
     assert_eq!(transitions["fade_out"]["lights"], "0s");
     assert!(transitions["fade_out"]["exclude"].is_null(), "the default");
     assert_eq!(transitions["next"]["song"], "DSL Light Show Song");
-    assert_eq!(transitions["next"]["fade_in"]["length"], "2s");
+    assert_eq!(transitions["next"]["fade_in"]["length"], "0.25s");
 
     controller.shutdown();
     Ok(())

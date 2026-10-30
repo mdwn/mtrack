@@ -201,8 +201,9 @@ pub(super) async fn put_playlist_by_name(
     };
     // What the player would refuse to load is refused here, before the file
     // is written: a bad fade or ambient, or a fade leaving out a track its
-    // song does not have.
-    if let Err(e) = crate::playlist::validate_transitions(&playlist_config, &state.player.songs()) {
+    // song does not have. So is a fade the player would cut short, longer
+    // than the song it plays under.
+    if let Err(e) = crate::playlist::validate_for_write(&playlist_config, &state.player.songs()) {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({"error": e.to_string()})),

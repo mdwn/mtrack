@@ -220,6 +220,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its place by song across a reload, and a song an edit takes away while it plays stays current
   until the playlist moves on: Next goes to the entry that took its place. A song or playlist
   edit no longer sends any playlist back to its first entry.
+- **A playlist fade can't outlast the song it plays under (#577)**: a `fade_out` in measures or
+  beats had no bound, so `1000000measures` saved and gave a 33-day ending, the prelude playing on
+  at full level under the next song. A fade now lasts at most the song it plays under, counted on
+  the grid it counts on: a `fade_out` the next entry's song (its own at the end of the list), a
+  `fade_in` its own, as a `loop_crossfade` is bound by its song. The playlist editor, the API and
+  MCP `write_playlist` refuse a longer one; one already in a file is cut short to that song, with
+  a warning, rather than the playlist being dropped.
 
 ## [0.17.4] - 2026-10-26
 

@@ -3883,11 +3883,11 @@ impl McpServer {
 
     /// Checks a playlist about to be written: that it parses, and that its
     /// transitions do and name tracks their songs have, as the player will
-    /// when it loads it. Songs it names that do not exist are left to the
-    /// player, as before.
+    /// when it loads it, and that no fade outlasts the song it plays under.
+    /// Songs it names that do not exist are left to the player, as before.
     fn validate_playlist(&self, yaml: &str) -> Result<(), McpError> {
         let config: crate::config::Playlist = serde_yaml_from_str(yaml)?;
-        crate::playlist::validate_transitions(&config, &self.player.songs())
+        crate::playlist::validate_for_write(&config, &self.player.songs())
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         Ok(())
     }

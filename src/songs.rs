@@ -934,8 +934,56 @@ impl Song {
     /// song's own grid when `next` has none. The excluded tracks default to
     /// the song's `loop_crossfade_cut`. `None` when the song cuts with the
     /// short default crossfade: a zero length, or a musical one with no grid
-    /// to count it on.
+    /// to count it on. A fade longer than the song it plays under, `next` (or
+    /// this song, ending with nothing after it), is cut short to that song.
     pub fn fade_out_into(&self, fade: &config::Fade, next: Option<&Song>) -> Option<ResolvedFade> {
+        let resolved = self.fade_out_on_grid(fade, next)?;
+        Some(self.cut_short(resolved, next.unwrap_or(self), "fade_out"))
+    }
+
+    /// How the song fades in, on a playlist's `fade_in`, as it starts under
+    /// a song fading out: beats and measures on its own grid from its first
+    /// bar, and no longer than the song. `None` when it starts at full level.
+    pub fn fade_in(&self, fade: &config::Fade) -> Option<ResolvedFade> {
+        let resolved = self.resolve_fade(fade, self.lighting_tempo_map().as_ref(), "fade_in")?;
+        Some(self.cut_short(resolved, self, "fade_in"))
+    }
+
+    /// Checks `fade`, a playlist entry's `fade_out` for this song handing
+    /// over to `next`, or its `fade_in` (`next` of `None` and `fade_in`
+    /// set): an error when, counted on the grid it will be, it outlasts the
+    /// song it plays under, which [`Song::fade_out_into`] and
+    /// [`Song::fade_in`] would cut short.
+    pub fn check_fade(
+        &self,
+        fade: &config::Fade,
+        next: Option<&Song>,
+        fade_in: bool,
+    ) -> Result<(), String> {
+        let (resolved, under) = if fade_in {
+            let grid = self.lighting_tempo_map();
+            (self.resolve_fade(fade, grid.as_ref(), "fade_in"), self)
+        } else {
+            (self.fade_out_on_grid(fade, next), next.unwrap_or(self))
+        };
+        let Some((resolved, bound)) = resolved.zip(Self::fade_bound(under)) else {
+            return Ok(());
+        };
+        let longest = resolved.length.max(resolved.lights);
+        if longest > bound {
+            return Err(format!(
+                "{} lasts {:.3}s, longer than {} ({:.3}s), which it plays under",
+                fade.length,
+                longest.as_secs_f64(),
+                under.name(),
+                bound.as_secs_f64()
+            ));
+        }
+        Ok(())
+    }
+
+    /// [`Song::fade_out_into`] before it is cut short.
+    fn fade_out_on_grid(&self, fade: &config::Fade, next: Option<&Song>) -> Option<ResolvedFade> {
         let grid = next
             .and_then(|next| next.lighting_tempo_map())
             .or_else(|| self.lighting_tempo_map());
@@ -949,11 +997,31 @@ impl Song {
         })
     }
 
-    /// How the song fades in, on a playlist's `fade_in`, as it starts under
-    /// a song fading out: beats and measures on its own grid from its first
-    /// bar. `None` when it starts at full level.
-    pub fn fade_in(&self, fade: &config::Fade) -> Option<ResolvedFade> {
-        self.resolve_fade(fade, self.lighting_tempo_map().as_ref(), "fade_in")
+    /// The longest a fade playing under `under` may last: the song's length,
+    /// as a loop crossfade is bound by its song. Past it the song a fade
+    /// hands over to is over, and the one fading drones on under whatever
+    /// comes next (#577). `None` for a song with no length to measure by.
+    fn fade_bound(under: &Song) -> Option<Duration> {
+        Some(under.length()).filter(|length| !length.is_zero())
+    }
+
+    /// `fade` no longer than the song it plays under, `under`.
+    fn cut_short(&self, mut fade: ResolvedFade, under: &Song, field: &str) -> ResolvedFade {
+        let Some(bound) = Self::fade_bound(under) else {
+            return fade;
+        };
+        if fade.length.max(fade.lights) > bound {
+            warn!(
+                song = self.name(),
+                under = under.name(),
+                length_ms = fade.length.as_millis() as u64,
+                bound_ms = bound.as_millis() as u64,
+                "{field} is longer than the song it plays under; cutting it short to that"
+            );
+            fade.length = fade.length.min(bound);
+            fade.lights = fade.lights.min(bound);
+        }
+        fade
     }
 
     /// A fade's lengths on `grid`, counted from its first bar so any lead-in
@@ -2243,6 +2311,44 @@ mod test {
         // A fade-in counts on the song's own grid.
         assert!(close(length(song.fade_in(&bar)), 6.0 * 60.0 / 169.0));
         assert!(prelude.fade_in(&bar).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn a_fade_is_no_longer_than_the_song_it_plays_under() -> Result<(), Box<dyn Error>> {
+        use std::time::Duration;
+        // #577: a million measures on the next song's grid made a 33-day
+        // fade, the prelude droning on under everything after it.
+        let prelude = song_with("loop_playback: true\n")?;
+        let song = song_with("tempo:\n  bpm: 120\n  time_signature: 4/4\n")?;
+        let long = fade("1000000measures");
+        let out = prelude.fade_out_into(&long, Some(&song)).unwrap();
+        assert_eq!(out.length, song.length());
+        assert_eq!(out.lights, song.length());
+        let err = prelude.check_fade(&long, Some(&song), false).unwrap_err();
+        assert!(
+            err.contains("1000000measures") && err.contains("longer than s"),
+            "{err}"
+        );
+
+        // One that fits plays as written; with nothing after it, a fade
+        // out is bound by its own song, and a fade in by its own.
+        let bar = fade("1measure");
+        assert_eq!(
+            prelude.fade_out_into(&bar, Some(&song)).unwrap().length,
+            Duration::from_secs(2)
+        );
+        assert!(prelude.check_fade(&bar, Some(&song), false).is_ok());
+        assert!(prelude.check_fade(&fade("5s"), None, false).is_err());
+        assert!(prelude.check_fade(&fade("3s"), None, false).is_ok());
+        assert!(song.check_fade(&fade("3measures"), None, true).is_err());
+        assert_eq!(
+            song.fade_in(&fade("3measures")).unwrap().length,
+            song.length()
+        );
+        // The lights count too.
+        let lights = fade("{length: 1s, lights: 10s}");
+        assert!(prelude.check_fade(&lights, Some(&song), false).is_err());
         Ok(())
     }
 
