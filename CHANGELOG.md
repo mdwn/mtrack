@@ -108,6 +108,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`stop sequence` stops only the sequence it names (#591)**: stopping `verse` also stopped every
+  sequence whose name starts with `verse_`, such as `verse_two`, as the song played and after a
+  seek. A sequence's effects are now matched by its exact name.
 - **A name that would read wrong or vanish is refused (#578)**: a playlist, profile, song or file
   name that was blank, had space at either end, started with a dot (a song directory so named is
   skipped as hidden) or held a control character was accepted. Such names are now refused.

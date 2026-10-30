@@ -4156,6 +4156,24 @@ mod test {
             assert!(engine.outgoing_pass.lock().is_none());
             Ok(())
         }
+
+        #[test]
+        fn stopping_a_sequence_leaves_one_whose_name_starts_with_its_own(
+        ) -> Result<(), Box<dyn Error>> {
+            // #591: stopping "verse" matched the ID prefix `seq_verse_`, so
+            // it took out "verse_two" as well, played through and on a seek.
+            let show = "sequence \"verse\" {\n    @0.000\n    wash: static, color: \"blue\", \
+                duration: 30s, layer: foreground, blend_mode: replace\n}\n\n\
+                sequence \"verse_two\" {\n    @0.000\n    wash: static, color: \"red\", \
+                duration: 30s, layer: background\n}\n\n\
+                show \"s\" {\n    @0.000\n    sequence \"verse\"\n    sequence \"verse_two\"\n    \
+                @5.000\n    stop sequence \"verse\"\n}\n";
+            const RED: (f64, f64, f64) = (255.0, 0.0, 0.0);
+            assert_eq!(played_frame(show, 4.0)?, (0.0, 0.0, 255.0));
+            assert_eq!(played_frame(show, 6.0)?, RED);
+            assert_eq!(seek_frame(show, 6.0)?, RED, "seek to 6 s");
+            Ok(())
+        }
     }
 
     mod start_lighting_timeline_tests {

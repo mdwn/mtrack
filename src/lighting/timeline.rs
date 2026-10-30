@@ -354,12 +354,11 @@ fn replay(cues: &[Cue]) -> Replay {
             // mirroring what EffectEngine::stop_sequence() does at runtime.
             // Stopping a sequence does not release pose memory either.
             for seq_name in &cue.stop_sequences {
-                let prefix = format!("seq_{}_", seq_name);
                 let stopped: Vec<EffectLayer> = result
                     .effects_with_elapsed
-                    .iter()
-                    .filter(|(id, _)| id.starts_with(&prefix))
-                    .map(|(_, (effect, _))| effect.layer)
+                    .values()
+                    .filter(|(effect, _)| effect.is_from_sequence(seq_name))
+                    .map(|(effect, _)| effect.layer)
                     .collect();
                 for layer in stopped.into_iter().collect::<HashSet<_>>() {
                     settle_layer(
@@ -371,8 +370,8 @@ fn replay(cues: &[Cue]) -> Replay {
                     );
                 }
                 let mut cut = false;
-                result.effects_with_elapsed.retain(|id, _| {
-                    let keep = !id.starts_with(&prefix) || settled.arrived.contains(id);
+                result.effects_with_elapsed.retain(|id, (effect, _)| {
+                    let keep = !effect.is_from_sequence(seq_name) || settled.arrived.contains(id);
                     cut |= !keep;
                     keep
                 });
@@ -916,6 +915,7 @@ impl LightingTimeline {
         effect_instance.per_cell = effect.per_cell;
         effect_instance.spread = effect.spread;
         effect_instance.tempo_offset_secs = effect.tempo_offset_secs;
+        effect_instance.sequence = effect.sequence_name.clone();
 
         effect_instance
     }

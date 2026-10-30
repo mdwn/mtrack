@@ -1458,23 +1458,11 @@ impl EffectEngine {
         self.cache.invalidate();
     }
 
-    /// Stop all effects from a specific sequence
-    /// Effects from sequences have IDs starting with "seq_{sequence_name}_"
+    /// Stop all effects from a specific sequence: those cued from it by
+    /// name, as a seek's replay takes them out.
     pub fn stop_sequence(&mut self, sequence_name: &str) {
-        let prefix = format!("seq_{}_", sequence_name);
-        let mut to_remove = Vec::new();
-
-        // Collect effect IDs that match this sequence
-        for effect_id in self.active_effects.keys() {
-            if effect_id.starts_with(&prefix) {
-                to_remove.push(effect_id.clone());
-            }
-        }
-
-        // Remove the effects
-        for effect_id in to_remove {
-            self.active_effects.remove(&effect_id);
-        }
+        self.active_effects
+            .retain(|_, effect| !effect.is_from_sequence(sequence_name));
         self.cache.invalidate();
     }
 

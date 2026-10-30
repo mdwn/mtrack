@@ -684,8 +684,8 @@ impl Cuts {
         // start does not cut it.
         let next =
             |times: &Vec<Duration>| times.get(times.partition_point(|at| *at <= start)).copied();
-        // `LightingEngine::stop_sequence` drops every effect carrying the
-        // sequence's id prefix, so a stop really is an end.
+        // `LightingEngine::stop_sequence` drops every effect cued from the
+        // sequence, so a stop really is an end.
         let stopped = sequence.and_then(|name| self.stops.get(name));
         [Some(&self.all), self.layers.get(&layer), stopped]
             .into_iter()
@@ -1707,8 +1707,8 @@ show "T" {
     #[test]
     fn an_effect_cut_by_a_stop_sequence_does_not_overrun_the_song() {
         // The same claim as the clear case, by the other mechanism that ends an
-        // effect early. `LightingEngine::stop_sequence` drops every effect whose
-        // id carries the sequence's prefix, so the 60s bed really ends at 15s —
+        // effect early. `LightingEngine::stop_sequence` drops every effect cued
+        // from the sequence, so the 60s bed really ends at 15s —
         // well inside a 30s song.
         //
         // The stomp check already reasons this way. When only that one did, two
