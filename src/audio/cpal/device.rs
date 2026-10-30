@@ -663,16 +663,16 @@ impl Device {
     /// Takes in the next pass of a crossfading song loop if its build has
     /// finished.
     fn collect_pass(song_loop: &mut SongLoopCrossfade) {
-        if let Some((from, started, rx)) = song_loop.build_rx.take() {
+        if let Some((from, rx)) = song_loop.build_rx.take() {
             match rx.try_recv() {
-                Ok(Ok(sources)) => {
+                Ok(Ok((sources, took))) => {
                     song_loop.prebuilt = Some((from, sources));
-                    song_loop.build_took = Some(started.elapsed());
+                    song_loop.build_took = Some(took);
                 }
                 Ok(Err(e)) => {
                     error!(err = %e, "Failed to pre-build the next loop pass; will retry")
                 }
-                Err(mpsc::TryRecvError::Empty) => song_loop.build_rx = Some((from, started, rx)),
+                Err(mpsc::TryRecvError::Empty) => song_loop.build_rx = Some((from, rx)),
                 Err(mpsc::TryRecvError::Disconnected) => {}
             }
         }
@@ -684,7 +684,7 @@ impl Device {
             .prebuilt
             .as_ref()
             .map(|(from, _)| *from)
-            .or(song_loop.build_rx.as_ref().map(|(from, _, _)| *from))
+            .or(song_loop.build_rx.as_ref().map(|(from, _)| *from))
     }
 
     /// Keeps a pass begun late (inside the crossfade) on a build that can
@@ -707,7 +707,7 @@ impl Device {
             .build_took
             .map(|took| took * 3 / 2 + lookahead)
             .unwrap_or_default();
-        trigger.join_at_least(needs);
+        trigger.join_ahead_by(needs);
         let end = section.bounds.end_time;
         let join_of = |from: Duration, consumed: Duration| end + from + consumed;
         let target = trigger.arm(effective, elapsed)?;
@@ -715,8 +715,10 @@ impl Device {
             .saturating_sub(trigger.consumed())
             .saturating_sub(end);
         match Self::pass_from(song_loop) {
+            // Only a pass begun late: one on time builds from the top.
             Some(built)
-                if built != planned
+                if !planned.is_zero()
+                    && built != planned
                     && built <= section.overlap
                     && join_of(built, trigger.consumed()) >= elapsed + lookahead =>
             {
@@ -761,16 +763,18 @@ impl Device {
         let _ = thread::Builder::new()
             .name("mtrack-loop-pass-prebuild".into())
             .spawn(move || {
-                let _ = tx.send(build_pass_sources(
+                let started = std::time::Instant::now();
+                let built = build_pass_sources(
                     &song,
                     &context,
                     &mappings,
                     from,
                     from,
                     song.loop_crossfade_cut(),
-                ));
+                );
+                let _ = tx.send(built.map(|sources| (sources, started.elapsed())));
             });
-        song_loop.build_rx = Some((from, std::time::Instant::now(), rx));
+        song_loop.build_rx = Some((from, rx));
     }
 
     /// Builds the next pass of a crossfading song loop ahead of its boundary,
@@ -1287,7 +1291,7 @@ struct SongLoopCrossfade {
     prebuilt: Option<(Duration, GroupedSources)>,
     /// A build of the next pass's sources in flight.
     build_rx: Option<PassBuild>,
-    /// How long the last build took.
+    /// How long the latest build took, timed where it was built.
     build_took: Option<Duration>,
     /// The sample the latest pass starts at, and its sources' ids, to cancel
     /// them outright if playback ends before they have started.
@@ -1303,12 +1307,11 @@ struct SongLoopCrossfade {
 const PASS_PREBUILD_AHEAD: Duration = Duration::from_secs(5);
 
 /// Where a crossfading song loop is, for [`Device::song_loop_boundary`].
-/// A pass being built: from where in the song, since when, and where its
-/// sources come.
+/// A pass being built: from where in the song, and where its sources come,
+/// with how long they took to build.
 type PassBuild = (
     Duration,
-    std::time::Instant,
-    mpsc::Receiver<Result<GroupedSources, String>>,
+    mpsc::Receiver<Result<(GroupedSources, Duration), String>>,
 );
 
 struct SongLoopTiming {

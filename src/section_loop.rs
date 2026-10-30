@@ -41,7 +41,7 @@ pub struct SectionLoopTrigger {
     /// this is the position in the song.
     consumed: Duration,
     /// How far ahead a pass begun late joins its grid: [`JOIN_AHEAD`], or
-    /// longer once the audio has found its builds take longer.
+    /// longer while the audio finds its builds take longer.
     join_ahead: Duration,
 }
 
@@ -289,10 +289,11 @@ impl SectionLoopTrigger {
         self.next_trigger
     }
 
-    /// Has a pass begun late join its grid `ahead` on, at the least: as long
-    /// as the audio takes to build one, with some to spare.
-    pub fn join_at_least(&mut self, ahead: Duration) {
-        self.join_ahead = self.join_ahead.max(ahead);
+    /// Has a pass begun late join its grid `ahead` on, or [`JOIN_AHEAD`] if
+    /// that is further: as long as the audio's latest build took, with some
+    /// to spare.
+    pub fn join_ahead_by(&mut self, ahead: Duration) {
+        self.join_ahead = ahead.max(JOIN_AHEAD);
     }
 
     /// Sets the pass begun late now armed to join its grid at `from` in the
@@ -1039,14 +1040,14 @@ mod late_passes {
         );
 
         let mut t = SectionLoopTrigger::new();
-        t.join_at_least(Duration::from_millis(1_200));
+        t.join_ahead_by(Duration::from_millis(1_200));
         assert_eq!(
             t.arm(effective.as_ref(), secs(97)),
             Some(Duration::from_millis(98_200))
         );
         // Never past the song's end.
         let mut t = SectionLoopTrigger::new();
-        t.join_at_least(secs(10));
+        t.join_ahead_by(secs(10));
         assert_eq!(t.arm(effective.as_ref(), secs(97)), Some(secs(100)));
     }
 
