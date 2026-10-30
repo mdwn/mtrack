@@ -98,9 +98,12 @@ impl Entry {
             let failure = failure.clone();
             tokio::spawn(async move {
                 if let Some(after) = after {
-                    tokio::select! {
-                        _ = after.cancelled() => {}
-                        _ = stop.cancelled() => return Ok(()),
+                    // Waited out even when stopped first: those started
+                    // after this one wait for its end, and may bind the
+                    // port of the controllers it was waiting for.
+                    after.cancelled().await;
+                    if stop.is_cancelled() {
+                        return Ok(());
                     }
                 }
                 let mut task = AbortOnDrop(driver.monitor_events());
@@ -746,6 +749,37 @@ mod test {
             "the new one never started"
         );
         super::Entry::stop_all(vec![new]);
+    }
+
+    /// Two updates in quick succession: the second stopped a controller
+    /// still waiting for the one the first stopped. A stopped wait ended at
+    /// once, so the second's replacement started while the original
+    /// listener still held the port. A stopped wait now ends only once what
+    /// it waited for is gone.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_controller_restarted_twice_at_once_waits_for_the_first() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let overlapped = Arc::new(AtomicBool::new(false));
+        let driver = Arc::new(SlowToRelease {
+            held: Arc::new(AtomicBool::new(false)),
+            overlapped: overlapped.clone(),
+        });
+        let old = super::Entry::run(driver.clone(), None, None, false, None);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let stopped = super::Entry::stop_all(vec![old]);
+        let waiting = super::Entry::run(driver.clone(), stopped, None, false, None);
+        // The second update, before the first's replacement has started.
+        let stopped = super::Entry::stop_all(vec![waiting]);
+        let new = super::Entry::run(driver.clone(), stopped, None, false, None);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let started = driver.held.load(Ordering::SeqCst);
+        super::Entry::stop_all(vec![new]);
+        assert!(
+            !overlapped.load(Ordering::SeqCst),
+            "the second update's listener started while the original still held the port"
+        );
+        assert!(started, "the second update's listener never started");
     }
 
     /// A controller whose listener could not bind its port, which happens on
