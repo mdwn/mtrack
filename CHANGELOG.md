@@ -108,6 +108,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A config change made over MCP takes effect**: `update_audio`, `update_midi`, `update_dmx`,
+  `update_controllers` and the profile tools saved the change but never reloaded the hardware, so it
+  did nothing until something else reloaded it or mtrack restarted. They now reload it, as the gRPC
+  and web config changes do; during playback the reload waits for it to end.
 - **The latest move takes a mover, whatever its layer (#599)**: two moves on different layers
   over one head blended by layer, and where the head came to rest depended on how you got there:
   played through, after a seek and in `evaluate_show` it could land on three different poses. A

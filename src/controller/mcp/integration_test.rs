@@ -5695,3 +5695,50 @@ async fn mcp_import_mvr_keeps_a_venue_save_made_while_it_waits() -> Result<(), B
     controller.shutdown();
     Ok(())
 }
+
+/// A config change made over MCP takes effect on the running hardware, as
+/// one made over gRPC or the web UI does: it was saved but not applied
+/// until something else reloaded the hardware or mtrack restarted.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_config_update_reloads_the_hardware() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    assert!(player.audio_device().is_some(), "the fixture has audio");
+
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let cfg = tool_json(&call_tool(&client, &url, &session, 10, "get_config", json!({})).await);
+    let checksum = cfg["checksum"].as_str().expect("checksum").to_string();
+    tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            11,
+            "update_audio",
+            json!({"body": null, "expected_checksum": checksum}),
+        )
+        .await,
+    );
+
+    tokio::time::timeout(Duration::from_secs(10), player.await_hardware_ready())
+        .await
+        .expect("the hardware never came back up");
+    assert!(
+        player.audio_device().is_none(),
+        "the audio removed over MCP is still set up"
+    );
+    controller.shutdown();
+    Ok(())
+}

@@ -900,7 +900,7 @@ impl McpServer {
             .update_audio(audio, &args.expected_checksum)
             .await
             .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+        self.reload_and_respond(snapshot).await
     }
 
     #[tool(
@@ -917,7 +917,7 @@ impl McpServer {
             .update_midi(midi, &args.expected_checksum)
             .await
             .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+        self.reload_and_respond(snapshot).await
     }
 
     #[tool(
@@ -934,7 +934,7 @@ impl McpServer {
             .update_dmx(dmx, &args.expected_checksum)
             .await
             .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+        self.reload_and_respond(snapshot).await
     }
 
     #[tool(
@@ -953,7 +953,7 @@ impl McpServer {
             .update_controllers(controllers, &args.expected_checksum)
             .await
             .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+        self.reload_and_respond(snapshot).await
     }
 
     #[tool(description = "Append a new hardware profile to the `profiles` list.")]
@@ -968,7 +968,7 @@ impl McpServer {
             .add_profile(profile, &args.expected_checksum)
             .await
             .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+        self.reload_and_respond(snapshot).await
     }
 
     #[tool(description = "Update the profile at a given index in the `profiles` \
@@ -989,7 +989,7 @@ impl McpServer {
             .update_profile(args.index as usize, profile, &args.expected_checksum)
             .await
             .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+        self.reload_and_respond(snapshot).await
     }
 
     #[tool(description = "Remove the profile at a given index in the `profiles` list.")]
@@ -1002,7 +1002,7 @@ impl McpServer {
             .remove_profile(args.index as usize, &args.expected_checksum)
             .await
             .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+        self.reload_and_respond(snapshot).await
     }
 
     // ---- Song / playlist file editing ----
@@ -3971,6 +3971,35 @@ pub(crate) fn parse_optional<T: for<'de> serde::Deserialize<'de>>(
     serde_json::from_value(value)
         .map(Some)
         .map_err(|e| McpError::invalid_params(format!("invalid payload: {e}"), None))
+}
+
+impl McpServer {
+    /// Applies a saved config change to the running hardware and answers
+    /// with the new snapshot, as the gRPC config updates do. A change saved
+    /// here was otherwise not applied until something else reloaded the
+    /// hardware or mtrack restarted. During playback the reload waits for
+    /// it to end. Controllers are restarted only by a change to them.
+    async fn reload_and_respond(
+        &self,
+        snapshot: crate::config::store::ConfigSnapshot,
+    ) -> Result<CallToolResult, McpError> {
+        if let Err(e) = self
+            .player
+            .reload_hardware()
+            .await
+            .map_err(|e| e.to_string())
+        {
+            tracing::warn!("Hardware reload after config update failed: {}", e);
+            return Err(McpError::internal_error(
+                format!(
+                    "the config was saved but the running hardware was not reloaded, so it \
+                     will not take effect until the next reload or restart: {e}"
+                ),
+                None,
+            ));
+        }
+        Ok(snapshot_response(&snapshot))
+    }
 }
 
 /// Returns a tool response containing the updated config YAML and new checksum.
