@@ -5820,9 +5820,9 @@ async fn mcp_config_update_while_paused_says_it_is_deferred() -> Result<(), Box<
 
     // The fixture's show names fixtures its config does not have, so its
     // song will not play; a paused one holds the reload as a playing one
-    // does, and a seek while stopped leaves it as a pause does.
-    player.seek_to(Duration::from_millis(100)).await?;
-    assert!(player.pending_start().is_some(), "paused");
+    // does, so it is left as a pause leaves it.
+    player.pause_at_for_test(Duration::from_millis(100));
+    assert!(player.is_paused());
     let cfg = tool_json(&call_tool(&client, &url, &session, 10, "get_config", json!({})).await);
     let checksum = cfg["checksum"].as_str().expect("checksum").to_string();
     let updated = tool_json(

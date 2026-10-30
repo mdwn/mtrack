@@ -622,9 +622,9 @@ impl Player {
         // An auto play waiting counts as playing: the reset would leave the
         // hardware initializing when its gap ends, and its start would fail.
         // So does a paused song: a show in progress, its lights held, which
-        // must resume at once.
-        let playing =
-            join.is_some() || self.auto_play_status().is_some() || self.pending_start().is_some();
+        // must resume at once. A position cued by a seek while stopped is
+        // not: nothing plays, and nothing is held.
+        let playing = join.is_some() || self.auto_play_status().is_some() || self.is_paused();
         let fading = self.fading_out();
         if playing || fading.is_some() {
             self.hardware_reload_pending.store(true, Ordering::Relaxed);

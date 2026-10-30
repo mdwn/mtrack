@@ -201,11 +201,12 @@ fn require_config_store(
 /// paused, or an auto play is waiting out its gap: the reload a save makes
 /// would leave the hardware initializing when the gap ends, and the song
 /// would not start. A reload waits for all three, so a save then would not
-/// take effect until the song stops.
+/// take effect until the song stops. A position cued by a seek while stopped
+/// is not paused, and does not hold a save.
 pub(super) async fn reject_if_playing(state: &WebUiState) -> Option<axum::response::Response> {
     if state.player.is_playing().await
         || state.player.auto_play_status().is_some()
-        || state.player.pending_start().is_some()
+        || state.player.is_paused()
     {
         Some(
             (
@@ -1446,6 +1447,22 @@ mod test {
             .unwrap();
         assert_eq!(response.status(), StatusCode::CONFLICT);
         state.player.stop().await;
+        assert!(super::reject_if_playing(&state).await.is_none());
+    }
+
+    /// A position cued by a seek while stopped read as a pause, and a save
+    /// was refused as "playing or paused", though nothing plays and no
+    /// lights are held.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_after_a_seek_while_stopped_is_not_refused() {
+        let (state, _dir) = test_state_with_audio_device("mock-device");
+        set_store(&state);
+        state
+            .player
+            .seek_to(std::time::Duration::from_millis(500))
+            .await
+            .unwrap();
+        assert!(!state.player.is_playing().await);
         assert!(super::reject_if_playing(&state).await.is_none());
     }
 

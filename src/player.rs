@@ -437,9 +437,10 @@ pub struct Player {
     loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
     /// Reactive loop state machine.
     reactive_loop_state: Arc<parking_lot::RwLock<ReactiveLoopState>>,
-    /// Start position for the next play(), set by seeking while stopped.
+    /// Start position for the next play(), set by a pause or by seeking
+    /// while stopped.
     /// Cleared when the playlist position changes.
-    pending_start: Arc<parking_lot::Mutex<Option<Duration>>>,
+    pending_start: Arc<parking_lot::Mutex<Option<seek::PendingStart>>>,
     /// Notification engine for section loop audio feedback.
     notification_engine: Arc<crate::notification::NotificationEngine>,
     /// Pending debounced task persisting track gains to the config store.
@@ -4645,7 +4646,10 @@ mod test {
             // As pause() does it, under the lock.
             let mut join = hold_join_over_a_songs_own_end(&player).await?;
             player.stop_for_pause(&mut join).await;
-            *player.pending_start.lock() = Some(paused_at);
+            *player.pending_start.lock() = Some(seek::PendingStart {
+                position: paused_at,
+                paused: true,
+            });
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
@@ -5060,6 +5064,37 @@ mod test {
             || player.audio_device().is_none(),
             "The deferred reload never ran",
         );
+        Ok(())
+    }
+
+    /// A position cued by a seek while stopped held a reload off as a pause
+    /// does, though nothing plays and no lights are held. Only a pause does;
+    /// a seek while paused leaves the song paused.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_seek_while_stopped_does_not_hold_a_reload() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _store = set_store_without_audio(&player)?;
+        player.play().await?;
+        elapsed_eventually(&player).await?;
+        assert!(player.pause().await?.is_some());
+        player.seek_to(Duration::from_millis(150)).await?;
+        assert!(
+            player.is_paused(),
+            "a seek while paused called the pause off"
+        );
+        assert!(!player.reload_hardware().await?.applied());
+        player.stop().await;
+        assert!(!player.is_paused());
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        player.await_hardware_ready().await;
+
+        player.seek_to(Duration::from_millis(150)).await?;
+        assert_eq!(player.pending_start(), Some(Duration::from_millis(150)));
+        assert!(!player.is_paused(), "a stopped seek reads as paused");
+        assert!(player.reload_hardware().await?.applied());
         Ok(())
     }
 

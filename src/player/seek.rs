@@ -26,6 +26,18 @@ use crate::songs::Song;
 /// when a playback thread failed to observe cancellation.
 const SEEK_WINDDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Where the next play starts the current song, kept while it is stopped.
+#[derive(Clone, Copy)]
+pub(super) struct PendingStart {
+    pub(super) position: Duration,
+    /// Whether a pause kept it, as against a seek while stopped. A paused
+    /// song is a show in progress, its lights held, and holds off a
+    /// hardware reload and a config save until it resumes or is stopped. A
+    /// position cued while stopped is not: nothing plays, and nothing is
+    /// held.
+    pub(super) paused: bool,
+}
+
 impl Player {
     /// Pauses playback and stores the exact song position for the next play.
     ///
@@ -73,7 +85,7 @@ impl Player {
         // and must resume at once. A hardware reload waits on, for a stop or
         // a move off the song. A pause on a song's very end keeps nothing to
         // resume, though, and that is idle.
-        if self.pending_start().is_none() {
+        if !self.is_paused() {
             self.reload_deferred_hardware();
         }
         Ok(Some(position))
@@ -94,7 +106,10 @@ impl Player {
             return position;
         }
         info!(song = song.name(), position = ?position, "Paused; play resumes here");
-        *self.pending_start.lock() = Some(position);
+        *self.pending_start.lock() = Some(PendingStart {
+            position,
+            paused: true,
+        });
         position
     }
 
@@ -128,7 +143,11 @@ impl Player {
             None => {
                 // Not playing: remember the position for the next play().
                 info!(song = song.name(), position = ?position, "Seek stored as pending start position");
-                *self.pending_start.lock() = Some(position);
+                // A seek while paused moves the paused song, which stays
+                // paused.
+                let mut pending = self.pending_start.lock();
+                let paused = pending.is_some_and(|p| p.paused);
+                *pending = Some(PendingStart { position, paused });
                 return Ok(());
             }
             Some(handles) => handles,
@@ -209,14 +228,31 @@ impl Player {
         self.seek_to(start_time).await
     }
 
-    /// Returns the pending start position set by seeking while stopped, if any.
+    /// Returns the pending start position set by a pause or by seeking while
+    /// stopped, if any.
     pub fn pending_start(&self) -> Option<Duration> {
-        *self.pending_start.lock()
+        self.pending_start.lock().map(|p| p.position)
+    }
+
+    /// Whether a song is paused: stopped by a pause, with a position to
+    /// resume from, until a play, a stop or a move off the song.
+    pub fn is_paused(&self) -> bool {
+        self.pending_start.lock().is_some_and(|p| p.paused)
+    }
+
+    /// Leaves the current song paused at `position`, as a pause leaves it,
+    /// for a test whose song cannot play.
+    #[cfg(test)]
+    pub(crate) fn pause_at_for_test(&self, position: Duration) {
+        *self.pending_start.lock() = Some(PendingStart {
+            position,
+            paused: true,
+        });
     }
 
     /// Takes (consumes) the pending start position.
     pub(super) fn take_pending_start(&self) -> Option<Duration> {
-        self.pending_start.lock().take()
+        self.pending_start.lock().take().map(|p| p.position)
     }
 
     /// Clears the pending start position. Called when the playlist position
