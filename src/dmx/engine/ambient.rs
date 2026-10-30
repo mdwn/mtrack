@@ -26,7 +26,7 @@
 
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -316,14 +316,31 @@ impl Overlay {
         self.level.to <= 0.0 && self.level.at(now) <= 0.0
     }
 
-    /// Takes the main engine's rig, as this one's inner overlay does.
-    fn adopt_rig(&mut self, main: &EffectEngine) {
+    /// Takes the main engine's rig, as this one's inner overlay does, and
+    /// the fixtures its moves' groups now stand for: a pass starting part
+    /// way after a venue reload replays its history by the venue's.
+    fn adopt_rig(&mut self, main: &EffectEngine, resolve: &mut ResolveGroups) {
         self.engine.adopt_rig(main);
+        self.heads = resolve(self.timeline.move_groups());
         if let Some(inner) = self.inner.as_mut() {
-            inner.adopt_rig(main);
+            inner.adopt_rig(main, resolve);
         }
     }
+
+    /// The groups the moves of this overlay's show, and its inner one's,
+    /// target.
+    fn move_groups(&self) -> HashSet<String> {
+        let mut groups = self.timeline.move_groups();
+        if let Some(inner) = self.inner.as_ref() {
+            groups.extend(inner.move_groups());
+        }
+        groups
+    }
 }
+
+/// Resolves move groups to the fixtures they stand for (see
+/// `Engine::resolve_groups`).
+pub(super) type ResolveGroups<'a> = dyn FnMut(HashSet<String>) -> HashMap<String, Vec<String>> + 'a;
 
 /// Applies a timeline update, its groups resolved, to `engine`, as
 /// [`Engine::apply_timeline_update`] does to the main one.
@@ -591,11 +608,22 @@ impl Engine {
     }
 
     /// The main engine's rig changed (a venue registration): ambient's
-    /// engine follows it.
-    pub(super) fn ambient_follows_rig(&self, main: &EffectEngine) {
+    /// engine follows it, its moves' groups resolved by `resolve` -- the
+    /// caller may hold the lighting system already, and the overlay's lock
+    /// must not wait on it (see [`Self::resolve_groups`]).
+    pub(super) fn ambient_follows_rig(&self, main: &EffectEngine, resolve: &mut ResolveGroups) {
         if let Some(o) = self.ambient_overlay.lock().as_mut() {
-            o.adopt_rig(main);
+            o.adopt_rig(main, resolve);
         }
+    }
+
+    /// The groups the moves of the ambient shows playing target.
+    pub(super) fn ambient_move_groups(&self) -> HashSet<String> {
+        self.ambient_overlay
+            .lock()
+            .as_ref()
+            .map(Overlay::move_groups)
+            .unwrap_or_default()
     }
 
     /// Fades ambient in to `ambient`: the overlay playing it rises from
@@ -2481,11 +2509,45 @@ mod tests {
                 channels,
                 None,
             )]);
-            engine.ambient_follows_rig(&main);
+            engine.ambient_follows_rig(&main, &mut |groups| engine.resolve_groups(groups));
         }
         engine.effects_loop_tick();
         let universe = engine.get_universe(5).unwrap();
         assert_eq!(universe.get_target_value(5), 255.0);
+        Ok(())
+    }
+
+    /// A venue reload while ambient plays resolves its moves' groups again:
+    /// a pass starting part way after it replays its history by the fixtures
+    /// the groups stand for now, not those they did when ambient came in.
+    #[test]
+    fn ambient_resolves_its_moves_again_on_a_venue_reload() -> Result<(), Box<dyn Error>> {
+        let show = "show \"ambient\" {\n    @0.000\n    wash: move pan: 90deg, tilt: 0deg, \
+                    duration: 1s\n}\n";
+        let (_dir, engine) = ambient_engine(show, ("0s", "0s", "0s"))?;
+        engine.idle_ambient(None, false);
+        engine.effects_loop_tick();
+        let heads = || {
+            engine
+                .ambient_overlay
+                .lock()
+                .as_ref()
+                .map(|o| o.heads.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(heads().get("wash"), None, "no lighting system, by name");
+        for fixtures in [vec!["m1", "m2"], vec!["m3"]] {
+            let main = engine.effect_engine.lock();
+            engine.ambient_follows_rig(&main, &mut |groups| {
+                groups
+                    .into_iter()
+                    .map(|group| (group, fixtures.iter().map(|f| f.to_string()).collect()))
+                    .collect()
+            });
+            drop(main);
+            let expected: Vec<String> = fixtures.iter().map(|f| f.to_string()).collect();
+            assert_eq!(heads().get("wash"), Some(&expected));
+        }
         Ok(())
     }
 

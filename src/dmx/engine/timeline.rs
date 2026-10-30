@@ -731,14 +731,7 @@ impl Engine {
         let Some(lighting_system) = &self.lighting_system else {
             return HashMap::new();
         };
-        let mut lighting_system = lighting_system.lock();
-        groups
-            .into_iter()
-            .map(|group| {
-                let fixtures = lighting_system.resolve_logical_group_graceful(&group);
-                (group, fixtures)
-            })
-            .collect()
+        resolve_groups_in(&mut lighting_system.lock(), groups)
     }
 
     /// Stops the lighting timeline
@@ -854,6 +847,20 @@ impl Engine {
             Vec::new()
         }
     }
+}
+
+/// [`Engine::resolve_groups`] against a lighting system already locked.
+pub(super) fn resolve_groups_in(
+    lighting_system: &mut crate::lighting::system::LightingSystem,
+    groups: impl IntoIterator<Item = String>,
+) -> HashMap<String, Vec<String>> {
+    groups
+        .into_iter()
+        .map(|group| {
+            let fixtures = lighting_system.resolve_logical_group_graceful(&group);
+            (group, fixtures)
+        })
+        .collect()
 }
 
 /// The fixtures `effect`'s groups stand for, by `resolved` (see

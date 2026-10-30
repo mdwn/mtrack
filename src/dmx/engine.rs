@@ -808,11 +808,14 @@ impl Engine {
     /// Drops every registered fixture: what a restart gives for a venue that
     /// does not register, so what runs now is what runs after a reboot.
     fn clear_registered_fixtures(&self) {
+        // Resolved before the engine is locked: the venue's registration
+        // locks the lighting system first, then the engine.
+        let heads = self.resolve_groups(self.ambient_move_groups());
         let mut effect_engine = self.effect_engine.lock();
         self.midi_dmx_store.write().retain_channels(|_, _| false);
         effect_engine.replace_fixtures(Vec::new());
         effect_engine.set_focus_points(HashMap::new());
-        self.ambient_follows_rig(&effect_engine);
+        self.ambient_follows_rig(&effect_engine, &mut |_| heads.clone());
     }
 
     /// Registers all fixtures from the current venue (thread-safe version).
@@ -822,7 +825,7 @@ impl Engine {
     /// an older venue's, and records why ([`Self::venue_registration`]).
     pub fn register_venue_fixtures_safe(&self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(lighting_system) = &self.lighting_system {
-            let lighting_system = lighting_system.lock();
+            let mut lighting_system = lighting_system.lock();
             let venue = lighting_system.current_venue().map(str::to_string);
             let fixture_infos = match lighting_system.get_current_venue_fixtures() {
                 Ok(infos) => {
@@ -916,7 +919,9 @@ impl Engine {
                     .unwrap_or_default(),
             );
             drop(midi_dmx_store);
-            self.ambient_follows_rig(&effect_engine);
+            self.ambient_follows_rig(&effect_engine, &mut |groups| {
+                timeline::resolve_groups_in(&mut lighting_system, groups)
+            });
         }
         Ok(())
     }
