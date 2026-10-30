@@ -3784,6 +3784,73 @@ mod test {
         Ok(())
     }
 
+    /// Rewrites the playlist of a player from [`player_looping_b_with`] as
+    /// `yaml` and reloads it, as the playlist editor's save does.
+    fn edit_playlist(player: &Player, dir: &tempfile::TempDir, yaml: &str) {
+        let playlist_path = dir.path().join("playlist.yaml");
+        std::fs::write(&playlist_path, yaml).unwrap();
+        player.reload_songs(&dir.path().join("songs"), None, Some(&playlist_path));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_edit_moving_the_looping_song_keeps_its_ending() -> Result<(), Box<dyn Error>> {
+        // #576: the playlist kept its index, so C took B's place and a stop
+        // cut rather than fading B out.
+        let (player, dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 2s\n- C\n").await?;
+        edit_playlist(
+            &player,
+            &dir,
+            "songs:\n- A\n- C\n- song: B\n  fade_out: 2s\n",
+        );
+        assert_eq!(current_name(&player).await, "B");
+        assert_eq!(player.get_playlist().position(), 2);
+        let stopped = player.stop().await.map(|s| s.name().to_string());
+        assert_eq!(stopped.as_deref(), Some("B"));
+        let (song, _) = player.ending_status().expect("B fades out");
+        assert_eq!(song, "B");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_edit_moving_a_song_under_one_playing_leaves_it_be() -> Result<(), Box<dyn Error>> {
+        // #576: A playing, and an edit putting looping B where A was gave A
+        // B's ending.
+        let (player, dir) = player_looping_b().await?;
+        player.stop().await;
+        player.get_playlist().navigate_to("A");
+        player.play().await?;
+        playing_eventually(&player, "A").await?;
+        edit_playlist(
+            &player,
+            &dir,
+            "songs:\n- song: B\n  fade_out: 2s\n- A\n- C\n",
+        );
+        assert_eq!(current_name(&player).await, "A");
+        assert!(!player.is_current_song_looping());
+        let stopped = player.stop().await.map(|s| s.name().to_string());
+        assert_eq!(stopped.as_deref(), Some("A"));
+        assert!(player.ending_status().is_none(), "A is cut, not faded");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_looping_song_an_edit_takes_away_still_breaks() -> Result<(), Box<dyn Error>> {
+        // #576: with B gone from the list, the playlist named A, which does
+        // not loop, and next did nothing.
+        let (player, dir) = player_looping_b().await?;
+        edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+        assert_eq!(current_name(&player).await, "B", "B plays on, off the list");
+        assert!(player.is_current_song_looping());
+        // What took its place is what comes next.
+        let target = player.next().await.map(|s| s.name().to_string());
+        assert_eq!(target.as_deref(), Some("C"));
+        playing_eventually(&player, "C").await?;
+        assert_eq!(player.get_playlist().entry(), Some(1));
+        player.stop().await;
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_stop_counts_measures_on_the_next_songs_grid() -> Result<(), Box<dyn Error>> {
         // #569: B has no grid of its own, so a fade in measures cut.

@@ -213,6 +213,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lighting view and the MCP `get_fixture_state` showed the incoming show alone -- at Next, black
   until its first cue, then a snap to it. They now show the blend, crossed channel by channel by
   the same rules as the DMX.
+- **An edit to the active playlist keeps the song playing current (#576)**: saving a playlist
+  kept the position's index and pointed it at whatever entry then sat there, so status, Stop,
+  Next and the loop ending all acted on another song: a song moved under a playing one got the
+  looping song's fade-out, and a looping song lost its graceful ending. Every playlist now keeps
+  its place by song across a reload, and a song an edit takes away while it plays stays current
+  until the playlist moves on: Next goes to the entry that took its place. A song or playlist
+  edit no longer sends any playlist back to its first entry.
 
 ## [0.17.4] - 2026-10-26
 

@@ -262,7 +262,11 @@ impl Player {
                 // Natural finish or loop break: advance playlist and clean up.
                 // A loop broken by previous goes back instead.
                 let mut join = player.join.lock().await;
-                let from = playlist.position();
+                // The playlist as it is now, not as it was when the song
+                // started: an edit since replaces it, the place it had got to
+                // carried over (#576).
+                let playlist = player.get_playlist();
+                let from = playlist.entry();
                 let moved = if loop_broken && back {
                     playlist.prev()
                 } else {
@@ -286,7 +290,7 @@ impl Player {
                     // A song that ended by itself moves the playlist on: the
                     // song it reaches may start by itself (its `auto_play`).
                     // Otherwise, between songs: ambient light, after its delay.
-                    let auto_play = (succeeded && playlist.position() != from)
+                    let auto_play = (succeeded && playlist.entry() != from)
                         .then(|| playlist.auto_play())
                         .flatten();
 

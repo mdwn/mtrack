@@ -354,10 +354,10 @@ fn next_json(playlist: &crate::playlist::Playlist, is_playing: bool) -> serde_js
     let Some(current) = playlist.current() else {
         return serde_json::Value::Null;
     };
-    let position = playlist.position();
-    let Some(song) = playlist.songs().get(position + 1) else {
+    let Some(position) = playlist.next_entry() else {
         return json!({"song": null});
     };
+    let song = &playlist.songs()[position];
     if is_playing && current.loop_playback() {
         let handover = playlist.loop_break(false);
         return json!({
@@ -368,11 +368,7 @@ fn next_json(playlist: &crate::playlist::Playlist, is_playing: bool) -> serde_js
             "auto_play_ms": null,
         });
     }
-    let gap = playlist
-        .entry_auto_play()
-        .get(position + 1)
-        .copied()
-        .flatten();
+    let gap = playlist.entry_auto_play().get(position).copied().flatten();
     json!({
         "song": song,
         "breaks_loop": false,

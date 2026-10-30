@@ -125,7 +125,7 @@ impl Player {
             return current;
         }
         let playlist = self.get_playlist();
-        let from = playlist.position();
+        let from = playlist.entry();
         let song = match direction {
             PlaylistDirection::Next => playlist.next()?,
             PlaylistDirection::Prev => playlist.prev()?,
@@ -139,7 +139,7 @@ impl Player {
         // A song ending fades on out; the ambient light following it, now
         // this navigation's to bring.
         let ending = self.end_ending();
-        match playlist.auto_play().filter(|_| playlist.position() != from) {
+        match playlist.auto_play().filter(|_| playlist.entry() != from) {
             Some(gap) => self.schedule_auto_play(gap),
             None if called_off || ending => self.idle_ambient(true),
             None => {}
@@ -294,10 +294,27 @@ impl Player {
             };
 
         // Preserve active playlist name if it still exists; fall back to all_songs.
-        {
+        let active = {
             let mut active = self.active_playlist.write();
             if !new_playlists.contains_key(active.as_str()) {
                 *active = "all_songs".to_string();
+            }
+            active.clone()
+        };
+
+        // Each playlist keeps its place by song, not by index: the song
+        // playing stays current through an edit that moves it, or takes it
+        // off the list, and the ending, loop-break and status logic, which
+        // read the active playlist's current song, keep to it (#576). A join
+        // lock held elsewhere is a control call under way, which may be
+        // starting a song: taken as playing, so it is not lost.
+        let playing = self.join.try_lock().map_or(true, |join| join.is_some());
+        {
+            let old_playlists = self.playlists.read();
+            for (name, playlist) in &new_playlists {
+                if let Some(old) = old_playlists.get(name) {
+                    playlist.follow(old, playing && *name == active);
+                }
             }
         }
 
