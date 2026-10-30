@@ -146,7 +146,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   time since its cue, so slowing a fade half way dropped it back to a quarter in one frame, and a
   slow-down on a look's last instant brought it back to half way to play its second half again. A
   speed change now applies from the moment it lands: the look carries on from where it was, faster
-  or slower.
+  or slower. A look cued just before a speed change, freeze or unfreeze in the same frame runs as
+  its layer did until then, as a seek has it.
 - **A freeze or speed change lands on its cue's own time**: a freeze held from the frame before the
   one its cue fired in, so a look frozen on the very instant it ended was held for good, and a seek
   to the same point had it over. Freezes and unfreezes (speed 0 and back too) now take their cue's

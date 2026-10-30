@@ -212,10 +212,11 @@ struct LayerState {
     /// The song time a frozen layer was frozen at, when there was one: what
     /// its cued effects hold at, and measure their time frozen from.
     frozen_song: HashMap<EffectLayer, Duration>,
-    /// The speed changes applied since the last frame rendered, each with
-    /// its song time and the speed before it: an effect cued before one but
-    /// started after it in the same frame ran at the old speed until then.
-    speed_changes: HashMap<EffectLayer, Vec<(Duration, f64)>>,
+    /// The speed changes, freezes and unfreezes applied since the last frame
+    /// rendered, each with its song time and the speed the layer ran at
+    /// before it (0 while frozen): an effect cued before one but started
+    /// after it in the same frame ran that way until then.
+    timing_changes: HashMap<EffectLayer, Vec<(Duration, f64)>>,
 }
 
 impl LayerState {
@@ -225,7 +226,7 @@ impl LayerState {
             speed_masters: HashMap::new(),
             frozen: HashMap::new(),
             frozen_song: HashMap::new(),
-            speed_changes: HashMap::new(),
+            timing_changes: HashMap::new(),
         }
     }
 
@@ -235,7 +236,7 @@ impl LayerState {
         self.speed_masters.clear();
         self.frozen.clear();
         self.frozen_song.clear();
-        self.speed_changes.clear();
+        self.timing_changes.clear();
     }
 
     /// Reset a single layer back to defaults.
@@ -244,7 +245,7 @@ impl LayerState {
         self.speed_masters.remove(&layer);
         self.frozen.remove(&layer);
         self.frozen_song.remove(&layer);
-        self.speed_changes.remove(&layer);
+        self.timing_changes.remove(&layer);
     }
 
     fn intensity_master(&self, layer: &EffectLayer) -> f64 {
@@ -868,7 +869,7 @@ impl EffectEngine {
     }
 
     pub fn start_effect(&mut self, mut effect: EffectInstance) -> Result<(), EffectError> {
-        self.mark_speed_changes_since_cue(&mut effect);
+        self.mark_timing_changes_since_cue(&mut effect);
         self.expand_cells(&mut effect);
         // Validate effect
         validation::validate_effect(self.fixtures.as_map(), &effect)?;
@@ -1074,7 +1075,7 @@ impl EffectEngine {
         self.engine_elapsed += dt;
         self.last_song_time = song_time;
         // The cues before this frame have started their effects.
-        self.layer_state.speed_changes.clear();
+        self.layer_state.timing_changes.clear();
         self.last_dt = dt;
 
         // Fast path for MIDI-DMX-only frames: when no DSL effects are running,
@@ -1511,6 +1512,7 @@ impl EffectEngine {
     /// Freeze a layer - pauses all effects on the layer at their current state
     /// Effects maintain their current output values but don't advance in time
     pub fn freeze_layer(&mut self, layer: EffectLayer) {
+        self.note_timing_change(layer);
         let was_frozen = self.layer_state.frozen.contains_key(&layer);
         layers::freeze_layer(
             &mut self.layer_state.frozen,
@@ -1544,19 +1546,43 @@ impl EffectEngine {
         )
     }
 
-    /// An effect cued before a speed change in the frame it starts in -- the
-    /// cues fire together, layer commands first -- ran at the old speed
-    /// until the change, frozen if that was 0: it starts as if it had been
-    /// running then, as a seek's replay has it.
-    fn mark_speed_changes_since_cue(&self, effect: &mut EffectInstance) {
+    /// Notes a change to how `layer` runs in time, at the current song time,
+    /// with the speed it ran at until now (0 while frozen); see
+    /// [`Self::mark_timing_changes_since_cue`].
+    fn note_timing_change(&mut self, layer: EffectLayer) {
+        let Some(now) = self.last_song_time else {
+            return;
+        };
+        let before = if self.layer_state.frozen.contains_key(&layer) {
+            0.0
+        } else {
+            self.get_layer_speed_master(layer)
+        };
+        self.layer_state
+            .timing_changes
+            .entry(layer)
+            .or_default()
+            .push((now, before));
+    }
+
+    /// An effect cued before a speed change, freeze or unfreeze in the frame
+    /// it starts in -- the cues fire together, layer commands first -- ran
+    /// as its layer did until each: it starts as if it had been running
+    /// then, as a seek's replay has it. Up to the freeze its layer is in, if
+    /// any: that freeze's own time is counted at its unfreeze.
+    fn mark_timing_changes_since_cue(&self, effect: &mut EffectInstance) {
         let (Some(cue), Some(changes)) = (
             effect.cue_time,
-            self.layer_state.speed_changes.get(&effect.layer),
+            self.layer_state.timing_changes.get(&effect.layer),
         ) else {
             return;
         };
+        let held_from = self.layer_state.frozen_song.get(&effect.layer).copied();
         let (mut from, mut base, mut own) = (cue, Duration::ZERO, Duration::ZERO);
         for &(at, before) in changes.iter().filter(|(at, _)| *at > cue) {
+            if held_from.is_some_and(|held| from >= held) {
+                break;
+            }
             let stretch = at.saturating_sub(from);
             if before == 0.0 {
                 effect.score_frozen += stretch;
@@ -1633,6 +1659,7 @@ impl EffectEngine {
 
     /// Unfreeze a layer - resumes effects on the layer from where they left off
     pub fn unfreeze_layer(&mut self, layer: EffectLayer) {
+        self.note_timing_change(layer);
         let was_frozen = self.layer_state.frozen.contains_key(&layer);
         layers::unfreeze_layer(
             &mut self.layer_state.frozen,
@@ -1693,14 +1720,7 @@ impl EffectEngine {
                 effect.elapsed_from = own;
             }
         }
-        if let Some(now) = now {
-            let before = self.get_layer_speed_master(layer);
-            self.layer_state
-                .speed_changes
-                .entry(layer)
-                .or_default()
-                .push((now, before));
-        }
+        self.note_timing_change(layer);
         let was_frozen = self.layer_state.frozen.contains_key(&layer);
         layers::set_layer_speed_master(
             &mut self.layer_state.speed_masters,

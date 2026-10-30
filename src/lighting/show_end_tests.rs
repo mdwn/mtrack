@@ -460,3 +460,94 @@ fn show_end_speed_up_in_the_same_frame_as_the_cue_plays_as_it_seeks() {
         );
     }
 }
+
+/// a freeze then a speed change in the frame a fade cued just
+/// before them starts in: frozen 2 ms in, as a seek has it.
+#[test]
+fn show_end_same_frame_freeze_then_speed_change_in_the_cues_frame() {
+    let show = "show \"s\" {\n    @2.001\n    a: static red: 100%, up_time: 20ms, hold_time: 5s, \
+                layer: midground\n    @2.003\n    freeze(layer: midground)\n    \
+                @2.007\n    master(layer: midground, speed: 4)\n}\n";
+    for at in [2100u64, 2500] {
+        let live = rg(&played3(show, at));
+        let seek = rg(&seek3(show, at, at));
+        assert!(
+            (live.0 - seek.0).abs() < 0.01 && (live.0 - 0.1).abs() < 0.01,
+            "at {at} ms: live {live:?} seek {seek:?}, want 0.1"
+        );
+    }
+}
+
+/// the freeze alone holds the fade 2 ms in.
+#[test]
+fn show_end_same_frame_freeze_alone_in_the_cues_frame() {
+    let show = "show \"s\" {\n    @2.001\n    a: static red: 100%, up_time: 20ms, hold_time: 5s, \
+                layer: midground\n    @2.003\n    freeze(layer: midground)\n}\n";
+    for at in [2100u64, 2500] {
+        let live = rg(&played3(show, at));
+        let seek = rg(&seek3(show, at, at));
+        assert!(
+            (live.0 - seek.0).abs() < 0.01 && (live.0 - 0.1).abs() < 0.01,
+            "at {at} ms: live {live:?} seek {seek:?}, want 0.1"
+        );
+    }
+}
+
+/// freeze, speed 0 then speed 1 in one frame (the speed 1 lifts
+/// the freeze command's freeze too): frozen from 2.003 to 2.009.
+#[test]
+fn show_end_same_frame_freeze_then_speed_zero_and_back_in_the_cues_frame() {
+    let show = "show \"s\" {\n    @2.001\n    a: static red: 100%, up_time: 100ms, hold_time: 5s, \
+                layer: midground\n    @2.003\n    freeze(layer: midground)\n    \
+                @2.005\n    master(layer: midground, speed: 0)\n    \
+                @2.009\n    master(layer: midground, speed: 1)\n}\n";
+    let live = rg(&played3(show, 2050));
+    let seek = rg(&seek3(show, 2050, 2050));
+    assert!(
+        (live.0 - seek.0).abs() < 0.01,
+        "live {live:?} seek {seek:?}"
+    );
+}
+
+/// frozen and unfrozen, no speed change, in the cue's frame.
+#[test]
+fn show_end_same_frame_freeze_unfreeze_in_the_cues_frame() {
+    let show = "show \"s\" {\n    @2.001\n    a: static red: 100%, up_time: 100ms, hold_time: 5s, \
+                layer: midground\n    @2.004\n    freeze(layer: midground)\n    \
+                @2.008\n    unfreeze(layer: midground)\n}\n";
+    let live = rg(&played3(show, 2050));
+    let seek = rg(&seek3(show, 2050, 2050));
+    assert!(
+        (live.0 - seek.0).abs() < 0.005,
+        "live {live:?} seek {seek:?}"
+    );
+}
+
+/// speed 0 and back, no freeze command, in the cue's frame.
+#[test]
+fn show_end_same_frame_speed_zero_and_back_in_the_cues_frame() {
+    let show = "show \"s\" {\n    @2.001\n    a: static red: 100%, up_time: 100ms, hold_time: 5s, \
+                layer: midground\n    @2.004\n    master(layer: midground, speed: 0)\n    \
+                @2.008\n    master(layer: midground, speed: 1)\n}\n";
+    let live = rg(&played3(show, 2050));
+    let seek = rg(&seek3(show, 2050, 2050));
+    assert!(
+        (live.0 - seek.0).abs() < 0.005 && (live.0 - 0.45).abs() < 0.005,
+        "live {live:?} seek {seek:?}"
+    );
+}
+
+/// slowed, then frozen and unfrozen, in the cue's frame.
+#[test]
+fn show_end_same_frame_speed_change_then_freeze_unfreeze_in_the_cues_frame() {
+    let show = "show \"s\" {\n    @2.001\n    a: static red: 100%, up_time: 100ms, hold_time: 5s, \
+                layer: midground\n    @2.002\n    master(layer: midground, speed: 0.5)\n    \
+                @2.004\n    freeze(layer: midground)\n    \
+                @2.008\n    unfreeze(layer: midground)\n}\n";
+    let live = rg(&played3(show, 2050));
+    let seek = rg(&seek3(show, 2050, 2050));
+    assert!(
+        (live.0 - seek.0).abs() < 0.005,
+        "live {live:?} seek {seek:?}"
+    );
+}
