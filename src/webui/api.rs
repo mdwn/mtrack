@@ -498,9 +498,14 @@ pub(super) mod test_helpers {
         let songs_path = dir.path().join("songs");
         std::fs::create_dir(&songs_path).unwrap();
 
+        // Mappings with the device, or the player counts no audio to play
+        // and a song finishes the moment it starts, whatever its length.
+        let mappings = audio
+            .as_ref()
+            .map(|_| std::sync::Arc::new(std::collections::HashMap::new()));
         let devices = PlayerDevices {
             audio,
-            mappings: None,
+            mappings,
             midi: None,
             dmx_engine,
             sample_engine: None,

@@ -1917,18 +1917,28 @@ mod test {
     /// fresh one is handed the tempo that schedule set, not the one before.
     #[test]
     fn a_reopen_mid_schedule_carries_the_schedule_tempo() {
-        struct Null;
-        impl MidiSender for Null {
-            fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
+        // Counts the timing clocks sent, so the test waits for the schedule
+        // to have set its tempo rather than for a time that a slow runner
+        // (CI runs these under coverage) need not have used to send two.
+        struct Counting(Arc<std::sync::atomic::AtomicUsize>);
+        impl MidiSender for Counting {
+            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                if bytes == [0xF8] {
+                    self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
                 Ok(())
             }
         }
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (tx, rx) = mpsc::channel();
         // The previous song left 20ms; this schedule ticks every 10ms.
         let tempo = Arc::new(Mutex::new(Some(Duration::from_millis(20))));
         let engine_tempo = tempo.clone();
-        let join = std::thread::spawn(move || {
-            beat_clock_engine_loop(&mut Null, true, &engine_tempo, &rx);
+        let join = std::thread::spawn({
+            let sent = sent.clone();
+            move || {
+                beat_clock_engine_loop(&mut Counting(sent), true, &engine_tempo, &rx);
+            }
         });
         let clock = PlaybackClock::wall();
         clock.start();
@@ -1942,7 +1952,14 @@ mod test {
             clock,
         }))
         .unwrap();
-        std::thread::sleep(Duration::from_millis(200));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while sent.load(std::sync::atomic::Ordering::SeqCst) < 3 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the schedule never ticked"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let mut old = Device::new_default("test".to_string());
         old.beat_clock_engine = Some(Arc::new(BeatClockEngine {
             tx,
