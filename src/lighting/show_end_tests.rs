@@ -315,15 +315,7 @@ fn seek3(source: &str, seek_ms: u64, until_ms: u64) -> EffectEngine {
     let start = Duration::from_millis(seek_ms);
     let h = tl.start_at(start);
     engine.set_song_time(start);
-    engine.apply_layer_commands(&h.layer_commands, &[]);
-    for s in &h.stop_sequences {
-        engine.stop_sequence(s);
-    }
-    let mut we: Vec<_> = h.effects_with_elapsed.into_values().collect();
-    we.sort_by_key(|(e, _)| e.cue_time.unwrap_or(Duration::ZERO));
-    for (e, el) in we {
-        let _ = engine.start_effect_with_elapsed(e, el);
-    }
+    let _ = engine.apply_timeline_update(h);
     run(&mut tl, &mut engine, seek_ms, until_ms);
     engine
 }
@@ -439,8 +431,8 @@ fn show_end_zero_length_cued_on_frozen_layer() {
 }
 
 /// A look cued at 1.002 s and slowed to 0.1 at 1.008 s fire in the same
-/// frame, the speed change first: the look still ran its 6 ms at full speed
-/// before it, then 3.994 s at a tenth, over at 40.948 s -- played through,
+/// frame, and apply in turn: the look runs its 6 ms at full speed before
+/// the change, then 3.994 s at a tenth, over at 40.948 s -- played through,
 /// in the show's end and after a seek.
 #[test]
 fn show_end_slow_down_in_the_same_frame_as_the_cue() {

@@ -422,38 +422,20 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
     }
 }
 
-/// Applies one timeline update to the engine in the same order the live path
-/// uses: layer commands, then stopped sequences, then seek-started effects in
-/// cue order, then freshly-fired effects with sequence effects first.
+/// Applies one timeline update to the engine as the live path does (see
+/// [`EffectEngine::apply_timeline_update`]), its groups resolved first.
 pub(crate) fn apply_timeline_update<F>(
     engine: &mut EffectEngine,
-    update: crate::lighting::timeline::TimelineUpdate,
+    mut update: crate::lighting::timeline::TimelineUpdate,
     resolve_groups: &mut F,
 ) where
     F: FnMut(EffectInstance) -> EffectInstance,
 {
-    engine.apply_layer_commands(&update.layer_commands, &update.layer_command_times);
-
-    for sequence_name in &update.stop_sequences {
-        engine.stop_sequence(sequence_name);
-    }
-
-    let mut with_elapsed: Vec<_> = update.effects_with_elapsed.into_values().collect();
-    with_elapsed.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
-    for (effect, elapsed) in with_elapsed {
-        let resolved = resolve_groups(effect);
-        // A cue targeting a group with no fixtures in this venue fails validation.
-        // That is a fact about the show worth surfacing elsewhere (#340), not a
-        // reason to abandon the sample.
-        let _ = engine.start_effect_with_elapsed(resolved, elapsed);
-    }
-
-    let mut effects = update.effects;
-    effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
-    for effect in effects {
-        let resolved = resolve_groups(effect);
-        let _ = engine.start_effect(resolved);
-    }
+    update.map_effects(resolve_groups);
+    // A cue targeting a group with no fixtures in this venue fails validation.
+    // That is a fact about the show worth surfacing elsewhere (#340), not a
+    // reason to abandon the sample.
+    let _ = engine.apply_timeline_update(update);
 }
 
 #[cfg(test)]

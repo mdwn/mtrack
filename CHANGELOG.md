@@ -108,6 +108,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Cues less than a frame apart apply in turn (#592)**: cues that landed in the same frame were
+  applied all their layer commands first, so a `clear` or `stop sequence` cued a few milliseconds
+  after an effect ran before it, and the effect stayed on, though a seek to the same point had it
+  gone. Each frame's cues now apply time by time, as a seek replays them, everywhere a show
+  plays: the song, a loop's outgoing pass, ambient light and `evaluate_show`.
 - **`stop sequence` stops only the sequence it names (#591)**: stopping `verse` also stopped every
   sequence whose name starts with `verse_`, such as `verse_two`, as the song played and after a
   seek. A sequence's effects are now matched by its exact name.

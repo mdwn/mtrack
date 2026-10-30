@@ -318,23 +318,8 @@ impl Overlay {
 /// Applies a timeline update, its groups resolved, to `engine`, as
 /// [`Engine::apply_timeline_update`] does to the main one.
 fn apply_update(engine: &mut EffectEngine, update: TimelineUpdate) {
-    engine.apply_layer_commands(&update.layer_commands, &update.layer_command_times);
-    for sequence_name in &update.stop_sequences {
-        engine.stop_sequence(sequence_name);
-    }
-    let mut with_elapsed: Vec<_> = update.effects_with_elapsed.into_values().collect();
-    with_elapsed.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
-    for (effect, elapsed) in with_elapsed {
-        if let Err(e) = engine.start_effect_with_elapsed(effect, elapsed) {
-            error!("Failed to start ambient effect with elapsed time: {}", e);
-        }
-    }
-    let mut effects = update.effects;
-    effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
-    for effect in effects {
-        if let Err(e) = engine.start_effect(effect) {
-            error!("Failed to start ambient effect: {}", e);
-        }
+    for e in engine.apply_timeline_update(update) {
+        error!("Failed to start ambient effect: {}", e);
     }
 }
 
@@ -743,13 +728,7 @@ impl Engine {
     }
 
     fn resolve_update_groups(&self, update: &mut TimelineUpdate) {
-        update.effects = std::mem::take(&mut update.effects)
-            .into_iter()
-            .map(|effect| self.resolve_effect_groups(effect))
-            .collect();
-        for (effect, _) in update.effects_with_elapsed.values_mut() {
-            *effect = self.resolve_effect_groups(effect.clone());
-        }
+        update.map_effects(|effect| self.resolve_effect_groups(effect));
     }
 
     /// Resolves and reads the ambient light for `playlist`, `None` when there

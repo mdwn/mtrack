@@ -257,7 +257,7 @@ pub(super) fn reload_timeline(
         .saturating_sub(playback_delay);
 
     // Calculate the timeline update before acquiring the engine lock.
-    let timeline_update = if song_time > Duration::ZERO {
+    let mut timeline_update = if song_time > Duration::ZERO {
         new_timeline.start_at(song_time)
     } else {
         new_timeline.start();
@@ -266,25 +266,7 @@ pub(super) fn reload_timeline(
 
     // Pre-resolve group names while the engine lock is NOT held
     // to avoid deadlocking with the lighting system lock.
-    let resolved_effects_with_elapsed: Vec<_> = {
-        let mut sorted: Vec<_> = timeline_update.effects_with_elapsed.values().collect();
-        sorted.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
-        sorted
-            .into_iter()
-            .map(|(effect, elapsed)| {
-                (
-                    resolve_effect_groups(lighting_system, effect.clone()),
-                    *elapsed,
-                )
-            })
-            .collect()
-    };
-    let mut resolved_effects: Vec<_> = timeline_update.effects;
-    resolved_effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
-    let resolved_effects: Vec<_> = resolved_effects
-        .into_iter()
-        .map(|e| resolve_effect_groups(lighting_system, e))
-        .collect();
+    timeline_update.map_effects(|e| resolve_effect_groups(lighting_system, e));
 
     // Extract tempo map before moving new_timeline into the lock. Shows
     // without their own tempo block fall back to the song's tempo map.
@@ -318,22 +300,9 @@ pub(super) fn reload_timeline(
         // A freeze in the history holds where the reload starts from.
         engine.set_song_time(song_time);
 
-        if song_time > Duration::ZERO {
-            // A history: its freezes hold at the reload point, set above.
-            engine.apply_layer_commands(&timeline_update.layer_commands, &[]);
-            for seq_name in &timeline_update.stop_sequences {
-                engine.stop_sequence(seq_name);
-            }
-            for (effect, elapsed_time) in resolved_effects_with_elapsed {
-                if let Err(e) = engine.start_effect_with_elapsed(effect, elapsed_time) {
-                    error!("Failed to start lighting effect with elapsed time: {}", e);
-                }
-            }
-        }
-        for effect in resolved_effects {
-            if let Err(e) = engine.start_effect(effect) {
-                error!("Failed to start lighting effect: {}", e);
-            }
+        // A history: its freezes hold at the reload point, set above.
+        for e in engine.apply_timeline_update(timeline_update) {
+            error!("Failed to start lighting effect: {}", e);
         }
         info!("Watcher releasing effect_engine lock.");
     }

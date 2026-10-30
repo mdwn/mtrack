@@ -212,11 +212,6 @@ struct LayerState {
     /// The song time a frozen layer was frozen at, when there was one: what
     /// its cued effects hold at, and measure their time frozen from.
     frozen_song: HashMap<EffectLayer, Duration>,
-    /// The speed changes, freezes and unfreezes applied since the last frame
-    /// rendered, each with its song time and the speed the layer ran at
-    /// before it (0 while frozen): an effect cued before one but started
-    /// after it in the same frame ran that way until then.
-    timing_changes: HashMap<EffectLayer, Vec<(Duration, f64)>>,
 }
 
 impl LayerState {
@@ -226,7 +221,6 @@ impl LayerState {
             speed_masters: HashMap::new(),
             frozen: HashMap::new(),
             frozen_song: HashMap::new(),
-            timing_changes: HashMap::new(),
         }
     }
 
@@ -236,7 +230,6 @@ impl LayerState {
         self.speed_masters.clear();
         self.frozen.clear();
         self.frozen_song.clear();
-        self.timing_changes.clear();
     }
 
     /// Reset a single layer back to defaults.
@@ -245,7 +238,6 @@ impl LayerState {
         self.speed_masters.remove(&layer);
         self.frozen.remove(&layer);
         self.frozen_song.remove(&layer);
-        self.timing_changes.remove(&layer);
     }
 
     fn intensity_master(&self, layer: &EffectLayer) -> f64 {
@@ -869,7 +861,6 @@ impl EffectEngine {
     }
 
     pub fn start_effect(&mut self, mut effect: EffectInstance) -> Result<(), EffectError> {
-        self.mark_timing_changes_since_cue(&mut effect);
         self.expand_cells(&mut effect);
         // Validate effect
         validation::validate_effect(self.fixtures.as_map(), &effect)?;
@@ -1074,8 +1065,6 @@ impl EffectEngine {
         self.current_time += dt;
         self.engine_elapsed += dt;
         self.last_song_time = song_time;
-        // The cues before this frame have started their effects.
-        self.layer_state.timing_changes.clear();
         self.last_dt = dt;
 
         // Fast path for MIDI-DMX-only frames: when no DSL effects are running,
@@ -1500,7 +1489,6 @@ impl EffectEngine {
     /// Freeze a layer - pauses all effects on the layer at their current state
     /// Effects maintain their current output values but don't advance in time
     pub fn freeze_layer(&mut self, layer: EffectLayer) {
-        self.note_timing_change(layer);
         let was_frozen = self.layer_state.frozen.contains_key(&layer);
         layers::freeze_layer(
             &mut self.layer_state.frozen,
@@ -1532,56 +1520,6 @@ impl EffectEngine {
             self.base_elapsed_at(effect, song_time),
             self.get_layer_speed_master(effect.layer),
         )
-    }
-
-    /// Notes a change to how `layer` runs in time, at the current song time,
-    /// with the speed it ran at until now (0 while frozen); see
-    /// [`Self::mark_timing_changes_since_cue`].
-    fn note_timing_change(&mut self, layer: EffectLayer) {
-        let Some(now) = self.last_song_time else {
-            return;
-        };
-        let before = if self.layer_state.frozen.contains_key(&layer) {
-            0.0
-        } else {
-            self.get_layer_speed_master(layer)
-        };
-        self.layer_state
-            .timing_changes
-            .entry(layer)
-            .or_default()
-            .push((now, before));
-    }
-
-    /// An effect cued before a speed change, freeze or unfreeze in the frame
-    /// it starts in -- the cues fire together, layer commands first -- ran
-    /// as its layer did until each: it starts as if it had been running
-    /// then, as a seek's replay has it. Up to the freeze its layer is in, if
-    /// any: that freeze's own time is counted at its unfreeze.
-    fn mark_timing_changes_since_cue(&self, effect: &mut EffectInstance) {
-        let (Some(cue), Some(changes)) = (
-            effect.cue_time,
-            self.layer_state.timing_changes.get(&effect.layer),
-        ) else {
-            return;
-        };
-        let held_from = self.layer_state.frozen_song.get(&effect.layer).copied();
-        let (mut from, mut base, mut own) = (cue, Duration::ZERO, Duration::ZERO);
-        for &(at, before) in changes.iter().filter(|(at, _)| *at > cue) {
-            if held_from.is_some_and(|held| from >= held) {
-                break;
-            }
-            let stretch = at.saturating_sub(from);
-            if before == 0.0 {
-                effect.score_frozen += stretch;
-            } else {
-                base += stretch;
-                own += scale_by_speed(stretch, before);
-            }
-            from = at;
-        }
-        effect.speed_from = base;
-        effect.elapsed_from = own;
     }
 
     /// [`Self::elapsed_at`] before the layer's speed master: song time
@@ -1647,7 +1585,6 @@ impl EffectEngine {
 
     /// Unfreeze a layer - resumes effects on the layer from where they left off
     pub fn unfreeze_layer(&mut self, layer: EffectLayer) {
-        self.note_timing_change(layer);
         let was_frozen = self.layer_state.frozen.contains_key(&layer);
         layers::unfreeze_layer(
             &mut self.layer_state.frozen,
@@ -1708,7 +1645,6 @@ impl EffectEngine {
                 effect.elapsed_from = own;
             }
         }
-        self.note_timing_change(layer);
         let was_frozen = self.layer_state.frozen.contains_key(&layer);
         layers::set_layer_speed_master(
             &mut self.layer_state.speed_masters,
@@ -1725,6 +1661,90 @@ impl EffectEngine {
     /// Get the speed master for a layer (defaults to 1.0)
     pub fn get_layer_speed_master(&self, layer: EffectLayer) -> f64 {
         self.layer_state.speed_master(&layer)
+    }
+
+    /// Applies what a timeline fired, its groups already resolved: cue time
+    /// by cue time, in order, as a seek's replay has them, and at each time
+    /// its layer commands, then its sequence stops, then its effects --
+    /// sequence effects first, so a show's own effect at the same time wins
+    /// a Replace conflict. Cues less than a frame apart land in one update,
+    /// and all its layer commands going first ran a later cue's `clear` or
+    /// `stop sequence` before an earlier cue's effect, which then survived it
+    /// (#592). In turn, a speed change or freeze finds an effect cued
+    /// before it already running, as a seek's replay does, with nothing to
+    /// make up for. What carries no time goes first: a seek's history, its
+    /// layer commands at the song time already set and its effects started
+    /// part way, in cue order. Returns the errors of the effects that would
+    /// not start.
+    pub fn apply_timeline_update(
+        &mut self,
+        update: crate::lighting::timeline::TimelineUpdate,
+    ) -> Vec<EffectError> {
+        enum Step {
+            Command(crate::lighting::parser::LayerCommand),
+            Stop(String),
+            Resume(EffectInstance, Duration),
+            Start(EffectInstance),
+        }
+        let mut with_elapsed: Vec<_> = update.effects_with_elapsed.into_values().collect();
+        with_elapsed.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
+        let commands = update
+            .layer_commands
+            .into_iter()
+            .enumerate()
+            .map(|(i, cmd)| {
+                (
+                    update.layer_command_times.get(i).copied(),
+                    0,
+                    Step::Command(cmd),
+                )
+            });
+        let stops = update
+            .stop_sequences
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| {
+                (
+                    update.stop_sequence_times.get(i).copied(),
+                    1,
+                    Step::Stop(name),
+                )
+            });
+        let resumed = with_elapsed
+            .into_iter()
+            .map(|(effect, elapsed)| (None, 2, Step::Resume(effect, elapsed)));
+        let started = update.effects.into_iter().map(|effect| {
+            let rank = if effect.sequence.is_some() { 3 } else { 4 };
+            (effect.cue_time, rank, Step::Start(effect))
+        });
+        let mut steps: Vec<_> = commands
+            .chain(stops)
+            .chain(resumed)
+            .chain(started)
+            .collect();
+        // Stable: the cues' own order stands within a time and kind.
+        steps.sort_by_key(|(time, rank, _)| (*time, *rank));
+
+        let mut errors = Vec::new();
+        for (time, _, step) in steps {
+            let result = match step {
+                Step::Command(cmd) => {
+                    let times: Vec<Duration> = time.into_iter().collect();
+                    self.apply_layer_commands(std::slice::from_ref(&cmd), &times);
+                    Ok(())
+                }
+                Step::Stop(name) => {
+                    self.stop_sequence(&name);
+                    Ok(())
+                }
+                Step::Resume(effect, elapsed) => self.start_effect_with_elapsed(effect, elapsed),
+                Step::Start(effect) => self.start_effect(effect),
+            };
+            if let Err(e) = result {
+                errors.push(e);
+            }
+        }
+        errors
     }
 
     /// Applies a cue's layer commands, each at its cue's song time when

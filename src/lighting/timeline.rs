@@ -41,6 +41,25 @@ pub struct TimelineUpdate {
     pub layer_command_times: Vec<Duration>,
     /// Names of sequences to stop
     pub stop_sequences: Vec<String>,
+    /// The song time of each sequence stop's cue, for cues fired as the
+    /// song plays, as for the layer commands: an update's cues apply time by
+    /// time (see `EffectEngine::apply_timeline_update`). Empty for a seek's
+    /// history.
+    pub stop_sequence_times: Vec<Duration>,
+}
+
+impl TimelineUpdate {
+    /// Passes every effect through `f`: resolving their groups, before the
+    /// update goes to an engine.
+    pub fn map_effects(&mut self, mut f: impl FnMut(EffectInstance) -> EffectInstance) {
+        self.effects = std::mem::take(&mut self.effects)
+            .into_iter()
+            .map(&mut f)
+            .collect();
+        for (effect, _) in self.effects_with_elapsed.values_mut() {
+            *effect = f(effect.clone());
+        }
+    }
 }
 
 /// A layer's freeze and speed master as a seek replays its history.
@@ -247,10 +266,10 @@ fn replay(cues: &[Cue]) -> Replay {
         stopped_sequences,
     } = &mut replay;
 
-    // Cues at the same time fire in the same update live, which applies
-    // all their layer commands, then their sequence stops, then their
-    // effects: a clear in one cue does not take out an effect another cue
-    // starts at the same time.
+    // Cues at the same time apply together live: all their layer
+    // commands, then their sequence stops, then their effects, so a clear
+    // in one cue does not take out an effect another cue starts at the same
+    // time. Cues at different times apply in turn, however close.
     for group in cues.chunk_by(|a, b| a.time == b.time) {
         let time = group[0].time;
         // Cue by cue, as the timeline fires them live: a cue's sequence
@@ -835,6 +854,9 @@ impl LightingTimeline {
                     .extend(cue.layer_commands.iter().map(|_| cue.time));
 
                 process_stop_sequences(&mut self.stopped_sequences, cue, &mut result);
+                result
+                    .stop_sequence_times
+                    .resize(result.stop_sequences.len(), cue.time);
 
                 self.next_cue_index += 1;
             } else {

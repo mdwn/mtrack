@@ -114,17 +114,7 @@ fn seek_play(source: &str, fixtures: &[FixtureInfo], seek_ms: u64, until_ms: u64
     let start = Duration::from_millis(seek_ms);
     let h = tl.start_at(start);
     engine.set_song_time(start);
-    for cmd in &h.layer_commands {
-        engine.apply_layer_command(cmd);
-    }
-    for s in &h.stop_sequences {
-        engine.stop_sequence(s);
-    }
-    let mut we: Vec<_> = h.effects_with_elapsed.into_values().collect();
-    we.sort_by_key(|(e, _)| e.cue_time.unwrap_or(Duration::ZERO));
-    for (e, el) in we {
-        let _ = engine.start_effect_with_elapsed(e, el);
-    }
+    let _ = engine.apply_timeline_update(h);
     run_frames(&mut tl, &mut engine, seek_ms, until_ms);
     engine
 }

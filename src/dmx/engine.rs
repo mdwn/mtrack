@@ -4174,6 +4174,33 @@ mod test {
             assert_eq!(seek_frame(show, 6.0)?, RED, "seek to 6 s");
             Ok(())
         }
+
+        #[test]
+        fn cues_less_than_a_frame_apart_apply_in_turn() -> Result<(), Box<dyn Error>> {
+            // #592: cues that land in one frame were applied all layer
+            // commands first, then all effects, so a clear or a sequence
+            // stop cued just after an effect ran before it, and the effect
+            // the show takes out stayed on. A seek replays them in order.
+            const RED: (f64, f64, f64) = (255.0, 0.0, 0.0);
+            let bed = "    @0.000\n    wash: static, color: \"red\", duration: 10s, \
+                layer: background, blend_mode: replace\n";
+            let cleared = format!(
+                "show \"a\" {{\n{bed}    @2.003\n    wash: static, color: \"green\", \
+                 duration: 5s, layer: midground, blend_mode: replace\n    @2.006\n    \
+                 clear(layer: midground)\n}}\n"
+            );
+            let stopped = format!(
+                "sequence \"x\" {{\n    @0.000\n    wash: static, color: \"green\", \
+                 duration: 5s, layer: midground, blend_mode: replace\n}}\n\n\
+                 show \"a\" {{\n{bed}    @2.003\n    sequence \"x\"\n    @2.006\n    \
+                 stop sequence \"x\"\n}}\n"
+            );
+            for show in [&cleared, &stopped] {
+                assert_eq!(seek_frame(show, 3.0)?, RED, "seek to 3 s\n{show}");
+                assert_eq!(played_frame(show, 3.0)?, RED, "played to 3 s\n{show}");
+            }
+            Ok(())
+        }
     }
 
     mod start_lighting_timeline_tests {
@@ -5390,6 +5417,7 @@ mod test {
                 }],
                 stop_sequences: vec![],
                 layer_command_times: vec![],
+                stop_sequence_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -5406,6 +5434,7 @@ mod test {
                 layer_commands: vec![],
                 stop_sequences: vec!["test_seq".to_string()],
                 layer_command_times: vec![],
+                stop_sequence_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -5460,6 +5489,7 @@ mod test {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 layer_command_times: vec![],
+                stop_sequence_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -5507,6 +5537,7 @@ mod test {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 layer_command_times: vec![],
+                stop_sequence_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
