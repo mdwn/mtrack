@@ -100,12 +100,68 @@ pub struct LoopControl {
     /// playlist `fade_in`), set by the player as it breaks the loop and taken
     /// by the audio device as the song starts.
     pub start_fade: Arc<parking_lot::Mutex<Option<StartFade>>>,
-    /// The section loop jumps the audio has committed to, for this playback,
-    /// as it commits to them: `None` when it plays no audio. The beat clock
-    /// follows them rather than deciding on its own a little before or after.
-    pub section_jumps: Option<
-        Arc<parking_lot::Mutex<std::collections::VecDeque<crate::section_loop::SectionJump>>>,
-    >,
+    /// This playback's section loop jumps, as they are committed to: by the
+    /// audio when it plays any, by a thread of their own otherwise. The
+    /// notes, lights and beat clock follow them, so none can decide a
+    /// moment before or after the others.
+    pub section_jumps: Arc<SectionJumpLog>,
+}
+
+/// A playback's section loop jumps, in order, as they are committed to. Each
+/// follower reads it with a [`JumpCursor`] of its own.
+#[derive(Default)]
+pub struct SectionJumpLog {
+    jumps: parking_lot::Mutex<Vec<crate::section_loop::SectionJump>>,
+}
+
+impl SectionJumpLog {
+    /// Records a jump committed to.
+    pub fn push(&self, jump: crate::section_loop::SectionJump) {
+        self.jumps.lock().push(jump);
+    }
+
+    /// The jump at `index`, if it has been committed to.
+    fn get(&self, index: usize) -> Option<crate::section_loop::SectionJump> {
+        self.jumps.lock().get(index).cloned()
+    }
+}
+
+/// A follower's place in a [`SectionJumpLog`]: the jumps it has passed, and
+/// the time they have put back.
+pub struct JumpCursor {
+    log: Arc<SectionJumpLog>,
+    next: usize,
+    consumed: Duration,
+}
+
+impl JumpCursor {
+    pub fn new(log: Arc<SectionJumpLog>) -> Self {
+        JumpCursor {
+            log,
+            next: 0,
+            consumed: Duration::ZERO,
+        }
+    }
+
+    /// The next jump committed to, not yet passed.
+    pub fn peek(&self) -> Option<crate::section_loop::SectionJump> {
+        self.log.get(self.next)
+    }
+
+    /// Passes the next jump if it falls due by `at` on the playback timeline
+    /// (the start position plus the clock), giving it.
+    pub fn due(&mut self, at: Duration) -> Option<crate::section_loop::SectionJump> {
+        let jump = self.peek().filter(|jump| jump.at <= at)?;
+        self.next += 1;
+        self.consumed += jump.amount();
+        Some(jump)
+    }
+
+    /// The time the jumps passed have put back: playback time less this is
+    /// the position in the song.
+    pub fn consumed(&self) -> Duration {
+        self.consumed
+    }
 }
 
 impl LoopControl {
@@ -119,7 +175,7 @@ impl LoopControl {
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
-            section_jumps: None,
+            section_jumps: Arc::new(SectionJumpLog::default()),
         }
     }
 }

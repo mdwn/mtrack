@@ -227,8 +227,7 @@ impl Player {
                     break_fade: self.break_fade.clone(),
                     break_fade_ids: self.break_fade_ids.clone(),
                     start_fade: self.start_fade.clone(),
-                    section_jumps: (hw.device.is_some() && hw.mappings.is_some())
-                        .then(|| Arc::new(parking_lot::Mutex::new(Default::default()))),
+                    section_jumps: Default::default(),
                 },
             };
             tokio::task::spawn_blocking(move || {
@@ -432,6 +431,21 @@ impl Player {
             return;
         }
 
+        // With no audio to commit to section loop jumps, a thread of their
+        // own does, for the notes, lights and beat clock to follow.
+        let subsystems_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // (A song with no tracks makes the audio give up at once.)
+        if !has_audio || song.tracks().is_empty() {
+            let publisher = crate::section_loop::JumpPublisher {
+                clock: clock.clone(),
+                start_time,
+                cancel: cancel_handle.clone(),
+                done: subsystems_done.clone(),
+                loop_control: loop_control.clone(),
+            };
+            thread::spawn(move || crate::section_loop::publish_jumps(publisher));
+        }
+
         // Each subsystem signals readiness on this channel. Once all have
         // reported ready, we start the clock as the "go" signal.
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
@@ -592,6 +606,7 @@ impl Player {
             }
         }
 
+        subsystems_done.store(true, Ordering::Relaxed);
         let outcome = resolve_playback_outcome(has_audio, audio_outcome.lock().take());
         if play_tx.send(outcome).is_err() {
             error!("Error while sending to finish channel (receiver dropped).")
@@ -1061,6 +1076,7 @@ impl Player {
             "Activating section loop"
         );
 
+        *self.consumed_at_arm.lock() = *self.loop_time_consumed.lock();
         {
             let mut active = self.active_section.write();
             *active = Some(super::SectionBounds {
@@ -1132,6 +1148,7 @@ impl Player {
                 *state = ReactiveLoopState::LoopArmed(bounds.clone());
 
                 // Set active_section to engage the existing loop machinery.
+                *self.consumed_at_arm.lock() = *self.loop_time_consumed.lock();
                 {
                     let mut active = self.active_section.write();
                     *active = Some(bounds);
@@ -1227,13 +1244,34 @@ impl Player {
                 *state = ReactiveLoopState::Idle;
             }
 
+            // BreakRequested + straight into the next section (sections back
+            // to back) → loop exited, and the next one offered. Waiting for a
+            // gap between sections that never comes left the state broken for
+            // the rest of the song, and no section offered.
+            (ReactiveLoopState::BreakRequested(broken), Some(bounds))
+                if broken.name != bounds.name =>
+            {
+                info!(
+                    old = broken.name.as_str(),
+                    new = bounds.name.as_str(),
+                    "Section loop exited after break into the next section"
+                );
+                self.play_notification(crate::notification::NotificationEvent::LoopExited);
+                self.play_notification(crate::notification::NotificationEvent::SectionEntering {
+                    section_name: bounds.name.clone(),
+                });
+                *state = ReactiveLoopState::SectionOffered(bounds);
+            }
+
             // LoopArmed → Looping transition happens when the audio engine
             // actually begins looping. We detect this by checking if
             // active_section is set and we've wrapped around.
             (ReactiveLoopState::LoopArmed(bounds), Some(_)) => {
-                // Check if the audio engine has started looping.
+                // Check if the audio engine has started looping: loop time
+                // put back since it was armed (any before is an earlier
+                // loop's).
                 let loop_consumed = *self.loop_time_consumed.lock();
-                if loop_consumed > Duration::ZERO {
+                if loop_consumed > *self.consumed_at_arm.lock() {
                     *state = ReactiveLoopState::Looping(bounds.clone());
                 }
             }

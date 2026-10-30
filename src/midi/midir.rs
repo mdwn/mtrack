@@ -112,6 +112,7 @@ impl Device {
     /// thread) owns the clock output: it syncs to the shared playback clock's
     /// "go" signal, plays this schedule, and then holds the last tempo until
     /// the next song retunes it.
+    #[allow(clippy::too_many_arguments)]
     fn play_beat_clock(
         &self,
         song: &Song,
@@ -340,6 +341,7 @@ impl super::Device for Device {
                         loop_break: loop_break.clone(),
                         active_section: active_section.clone(),
                         section_loop_break: section_loop_break.clone(),
+                        section_jumps: section_jumps.clone(),
                     },
                 );
             })
@@ -776,6 +778,8 @@ struct PlaybackContext<'a> {
     loop_break: Arc<AtomicBool>,
     active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
     section_loop_break: Arc<AtomicBool>,
+    /// The playback's section loop jumps, which the notes follow.
+    section_jumps: Arc<crate::playsync::SectionJumpLog>,
 }
 
 /// Runs the MIDI playback thread body: signals readiness, waits for the clock
@@ -817,105 +821,66 @@ fn run_playback(sender: &mut dyn MidiSender, mut ctx: PlaybackContext<'_>) {
         }
     }
 
-    // A looping song's first pass plays to the first boundary here; the
-    // passes from there on follow the song's grid (`play_looping_passes`).
+    // The song plays from where it starts, and on from each section loop
+    // jump committed to -- by the audio, or the playback's own publisher
+    // without it -- up to the next: the notes go back where and when the
+    // audio and lights do, and play on once the loop is broken. A looping
+    // song's first pass plays to the first boundary; the passes from there on
+    // follow the song's grid (`play_looping_passes`).
     let first_clock_base = ctx.clock.elapsed();
-    play_precomputed(
-        &MidiPlaybackParams {
-            precomputed: ctx.precomputed,
-            start_time: ctx.start_time,
-            end_time: ctx
-                .loop_passes
-                .map(|(length, overlap)| length.saturating_sub(overlap)),
-            clock_base: first_clock_base,
-            cancel_handle: ctx.cancel_handle,
-            exclude_channels: ctx.exclude_channels,
-            clock: ctx.clock,
-            active_section: Some(&ctx.active_section),
-        },
-        sender,
-    );
-
-    // Section loop: if active_section is set, loop the section region.
-    // The initial play_precomputed exits when it reaches section.end_time
-    // (via the active_section check). This loop then replays the section.
-    let mut section_monitor = crate::section_loop::SectionLoopMonitor::new();
-    // Where a replayed section ends, and when on the clock: the song plays on
-    // from there once the loop is broken or cleared.
-    let mut after_section: Option<(Duration, Duration)> = None;
+    let mut jumps = crate::playsync::JumpCursor::new(ctx.section_jumps.clone());
+    let mut segment = Some((
+        ctx.start_time,
+        first_clock_base,
+        ctx.loop_passes
+            .map(|(length, overlap)| length.saturating_sub(overlap)),
+    ));
+    while let Some((from, clock_base, end_time)) = segment.take() {
+        if ctx.cancel_handle.is_cancelled() || ctx.loop_break.load(Ordering::Relaxed) {
+            break;
+        }
+        let played = play_precomputed(
+            &MidiPlaybackParams {
+                precomputed: ctx.precomputed,
+                start_time: from,
+                end_time,
+                clock_base,
+                cancel_handle: ctx.cancel_handle,
+                exclude_channels: ctx.exclude_channels,
+                clock: ctx.clock,
+            },
+            Some((&mut jumps, ctx.start_time)),
+            sender,
+        );
+        let jumped = match played {
+            Played::Jumped(jump) => Some(jump),
+            Played::Cancelled => None,
+            // Out of notes with a section still looping (its end past the
+            // last of them, or no notes in it at all): its jump is to come.
+            Played::Ended => loop {
+                if ctx.cancel_handle.is_cancelled() || ctx.loop_break.load(Ordering::Relaxed) {
+                    break None;
+                }
+                if let Some(jump) = jumps.due(ctx.start_time + ctx.clock.elapsed()) {
+                    break Some(jump);
+                }
+                let looping = !ctx.section_loop_break.load(Ordering::Relaxed)
+                    && ctx.active_section.read().is_some();
+                if !looping && jumps.peek().is_none() {
+                    break None;
+                }
+                thread::sleep(Duration::from_millis(5));
+            },
+        };
+        if let Some(jump) = jumped {
+            debug!(from = ?jump.from, to = ?jump.to, "MIDI section loop: going back");
+            segment = Some((jump.to, jump.at.saturating_sub(ctx.start_time), None));
+        }
+    }
 
     loop {
         if ctx.cancel_handle.is_cancelled() || ctx.loop_break.load(Ordering::Relaxed) {
             break;
-        }
-
-        // Check for section loop using shared monitor. Section bounds are
-        // song-absolute while the clock counts from this playback's start,
-        // so offset by the start position.
-        if !ctx.section_loop_break.load(Ordering::Relaxed) {
-            let elapsed = ctx.start_time + ctx.clock.elapsed();
-            match section_monitor.poll(&ctx.active_section, elapsed) {
-                crate::section_loop::LoopPoll::Triggered(section, jump) => {
-                    if ctx.cancel_handle.is_cancelled() {
-                        break;
-                    }
-                    if !ctx.section_loop_break.load(Ordering::Relaxed) {
-                        info!(section = section.name, "MIDI section loop: restarting");
-                        // From the jump's time, not when it was noticed: the
-                        // margin ahead of it, give or take a poll.
-                        let base = jump.at.saturating_sub(ctx.start_time);
-                        play_precomputed(
-                            &MidiPlaybackParams {
-                                precomputed: ctx.precomputed,
-                                start_time: section.start_time,
-                                end_time: Some(section.end_time),
-                                clock_base: base,
-                                cancel_handle: ctx.cancel_handle,
-                                exclude_channels: ctx.exclude_channels,
-                                clock: ctx.clock,
-                                active_section: None,
-                            },
-                            sender,
-                        );
-                        after_section = Some((
-                            section.end_time,
-                            base + section.end_time.saturating_sub(section.start_time),
-                        ));
-                        continue;
-                    }
-                }
-                // Armed, its end not reached: the first play stops at the
-                // first event past the section, which can be well before the
-                // clock gets there. Wait for the trigger rather than taking
-                // the song as over -- or, looping, restarting it.
-                crate::section_loop::LoopPoll::Waiting(_) => {
-                    thread::sleep(Duration::from_millis(5));
-                    continue;
-                }
-                crate::section_loop::LoopPoll::NoSection
-                | crate::section_loop::LoopPoll::SectionCleared => {}
-            }
-        }
-
-        // The loop broken, or cleared: the song plays on from the section's
-        // end, as its audio does -- up to the end of a section armed later,
-        // which loops in its turn.
-        if let Some((position, clock_base)) = after_section.take() {
-            info!("MIDI section loop: playing on from the section's end");
-            play_precomputed(
-                &MidiPlaybackParams {
-                    precomputed: ctx.precomputed,
-                    start_time: position,
-                    end_time: None,
-                    clock_base,
-                    cancel_handle: ctx.cancel_handle,
-                    exclude_channels: ctx.exclude_channels,
-                    clock: ctx.clock,
-                    active_section: Some(&ctx.active_section),
-                },
-                sender,
-            );
-            continue;
         }
 
         // Whole-song loop check.
@@ -958,8 +923,8 @@ fn run_playback(sender: &mut dyn MidiSender, mut ctx: PlaybackContext<'_>) {
                     cancel_handle: ctx.cancel_handle,
                     exclude_channels: ctx.exclude_channels,
                     clock: ctx.clock,
-                    active_section: Some(&ctx.active_section),
                 },
+                None,
                 sender,
             );
             continue;
@@ -1037,7 +1002,7 @@ fn run_beat_clock(
             // Out of ticks with a section still going round (its end at or
             // past the last of them): its jump is still to come.
             loop {
-                if !follow.pending() {
+                if !follow.pending(ticks) {
                     break 'ticks;
                 }
                 if cancel_handle.is_cancelled() {
@@ -1057,8 +1022,7 @@ fn run_beat_clock(
                 }
                 if let Some(jump) = follow.due(start_time + clock.elapsed()) {
                     if lands_in(ticks, &jump) {
-                        looped = jump.at.saturating_sub(jump.to);
-                        schedule.seek(jump.to);
+                        looped = schedule.go_back(&jump);
                         jumped = true;
                         continue 'ticks;
                     }
@@ -1070,8 +1034,7 @@ fn run_beat_clock(
         // takes the notes and audio: the tick due there is the start's.
         while let Some(jump) = follow.due(tick_time + looped) {
             if lands_in(ticks, &jump) {
-                looped = jump.at.saturating_sub(jump.to);
-                schedule.seek(jump.to);
+                looped = schedule.go_back(&jump);
                 jumped = true;
                 continue 'ticks;
             }
@@ -1116,20 +1079,12 @@ fn run_beat_clock(
         let elapsed = clock.elapsed();
         if target_wall > elapsed {
             discipline.sleep_until(target_wall, clock, reference);
-        } else if schedule.clone().next().is_some_and(|(next, _)| {
-            discipline.steer((next + looped).saturating_sub(start_time)) <= elapsed
-        }) {
-            // Late enough that the next is due too (a start noticed late):
-            // skipped, not sent with it in a burst gear reads as a tempo spike.
-            prev_tick = None;
-            continue;
         }
         // A jump the audio committed to while this waited: the tick due at it
         // is the section start's.
         while let Some(jump) = follow.due(tick_time + looped) {
             if lands_in(ticks, &jump) {
-                looped = jump.at.saturating_sub(jump.to);
-                schedule.seek(jump.to);
+                looped = schedule.go_back(&jump);
                 jumped = true;
                 continue 'ticks;
             }
@@ -1222,6 +1177,25 @@ impl PassTicks<'_> {
     fn seek(&mut self, position: Duration) {
         self.index = self.ticks.partition_point(|tick| *tick < position);
         self.skip_before = Duration::ZERO;
+    }
+
+    /// Takes a section loop's jump: back to its target in the pass its
+    /// section is in -- the one under way, or, for a section ending on a
+    /// looping song's end, the one the ticks have just left -- giving how
+    /// far the song is then put back (`looped`), so that the target falls
+    /// due at the jump's time.
+    fn go_back(&mut self, jump: &crate::section_loop::SectionJump) -> Duration {
+        let rolled_on = self.index > 0
+            && self.passes > 0
+            && self.ticks[self.index - 1] < jump.to
+            && self.offset > Duration::ZERO;
+        if rolled_on {
+            if let Some(period) = self.period {
+                self.offset = self.offset.saturating_sub(period);
+            }
+        }
+        self.seek(jump.to);
+        jump.at.saturating_sub(self.offset + jump.to)
     }
 
     /// Whether the tick under way belongs to this pass rather than falling on
@@ -1319,18 +1293,13 @@ struct BeatClockPasses {
     loop_break: Arc<AtomicBool>,
 }
 
-/// A song's section loop, which the clock follows as its notes and audio do:
-/// the player's handles, shared with them.
+/// A song's section loop, which the clock follows as its notes and lights do:
+/// the player's handles, and the playback's log of the jumps committed to.
 #[derive(Clone)]
 struct BeatClockSections {
     active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
     section_loop_break: Arc<AtomicBool>,
-    /// The jumps the audio has committed to, when the song plays audio: the
-    /// clock goes as it goes, not by a decision of its own a little before
-    /// or after.
-    jumps: Option<
-        Arc<parking_lot::Mutex<std::collections::VecDeque<crate::section_loop::SectionJump>>>,
-    >,
+    jumps: Arc<crate::playsync::SectionJumpLog>,
 }
 
 impl BeatClockSections {
@@ -1343,51 +1312,45 @@ impl BeatClockSections {
     }
 }
 
-/// Where a schedule's section loop jumps come from: the audio's, as it
-/// commits to them, or, for a song without audio, a trigger of its own on
-/// the schedule's timeline, set as the notes' and lights' are.
+/// A schedule's way through the playback's section loop jumps.
 struct SectionFollow<'a> {
     sections: Option<&'a BeatClockSections>,
-    trigger: crate::section_loop::SectionLoopTrigger,
+    cursor: Option<crate::playsync::JumpCursor>,
 }
 
 impl<'a> SectionFollow<'a> {
     fn new(sections: Option<&'a BeatClockSections>) -> Self {
         SectionFollow {
             sections,
-            trigger: crate::section_loop::SectionLoopTrigger::new(),
+            cursor: sections
+                .map(|sections| crate::playsync::JumpCursor::new(sections.jumps.clone())),
         }
     }
 
     /// The jump falling due by `at` on the playback timeline, if one does.
     fn due(&mut self, at: Duration) -> Option<crate::section_loop::SectionJump> {
-        let sections = self.sections?;
-        if let Some(jumps) = &sections.jumps {
-            let mut jumps = jumps.lock();
-            return jumps
-                .front()
-                .is_some_and(|jump| jump.at <= at)
-                .then(|| jumps.pop_front())
-                .flatten();
-        }
-        match sections.looping() {
-            Some(section) => self.trigger.jump(&section, at, Duration::ZERO),
-            None => {
-                self.trigger.reset();
-                None
-            }
-        }
+        self.cursor.as_mut()?.due(at)
     }
 
-    /// Whether a jump may yet come: a section looping, or one committed.
-    fn pending(&self) -> bool {
-        self.sections.is_some_and(|sections| {
-            sections.looping().is_some()
-                || sections
-                    .jumps
-                    .as_ref()
-                    .is_some_and(|jumps| !jumps.lock().is_empty())
-        })
+    /// Whether a jump the schedule could follow may yet come: one committed,
+    /// or a section looping with a tick in it to go back to.
+    fn pending(&self, ticks: &[Duration]) -> bool {
+        self.cursor
+            .as_ref()
+            .is_some_and(|cursor| cursor.peek().is_some())
+            || self
+                .sections
+                .and_then(BeatClockSections::looping)
+                .is_some_and(|section| {
+                    lands_in(
+                        ticks,
+                        &crate::section_loop::SectionJump {
+                            at: Duration::ZERO,
+                            from: section.end_time,
+                            to: section.start_time,
+                        },
+                    )
+                })
     }
 }
 
@@ -1949,9 +1912,6 @@ struct MidiPlaybackParams<'a> {
     cancel_handle: &'a CancelHandle,
     exclude_channels: &'a HashSet<u8>,
     clock: &'a PlaybackClock,
-    /// If set, stop playback when this section becomes active and event time
-    /// reaches the section end. Allows the section loop to take over.
-    active_section: Option<&'a Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>>,
 }
 
 /// The passes of a looping song, for [`play_looping_passes`].
@@ -2044,41 +2004,76 @@ fn play_looping_passes(params: &LoopingPasses<'_>, sender: &mut dyn MidiSender) 
 
 /// Plays pre-computed MIDI events through a MIDI sender.
 /// Sleeps between events using spin_sleep for precision without busy-waiting.
-fn play_precomputed(params: &MidiPlaybackParams<'_>, sender: &mut dyn MidiSender) {
+/// How a stretch of notes ended.
+#[derive(Debug, PartialEq)]
+enum Played {
+    /// The notes ran out, or reached the end asked for.
+    Ended,
+    /// A section loop jump fell due: the song goes on from its target.
+    Jumped(crate::section_loop::SectionJump),
+    Cancelled,
+}
+
+/// Plays a stretch of notes, up to `params.end_time` -- or, given the
+/// playback's section loop jumps (with the start position they are timed
+/// from), up to the next that falls due before a note, at its time.
+fn play_precomputed(
+    params: &MidiPlaybackParams<'_>,
+    mut jumps: Option<(&mut crate::playsync::JumpCursor, Duration)>,
+    sender: &mut dyn MidiSender,
+) -> Played {
+    // Waits on the clock in steps this long while a jump may be committed.
+    const JUMP_CHECK: Duration = Duration::from_millis(10);
     let events = params.precomputed.events_from(params.start_time);
     let mut buf = Vec::with_capacity(8);
 
     for event in events {
         if params.cancel_handle.is_cancelled() {
-            return;
+            return Played::Cancelled;
         }
 
         // Stop at section end time if specified.
         if let Some(end) = params.end_time {
             if event.time >= end {
-                return;
-            }
-        }
-
-        // Stop if a section loop became active and we've reached its end.
-        // This lets the section loop in run_playback take over.
-        if let Some(active) = params.active_section {
-            if let Some(ref section) = *active.read() {
-                if event.time >= section.end_time {
-                    return;
-                }
+                return Played::Ended;
             }
         }
 
         // target_wall is relative to the section start, then offset by
         // clock_base so it aligns with the continuously-advancing clock.
         let target_wall = params.clock_base + (event.time - params.start_time);
-        let elapsed = params.clock.elapsed();
-        if target_wall > elapsed {
-            spin_sleep::sleep(target_wall - elapsed);
-        }
-        if params.cancel_handle.is_cancelled() {
-            return;
+        loop {
+            // A jump falling due before this note: the song goes on from
+            // there, at its time.
+            if let Some((cursor, song_start)) = jumps.as_mut() {
+                if let Some(next) = cursor.peek() {
+                    let at = next.at.saturating_sub(*song_start);
+                    if at <= target_wall {
+                        while params.clock.elapsed() < at {
+                            if params.cancel_handle.is_cancelled() {
+                                return Played::Cancelled;
+                            }
+                            let left = at.saturating_sub(params.clock.elapsed());
+                            spin_sleep::sleep(left.min(JUMP_CHECK));
+                        }
+                        let jump = cursor.due(next.at).expect("the jump peeked at is due");
+                        return Played::Jumped(jump);
+                    }
+                }
+            }
+            let elapsed = params.clock.elapsed();
+            if target_wall <= elapsed {
+                break;
+            }
+            let wait = target_wall - elapsed;
+            if jumps.is_none() {
+                spin_sleep::sleep(wait);
+                break;
+            }
+            spin_sleep::sleep(wait.min(JUMP_CHECK));
+            if params.cancel_handle.is_cancelled() {
+                return Played::Cancelled;
+            }
         }
 
         if let Some(bytes) = serialize_midi_event(event, params.exclude_channels, &mut buf) {
@@ -2087,6 +2082,7 @@ fn play_precomputed(params: &MidiPlaybackParams<'_>, sender: &mut dyn MidiSender
             }
         }
     }
+    Played::Ended
 }
 
 /// Promotes the current thread to real-time priority for low-jitter MIDI clock output.
@@ -2112,6 +2108,32 @@ fn promote_to_realtime_thread() {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// Runs a section loop jump publisher for a test playback, as
+    /// `play_files` runs one for a song without audio: the jumps for the
+    /// armed section (on `clock`, from `start_time`) go into the log given
+    /// back, until the flag given back is set.
+    fn publish_jumps_for_test(
+        clock: &PlaybackClock,
+        start_time: Duration,
+        active_section: &Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+        section_loop_break: &Arc<AtomicBool>,
+    ) -> (Arc<crate::playsync::SectionJumpLog>, Arc<AtomicBool>) {
+        let mut loop_control = crate::playsync::LoopControl::new();
+        loop_control.active_section = active_section.clone();
+        loop_control.section_loop_break = section_loop_break.clone();
+        let log = loop_control.section_jumps.clone();
+        let done = Arc::new(AtomicBool::new(false));
+        let publisher = crate::section_loop::JumpPublisher {
+            clock: clock.clone(),
+            start_time,
+            cancel: CancelHandle::new(),
+            done: done.clone(),
+            loop_control,
+        };
+        thread::spawn(move || crate::section_loop::publish_jumps(publisher));
+        (log, done)
+    }
     use midly::num::u7;
     use midly::MidiMessage;
 
@@ -2483,60 +2505,6 @@ mod test {
         assert!(first >= Duration::from_secs(1), "{first:?}");
         // Counted from the notice, it would be 1.6s in.
         assert!(first < Duration::from_millis(1_450), "{first:?}");
-    }
-
-    /// A start noticed after the playback delay has run out (here no delay,
-    /// the default, and the engine hearing of the song 200ms in) does not
-    /// send the ticks already due back to back, a burst gear reads as a tempo
-    /// spike: it picks the schedule up where it is.
-    #[test]
-    fn a_late_notice_does_not_burst_the_ticks_already_due() {
-        struct Stamps(Arc<Mutex<Vec<std::time::Instant>>>);
-        impl MidiSender for Stamps {
-            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-                if bytes == [0xF8] {
-                    self.0.lock().unwrap().push(std::time::Instant::now());
-                }
-                Ok(())
-            }
-        }
-        let clock = PlaybackClock::wall();
-        clock.start();
-        std::thread::sleep(Duration::from_millis(200));
-        let stamps = Arc::new(Mutex::new(Vec::new()));
-        let (tx, rx) = mpsc::channel();
-        let cancel = CancelHandle::new();
-        tx.send(BeatClockCommand::Play(BeatClockPlay {
-            ticks: Arc::new((0..48).map(|k| Duration::from_millis(k * 20)).collect()),
-            start_time: Duration::ZERO,
-            playback_delay: Duration::ZERO,
-            cancel: cancel.clone(),
-            clock: clock.clone(),
-            passes: None,
-            sections: None,
-        }))
-        .unwrap();
-        let join = std::thread::spawn({
-            let stamps = stamps.clone();
-            move || {
-                let tempo = Mutex::new(None);
-                beat_clock_engine_loop(&mut Stamps(stamps), false, &tempo, &rx);
-            }
-        });
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        while stamps.lock().unwrap().len() < 6 && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        cancel.cancel();
-        drop(tx);
-        join.join().unwrap();
-        let stamps = stamps.lock().unwrap();
-        let gaps: Vec<Duration> = stamps.windows(2).take(5).map(|w| w[1] - w[0]).collect();
-        // Ticks are 20ms apart; none should go out within 5ms of the last.
-        assert!(
-            gaps.iter().all(|gap| *gap >= Duration::from_millis(5)),
-            "clocks sent in a burst: {gaps:?}"
-        );
     }
 
     /// A reopen while a song's beat clock schedule still runs (a clock
@@ -3120,8 +3088,8 @@ mod test {
                     cancel_handle: cancel,
                     exclude_channels: exclude,
                     clock,
-                    active_section: None,
                 },
+                None,
                 sender,
             );
         }
@@ -3422,6 +3390,7 @@ mod test {
                     loop_break: loop_break.clone(),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
+                    section_jumps: Default::default(),
                 },
             );
             breaker.join().unwrap();
@@ -3489,6 +3458,7 @@ mod test {
                     loop_break: loop_break.clone(),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
+                    section_jumps: Default::default(),
                 },
             );
             breaker.join().unwrap();
@@ -3542,6 +3512,20 @@ mod test {
                 })
             };
 
+            let active_section = Arc::new(parking_lot::RwLock::new(Some(
+                crate::player::SectionBounds {
+                    name: "intro".to_string(),
+                    start_time: Duration::ZERO,
+                    end_time: Duration::from_millis(300),
+                },
+            )));
+            let section_loop_break = Arc::new(AtomicBool::new(false));
+            let (log, done) = publish_jumps_for_test(
+                &clock,
+                Duration::ZERO,
+                &active_section,
+                &section_loop_break,
+            );
             run_playback(
                 &mut sender,
                 PlaybackContext {
@@ -3556,17 +3540,13 @@ mod test {
                     loop_playback: true,
                     loop_passes: Some((Duration::from_secs(1), Duration::ZERO)),
                     loop_break: loop_break.clone(),
-                    active_section: Arc::new(parking_lot::RwLock::new(Some(
-                        crate::player::SectionBounds {
-                            name: "intro".to_string(),
-                            start_time: Duration::ZERO,
-                            end_time: Duration::from_millis(300),
-                        },
-                    ))),
-                    section_loop_break: Arc::new(AtomicBool::new(false)),
+                    active_section,
+                    section_loop_break,
+                    section_jumps: log,
                 },
             );
             breaker.join().unwrap();
+            done.store(true, Ordering::Relaxed);
 
             let notes: Vec<u8> = sender.sent.iter().map(|(_, note)| *note).collect();
             assert_eq!(notes, vec![60, 61, 60, 61, 60, 61], "{:?}", sender.sent);
@@ -3625,6 +3605,12 @@ mod test {
                     *active_section.write() = None;
                 })
             };
+            let (log, done) = publish_jumps_for_test(
+                &clock,
+                Duration::ZERO,
+                &active_section,
+                &section_loop_break,
+            );
             run_playback(
                 &mut sender,
                 PlaybackContext {
@@ -3641,11 +3627,127 @@ mod test {
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section,
                     section_loop_break,
+                    section_jumps: log,
                 },
             );
             breaker.join().unwrap();
+            done.store(true, Ordering::Relaxed);
             let notes: Vec<u8> = sender.sent.iter().map(|(_, note)| *note).collect();
             assert_eq!(notes, vec![60, 61, 60, 61, 62], "{:?}", sender.sent);
+        }
+
+        /// Runs `run_playback` over notes at `at_ms` (60, 61, ...) with
+        /// `section` armed from the top, while `driver` changes the section
+        /// loop state on the clock; returns the notes sent.
+        fn play_with_sections(
+            at_ms: &[u64],
+            section: (u64, u64),
+            driver: impl FnOnce(
+                    PlaybackClock,
+                    Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+                    Arc<AtomicBool>,
+                ) + Send
+                + 'static,
+        ) -> Vec<(f64, u8)> {
+            let midi = make_events(at_ms);
+            let cancel = CancelHandle::new();
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let exclude = HashSet::new();
+            let clock = PlaybackClock::wall();
+            clock.start();
+            let mut sender = TimedSender {
+                clock: clock.clone(),
+                sent: Vec::new(),
+            };
+            let active_section = Arc::new(parking_lot::RwLock::new(Some(
+                crate::player::SectionBounds {
+                    name: "a".to_string(),
+                    start_time: Duration::from_millis(section.0),
+                    end_time: Duration::from_millis(section.1),
+                },
+            )));
+            let section_loop_break = Arc::new(AtomicBool::new(false));
+            let driver = {
+                let clock = clock.clone();
+                let active_section = active_section.clone();
+                let section_loop_break = section_loop_break.clone();
+                std::thread::spawn(move || driver(clock, active_section, section_loop_break))
+            };
+            let (log, done) = publish_jumps_for_test(
+                &clock,
+                Duration::ZERO,
+                &active_section,
+                &section_loop_break,
+            );
+            run_playback(
+                &mut sender,
+                PlaybackContext {
+                    precomputed: &midi,
+                    start_time: Duration::ZERO,
+                    playback_delay: Duration::ZERO,
+                    cancel_handle: &cancel,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    finished: Arc::new(AtomicBool::new(false)),
+                    exclude_channels: &exclude,
+                    clock: &clock,
+                    loop_playback: false,
+                    loop_passes: None,
+                    loop_break: Arc::new(AtomicBool::new(false)),
+                    active_section,
+                    section_loop_break,
+                    section_jumps: log,
+                },
+            );
+            driver.join().unwrap();
+            done.store(true, Ordering::Relaxed);
+            sender.sent
+        }
+
+        fn wait_until(clock: &PlaybackClock, ms: u64) {
+            while clock.elapsed() < Duration::from_millis(ms) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        /// Broken before it ever went round (as `stop_section_loop` breaks
+        /// it), the section's end is played through, as the audio plays it:
+        /// the notes past it still come.
+        #[test]
+        fn notes_play_on_after_a_section_broken_before_it_loops() {
+            // Notes at 0, 100 and 400ms; section 0-300ms armed, broken at
+            // 200ms: the note at 400ms is still due.
+            let sent = play_with_sections(&[0, 100, 400], (0, 300), |clock, active, brk| {
+                wait_until(&clock, 200);
+                brk.store(true, Ordering::Relaxed);
+                *active.write() = None;
+            });
+            let notes: Vec<u8> = sent.iter().map(|(_, note)| *note).collect();
+            assert_eq!(notes, vec![60, 61, 62], "{sent:?}");
+        }
+
+        /// Another section armed while one loops (no break): the audio plays
+        /// the rest of the song up to the new section's end; so do the notes.
+        #[test]
+        fn notes_play_on_into_another_section_armed_while_one_loops() {
+            // A = 0-300ms, B = 400-600ms. A loops at 300ms; at 350ms B is
+            // armed. The song plays on from A's end (clock 600ms) through
+            // B, whose notes (400, 500) come at 700 and 800ms, and B goes
+            // round at 900ms (notes again at 900, 1000). Broken at 950ms;
+            // the note at 700ms in the song comes at 1200ms.
+            let sent =
+                play_with_sections(&[0, 100, 400, 500, 700], (0, 300), |clock, active, brk| {
+                    wait_until(&clock, 350);
+                    *active.write() = Some(crate::player::SectionBounds {
+                        name: "b".to_string(),
+                        start_time: Duration::from_millis(400),
+                        end_time: Duration::from_millis(600),
+                    });
+                    wait_until(&clock, 950);
+                    brk.store(true, Ordering::Relaxed);
+                    *active.write() = None;
+                });
+            let notes: Vec<u8> = sent.iter().map(|(_, note)| *note).collect();
+            assert_eq!(notes, vec![60, 61, 60, 61, 62, 63, 62, 63, 64], "{sent:?}");
         }
 
         #[test]
@@ -3675,6 +3777,7 @@ mod test {
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
+                    section_jumps: Default::default(),
                 },
             );
 
@@ -3710,6 +3813,7 @@ mod test {
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
+                    section_jumps: Default::default(),
                 },
             );
 
@@ -3752,6 +3856,7 @@ mod test {
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
+                    section_jumps: Default::default(),
                 },
             );
 
@@ -3788,6 +3893,7 @@ mod test {
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
+                    section_jumps: Default::default(),
                 },
             );
 
@@ -3841,6 +3947,7 @@ mod test {
                     loop_break: Arc::new(AtomicBool::new(false)),
                     active_section: Arc::new(parking_lot::RwLock::new(None)),
                     section_loop_break: Arc::new(AtomicBool::new(false)),
+                    section_jumps: Default::default(),
                 },
             );
 
@@ -3880,6 +3987,7 @@ mod test {
                         loop_break: Arc::new(AtomicBool::new(false)),
                         active_section: Arc::new(parking_lot::RwLock::new(None)),
                         section_loop_break: Arc::new(AtomicBool::new(false)),
+                        section_jumps: Default::default(),
                     },
                 );
                 sender
@@ -4405,7 +4513,7 @@ mod test {
                         },
                     ))),
                     section_loop_break: section_loop_break.clone(),
-                    jumps: None,
+                    jumps: Default::default(),
                 },
                 section_loop_break,
             )
@@ -4441,6 +4549,22 @@ mod test {
             }
             let clock = PlaybackClock::wall();
             clock.start();
+            // The jumps a test gives stand in for the audio's; otherwise the
+            // playback's own publisher commits them.
+            let given = crate::playsync::JumpCursor::new(sections.jumps.clone())
+                .peek()
+                .is_some();
+            let (log, done) = publish_jumps_for_test(
+                &clock,
+                ms(start),
+                &sections.active_section,
+                &sections.section_loop_break,
+            );
+            let mut sections = sections.clone();
+            if !given {
+                sections.jumps = log;
+            }
+            let sections = &sections;
             let mut sender = SectionSender {
                 sent: 0,
                 break_after,
@@ -4458,6 +4582,7 @@ mod test {
                 &clock,
                 &rx,
             );
+            done.store(true, Ordering::Relaxed);
             sender.sent
         }
 
@@ -4467,11 +4592,13 @@ mod test {
         #[test]
         fn a_section_loop_takes_the_clock_back_until_it_is_broken() {
             // 10ms clocks to 500ms; the section is 100-300ms. 30 clocks to
-            // its end, then round from 100ms; broken at the 50th clock (at
-            // 290ms, the second time round), then on to the end: 20 more.
+            // its end, then round from 100ms; broken at the 40th clock (at
+            // 190ms, the second time round: well before the next jump is
+            // committed, 30ms ahead of it, as the audio commits), then on
+            // from there to the end: 30 more.
             let (sections, section_loop_break) = section(100, 300);
-            let sent = play_section(&every_10ms(500), 0, &sections, section_loop_break, 50);
-            assert_eq!(sent, 30 + 20 + 20);
+            let sent = play_section(&every_10ms(500), 0, &sections, section_loop_break, 40);
+            assert_eq!(sent, 30 + 10 + 30);
         }
 
         /// A section armed after the clock has passed its end goes back at
@@ -4483,7 +4610,11 @@ mod test {
             let (sections, section_loop_break) = section(100, 300);
             let sent = play_section(&every_10ms(500), 350, &sections, section_loop_break, 25);
             // The 25th is at 140ms the second time round; then on to 490ms.
-            assert_eq!(sent, 25 + 35);
+            // The jump falls when the publisher sees the section armed, a
+            // poll after the start, so the 350ms clock may go out first. (The
+            // player refuses a section armed past its end; this is the jump
+            // at once that a late arm still gets.)
+            assert!(sent == 25 + 35 || sent == 1 + 25 + 35, "{sent}");
         }
 
         /// A seek within the pass under way goes to its first tick at or after
@@ -4536,18 +4667,16 @@ mod test {
         #[test]
         fn a_clock_with_audio_follows_the_jumps_the_audio_commits_to() {
             let (mut sections, section_loop_break) = section(100, 300);
-            let jumps = Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::from([
-                crate::section_loop::SectionJump {
-                    at: ms(300),
-                    from: ms(300),
-                    to: ms(150),
-                },
-            ])));
-            sections.jumps = Some(jumps.clone());
+            let jumps = Arc::new(crate::playsync::SectionJumpLog::default());
+            jumps.push(crate::section_loop::SectionJump {
+                at: ms(300),
+                from: ms(300),
+                to: ms(150),
+            });
+            sections.jumps = jumps.clone();
             // Broken once the audio's jump has been taken: the section's own
             // end would loop again at 500ms, but the audio made no such jump.
             let sent = play_section(&every_10ms(500), 0, &sections, section_loop_break, 31);
-            assert!(jumps.lock().is_empty());
             // 30 to 300ms, back to 150ms, and on to the end: 35 more (a
             // jump of its own would have gone to 100ms: 40).
             assert_eq!(sent, 30 + 35);
@@ -4606,6 +4735,143 @@ mod test {
             let (sections, section_loop_break) = section(300, 500);
             let sent = play_section(&every_10ms(500), 0, &sections, section_loop_break, 60);
             assert_eq!(sent, 70);
+        }
+
+        /// a section with no pulse in it at all, past the last one
+        /// (a clock that stops before the song does), can never be followed,
+        /// yet the clock out of ticks waits for its jump for as long as the
+        /// section stays armed: no Stop at the clock's end, and the engine
+        /// cannot go on to hold the tempo. Here the section is broken after
+        /// 1.5s; the clock (ticks to 490ms) should have stopped long before.
+        #[test]
+        fn a_section_past_the_last_pulse_does_not_hold_the_clock() {
+            let (sections, section_loop_break) = section(600, 800);
+            let clock = PlaybackClock::wall();
+            clock.start();
+            let breaker = std::thread::spawn({
+                let section_loop_break = section_loop_break.clone();
+                move || {
+                    std::thread::sleep(Duration::from_millis(1_500));
+                    section_loop_break.store(true, Ordering::Relaxed);
+                }
+            });
+            let mut sender = MockSender::new();
+            let (_tx, rx) = mpsc::channel();
+            run_beat_clock(
+                &mut sender,
+                &every_10ms(500),
+                Duration::ZERO,
+                None,
+                Some(&sections),
+                None,
+                &CancelHandle::new(),
+                &clock,
+                &rx,
+            );
+            let returned_at = clock.elapsed();
+            let still_armed = !section_loop_break.load(Ordering::Relaxed);
+            breaker.join().unwrap();
+            assert!(
+                still_armed,
+                "the clock sent Stop only once the loop was broken, at {returned_at:?}"
+            );
+        }
+
+        /// a looping song (no crossfade, so a section loop is allowed)
+        /// whose section ends on the song's end: the schedule has already
+        /// rolled into the next pass when the jump is seen, so the seek goes
+        /// to the section start of the *next* pass, a whole period late.
+        #[test]
+        fn a_section_ending_on_a_looping_songs_end_goes_back_in_its_pass() {
+            // Without audio the trigger then fires again at every fetch (each
+            // seek puts the tick a period on, past the next trigger): the
+            // thread spins without sending or hearing a cancel or command.
+            let (sections, section_loop_break) = section(300, 500);
+            let loop_break = Arc::new(AtomicBool::new(false));
+            let handle = std::thread::spawn({
+                let sections = sections.clone();
+                let loop_break = loop_break.clone();
+                move || {
+                    let clock = PlaybackClock::wall();
+                    clock.start();
+                    let mut sender = LoopingSender {
+                        clock: clock.clone(),
+                        clocks: Vec::new(),
+                        break_after: 52,
+                        loop_break: loop_break.clone(),
+                    };
+                    let (_tx, rx) = mpsc::channel();
+                    run_beat_clock(
+                        &mut sender,
+                        &every_10ms(500),
+                        Duration::ZERO,
+                        Some(&BeatClockPasses {
+                            period: ms(500),
+                            loop_break,
+                        }),
+                        Some(&sections),
+                        None,
+                        &CancelHandle::new(),
+                        &clock,
+                        &rx,
+                    );
+                    sender.clocks
+                }
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !handle.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let returned = handle.is_finished();
+            // Free a spinning thread either way, so nothing hangs.
+            section_loop_break.store(true, Ordering::Relaxed);
+            loop_break.store(true, Ordering::Relaxed);
+            let clocks = handle.join().unwrap();
+            assert!(
+                returned,
+                "the clock spun at the jump after {} clocks",
+                clocks.len()
+            );
+            // The 51st clock (the section start, round again) is due 10ms
+            // after the 50th, not a period later.
+            let gap = clocks[50] - clocks[49];
+            assert!(
+                gap < ms(250),
+                "the clock went silent for {gap:?} at the jump"
+            );
+        }
+
+        /// a start noticed late drops the pulses already due. A
+        /// slaved sequencer counts pulses from Start for its position, so
+        /// every one dropped leaves it that many pulses behind the song for
+        /// the rest of it (a burst kept the count). Every pulse of the
+        /// schedule should go out.
+        #[test]
+        fn a_late_start_keeps_the_pulse_count() {
+            let clock = PlaybackClock::wall();
+            clock.start();
+            std::thread::sleep(Duration::from_millis(200));
+            let mut sender = MockSender::new();
+            let (_tx, rx) = mpsc::channel();
+            let ticks: Vec<Duration> = (0..30).map(|k| ms(k * 20)).collect();
+            run_beat_clock(
+                &mut sender,
+                &ticks,
+                Duration::ZERO,
+                None,
+                None,
+                None,
+                &CancelHandle::new(),
+                &clock,
+                &rx,
+            );
+            let clocks = sender
+                .sent
+                .lock()
+                .iter()
+                .filter(|bytes| **bytes == clock_bytes())
+                .count();
+            assert_eq!(clocks, ticks.len(), "pulses dropped at a late start");
         }
 
         /// At a tempo whose pulse is a whole number of audio buffers (or

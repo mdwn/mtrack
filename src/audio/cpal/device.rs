@@ -1690,14 +1690,18 @@ impl AudioDevice for Device {
             // performer arms, even on the section's final beat. (During looping
             // the raw clock runs past the section end, so we rely on `armed`
             // rather than the playhead lookup.)
-            let prewarm_target = if break_requested {
-                None
-            } else if armed.is_some() {
-                armed.clone()
-            } else {
+            //
+            // After a break too: reactive looping arms the next section as
+            // playback reaches it, and with nothing warm a late arm loops late.
+            let prewarm_target = match &armed {
+                Some(_) if !break_requested => armed.clone(),
                 // The clock is stream-relative; section bounds are
-                // song-absolute. Offset by the playback start position.
-                current_playhead_section(&song, start_time + clock.elapsed())
+                // song-absolute. Offset by the playback start position, and
+                // take off what loops have put back to have the song's.
+                _ => current_playhead_section(
+                    &song,
+                    (start_time + clock.elapsed()).saturating_sub(section_trigger.consumed()),
+                ),
             };
 
             // Collect the result of a finished background build. Take the
@@ -1900,9 +1904,7 @@ impl AudioDevice for Device {
                         // actually crosses the boundary, so the user-visible
                         // elapsed doesn't briefly jump backwards.
                         pending_consumption.push((loop_sample, jump.amount()));
-                        if let Some(jumps) = &section_jumps {
-                            jumps.lock().push_back(jump.clone());
-                        }
+                        section_jumps.push(jump.clone());
 
                         continue 'monitor;
                     }

@@ -2099,6 +2099,163 @@ mod test {
         Ok(())
     }
 
+    /// Plays a DSL show whose cues run long past the test, with the given
+    /// section loop control, and returns the playback's handles.
+    fn play_section_show(
+        engine: &Arc<Engine>,
+        loop_control: crate::playsync::LoopControl,
+    ) -> Result<
+        (
+            tempfile::TempDir,
+            crate::playsync::CancelHandle,
+            crate::clock::PlaybackClock,
+            std::thread::JoinHandle<()>,
+        ),
+        Box<dyn Error>,
+    > {
+        let tmp_dir = tempfile::tempdir()?;
+        let dsl_path = tmp_dir.path().join("long.dsl");
+        std::fs::write(
+            &dsl_path,
+            r#"show "long" {
+    @00:00.000
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
+    @00:30.000
+    front_wash: static color: "red", duration: 5s, dimmer: 100%
+}"#,
+        )?;
+        let song_config = crate::config::Song::new(
+            "Sections",
+            None,
+            None,
+            None,
+            None,
+            Some(vec![crate::config::LightingShow::new(
+                dsl_path.to_string_lossy().into_owned(),
+            )]),
+            vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
+        );
+        let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+        let cancel_handle = crate::playsync::CancelHandle::new();
+        let clock = crate::clock::PlaybackClock::wall();
+        // The song has no audio: its section loop jumps come from the
+        // playback's own publisher, as `play_files` runs one.
+        {
+            let publisher = crate::section_loop::JumpPublisher {
+                clock: clock.clone(),
+                start_time: Duration::ZERO,
+                cancel: cancel_handle.clone(),
+                done: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                loop_control: loop_control.clone(),
+            };
+            std::thread::spawn(move || crate::section_loop::publish_jumps(publisher));
+        }
+        let thread = {
+            let engine = engine.clone();
+            let cancel_handle = cancel_handle.clone();
+            let clock = clock.clone();
+            std::thread::spawn(move || {
+                let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+                let _ = Engine::play(
+                    engine,
+                    song,
+                    crate::playsync::PlaybackSync {
+                        cancel_handle,
+                        ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                        clock,
+                        start_time: Duration::ZERO,
+                        loop_control,
+                    },
+                );
+            })
+        };
+        Ok((tmp_dir, cancel_handle, clock, thread))
+    }
+
+    fn wait_for_clock(clock: &crate::clock::PlaybackClock, at: Duration) {
+        while clock.elapsed() < at {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Another section armed while one loops (no break): the lights play on
+    /// through the rest of the looping section's pass, as the audio does,
+    /// to the new section's end. They used to jump ahead to the new
+    /// section, timed from the old one's iteration.
+    #[test]
+    fn arming_another_section_while_one_loops_keeps_the_lights_in_place(
+    ) -> Result<(), Box<dyn Error>> {
+        let (engine, _) = create_engine()?;
+        let loop_control = crate::playsync::LoopControl::new();
+        let a = crate::player::SectionBounds {
+            name: "a".to_string(),
+            start_time: Duration::from_millis(400),
+            end_time: Duration::from_millis(1_000),
+        };
+        let b = crate::player::SectionBounds {
+            name: "b".to_string(),
+            start_time: Duration::from_millis(1_200),
+            end_time: Duration::from_millis(1_800),
+        };
+        *loop_control.active_section.write() = Some(a);
+        let (_dir, cancel_handle, clock, thread) =
+            play_section_show(&engine, loop_control.clone())?;
+        clock.start();
+        // A goes round at 1s; at 1.2s (0.6s in the song) B is armed.
+        wait_for_clock(&clock, Duration::from_millis(1_200));
+        *loop_control.active_section.write() = Some(b);
+        // At 1.4s the song is at 0.8s: A's second pass, played through.
+        wait_for_clock(&clock, Duration::from_millis(1_400));
+        let song_time = engine.get_song_time();
+        cancel_handle.cancel();
+        thread.join().unwrap();
+        assert!(
+            song_time >= Duration::from_millis(650) && song_time <= Duration::from_millis(1_000),
+            "lights at {song_time:?}, the song at 0.8s"
+        );
+        Ok(())
+    }
+
+    /// Re-armed after a break, while still inside the section: the lights
+    /// loop it again at its end, on the grid playback reaches it on.
+    #[test]
+    fn a_section_rearmed_after_a_break_loops_the_lights_again() -> Result<(), Box<dyn Error>> {
+        let (engine, _) = create_engine()?;
+        let loop_control = crate::playsync::LoopControl::new();
+        let a = crate::player::SectionBounds {
+            name: "a".to_string(),
+            start_time: Duration::from_millis(400),
+            end_time: Duration::from_millis(1_000),
+        };
+        *loop_control.active_section.write() = Some(a.clone());
+        let (_dir, cancel_handle, clock, thread) =
+            play_section_show(&engine, loop_control.clone())?;
+        clock.start();
+        // Loops at 1s; broken at 1.2s (song 0.6s), re-armed at 1.3s (0.7s).
+        wait_for_clock(&clock, Duration::from_millis(1_200));
+        loop_control
+            .section_loop_break
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        *loop_control.active_section.write() = None;
+        wait_for_clock(&clock, Duration::from_millis(1_300));
+        *loop_control.active_section.write() = Some(a);
+        loop_control
+            .section_loop_break
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        // Goes round again at 1.6s: at 1.8s the song is at 0.6s.
+        wait_for_clock(&clock, Duration::from_millis(1_800));
+        let song_time = engine.get_song_time();
+        cancel_handle.cancel();
+        thread.join().unwrap();
+        assert!(
+            song_time >= Duration::from_millis(450) && song_time <= Duration::from_millis(800),
+            "lights at {song_time:?}, the song at 0.6s"
+        );
+        Ok(())
+    }
+
     mod classify_midi_dmx_action_tests {
         use super::super::{classify_midi_dmx_action, MidiDmxAction};
         use midly::num::u7;

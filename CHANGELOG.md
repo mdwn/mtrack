@@ -125,22 +125,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The beat clock follows section loops, and keeps with the audio over long loops** (#604): a
   section loop took the notes and audio back to the section's start at its end, but the clock ran
-  on along the song. It now goes back with them: with audio, by the jumps the audio commits to (so
-  the two cannot decide a moment apart), and without, by the same trigger the notes and lights
-  use; once the loop is broken it plays on. And the clock, timed on the computer's clock for
-  smoothness, is now steered onto the playback clock the audio follows, read at random points so
-  no tempo lines up with the audio buffers, and moved at most 0.5ms every 2 seconds, so a loop
-  played for minutes no longer drifts off the audio by the few ms a minute the two clocks differ.
-- **Section loops after a break, or another section armed while one loops**: arming a section
-  again after breaking a loop (as reactive looping does, section by section) left the audio's
-  trigger on the old section's grid, so it jumped at once or at the wrong moment; the lights
-  never looped again after the first break; and the notes stopped for good at the first break.
-  A section armed now loops from where playback reaches its end, counting the time loops so far
-  have put back, in the audio, lights, notes and beat clock alike, and each reports what it put
-  back as it went. The notes play on after a break, and their replays start on the loop point
-  rather than as much as 5ms early. A loop the audio had nothing ready for is made a moment
-  late rather than missed. A break before a section ever looped no longer moves the lights to
-  its end.
+  on along the song. It now goes back with them, and plays on once the loop is broken. And the
+  clock, timed on the computer's clock for smoothness, is now steered onto the playback clock the
+  audio follows, read at random points so no tempo lines up with the audio buffers, and moved at
+  most 0.5ms every 2 seconds, so a loop played for minutes no longer drifts off the audio by the
+  few ms a minute the two clocks differ.
+- **Section loops: one decision, followed by everything**: the audio, lights, notes and beat
+  clock each decided for themselves when a section loop went round, so they could disagree, and
+  several flows went wrong: arming a section again after breaking a loop (as reactive looping
+  does, section by section) left the audio on the old section's grid, so it jumped at once or at
+  the wrong moment; the lights never looped again after the first break, and arming another
+  section while one looped jumped them forward; and the notes stopped for good at a break, or
+  went quiet into a section armed while another looped. Now each jump is decided once -- by the
+  audio when the song has any, otherwise by the playback itself -- as it is committed to, and the
+  lights, notes and beat clock follow it, playing on from wherever it leaves the song. A section
+  armed loops from where playback reaches its end, counting the time loops so far have put back;
+  a loop the audio had nothing ready for goes round a moment late rather than not at all, and the
+  section the playhead is in is ready to loop after a break too. The notes' replays start on the
+  loop point rather than as much as 5ms early.
+- **Reactive looping after a break**: breaking a loop straight into the next section (sections
+  back to back) left the state on the broken loop for the rest of the song, so no section was
+  offered again; and once any loop had gone round, a section armed afterwards showed as looping
+  at once. The next section is now offered, and a loop shows as going round when it does.
 - **The beat clock's playback delay counts from the start** (#600): it counted from whenever its
   thread noticed playback had started, so its Start and every clock could land a few ms after the
   notes and audio, by a different amount each time. It now counts from the playback clock's start,
@@ -148,7 +154,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A reload no longer races the round it replaced for a device** (#603): a hardware reload cancels
   the init round under way, but a device that round was opening stayed open until it finished, and
   a new round opening the same device (the trigger input, say) was refused it as busy and went on
-  without it. A round now starts only once the one before it has finished.
+  without it. A round now starts only once the one before it has finished, and a cancelled round
+  stops waiting for olad at once rather than retrying it for up to 45 seconds.
 - **A hardware reload keeps the audio triggers**: dropping the trigger engine only signalled its
   input thread, which noticed up to half a second later, so the replacement opened the input device
   while the old stream still held it, failed with "device busy", and went on with no triggers until

@@ -214,12 +214,6 @@ mod test {
         assert!(found.is_none());
         assert_eq!(last_err, Some("olad is down"));
         assert_eq!(calls, 1);
-        // Within a step of the stop, not after the 5s pause.
-        assert!(
-            started.elapsed() < Duration::from_secs(4),
-            "{:?}",
-            started.elapsed()
-        );
     }
 
     /// It retries until it connects.

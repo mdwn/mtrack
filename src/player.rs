@@ -446,6 +446,9 @@ pub struct Player {
     /// Each completed loop iteration adds section_duration to this value.
     /// Subtracted from raw elapsed to get the true song position.
     loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
+    /// `loop_time_consumed` when the section loop now armed was armed: the
+    /// loop is going round once it has grown past this.
+    consumed_at_arm: Arc<parking_lot::Mutex<Duration>>,
     /// Reactive loop state machine.
     reactive_loop_state: Arc<parking_lot::RwLock<ReactiveLoopState>>,
     /// Start position for the next play(), set by a pause or by seeking
@@ -697,6 +700,7 @@ impl Player {
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
             loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
+            consumed_at_arm: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
             reactive_loop_state: Arc::new(parking_lot::RwLock::new(ReactiveLoopState::Idle)),
             pending_start: Arc::new(parking_lot::Mutex::new(None)),
             notification_engine: Arc::new(crate::notification::NotificationEngine::with_defaults(
@@ -3772,6 +3776,67 @@ mod test {
         assert_eq!(active.start_time, Duration::from_secs(10));
         assert_eq!(active.end_time, Duration::from_secs(20));
 
+        Ok(())
+    }
+
+    /// Reactive looping, with sections back to back (as a song's are): a
+    /// loop broken in one, playback goes straight on into the next, which is
+    /// offered for its own ack. It used to stay on the broken loop for good,
+    /// as only a stretch outside every section moved it on.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_broken_loop_offers_the_section_after_it() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let songs_dir = dir.path().join("songs");
+        let song_dir = songs_dir.join("S");
+        std::fs::create_dir_all(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("t.wav"), vec![vec![0_i32; 8000 * 10]], 8000)?;
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: S\ntracks:\n  - name: t\n    file: t.wav\ntempo:\n  bpm: 120\n  \
+             time_signature: 4/4\nsections:\n  - name: a\n    start_measure: 1\n    \
+             end_measure: 2\n  - name: b\n    start_measure: 2\n    end_measure: 3\n",
+        )?;
+        let playlist_path = dir.path().join("playlist.yaml");
+        std::fs::write(&playlist_path, "songs:\n- S\n")?;
+        let songs = songs::get_all_songs(&songs_dir)?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(&playlist_path)?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                songs_dir.to_str().unwrap(),
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let song = player.get_playlist().current().unwrap();
+        let (a_start, a_end) = song.resolve_section("a").unwrap();
+        let (_, b_end) = song.resolve_section("b").unwrap();
+        *player.reactive_loop_state.write() = ReactiveLoopState::Looping(SectionBounds {
+            name: "a".to_string(),
+            start_time: a_start,
+            end_time: a_end,
+        });
+        player.stop_section_loop();
+        // Still in a, finishing its pass; then into b.
+        player.check_section_boundaries(a_end - Duration::from_millis(100));
+        player.check_section_boundaries(a_end + Duration::from_millis(100));
+        assert!(b_end > a_end + Duration::from_millis(100));
+        let state = player.reactive_loop_state();
+        assert!(
+            matches!(&state, ReactiveLoopState::SectionOffered(b) if b.name == "b"),
+            "{state:?}"
+        );
+        assert!(player.section_ack().await.is_ok());
         Ok(())
     }
 
