@@ -175,3 +175,53 @@ fn replay_a_hold_on_nothing_keeps_the_written_end() {
         Duration::from_secs(4)
     );
 }
+
+fn end_of(src: &str) -> Duration {
+    LightingTimeline::new(parse(src)).show_end()
+}
+
+/// An arrived move stays in the replay for its pose, but it ended when it
+/// arrived: later commands on its layer do not carry the show's end on.
+#[test]
+fn replay_an_arrived_move_ends_the_show_when_it_arrives() {
+    let tail = "    @00:03.000\n    master(layer: background, speed: 0.5)\n    \
+                @00:05.000\n    master(layer: foreground, intensity: 50%)\n}\n";
+    let stat = format!(
+        "show \"s\" {{\n    @00:00.000\n    w: static, color: \"blue\", duration: 1s\n{tail}"
+    );
+    let mv = format!(
+        "show \"s\" {{\n    @00:00.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 1s\n{tail}"
+    );
+    assert_eq!(end_of(&stat), Duration::from_secs(1), "static");
+    assert_eq!(end_of(&mv), Duration::from_secs(1), "move over at 1 s too");
+}
+
+/// An intensity-only master at the seek point is not a freeze, unfreeze or
+/// speed change: an effect ending exactly there is over in the seek.
+#[test]
+fn replay_an_intensity_master_does_not_hold_a_look_at_its_end() {
+    let src = "show \"s\" {\n    @00:00.000\n    w: static, color: \"blue\", duration: 2s\n    \
+               @00:02.000\n    master(layer: background, intensity: 50%)\n}\n";
+    let mut tl = LightingTimeline::new(parse(src));
+    let h = tl.start_at(Duration::from_secs(2));
+    assert_eq!(
+        h.effects_with_elapsed.len(),
+        0,
+        "{:?}",
+        h.effects_with_elapsed
+            .values()
+            .map(|(_, e)| *e)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A full clear cuts only what is still running: a look long over ended
+/// on its own, not at the clear.
+#[test]
+fn replay_a_full_clear_does_not_carry_the_show_end() {
+    let src = "show \"s\" {\n    @00:00.000\n    w: static, color: \"blue\", duration: 1s\n    \
+               @00:01.000\n    master(layer: foreground, speed: 0.5)\n    \
+               @00:03.000\n    clear()\n    \
+               @00:05.000\n    master(layer: foreground, intensity: 50%)\n}\n";
+    assert_eq!(end_of(src), Duration::from_secs(1));
+}

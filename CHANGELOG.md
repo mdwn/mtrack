@@ -145,9 +145,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A freeze or speed change lands on its cue's own time**: a freeze held from the frame before the
   one its cue fired in, so a look frozen on the very instant it ended was held for good, and a seek
   to the same point had it over. Freezes, unfreezes and speed changes now take their cue's song time.
-  A seek's rebuild of the show also follows the cues at one time as they fire live, so a sequence
-  stopped and restarted at once, or a stop and a sequence's cue at the same time, come back as they
-  played.
+  A seek's rebuild of the show also follows the cues at one time as they fire live, layer commands
+  and stops before effects: an effect cued at the same time as a clear of its layer or a stop of its
+  sequence (from another show or file, say) now survives a seek as it does when played, and a
+  sequence stopped and restarted at once comes back as it played.
 - **A cue at a loop restart lands on the right pass**: a cue fired just as a section loop restarted
   could also play on top of the restarted state. One fired just as a looping song started its next
   pass could land on the new pass instead of the one fading out.

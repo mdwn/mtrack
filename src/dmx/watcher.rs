@@ -309,10 +309,8 @@ fn reload_timeline(
         engine.set_song_time(song_time);
 
         if song_time > Duration::ZERO {
-            engine.apply_layer_commands(
-                &timeline_update.layer_commands,
-                &timeline_update.layer_command_times,
-            );
+            // A history: its freezes hold at the reload point, set above.
+            engine.apply_layer_commands(&timeline_update.layer_commands, &[]);
             for seq_name in &timeline_update.stop_sequences {
                 engine.stop_sequence(seq_name);
             }

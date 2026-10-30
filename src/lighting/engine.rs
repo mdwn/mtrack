@@ -1642,6 +1642,10 @@ impl EffectEngine {
         commands: &[crate::lighting::parser::LayerCommand],
         times: &[Duration],
     ) {
+        debug_assert!(
+            times.is_empty() || times.len() == commands.len(),
+            "a time for every layer command, or none"
+        );
         let frame = self.last_song_time;
         for (i, cmd) in commands.iter().enumerate() {
             if let Some(time) = times.get(i) {

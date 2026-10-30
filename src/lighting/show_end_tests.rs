@@ -235,8 +235,12 @@ fn show_end_property_hold_free_show_end() {
             bad.push(f);
         }
     }
-    for b in bad.iter().take(6) {}
-    assert!(bad.is_empty(), "{} failures", bad.len());
+    assert!(
+        bad.is_empty(),
+        "{} failures: {:#?}",
+        bad.len(),
+        &bad[..bad.len().min(6)]
+    );
 }
 
 #[test]
@@ -253,8 +257,12 @@ fn show_end_property_held_show_end() {
             bad.push(f);
         }
     }
-    for b in bad.iter().take(8) {}
-    assert!(bad.is_empty(), "{} failures", bad.len());
+    assert!(
+        bad.is_empty(),
+        "{} failures: {:#?}",
+        bad.len(),
+        &bad[..bad.len().min(8)]
+    );
 }
 
 fn fixtures3(engine: &mut EffectEngine) {
@@ -360,10 +368,8 @@ fn show_end_seek_onto_slow_down_at_cycles_last_instant() {
     for at in [2000u64, 2010, 2100] {
         let live = played3(CYCLE_SLOW_AT_END, at);
         let seek = seek3(CYCLE_SLOW_AT_END, 2000, at);
+        assert_eq!(rg(&seek), rg(&live), "at {at} ms");
     }
-    let live = played3(CYCLE_SLOW_AT_END, 2000);
-    let seek = seek3(CYCLE_SLOW_AT_END, 2000, 2000);
-    assert_eq!(rg(&seek), rg(&live));
 }
 
 #[test]
@@ -376,7 +382,17 @@ fn show_end_edge_ends() {
         "show \"s\" {\n    @2.000\n    a: static red: 100%, hold_time: 0s, layer: midground\n    freeze(layer: midground)\n    @3.000\n    unfreeze(layer: midground)\n}\n",
         "show \"s\" {\n    @0.000\n    a: static red: 100%, duration: 2s\n    @1.000\n    clear()\n    freeze(layer: background)\n    @3.000\n    unfreeze(layer: background)\n}\n",
     ];
-    for c in cases {}
+    for c in cases {
+        // A show that never lights anything has no live end to compare: a
+        // look with no length ends at its cue (see the next test).
+        if let Some(live) = live_end(c, 6000).filter(|live| !live.is_zero()) {
+            let head = end(c);
+            assert!(
+                live.abs_diff(head) <= Duration::from_millis(10),
+                "live {live:?} show_end {head:?}\n{c}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -386,7 +402,13 @@ fn show_end_full_clear_variants() {
     let layer = format!("{base}    @10.000\n    clear(layer: background)\n}}\n");
     let full = format!("{base}    @10.000\n    clear()\n}}\n");
     let other = format!("{base}    @10.000\n    master(layer: foreground, speed: 1.0)\n}}\n");
-    assert_eq!(end(&full), end(&layer));
+    for (name, show) in [
+        ("layer clear", &layer),
+        ("full clear", &full),
+        ("master", &other),
+    ] {
+        assert_eq!(end(show), end(&none), "{name}");
+    }
 }
 
 #[test]
