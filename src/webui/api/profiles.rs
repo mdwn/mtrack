@@ -290,6 +290,15 @@ pub(super) async fn put_profile(
         StatusCode::SERVICE_UNAVAILABLE,
     )?;
 
+    // The store's mutations persist its own copy of the profile files: held
+    // from the read below to the reload after the write, so none lands in
+    // between and writes the copy from before this save over it.
+    let store = state.player.config_store();
+    let disk_write = match &store {
+        Some(store) => Some(store.lock_for_disk_write().await),
+        None => None,
+    };
+
     // Sections the body leaves out keep the values in the file it replaces;
     // `null` removes one (#523). The existing file is read the way the
     // profile read does; a missing or unreadable one has nothing to keep.
@@ -384,8 +393,8 @@ pub(super) async fn put_profile(
     // whole defect this call exists to close. `Player::deserialize` validates
     // the entire config, so one unrelated bad file in the directory is enough
     // to cause it — the caller has to be told rather than left with a 200.
-    if let Some(store) = state.player.config_store() {
-        if let Err(e) = store.reload_from_disk().await {
+    if let Some(disk_write) = disk_write {
+        if let Err(e) = disk_write.reload().await {
             warn!("Config reload after profile write failed: {}", e);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -425,6 +434,15 @@ pub(super) async fn delete_profile_file(
         StatusCode::SERVICE_UNAVAILABLE,
     )?;
 
+    // Held from the delete to the reload after it, as a save holds it: a
+    // store mutation between the two would still hold this profile, and be
+    // refused for files that no longer line up with what it loaded.
+    let store = state.player.config_store();
+    let disk_write = match &store {
+        Some(store) => Some(store.lock_for_disk_write().await),
+        None => None,
+    };
+
     // codeql[rust/path-injection] filename is validated; path is verified via resolve_resource_path.
     let file_path = resolve_resource_path(&profiles_dir, &filename, "yaml")?;
     let yml_path = resolve_resource_path(&profiles_dir, &filename, "yml")?;
@@ -450,8 +468,8 @@ pub(super) async fn delete_profile_file(
     // whole defect this call exists to close. `Player::deserialize` validates
     // the entire config, so one unrelated bad file in the directory is enough
     // to cause it — the caller has to be told rather than left with a 200.
-    if let Some(store) = state.player.config_store() {
-        if let Err(e) = store.reload_from_disk().await {
+    if let Some(disk_write) = disk_write {
+        if let Err(e) = disk_write.reload().await {
             warn!("Config reload after profile write failed: {}", e);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,

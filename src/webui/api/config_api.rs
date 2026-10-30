@@ -72,15 +72,38 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
 
+    // The store persists its own copy of this file on every mutation: the
+    // copy is read back from the save before any mutation can land, or the
+    // next one writes the copy from before the save over it.
+    let store = state.player.config_store();
+    let disk_write = match &store {
+        Some(store) => Some(store.lock_for_disk_write().await),
+        None => None,
+    };
     let path = state.config_path.clone();
-    match super::helpers::spawn_blocking_io("write config", move || {
+    if let Err(e) = super::helpers::spawn_blocking_io("write config", move || {
         config_io::staged_write(&path, &body)
     })
     .await
     {
-        Ok(()) => (StatusCode::OK, Json(json!({"status": "saved"}))).into_response(),
-        Err(e) => e,
+        return e;
     }
+    if let Some(disk_write) = disk_write {
+        if let Err(e) = disk_write.reload().await {
+            warn!("Config reload after config write failed: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!(
+                        "the config was written but the running config could not be \
+                         reloaded, and a later settings change would write over it: {e}"
+                    )
+                })),
+            )
+                .into_response();
+        }
+    }
+    (StatusCode::OK, Json(json!({"status": "saved"}))).into_response()
 }
 
 /// POST /api/config/validate — validates player config YAML without saving.
@@ -1090,6 +1113,52 @@ mod test {
         assert!(result["yaml"].is_string());
         assert!(result["checksum"].is_string());
         assert!(!result["checksum"].as_str().unwrap().is_empty());
+    }
+
+    /// A raw config save wrote the file and left the store's copy as it
+    /// was: the next settings change persisted that copy over the save.
+    #[tokio::test]
+    async fn a_settings_change_after_a_raw_config_save_keeps_the_save() {
+        let (state, _dir) = test_state_with_store();
+        let config_path = state.config_path.clone();
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from("songs: other-songs\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let checksum = get_checksum(&state).await;
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/audio")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "audio": { "device": "test-device" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let written = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            written.contains("other-songs"),
+            "the raw save was written over: {written}"
+        );
     }
 
     #[tokio::test]
