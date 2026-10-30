@@ -1161,21 +1161,30 @@ fn beat_clock_engine_loop(
         }
 
         // Sleep the playback delay, matching the note thread -- still holding
-        // the tempo, for the same reason as above.
+        // the tempo, for the same reason as above, and hearing a command as
+        // the wait for the start does: a stop for a reopen joins this thread.
         if !play.playback_delay.is_zero() {
-            match held {
-                Some(interval) => {
-                    let hold = hold_at(&mut hold, interval);
-                    let delay = PlaybackClock::wall();
-                    delay.start();
-                    while delay.elapsed() < play.playback_delay && !play.cancel.is_cancelled() {
-                        spin_sleep::sleep(
-                            hold.until_next().min(play.playback_delay - delay.elapsed()),
-                        );
-                        hold.tick_if_due(sender);
-                    }
+            const COMMAND_CHECK: Duration = Duration::from_millis(50);
+            let mut hold = held.map(|interval| hold_at(&mut hold, interval));
+            let delay = PlaybackClock::wall();
+            delay.start();
+            let mut interrupted = false;
+            while delay.elapsed() < play.playback_delay && !play.cancel.is_cancelled() {
+                let left = play.playback_delay.saturating_sub(delay.elapsed());
+                let step = hold
+                    .as_ref()
+                    .map_or(COMMAND_CHECK, |hold| hold.until_next().min(COMMAND_CHECK));
+                spin_sleep::sleep(step.min(left));
+                if heard_command(rx, &mut pending) {
+                    interrupted = true;
+                    break;
                 }
-                None => spin_sleep::sleep(play.playback_delay),
+                if let Some(hold) = hold.as_deref_mut() {
+                    hold.tick_if_due(sender);
+                }
+            }
+            if interrupted {
+                continue;
             }
         }
         if play.cancel.is_cancelled() {
@@ -1384,14 +1393,28 @@ fn wait_for_start_holding_tempo(
         if play.cancel.is_cancelled() {
             return false;
         }
-        if let Ok(command) = rx.try_recv() {
-            *pending = Some(command);
+        if heard_command(rx, pending) {
             return true;
         }
         if let Some(hold) = hold.as_deref_mut() {
             hold.tick_if_due(sender);
         }
     }
+}
+
+/// Takes a command off the channel for the engine loop to act on in place of
+/// the next receive, if one has come; a channel closed counts as a shutdown,
+/// as it does there. True if there was one.
+fn heard_command(
+    rx: &mpsc::Receiver<BeatClockCommand>,
+    pending: &mut Option<BeatClockCommand>,
+) -> bool {
+    match rx.try_recv() {
+        Ok(command) => *pending = Some(command),
+        Err(mpsc::TryRecvError::Disconnected) => *pending = Some(BeatClockCommand::Shutdown),
+        Err(mpsc::TryRecvError::Empty) => return false,
+    }
+    true
 }
 
 /// Parameters for playing pre-computed MIDI events.
@@ -3290,6 +3313,67 @@ mod test {
                 cancel,
                 clock,
             }
+        }
+
+        /// A closed channel ends the engine while it awaits a start that never
+        /// comes, as it does anywhere else.
+        #[test]
+        fn a_closed_channel_ends_the_engine_awaiting_a_start() {
+            let (tx, rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let cancel = CancelHandle::new();
+            let play = BeatClockPlay {
+                ticks: Arc::new(vec![Duration::ZERO]),
+                start_time: Duration::ZERO,
+                playback_delay: Duration::ZERO,
+                cancel: cancel.clone(),
+                clock: PlaybackClock::wall(),
+            };
+            thread::spawn(move || {
+                let mut sender = SharedSender::new();
+                beat_clock_engine_loop(
+                    &mut sender,
+                    true,
+                    &Mutex::new(Some(Duration::from_millis(20))),
+                    &rx,
+                );
+                let _ = done_tx.send(());
+            });
+            tx.send(BeatClockCommand::Play(play)).unwrap();
+            thread::sleep(Duration::from_millis(50));
+            drop(tx);
+            let ended = done_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+            cancel.cancel();
+            assert!(ended, "the engine kept waiting on a closed channel");
+        }
+
+        /// A stop during a song's playback delay is heard at once, not once
+        /// the delay is over: a reopen joins this thread while it holds its
+        /// lock.
+        #[test]
+        fn a_stop_during_the_playback_delay_is_heard_at_once() {
+            let (tx, rx) = mpsc::channel();
+            let engine = thread::spawn(move || {
+                let mut sender = SharedSender::new();
+                beat_clock_engine_loop(
+                    &mut sender,
+                    true,
+                    &Mutex::new(Some(Duration::from_millis(20))),
+                    &rx,
+                );
+            });
+            let mut play = ready_play(vec![Duration::ZERO], CancelHandle::new());
+            play.playback_delay = Duration::from_secs(2);
+            tx.send(BeatClockCommand::Play(play)).unwrap();
+            thread::sleep(Duration::from_millis(50));
+            let stopping = std::time::Instant::now();
+            tx.send(BeatClockCommand::Shutdown).unwrap();
+            engine.join().unwrap();
+            assert!(
+                stopping.elapsed() < Duration::from_millis(500),
+                "the stop waited {:?}",
+                stopping.elapsed()
+            );
         }
 
         /// Pacing, decided from a table of elapsed times rather than a clock.
