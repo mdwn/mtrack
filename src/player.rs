@@ -3789,6 +3789,38 @@ mod test {
         Ok(())
     }
 
+    /// The position runs on the playback's clock once it starts, as the
+    /// jumps it counts do. Taken from the wall clock instead, it read just
+    /// before the section's start after a jump whenever the playback clock
+    /// read a little ahead (the audio's counter, just after a callback): the
+    /// reactive offer reset at every loop.
+    #[tokio::test]
+    async fn the_position_runs_on_the_playback_clock() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let log = Arc::new(crate::playsync::SectionJumpLog::default());
+        log.push(crate::section_loop::SectionJump {
+            at: Duration::from_secs(100),
+            from: Duration::from_secs(100),
+            to: Duration::from_secs(4),
+        });
+        // Clock 10ms ahead of the wall: it reads 100.005s, the wall 99.995s.
+        log.set_timeline(
+            crate::clock::PlaybackClock::wall_from(
+                std::time::Instant::now() - Duration::from_millis(100_005),
+            ),
+            Duration::ZERO,
+        );
+        *player.section_jumps.lock() = log;
+        *player.play_start_time.lock().await =
+            Some(std::time::SystemTime::now() - Duration::from_millis(99_995));
+        let position = player.elapsed().await?.unwrap();
+        assert!(
+            position >= Duration::from_secs(4),
+            "before the section: {position:?}"
+        );
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_add_loop_time_consumed() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
