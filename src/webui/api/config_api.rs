@@ -188,15 +188,20 @@ fn require_config_store(
     })
 }
 
-/// Returns a 409 Conflict response if the player is currently playing, or an
-/// auto play is waiting out its gap: the reload a save makes would leave the
-/// hardware initializing when the gap ends, and the song would not start.
+/// Returns a 409 Conflict response if the player is currently playing, is
+/// paused, or an auto play is waiting out its gap: the reload a save makes
+/// would leave the hardware initializing when the gap ends, and the song
+/// would not start. A reload waits for all three, so a save then would not
+/// take effect until the song stops.
 pub(super) async fn reject_if_playing(state: &WebUiState) -> Option<axum::response::Response> {
-    if state.player.is_playing().await || state.player.auto_play_status().is_some() {
+    if state.player.is_playing().await
+        || state.player.auto_play_status().is_some()
+        || state.player.pending_start().is_some()
+    {
         Some(
             (
                 StatusCode::CONFLICT,
-                Json(json!({"error": "Cannot modify hardware config during playback"})),
+                Json(json!({"error": "Cannot modify hardware config while a song is playing or paused"})),
             )
                 .into_response(),
         )
@@ -1327,6 +1332,31 @@ mod test {
             .unwrap();
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert!(state.player.cancel_waiting_auto_play());
+    }
+
+    /// A paused song is a show in progress, which a reload waits for, as for
+    /// a playing one: a save then is refused rather than left waiting.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_while_a_song_is_paused_is_refused() {
+        let (state, _dir) = test_state_with_audio_device("mock-device");
+        set_store(&state);
+        state.player.play().await.unwrap();
+        assert!(state.player.pause().await.unwrap().is_some(), "paused");
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from("songs: songs\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        state.player.stop().await;
+        assert!(super::reject_if_playing(&state).await.is_none());
     }
 
     #[tokio::test]

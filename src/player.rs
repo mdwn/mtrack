@@ -4987,4 +4987,82 @@ mod test {
         );
         Ok(())
     }
+
+    /// A pause ran a reload deferred under the song, and a resume was then
+    /// refused while the hardware came back up, for good when the new
+    /// config's audio interface was slow or not there. A paused song is a
+    /// show in progress: the reload waits on, and the song resumes at once.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_waits_out_a_pause() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        // A saved config whose audio interface is slow or not there yet.
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        std::fs::write(
+            &path,
+            "songs: songs\nprofiles:\n  - audio:\n      device: no-such-device\n      track_mappings:\n        click: [1]\n",
+        )?;
+        let cfg = config::Player::deserialize(&path)?;
+        player.set_config_store(std::sync::Arc::new(config::ConfigStore::new(cfg, path)));
+
+        player.play().await?;
+        elapsed_eventually(&player).await?;
+        player.reload_hardware().await?; // deferred under the song
+        let paused = player.pause().await?;
+        assert!(paused.is_some());
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let resumed = player.play().await;
+        player.init_cancel.lock().cancel();
+        assert!(
+            matches!(resumed, Ok(Some(_))),
+            "resume after a pause refused: {:?}",
+            resumed
+                .map(|s| s.map(|s| s.name().to_string()))
+                .map_err(|e| e.to_string())
+        );
+        Ok(())
+    }
+
+    /// A reload asked for while a song is paused waits as under a playing
+    /// one, and runs once the paused song is stopped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_while_paused_runs_when_the_song_stops() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _store = set_store_without_audio(&player)?;
+        player.play().await?;
+        elapsed_eventually(&player).await?;
+        assert!(player.pause().await?.is_some());
+        player.reload_hardware().await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(player.audio_device().is_some(), "reloaded under the pause");
+        assert!(*player.init_done_tx.borrow(), "reset under the pause");
+
+        player.stop().await;
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        Ok(())
+    }
+
+    /// Moving off a paused song calls the pause off: a reload waiting for
+    /// it runs then.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_while_paused_runs_when_the_playlist_moves_on() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _store = set_store_without_audio(&player)?;
+        player.play().await?;
+        elapsed_eventually(&player).await?;
+        assert!(player.pause().await?.is_some());
+        player.reload_hardware().await?;
+        assert!(player.audio_device().is_some(), "reloaded under the pause");
+
+        player.next().await;
+        assert!(player.pending_start().is_none(), "still paused");
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        Ok(())
+    }
 }

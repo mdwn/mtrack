@@ -69,10 +69,13 @@ impl Player {
         }
         let position = self.keep_paused_position(position);
         self.song_playing.store(false, Ordering::Relaxed);
-        // Paused counts as idle, as it does for a config save's own check: a
-        // resume while the hardware comes back up is refused, as at startup,
-        // rather than the reload waiting on a resume that may never come.
-        self.reload_deferred_hardware();
+        // Not idle: a paused song is a show in progress, its lights held,
+        // and must resume at once. A hardware reload waits on, for a stop or
+        // a move off the song. A pause on a song's very end keeps nothing to
+        // resume, though, and that is idle.
+        if self.pending_start().is_none() {
+            self.reload_deferred_hardware();
+        }
         Ok(Some(position))
     }
 
