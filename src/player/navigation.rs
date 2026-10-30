@@ -124,12 +124,26 @@ impl Player {
             }
             return current;
         }
-        let playlist = self.get_playlist();
-        let from = playlist.position();
-        let song = match direction {
-            PlaylistDirection::Next => playlist.next()?,
-            PlaylistDirection::Prev => playlist.prev()?,
+        let (playlist, (from, song)) = self.move_playlist(|playlist| {
+            let from = playlist.entry();
+            // A paused song an edit took off the list after the last entry
+            // has no entry to move on to: it stays paused, and current, as
+            // at the end of the list, rather than losing its pause and
+            // staying off the list (#576).
+            if from.is_none() && !playlist.can_move(direction == PlaylistDirection::Prev) {
+                return (from, None);
+            }
+            let song = match direction {
+                PlaylistDirection::Next => playlist.next(),
+                PlaylistDirection::Prev => playlist.prev(),
+            };
+            (from, Some(song))
+        });
+        let Some(song) = song else {
+            info!("Nothing to go to {}: the paused song stays.", direction);
+            return playlist.current();
         };
+        let song = song?;
         self.clear_pending_start();
         self.emit_song_change(&song);
         // Navigating onto a song with `auto_play` starts it; navigating away
@@ -139,11 +153,15 @@ impl Player {
         // A song ending fades on out; the ambient light following it, now
         // this navigation's to bring.
         let ending = self.end_ending();
-        match playlist.auto_play().filter(|_| playlist.position() != from) {
+        match playlist.auto_play().filter(|_| playlist.entry() != from) {
             Some(gap) => self.schedule_auto_play(gap),
             None if called_off || ending => self.idle_ambient(true),
             None => {}
         }
+        // A pause called off here, or an ending forgotten, which then no
+        // longer runs a reload waiting for its fade: the reload looks again
+        // now.
+        self.reload_deferred_hardware();
         drop(join);
         self.load_song_samples(&song);
         Some(song)
@@ -184,10 +202,17 @@ impl Player {
             }
         }
 
+        // A paused song an edit took off the list stays current only to be
+        // resumed, which the switch calls off: the playlist left goes on to
+        // the entry that took its place.
+        self.move_playlist(|playlist| playlist.settle());
         *self.active_playlist.write() = name.to_string();
         self.clear_pending_start();
         self.cancel_auto_play();
         self.end_ending();
+        // As for a navigation: a reload waiting on a pause or an ending
+        // looks again.
+        self.reload_deferred_hardware();
 
         // Persist the choice to the config store, unless it's "all_songs" (session-only).
         if name != "all_songs" {
@@ -254,6 +279,16 @@ impl Player {
         }
     }
 
+    /// Moves the active playlist's place with `step`, returning the playlist
+    /// and what `step` returns. A reload cannot come between looking the
+    /// playlist up and moving it, so the move is not lost to it.
+    pub(super) fn move_playlist<T>(&self, step: impl FnOnce(&Playlist) -> T) -> (Arc<Playlist>, T) {
+        let _moves = self.playlist_moves.lock();
+        let playlist = self.get_playlist();
+        let result = step(&playlist);
+        (playlist, result)
+    }
+
     /// Returns the song registry from the all-songs playlist.
     pub fn songs(&self) -> Arc<Songs> {
         let playlists = self.playlists.read();
@@ -293,11 +328,46 @@ impl Player {
                 }
             };
 
+        // Copying each playlist's place and swapping the new ones in is one
+        // step to a move of the active playlist's place, such as a song's
+        // end advancing it: one made between the two would be made on the
+        // old playlist, and lost.
+        let _moves = self.playlist_moves.lock();
+
         // Preserve active playlist name if it still exists; fall back to all_songs.
-        {
+        let (was_active, active) = {
             let mut active = self.active_playlist.write();
+            let was_active = active.clone();
             if !new_playlists.contains_key(active.as_str()) {
                 *active = "all_songs".to_string();
+            }
+            (was_active, active.clone())
+        };
+
+        // Each playlist keeps its place by song, not by index: the song
+        // playing stays current through an edit that moves it, or takes it
+        // off the list, and the ending, loop-break and status logic, which
+        // read the active playlist's current song, keep to it (#576). A
+        // paused song counts as playing: play resumes it where it was, and
+        // the entry after it is not the song to resume. Asked of the flag
+        // kept with `join`, not of the join lock: every status poll takes
+        // that lock, and a stopped song read as playing for one would keep
+        // its place off the list.
+        let playing = self.song_playing.load(Ordering::Relaxed) || self.pending_start().is_some();
+        {
+            let old_playlists = self.playlists.read();
+            for (name, playlist) in &new_playlists {
+                // With the active playlist gone, deleted or renamed, the
+                // all_songs it falls back to takes over from it rather than
+                // from its own place, so the song playing stays current.
+                let from = if *name == active {
+                    old_playlists.get(&was_active)
+                } else {
+                    old_playlists.get(name)
+                };
+                if let Some(old) = from {
+                    playlist.follow(old, playing && *name == active);
+                }
             }
         }
 

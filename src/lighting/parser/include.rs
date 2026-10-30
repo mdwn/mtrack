@@ -113,7 +113,7 @@ pub(super) fn add_included(
             Some(parent) => parent.parent().unwrap_or(Path::new("")).join(&written),
             None => PathBuf::from(&written),
         };
-        let content = std::fs::read_to_string(&canonical).map_err(|e| {
+        let content = crate::util::read_to_string(&canonical).map_err(|e| {
             in_file(format!(
                 "line {line}: include \"{written}\": cannot read {}: {e}",
                 path.display()
@@ -196,7 +196,7 @@ pub fn included_files(path: &Path) -> Vec<PathBuf> {
 }
 
 fn collect(path: &Path, seen: &mut HashSet<PathBuf>, found: &mut Vec<PathBuf>) {
-    let Ok(content) = std::fs::read_to_string(path) else {
+    let Ok(content) = crate::util::read_to_string(path) else {
         return;
     };
     let Ok(pairs) = LightingParser::parse(Rule::file, &content) else {

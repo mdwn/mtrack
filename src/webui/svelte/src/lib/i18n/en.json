@@ -104,6 +104,8 @@
   "playback.nextBreakCut": "Next breaks the loop: cuts to {song}",
   "playback.nextBreakFadeIn": ", which fades in over {length}",
   "playback.nextEnd": "End of playlist",
+  "playback.nextEndsLoop": "Next ends the loop: fades out over {length}",
+  "playback.prevEndsLoopTooltip": "Previous ends the loop: fades out over {length} (Left Arrow)",
   "playback.ambientPlaying": "Ambient light",
   "playback.ambientPending": "Ambient light soon",
   "playback.ambientUnavailable": "No ambient show",

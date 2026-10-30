@@ -70,9 +70,12 @@ fn live_end(source: &str, until_ms: u64) -> Option<Duration> {
     }
 }
 
-/// The show's end before holds counted: the lint's reckoning.
+/// The show's end before holds counted: the lint's reckoning, over the
+/// effects the timeline fires -- not those of a sequence stopped by their
+/// cue (#594).
 fn lint_end(source: &str) -> Duration {
-    let cues: Vec<_> = shows(source).into_iter().flat_map(|s| s.cues).collect();
+    let mut cues: Vec<_> = shows(source).into_iter().flat_map(|s| s.cues).collect();
+    cues.sort_by_key(|cue| cue.time);
     let clears: Vec<_> = cues
         .iter()
         .flat_map(|cue| {
@@ -90,23 +93,57 @@ fn lint_end(source: &str) -> Duration {
                 .map(move |n| (n.clone(), cue.time))
         })
         .collect();
-    cues.iter()
-        .flat_map(|cue| {
-            let (clears, stops) = (&clears, &stops);
-            cue.effects.iter().map(move |e| {
-                crate::lighting::lint::effective_end(
-                    cue.time + e.total_duration(),
-                    cue.time,
-                    e.layer
-                        .unwrap_or(crate::lighting::effects::EffectLayer::Background),
-                    e.sequence_name.as_deref(),
-                    clears,
-                    stops,
-                )
-            })
-        })
-        .max()
-        .unwrap_or(Duration::ZERO)
+    // The cues the timeline fires -- a sequence's passes after it was
+    // stopped never start (#594) -- each effect's end found by scanning
+    // every clear and stop, as the lint did before it looked them up (#595):
+    // what the timeline's reckoning must still come to.
+    let mut stopped = std::collections::HashSet::new();
+    let mut end = Duration::ZERO;
+    for cue in &cues {
+        for name in &cue.start_sequences {
+            stopped.remove(name);
+        }
+        for e in &cue.effects {
+            if e.sequence_name
+                .as_ref()
+                .is_some_and(|n| stopped.contains(n))
+            {
+                continue;
+            }
+            let layer = e
+                .layer
+                .unwrap_or(crate::lighting::effects::EffectLayer::Background);
+            let authored_end = cue.time + e.total_duration();
+            let cleared_at = clears
+                .iter()
+                .filter(|(cleared, at)| *at > cue.time && cleared.is_none_or(|l| l == layer))
+                .map(|(_, at)| *at);
+            let stopped_at = stops
+                .iter()
+                .filter(|(name, at)| {
+                    Some(name.as_str()) == e.sequence_name.as_deref() && *at > cue.time
+                })
+                .map(|(_, at)| *at);
+            end = end.max(
+                cleared_at
+                    .chain(stopped_at)
+                    .filter(|at| *at < authored_end)
+                    .min()
+                    .unwrap_or(authored_end),
+            );
+        }
+        // A stop at a pass's own boundary ends that pass only.
+        for name in &cue.stop_sequences {
+            if !cue
+                .effects
+                .iter()
+                .any(|e| e.sequence_name.as_ref() == Some(name))
+            {
+                stopped.insert(name.clone());
+            }
+        }
+    }
+    end
 }
 
 fn end(source: &str) -> Duration {
@@ -124,6 +161,23 @@ fn show_end_full_clear_after_effect_over_with_unrelated_freeze() {
     let live = live_end(show, 12000);
     assert_eq!(live, Some(Duration::from_secs(2)));
     assert_eq!(end(show), Duration::from_secs(2));
+}
+
+#[test]
+fn show_end_skips_the_passes_of_a_looping_sequence_once_stopped() {
+    // #594: `loop: loop` is 10,000 passes, and the show's end counted every
+    // one of them after the stop at 5 s, over 10,000 s, rather than the bed.
+    let show = "sequence \"v\" {\n    @0.000\n    b: static green: 100%, duration: 1s\n}\n\n\
+        show \"s\" {\n    @0.000\n    a: static red: 100%, duration: 20s\n    \
+        sequence \"v\", loop: loop\n    @5.500\n    stop sequence \"v\"\n}\n";
+    assert_eq!(end(show), Duration::from_secs(20));
+    // With a hold, too: the replay skips them already, but the end it was
+    // written with is the floor of a look held for good.
+    let held = show.replace(
+        "    @5.500\n",
+        "    @5.500\n    freeze(layer: background)\n",
+    );
+    assert_eq!(end(&held), Duration::from_secs(20));
 }
 
 struct Rng(u64);
@@ -193,10 +247,9 @@ fn gen_show(rng: &mut Rng, holds: bool) -> String {
     s
 }
 
-/// A show without holds keeps the lint's end exactly, as before them; one
-/// with holds ends within a frame of a played-through engine going idle.
-/// (Without holds the lint's end can run past the live one: it counts a
-/// stopped sequence's later cues, as it always has -- #594.)
+/// A show without holds keeps the lint's end exactly, as before them, but
+/// for the passes of a stopped sequence, which never start; one with holds
+/// ends within a frame of a played-through engine going idle.
 fn fails(src: &str, until_ms: u64, hold_free: bool) -> Option<String> {
     let parsed = parse_light_shows(src);
     if parsed.is_err() {
@@ -303,15 +356,7 @@ fn seek3(source: &str, seek_ms: u64, until_ms: u64) -> EffectEngine {
     let start = Duration::from_millis(seek_ms);
     let h = tl.start_at(start);
     engine.set_song_time(start);
-    engine.apply_layer_commands(&h.layer_commands, &[]);
-    for s in &h.stop_sequences {
-        engine.stop_sequence(s);
-    }
-    let mut we: Vec<_> = h.effects_with_elapsed.into_values().collect();
-    we.sort_by_key(|(e, _)| e.cue_time.unwrap_or(Duration::ZERO));
-    for (e, el) in we {
-        let _ = engine.start_effect_with_elapsed(e, el);
-    }
+    let _ = engine.apply_timeline_update(h);
     run(&mut tl, &mut engine, seek_ms, until_ms);
     engine
 }
@@ -427,8 +472,8 @@ fn show_end_zero_length_cued_on_frozen_layer() {
 }
 
 /// A look cued at 1.002 s and slowed to 0.1 at 1.008 s fire in the same
-/// frame, the speed change first: the look still ran its 6 ms at full speed
-/// before it, then 3.994 s at a tenth, over at 40.948 s -- played through,
+/// frame, and apply in turn: the look runs its 6 ms at full speed before
+/// the change, then 3.994 s at a tenth, over at 40.948 s -- played through,
 /// in the show's end and after a seek.
 #[test]
 fn show_end_slow_down_in_the_same_frame_as_the_cue() {
@@ -550,4 +595,74 @@ fn show_end_same_frame_speed_change_then_freeze_unfreeze_in_the_cues_frame() {
         (live.0 - seek.0).abs() < 0.005,
         "live {live:?} seek {seek:?}"
     );
+}
+
+/// A show with a sequence on `loop:` `passes`, as the band's are: a 4-bar
+/// verse looping under a long bed and beat hits, stopped at bar `stop` if
+/// given, with `extra` cues after.
+fn looping_show(passes: &str, stop: Option<u32>, extra: &str) -> String {
+    let mut s =
+        String::from("tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n}\n\n");
+    s.push_str("sequence \"verse\" {\n");
+    for bar in 1..=4 {
+        for beat in 1..=4 {
+            s.push_str(&format!(
+                "    @{bar}/{beat}\n    a: static red: 100%, duration: 1beats, layer: midground\n"
+            ));
+        }
+    }
+    s.push_str(&format!(
+        "}}\n\nshow \"s\" {{\n    @1/1\n    sequence \"verse\", loop: {passes}\n    \
+         b: static blue: 100%, duration: 400measures\n"
+    ));
+    if let Some(bar) = stop {
+        s.push_str(&format!("    @{bar}/1\n    stop sequence \"verse\"\n"));
+    }
+    for i in 0..60u32 {
+        s.push_str(&format!(
+            "    @{}/{}\n    c: static green: 100%, duration: 1beats, layer: foreground\n",
+            2 + (i * 37) % 300,
+            1 + i % 4
+        ));
+    }
+    s.push_str(extra);
+    s.push_str("}\n");
+    s
+}
+
+/// Looked up rather than scanned, a show's clears and stops cut its effects
+/// where they did (#595): the show's end is still the scan's.
+#[test]
+fn show_end_of_looping_shows_is_the_scans() {
+    let sources = [
+        looping_show("300", Some(100), ""),
+        looping_show("300", None, ""),
+        looping_show(
+            "300",
+            Some(40),
+            "    @200/1\n    clear(layer: background)\n",
+        ),
+        looping_show("300", None, "    @250/3\n    clear()\n"),
+        looping_show("300", None, "    @120/1\n    clear(layer: midground)\n"),
+        looping_show("2", None, "    @3/1\n    stop sequence \"verse\"\n"),
+    ];
+    for src in &sources {
+        assert_eq!(end(src), lint_end(src), "{src}");
+    }
+}
+
+/// A sequence on `loop: loop` expands to 10,000 passes, each stopping the
+/// one before. Scanning every stop for each effect they start took seconds
+/// to build the timeline, holding up a crossfaded loop's next pass and the
+/// ambient show's start (#595). A second or so in a debug build now, where
+/// the scan took minutes.
+#[test]
+fn a_show_looping_for_good_builds_its_timeline_quickly() {
+    let parsed = shows(&looping_show("loop", Some(100), ""));
+    assert!(parsed[0].cues.len() > 160_000);
+    let started = std::time::Instant::now();
+    let timeline = LightingTimeline::new(parsed);
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(10), "took {took:?}");
+    assert!(timeline.show_end() > Duration::ZERO);
 }

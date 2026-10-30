@@ -165,7 +165,7 @@ fn names_of(
         archive = file_name,
         "Reading a GDTF in the library for its fixture name"
     );
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read it: {e}"))?;
+    let bytes = crate::util::read_file(path).map_err(|e| format!("cannot read it: {e}"))?;
     let sha256 = format!("{:x}", Sha256::digest(&bytes));
     let names = match index.names.get(&sha256) {
         Some(names) => names.clone(),

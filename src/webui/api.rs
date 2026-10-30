@@ -342,7 +342,11 @@ async fn upload_sample_file(
     }
 
     let file_path = samples_dir.join(&filename);
-    if !file_path.starts_with(&root_canonical) {
+    // A new sample's name must also pass the rules for new names; one
+    // already there is replaced under its own.
+    let refused =
+        !file_path.exists() && super::safe_path::SafePath::validate_new_name(&filename).is_err();
+    if refused || !file_path.starts_with(&root_canonical) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Invalid filename"})),
@@ -403,7 +407,13 @@ pub(super) mod test_helpers {
         let mut map = HashMap::new();
         map.insert(
             "Song A".to_string(),
-            std::sync::Arc::new(Song::new_for_test("Song A", &["kick", "snare"])),
+            // An hour long: the tests that play it look while it plays, and a
+            // zero-length song has often ended by then on a loaded machine.
+            std::sync::Arc::new(Song::new_for_test_lasting(
+                "Song A",
+                &["kick", "snare"],
+                std::time::Duration::from_secs(3600),
+            )),
         );
         test_state_inner(
             std::sync::Arc::new(Songs::new(map)),
@@ -438,8 +448,40 @@ pub(super) mod test_helpers {
         audio: Option<std::sync::Arc<dyn crate::audio::Device>>,
         dmx_engine: Option<std::sync::Arc<crate::dmx::engine::Engine>>,
     ) -> (WebUiState, tempfile::TempDir) {
+        let all_songs_playlist = crate::playlist::from_songs(songs).unwrap();
+        let mut playlists = std::collections::HashMap::new();
+        playlists.insert("all_songs".to_string(), all_songs_playlist);
+        test_state_with_playlists(playlists, "all_songs", audio, dmx_engine)
+    }
+
+    /// Creates a WebUiState whose player has `playlist` active, with a mock
+    /// audio device to play it on.
+    pub fn test_state_with_playlist(
+        playlist: std::sync::Arc<crate::playlist::Playlist>,
+    ) -> (WebUiState, tempfile::TempDir) {
+        let mut playlists = std::collections::HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            crate::playlist::from_songs(playlist.registry().clone()).unwrap(),
+        );
+        playlists.insert(playlist.name().to_string(), playlist.clone());
+        test_state_with_playlists(
+            playlists,
+            playlist.name(),
+            Some(std::sync::Arc::new(crate::audio::mock::Device::get(
+                "mock-device",
+            ))),
+            None,
+        )
+    }
+
+    fn test_state_with_playlists(
+        playlists: std::collections::HashMap<String, std::sync::Arc<crate::playlist::Playlist>>,
+        active: &str,
+        audio: Option<std::sync::Arc<dyn crate::audio::Device>>,
+        dmx_engine: Option<std::sync::Arc<crate::dmx::engine::Engine>>,
+    ) -> (WebUiState, tempfile::TempDir) {
         use crate::player::PlayerDevices;
-        use crate::playlist;
         use tokio::sync::{broadcast, watch};
 
         let dir = tempfile::tempdir().unwrap();
@@ -456,26 +498,22 @@ pub(super) mod test_helpers {
         let songs_path = dir.path().join("songs");
         std::fs::create_dir(&songs_path).unwrap();
 
-        let all_songs_playlist = playlist::from_songs(songs.clone()).unwrap();
-
+        // Mappings with the device, or the player counts no audio to play
+        // and a song finishes the moment it starts, whatever its length.
+        let mappings = audio
+            .as_ref()
+            .map(|_| std::sync::Arc::new(std::collections::HashMap::new()));
         let devices = PlayerDevices {
             audio,
-            mappings: None,
+            mappings,
             midi: None,
             dmx_engine,
             sample_engine: None,
             trigger_engine: None,
         };
-        let mut playlists = std::collections::HashMap::new();
-        playlists.insert("all_songs".to_string(), all_songs_playlist);
         let player = std::sync::Arc::new(
-            crate::player::Player::new_with_devices(
-                devices,
-                playlists,
-                "all_songs".to_string(),
-                None,
-            )
-            .unwrap(),
+            crate::player::Player::new_with_devices(devices, playlists, active.to_string(), None)
+                .unwrap(),
         );
 
         let (broadcast_tx, _) = broadcast::channel(16);

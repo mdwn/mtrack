@@ -61,6 +61,25 @@ pub struct EffectInstance {
     /// it by, whose unfreeze shifts its `start_time` so it resumes where it
     /// stopped -- song time ran on meanwhile, so rendering on it would jump.
     pub engine_timed: bool,
+    /// The sequence this effect was cued from, if any: `stop sequence`
+    /// takes out the effects of that sequence by name, and only those.
+    pub sequence: Option<String>,
+    /// For a move a seek's history cut short before it arrived -- by a
+    /// clear, a stop of its sequence or a later move on the same heads --
+    /// where each cut left it. Live, a cut head holds the last pose it was
+    /// shown at, so the engine commits that pose for the fixtures cut and
+    /// runs the move on the rest, if any. Empty otherwise.
+    pub cuts: Vec<MoveCut>,
+}
+
+/// Where a seek's history cut a move short (see `EffectInstance::cuts`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoveCut {
+    /// The move's own elapsed at the cut. `None` for one cut on its own
+    /// cue's time, which never rendered: the heads stay where they were.
+    pub elapsed: Option<Duration>,
+    /// The fixtures cut, or every one it still has for `None`.
+    pub fixtures: Option<Vec<String>>,
 }
 
 impl EffectInstance {
@@ -110,7 +129,15 @@ impl EffectInstance {
             speed_from: Duration::ZERO,
             elapsed_from: Duration::ZERO,
             engine_timed: false,
+            sequence: None,
+            cuts: Vec::new(),
         }
+    }
+
+    /// Whether this effect was cued from the sequence `name`: by its name
+    /// exactly, so stopping `verse` leaves `verse_two` running (#591).
+    pub fn is_from_sequence(&self, name: &str) -> bool {
+        self.sequence.as_deref() == Some(name)
     }
 
     #[cfg(test)]

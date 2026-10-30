@@ -108,6 +108,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A hardware reload keeps the audio triggers**: dropping the trigger engine only signalled its
+  input thread, which noticed up to half a second later, so the replacement opened the input device
+  while the old stream still held it, failed with "device busy", and went on with no triggers until
+  the next reload. The engine now wakes the thread at once and waits for it to close the stream, and
+  a retry backoff no longer outlasts shutdown.
+- **A config change made over MCP takes effect**: `update_audio`, `update_midi`, `update_dmx`,
+  `update_controllers` and the profile tools saved the change but never reloaded the hardware, so it
+  did nothing until something else reloaded it or mtrack restarted. They now reload it, as the gRPC
+  and web config changes do; during playback the reload waits for it to end.
+- **A controller change restarts only the controllers it changes (#578)**: a change to any one
+  controller restarted them all, so adding an OSC or gRPC controller over MCP tore down the MCP
+  server answering it, and its sessions with it. Controllers whose config is unchanged now keep
+  running, a web UI config save included; MIDI controllers, whose song-change notifiers go
+  together, restart together, and also when a reload opens a new MIDI device, for a changed MIDI
+  config or a device gone, so they listen on the new one. A reload of an unchanged MIDI config,
+  or two in quick succession, keeps the device and the MIDI controllers on it, opening it afresh
+  in place, so one unplugged and plugged back in is heard again; its beat clock goes on with the
+  tempo it held between songs (`persist_tempo`), and a controller whose watch the reopened device
+  could not take over reads as an error and is retried. "Restart controllers" still restarts them
+  all, and a MIDI controller restarted on the device it had now hears it again. A changed
+  controller waits for the one it replaces to let go of its port, and one that cannot bind its
+  port shows the error in the status rather than "running", and is retried on the next reload. So
+  is one whose predecessor has still not stopped after five seconds: it is not started on top of
+  it, nor is the one replacing it, or its retry, while that predecessor still holds on. A second
+  MIDI controller, which could never watch the one MIDI device, is refused by config validation;
+  one that gets past it reads as that error, and is no longer retried, which restarted the
+  working one each time.
+- **A config change the next start would refuse is refused (#578)**: changes made over MCP,
+  gRPC or the web UI (`update_controllers`, the profile tools and the other section updates)
+  were saved without the checks a load runs, so a second MIDI controller, say, was written and
+  applied, and mtrack then failed to start. Each change is now checked as the whole config the
+  next start would load, and one that fails is not saved: MCP answers invalid params, gRPC
+  `INVALID_ARGUMENT` and the web UI a 400, with the reason.
+- **The latest move takes a mover, whatever its layer (#599)**: two moves on different layers
+  over one head blended by layer, and where the head came to rest depended on how you got there:
+  played through, after a seek and in `evaluate_show` it could land on three different poses. A
+  move now takes its heads from any move already on them, on any layer, and the head carries on
+  from where it is (unless the move has a `from`); the move it took them from runs on its other
+  fixtures, or ends. Played through, after a seek and in `evaluate_show` alike, the head rests
+  where the latest move leaves it, and a show whose last move was taken over ends when the one
+  that took it does.
+- **A mover cut part way through a move keeps its pose after a seek (#596)**: a layer `clear` or a
+  `stop sequence` part way through a move leaves the head where it was, as the song plays, but a
+  seek past the cut (or `evaluate_show`) left the head with no pose at all, so the next move
+  without `from` snapped instead of sweeping from there. A seek now puts the head where the cut
+  caught it. A full `clear()` still lets the head go.
+- **Same-time cues from different shows fire in a steady order (#597)**: a file's shows came back
+  in hash order, which changed from one timeline build to the next -- every section loop pass and
+  crossfaded loop pass builds one -- so of two cues at the same time in different shows (a `stop
+  sequence` and a `sequence`, two moves on one head) either could go first. Shows now keep their
+  files' order and their order in each file, in the player, ambient light, `evaluate_show` and
+  the MCP tools alike.
+- **A stopped looping sequence no longer stretches the show's end (#594)**: the show's end counted
+  every pass of a sequence, even those cued after a `stop sequence` ended it, which never play. A
+  `loop: loop` sequence stopped part way put the end at its 10,000th pass, so a song with no audio
+  ran for hours (its length, seek bound and progress bar), and an ambient show waited that long to
+  loop. The end now counts only the passes that play.
+- **Cues less than a frame apart apply in turn (#592)**: cues that landed in the same frame were
+  applied all their layer commands first, so a `clear` or `stop sequence` cued a few milliseconds
+  after an effect ran before it, and the effect stayed on, though a seek to the same point had it
+  gone. Each frame's cues now apply time by time, as a seek replays them, everywhere a show
+  plays: the song, a loop's outgoing pass, ambient light and `evaluate_show`.
+- **`stop sequence` stops only the sequence it names (#591)**: stopping `verse` also stopped every
+  sequence whose name starts with `verse_`, such as `verse_two`, as the song played and after a
+  seek. A sequence's effects are now matched by its exact name.
+- **A name that would read wrong or vanish is refused (#578)**: a playlist, profile, song or file
+  name that was blank, had space at either end, started with a dot (a song directory so named is
+  skipped as hidden) or held a control character was accepted. Such names are now refused for
+  anything new, a song directory a new song or track upload makes included, at any level of a
+  nested one; a file already named so can still be saved, renamed and deleted.
+- **A show edited during playback reloads where the lights are (#593)**: with a lighting
+  `playback_delay`, a hot reload of the `.light` file rebuilt the show at the song's time rather
+  than the lights' one, the delay ahead of the rig: cues in between were skipped, effects jumped
+  ahead and a freeze held at the wrong point. It now rebuilds at the same point a seek does.
+- **A show that loops a sequence for good builds at once (#595)**: a `loop: loop` sequence expands
+  to 10,000 passes, each stopping the one before, and working out the show's end checked every
+  effect against every one of those stops: seconds for a looping verse under a long bed (10 s
+  for 160,000 cues on a loaded x86 machine). That held up each pass of a crossfaded looping song
+  and the ambient show's start, which stalled DMX output. Clears and stops are now looked up by
+  layer and by sequence, and the same show builds in 40 ms. The lint's past-end and overlapping
+  `replace` checks use the same lookup.
+- **Show analysis counts freezes and the speed master (#598)**: `analyze_show` (MCP
+  `analyze_show`) split a show at its effects' authored ends, so a look frozen for a second was
+  missing that second from the span and its group's time, and a look sped up to end early hid the
+  dark gap after it. It now splits at the ends the show really has, as worked out for the show's
+  end and for seeks.
+- **A malformed OSC address no longer stops OSC control (#574)**: one bad packet ended the OSC
+  driver until a restart. It is logged and skipped.
+- **A burst of OSC messages no longer deadlocks the driver (#575)**: with both its queues full,
+  the receive task and the status broadcast each waited on the other. The receive task now goes
+  on sending while it waits to hand on a command, so neither waits on the other, and nothing is
+  dropped: neither commands nor any of a broadcast's status and track gains.
 - **MIDI DMX looks come back after a seek (#583)**: a seek, play-from or section loop started a MIDI
   DMX show past every event before its start point, and since #581 a channel nothing writes goes to
   0, so a look the show set once and held stayed dark. Those events are now put back as playback
@@ -191,6 +283,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lighting view and the MCP `get_fixture_state` showed the incoming show alone -- at Next, black
   until its first cue, then a snap to it. They now show the blend, crossed channel by channel by
   the same rules as the DMX.
+- **An edit to the active playlist keeps the song playing current (#576)**: saving a playlist
+  kept the position's index and pointed it at whatever entry then sat there, so status, Stop,
+  Next and the loop ending all acted on another song: a song moved under a playing one got the
+  looping song's fade-out, and a looping song lost its graceful ending. Every playlist now keeps
+  its place by song across a reload, and a song an edit takes away while it plays or is paused
+  stays current until the playlist moves on: Play resumes a paused one where it was, and Next
+  goes to the entry that took its place, as Stop or its end does; the dashboard shows it as none
+  of the list's entries. Deleting or renaming the active playlist keeps the song playing current
+  in all songs. A song or playlist edit no longer sends any playlist back to its first entry.
+- **A Stop or pause during a loop break stops on the song it was going to (#576)**: Next or
+  Previous on a looping song names the song it moves to and starts fading into it, but a Stop or
+  pause in the moment before the player moved on left it on the looping song (with a `fade_out`,
+  a Stop ended that song over it instead), and one just after could not keep the next song from
+  starting. The player now stops on the song the break was going to, with no paused position, and
+  a Stop at any point after keeps it from starting; so does a Stop as an auto play's gap runs
+  out. A seek in that moment still calls the break off and seeks in the looping song.
+- **A playlist fade can't outlast the song it plays under (#577)**: a `fade_out` in measures or
+  beats had no bound, so `1000000measures` saved and gave a 33-day ending, the prelude playing on
+  at full level under the next song. A fade now lasts at most the song it plays under, counted on
+  the grid it counts on: a `fade_out` the next entry's song (its own at the end of the list), a
+  `fade_in` its own, as a `loop_crossfade` is bound by its song. The playlist editor, the API and
+  MCP `write_playlist` refuse a longer one; one already in a file is cut short to that song, with
+  a warning, rather than the playlist being dropped.
+- **Playlist saves refuse what the player would not load, and take turns (#578)**: a save naming
+  a song the player does not have was accepted, and the playlist then vanished, the player falling
+  back to all songs if it was the active one. `auto_play` or `fades` lists of another length than
+  the songs were laid over the entries by position. Both are now refused with a 422, as is an
+  ambient show outside the project (`../`, or an absolute path). MCP `write_playlist` and
+  `patch_playlist` refuse an unknown song too. Saves of one file at once no longer fail with a
+  500: writers of one file now take turns while they stage the new content, not only while they
+  rewrite the file, and a write that fails before it rewrites the file leaves no empty file or
+  staged copy behind. The playlist editor's saves, and MCP's, take turns from reading the file
+  to reloading the player. The player reads a playlist, song, profile or lighting file whole,
+  never caught midway through a save, which it took for broken: a playlist so read was skipped,
+  an active one falling back to all songs.
+- **A raw config save takes effect, or changes nothing (#578)**: `PUT /api/config` (the config
+  editor's raw save) wrote the file but left the running config and hardware on the old one, so
+  the next settings change wrote the old config back over the save. It now reloads the config and
+  the hardware, as a profile save does, and like one is refused during playback. A save the
+  player cannot load (a broken profile in its `profiles_dir`, say) puts the file back as it was
+  and reports that it was not saved.
+- **A config save raced by a play applies when the song stops (#578)**: a song started between a
+  save's playback check and its hardware reload had the reload refused, while the save still
+  answered "saved" and the rig ran on the old config until something else reloaded it. The
+  reload now waits for the player to go idle, and for a song still fading out (a looping song's
+  ending, or after a loop break) to be out, and runs then. A paused song is not idle: it is a
+  show in progress that must resume at once, so the reload waits for it to be stopped or moved
+  off, and the web UI's config and profile saves are refused with 409 while it is paused. A
+  position cued by a seek while stopped is not a pause, and holds neither. A config change's
+  reply over MCP, gRPC or the web UI says which: `applied` is false while the reload waits, with
+  a `message` saying why.
+- **A config save no longer drops a waiting auto play (#578)**: a save while an `auto_play` entry
+  waited out its gap reloaded the hardware, and when the gap ended the song failed to start
+  ("Hardware is still initializing") and was not retried. The gap now counts as playing: the web
+  UI's config and profile saves are refused with 409, and a reload from elsewhere waits for the
+  song.
+- **The dashboard can end a looping song at either end of the list (#579)**: Next on the last
+  entry, or Previous on the first, ends a looping song over its `fade_out`, but the dashboard
+  turned those buttons off there, so the ending could only be reached from MCP, OSC or gRPC.
+  They now stay on while such a song plays, the next-up line reads "Next ends the loop: fades
+  out over 2 measures" rather than "End of playlist", and Previous's tooltip says the same on
+  the first entry. With no `fade_out`, where the press would only cut, they stay off. Previous
+  also stays on for a song an edit took off the list before the first entry, which it moves onto,
+  and breaks such a looping song's loop onto that entry rather than ending it. The playback
+  feed's `next` carries `ends_loop` and the `fade_out` at the end of the list.
 
 ## [0.17.4] - 2026-10-26
 

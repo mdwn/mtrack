@@ -58,7 +58,7 @@ pub struct DslLightingShow {
 
 /// One parse of a DSL file.
 struct ParsedFile {
-    shows: Arc<HashMap<String, ParsedLightShow>>,
+    shows: Arc<crate::lighting::parser::LightShows>,
     modified: Option<FileStamp>,
     /// Bumped by every parse after the first, for what is worked out from
     /// the shows to tell it is stale.
@@ -103,8 +103,8 @@ fn modified_time(path: &Path) -> Option<FileStamp> {
 fn parse_dsl_file(
     file_path: &Path,
     tempo_map: Option<&crate::tempo::TempoMap>,
-) -> Result<HashMap<String, ParsedLightShow>, Box<dyn Error>> {
-    let content = std::fs::read_to_string(file_path).map_err(|e| {
+) -> Result<crate::lighting::parser::LightShows, Box<dyn Error>> {
+    let content = crate::util::read_to_string(file_path).map_err(|e| {
         format!(
             "Failed to read DSL lighting show {}: {}",
             file_path.display(),
@@ -163,7 +163,7 @@ impl DslLightingShow {
     /// it was read (`None`: never parsed again).
     fn with_shows(
         file_path: PathBuf,
-        shows: HashMap<String, ParsedLightShow>,
+        shows: crate::lighting::parser::LightShows,
         tempo_map: Option<&crate::tempo::TempoMap>,
         modified: Option<FileStamp>,
     ) -> Self {
@@ -187,7 +187,7 @@ impl DslLightingShow {
     /// changed on disk since. A file that no longer parses keeps the last
     /// good parse (the error is logged once per change), as the engine's
     /// hot reload does.
-    pub fn shows(&self) -> Arc<HashMap<String, ParsedLightShow>> {
+    pub fn shows(&self) -> Arc<crate::lighting::parser::LightShows> {
         self.refresh().0
     }
 
@@ -197,7 +197,7 @@ impl DslLightingShow {
         self.refresh().1
     }
 
-    fn refresh(&self) -> (Arc<HashMap<String, ParsedLightShow>>, u64) {
+    fn refresh(&self) -> (Arc<crate::lighting::parser::LightShows>, u64) {
         let mut parsed = self.parsed.lock();
         if parsed.modified.is_some() {
             let modified = modified_time(&self.file_path);
@@ -582,7 +582,10 @@ impl Song {
 
     /// Create a song from a directory without a configuration file
     pub fn initialize(song_directory: &PathBuf) -> Result<Self, Box<dyn Error>> {
-        let song_files = fs::read_dir(song_directory)?;
+        // By name: a directory lists its files in no set order, and a song's
+        // light shows fire same-time cues in the order its files come (#597).
+        let mut song_files: Vec<_> = fs::read_dir(song_directory)?.collect::<Result<_, _>>()?;
+        song_files.sort_by_key(|entry: &fs::DirEntry| entry.file_name());
         let name = filename_display(song_directory).to_string();
 
         let mut light_shows = vec![];
@@ -590,8 +593,7 @@ impl Song {
         let mut light_paths: Vec<PathBuf> = vec![];
         let mut midi_playback = None;
         let mut tracks = vec![];
-        for song_file in song_files {
-            let entry = song_file?;
+        for entry in song_files {
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
                 warn!("Song directory {song_directory:?} has a subdirectory called '{entry:?}'. It will be ignored for initialization.");
@@ -934,8 +936,56 @@ impl Song {
     /// song's own grid when `next` has none. The excluded tracks default to
     /// the song's `loop_crossfade_cut`. `None` when the song cuts with the
     /// short default crossfade: a zero length, or a musical one with no grid
-    /// to count it on.
+    /// to count it on. A fade longer than the song it plays under, `next` (or
+    /// this song, ending with nothing after it), is cut short to that song.
     pub fn fade_out_into(&self, fade: &config::Fade, next: Option<&Song>) -> Option<ResolvedFade> {
+        let resolved = self.fade_out_on_grid(fade, next)?;
+        Some(self.cut_short(resolved, next.unwrap_or(self), "fade_out"))
+    }
+
+    /// How the song fades in, on a playlist's `fade_in`, as it starts under
+    /// a song fading out: beats and measures on its own grid from its first
+    /// bar, and no longer than the song. `None` when it starts at full level.
+    pub fn fade_in(&self, fade: &config::Fade) -> Option<ResolvedFade> {
+        let resolved = self.resolve_fade(fade, self.lighting_tempo_map().as_ref(), "fade_in")?;
+        Some(self.cut_short(resolved, self, "fade_in"))
+    }
+
+    /// Checks `fade`, a playlist entry's `fade_out` for this song handing
+    /// over to `next`, or its `fade_in` (`next` of `None` and `fade_in`
+    /// set): an error when, counted on the grid it will be, it outlasts the
+    /// song it plays under, which [`Song::fade_out_into`] and
+    /// [`Song::fade_in`] would cut short.
+    pub fn check_fade(
+        &self,
+        fade: &config::Fade,
+        next: Option<&Song>,
+        fade_in: bool,
+    ) -> Result<(), String> {
+        let (resolved, under) = if fade_in {
+            let grid = self.lighting_tempo_map();
+            (self.resolve_fade(fade, grid.as_ref(), "fade_in"), self)
+        } else {
+            (self.fade_out_on_grid(fade, next), next.unwrap_or(self))
+        };
+        let Some((resolved, bound)) = resolved.zip(Self::fade_bound(under)) else {
+            return Ok(());
+        };
+        let longest = resolved.length.max(resolved.lights);
+        if longest > bound {
+            return Err(format!(
+                "{} lasts {:.3}s, longer than {} ({:.3}s), which it plays under",
+                fade.length,
+                longest.as_secs_f64(),
+                under.name(),
+                bound.as_secs_f64()
+            ));
+        }
+        Ok(())
+    }
+
+    /// [`Song::fade_out_into`] before it is cut short.
+    fn fade_out_on_grid(&self, fade: &config::Fade, next: Option<&Song>) -> Option<ResolvedFade> {
         let grid = next
             .and_then(|next| next.lighting_tempo_map())
             .or_else(|| self.lighting_tempo_map());
@@ -949,11 +999,31 @@ impl Song {
         })
     }
 
-    /// How the song fades in, on a playlist's `fade_in`, as it starts under
-    /// a song fading out: beats and measures on its own grid from its first
-    /// bar. `None` when it starts at full level.
-    pub fn fade_in(&self, fade: &config::Fade) -> Option<ResolvedFade> {
-        self.resolve_fade(fade, self.lighting_tempo_map().as_ref(), "fade_in")
+    /// The longest a fade playing under `under` may last: the song's length,
+    /// as a loop crossfade is bound by its song. Past it the song a fade
+    /// hands over to is over, and the one fading drones on under whatever
+    /// comes next (#577). `None` for a song with no length to measure by.
+    fn fade_bound(under: &Song) -> Option<Duration> {
+        Some(under.length()).filter(|length| !length.is_zero())
+    }
+
+    /// `fade` no longer than the song it plays under, `under`.
+    fn cut_short(&self, mut fade: ResolvedFade, under: &Song, field: &str) -> ResolvedFade {
+        let Some(bound) = Self::fade_bound(under) else {
+            return fade;
+        };
+        if fade.length.max(fade.lights) > bound {
+            warn!(
+                song = self.name(),
+                under = under.name(),
+                length_ms = fade.length.as_millis() as u64,
+                bound_ms = bound.as_millis() as u64,
+                "{field} is longer than the song it plays under; cutting it short to that"
+            );
+            fade.length = fade.length.min(bound);
+            fade.lights = fade.lights.min(bound);
+        }
+        fade
     }
 
     /// A fade's lengths on `grid`, counted from its first bar so any lead-in
@@ -1451,6 +1521,18 @@ impl Song {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    /// Test helper: a song whose tracks last `duration`, for a test that needs
+    /// the song still playing when it looks; a zero-length one has often ended.
+    #[cfg(test)]
+    pub fn new_for_test_lasting(name: &str, track_names: &[&str], duration: Duration) -> Song {
+        let mut song = Self::new_for_test(name, track_names);
+        for track in &mut song.tracks {
+            track.duration = duration;
+        }
+        song.duration = duration;
+        song
     }
 
     /// Test helper: a looping song with the given track names.
@@ -2243,6 +2325,44 @@ mod test {
         // A fade-in counts on the song's own grid.
         assert!(close(length(song.fade_in(&bar)), 6.0 * 60.0 / 169.0));
         assert!(prelude.fade_in(&bar).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn a_fade_is_no_longer_than_the_song_it_plays_under() -> Result<(), Box<dyn Error>> {
+        use std::time::Duration;
+        // #577: a million measures on the next song's grid made a 33-day
+        // fade, the prelude droning on under everything after it.
+        let prelude = song_with("loop_playback: true\n")?;
+        let song = song_with("tempo:\n  bpm: 120\n  time_signature: 4/4\n")?;
+        let long = fade("1000000measures");
+        let out = prelude.fade_out_into(&long, Some(&song)).unwrap();
+        assert_eq!(out.length, song.length());
+        assert_eq!(out.lights, song.length());
+        let err = prelude.check_fade(&long, Some(&song), false).unwrap_err();
+        assert!(
+            err.contains("1000000measures") && err.contains("longer than s"),
+            "{err}"
+        );
+
+        // One that fits plays as written; with nothing after it, a fade
+        // out is bound by its own song, and a fade in by its own.
+        let bar = fade("1measure");
+        assert_eq!(
+            prelude.fade_out_into(&bar, Some(&song)).unwrap().length,
+            Duration::from_secs(2)
+        );
+        assert!(prelude.check_fade(&bar, Some(&song), false).is_ok());
+        assert!(prelude.check_fade(&fade("5s"), None, false).is_err());
+        assert!(prelude.check_fade(&fade("3s"), None, false).is_ok());
+        assert!(song.check_fade(&fade("3measures"), None, true).is_err());
+        assert_eq!(
+            song.fade_in(&fade("3measures")).unwrap().length,
+            song.length()
+        );
+        // The lights count too.
+        let lights = fade("{length: 1s, lights: 10s}");
+        assert!(prelude.check_fade(&lights, Some(&song), false).is_err());
         Ok(())
     }
 

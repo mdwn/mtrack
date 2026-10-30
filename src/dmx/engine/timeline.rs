@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::{error::Error, time::Duration};
+use std::{collections::HashMap, error::Error, time::Duration};
 
 use tracing::{debug, error, warn};
 
@@ -56,13 +56,7 @@ pub(crate) struct OutgoingPass {
 }
 
 /// What a pass's timeline fired, by the pass's id, its groups resolved.
-type PassUpdates = std::collections::HashMap<
-    u64,
-    (
-        crate::lighting::timeline::TimelineUpdate,
-        Vec<crate::lighting::EffectInstance>,
-    ),
->;
+type PassUpdates = std::collections::HashMap<u64, crate::lighting::timeline::TimelineUpdate>;
 
 /// A timeline going into a pass, its hold let go: a start held it while
 /// its state went in, and whatever would have let it go now finds the
@@ -220,19 +214,12 @@ impl OutgoingPass {
     /// Applies what [`Self::advance_timelines`] collected, its groups
     /// resolved, to this pass's engine and each inner one's.
     fn apply_updates(&mut self, updates: &mut PassUpdates) {
-        if let Some((update, effects)) = updates.remove(&self.id) {
-            self.effect_engine
-                .apply_layer_commands(&update.layer_commands, &update.layer_command_times);
-            for sequence_name in &update.stop_sequences {
-                self.effect_engine.stop_sequence(sequence_name);
-            }
-            for effect in effects {
-                if let Err(e) = self.effect_engine.start_effect(effect) {
-                    error!(
-                        "Failed to start lighting effect in the outgoing loop pass: {}",
-                        e
-                    );
-                }
+        if let Some(update) = updates.remove(&self.id) {
+            for e in self.effect_engine.apply_timeline_update(update) {
+                error!(
+                    "Failed to start lighting effect in the outgoing loop pass: {}",
+                    e
+                );
             }
         }
         if let Some(inner) = self.inner.as_mut() {
@@ -506,13 +493,8 @@ impl Engine {
         let mut resolved: PassUpdates = updates
             .into_iter()
             .map(|(id, mut update)| {
-                let mut effects = std::mem::take(&mut update.effects);
-                effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
-                let effects: Vec<_> = effects
-                    .into_iter()
-                    .map(|effect| self.resolve_effect_groups(effect))
-                    .collect();
-                (id, (update, effects))
+                update.map_effects(|effect| self.resolve_effect_groups(effect));
+                (id, update)
             })
             .collect();
         // Each pass takes its own, wherever it went in between: inside a
@@ -588,7 +570,21 @@ impl Engine {
         // loop break's fade carries on over this song's start.
         self.drop_pass_crossfade();
 
-        let timeline_update = {
+        // A move takes its heads from another by the fixtures they share,
+        // so the history needs its moves' groups resolved: here, with no
+        // timeline lock held, as the effects' groups are below.
+        let heads = if start_time == Duration::ZERO {
+            HashMap::new()
+        } else {
+            let groups = self
+                .current_song_timeline
+                .lock()
+                .as_ref()
+                .map(|timeline| timeline.move_groups())
+                .unwrap_or_default();
+            self.resolve_groups(groups)
+        };
+        let mut timeline_update = {
             let mut current_timeline = self.current_song_timeline.lock();
             if let Some(timeline) = current_timeline.as_mut() {
                 // Firing nothing until the state it starts from is in (below).
@@ -598,7 +594,9 @@ impl Engine {
                     crate::lighting::timeline::TimelineUpdate::default()
                 } else {
                     // Process historical cues to ensure deterministic state
-                    timeline.start_at(start_time)
+                    timeline.start_at_resolving(start_time, &mut |effect| {
+                        resolved_fixtures(&heads, effect)
+                    })
                 }
             } else {
                 crate::lighting::timeline::TimelineUpdate::default()
@@ -626,18 +624,7 @@ impl Engine {
         // under the one lock, groups resolved first: a frame between the two
         // would find the channels unwritten and send them 0 -- a black flash
         // at every seek and section loop (#581). As the watcher's reload.
-        let mut with_elapsed: Vec<_> = timeline_update.effects_with_elapsed.into_values().collect();
-        with_elapsed.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
-        let with_elapsed: Vec<_> = with_elapsed
-            .into_iter()
-            .map(|(effect, elapsed)| (self.resolve_effect_groups(effect), elapsed))
-            .collect();
-        let mut effects = timeline_update.effects;
-        effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
-        let effects: Vec<_> = effects
-            .into_iter()
-            .map(|effect| self.resolve_effect_groups(effect))
-            .collect();
+        timeline_update.map_effects(|effect| self.resolve_effect_groups(effect));
         let mut effect_engine = self.effect_engine.lock();
         effect_engine.stop_all_effects();
         // A freeze in the history holds at the start point, where the
@@ -652,19 +639,8 @@ impl Engine {
             MidiDmxStart::Seek => self.seek_midi_dmx_playbacks(start_time),
         }
         if start_time > Duration::ZERO {
-            effect_engine.apply_layer_commands(&timeline_update.layer_commands, &[]);
-            for sequence_name in &timeline_update.stop_sequences {
-                effect_engine.stop_sequence(sequence_name);
-            }
-            for (effect, elapsed) in with_elapsed {
-                if let Err(e) = effect_engine.start_effect_with_elapsed(effect, elapsed) {
-                    error!("Failed to start lighting effect with elapsed time: {}", e);
-                }
-            }
-            for effect in effects {
-                if let Err(e) = effect_engine.start_effect(effect) {
-                    error!("Failed to start lighting effect: {}", e);
-                }
+            for e in effect_engine.apply_timeline_update(timeline_update) {
+                error!("Failed to start lighting effect: {}", e);
             }
         }
         drop(effect_engine);
@@ -685,61 +661,22 @@ impl Engine {
     /// a pass's -- and nowhere if it is gone.
     pub(super) fn apply_timeline_update(
         &self,
-        timeline_update: crate::lighting::timeline::TimelineUpdate,
+        mut timeline_update: crate::lighting::timeline::TimelineUpdate,
         epoch: u64,
     ) -> Result<(), Box<dyn Error>> {
-        let crate::lighting::timeline::TimelineUpdate {
-            effects,
-            effects_with_elapsed,
-            layer_commands,
-            layer_command_times,
-            stop_sequences,
-        } = timeline_update;
-        if effects.is_empty()
-            && effects_with_elapsed.is_empty()
-            && layer_commands.is_empty()
-            && stop_sequences.is_empty()
+        if timeline_update.effects.is_empty()
+            && timeline_update.effects_with_elapsed.is_empty()
+            && timeline_update.layer_commands.is_empty()
+            && timeline_update.stop_sequences.is_empty()
         {
             return Ok(());
         }
 
         // Groups resolved first: never under the engine's lock.
-        // Effects with pre-calculated elapsed time (from seeking) go in by
-        // cue time, so later effects properly conflict with and stop earlier
-        // ones.
-        let mut with_elapsed: Vec<_> = effects_with_elapsed.into_values().collect();
-        with_elapsed.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
-        let with_elapsed: Vec<_> = with_elapsed
-            .into_iter()
-            .map(|(effect, elapsed)| (self.resolve_effect_groups(effect), elapsed))
-            .collect();
-        // Sequence effects start before song effects. When a sequence's
-        // last cue (timing anchor) fires at the same time as the next show
-        // cue, starting sequence effects first ensures show-level effects win
-        // any Replace-blend conflicts via the conflict resolution in
-        // start_effect().
-        let mut effects = effects;
-        effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
-        let effects: Vec<_> = effects
-            .into_iter()
-            .map(|effect| self.resolve_effect_groups(effect))
-            .collect();
-
+        timeline_update.map_effects(|effect| self.resolve_effect_groups(effect));
         let apply = |engine: &mut crate::lighting::EffectEngine| {
-            // Layer commands first: they affect the effects after them.
-            engine.apply_layer_commands(&layer_commands, &layer_command_times);
-            for sequence_name in &stop_sequences {
-                engine.stop_sequence(sequence_name);
-            }
-            for (effect, elapsed) in with_elapsed {
-                if let Err(e) = engine.start_effect_with_elapsed(effect, elapsed) {
-                    error!("Failed to start lighting effect with elapsed time: {}", e);
-                }
-            }
-            for effect in effects {
-                if let Err(e) = engine.start_effect(effect) {
-                    error!("Failed to start lighting effect: {}", e);
-                }
+            for e in engine.apply_timeline_update(timeline_update) {
+                error!("Failed to start lighting effect: {}", e);
             }
         };
 
@@ -782,6 +719,19 @@ impl Engine {
         } else {
             effect
         }
+    }
+
+    /// Each of `groups` resolved to its fixtures, as
+    /// [`Self::resolve_effect_groups`] resolves an effect's. Empty with no
+    /// lighting system, where groups are fixtures by name.
+    pub(super) fn resolve_groups(
+        &self,
+        groups: impl IntoIterator<Item = String>,
+    ) -> HashMap<String, Vec<String>> {
+        let Some(lighting_system) = &self.lighting_system else {
+            return HashMap::new();
+        };
+        resolve_groups_in(&mut lighting_system.lock(), groups)
     }
 
     /// Stops the lighting timeline
@@ -897,4 +847,36 @@ impl Engine {
             Vec::new()
         }
     }
+}
+
+/// [`Engine::resolve_groups`] against a lighting system already locked.
+pub(super) fn resolve_groups_in(
+    lighting_system: &mut crate::lighting::system::LightingSystem,
+    groups: impl IntoIterator<Item = String>,
+) -> HashMap<String, Vec<String>> {
+    groups
+        .into_iter()
+        .map(|group| {
+            let fixtures = lighting_system.resolve_logical_group_graceful(&group);
+            (group, fixtures)
+        })
+        .collect()
+}
+
+/// The fixtures `effect`'s groups stand for, by `resolved` (see
+/// `Engine::resolve_groups`): a group it does not have is a fixture by name.
+pub(super) fn resolved_fixtures(
+    resolved: &HashMap<String, Vec<String>>,
+    effect: &crate::lighting::EffectInstance,
+) -> Vec<String> {
+    effect
+        .target_fixtures
+        .iter()
+        .flat_map(|group| {
+            resolved
+                .get(group)
+                .cloned()
+                .unwrap_or_else(|| vec![group.clone()])
+        })
+        .collect()
 }

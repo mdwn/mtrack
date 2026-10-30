@@ -18,8 +18,8 @@
   import { playerClient } from "../../lib/grpc/client";
   import { sectionColor } from "../../lib/sectionColors";
   import BeatIndicator from "./BeatIndicator.svelte";
-  import { formatMs } from "../../lib/util/format";
-  import { describeNext } from "../../lib/nextUp";
+  import { formatFadeLength, formatMs } from "../../lib/util/format";
+  import { describeNext, loopEndFade, playlistEnds } from "../../lib/nextUp";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -286,14 +286,20 @@
     }
   }
 
+  // A looping song playing with a fade out ends over it on Next at the
+  // last entry or Previous at the first, so those stay pressable there;
+  // without one the press would only cut it, and they stay off (#579).
+  let loopEnd = $derived(
+    $playbackStore.is_playing ? loopEndFade($playbackStore.next) : null,
+  );
+  let ends = $derived(playlistEnds($playbackStore));
+  let atFirst = $derived(ends.atFirst);
+  let atLast = $derived(ends.atLast);
   let canPrev = $derived(
-    $playbackStore.playlist_songs.length > 0 &&
-      $playbackStore.playlist_position > 0,
+    $playbackStore.playlist_songs.length > 0 && (!atFirst || !!loopEnd),
   );
   let canNext = $derived(
-    $playbackStore.playlist_songs.length > 0 &&
-      $playbackStore.playlist_position <
-        $playbackStore.playlist_songs.length - 1,
+    $playbackStore.playlist_songs.length > 0 && (!atLast || !!loopEnd),
   );
 
   let progressPct = $derived(
@@ -532,7 +538,11 @@
           disabled={($playbackStore.is_playing && !$playbackStore.looping) ||
             loading ||
             !canPrev}
-          title={$t("playback.prevTooltip")}
+          title={atFirst && loopEnd
+            ? $t("playback.prevEndsLoopTooltip", {
+                values: { length: formatFadeLength(loopEnd.length) },
+              })
+            : $t("playback.prevTooltip")}
           aria-label={$t("playback.prev")}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"

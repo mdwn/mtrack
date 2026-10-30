@@ -334,7 +334,7 @@ impl LightingSystem {
                         format!("MVR path {} escapes the project directory", source.mvr).into(),
                     );
                 }
-                let bytes = std::fs::read(&canonical)?;
+                let bytes = crate::util::read_file(&canonical)?;
                 let parsed: std::cell::OnceCell<crate::lighting::mvr::Scene> =
                     std::cell::OnceCell::new();
                 cache.ensure_scenery(&bytes, &source.origin, || {
@@ -631,7 +631,7 @@ impl LightingSystem {
             .into());
         }
 
-        let bytes = std::fs::read(&canonical)
+        let bytes = crate::util::read_file(&canonical)
             .map_err(|e| format!("cannot read GDTF archive {}: {e}", canonical.display()))?;
         // Everything that can change the expansion participates in the key;
         // movement is the only override today, so it is the fingerprint.
@@ -754,7 +754,7 @@ impl LightingSystem {
             let modes = self.referential[&type_name]
                 .source()
                 .map(|source| base_path.join(&source.path))
-                .and_then(|path| std::fs::read(path).ok())
+                .and_then(|path| crate::util::read_file(&path).ok())
                 .and_then(|bytes| gdtf::parse_archive(&bytes).ok())
                 .map(|description| description.modes.into_iter().map(|m| m.name).collect())
                 .unwrap_or_default();

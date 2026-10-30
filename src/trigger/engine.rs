@@ -32,9 +32,9 @@ use crate::config::trigger::{AudioTriggerInput, TriggerConfig, TriggerInput, Tri
 use crate::samples::TriggerAction;
 use crate::thread_priority::{callback_thread_priority, promote_to_realtime, rt_audio_enabled};
 
-/// Shared condvar notify for signalling stream errors from the error callback
-/// to the recovery thread.
-type ErrorNotify = Arc<(Mutex<bool>, Condvar)>;
+/// Set by a stream's error callback for the recovery thread, which it wakes
+/// through the shutdown signal's condvar (see [`wake`]).
+type ErrorNotify = Arc<Mutex<bool>>;
 
 /// Whether a backend error means this stream is finished and must be replaced.
 ///
@@ -65,10 +65,9 @@ type ShutdownNotify = Arc<(Mutex<bool>, Condvar)>;
 pub struct TriggerEngine {
     /// Receiver for trigger actions produced by detectors.
     receiver: Receiver<TriggerAction>,
-    /// Background thread running the stream recovery loop.
-    _thread: Option<std::thread::JoinHandle<()>>,
-    /// Shutdown signal to stop the recovery thread on drop.
-    shutdown: ShutdownNotify,
+    /// The thread holding the input stream. Dropped after `receiver`, and its
+    /// drop returns only once the stream, and so the device, is released.
+    _recovery: RecoveryThread,
 }
 
 /// Parameters captured from config for rebuilding the input stream on recovery.
@@ -176,7 +175,7 @@ impl TriggerEngine {
             inputs: config.inputs().to_vec(),
         };
 
-        let error_notify: ErrorNotify = Arc::new((Mutex::new(false), Condvar::new()));
+        let error_notify: ErrorNotify = Arc::new(Mutex::new(false));
         let shutdown: ShutdownNotify = Arc::new((Mutex::new(false), Condvar::new()));
 
         // Build the initial stream before spawning the recovery thread.
@@ -191,24 +190,22 @@ impl TriggerEngine {
             params.sample_format,
             params.crosstalk,
             error_notify.clone(),
+            shutdown.clone(),
         )?;
         stream.play()?;
         info!("Trigger input stream started");
 
-        // Spawn recovery thread — mirrors the audio output stream pattern.
-        let thread = {
+        let rebuild = {
             let shutdown = shutdown.clone();
-            std::thread::Builder::new()
-                .name("trigger-input-recovery".into())
-                .spawn(move || {
-                    Self::recovery_loop(stream, error_notify, params, tx, shutdown);
-                })?
+            move |attempt_notify: ErrorNotify| {
+                Self::rebuild_stream(&params, &tx, attempt_notify, &shutdown)
+            }
         };
+        let recovery = RecoveryThread::spawn(stream, error_notify, shutdown, rebuild)?;
 
         Ok(TriggerEngine {
             receiver: rx,
-            _thread: Some(thread),
-            shutdown,
+            _recovery: recovery,
         })
     }
 
@@ -217,110 +214,44 @@ impl TriggerEngine {
         self.receiver.clone()
     }
 
-    /// Runs the stream recovery loop. Blocks until shutdown.
-    fn recovery_loop(
-        mut stream: cpal::Stream,
-        mut error_notify: ErrorNotify,
-        params: StreamParams,
-        tx: Sender<TriggerAction>,
-        shutdown: ShutdownNotify,
-    ) {
-        loop {
-            // Wait for either a stream error or shutdown.
-            //
-            // Scoped so the borrow of `error_notify` ends before the rebuild
-            // below replaces it.
-            {
-                let (err_mutex, err_condvar) = &*error_notify;
-                let (shut_mutex, _) = &*shutdown;
-                loop {
-                    if *shut_mutex.lock() {
-                        drop(stream);
-                        return;
-                    }
-                    let mut errored = err_mutex.lock();
-                    if *errored {
-                        break;
-                    }
-                    err_condvar.wait_for(&mut errored, std::time::Duration::from_millis(500));
-                }
-            }
-
-            // Drop the old stream and attempt to rebuild.
-            drop(stream);
-            warn!("Trigger input stream error detected, attempting recovery");
-
-            // Retry with backoff until the device is available again.
-            loop {
-                if *shutdown.0.lock() {
-                    return;
-                }
-
-                let device = match crate::audio::find_input_device(&params.device_name) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        warn!(error = %e, "Trigger recovery: device not found, retrying");
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                        continue;
-                    }
-                };
-
-                let detector_map = match build_detector_map(
-                    &params.inputs,
-                    params.stream_config.channels,
-                    params.stream_config.sample_rate,
-                ) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        warn!(error = %e, "Trigger recovery: failed to build detectors, retrying");
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                        continue;
-                    }
-                };
-
-                // A fresh signal per attempt, never the one the dead stream held.
-                //
-                // Sharing one meant an error latched by a stream that was already
-                // gone was still set when its replacement came up, and the wait
-                // above returned immediately and tore the new stream straight back
-                // down. cpal can raise the same fault twice — one USB unplug on the
-                // test rig produced two POLLERR callbacks 0.2ms apart — so the
-                // second outlived the rebuild it triggered. Clearing the flag
-                // before each build fixes that instance and not the class: the
-                // attempt below can build a stream, have `play()` fail, drop it,
-                // and go round again, and that discarded stream still holds the
-                // signal. A fresh one has nobody to inherit from. Same fix as the
-                // output path in #370.
-                let attempt_notify: ErrorNotify = Arc::new((Mutex::new(false), Condvar::new()));
-
-                match Self::build_input_stream(
-                    &device,
-                    &params.stream_config,
-                    detector_map,
-                    params.stream_config.channels,
-                    tx.clone(),
-                    params.sample_format,
-                    params.crosstalk,
-                    attempt_notify.clone(),
-                ) {
-                    Ok(new_stream) => {
-                        if let Err(e) = new_stream.play() {
-                            warn!(error = %e, "Trigger recovery: failed to start stream, retrying");
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                            continue;
-                        }
-                        info!("Trigger input stream recovered after backend error");
-                        stream = new_stream;
-                        error_notify = attempt_notify;
-                        break;
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Trigger recovery: failed to build stream, retrying");
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                    }
-                }
-            }
-        }
+    /// Makes one attempt at replacing a dead input stream, signalling errors
+    /// through `attempt_notify`. A failure is logged here; the caller backs off.
+    fn rebuild_stream(
+        params: &StreamParams,
+        tx: &Sender<TriggerAction>,
+        attempt_notify: ErrorNotify,
+        waker: &ShutdownNotify,
+    ) -> Result<cpal::Stream, ()> {
+        let device = crate::audio::find_input_device(&params.device_name).map_err(|e| {
+            warn!(error = %e, "Trigger recovery: device not found, retrying");
+        })?;
+        let detector_map = build_detector_map(
+            &params.inputs,
+            params.stream_config.channels,
+            params.stream_config.sample_rate,
+        )
+        .map_err(|e| {
+            warn!(error = %e, "Trigger recovery: failed to build detectors, retrying");
+        })?;
+        let stream = Self::build_input_stream(
+            &device,
+            &params.stream_config,
+            detector_map,
+            params.stream_config.channels,
+            tx.clone(),
+            params.sample_format,
+            params.crosstalk,
+            attempt_notify,
+            waker.clone(),
+        )
+        .map_err(|e| {
+            warn!(error = %e, "Trigger recovery: failed to build stream, retrying");
+        })?;
+        stream.play().map_err(|e| {
+            warn!(error = %e, "Trigger recovery: failed to start stream, retrying");
+        })?;
+        info!("Trigger input stream recovered after backend error");
+        Ok(stream)
     }
 
     /// Builds the cpal input stream, matching the device's native sample format.
@@ -334,6 +265,7 @@ impl TriggerEngine {
         sample_format: cpal::SampleFormat,
         crosstalk: Option<(u32, f32)>,
         error_notify: ErrorNotify,
+        waker: ShutdownNotify,
     ) -> Result<cpal::Stream, Box<dyn Error>> {
         match sample_format {
             cpal::SampleFormat::I16 => Self::build_input_stream_typed::<i16>(
@@ -344,6 +276,7 @@ impl TriggerEngine {
                 tx,
                 crosstalk,
                 error_notify,
+                waker,
             ),
             cpal::SampleFormat::I32 => Self::build_input_stream_typed::<i32>(
                 device,
@@ -353,6 +286,7 @@ impl TriggerEngine {
                 tx,
                 crosstalk,
                 error_notify,
+                waker,
             ),
             _ => Self::build_input_stream_typed::<f32>(
                 device,
@@ -362,6 +296,7 @@ impl TriggerEngine {
                 tx,
                 crosstalk,
                 error_notify,
+                waker,
             ),
         }
     }
@@ -376,6 +311,7 @@ impl TriggerEngine {
         tx: Sender<TriggerAction>,
         crosstalk: Option<(u32, f32)>,
         error_notify: ErrorNotify,
+        waker: ShutdownNotify,
     ) -> Result<cpal::Stream, Box<dyn Error>>
     where
         T: cpal::SizedSample + 'static,
@@ -411,10 +347,8 @@ impl TriggerEngine {
                     error = %err,
                     "Trigger input stream error (will attempt to recover)"
                 );
-                let (mutex, condvar) = &*error_notify;
-                let mut guard = mutex.lock();
-                *guard = true;
-                condvar.notify_one();
+                *error_notify.lock() = true;
+                wake(&waker);
             },
             None,
         )?;
@@ -423,11 +357,132 @@ impl TriggerEngine {
     }
 }
 
-impl Drop for TriggerEngine {
+/// Wakes the recovery thread, which waits on the shutdown signal's condvar.
+///
+/// Notified under its mutex: the thread checks for an error while holding it
+/// and releases it only by waiting, so a notification cannot fall between the
+/// check and the wait.
+fn wake(waker: &ShutdownNotify) {
+    let _guard = waker.0.lock();
+    waker.1.notify_all();
+}
+
+/// The thread that owns the input stream and replaces it when it dies.
+///
+/// Dropping it stops the thread and waits for it, so the stream is closed when
+/// the drop returns. Signalling alone left the device open after the engine
+/// was gone, for as long as the thread took to notice: a hardware reload then
+/// opened its replacement against a device still held, got "device busy", and
+/// went on with no triggers at all until the next reload.
+struct RecoveryThread {
+    shutdown: ShutdownNotify,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RecoveryThread {
+    /// How long to wait between failed rebuilds.
+    const BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// Spawns the thread, handing it the live stream. `rebuild` makes one
+    /// attempt at a replacement, given the fresh error signal it should raise;
+    /// both it and the stream's error callback must wake `shutdown`.
+    fn spawn<S, F>(
+        stream: S,
+        error_notify: ErrorNotify,
+        shutdown: ShutdownNotify,
+        rebuild: F,
+    ) -> std::io::Result<Self>
+    where
+        S: Send + 'static,
+        F: FnMut(ErrorNotify) -> Result<S, ()> + Send + 'static,
+    {
+        let thread = {
+            let shutdown = shutdown.clone();
+            std::thread::Builder::new()
+                .name("trigger-input-recovery".into())
+                .spawn(move || Self::run(stream, error_notify, shutdown, rebuild))?
+        };
+        Ok(RecoveryThread {
+            shutdown,
+            thread: Some(thread),
+        })
+    }
+
+    /// Runs the recovery loop until shutdown, dropping the stream on the way out.
+    fn run<S>(
+        mut stream: S,
+        mut error_notify: ErrorNotify,
+        shutdown: ShutdownNotify,
+        mut rebuild: impl FnMut(ErrorNotify) -> Result<S, ()>,
+    ) {
+        let (shut_mutex, shut_condvar) = &*shutdown;
+        loop {
+            // Wait for either a stream error or shutdown.
+            {
+                let mut shut = shut_mutex.lock();
+                loop {
+                    if *shut {
+                        drop(shut);
+                        drop(stream);
+                        return;
+                    }
+                    if *error_notify.lock() {
+                        break;
+                    }
+                    shut_condvar.wait(&mut shut);
+                }
+            }
+
+            // Drop the old stream and attempt to rebuild.
+            drop(stream);
+            warn!("Trigger input stream error detected, attempting recovery");
+
+            // Retry with backoff until the device is available again.
+            loop {
+                if *shut_mutex.lock() {
+                    return;
+                }
+                // A fresh signal per attempt, never the one the dead stream held.
+                //
+                // Sharing one meant an error latched by a stream that was already
+                // gone was still set when its replacement came up, and the wait
+                // above returned immediately and tore the new stream straight back
+                // down. cpal can raise the same fault twice — one USB unplug on the
+                // test rig produced two POLLERR callbacks 0.2ms apart — so the
+                // second outlived the rebuild it triggered. Clearing the flag
+                // before each build fixes that instance and not the class: the
+                // attempt can build a stream, have `play()` fail, drop it, and go
+                // round again, and that discarded stream still holds the signal.
+                // A fresh one has nobody to inherit from. Same fix as the output
+                // path in #370.
+                let attempt_notify: ErrorNotify = Arc::new(Mutex::new(false));
+                match rebuild(attempt_notify.clone()) {
+                    Ok(new_stream) => {
+                        stream = new_stream;
+                        error_notify = attempt_notify;
+                        break;
+                    }
+                    Err(()) => {
+                        let mut shut = shut_mutex.lock();
+                        if !*shut {
+                            shut_condvar.wait_for(&mut shut, Self::BACKOFF);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Drop for RecoveryThread {
     fn drop(&mut self) {
-        let (mutex, condvar) = &*self.shutdown;
-        *mutex.lock() = true;
-        condvar.notify_one();
+        *self.shutdown.0.lock() = true;
+        self.shutdown.1.notify_all();
+        if let Some(thread) = self.thread.take() {
+            if thread.join().is_err() {
+                error!("Trigger input recovery thread panicked");
+            }
+        }
     }
 }
 
@@ -577,6 +632,161 @@ fn process_frame(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    mod recovery_thread_tests {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        /// Stands in for a cpal stream: records when it is dropped.
+        struct FakeStream(Arc<AtomicBool>);
+
+        impl Drop for FakeStream {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        fn signals() -> (ErrorNotify, ShutdownNotify) {
+            (
+                Arc::new(Mutex::new(false)),
+                Arc::new((Mutex::new(false), Condvar::new())),
+            )
+        }
+
+        /// The stream, and so the device, must be released by the time the
+        /// drop returns: a reload opens the replacement straight after, and a
+        /// device still held refuses it with "device busy".
+        #[test]
+        fn drop_releases_the_stream_before_returning() {
+            let (error_notify, shutdown) = signals();
+            let dropped = Arc::new(AtomicBool::new(false));
+            let thread = RecoveryThread::spawn(
+                FakeStream(dropped.clone()),
+                error_notify,
+                shutdown,
+                |_| -> Result<FakeStream, ()> { Err(()) },
+            )
+            .unwrap();
+            // Let the thread reach its wait.
+            std::thread::sleep(Duration::from_millis(50));
+
+            let started = Instant::now();
+            drop(thread);
+            assert!(
+                dropped.load(Ordering::SeqCst),
+                "stream still open after drop"
+            );
+            assert!(
+                started.elapsed() < Duration::from_millis(200),
+                "drop should wake the thread at once, took {:?}",
+                started.elapsed()
+            );
+        }
+
+        /// A stream error wakes the thread at once, through the shared waker,
+        /// and the replacement is installed and later released on drop.
+        #[test]
+        fn an_error_rebuilds_promptly_and_the_rebuilt_stream_is_released() {
+            let (error_notify, shutdown) = signals();
+            let first = Arc::new(AtomicBool::new(false));
+            let second = Arc::new(AtomicBool::new(false));
+            let builds = Arc::new(AtomicUsize::new(0));
+            let thread = RecoveryThread::spawn(
+                FakeStream(first.clone()),
+                error_notify.clone(),
+                shutdown.clone(),
+                {
+                    let second = second.clone();
+                    let builds = builds.clone();
+                    move |_| {
+                        builds.fetch_add(1, Ordering::SeqCst);
+                        Ok(FakeStream(second.clone()))
+                    }
+                },
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+
+            // As the stream's error callback does.
+            *error_notify.lock() = true;
+            wake(&shutdown);
+            let deadline = Instant::now() + Duration::from_millis(200);
+            while builds.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(
+                builds.load(Ordering::SeqCst) >= 1,
+                "an error should rebuild at once"
+            );
+            // A stale error flag, still set on the replacement, rebuilds again.
+            std::thread::sleep(Duration::from_millis(50));
+            assert_eq!(
+                builds.load(Ordering::SeqCst),
+                1,
+                "the replacement was torn down by the error that replaced the first"
+            );
+            assert!(
+                first.load(Ordering::SeqCst),
+                "the dead stream should be dropped"
+            );
+
+            drop(thread);
+            assert!(
+                second.load(Ordering::SeqCst),
+                "the rebuilt stream should be released on drop"
+            );
+            assert_eq!(
+                builds.load(Ordering::SeqCst),
+                1,
+                "the stale error must not rebuild again"
+            );
+        }
+
+        /// Shutdown cuts a retry backoff short rather than waiting it out.
+        #[test]
+        fn drop_interrupts_the_retry_backoff() {
+            let (error_notify, shutdown) = signals();
+            let attempts = Arc::new(AtomicUsize::new(0));
+            // Owned by the rebuild closure, so dropped when the thread exits.
+            let exited = Arc::new(AtomicBool::new(false));
+            let thread = RecoveryThread::spawn(
+                FakeStream(Arc::new(AtomicBool::new(false))),
+                error_notify.clone(),
+                shutdown.clone(),
+                {
+                    let attempts = attempts.clone();
+                    let exit_marker = FakeStream(exited.clone());
+                    move |_| -> Result<FakeStream, ()> {
+                        let _ = &exit_marker;
+                        attempts.fetch_add(1, Ordering::SeqCst);
+                        Err(())
+                    }
+                },
+            )
+            .unwrap();
+            *error_notify.lock() = true;
+            wake(&shutdown);
+            let deadline = Instant::now() + Duration::from_millis(500);
+            while attempts.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+            let started = Instant::now();
+            drop(thread);
+            assert!(
+                started.elapsed() < RecoveryThread::BACKOFF / 2,
+                "drop waited out the backoff: {:?}",
+                started.elapsed()
+            );
+            assert!(
+                exited.load(Ordering::SeqCst),
+                "the thread outlived the drop"
+            );
+            assert_eq!(attempts.load(Ordering::SeqCst), 1, "retried after shutdown");
+        }
+    }
 
     mod warrants_rebuild_tests {
         use super::*;

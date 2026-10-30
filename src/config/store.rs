@@ -170,22 +170,23 @@ impl ConfigStore {
     /// profile with no trigger, and the reload built one anyway from the copy
     /// that still had it.
     pub async fn reload_from_disk(&self) -> Result<(), ConfigError> {
-        // The write lock is taken *before* the read, not after it. Reading disk
-        // first and swapping afterwards leaves a window in which another
-        // mutation can commit to memory and disk between the two — that value
-        // is then overwritten in memory by this older snapshot, the client that
-        // wrote it holds a checksum that is already stale, and the next persist
-        // writes the pre-mutation value back over the file.
-        let mut guard = self.inner.write().await;
-        let path = self.path.clone();
-        let config = tokio::task::spawn_blocking(move || Player::deserialize(&path))
-            .await
-            .map_err(|e| ConfigError::StoreSerialization(e.to_string()))??;
-        *guard = config;
-        drop(guard);
-        // Ignored deliberately: no subscribers is normal.
-        let _ = self.change_tx.send(());
-        Ok(())
+        self.lock_for_disk_write().await.reload().await
+    }
+
+    /// Holds off every mutation of the store while the caller writes a file
+    /// the config is loaded from -- the main config, or a profile in
+    /// `profiles_dir` -- until [`DiskWrite::reload`] has read it back in.
+    ///
+    /// A mutation persists the store's copy of those files, not what is on
+    /// disk. One landing between a file written outside the store and the
+    /// reload that follows it wrote the copy from before the save back over
+    /// it, and the save, acknowledged, was lost. Held from before the write,
+    /// the mutation waits, then finds its checksum stale against the reload.
+    pub async fn lock_for_disk_write(&self) -> DiskWrite<'_> {
+        DiskWrite {
+            store: self,
+            guard: self.inner.write().await,
+        }
     }
 
     /// Returns the path to the on-disk config file.
@@ -287,6 +288,14 @@ impl ConfigStore {
             return Err(e);
         }
 
+        // Checked as the next start will check it. The running player took
+        // a section on its own, so two MIDI controllers in one profile, say,
+        // were written, applied, and then refused at the next load (#578).
+        if let Err(e) = Self::validate(&guard) {
+            *guard = rollback;
+            return Err(e);
+        }
+
         // The checksum covers the whole in-memory config, including profiles
         // loaded from a directory. That is deliberate and independent of how
         // the config is split across files: it is what `read` hashes, so
@@ -308,6 +317,13 @@ impl ConfigStore {
             yaml: new_yaml,
             checksum: new_checksum,
         })
+    }
+
+    /// Validates the whole config, as [`Player::deserialize`] does at load.
+    fn validate(config: &Player) -> Result<(), ConfigError> {
+        config
+            .validate()
+            .map_err(|errors| ConfigError::Validation(errors.join("; ")))
     }
 
     /// Writes the config to disk, respecting how it is split across files.
@@ -371,10 +387,15 @@ impl ConfigStore {
         *main.profiles_mut() = None;
         let yaml =
             to_yaml_string(&main).map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
-        if std::fs::read_to_string(&self.path).ok().as_deref() != Some(yaml.as_str()) {
+        if crate::util::read_to_string(&self.path).ok().as_deref() != Some(yaml.as_str()) {
             staged_write(&self.path, &yaml).map_err(ConfigError::StoreIo)?;
         }
 
+        // In turn with the web UI's profile saves, which read a file to keep
+        // what their editor does not send (#578).
+        let _writing = crate::webui::api::profiles::PROFILE_WRITES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         for (index, (before, after)) in profiles_before.iter().zip(&profiles_after).enumerate() {
             if before == after {
                 continue;
@@ -395,7 +416,7 @@ impl ConfigStore {
     /// the right content to write -- keeping a stale duplicate would be worse --
     /// but it removes something the operator wrote, so it is not done silently.
     fn warn_if_dropping_inline_profiles(&self) {
-        let Ok(current) = std::fs::read_to_string(&self.path) else {
+        let Ok(current) = crate::util::read_to_string(&self.path) else {
             return;
         };
         if current.lines().any(|l| l.trim_start() == "profiles:") {
@@ -632,6 +653,7 @@ impl ConfigStore {
         gains: indexmap::IndexMap<String, f32>,
     ) -> Result<(), ConfigError> {
         let mut guard = self.inner.write().await;
+        let rollback = guard.clone();
 
         // Update the in-memory active profile so subsequent reads are current.
         let profile = guard.active_profile_mut(hostname).ok_or_else(|| {
@@ -641,17 +663,29 @@ impl ConfigStore {
             ConfigError::Validation("active profile has no audio config".to_string())
         })?;
         audio.set_track_gains(gains.clone());
+        // A gain the next load would refuse is not written either.
+        if let Err(e) = Self::validate(&guard) {
+            *guard = rollback;
+            return Err(e);
+        }
 
         // `directory_profiles` rather than `resolved_profiles_dir`: a
         // configured-but-empty directory falls back to inline profiles at load
         // time, and looking for an owning file in it would fail with "no
         // profile file matches" on a config that loaded perfectly well.
-        if let Some(dir) = self.directory_profiles(&guard) {
-            persist_gains_to_profile_file(&dir, hostname, &gains)?;
+        // A gain that could not be written is not served from memory either:
+        // it would be lost at the next start, and the checksum would have
+        // moved under the operator's next save.
+        let written = if let Some(dir) = self.directory_profiles(&guard) {
+            persist_gains_to_profile_file(&dir, hostname, &gains)
         } else {
-            let new_yaml = to_yaml_string(&*guard)
-                .map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
-            staged_write(&self.path, &new_yaml).map_err(ConfigError::StoreIo)?;
+            to_yaml_string(&*guard)
+                .map_err(|e| ConfigError::StoreSerialization(e.to_string()))
+                .and_then(|yaml| staged_write(&self.path, &yaml).map_err(ConfigError::StoreIo))
+        };
+        if let Err(e) = written {
+            *guard = rollback;
+            return Err(e);
         }
 
         let _ = self.change_tx.send(());
@@ -678,6 +712,70 @@ impl ConfigStore {
     }
 }
 
+/// The store held for a write of its files outside it, from
+/// [`ConfigStore::lock_for_disk_write`]. Dropped without a reload, it lets
+/// go with the store as it was, for a write that did not happen.
+pub struct DiskWrite<'a> {
+    store: &'a ConfigStore,
+    guard: tokio::sync::RwLockWriteGuard<'a, Player>,
+}
+
+impl DiskWrite<'_> {
+    /// Re-reads the config from disk into the store, and lets go of it.
+    pub async fn reload(mut self) -> Result<(), ConfigError> {
+        self.read_back().await?;
+        self.release();
+        Ok(())
+    }
+
+    /// As [`DiskWrite::reload`], but when the files written cannot be read
+    /// back in, `restore` puts them back as they were before the store is
+    /// let go. The store keeps its old copy and checksum then, and the files
+    /// match them again, so the failed write changes nothing; left as they
+    /// were written, the next mutation would persist the old copy over them.
+    pub async fn reload_or_restore<F>(mut self, restore: F) -> Result<(), ConfigError>
+    where
+        F: FnOnce() -> Result<(), String> + Send + 'static,
+    {
+        let Err(e) = self.read_back().await else {
+            self.release();
+            return Ok(());
+        };
+        let restored = tokio::task::spawn_blocking(restore)
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|restored| restored);
+        drop(self);
+        match restored {
+            Ok(()) => Err(e),
+            Err(restore_error) => Err(ConfigError::StoreIo(format!(
+                "{e}; and the file could not be put back as it was: {restore_error}"
+            ))),
+        }
+    }
+
+    /// Reads the config from disk into the store, still held.
+    async fn read_back(&mut self) -> Result<(), ConfigError> {
+        // Read under the lock, never before it: a mutation committing between
+        // a read and the swap would be overwritten in memory by the older
+        // copy, and the next persist would write that copy back over its file.
+        let path = self.store.path.clone();
+        let config = tokio::task::spawn_blocking(move || Player::deserialize(&path))
+            .await
+            .map_err(|e| ConfigError::StoreSerialization(e.to_string()))??;
+        *self.guard = config;
+        Ok(())
+    }
+
+    /// Lets go of the store, with what was read back in it.
+    fn release(self) {
+        let DiskWrite { store, guard } = self;
+        drop(guard);
+        // Ignored deliberately: no subscribers is normal.
+        let _ = store.change_tx.send(());
+    }
+}
+
 /// Persists track gains into the profile file inside `dir` that owns the
 /// active profile: files are visited in the same sorted order used at load
 /// time, and the first profile matching the hostname rule wins.
@@ -688,13 +786,18 @@ fn persist_gains_to_profile_file(
 ) -> Result<(), ConfigError> {
     let yaml_paths = super::player::list_profile_files(dir)?;
 
+    // Held from reading the file to writing it back, as the web UI's profile
+    // saves hold it, or a save between the two would be lost (#578).
+    let _writing = crate::webui::api::profiles::PROFILE_WRITES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+
     // A parse failure aborts (matching load behavior) rather than skipping:
     // skipping an unparseable file could write the gains into the wrong
     // profile when the broken file is the active profile's.
     for path in &yaml_paths {
-        let mut profile = config::Config::builder()
-            .add_source(config::File::from(path.as_path()))
-            .build()
+        let mut profile = crate::util::yaml_source(path)
+            .and_then(|source| config::Config::builder().add_source(source).build())
             .and_then(|c| c.try_deserialize::<Profile>())
             .map_err(|source| ConfigError::ProfileParse {
                 path: path.clone(),
@@ -838,6 +941,75 @@ profiles:
 
     /// The same, on a `profiles_dir` layout: the owning file is rewritten and
     /// the main config is not turned into an inline copy of the directory.
+    /// A store mutation is checked as the next load checks it. A second
+    /// MIDI controller, through `update_controllers` or a profile, was
+    /// written and applied, and the config then failed to load. It is
+    /// refused, and neither the file nor the store changes.
+    /// REVIEW: set_track_gains now keeps a rollback for a refused gain, but
+    /// a gain that validates and then fails to persist stays in memory: the
+    /// store serves gains the file does not have, lost at the next restart.
+    #[tokio::test]
+    async fn track_gains_that_cannot_be_written_are_rolled_back() {
+        let yaml = "songs: songs\nprofiles:\n  - audio:\n      device: a\n      track_mappings:\n        click: [1]\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        let player = Player::deserialize(&path).unwrap();
+        // Its directory is gone, so the write fails.
+        let store = ConfigStore::new(player, dir.path().join("gone").join("config.yaml"));
+        let before = store.read().await.unwrap().checksum;
+        let mut gains = indexmap::IndexMap::new();
+        gains.insert("click".to_string(), -6.0f32);
+        let result = store.set_track_gains("anyhost", gains).await;
+        assert!(result.is_err(), "the write did not fail");
+        assert_eq!(
+            store.read().await.unwrap().checksum,
+            before,
+            "a gain that was never written is served from memory"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mutation_the_next_load_would_refuse_is_not_written() {
+        let yaml = "songs: songs\nprofiles:\n  - audio:\n      device: a\n      track_mappings:\n        click: [1]\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        let player = Player::deserialize(&path).unwrap();
+        let store = ConfigStore::new(player, path.clone());
+        let snap = store.read().await.unwrap();
+        let midi = || {
+            Controller::Midi(super::super::MidiController::new(
+                super::super::midi::note_on(16, 0, 127),
+                super::super::midi::note_on(16, 1, 127),
+                super::super::midi::note_on(16, 2, 127),
+                super::super::midi::note_on(16, 3, 127),
+                super::super::midi::note_on(16, 4, 127),
+                super::super::midi::note_on(16, 5, 127),
+            ))
+        };
+        let mut two_midi = Profile::new(None, None, None, None);
+        two_midi.set_controllers(vec![midi(), midi()]);
+
+        let refusals = [
+            store
+                .update_controllers(vec![midi(), midi()], &snap.checksum)
+                .await,
+            store.add_profile(two_midi.clone(), &snap.checksum).await,
+            store.update_profile(0, two_midi, &snap.checksum).await,
+        ];
+        for refused in refusals {
+            let e = refused.expect_err("a second MIDI controller was accepted");
+            assert!(
+                matches!(&e, ConfigError::Validation(m) if m.contains("only one can watch")),
+                "{e}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), yaml);
+        assert_eq!(store.read().await.unwrap().checksum, snap.checksum);
+        Player::deserialize(&path).expect("the config still loads");
+    }
+
     #[tokio::test]
     async fn update_midi_profiles_dir_writes_the_owning_profile_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -940,6 +1112,56 @@ profiles:
         std::fs::write(&main_path, "songs: songs\nprofiles_dir: profiles\n").unwrap();
         std::fs::write(profiles_dir.join("01-only.yaml"), profile_yaml).unwrap();
         (dir, main_path, profiles_dir)
+    }
+
+    /// A web profile save wrote the file, then reloaded the store. A store
+    /// mutation (MCP update_midi, say) landing between the two persisted its
+    /// copy of the profile, from before the save, over the file. Held for
+    /// the write, the store keeps the mutation waiting until the reload, and
+    /// it is then refused as stale.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_store_write_during_a_profile_save_waits_for_its_reload() {
+        let (_dir, main_path, profiles_dir) = profiles_dir_project(
+            "kind: hardware_profile\naudio:\n  device: a\n  track_mappings:\n    click: [1]\nmidi:\n  device: old-midi\n",
+        );
+        let file = profiles_dir.join("01-only.yaml");
+        let player = Player::deserialize(&main_path).unwrap();
+        let store = std::sync::Arc::new(ConfigStore::new(player, main_path.clone()));
+        let snap = store.read().await.unwrap();
+
+        // The web save, as put_profile makes it.
+        let disk_write = store.lock_for_disk_write().await;
+        crate::webui::config_io::staged_write(
+            &file,
+            "kind: hardware_profile\naudio:\n  device: web-edit\n  track_mappings:\n    click: [1]\nmidi:\n  device: old-midi\n",
+        )
+        .unwrap();
+        // An MCP update_midi, before the web save's reload.
+        let update = tokio::spawn({
+            let store = store.clone();
+            async move {
+                store
+                    .update_midi(Some(midi_with_persist("new-midi")), &snap.checksum)
+                    .await
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !update.is_finished(),
+            "the update did not wait for the save"
+        );
+        disk_write.reload().await.unwrap();
+
+        let refused = update.await.unwrap();
+        assert!(
+            matches!(refused, Err(ConfigError::StaleChecksum { .. })),
+            "the update went ahead on the copy from before the save: {refused:?}"
+        );
+        let written = crate::util::read_to_string(&file).unwrap();
+        assert!(
+            written.contains("web-edit"),
+            "the acknowledged web profile save was overwritten: {written}"
+        );
     }
 
     /// #523: a whole-profile update that names only the controllers -- the

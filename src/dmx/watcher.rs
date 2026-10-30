@@ -38,7 +38,7 @@ pub struct WatcherHandle {
 /// 1. Re-parses the .light file
 /// 2. Builds a new LightingTimeline
 /// 3. Swaps it into current_song_timeline
-/// 4. Reconstructs state at current_song_time
+/// 4. Reconstructs state at current_song_time, less `playback_delay`
 /// 5. Sends a reload notification over WebSocket
 #[allow(clippy::too_many_arguments)]
 pub fn start_watching(
@@ -46,6 +46,7 @@ pub fn start_watching(
     effect_engine: Arc<Mutex<EffectEngine>>,
     current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
     current_song_time: Arc<AtomicU64>,
+    playback_delay: Duration,
     lighting_system: Option<Arc<Mutex<LightingSystem>>>,
     lighting_config: Option<crate::config::Lighting>,
     fallback_tempo_map: Option<crate::tempo::TempoMap>,
@@ -167,6 +168,7 @@ pub fn start_watching(
                         &effect_engine,
                         &current_song_timeline,
                         &current_song_time,
+                        playback_delay,
                         lighting_system.as_ref(),
                         lighting_config.as_ref(),
                         fallback_tempo_map.as_ref(),
@@ -203,12 +205,16 @@ pub fn start_watching(
 }
 
 /// Re-parses light show files, builds a new timeline, and swaps it in.
+///
+/// `current_song_time` is the transport's clock; the show is rebuilt at it
+/// less `playback_delay`, the delayed time base frames render on.
 #[allow(clippy::too_many_arguments)]
-fn reload_timeline(
+pub(super) fn reload_timeline(
     file_paths: &[PathBuf],
     effect_engine: &Arc<Mutex<EffectEngine>>,
     current_song_timeline: &Arc<Mutex<Option<LightingTimeline>>>,
     current_song_time: &Arc<AtomicU64>,
+    playback_delay: Duration,
     lighting_system: Option<&Arc<Mutex<LightingSystem>>>,
     lighting_config: Option<&crate::config::Lighting>,
     fallback_tempo_map: Option<&crate::tempo::TempoMap>,
@@ -216,7 +222,7 @@ fn reload_timeline(
     let mut all_shows = Vec::new();
 
     for path in file_paths {
-        let content = std::fs::read_to_string(path)
+        let content = crate::util::read_to_string(path)
             .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
         // Parse with the same tempo this timeline will run under. Using the
@@ -243,12 +249,19 @@ fn reload_timeline(
 
     let mut new_timeline = LightingTimeline::new(all_shows);
 
-    // Get current song time
-    let song_time = Duration::from_nanos(current_song_time.load(Ordering::Relaxed));
+    // Where the lights are, not the transport: rebuilding at the undelayed
+    // time put the show the delay ahead of the rig, skipping the cues in
+    // between (#593). As `Engine::to_delayed_song_time`, a reload inside the
+    // delay window starts from the top.
+    let song_time = Duration::from_nanos(current_song_time.load(Ordering::Relaxed))
+        .saturating_sub(playback_delay);
 
     // Calculate the timeline update before acquiring the engine lock.
-    let timeline_update = if song_time > Duration::ZERO {
-        new_timeline.start_at(song_time)
+    let mut timeline_update = if song_time > Duration::ZERO {
+        // A move takes its heads from another by the fixtures they share.
+        new_timeline.start_at_resolving(song_time, &mut |effect| {
+            resolve_effect_groups(lighting_system, effect.clone()).target_fixtures
+        })
     } else {
         new_timeline.start();
         crate::lighting::timeline::TimelineUpdate::default()
@@ -256,25 +269,7 @@ fn reload_timeline(
 
     // Pre-resolve group names while the engine lock is NOT held
     // to avoid deadlocking with the lighting system lock.
-    let resolved_effects_with_elapsed: Vec<_> = {
-        let mut sorted: Vec<_> = timeline_update.effects_with_elapsed.values().collect();
-        sorted.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
-        sorted
-            .into_iter()
-            .map(|(effect, elapsed)| {
-                (
-                    resolve_effect_groups(lighting_system, effect.clone()),
-                    *elapsed,
-                )
-            })
-            .collect()
-    };
-    let mut resolved_effects: Vec<_> = timeline_update.effects;
-    resolved_effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
-    let resolved_effects: Vec<_> = resolved_effects
-        .into_iter()
-        .map(|e| resolve_effect_groups(lighting_system, e))
-        .collect();
+    timeline_update.map_effects(|e| resolve_effect_groups(lighting_system, e));
 
     // Extract tempo map before moving new_timeline into the lock. Shows
     // without their own tempo block fall back to the song's tempo map.
@@ -308,22 +303,9 @@ fn reload_timeline(
         // A freeze in the history holds where the reload starts from.
         engine.set_song_time(song_time);
 
-        if song_time > Duration::ZERO {
-            // A history: its freezes hold at the reload point, set above.
-            engine.apply_layer_commands(&timeline_update.layer_commands, &[]);
-            for seq_name in &timeline_update.stop_sequences {
-                engine.stop_sequence(seq_name);
-            }
-            for (effect, elapsed_time) in resolved_effects_with_elapsed {
-                if let Err(e) = engine.start_effect_with_elapsed(effect, elapsed_time) {
-                    error!("Failed to start lighting effect with elapsed time: {}", e);
-                }
-            }
-        }
-        for effect in resolved_effects {
-            if let Err(e) = engine.start_effect(effect) {
-                error!("Failed to start lighting effect: {}", e);
-            }
+        // A history: its freezes hold at the reload point, set above.
+        for e in engine.apply_timeline_update(timeline_update) {
+            error!("Failed to start lighting effect: {}", e);
         }
         info!("Watcher releasing effect_engine lock.");
     }
@@ -373,6 +355,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -411,6 +394,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -446,6 +430,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -465,6 +450,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -487,6 +473,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -526,6 +513,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             Some(&lighting_config),
             None,
@@ -565,6 +553,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             Some(&lighting_config),
             None,
@@ -601,6 +590,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             Some(&lighting_system),
             None,
             None,
@@ -625,6 +615,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -661,6 +652,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -704,6 +696,7 @@ show "test" {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -780,6 +773,7 @@ show "test" {
             &effect_engine,
             &timeline,
             &song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -810,6 +804,7 @@ show "test" {
             effect_engine,
             timeline.clone(),
             song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -886,6 +881,7 @@ show "test" {
             Arc::new(Mutex::new(EffectEngine::new())),
             timeline.clone(),
             Arc::new(AtomicU64::new(0)),
+            Duration::ZERO,
             None,
             None,
             None,
@@ -939,6 +935,7 @@ show "test" {
             effect_engine,
             timeline,
             song_time,
+            Duration::ZERO,
             None,
             None,
             None,
@@ -995,6 +992,7 @@ show "test" {
             effect_engine,
             timeline,
             song_time,
+            Duration::ZERO,
             None,
             None,
             None,

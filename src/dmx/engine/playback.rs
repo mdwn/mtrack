@@ -227,6 +227,7 @@ impl Engine {
                         dmx_engine.effect_engine.clone(),
                         dmx_engine.current_song_timeline.clone(),
                         dmx_engine.current_song_time.clone(),
+                        dmx_engine.playback_delay,
                         dmx_engine.lighting_system.clone(),
                         dmx_engine.lighting_config.clone(),
                         song.lighting_tempo_map(),

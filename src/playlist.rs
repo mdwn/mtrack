@@ -42,6 +42,17 @@ pub struct LoopBreak {
     pub fade_in: Option<config::Fade>,
 }
 
+/// Where a playlist stands: on an entry, or, after an edit took away the
+/// song playing, off the list just before the entry at `index` (or after
+/// the last, at the list's length) while that song plays on.
+#[derive(Clone, Default)]
+struct Cursor {
+    /// The entry the playlist is on, or the one it sits before.
+    index: usize,
+    /// The song playing that an edit took off the list, if one did.
+    off_list: Option<Arc<Song>>,
+}
+
 /// Playlist is a playlist for use by a player.
 pub struct Playlist {
     /// The name of this playlist.
@@ -55,7 +66,7 @@ pub struct Playlist {
     /// Its ambient light, as written: overriding the player's.
     ambient: Option<config::ambient::PlaylistAmbient>,
     /// The current position of the playlist.
-    position: Arc<RwLock<usize>>,
+    position: Arc<RwLock<Cursor>>,
     /// The song registry.
     registry: Arc<Songs>,
     /// The logging span.
@@ -99,7 +110,7 @@ impl Playlist {
             transitions,
             fades: config.entry_fades(),
             ambient: config.ambient().cloned(),
-            position: Arc::new(RwLock::new(0)),
+            position: Arc::new(RwLock::new(Cursor::default())),
             registry: Arc::clone(&registry),
             span: span!(Level::INFO, "playlist"),
         }))
@@ -115,9 +126,91 @@ impl Playlist {
         self.ambient.as_ref()
     }
 
-    /// Returns the current position in the playlist (0-indexed).
+    /// Returns the current position in the playlist (0-indexed). Off the
+    /// list, the entry the playlist sits before.
     pub fn position(&self) -> usize {
-        *self.position.read()
+        self.position.read().index
+    }
+
+    /// The entry the playlist is on, or `None` while the song playing is one
+    /// an edit took off the list.
+    pub fn entry(&self) -> Option<usize> {
+        let cursor = self.position.read();
+        cursor.off_list.is_none().then_some(cursor.index)
+    }
+
+    /// The entry [`Playlist::next`] moves to, or `None` at the end of the
+    /// list.
+    pub fn next_entry(&self) -> Option<usize> {
+        let cursor = self.position.read();
+        let index = match cursor.off_list {
+            Some(_) => cursor.index,
+            None => cursor.index + 1,
+        };
+        (index < self.songs.len()).then_some(index)
+    }
+
+    /// Takes up the place `old`, the playlist this one replaces, had got
+    /// to: on the same song if it is still in the list, its entries matched
+    /// up first to first, as an edit keeps each entry's settings with its
+    /// song. A song `playing` that the edit took away stays current, off the
+    /// list, until the playlist moves on; one that is not playing gives way
+    /// to the entry now in its place.
+    pub fn follow(&self, old: &Playlist, playing: bool) {
+        let old_cursor = old.position.read().clone();
+        let Some(song) = old.song_at(&old_cursor) else {
+            return;
+        };
+        let name = song.name();
+        // Which of the song's entries the old list was on: the first, the
+        // second...
+        let nth = match old_cursor.off_list {
+            Some(_) => 0,
+            None => old.songs[..old_cursor.index]
+                .iter()
+                .filter(|s| *s == name)
+                .count(),
+        };
+        let entries: Vec<usize> = (0..self.songs.len())
+            .filter(|&i| self.songs[i] == name)
+            .collect();
+        let cursor = match entries.get(nth).or(entries.last()) {
+            Some(&index) => Cursor {
+                index,
+                off_list: None,
+            },
+            None if playing => Cursor {
+                index: old_cursor.index.min(self.songs.len()),
+                off_list: Some(song),
+            },
+            None => Cursor {
+                index: old_cursor.index.min(self.songs.len().saturating_sub(1)),
+                off_list: None,
+            },
+        };
+        *self.position.write() = cursor;
+    }
+
+    /// Puts a playlist off the list back on an entry, for when its song
+    /// is no longer playing: the entry that took the song's place, where
+    /// next lands, or the last after the end of the list. Returns whether
+    /// it was off the list.
+    pub fn settle(&self) -> bool {
+        let mut cursor = self.position.write();
+        let off_list = cursor.off_list.take().is_some();
+        if off_list {
+            cursor.index = cursor.index.min(self.songs.len().saturating_sub(1));
+        }
+        off_list
+    }
+
+    /// The song at `cursor`: the one playing off the list, or its entry's.
+    fn song_at(&self, cursor: &Cursor) -> Option<Arc<Song>> {
+        if let Some(song) = &cursor.off_list {
+            return Some(Arc::clone(song));
+        }
+        let name = self.songs.get(cursor.index)?;
+        self.registry.get(name).ok()
     }
 
     /// Returns the list of songs in the playlist.
@@ -136,14 +229,20 @@ impl Playlist {
         }
 
         let mut position = self.position.write();
-        if *position < self.songs.len() - 1 {
-            *position += 1;
+        // Off the list, the next entry is the one it sits before; after the
+        // last there is none, and it stays.
+        if position.off_list.is_some() {
+            if position.index < self.songs.len() {
+                position.off_list = None;
+            }
+        } else if position.index < self.songs.len() - 1 {
+            position.index += 1;
         }
 
-        let current = self.registry.get(&self.songs[*position]).ok()?;
+        let current = self.song_at(&position)?;
 
         info!(
-            position = *position,
+            position = position.index,
             song = current.name(),
             "Moving to next playlist position."
         );
@@ -160,14 +259,18 @@ impl Playlist {
         }
 
         let mut position = self.position.write();
-        if *position > 0 {
-            *position -= 1;
+        // Off the list, the previous entry is the one before the entry it
+        // sits before.
+        if position.off_list.take().is_some() {
+            position.index = position.index.saturating_sub(1);
+        } else if position.index > 0 {
+            position.index -= 1;
         }
 
-        let current = self.registry.get(&self.songs[*position]).ok()?;
+        let current = self.song_at(&position)?;
 
         info!(
-            position = *position,
+            position = position.index,
             song = current.name(),
             "Moving to previous playlist position."
         );
@@ -180,8 +283,7 @@ impl Playlist {
         if self.songs.is_empty() {
             return None;
         }
-        let position = (*self.position.read() + 1).min(self.songs.len() - 1);
-        self.registry.get(&self.songs[position]).ok()
+        self.song_at(&self.target(false))
     }
 
     /// The song [`Playlist::prev`] would move to, without moving.
@@ -189,8 +291,24 @@ impl Playlist {
         if self.songs.is_empty() {
             return None;
         }
-        let position = self.position.read().saturating_sub(1);
-        self.registry.get(&self.songs[position]).ok()
+        self.song_at(&self.target(true))
+    }
+
+    /// Where previous (`back`) or next would move to, clamped at either end
+    /// of the list as they are.
+    fn target(&self, back: bool) -> Cursor {
+        let cursor = self.position.read().clone();
+        let index = match (back, &cursor.off_list) {
+            (true, _) => cursor.index.saturating_sub(1),
+            // After the last entry there is nothing to go on to.
+            (false, Some(_)) if cursor.index >= self.songs.len() => return cursor,
+            (false, Some(_)) => cursor.index,
+            (false, None) => (cursor.index + 1).min(self.songs.len().saturating_sub(1)),
+        };
+        Cursor {
+            index,
+            off_list: None,
+        }
     }
 
     /// What breaking the current song's loop hands over to, moving back
@@ -205,27 +323,30 @@ impl Playlist {
                 fade_in: None,
             };
         }
-        let position = *self.position.read();
-        let to = if back {
-            position.saturating_sub(1)
-        } else {
-            (position + 1).min(self.songs.len() - 1)
-        };
+        // A song off the list has no entry, and so no fade out of its own.
+        let from = self.entry();
+        let to = self.target(back);
+        let onto = to.off_list.is_none().then_some(to.index);
         LoopBreak {
-            target: self.registry.get(&self.songs[to]).ok(),
-            fade_out: self.transitions[position].fade_out.clone(),
-            fade_in: self.transitions[to].fade_in.clone(),
+            target: self.song_at(&to),
+            fade_out: from.and_then(|from| self.transitions[from].fade_out.clone()),
+            fade_in: onto
+                .and_then(|to| self.transitions.get(to))
+                .and_then(|t| t.fade_in.clone()),
         }
     }
 
     /// Whether there is an entry before the current one (`back`) or after
     /// it: false at either end of the list, where next and previous clamp.
+    /// Off the list, previous always has an entry to land on, the one at
+    /// its position included.
     pub fn can_move(&self, back: bool) -> bool {
-        let position = *self.position.read();
-        if back {
-            position > 0
-        } else {
-            position + 1 < self.songs.len()
+        let cursor = self.position.read();
+        match (back, &cursor.off_list) {
+            (true, Some(_)) => !self.songs.is_empty(),
+            (true, None) => cursor.index > 0,
+            (false, Some(_)) => cursor.index < self.songs.len(),
+            (false, None) => cursor.index + 1 < self.songs.len(),
         }
     }
 
@@ -233,7 +354,7 @@ impl Playlist {
     /// reached by the song before it ending or by next/previous while
     /// stopped; `None` when it waits for play.
     pub fn auto_play(&self) -> Option<Duration> {
-        let position = *self.position.read();
+        let position = self.entry()?;
         self.transitions.get(position).and_then(|t| t.auto_play)
     }
 
@@ -253,7 +374,10 @@ impl Playlist {
     pub fn navigate_to(&self, name: &str) -> Option<Arc<Song>> {
         let idx = self.songs.iter().position(|s| s == name)?;
         let song = self.registry.get(name).ok()?;
-        *self.position.write() = idx;
+        *self.position.write() = Cursor {
+            index: idx,
+            off_list: None,
+        };
         Some(song)
     }
 
@@ -267,14 +391,10 @@ impl Playlist {
         self.registry.get(name).ok()
     }
 
-    /// Return the song at the current position of the playlist.
-    /// Returns `None` if the playlist is empty.
+    /// Return the song at the current position of the playlist: off the
+    /// list, the song playing there. Returns `None` if the playlist is empty.
     pub fn current(&self) -> Option<Arc<Song>> {
-        if self.songs.is_empty() {
-            return None;
-        }
-        let position = self.position.read();
-        self.registry.get(&self.songs[*position]).ok()
+        self.song_at(&self.position.read())
     }
 }
 
@@ -309,6 +429,73 @@ pub fn validate_transitions(
         }
     }
     Ok(transitions)
+}
+
+/// Checks a playlist about to be written as [`validate_transitions`] does,
+/// and that no fade outlasts the song it plays under, counted on the grid
+/// it will be: a fade-out under the next entry's song (its own at the end
+/// of the list), a fade-in under its own. The player cuts such a fade short
+/// rather than drop the playlist on load, so it is refused here, where the
+/// one writing it can fix it (#577).
+///
+/// Each song must be in `registry` too: the player drops a playlist naming
+/// one that is not, and a save would make it vanish (#578). And an ambient
+/// show must be a path inside the project, which the player will read it
+/// from and no further.
+pub fn validate_for_write(
+    config: &config::Playlist,
+    registry: &Songs,
+) -> Result<(), PlaylistError> {
+    if let Some(missing) = config
+        .songs()
+        .iter()
+        .find(|name| registry.get(name).is_err())
+    {
+        return Err(PlaylistError::SongNotFound(missing.clone()));
+    }
+    let show = match config.ambient() {
+        Some(config::ambient::PlaylistAmbient::On(ambient)) => ambient.show(),
+        _ => None,
+    };
+    if let Some(show) = show {
+        let path = std::path::Path::new(show);
+        let escapes = path.is_absolute()
+            || path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir));
+        if escapes {
+            return Err(PlaylistError::InvalidAmbient(format!(
+                "ambient show {show:?}: must be a path inside the project, relative to it \
+                 and without \"..\""
+            )));
+        }
+    }
+    let transitions = validate_transitions(config, registry)?;
+    let songs: Vec<Option<Arc<Song>>> = config
+        .songs()
+        .iter()
+        .map(|name| registry.get(name).ok())
+        .collect();
+    for (i, entry) in transitions.iter().enumerate() {
+        let Some(song) = &songs[i] else {
+            continue;
+        };
+        let next = songs.get(i + 1).cloned().flatten();
+        let fades = [
+            ("fade_out", entry.fade_out.as_ref(), false),
+            ("fade_in", entry.fade_in.as_ref(), true),
+        ];
+        for (field, fade, fade_in) in fades {
+            let Some(fade) = fade else {
+                continue;
+            };
+            song.check_fade(fade, next.as_deref(), fade_in)
+                .map_err(|e| {
+                    PlaylistError::InvalidTransition(format!("song {}: {field}: {e}", song.name()))
+                })?;
+        }
+    }
+    Ok(())
 }
 
 /// Creates an alphabetized playlist from all available songs.
@@ -391,7 +578,7 @@ mod test {
             transitions: vec![],
             fades: vec![],
             ambient: None,
-            position: Arc::new(parking_lot::RwLock::new(0)),
+            position: Default::default(),
             registry,
             span: tracing::span!(tracing::Level::INFO, "test"),
         };
@@ -520,7 +707,7 @@ mod test {
             transitions: vec![Default::default(); 2],
             fades: vec![Default::default(); 2],
             ambient: None,
-            position: Arc::new(parking_lot::RwLock::new(0)),
+            position: Default::default(),
             registry,
             span: tracing::span!(tracing::Level::INFO, "test"),
         };
@@ -578,6 +765,150 @@ mod test {
         playlist.navigate_to("B");
         assert!(playlist.can_move(true));
         assert!(!playlist.can_move(false));
+    }
+
+    #[test]
+    fn off_the_list_before_the_first_entry_previous_can_move_onto_it() {
+        // #579: off the list at position 0, previous lands on entry 0, so
+        // it is no end of the list for previous.
+        let old = playlist_from("songs:\n- B\n- A\n- C\n").unwrap();
+        let new = playlist_from("songs:\n- A\n- C\n").unwrap();
+        new.follow(&old, true);
+        assert_eq!((new.entry(), new.position()), (None, 0));
+        assert!(new.can_move(true));
+        assert_eq!(new.peek_prev().unwrap().name(), "A");
+        assert_eq!(new.prev().unwrap().name(), "A");
+        assert_eq!(new.entry(), Some(0));
+        assert!(!new.can_move(true));
+    }
+
+    #[test]
+    fn an_edit_keeps_the_place_by_song() {
+        // #576: the new list started at its first entry, whatever was on it.
+        let old = playlist_from("songs:\n- A\n- B\n- C\n").unwrap();
+        old.navigate_to("B");
+        let new = playlist_from("songs:\n- B\n- A\n- C\n").unwrap();
+        new.follow(&old, true);
+        assert_eq!(new.current().unwrap().name(), "B");
+        assert_eq!(new.entry(), Some(0));
+
+        // On the second of a song's entries, the second it keeps.
+        let old = playlist_from("songs:\n- A\n- B\n- A\n").unwrap();
+        old.next();
+        old.next();
+        let new = playlist_from("songs:\n- C\n- A\n- A\n").unwrap();
+        new.follow(&old, true);
+        assert_eq!(new.entry(), Some(2));
+    }
+
+    /// A registry of 4-second songs on disk: A loops with no grid, B has
+    /// one at 120 bpm in 4/4.
+    fn songs_on_disk() -> (Arc<Songs>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, extra) in [
+            ("A", "loop_playback: true\n"),
+            ("B", "tempo:\n  bpm: 120\n  time_signature: 4/4\n"),
+        ] {
+            let song_dir = dir.path().join(name);
+            std::fs::create_dir_all(&song_dir).unwrap();
+            crate::testutil::write_wav(song_dir.join("t.wav"), vec![vec![0_i32; 8000 * 4]], 8000)
+                .unwrap();
+            std::fs::write(
+                song_dir.join("song.yaml"),
+                format!("name: {name}\ntracks:\n  - name: t\n    file: t.wav\n{extra}"),
+            )
+            .unwrap();
+        }
+        (songs::get_all_songs(dir.path()).unwrap(), dir)
+    }
+
+    /// The playlist written as `yaml`.
+    fn config_from(yaml: &str) -> config::Playlist {
+        ::config::Config::builder()
+            .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_write_refuses_a_fade_longer_than_the_song_under_it() {
+        // #577: seconds had a bound and measures none, so a million
+        // measures saved and made a 33-day ending.
+        let (registry, _dir) = songs_on_disk();
+        let long = config_from("songs:\n- song: A\n  fade_out: 1000000measures\n- B\n");
+        let err = super::validate_for_write(&long, &registry)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("song A: fade_out") && err.contains("B"),
+            "{err}"
+        );
+        // Loading it is another matter: the player cuts it short instead.
+        assert!(super::Playlist::new("p", &long, Arc::clone(&registry)).is_ok());
+
+        let fits =
+            config_from("songs:\n- song: A\n  fade_out: 1measure\n- song: B\n  fade_in: 1s\n");
+        assert!(super::validate_for_write(&fits, &registry).is_ok());
+        let long_in = config_from("songs:\n- A\n- song: B\n  fade_in: 3measures\n");
+        assert!(super::validate_for_write(&long_in, &registry).is_err());
+    }
+
+    #[test]
+    fn a_song_playing_that_an_edit_takes_away_stays_current() {
+        let old = playlist_from("songs:\n- song: A\n  fade_out: 2s\n- B\n- C\n").unwrap();
+        old.navigate_to("B");
+        let new = playlist_from("songs:\n- A\n- C\n").unwrap();
+        new.follow(&old, true);
+        assert_eq!(new.current().unwrap().name(), "B");
+        assert_eq!(new.entry(), None);
+        // C took its place: next goes there, previous to A, and a loop
+        // break has no fade out of B's to take.
+        assert_eq!(new.next_entry(), Some(1));
+        assert_eq!(new.peek_next().unwrap().name(), "C");
+        assert_eq!(new.peek_prev().unwrap().name(), "A");
+        assert!(new.can_move(true) && new.can_move(false));
+        let on = new.loop_break(false);
+        assert_eq!(on.target.unwrap().name(), "C");
+        assert!(on.fade_out.is_none());
+        assert_eq!(new.next().unwrap().name(), "C");
+        assert_eq!(new.entry(), Some(1));
+
+        // Taken from the end: nothing after it.
+        let new = playlist_from("songs:\n- A\n").unwrap();
+        new.follow(&old, true);
+        assert!(!new.can_move(false));
+        assert_eq!(new.next_entry(), None);
+        assert_eq!(new.next().unwrap().name(), "B");
+
+        // Not playing, it gives way to the entry in its place.
+        let new = playlist_from("songs:\n- A\n- C\n").unwrap();
+        new.follow(&old, false);
+        assert_eq!(new.current().unwrap().name(), "C");
+        assert_eq!(new.entry(), Some(1));
+    }
+
+    #[test]
+    fn a_song_off_the_list_no_longer_playing_gives_way() {
+        // #576: stopped or finished, the song taken away stayed current, so
+        // Play started it again.
+        let old = playlist_from("songs:\n- A\n- B\n- C\n").unwrap();
+        old.navigate_to("B");
+        let new = playlist_from("songs:\n- A\n- C\n").unwrap();
+        new.follow(&old, true);
+        assert!(new.settle());
+        assert_eq!(new.current().unwrap().name(), "C");
+        assert_eq!(new.entry(), Some(1));
+        assert!(!new.settle(), "on an entry, it stays there");
+        assert_eq!(new.entry(), Some(1));
+
+        // Taken from the end, where next has nothing to land on: the last.
+        let new = playlist_from("songs:\n- A\n").unwrap();
+        new.follow(&old, true);
+        assert!(new.settle());
+        assert_eq!(new.current().unwrap().name(), "A");
+        assert_eq!(new.entry(), Some(0));
     }
 
     #[test]

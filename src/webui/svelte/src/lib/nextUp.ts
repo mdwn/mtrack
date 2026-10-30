@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import type { NextUp } from "./ws/stores";
+import type { FadeInfo, NextUp, PlaybackState } from "./ws/stores";
 import { formatFadeLength, formatGapMs, isZeroLength } from "./util/format";
 
 type Translate = (
@@ -27,7 +27,14 @@ export function describeNext(
   t: Translate,
 ): string {
   if (!next) return "";
-  if (next.song === null) return t("playback.nextEnd");
+  if (next.song === null) {
+    const fade = loopEndFade(next);
+    return fade
+      ? t("playback.nextEndsLoop", {
+          values: { length: formatFadeLength(fade.length) },
+        })
+      : t("playback.nextEnd");
+  }
   const song = next.song;
   if (next.breaks_loop) {
     const out = next.fade_out;
@@ -55,4 +62,33 @@ export function describeNext(
   return t("playback.nextAuto", {
     values: { song, gap: formatGapMs(next.auto_play_ms) },
   });
+}
+
+/** The fade a looping song playing ends over when Next on the last entry,
+ *  or Previous on the first, ends it, or null when such a press would cut
+ *  it (no `fade_out`) and so is not offered. */
+export function loopEndFade(next: NextUp | null | undefined): FadeInfo | null {
+  if (!next || !(next.breaks_loop || next.ends_loop)) return null;
+  const out = next.fade_out;
+  return out && !isZeroLength(out.length) ? out : null;
+}
+
+/** Whether the playlist is at its first entry, with nothing for Previous to
+ *  move back to, and at its last, with nothing for Next. Off the list, it
+ *  sits before the entry at its position, which Next lands on; Previous
+ *  lands on the one before, or on the first entry itself, so off the list
+ *  is never the first. */
+export function playlistEnds(
+  state: Pick<
+    PlaybackState,
+    "playlist_position" | "playlist_off_list" | "playlist_songs"
+  >,
+): { atFirst: boolean; atLast: boolean } {
+  const lastEntry = state.playlist_songs.length - 1;
+  return {
+    atFirst: !state.playlist_off_list && state.playlist_position <= 0,
+    atLast: state.playlist_off_list
+      ? state.playlist_position > lastEntry
+      : state.playlist_position >= lastEntry,
+  };
 }

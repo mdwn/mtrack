@@ -31,17 +31,16 @@ fn parse(src: &str) -> Vec<LightShow> {
 fn live_running_at(src: &str, t: Duration) -> Vec<String> {
     let mut tl = LightingTimeline::new(parse(src));
     tl.start();
-    let mut running: Vec<(String, Duration, Duration, String)> = Vec::new();
+    let mut running: Vec<(Option<String>, Duration, Duration, String)> = Vec::new();
     let mut at = Duration::ZERO;
     while at <= t {
         let u = tl.update(at);
         for s in &u.stop_sequences {
-            let p = format!("seq_{}_", s);
-            running.retain(|(id, ..)| !id.starts_with(&p));
+            running.retain(|(sequence, ..)| sequence.as_deref() != Some(s.as_str()));
         }
         for e in u.effects {
             running.push((
-                e.id.clone(),
+                e.sequence.clone(),
                 e.cue_time.unwrap(),
                 e.total_duration(),
                 format!("{}@{:?}", e.target_fixtures.join(","), e.cue_time.unwrap()),

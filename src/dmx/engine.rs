@@ -808,11 +808,14 @@ impl Engine {
     /// Drops every registered fixture: what a restart gives for a venue that
     /// does not register, so what runs now is what runs after a reboot.
     fn clear_registered_fixtures(&self) {
+        // Resolved before the engine is locked: the venue's registration
+        // locks the lighting system first, then the engine.
+        let heads = self.resolve_groups(self.ambient_move_groups());
         let mut effect_engine = self.effect_engine.lock();
         self.midi_dmx_store.write().retain_channels(|_, _| false);
         effect_engine.replace_fixtures(Vec::new());
         effect_engine.set_focus_points(HashMap::new());
-        self.ambient_follows_rig(&effect_engine);
+        self.ambient_follows_rig(&effect_engine, &mut |_| heads.clone());
     }
 
     /// Registers all fixtures from the current venue (thread-safe version).
@@ -822,7 +825,7 @@ impl Engine {
     /// an older venue's, and records why ([`Self::venue_registration`]).
     pub fn register_venue_fixtures_safe(&self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(lighting_system) = &self.lighting_system {
-            let lighting_system = lighting_system.lock();
+            let mut lighting_system = lighting_system.lock();
             let venue = lighting_system.current_venue().map(str::to_string);
             let fixture_infos = match lighting_system.get_current_venue_fixtures() {
                 Ok(infos) => {
@@ -916,7 +919,9 @@ impl Engine {
                     .unwrap_or_default(),
             );
             drop(midi_dmx_store);
-            self.ambient_follows_rig(&effect_engine);
+            self.ambient_follows_rig(&effect_engine, &mut |groups| {
+                timeline::resolve_groups_in(&mut lighting_system, groups)
+            });
         }
         Ok(())
     }
@@ -4156,6 +4161,68 @@ mod test {
             assert!(engine.outgoing_pass.lock().is_none());
             Ok(())
         }
+
+        #[test]
+        fn stopping_a_sequence_leaves_one_whose_name_starts_with_its_own(
+        ) -> Result<(), Box<dyn Error>> {
+            // #591: stopping "verse" matched the ID prefix `seq_verse_`, so
+            // it took out "verse_two" as well, played through and on a seek.
+            let show = "sequence \"verse\" {\n    @0.000\n    wash: static, color: \"blue\", \
+                duration: 30s, layer: foreground, blend_mode: replace\n}\n\n\
+                sequence \"verse_two\" {\n    @0.000\n    wash: static, color: \"red\", \
+                duration: 30s, layer: background\n}\n\n\
+                show \"s\" {\n    @0.000\n    sequence \"verse\"\n    sequence \"verse_two\"\n    \
+                @5.000\n    stop sequence \"verse\"\n}\n";
+            const RED: (f64, f64, f64) = (255.0, 0.0, 0.0);
+            assert_eq!(played_frame(show, 4.0)?, (0.0, 0.0, 255.0));
+            assert_eq!(played_frame(show, 6.0)?, RED);
+            assert_eq!(seek_frame(show, 6.0)?, RED, "seek to 6 s");
+            Ok(())
+        }
+
+        #[test]
+        fn same_time_cues_from_two_shows_fire_in_file_order() -> Result<(), Box<dyn Error>> {
+            // #597: the shows were taken in a HashMap's order, which differs
+            // from one timeline build to the next, so which of two looks
+            // cued at once in different shows won changed from run to run.
+            // The later show's goes in last, and wins, every time.
+            let show = "show \"later\" {\n    @1.500\n    wash: static, color: \"red\", \
+                duration: 5s, layer: midground, blend_mode: replace\n}\n\n\
+                show \"earlier\" {\n    @1.500\n    wash: static, color: \"green\", \
+                duration: 5s, layer: midground, blend_mode: replace\n}\n";
+            for _ in 0..16 {
+                assert_eq!(played_frame(show, 2.0)?, GREEN);
+                assert_eq!(seek_frame(show, 2.0)?, GREEN, "seek to 2 s");
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn cues_less_than_a_frame_apart_apply_in_turn() -> Result<(), Box<dyn Error>> {
+            // #592: cues that land in one frame were applied all layer
+            // commands first, then all effects, so a clear or a sequence
+            // stop cued just after an effect ran before it, and the effect
+            // the show takes out stayed on. A seek replays them in order.
+            const RED: (f64, f64, f64) = (255.0, 0.0, 0.0);
+            let bed = "    @0.000\n    wash: static, color: \"red\", duration: 10s, \
+                layer: background, blend_mode: replace\n";
+            let cleared = format!(
+                "show \"a\" {{\n{bed}    @2.003\n    wash: static, color: \"green\", \
+                 duration: 5s, layer: midground, blend_mode: replace\n    @2.006\n    \
+                 clear(layer: midground)\n}}\n"
+            );
+            let stopped = format!(
+                "sequence \"x\" {{\n    @0.000\n    wash: static, color: \"green\", \
+                 duration: 5s, layer: midground, blend_mode: replace\n}}\n\n\
+                 show \"a\" {{\n{bed}    @2.003\n    sequence \"x\"\n    @2.006\n    \
+                 stop sequence \"x\"\n}}\n"
+            );
+            for show in [&cleared, &stopped] {
+                assert_eq!(seek_frame(show, 3.0)?, RED, "seek to 3 s\n{show}");
+                assert_eq!(played_frame(show, 3.0)?, RED, "played to 3 s\n{show}");
+            }
+            Ok(())
+        }
     }
 
     mod start_lighting_timeline_tests {
@@ -4516,6 +4583,62 @@ mod test {
                 engine.to_delayed_song_time(Duration::from_millis(50)),
                 Duration::ZERO
             );
+            Ok(())
+        }
+
+        /// A live edit rebuilds the show where the lights are, as a seek does:
+        /// at the transport's time it came up the delay ahead of the rig,
+        /// skipping a cue just past the lights' time (#593).
+        #[test]
+        fn a_reload_rebuilds_at_the_delayed_time() -> Result<(), Box<dyn Error>> {
+            let engine = engine_with_delay("200ms")?;
+            let mut channels = std::collections::HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "test_fixture".to_string(),
+                    1,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+            let tmp_dir = tempfile::tempdir()?;
+            let dsl_path = tmp_dir.path().join("show.light");
+            std::fs::write(
+                &dsl_path,
+                r#"show "test" {
+    @00:00.000
+    test_fixture: static dimmer: 50%, duration: 30s
+    @00:09.900
+    test_fixture: static dimmer: 100%, duration: 5s
+}"#,
+            )?;
+            engine.update_song_time(Duration::from_secs(10));
+
+            crate::dmx::watcher::reload_timeline(
+                std::slice::from_ref(&dsl_path),
+                &engine.effect_engine,
+                &engine.current_song_timeline,
+                &engine.current_song_time,
+                engine.playback_delay,
+                None,
+                None,
+                None,
+            )?;
+            let next_cue = |engine: &Engine| engine.lighting_arming_state().and_then(|s| s.3);
+            assert_eq!(
+                next_cue(&engine),
+                Some(Duration::from_millis(9900)),
+                "the reload skipped the cue the lights have yet to reach"
+            );
+            assert_eq!(engine.effect_engine.lock().active_effects_count(), 1);
+
+            // A seek to the same point lands on the same state.
+            engine.start_lighting_timeline_at(Duration::from_secs(10));
+            assert_eq!(next_cue(&engine), Some(Duration::from_millis(9900)));
+            assert_eq!(engine.effect_engine.lock().active_effects_count(), 1);
             Ok(())
         }
     }
@@ -5316,6 +5439,7 @@ mod test {
                 }],
                 stop_sequences: vec![],
                 layer_command_times: vec![],
+                stop_sequence_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -5332,6 +5456,7 @@ mod test {
                 layer_commands: vec![],
                 stop_sequences: vec!["test_seq".to_string()],
                 layer_command_times: vec![],
+                stop_sequence_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -5386,6 +5511,7 @@ mod test {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 layer_command_times: vec![],
+                stop_sequence_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -5433,6 +5559,7 @@ mod test {
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 layer_command_times: vec![],
+                stop_sequence_times: vec![],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());

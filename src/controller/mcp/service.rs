@@ -561,12 +561,13 @@ impl McpServer {
                 .songs()
                 .get(name)
                 .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-            let mut shows: Vec<_> = song
+            // In file order, then their order in the file, as the player
+            // has them.
+            let shows: Vec<_> = song
                 .dsl_lighting_shows()
                 .iter()
                 .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
                 .collect();
-            sort_shows(&mut shows);
 
             // Merged and time-sorted, the way the player's own timeline
             // combines a song's shows. Concatenating per show would restart
@@ -898,8 +899,8 @@ impl McpServer {
         let snapshot = store
             .update_audio(audio, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+            .map_err(config_err)?;
+        self.reload_and_respond(snapshot).await
     }
 
     #[tool(
@@ -915,8 +916,8 @@ impl McpServer {
         let snapshot = store
             .update_midi(midi, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+            .map_err(config_err)?;
+        self.reload_and_respond(snapshot).await
     }
 
     #[tool(
@@ -932,8 +933,8 @@ impl McpServer {
         let snapshot = store
             .update_dmx(dmx, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+            .map_err(config_err)?;
+        self.reload_and_respond(snapshot).await
     }
 
     #[tool(
@@ -951,8 +952,8 @@ impl McpServer {
         let snapshot = store
             .update_controllers(controllers, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+            .map_err(config_err)?;
+        self.reload_and_respond(snapshot).await
     }
 
     #[tool(description = "Append a new hardware profile to the `profiles` list.")]
@@ -966,8 +967,8 @@ impl McpServer {
         let snapshot = store
             .add_profile(profile, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+            .map_err(config_err)?;
+        self.reload_and_respond(snapshot).await
     }
 
     #[tool(description = "Update the profile at a given index in the `profiles` \
@@ -987,8 +988,8 @@ impl McpServer {
         let snapshot = store
             .update_profile(args.index as usize, profile, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+            .map_err(config_err)?;
+        self.reload_and_respond(snapshot).await
     }
 
     #[tool(description = "Remove the profile at a given index in the `profiles` list.")]
@@ -1000,8 +1001,8 @@ impl McpServer {
         let snapshot = store
             .remove_profile(args.index as usize, &args.expected_checksum)
             .await
-            .map_err(internal_err)?;
-        Ok(snapshot_response(&snapshot))
+            .map_err(config_err)?;
+        self.reload_and_respond(snapshot).await
     }
 
     // ---- Song / playlist file editing ----
@@ -1023,9 +1024,7 @@ impl McpServer {
             .config_path()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| song.base_path().join("song.yaml"));
-        let body = tokio::fs::read_to_string(&path).await.map_err(|e| {
-            McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
-        })?;
+        let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "name": song.name(),
             "path": path.display().to_string(),
@@ -1198,6 +1197,9 @@ impl McpServer {
         // Validate the YAML parses as a song config before we touch disk.
         let _: crate::config::Song = serde_yaml_from_str(&args.yaml)?;
 
+        // Taken turns with the song's other writers, here and in the web UI,
+        // whose edits read the file first.
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let songs_root = self.songs_root_verified().await?;
         let yaml_path = match self.player.songs().get(&args.name) {
             Ok(existing) => {
@@ -1216,7 +1218,7 @@ impl McpServer {
                     .to_path_buf()
             }
             Err(_) => {
-                crate::webui::safe_path::SafePath::validate_name(&args.name)
+                crate::webui::safe_path::SafePath::validate_new_name(&args.name)
                     .map_err(safepath_err)?;
                 let song_dir = crate::webui::safe_path::SafePath::create_dir(
                     &songs_root.as_safe_path(),
@@ -1245,9 +1247,7 @@ impl McpServer {
         Parameters(args): Parameters<PlaylistNameArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
-        let body = tokio::fs::read_to_string(&path).await.map_err(|e| {
-            McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
-        })?;
+        let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "yaml": body,
@@ -1279,8 +1279,17 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<WritePlaylistArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.validate_playlist(&args.yaml)?;
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
+        // Taken turns with the web UI's playlist saves, which read the file
+        // to keep what the editor does not send.
+        let _writing = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
+        // Checked under the lock, against the songs and the file as they
+        // are: a web song delete holds it while it takes the song off every
+        // playlist, and a check before it would write the deleted song back.
+        self.validate_playlist(&args.yaml)?;
+        if let Some(name) = &args.name {
+            validate_name_to_write(&path, name)?;
+        }
         // Same rule as the web UI's playlist write and every other configured
         // root: created only when it is inside the project. A `playlists_dir:`
         // pointing elsewhere is the operator's to set up.
@@ -1363,8 +1372,7 @@ impl McpServer {
         .map_err(|e| e.to_string());
         match parsed_shows {
             Ok(shows) => {
-                let mut parsed: Vec<_> = shows.values().cloned().collect();
-                sort_shows(&mut parsed);
+                let parsed: Vec<_> = shows.values().cloned().collect();
                 let warnings = self.lint_warnings(&parsed, args.song.as_deref()).await?;
                 let mut summary: Vec<Value> = shows
                     .iter()
@@ -1479,8 +1487,7 @@ impl McpServer {
                     tempo.as_ref(),
                 )
                 .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-                let mut shows: Vec<_> = shows.into_values().collect();
-                sort_shows(&mut shows);
+                let shows: Vec<_> = shows.into_values().collect();
                 Ok((shows, tempo))
             }
             (None, None) => Err(McpError::invalid_params(
@@ -1516,8 +1523,7 @@ impl McpServer {
                         None,
                     )
                 })?;
-                let mut shows: Vec<_> = shows.into_values().collect();
-                sort_shows(&mut shows);
+                let shows: Vec<_> = shows.into_values().collect();
                 Ok((shows, None))
             }
         }
@@ -1946,7 +1952,7 @@ impl McpServer {
                 .map(|(name, archive, curve)| {
                     let modes: Vec<String> = project
                         .as_ref()
-                        .and_then(|project| std::fs::read(project.join(&archive)).ok())
+                        .and_then(|project| crate::util::read_file(&project.join(&archive)).ok())
                         .and_then(|bytes| crate::lighting::gdtf::parse_archive(&bytes).ok())
                         .map(|d| d.modes.into_iter().map(|m| m.name).collect())
                         .unwrap_or_default();
@@ -1998,9 +2004,12 @@ impl McpServer {
         Parameters(args): Parameters<ListGdtfModesArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve_in_project(&args.path)?;
-        let bytes = tokio::fs::read(&path).await.map_err(|e| {
-            McpError::invalid_params(format!("cannot read {}: {e}", args.path), None)
-        })?;
+        let bytes = tokio::task::spawn_blocking(move || crate::util::read_file(&path))
+            .await
+            .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
+            .map_err(|e| {
+                McpError::invalid_params(format!("cannot read {}: {e}", args.path), None)
+            })?;
         let description = crate::lighting::gdtf::parse_archive(&bytes)
             .map_err(|e| McpError::invalid_params(format!("not a parseable GDTF: {e}"), None))?;
         let modes: Vec<Value> = crate::lighting::gdtf::mode_summaries(&description)
@@ -2036,6 +2045,9 @@ impl McpServer {
         let path = self.resolve_in_project(&args.path)?;
         let project = crate::util::project_dir_of(self.config_store()?.path());
         let (types_dir, _) = self.project_lighting_dirs().await?;
+        // A pinned name writes a fixture type record: taken in turn with the
+        // web UI's fixture type and venue saves, as write_fixture_type is.
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         let report = tokio::task::spawn_blocking(move || {
             crate::lighting::import::import_gdtf(&path, args.name.as_deref(), &project, &types_dir)
                 .map_err(|e| e.to_string())
@@ -2117,6 +2129,9 @@ impl McpServer {
         let path = self.resolve_in_project(&args.path)?;
         let project = crate::util::project_dir_of(self.config_store()?.path());
         let options = self.mvr_options(&args).await?;
+        // A re-import merges into the venue file it reads, so it holds the
+        // lock from that read to its write, as patch_venue does.
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         let report = tokio::task::spawn_blocking(move || {
             crate::lighting::import::import_mvr(&path, &options, &project)
                 .map_err(|e| e.to_string())
@@ -2184,9 +2199,7 @@ impl McpServer {
                 None,
             )
         })?;
-        let body = tokio::fs::read_to_string(&path).await.map_err(|e| {
-            McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
-        })?;
+        let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "source": body,
@@ -2213,9 +2226,7 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::Venues, &args.file)
             .await?;
-        let body = tokio::fs::read_to_string(&path).await.map_err(|e| {
-            McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
-        })?;
+        let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "source": body,
@@ -2238,6 +2249,11 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::Venues, &args.file)
             .await?;
+        // Taken turns with the web UI's venue saves, which check the file's
+        // version before writing. Held from the check on the file's name,
+        // which goes by whether the file is there.
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
+        validate_name_to_write(&path, &args.file)?;
         staged_write_string(&path, &args.source).await?;
         let (reloaded, venue_error) = self.reload_venue_if_current().await;
         let mut body = json!({
@@ -2293,6 +2309,7 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::Venues, &args.file)
             .await?;
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         remove_lighting_file(&path).await?;
         Ok(ok_json(json!({"deleted": path.display().to_string()})))
     }
@@ -2306,6 +2323,7 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
             .await?;
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         remove_lighting_file(&path).await?;
         Ok(ok_json(json!({"deleted": path.display().to_string()})))
     }
@@ -2321,6 +2339,10 @@ impl McpServer {
         Parameters(args): Parameters<SongLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
         validate_lighting_filename(&args.file)?;
+        // Held from looking the song up: a web song save or delete reloads
+        // the songs under it, and the file and reference found before it
+        // could be ones the song no longer has.
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self
             .player
             .songs()
@@ -2409,9 +2431,7 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
             .await?;
-        let body = tokio::fs::read_to_string(&path).await.map_err(|e| {
-            McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
-        })?;
+        let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "source": body,
@@ -2431,6 +2451,9 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
             .await?;
+        // Held from the check on the file's name, as write_venue holds it.
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
+        validate_name_to_write(&path, &args.file)?;
         staged_write_string(&path, &args.source).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
@@ -2456,6 +2479,10 @@ impl McpServer {
         Parameters(args): Parameters<WriteSongLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
         validate_lighting_filename(&args.file)?;
+        // As patch_song: the registration below edits song.yaml. Held from
+        // looking the song up, so the tempo the show is checked against and
+        // the place it is written are the song's as a web save left them.
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self
             .player
             .songs()
@@ -2475,6 +2502,8 @@ impl McpServer {
         let path = match find_song_lighting_write_path(&song, &args.file) {
             Some(existing) => existing,
             None => {
+                crate::webui::safe_path::SafePath::validate_new_name(&args.file)
+                    .map_err(safepath_err)?;
                 // First time we're writing this basename for this song: drop
                 // it into the conventional `lighting/` subdirectory and
                 // create that directory if it doesn't exist yet.
@@ -2584,6 +2613,9 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<PatchSongArgs>,
     ) -> Result<CallToolResult, McpError> {
+        // Held from the lookup and the read, so a save between them and the
+        // write, such as the web UI's song editor, is not lost.
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self
             .player
             .songs()
@@ -2611,6 +2643,9 @@ impl McpServer {
         Parameters(args): Parameters<PatchPlaylistArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
+        // As write_playlist, with the web UI's saves; held from the read, so
+        // a save between it and the write is not lost.
+        let _writing = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
         self.validate_playlist(&updated)?;
@@ -2630,6 +2665,9 @@ impl McpServer {
         Parameters(args): Parameters<PatchSongLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
         validate_lighting_filename(&args.file)?;
+        // Held from looking the song up, so the tempo the patch is checked
+        // against is the song's as a web save left it.
+        let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self
             .player
             .songs()
@@ -2673,6 +2711,8 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::Venues, &args.file)
             .await?;
+        // Held from the read, as patch_song holds its own.
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
         crate::lighting::parser::parse_venues(&updated).map_err(|e| {
@@ -2703,6 +2743,9 @@ impl McpServer {
         let path = self
             .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
             .await?;
+        // A fixture's settings save in the web UI rewrites its type under
+        // the venues' lock: held from the read, as patch_venue holds it.
+        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
         let types = crate::lighting::parser::parse_fixture_types(&updated).map_err(|e| {
@@ -3113,15 +3156,6 @@ fn cue_timeline(show: &crate::lighting::parser::LightShow) -> Vec<Value> {
         .collect()
 }
 
-/// Orders shows by name so evaluation is reproducible.
-///
-/// Shows arrive from a `HashMap`, so without this both the cue order for
-/// identically-timed cues and — because `LightingTimeline` takes the first
-/// show's tempo map — which tempo block wins would vary between runs.
-fn sort_shows(shows: &mut [crate::lighting::parser::LightShow]) {
-    shows.sort_by(|a, b| a.name.cmp(&b.name));
-}
-
 /// Returns a successful tool result wrapping a JSON value as pretty-printed text.
 pub(crate) fn ok_json(value: Value) -> CallToolResult {
     let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
@@ -3446,6 +3480,15 @@ fn parse_mm_ss(s: &str) -> Result<f64, McpError> {
 /// Wraps a domain error into [`McpError::internal_error`].
 pub(crate) fn internal_err<E: std::fmt::Display>(e: E) -> McpError {
     McpError::internal_error(e.to_string(), None)
+}
+
+/// A config store error as an MCP error: a change the config would not load
+/// with is the caller's to fix, not a fault of the server.
+fn config_err(e: crate::config::ConfigError) -> McpError {
+    match e {
+        crate::config::ConfigError::Validation(_) => McpError::invalid_params(e.to_string(), None),
+        e => internal_err(e),
+    }
 }
 
 /// Sends a `notifications/resources/updated` to a peer with a JSON payload
@@ -3883,11 +3926,12 @@ impl McpServer {
 
     /// Checks a playlist about to be written: that it parses, and that its
     /// transitions do and name tracks their songs have, as the player will
-    /// when it loads it. Songs it names that do not exist are left to the
-    /// player, as before.
+    /// when it loads it, that no fade outlasts the song it plays under, that
+    /// every song it names exists (the player drops a playlist naming one
+    /// that does not), and that its ambient show is inside the project.
     fn validate_playlist(&self, yaml: &str) -> Result<(), McpError> {
         let config: crate::config::Playlist = serde_yaml_from_str(yaml)?;
-        crate::playlist::validate_transitions(&config, &self.player.songs())
+        crate::playlist::validate_for_write(&config, &self.player.songs())
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         Ok(())
     }
@@ -3938,12 +3982,54 @@ pub(crate) fn parse_optional<T: for<'de> serde::Deserialize<'de>>(
         .map_err(|e| McpError::invalid_params(format!("invalid payload: {e}"), None))
 }
 
-/// Returns a tool response containing the updated config YAML and new checksum.
-pub(crate) fn snapshot_response(snapshot: &crate::config::store::ConfigSnapshot) -> CallToolResult {
-    ok_json(json!({
+impl McpServer {
+    /// Applies a saved config change to the running hardware and answers
+    /// with the new snapshot, as the gRPC config updates do. A change saved
+    /// here was otherwise not applied until something else reloaded the
+    /// hardware or mtrack restarted. While a song plays or is paused the
+    /// reload waits for the player to be idle, and the reply says so, with
+    /// `applied: false`. Controllers are restarted only by a change to them.
+    async fn reload_and_respond(
+        &self,
+        snapshot: crate::config::store::ConfigSnapshot,
+    ) -> Result<CallToolResult, McpError> {
+        let reload = match self
+            .player
+            .reload_hardware()
+            .await
+            .map_err(|e| e.to_string())
+        {
+            Ok(reload) => reload,
+            Err(e) => {
+                tracing::warn!("Hardware reload after config update failed: {}", e);
+                return Err(McpError::internal_error(
+                    format!(
+                        "the config was saved but the running hardware was not reloaded, so \
+                         it will not take effect until the next reload or restart: {e}"
+                    ),
+                    None,
+                ));
+            }
+        };
+        Ok(snapshot_response(&snapshot, reload))
+    }
+}
+
+/// Returns a tool response containing the updated config YAML and new
+/// checksum, and whether the change has been applied to the hardware.
+pub(crate) fn snapshot_response(
+    snapshot: &crate::config::store::ConfigSnapshot,
+    reload: crate::player::HardwareReload,
+) -> CallToolResult {
+    let mut response = json!({
         "yaml": snapshot.yaml,
         "checksum": snapshot.checksum,
-    }))
+        "applied": reload.applied(),
+    });
+    if let Some(message) = reload.message() {
+        response["message"] = json!(message);
+    }
+    ok_json(response)
 }
 
 /// Parses a YAML string into `T`, returning an MCP `invalid_params` error.
@@ -3976,6 +4062,14 @@ pub(crate) fn create_within_err(err: crate::util::CreateWithinError) -> McpError
 /// Wraps a [`SafePathError`] as an `invalid_params` MCP error.
 pub(crate) fn safepath_err(err: crate::webui::safe_path::SafePathError) -> McpError {
     McpError::invalid_params(err.to_string(), None)
+}
+
+/// Validates `name`, already checked safe, for a write to `path`: a file not
+/// there yet is being created, and its name must also pass the rules for new
+/// names. One already there is written under its own name.
+fn validate_name_to_write(path: &std::path::Path, name: &str) -> Result<(), McpError> {
+    crate::webui::safe_path::SafePath::validate_name_to_write(name, path.exists())
+        .map_err(safepath_err)
 }
 
 /// Resolves a lighting filename to its on-disk path, searching three
@@ -4197,10 +4291,18 @@ pub(crate) fn patch_response(path: &std::path::Path, before: &str, after: &str) 
 }
 
 /// Reads a file as UTF-8, returning an MCP-friendly error on I/O failure.
+///
+/// Read as [`crate::util::read_file`] reads, in turn with the writers: a
+/// save rewrites a file in place, and a plain read midway through it finds
+/// the file empty or short (#578).
 pub(crate) async fn read_text(path: &std::path::Path) -> Result<String, McpError> {
-    tokio::fs::read_to_string(path).await.map_err(|e| {
-        McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
-    })
+    let owned = path.to_path_buf();
+    tokio::task::spawn_blocking(move || crate::util::read_to_string(&owned))
+        .await
+        .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
+        .map_err(|e| {
+            McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
+        })
 }
 
 /// Lists `.light` files directly under `dir` (no recursion). Subdirectories
@@ -4259,6 +4361,43 @@ pub(crate) async fn staged_write_string(
         }
         McpError::internal_error(message, None)
     })
+}
+
+#[cfg(test)]
+mod read_text_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_text_never_sees_a_file_midway_through_a_save() {
+        // #578: a plain read, between a save truncating the file and
+        // writing it back, found it empty or short.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.yaml");
+        let body =
+            "name: S\ntracks:\n".to_string() + &"  - name: t\n    file: t.wav\n".repeat(2000);
+        crate::util::write_file(&path, body.as_bytes()).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (path, body, stop) = (path.clone(), body.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    crate::util::write_file(&path, body.as_bytes()).unwrap();
+                }
+            })
+        };
+        let mut torn = 0;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(2) {
+            if super::read_text(&path).await.unwrap() != body {
+                torn += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        assert_eq!(torn, 0, "read_text read a torn song.yaml {torn} times");
+    }
 }
 
 #[cfg(test)]

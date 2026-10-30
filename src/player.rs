@@ -16,6 +16,8 @@ mod navigation;
 mod playback;
 mod seek;
 
+pub use hardware::HardwareReload;
+
 use midly::live::LiveEvent;
 use parking_lot::RwLock;
 use std::fmt;
@@ -106,6 +108,14 @@ struct HardwareState {
     /// track_mappings and track_gains. Also installed into the device mixer.
     track_gains: Option<Arc<crate::audio::track_gains::TrackGains>>,
     midi_device: Option<Arc<dyn midi::Device>>,
+    /// The MIDI config `midi_device` was opened with, as YAML: a reload of
+    /// the same config keeps the device, opened afresh in place.
+    midi_config: Option<String>,
+    /// The MIDI device a reload took down, with its config, until a round
+    /// keeps it, opens another or finds no MIDI config. Handed to the round
+    /// itself, it was lost with a round cancelled before its MIDI phase, and
+    /// the round after opened the device anew (#578).
+    midi_handoff: Option<(String, Arc<dyn midi::Device>)>,
     dmx_engine: Option<Arc<dmx::engine::Engine>>,
     sample_engine: Option<Arc<RwLock<SampleEngine>>>,
     trigger_engine: Option<Arc<TriggerEngine>>,
@@ -174,6 +184,10 @@ impl From<&ReactiveLoopState> for ReactiveLoopStateKind {
 struct PlayHandles {
     join: JoinHandle<()>,
     cancel: CancelHandle,
+    /// Where in the song the playback started: where it still is until
+    /// `play_files` stamps `play_start_time`, which a pause in that window
+    /// reads instead of the clock.
+    start_time: Duration,
 }
 
 /// Groups the parameters needed for `play_files` to avoid excessive argument counts.
@@ -328,6 +342,10 @@ pub struct Player {
     playlists: Arc<parking_lot::RwLock<HashMap<String, Arc<Playlist>>>>,
     /// The name of the currently active playlist.
     active_playlist: Arc<parking_lot::RwLock<String>>,
+    /// Held by a reload from copying each playlist's place to swapping the
+    /// new playlists in, and by a move of the active playlist's place, so
+    /// a move cannot land on a playlist a reload has already copied.
+    playlist_moves: Arc<parking_lot::Mutex<()>>,
     /// The persisted active playlist name (last non-all_songs choice). Used by
     /// MIDI/OSC `Playlist` action to return to the user's "real" playlist.
     persisted_playlist: Arc<parking_lot::RwLock<String>>,
@@ -335,6 +353,11 @@ pub struct Player {
     play_start_time: Arc<Mutex<Option<SystemTime>>>,
     /// Keeps track of the player joins. There should only be one task on here at a time.
     join: Arc<Mutex<Option<PlayHandles>>>,
+    /// Whether a song is playing: set as `join` becomes `Some`, and cleared
+    /// as it goes back to `None`, but readable without the join lock. A
+    /// playlist reload asks it rather than the lock, which every status
+    /// poll takes too, so a poll cannot pass for a song playing (#576).
+    song_playing: Arc<AtomicBool>,
     /// After stop is set, this will be set to true. This will prevent stop from being run again until
     /// it is unset, which should be handled by a cleanup async process after playback finishes.
     stop_run: Arc<AtomicBool>,
@@ -357,6 +380,10 @@ pub struct Player {
     /// superseded. Serializing means the last reload to run is the one that
     /// read the newest config.
     reload_lock: Arc<tokio::sync::Mutex<()>>,
+    /// A hardware reload asked for while a song played or an auto play
+    /// waited, which runs once the player is idle. Refusing it instead left
+    /// a config save acknowledged while the rig kept the old config (#578).
+    hardware_reload_pending: Arc<AtomicBool>,
     /// Broadcast channel sender, stored so async init can wire DMX engine.
     broadcast_tx: Arc<parking_lot::Mutex<Option<tokio::sync::broadcast::Sender<String>>>>,
     /// Watch channel to signal hardware init completion.
@@ -374,10 +401,6 @@ pub struct Player {
     locked: Arc<AtomicBool>,
     /// Active controllers (gRPC, OSC, MIDI). Replaced on reload.
     controller: Arc<parking_lot::Mutex<Option<crate::controller::Controller>>>,
-    /// The controller config the running controllers were started from,
-    /// serialized. Lets a reload leave them alone when nothing about them
-    /// changed — see [`Player::start_controllers`].
-    controller_config: Arc<parking_lot::Mutex<Option<String>>>,
     /// Signal to break out of a song loop gracefully (not a hard cancel).
     /// Set by play()/next() when the current song is looping. The playback
     /// loop checks this flag and exits cleanly, allowing the cleanup task
@@ -404,6 +427,9 @@ pub struct Player {
     /// The mixer sources fading out after a loop break, which a stop or seek
     /// cuts rather than letting them finish.
     break_fade_ids: Arc<parking_lot::Mutex<Vec<u64>>>,
+    /// When a song fading out after a loop break, or as it ends, is out,
+    /// audio and lights both. A hardware reload waits for it.
+    fading_until: Arc<parking_lot::Mutex<Option<std::time::Instant>>>,
     /// How the song a loop break moves to fades in under the one fading out
     /// (a playlist `fade_in`), taken by the audio device as it starts.
     start_fade: Arc<parking_lot::Mutex<Option<crate::playsync::StartFade>>>,
@@ -419,9 +445,10 @@ pub struct Player {
     loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
     /// Reactive loop state machine.
     reactive_loop_state: Arc<parking_lot::RwLock<ReactiveLoopState>>,
-    /// Start position for the next play(), set by seeking while stopped.
+    /// Start position for the next play(), set by a pause or by seeking
+    /// while stopped.
     /// Cleared when the playlist position changes.
-    pending_start: Arc<parking_lot::Mutex<Option<Duration>>>,
+    pending_start: Arc<parking_lot::Mutex<Option<seek::PendingStart>>>,
     /// Notification engine for section loop audio feedback.
     notification_engine: Arc<crate::notification::NotificationEngine>,
     /// Pending debounced task persisting track gains to the config store.
@@ -602,6 +629,8 @@ impl Player {
             mappings: devices.mappings,
             track_gains,
             midi_device: devices.midi,
+            midi_config: None,
+            midi_handoff: None,
             dmx_engine: devices.dmx_engine,
             sample_engine: devices.sample_engine,
             trigger_engine: devices.trigger_engine,
@@ -626,6 +655,7 @@ impl Player {
             base_path: base_path.map(Path::to_path_buf),
             playlists: Arc::new(parking_lot::RwLock::new(playlists)),
             active_playlist: Arc::new(parking_lot::RwLock::new(resolved_active.clone())),
+            playlist_moves: Arc::new(parking_lot::Mutex::new(())),
             persisted_playlist: Arc::new(parking_lot::RwLock::new(
                 if resolved_active == "all_songs" {
                     "playlist".to_string()
@@ -635,12 +665,14 @@ impl Player {
             )),
             play_start_time: Arc::new(Mutex::new(None)),
             join: Arc::new(Mutex::new(None)),
+            song_playing: Arc::new(AtomicBool::new(false)),
             stop_run: Arc::new(AtomicBool::new(false)),
             span: span!(Level::INFO, "player"),
             config_store: Arc::new(parking_lot::Mutex::new(None)),
             default_metronome: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             init_cancel: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
             reload_lock: Arc::new(tokio::sync::Mutex::new(())),
+            hardware_reload_pending: Arc::new(AtomicBool::new(false)),
             broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
             init_done_tx: Arc::new(init_done_tx),
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
@@ -648,7 +680,6 @@ impl Player {
             gain_persist_task: Arc::new(parking_lot::Mutex::new(None)),
             locked: Arc::new(AtomicBool::new(true)),
             controller: Arc::new(parking_lot::Mutex::new(None)),
-            controller_config: Arc::new(parking_lot::Mutex::new(None)),
             loop_break: Arc::new(AtomicBool::new(false)),
             loop_break_to_prev: Arc::new(AtomicBool::new(false)),
             loop_end: Arc::new(AtomicBool::new(false)),
@@ -657,6 +688,7 @@ impl Player {
             ambient_mode: Arc::new(parking_lot::Mutex::new(Default::default())),
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            fading_until: Arc::new(parking_lot::Mutex::new(None)),
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
@@ -2605,6 +2637,27 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_once_an_auto_plays_gap_is_up_keeps_its_song_from_starting(
+    ) -> Result<(), Box<dyn Error>> {
+        // The gap ran out and the auto play, done waiting, went to start its
+        // song; a stop that took the join lock first found nothing playing
+        // and nothing waiting, and the song started after it regardless.
+        let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 100ms\n- Song 5\n";
+        let player = make_test_player_with_playlist(yaml).await?;
+        player.next().await;
+        {
+            // Held over the end of the gap, as by a stop on a busy machine.
+            let mut join = player.join.lock().await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            player.cut_locked(&mut join).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!player.is_playing().await, "Song 3 started after the stop");
+        assert_eq!(current_name(&player).await, "Song 3");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn cancelling_a_waiting_auto_play_stops_on_its_song() -> Result<(), Box<dyn Error>> {
         let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 500ms\n- Song 5\n";
         let player = make_test_player_with_playlist(yaml).await?;
@@ -3167,39 +3220,140 @@ mod test {
         Ok(())
     }
 
+    /// Sets a config store on `player` whose profile has no audio, so a
+    /// reload that has run shows as the audio device going away.
+    fn set_store_without_audio(player: &Player) -> Result<tempfile::TempDir, Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        let yaml = "songs: songs\nprofiles:\n  - midi:\n      device: mock-midi-device\n";
+        std::fs::write(&path, yaml)?;
+        let cfg = config::Player::deserialize(&path)?;
+        player.set_config_store(std::sync::Arc::new(config::ConfigStore::new(cfg, path)));
+        Ok(dir)
+    }
+
+    /// A reload asked for during playback was refused, and the config save
+    /// that asked for it answered as saved while the rig kept the old config
+    /// (#578). It waits for the song to stop instead.
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_reload_hardware_during_playback_rejected() -> Result<(), Box<dyn Error>> {
+    async fn test_reload_hardware_during_playback_is_deferred() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
         let device = binding.to_mock()?;
-
-        // Set up config store (needed for reload_hardware).
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("config.yaml");
-        let yaml = "songs: songs\nprofiles:\n  - audio:\n      device: mock-device\n      track_mappings:\n        click: [1]\n";
-        std::fs::write(&path, yaml)?;
-        let cfg = config::Player::deserialize(&path)?;
-        let store = std::sync::Arc::new(config::ConfigStore::new(cfg, path));
-        player.set_config_store(store);
+        let _dir = set_store_without_audio(&player)?;
 
         player.play().await?;
         eventually(|| device.is_playing(), "Song never started playing");
 
-        // reload_hardware should fail during playback.
-        let result = player.reload_hardware().await;
-        assert!(
-            result.is_err(),
-            "reload_hardware should fail during playback"
-        );
-        assert!(
-            result.unwrap_err().to_string().contains("during playback"),
-            "error should mention playback"
-        );
+        // Deferred, not refused, and the song keeps its hardware. A second
+        // request while one waits just keeps it waiting.
+        player.reload_hardware().await?;
+        player.reload_hardware().await?;
+        assert!(player.audio_device().is_some(), "reloaded under the song");
+        assert!(*player.init_done_tx.borrow(), "reset under the song");
+        assert!(player.is_playing().await);
 
         player.stop().await;
         eventually(|| !device.is_playing(), "Song never stopped playing");
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        player.await_hardware_ready().await;
+        assert!(!player.hardware_reload_pending.load(Ordering::Relaxed));
+        Ok(())
+    }
+
+    /// The deferred reload runs when a song ends by itself, too.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_runs_when_the_song_ends() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player_with_playlist("songs:\n- Song 1\n").await?;
+        let _dir = set_store_without_audio(&player)?;
+        player.play().await?;
+        player.reload_hardware().await?;
+        assert!(player.audio_device().is_some(), "reloaded under the song");
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        Ok(())
+    }
+
+    /// A reload waiting for the player to go idle cannot run in the middle
+    /// of a start: the start holds the join lock, and the reload takes it
+    /// and finds the song playing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_waits_for_a_start_under_way() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _dir = set_store_without_audio(&player)?;
+        let mut join = player.join.lock().await;
+        player
+            .hardware_reload_pending
+            .store(true, Ordering::Relaxed);
+        player.reload_deferred_hardware();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(player.audio_device().is_some(), "reloaded under the start");
+        player.play_from_locked(Duration::ZERO, &mut join).await?;
+        drop(join);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(player.audio_device().is_some(), "reloaded under the song");
+        assert!(player.is_playing().await);
+        assert!(player.hardware_reload_pending.load(Ordering::Relaxed));
+
+        player.stop().await;
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        Ok(())
+    }
+
+    /// A reload in an auto play's gap set the hardware initializing, and the
+    /// song failed to start when the gap ended, with nothing to retry it
+    /// (#578). The gap counts as playing: the reload waits for the song.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_in_an_auto_plays_gap_waits_for_its_song() -> Result<(), Box<dyn Error>> {
+        let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 300ms\n";
+        let player = make_test_player_with_playlist(yaml).await?;
+        let _dir = set_store_without_audio(&player)?;
+        player.next().await;
+        assert!(player.auto_play_status().is_some(), "waiting");
+
+        player.reload_hardware().await?;
+        assert!(player.audio_device().is_some(), "reloaded in the gap");
+        eventually_async(
+            || async { player.is_playing().await },
+            "Song 3 never started",
+        )
+        .await;
+        assert!(player.audio_device().is_some(), "reloaded under the song");
+
+        player.stop().await;
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        Ok(())
+    }
+
+    /// An auto play called off leaves the player idle: a reload waiting for
+    /// it runs then.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_runs_when_an_auto_play_is_called_off() -> Result<(), Box<dyn Error>>
+    {
+        let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 10s\n";
+        let player = make_test_player_with_playlist(yaml).await?;
+        let _dir = set_store_without_audio(&player)?;
+        player.next().await;
+        player.reload_hardware().await?;
+        assert!(player.audio_device().is_some(), "reloaded in the gap");
+        assert!(player.cancel_waiting_auto_play());
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
         Ok(())
     }
 
@@ -3784,6 +3938,125 @@ mod test {
         Ok(())
     }
 
+    /// Rewrites the playlist of a player from [`player_looping_b_with`] as
+    /// `yaml` and reloads it, as the playlist editor's save does.
+    fn edit_playlist(player: &Player, dir: &tempfile::TempDir, yaml: &str) {
+        let playlist_path = dir.path().join("playlist.yaml");
+        std::fs::write(&playlist_path, yaml).unwrap();
+        player.reload_songs(&dir.path().join("songs"), None, Some(&playlist_path));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_edit_moving_the_looping_song_keeps_its_ending() -> Result<(), Box<dyn Error>> {
+        // #576: the playlist kept its index, so C took B's place and a stop
+        // cut rather than fading B out.
+        let (player, dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 2s\n- C\n").await?;
+        edit_playlist(
+            &player,
+            &dir,
+            "songs:\n- A\n- C\n- song: B\n  fade_out: 2s\n",
+        );
+        assert_eq!(current_name(&player).await, "B");
+        assert_eq!(player.get_playlist().position(), 2);
+        let stopped = player.stop().await.map(|s| s.name().to_string());
+        assert_eq!(stopped.as_deref(), Some("B"));
+        let (song, _) = player.ending_status().expect("B fades out");
+        assert_eq!(song, "B");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_edit_moving_a_song_under_one_playing_leaves_it_be() -> Result<(), Box<dyn Error>> {
+        // #576: A playing, and an edit putting looping B where A was gave A
+        // B's ending.
+        let (player, dir) = player_looping_b().await?;
+        player.stop().await;
+        player.get_playlist().navigate_to("A");
+        player.play().await?;
+        playing_eventually(&player, "A").await?;
+        edit_playlist(
+            &player,
+            &dir,
+            "songs:\n- song: B\n  fade_out: 2s\n- A\n- C\n",
+        );
+        assert_eq!(current_name(&player).await, "A");
+        assert!(!player.is_current_song_looping());
+        let stopped = player.stop().await.map(|s| s.name().to_string());
+        assert_eq!(stopped.as_deref(), Some("A"));
+        assert!(player.ending_status().is_none(), "A is cut, not faded");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deleting_the_active_playlist_keeps_the_playing_song() -> Result<(), Box<dyn Error>> {
+        // #576: with "playlist" deleted or renamed while B plays from it, the
+        // player falls back to all_songs, which took up its own place, on A.
+        let (player, dir) = player_looping_b().await?;
+        let empty = dir.path().join("playlists");
+        std::fs::create_dir_all(&empty)?;
+        player.reload_songs(&dir.path().join("songs"), Some(&empty), None);
+        assert_eq!(player.get_playlist().name(), "all_songs");
+        assert_eq!(current_name(&player).await, "B", "B is still playing");
+        assert!(player.is_current_song_looping());
+        player.stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_song_taken_off_the_list_and_stopped_gives_way() -> Result<(), Box<dyn Error>> {
+        // #576: B, taken off the list while it plays, stayed current once
+        // stopped, so Play started it again. C took its place.
+        let (player, dir) = player_looping_b().await?;
+        edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+        player.stop().await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(current_name(&player).await, "C");
+        assert_eq!(player.get_playlist().entry(), Some(1));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_does_not_lose_a_move_made_while_it_runs() -> Result<(), Box<dyn Error>> {
+        // A reload copies each playlist's place, then swaps the new ones in.
+        // A song's end advancing the playlist between the two moved the old
+        // one, and the new one came in a song behind.
+        let (player, dir) = player_looping_b().await?;
+        player.stop().await;
+        let reload = {
+            let player = player.clone();
+            let songs = dir.path().join("songs");
+            let playlist = dir.path().join("playlist.yaml");
+            std::thread::spawn(move || player.reload_songs(&songs, None, Some(&playlist)))
+        };
+        let (_, moved) = player.move_playlist(|playlist| {
+            // The reload runs to its end here unless the move holds it off.
+            std::thread::sleep(Duration::from_millis(300));
+            playlist.next().map(|song| song.name().to_string())
+        });
+        reload.join().unwrap();
+        assert_eq!(moved.as_deref(), Some("C"));
+        assert_eq!(current_name(&player).await, "C");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_looping_song_an_edit_takes_away_still_breaks() -> Result<(), Box<dyn Error>> {
+        // #576: with B gone from the list, the playlist named A, which does
+        // not loop, and next did nothing.
+        let (player, dir) = player_looping_b().await?;
+        edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+        assert_eq!(current_name(&player).await, "B", "B plays on, off the list");
+        assert!(player.is_current_song_looping());
+        // What took its place is what comes next.
+        let target = player.next().await.map(|s| s.name().to_string());
+        assert_eq!(target.as_deref(), Some("C"));
+        playing_eventually(&player, "C").await?;
+        assert_eq!(player.get_playlist().entry(), Some(1));
+        player.stop().await;
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_stop_counts_measures_on_the_next_songs_grid() -> Result<(), Box<dyn Error>> {
         // #569: B has no grid of its own, so a fade in measures cut.
@@ -4179,5 +4452,801 @@ mod test {
             assert!(player.set_track_gain("click", 0.0).is_err());
         }
         Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_paused_song_taken_off_the_list_stays_current_to_resume() -> Result<(), Box<dyn Error>>
+    {
+        // #576: pause left no playback, so the edit gave B's place to C, and
+        // play then started C at B's paused position.
+        let (player, dir) = player_looping_b().await?;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let paused_at = player.pause().await?.expect("paused");
+        assert!(paused_at > Duration::ZERO);
+        edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+        assert_eq!(current_name(&player).await, "B");
+        assert_eq!(player.get_playlist().entry(), None);
+        assert_eq!(player.pending_start(), Some(paused_at));
+        // Play resumes B where it was.
+        let played = player.play().await?.map(|s| s.name().to_string());
+        assert_eq!(played.as_deref(), Some("B"));
+        let elapsed = elapsed_eventually(&player).await?;
+        assert!(elapsed >= paused_at, "{elapsed:?} < {paused_at:?}");
+        player.stop().await;
+        // Stopped, it gives way to the entry that took its place.
+        assert_eq!(player.get_playlist().entry(), Some(1));
+        assert_eq!(current_name(&player).await, "C");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_paused_song_taken_off_the_list_gives_way_on_a_playlist_switch(
+    ) -> Result<(), Box<dyn Error>> {
+        let (player, dir) = player_looping_b().await?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        player.pause().await?.expect("paused");
+        edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+        let left = player.get_playlist();
+        player.switch_to_playlist("all_songs").await?;
+        assert_eq!(left.entry(), Some(1));
+        assert_eq!(left.current().unwrap().name(), "C");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_song_taken_off_the_list_while_ending_gives_way_once_stopped(
+    ) -> Result<(), Box<dyn Error>> {
+        // #576: an edit while a looping song ended over its fade_out kept it
+        // current, off the list, as playing; the ending's cleanup stopped
+        // the player but left it there, so Play would start it again.
+        let (player, dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 1s\n- C\n").await?;
+        let mut caught = false;
+        for _ in 0..10 {
+            let stopped = player.stop().await.map(|s| s.name().to_string());
+            assert_eq!(stopped.as_deref(), Some("B"));
+            assert!(player.ending_status().is_some(), "B fades out");
+            // Holding the join lock, the cleanup waits on it and the edit
+            // takes B as playing: the edit comes first, as on a busy machine.
+            let join = player.join.lock().await;
+            if join.is_none() {
+                // The cleanup was quicker: B ends again for another try.
+                drop(join);
+                player.play().await?;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+            assert_eq!(player.get_playlist().entry(), None, "B kept as playing");
+            caught = true;
+            break;
+        }
+        assert!(caught, "the ending's cleanup always ran before the edit");
+        eventually_async(|| async { !player.is_playing().await }, "never stopped").await;
+        eventually_async(
+            || async { player.get_playlist().entry() == Some(1) },
+            "B never gave way to C",
+        )
+        .await;
+        assert_eq!(current_name(&player).await, "C");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn off_the_list_before_the_first_entry_previous_goes_to_it() -> Result<(), Box<dyn Error>>
+    {
+        // #579: the web UI took position 0 as the start of the list, and
+        // turned Previous off, though Previous goes on to the entry there.
+        let (player, dir) = player_looping_b_with("songs:\n- B\n- A\n- C\n").await?;
+        edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+        let pl = player.get_playlist();
+        assert_eq!(pl.entry(), None);
+        assert_eq!(pl.position(), 0);
+        assert!(pl.can_move(true));
+        let prev = player.prev().await.map(|s| s.name().to_string());
+        player.stop().await;
+        assert_eq!(prev.as_deref(), Some("A"));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stopped_song_taken_off_the_list_gives_way_during_a_status_poll(
+    ) -> Result<(), Box<dyn Error>> {
+        // #576: the edit took any holder of the join lock for a song
+        // starting, so a status poll under way kept stopped B current, off
+        // the list, and Play would start it again.
+        let (player, dir) = player_looping_b().await?;
+        player.stop().await;
+        rests_stopped_on(&player, "B").await;
+        assert_eq!(player.pending_start(), None);
+        // Held as `is_playing()` holds it.
+        let poll = player.join.lock().await;
+        assert!(poll.is_none(), "stopped");
+        edit_playlist(&player, &dir, "songs:\n- A\n- C\n");
+        drop(poll);
+        assert_eq!(
+            player.get_playlist().entry(),
+            Some(1),
+            "stopped B gives way to C"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn next_past_the_end_keeps_a_paused_song_off_the_list_paused(
+    ) -> Result<(), Box<dyn Error>> {
+        // #576: off the list after the last entry, Next had nowhere to go
+        // but cleared the pause anyway, and left B current off the list,
+        // neither paused nor on an entry.
+        let (player, dir) = player_looping_b().await?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let paused_at = player.pause().await?.expect("paused");
+        edit_playlist(&player, &dir, "songs:\n- A\n");
+        assert_eq!(player.get_playlist().entry(), None);
+        let next = player.next().await.map(|s| s.name().to_string());
+        assert_eq!(next.as_deref(), Some("B"), "nothing to go to");
+        assert_eq!(player.pending_start(), Some(paused_at), "still paused");
+        assert_eq!(current_name(&player).await, "B");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_seek_racing_a_songs_own_end_moves_the_playlist_on_once() -> Result<(), Box<dyn Error>>
+    {
+        // No subsystems: every playback ends by itself at once, so a seek
+        // straight after play races the song's own end. The end's cleanup
+        // moved the playlist on and dropped the seek's restart, whose own
+        // end then moved it on again.
+        let mut doubled = 0;
+        for _ in 0..200 {
+            let player = make_test_player_with_config(None, None, None).await?;
+            let first = player.get_playlist().entry().unwrap();
+            player.play().await?;
+            let _ = player.seek_to(Duration::ZERO).await;
+            // Let every cleanup run.
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while player.join.lock().await.is_some() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let at = player.get_playlist().entry().unwrap();
+            if at as i64 - first as i64 != 1 {
+                doubled += 1;
+                eprintln!("moved {}", at as i64 - first as i64);
+            }
+        }
+        assert_eq!(
+            doubled, 0,
+            "one play and one seek moved the playlist on twice {doubled}/200 times"
+        );
+        Ok(())
+    }
+
+    /// Plays the current song with no subsystems, so that it ends by itself
+    /// at once, and returns the join lock taken before its cleanup could
+    /// take it: the cleanup is left waiting on it, as behind a pause or a
+    /// stop on a busy machine.
+    async fn hold_join_over_a_songs_own_end(
+        player: &Arc<Player>,
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<PlayHandles>>, Box<dyn Error>> {
+        for _ in 0..50 {
+            player.play().await?;
+            let join = player.join.lock().await;
+            if join.is_some() {
+                // The song ends, and its cleanup comes to wait on the lock.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                return Ok(join);
+            }
+            // The cleanup was quicker: back to the song to try again.
+            drop(join);
+            player.prev().await;
+        }
+        Err("the song's cleanup always took the join lock first".into())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_racing_a_songs_own_end_keeps_its_position_for_that_song(
+    ) -> Result<(), Box<dyn Error>> {
+        // The end's cleanup, behind the pause, moved the playlist on: the
+        // next song inherited the paused position.
+        let player = make_test_player_with_config(None, None, None).await?;
+        let first = player.get_playlist().entry();
+        let paused_at = Duration::from_millis(100);
+        {
+            // As pause() does it, under the lock.
+            let mut join = hold_join_over_a_songs_own_end(&player).await?;
+            player.stop_for_pause(&mut join).await;
+            *player.pending_start.lock() = Some(seek::PendingStart {
+                position: paused_at,
+                paused: true,
+            });
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            player.get_playlist().entry(),
+            first,
+            "the playlist moved on"
+        );
+        assert_eq!(player.pending_start(), Some(paused_at));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_racing_a_songs_own_end_leaves_the_playlist_where_it_stopped(
+    ) -> Result<(), Box<dyn Error>> {
+        // The end's cleanup, behind the stop, moved the playlist on past the
+        // song the stop stopped on.
+        let player = make_test_player_with_config(None, None, None).await?;
+        let first = player.get_playlist().entry();
+        {
+            // As stop() does it, under the lock.
+            let mut join = hold_join_over_a_songs_own_end(&player).await?;
+            player.cut_locked(&mut join).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            player.get_playlist().entry(),
+            first,
+            "the playlist moved on"
+        );
+        assert!(!player.is_playing().await);
+        Ok(())
+    }
+
+    /// Runs `then` while a Next (or, `back`, a Previous) on looping B breaks
+    /// its loop, before the break's cleanup: both wait on the join lock held
+    /// here, Next first, and the cleanup comes to it only once B, cancelled
+    /// by Next, has wound down. Returns the song Next named, and `then`'s.
+    async fn during_a_loop_break<T: Send + 'static>(
+        player: &Arc<Player>,
+        back: bool,
+        then: impl FnOnce(Arc<Player>) -> tokio::task::JoinHandle<T>,
+    ) -> Result<(Option<String>, T), Box<dyn Error>> {
+        let held = player.join.lock().await;
+        let navigating = player.clone();
+        let navigation = tokio::spawn(async move {
+            let target = if back {
+                navigating.prev().await
+            } else {
+                navigating.next().await
+            };
+            target.map(|song| song.name().to_string())
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let then = then(player.clone());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(held);
+        let target = navigation.await?;
+        Ok((target, then.await?))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_during_a_loop_break_stops_on_its_target() -> Result<(), Box<dyn Error>> {
+        // #576: Next on looping B had named C and begun fading into it, and
+        // a stop before the break's cleanup left the player stopped on B --
+        // with a `fade_out` on B's entry, ending B over it instead.
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 2s\n- C\n").await?;
+        elapsed_eventually(&player).await?;
+        let (target, stopped) = during_a_loop_break(&player, false, |player| {
+            tokio::spawn(async move { player.stop().await.map(|song| song.name().to_string()) })
+        })
+        .await?;
+        assert_eq!(target.as_deref(), Some("C"));
+        assert_eq!(stopped.as_deref(), Some("B"));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!player.is_playing().await, "C started after the stop");
+        assert_eq!(current_name(&player).await, "C");
+        assert_eq!(player.pending_start(), None);
+        assert!(player.ending_status().is_none(), "B ended instead");
+        // Nor is the break left for the next song played to take as its own.
+        assert!(
+            !player.loop_break.load(Ordering::Relaxed),
+            "the break outlived the stop"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_during_a_loop_break_stops_on_its_target() -> Result<(), Box<dyn Error>> {
+        // #576: Previous on looping B had named A, and a pause before the
+        // break's cleanup kept B's position on B instead.
+        let (player, _dir) = player_looping_b().await?;
+        elapsed_eventually(&player).await?;
+        let (target, paused) = during_a_loop_break(&player, true, |player| {
+            tokio::spawn(async move { player.pause().await.map_err(|e| e.to_string()) })
+        })
+        .await?;
+        assert_eq!(target.as_deref(), Some("A"));
+        assert_eq!(paused, Ok(None), "nothing to resume");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!player.is_playing().await, "A started after the pause");
+        assert_eq!(current_name(&player).await, "A");
+        assert_eq!(player.pending_start(), None, "a position kept for A");
+        assert!(!player.loop_break.load(Ordering::Relaxed));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_seek_during_a_loop_break_calls_it_off_and_seeks_the_looping_song(
+    ) -> Result<(), Box<dyn Error>> {
+        // A seek is asked of the song playing: it restarts B there, and the
+        // break is called off rather than moving on once B is restarted.
+        let (player, _dir) = player_looping_b().await?;
+        elapsed_eventually(&player).await?;
+        let (target, seeked) = during_a_loop_break(&player, false, |player| {
+            tokio::spawn(async move {
+                player
+                    .seek_to(Duration::from_secs(5))
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        })
+        .await?;
+        assert_eq!(target.as_deref(), Some("C"));
+        assert_eq!(seeked, Ok(()));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(player.is_playing().await);
+        assert_eq!(current_name(&player).await, "B");
+        let elapsed = player.elapsed().await?.expect("playing");
+        assert!(elapsed >= Duration::from_secs(5), "{elapsed:?}");
+        assert!(!player.loop_break.load(Ordering::Relaxed));
+        player.stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_after_a_loop_breaks_cleanup_keeps_the_next_song_from_starting(
+    ) -> Result<(), Box<dyn Error>> {
+        // Next breaks looping B's loop, and its cleanup moves on to C and
+        // starts it. It let go of the join lock in between, and a stop that
+        // took the lock there found nothing playing to stop: C started
+        // after it regardless.
+        let (player, _dir) = player_looping_b().await?;
+        elapsed_eventually(&player).await?;
+        let b = player.join.lock().await.as_ref().unwrap().cancel.clone();
+        player.next().await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut stopped = false;
+        while std::time::Instant::now() < deadline {
+            let mut join = player.join.lock().await;
+            // The first chance after the cleanup has had the lock.
+            if !join
+                .as_ref()
+                .is_some_and(|handles| handles.cancel.same_as(&b))
+            {
+                player.cut_locked(&mut join).await;
+                stopped = true;
+                break;
+            }
+            drop(join);
+            tokio::task::yield_now().await;
+        }
+        assert!(stopped, "the break's cleanup never ran");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !player.is_playing().await,
+            "C started after the stop: {}",
+            current_name(&player).await
+        );
+        assert_eq!(current_name(&player).await, "C");
+        Ok(())
+    }
+
+    /// A pause queued behind a loop break's cleanup, which moves on to the
+    /// next song and starts it, pauses that song at its own position, not
+    /// the one before's.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_queued_behind_a_loop_breaks_cleanup_keeps_no_position_of_the_song_before(
+    ) -> Result<(), Box<dyn Error>> {
+        let (player, _dir) = player_looping_b().await?;
+        elapsed_eventually(&player).await?;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let pause = {
+            let join = player.join.lock().await;
+            // Next's break, as navigate asks it.
+            player.loop_break.store(true, Ordering::Relaxed);
+            join.as_ref().unwrap().cancel.cancel();
+            drop(join);
+            // B winds down, so its cleanup queues on the lock first...
+            let held = player.join.lock().await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            // ...then the pause queues after it.
+            let pausing = player.clone();
+            let pause =
+                tokio::spawn(async move { pausing.pause().await.map_err(|e| e.to_string()) });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(held);
+            pause
+        };
+        let paused = pause.await?;
+        assert_eq!(current_name(&player).await, "C");
+        assert!(!player.is_playing().await);
+        let kept = player.pending_start();
+        assert!(
+            kept.is_none_or(|k| k < Duration::from_millis(500)),
+            "C kept B's position: pause returned {paused:?}, pending {kept:?}"
+        );
+        Ok(())
+    }
+
+    /// A pause before `play_files` has stamped the start time kept 0, so a
+    /// resume restarted the song: until the stamp, the song is where it
+    /// started (#576).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_before_the_start_is_stamped_keeps_the_start_position(
+    ) -> Result<(), Box<dyn Error>> {
+        let (player, _dir) = player_looping_b().await?;
+        player.stop().await;
+        eventually(
+            || player.join.try_lock().is_ok_and(|j| j.is_none()),
+            "stopped",
+        );
+        // Resume at 5 s (as after a pause), then pause again before
+        // play_files has stamped play_start_time. Simulated by clearing
+        // the stamp under the join lock once the start has gone in.
+        {
+            let mut join = player.join.lock().await;
+            player
+                .play_from_locked(Duration::from_secs(5), &mut join)
+                .await?;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            *player.play_start_time.lock().await = None;
+        }
+        let paused = player.pause().await?;
+        assert_eq!(
+            paused,
+            Some(Duration::from_secs(5)),
+            "a pause before the stamp kept {paused:?}, pending {:?}",
+            player.pending_start()
+        );
+        Ok(())
+    }
+
+    /// A pause straight after a seek lands in that window as a matter of
+    /// course: it keeps the seek's position.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_straight_after_a_seek_keeps_the_seek() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) = player_looping_b().await?;
+        elapsed_eventually(&player).await?;
+        let mut zeros = 0;
+        for _ in 0..10 {
+            player.seek_to(Duration::from_secs(5)).await?;
+            let paused = player.pause().await?;
+            if paused == Some(Duration::ZERO) {
+                zeros += 1;
+            }
+            player.play().await?;
+            elapsed_eventually(&player).await?;
+        }
+        assert_eq!(
+            zeros, 0,
+            "{zeros}/10 pauses straight after a seek to 5 s kept 0"
+        );
+        Ok(())
+    }
+
+    /// A reload deferred under a looping song ran as the song's ending
+    /// began, and tore the audio down under its fade-out. It waits for the
+    /// fade, and runs once it is over.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_waits_for_a_looping_songs_ending_fade() -> Result<(), Box<dyn Error>>
+    {
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 5s\n- C\n").await?;
+        let _store = set_store_without_audio(&player)?;
+        player.reload_hardware().await?;
+        assert!(player.audio_device().is_some(), "deferred");
+        // Stop ends B over its 5 s fade-out.
+        player.stop().await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(player.ending_status().is_some(), "still fading out");
+        assert!(
+            player.audio_device().is_some(),
+            "the deferred reload tore the audio device down under the ending fade"
+        );
+        eventually(
+            || player.ending_status().is_none() && player.audio_device().is_none(),
+            "The deferred reload never ran after the fade",
+        );
+        Ok(())
+    }
+
+    /// A loop break's fade can outlast the song it moved to, which leaves
+    /// the player idle with nothing to come along and run a reload waiting
+    /// for the fade: it runs once the fade is over.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_waits_for_a_loop_breaks_fade() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _store = set_store_without_audio(&player)?;
+        *player.fading_until.lock() = Some(std::time::Instant::now() + Duration::from_millis(800));
+        player.reload_hardware().await?;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            player.audio_device().is_some(),
+            "the reload tore the audio device down under the fade"
+        );
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran after the fade",
+        );
+        Ok(())
+    }
+
+    /// Next during an ending forgets it, the fade left to play out: a
+    /// reload waiting for the ending runs once the fade is over, though
+    /// the ending will not say so.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_runs_after_an_ending_navigated_away_from(
+    ) -> Result<(), Box<dyn Error>> {
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 1s\n- C\n").await?;
+        let _store = set_store_without_audio(&player)?;
+        player.reload_hardware().await?;
+        player.stop().await;
+        eventually(|| player.ending_status().is_some(), "B never began to end");
+        eventually(
+            || player.join.try_lock().is_ok_and(|j| j.is_none()),
+            "stopped",
+        );
+        player.next().await;
+        assert!(player.ending_status().is_none(), "the ending is forgotten");
+        assert!(player.audio_device().is_some(), "reloaded under the fade");
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran after the fade",
+        );
+        Ok(())
+    }
+
+    /// A pause ran a reload deferred under the song, and a resume was then
+    /// refused while the hardware came back up, for good when the new
+    /// config's audio interface was slow or not there. A paused song is a
+    /// show in progress: the reload waits on, and the song resumes at once.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_waits_out_a_pause() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        // A saved config whose audio interface is slow or not there yet.
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        std::fs::write(
+            &path,
+            "songs: songs\nprofiles:\n  - audio:\n      device: no-such-device\n      track_mappings:\n        click: [1]\n",
+        )?;
+        let cfg = config::Player::deserialize(&path)?;
+        player.set_config_store(std::sync::Arc::new(config::ConfigStore::new(cfg, path)));
+
+        player.play().await?;
+        elapsed_eventually(&player).await?;
+        player.reload_hardware().await?; // deferred under the song
+        let paused = player.pause().await?;
+        assert!(paused.is_some());
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let resumed = player.play().await;
+        player.init_cancel.lock().cancel();
+        assert!(
+            matches!(resumed, Ok(Some(_))),
+            "resume after a pause refused: {:?}",
+            resumed
+                .map(|s| s.map(|s| s.name().to_string()))
+                .map_err(|e| e.to_string())
+        );
+        Ok(())
+    }
+
+    /// A reload asked for while a song is paused waits as under a playing
+    /// one, and runs once the paused song is stopped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_while_paused_runs_when_the_song_stops() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _store = set_store_without_audio(&player)?;
+        player.play().await?;
+        elapsed_eventually(&player).await?;
+        assert!(player.pause().await?.is_some());
+        player.reload_hardware().await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(player.audio_device().is_some(), "reloaded under the pause");
+        assert!(*player.init_done_tx.borrow(), "reset under the pause");
+
+        player.stop().await;
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        Ok(())
+    }
+
+    /// Moving off a paused song calls the pause off: a reload waiting for
+    /// it runs then.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_while_paused_runs_when_the_playlist_moves_on() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _store = set_store_without_audio(&player)?;
+        player.play().await?;
+        elapsed_eventually(&player).await?;
+        assert!(player.pause().await?.is_some());
+        player.reload_hardware().await?;
+        assert!(player.audio_device().is_some(), "reloaded under the pause");
+
+        player.next().await;
+        assert!(player.pending_start().is_none(), "still paused");
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        Ok(())
+    }
+
+    /// A position cued by a seek while stopped held a reload off as a pause
+    /// does, though nothing plays and no lights are held. Only a pause does;
+    /// a seek while paused leaves the song paused.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_seek_while_stopped_does_not_hold_a_reload() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _store = set_store_without_audio(&player)?;
+        player.play().await?;
+        elapsed_eventually(&player).await?;
+        assert!(player.pause().await?.is_some());
+        player.seek_to(Duration::from_millis(150)).await?;
+        assert!(
+            player.is_paused(),
+            "a seek while paused called the pause off"
+        );
+        assert!(!player.reload_hardware().await?.applied());
+        player.stop().await;
+        assert!(!player.is_paused());
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran",
+        );
+        player.await_hardware_ready().await;
+
+        player.seek_to(Duration::from_millis(150)).await?;
+        assert_eq!(player.pending_start(), Some(Duration::from_millis(150)));
+        assert!(!player.is_paused(), "a stopped seek reads as paused");
+        assert!(player.reload_hardware().await?.applied());
+        Ok(())
+    }
+
+    /// A resume took the paused position before the join lock, and a reload
+    /// that took the lock in between found the player idle: it reset the
+    /// hardware, and the resume was refused with its position thrown away.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_resume_racing_a_reload_keeps_the_pause() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _store = set_store_without_audio(&player)?;
+        player.play().await?;
+        elapsed_eventually(&player).await?;
+        let paused = player.pause().await?;
+        assert!(paused.is_some());
+
+        // The reload and the resume both wait on the join lock, the reload
+        // first.
+        let join = player.join.lock().await;
+        let p = player.clone();
+        let reload =
+            tokio::spawn(async move { p.reload_hardware().await.map_err(|e| e.to_string()) });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let p = player.clone();
+        let resume = tokio::spawn(async move {
+            p.play()
+                .await
+                .map(|s| s.map(|s| s.name().to_string()))
+                .map_err(|e| e.to_string())
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(join);
+
+        let reload = reload.await?;
+        let resume = resume.await?;
+        assert!(
+            matches!(resume, Ok(Some(_))),
+            "resume refused: {resume:?}; reload: {reload:?}"
+        );
+        assert!(player.audio_device().is_some(), "reloaded under the pause");
+        player.stop().await;
+        Ok(())
+    }
+
+    /// A MIDI controller listening for the pedalboard's footswitches.
+    fn midi_controller() -> config::Controller {
+        config::Controller::Midi(config::MidiController::new(
+            config::midi::note_on(16, 0, 127),
+            config::midi::note_on(16, 1, 127),
+            config::midi::note_on(16, 2, 127),
+            config::midi::note_on(16, 3, 127),
+            config::midi::note_on(16, 4, 127),
+            config::midi::note_on(16, 5, 127),
+        ))
+    }
+
+    /// A player with a MIDI controller on the given MIDI device.
+    fn midi_controller_config(midi: &str) -> config::Player {
+        config::Player::new(
+            vec![midi_controller()],
+            Some(config::Audio::new("mock-device")),
+            Some(config::Midi::new(midi, None)),
+            None,
+            HashMap::new(),
+            "assets/songs",
+        )
+    }
+
+    /// A player whose MIDI controller has started on the given MIDI device.
+    async fn make_midi_controller_player(midi: &str) -> Result<Arc<Player>, Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let mut playlists = HashMap::new();
+        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
+        let player = Player::new(
+            playlists,
+            "all_songs".to_string(),
+            &midi_controller_config(midi),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        Ok(player)
+    }
+
+    /// Presses Next on the player's MIDI device, and waits for the playlist
+    /// to move on. A mock event waits for a watcher to take it, forever if
+    /// there is none, so it is sent from a thread of its own.
+    fn press_next_on_midi_device(player: &Arc<Player>) -> Result<(), Box<dyn Error>> {
+        use crate::config::midi::ToMidiEvent;
+
+        let midi = player.midi_device().expect("midi device").to_mock()?;
+        let before = player.get_playlist().current().unwrap().name().to_string();
+        let mut next = Vec::new();
+        config::midi::note_on(16, 2, 127)
+            .to_midi_event()?
+            .write(&mut next)?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            midi.mock_event(&next);
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_secs(3)).is_ok(),
+            "nothing watches the player's MIDI device"
+        );
+        eventually(
+            || player.get_playlist().current().unwrap().name() != before,
+            "Next on the MIDI device was ignored",
+        );
+        Ok(())
+    }
+
+    /// A hardware reload opens the MIDI device anew, and an unchanged MIDI
+    /// controller was kept listening to the old one, as gRPC and MCP
+    /// reload: a pedalboard moved to another interface went unheard.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unchanged_midi_controller_follows_a_reloaded_midi_device(
+    ) -> Result<(), Box<dyn Error>> {
+        let player = make_midi_controller_player("mock-midi-a").await?;
+        assert_eq!(player.controller_statuses()[0].status, "running");
+        // The pedalboard moves to another MIDI interface; the controller is
+        // unchanged.
+        let dir = tempfile::tempdir()?;
+        player.set_config_store(Arc::new(config::ConfigStore::new(
+            midi_controller_config("mock-midi-b"),
+            dir.path().join("config.yaml"),
+        )));
+        assert!(player.reload_hardware().await?.applied());
+        player.await_hardware_ready().await;
+        assert_eq!(player.controller_statuses()[0].status, "running");
+        assert!(player
+            .midi_device()
+            .is_some_and(|d| d.to_string().contains("mock-midi-b")));
+        press_next_on_midi_device(&player)
+    }
+
+    /// A restarted MIDI controller watches the device its predecessor did.
+    /// The predecessor was aborted with its watch still on, the device
+    /// refused a second, and the restarted controller heard nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_restarted_midi_controller_watches_its_device_again() -> Result<(), Box<dyn Error>> {
+        let player = make_midi_controller_player("mock-midi-device").await?;
+        player.restart_controllers_forced(vec![midi_controller()]);
+        assert_eq!(player.controller_statuses()[0].status, "running");
+        press_next_on_midi_device(&player)
     }
 }

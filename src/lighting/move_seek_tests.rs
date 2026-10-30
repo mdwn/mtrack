@@ -114,17 +114,7 @@ fn seek_play(source: &str, fixtures: &[FixtureInfo], seek_ms: u64, until_ms: u64
     let start = Duration::from_millis(seek_ms);
     let h = tl.start_at(start);
     engine.set_song_time(start);
-    for cmd in &h.layer_commands {
-        engine.apply_layer_command(cmd);
-    }
-    for s in &h.stop_sequences {
-        engine.stop_sequence(s);
-    }
-    let mut we: Vec<_> = h.effects_with_elapsed.into_values().collect();
-    we.sort_by_key(|(e, _)| e.cue_time.unwrap_or(Duration::ZERO));
-    for (e, el) in we {
-        let _ = engine.start_effect_with_elapsed(e, el);
-    }
+    let _ = engine.apply_timeline_update(h);
     run_frames(&mut tl, &mut engine, seek_ms, until_ms);
     engine
 }
@@ -450,4 +440,491 @@ fn move_seek_show_end() {
         }
     }
     assert!(bad.is_empty(), "{bad:#?}");
+}
+
+fn mover_at(name: &str, address: u16) -> FixtureInfo {
+    let mut info = mover(name);
+    info.address = address;
+    info
+}
+
+/// A head's pan as the engine remembers it: where it was last shown.
+fn pan_in(engine: &EffectEngine, name: &str) -> Option<f64> {
+    engine.poses().get(name).map(|pose| pose.pan)
+}
+
+fn eval_pan(source: &str, fixtures: &[FixtureInfo], ms: u64, name: &str) -> Option<f64> {
+    eval_one(source, fixtures, ms as f64 / 1000.0)
+        .poses
+        .iter()
+        .find(|pose| pose.name == name)
+        .map(|pose| pose.pan)
+}
+
+/// Each head's pan played through, after a seek and from `evaluate_show`,
+/// at each `(seek, at)`: the seek plays on to `at`, and evaluate is asked
+/// for `at`. Within a frame's travel: live, a cut head holds the pose of
+/// the frame before the cut, a seek the pose at the cut itself.
+fn compare_heads(
+    name: &str,
+    src: &str,
+    fixtures: &[FixtureInfo],
+    pairs: &[(u64, u64)],
+) -> Vec<String> {
+    let close = |a: Option<f64>, b: Option<f64>| match (a, b) {
+        (Some(a), Some(b)) => (a - b).abs() <= 1.0,
+        (a, b) => a == b,
+    };
+    let mut bad = Vec::new();
+    for &(seek, at) in pairs {
+        let live = played(src, fixtures, at);
+        let sought = seek_play(src, fixtures, seek, at);
+        for head in fixtures.iter().map(|f| f.name.as_str()) {
+            let (l, s) = (pan_in(&live, head), pan_in(&sought, head));
+            if !close(l, s) {
+                bad.push(format!(
+                    "{name} {head} seek {seek} at {at}: live {l:?} seek {s:?}"
+                ));
+            }
+            // Evaluate reports a head with no pose at rest, at 0.
+            let e = eval_pan(src, fixtures, at, head);
+            if !close(l.or(Some(0.0)), e) {
+                bad.push(format!("{name} {head} eval at {at}: live {l:?} eval {e:?}"));
+            }
+        }
+    }
+    bad
+}
+
+/// A layer clear part way through a move leaves the head where the clear
+/// caught it, after a seek past the clear as played through (#596).
+#[test]
+fn a_layer_clear_part_way_through_a_move_holds_the_head_after_a_seek() {
+    let src = show(mv("00:02.000", "") + "    @00:03.000\n    clear(layer: background)\n");
+    let f = [mover("m")];
+    let held = pan_in(&played(&src, &f, 3500), "m").expect("a pose");
+    assert!(held > 30.0 && held < 60.0, "held at {held}");
+    let bad = compare_heads(
+        "layer clear",
+        &src,
+        &f,
+        &[(3500, 3500), (4500, 4500), (3010, 5000), (4500, 6000)],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// The same for `stop sequence` part way through a sequence's move (#596).
+#[test]
+fn a_stop_part_way_through_a_sequence_move_holds_the_head_after_a_seek() {
+    let src = "sequence \"q\" {\n    @00:00.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s\n}\n\n\
+        show \"s\" {\n    @00:02.000\n    sequence \"q\"\n    @00:03.000\n    stop sequence \"q\"\n}\n";
+    let f = [mover("m")];
+    let held = pan_in(&played(src, &f, 3500), "m").expect("a pose");
+    assert!(held > 30.0 && held < 60.0, "held at {held}");
+    let bad = compare_heads(
+        "stop sequence",
+        src,
+        &f,
+        &[(3500, 3500), (4500, 4500), (4500, 6000)],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A full `clear` part way through a move still lets the head go: the next
+/// move without `from` snaps to its target rather than sweeping from where
+/// the clear caught the head, after a seek as played through.
+#[test]
+fn a_full_clear_part_way_through_a_move_releases_the_pose_after_a_seek() {
+    let src = show(
+        mv("00:02.000", "")
+            + "    @00:03.000\n    clear()\n    @00:04.000\n    m: move pan: 180deg, tilt: 0deg, duration: 2s\n",
+    );
+    let f = [mover("m")];
+    assert_eq!(pan_in(&played(&src, &f, 3500), "m"), None);
+    assert_eq!(pan_in(&played(&src, &f, 4500), "m"), Some(180.0));
+    let bad = compare_heads(
+        "full clear",
+        &src,
+        &f,
+        &[(3500, 3500), (4500, 4500), (3500, 4500), (5000, 5000)],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+const LAYERED_MOVES: &str = "show \"s\" {\n    @6.587\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 180deg, tilt: 30deg, duration: 2772ms, layer: foreground\n    \
+    @6.993\n    m: move from_pan: 45deg, from_tilt: 0deg, pan: -45deg, tilt: 30deg, duration: 1505ms, layer: midground\n}\n";
+
+/// Two moves on different layers over one head: the later takes it, and
+/// the head rests where that one ends, however it is reached (#599).
+#[test]
+fn the_latest_move_takes_a_head_whatever_its_layer() {
+    let f = [mover("m")];
+    assert_eq!(pan_in(&played(LAYERED_MOVES, &f, 9900), "m"), Some(-45.0));
+    let live = played(LAYERED_MOVES, &f, 7500);
+    assert_eq!(
+        live.get_active_effects().len(),
+        1,
+        "the earlier move is over"
+    );
+    let bad = compare_heads(
+        "layered moves",
+        LAYERED_MOVES,
+        &f,
+        &[
+            (6800, 6800),
+            (7500, 7500),
+            (7000, 8000),
+            (9000, 9000),
+            (9900, 9900),
+            (6800, 10500),
+        ],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+    // Over when the later move ends, not when the earlier would have.
+    let end = LightingTimeline::new(shows(LAYERED_MOVES)).show_end();
+    assert_eq!(end, Duration::from_millis(6993 + 1505));
+}
+
+/// A move over one of a two-head move's fixtures takes just that one: the
+/// other runs on to its end, and the head taken carries on from where it
+/// was, as the later move has no `from` (#599).
+#[test]
+fn a_move_takes_one_head_of_a_two_head_move() {
+    let src = "show \"s\" {\n    @00:02.000\n    m1, m2: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:03.000\n    m2: move pan: -90deg, tilt: 0deg, duration: 2s, layer: background\n}\n";
+    let f = [mover_at("m1", 1), mover_at("m2", 11)];
+    let live = played(src, &f, 4500);
+    assert_eq!(pan_in(&live, "m1"), Some(90.0));
+    let m2 = pan_in(&live, "m2").expect("a pose");
+    assert!(m2 > -90.0 && m2 < 45.0, "m2 sweeping from the cut, at {m2}");
+    assert_eq!(pan_in(&played(src, &f, 5500), "m2"), Some(-90.0));
+    let bad = compare_heads(
+        "one head of two",
+        src,
+        &f,
+        &[
+            (3500, 3500),
+            (4500, 4500),
+            (3010, 4500),
+            (5500, 5500),
+            (2500, 6000),
+        ],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+// ---- adversarial review ----
+
+/// A show's own move and a sequence's move on one head at one time: live,
+/// `apply_timeline_update` starts sequence effects first, so the show's own
+/// move starts last and takes the head. The seek replay supersedes in cue
+/// order, so the sequence's move, listed after it, takes the head instead.
+const SAME_TIME_SEQ_AND_SHOW_MOVE: &str = "sequence \"q\" {\n    @00:00.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: -90deg, tilt: 0deg, duration: 4s\n}\n\n\
+    show \"s\" {\n    @00:02.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s\n    sequence \"q\"\n}\n";
+
+#[test]
+fn a_show_move_beats_a_sequence_move_at_one_time_after_a_seek() {
+    let f = [mover("m")];
+    let live = pan_in(&played(SAME_TIME_SEQ_AND_SHOW_MOVE, &f, 7000), "m");
+    let seek = pan_in(&seek_play(SAME_TIME_SEQ_AND_SHOW_MOVE, &f, 7000, 7000), "m");
+    let mid_live = pan_in(&played(SAME_TIME_SEQ_AND_SHOW_MOVE, &f, 3000), "m");
+    let mid_seek = pan_in(&seek_play(SAME_TIME_SEQ_AND_SHOW_MOVE, &f, 3000, 3000), "m");
+    let eval = eval_pan(SAME_TIME_SEQ_AND_SHOW_MOVE, &f, 7000, "m");
+    assert_eq!(
+        (mid_seek, seek, eval),
+        (mid_live, live, live),
+        "seek/eval vs live (mid, rest, eval)"
+    );
+}
+
+#[test]
+fn a_show_move_beats_a_sequence_move_at_one_time_in_the_show_end() {
+    let f = [mover("m")];
+    // Live, the show's own 2 s move takes the head; nothing runs after 4 s.
+    let live = played(SAME_TIME_SEQ_AND_SHOW_MOVE, &f, 4500);
+    assert!(live.get_active_effects().is_empty(), "live idle at 4.5 s");
+    let end = LightingTimeline::new(shows(SAME_TIME_SEQ_AND_SHOW_MOVE)).show_end();
+    assert_eq!(end, Duration::from_secs(4));
+}
+
+#[test]
+fn a_move_takes_a_head_from_one_frozen_or_slowed() {
+    let f = [mover_at("m1", 1), mover_at("m2", 11)];
+    let frozen = "show \"s\" {\n    @00:02.000\n    m1, m2: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:02.500\n    freeze(layer: foreground)\n    @00:03.000\n    m2: move pan: -90deg, tilt: 0deg, duration: 2s, layer: background\n    \
+        @00:04.000\n    unfreeze(layer: foreground)\n}\n";
+    let slowed = "show \"s\" {\n    @00:02.000\n    m1, m2: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:02.500\n    master(layer: foreground, speed: 0.5)\n    @00:03.000\n    m2: move pan: -90deg, tilt: 0deg, duration: 2s, layer: background\n}\n";
+    let pairs = [
+        (2800, 2800),
+        (3500, 3500),
+        (4500, 4500),
+        (3010, 6000),
+        (6000, 6000),
+        (8000, 8000),
+    ];
+    let mut bad = compare_heads("frozen", frozen, &f, &pairs);
+    bad.extend(compare_heads("slowed", slowed, &f, &pairs));
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+fn two_heads() -> [FixtureInfo; 2] {
+    [mover_at("m1", 1), mover_at("m2", 11)]
+}
+
+/// Checks the show's end against the last frame live has an effect on.
+fn end_check(name: &str, src: &str, f: &[FixtureInfo], bad: &mut Vec<String>) {
+    let live = live_end(src, f, 20000);
+    let end = LightingTimeline::new(shows(src)).show_end();
+    if live.abs_diff(end) > Duration::from_millis(15) {
+        bad.push(format!("{name} end: live {live:?} show_end {end:?}"));
+    }
+}
+
+/// A seek exactly onto a layer clear part way through a move holds the
+/// head where the move had it then, as played through: the move restored
+/// part way has not rendered when the clear lands in the first frame.
+#[test]
+fn a_seek_onto_a_layer_clear_holds_the_head_where_the_move_had_it() {
+    let src = show(mv("00:02.000", "") + "    @00:03.000\n    clear(layer: background)\n");
+    let bad = compare_heads(
+        "onto clear",
+        &src,
+        &[mover("m")],
+        &[(3000, 3000), (3000, 3500), (3000, 5000)],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// The same for a seek onto a `stop sequence` part way through its move.
+#[test]
+fn a_seek_onto_a_stop_holds_the_head_where_the_sequence_move_had_it() {
+    let src = "sequence \"q\" {\n    @00:00.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s\n}\n\n\
+        show \"s\" {\n    @00:02.000\n    sequence \"q\"\n    @00:03.000\n    stop sequence \"q\"\n}\n";
+    let bad = compare_heads(
+        "onto stop",
+        src,
+        &[mover("m")],
+        &[(3000, 3000), (3000, 3500), (3000, 5000)],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// And the DMX sent after a seek onto that clear, from the first frame:
+/// the head held where the clear caught it, then swept on by a later move
+/// from there, not dropped.
+#[test]
+fn a_seek_onto_a_clear_sends_the_held_head_from_its_first_frame() {
+    let src = show(mv("00:02.000", "") + "    @00:03.000\n    clear(layer: background)\n    @00:04.000\n    m: move pan: -90deg, tilt: 0deg, duration: 2s\n");
+    let f = [mover("m")];
+    let mut bad = Vec::new();
+    for (seek, at) in [
+        (3000, 3000),
+        (3000, 3500),
+        (3000, 4500),
+        (3010, 3500),
+        (3010, 4500),
+    ] {
+        let live = pan_of(&played(&src, &f, at));
+        let sought = pan_of(&seek_play(&src, &f, seek, at));
+        let close = matches!((live, sought), (Some(l), Some(s)) if (l - s).abs() <= 1.0);
+        if !close {
+            bad.push(format!(
+                "seek {seek} at {at}: live {live:?} seek {sought:?}"
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A seek onto a later move's cue that takes one head of a two-head move:
+/// the head sweeps on from where the earlier move had it, rather than
+/// snapping to the later move's target for want of a pose.
+#[test]
+fn a_seek_onto_a_later_move_sweeps_the_head_from_where_it_is() {
+    let src = "show \"s\" {\n    @00:02.000\n    m1, m2: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:03.000\n    m2: move pan: -90deg, tilt: 0deg, duration: 2s, layer: background\n}\n";
+    let bad = compare_heads(
+        "onto supersede",
+        src,
+        &two_heads(),
+        &[(3000, 3000), (3000, 3500), (3000, 4500), (3000, 6000)],
+    );
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A layer clear of a move held by a freeze or slowed by the speed master,
+/// sought onto and past: the head holds where the move had it, and the
+/// show ends at the clear.
+#[test]
+fn a_clear_of_a_frozen_or_slowed_move_holds_the_head_after_a_seek() {
+    let f = [mover("m")];
+    let frozen = show(mv("00:02.000", "") + "    @00:02.500\n    freeze(layer: background)\n    @00:03.000\n    clear(layer: background)\n");
+    let slowed = show(mv("00:02.000", "") + "    @00:02.500\n    master(layer: background, speed: 0.5)\n    @00:03.500\n    clear(layer: background)\n");
+    let pairs = [
+        (2800, 2800),
+        (3000, 3000),
+        (3010, 3500),
+        (3500, 3500),
+        (4000, 4000),
+        (2700, 5000),
+    ];
+    let mut bad = compare_heads("frozen clear", &frozen, &f, &pairs);
+    bad.extend(compare_heads("slowed clear", &slowed, &f, &pairs));
+    end_check("frozen", &frozen, &f, &mut bad);
+    end_check("slowed", &slowed, &f, &mut bad);
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A move on another layer taking the head from a frozen move, sought
+/// onto: it sweeps from where the freeze holds the head, and the show ends
+/// with it, the frozen move over.
+#[test]
+fn a_seek_onto_a_move_taking_the_head_from_a_frozen_move() {
+    let f = [mover("m")];
+    let src = "show \"s\" {\n    @00:02.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:02.500\n    freeze(layer: foreground)\n    @00:03.000\n    m: move pan: -90deg, tilt: 0deg, duration: 2s, layer: background\n}\n";
+    let active = played(src, &f, 6000).get_active_effects().len();
+    let mut bad = compare_heads(
+        "frozen sup",
+        src,
+        &f,
+        &[(3000, 3000), (3500, 3500), (6000, 6000)],
+    );
+    end_check("frozen sup", src, &f, &mut bad);
+    assert!(bad.is_empty(), "{bad:#?} active at 6s {active}");
+}
+
+/// A clear in one show and a move in another at one time, in either file
+/// order: the move sweeps from where the clear held the head.
+#[test]
+fn a_clear_and_a_move_at_one_time_in_two_shows_after_a_seek() {
+    let f = [mover("m")];
+    let a = format!(
+        "show \"a\" {{\n{}    @00:03.000\n    clear(layer: background)\n}}\n",
+        mv("00:02.000", "")
+    );
+    let b = "show \"b\" {\n    @00:03.000\n    m: move pan: -90deg, tilt: 0deg, duration: 2s\n}\n"
+        .to_string();
+    let pairs = [
+        (3000, 3000),
+        (3000, 4000),
+        (3500, 3500),
+        (4000, 4000),
+        (2500, 6000),
+        (6000, 6000),
+    ];
+    let mut bad = Vec::new();
+    for (n, s) in [("ab", format!("{a}\n{b}")), ("ba", format!("{b}\n{a}"))] {
+        bad.extend(compare_heads(n, &s, &f, &pairs));
+        end_check(n, &s, &f, &mut bad);
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A sequence stopped and started again on one cue part way through its
+/// move, then a show's move and another stop: each sought onto and past.
+#[test]
+fn a_sequence_stopped_and_restarted_at_one_time_after_a_seek() {
+    let f = [mover("m")];
+    let src = "sequence \"q\" {\n    @00:00.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s\n}\n\n\
+        show \"s\" {\n    @00:02.000\n    sequence \"q\"\n    @00:03.000\n    stop sequence \"q\"\n    sequence \"q\"\n    @00:03.500\n    m: move pan: -90deg, tilt: 0deg, duration: 1s\n    stop sequence \"q\"\n}\n";
+    let pairs = [
+        (3000, 3000),
+        (3200, 3200),
+        (3500, 3500),
+        (3500, 4000),
+        (3700, 3700),
+        (5000, 5000),
+        (2500, 6000),
+    ];
+    let mut bad = compare_heads("stop restart", src, &f, &pairs);
+    end_check("stop restart", src, &f, &mut bad);
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A move taking one head of a frozen two-head move, then an unfreeze and
+/// a slow down: the other head runs on slowed from where it froze.
+#[test]
+fn an_unfreeze_after_a_head_is_taken_runs_the_other_on_after_a_seek() {
+    let f = two_heads();
+    let src = "show \"s\" {\n    @00:02.000\n    m1, m2: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:02.500\n    freeze(layer: foreground)\n    @00:03.000\n    m2: move pan: -90deg, tilt: 0deg, duration: 2s, layer: foreground\n    \
+        @00:03.500\n    unfreeze(layer: foreground)\n    master(layer: foreground, speed: 0.5)\n}\n";
+    let pairs = [
+        (3000, 3000),
+        (3200, 3200),
+        (3500, 3500),
+        (3500, 5000),
+        (4000, 4000),
+        (6000, 6000),
+        (9000, 9000),
+    ];
+    let mut bad = compare_heads("unfreeze after cut", src, &f, &pairs);
+    end_check("unfreeze after cut", src, &f, &mut bad);
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A long show of overlapping moves over eight heads on three layers, with
+/// slow downs and clears now and then: `n` cues 50 ms apart.
+fn many_overlapping_moves(n: u64) -> String {
+    let mut body = String::new();
+    let layers = ["background", "midground", "foreground"];
+    for i in 0..n {
+        let ms = i * 50;
+        let head = i % 8;
+        body.push_str(&format!(
+            "    @{}.{:03}\n    h{head}, h{}: move from_pan: 0deg, from_tilt: 0deg, pan: {}deg, tilt: 0deg, duration: 3s, layer: {}\n",
+            ms / 1000,
+            ms % 1000,
+            (head + 1) % 8,
+            (i % 180) as i64 - 90,
+            layers[(i % 3) as usize]
+        ));
+        if i % 97 == 0 {
+            body.push_str("    master(layer: midground, speed: 0.7)\n");
+        }
+        if i % 211 == 0 {
+            body.push_str("    clear(layer: foreground)\n");
+        }
+    }
+    show(body)
+}
+
+/// Builds the timeline for `n` cues of [`many_overlapping_moves`] and seeks
+/// to near its end: how long each takes, and how many effects the seek
+/// hands the engine.
+fn build_and_seek(n: u64) -> (Duration, Duration, usize) {
+    let s = shows(&many_overlapping_moves(n));
+    let t = std::time::Instant::now();
+    let mut tl = LightingTimeline::new(s);
+    let built = t.elapsed();
+    let t = std::time::Instant::now();
+    let h = tl.start_at(Duration::from_millis(n * 50 - 100));
+    (built, t.elapsed(), h.effects_with_elapsed.len())
+}
+
+/// A move that sets a head's pose outright, over another's, leaves nothing
+/// of the earlier one's pose to keep, so the replay forgets that one:
+/// building the timeline and seeking stay linear in the cues, and the seek
+/// hands the engine only what still counts, not every move since the top
+/// (#596, #599). 8000 cues took about 4 s in release while they piled up.
+#[test]
+fn a_long_show_of_moves_builds_and_seeks_quickly() {
+    let (built, sought, resumed) = build_and_seek(8000);
+    assert!(resumed <= 16, "{resumed} effects handed over");
+    assert!(built < Duration::from_secs(5), "built in {built:?}");
+    assert!(sought < Duration::from_secs(5), "sought in {sought:?}");
+}
+
+/// The same, `R2N` cues (4000 by default), timed.
+#[test]
+#[ignore]
+fn time_a_long_show_of_moves() {
+    let n: u64 = std::env::var("R2N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4000);
+    let (built, sought, resumed) = build_and_seek(n);
+    eprintln!("{n} cues: new {built:?}, start_at {sought:?}, {resumed} effects handed over");
 }

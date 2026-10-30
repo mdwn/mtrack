@@ -219,4 +219,213 @@ test.describe("Dashboard: next up", () => {
     await sendWsMessage(page, wsId, { ...frame, next: null });
     await expect(nextUp).toHaveCount(0);
   });
+
+  test("next and previous end a looping song at the ends of the list", async ({
+    page,
+  }) => {
+    // #579: they were disabled there, though pressing them ends the song
+    // over its fade out.
+    const wsId = `loop-end-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/`);
+    await expect(page.locator(".playback-card__title")).toBeVisible();
+
+    const nextUp = page.getByTestId("next-up");
+    const prevButton = page.getByRole("button", { name: "Prev", exact: true });
+    const nextButton = page.getByRole("button", { name: "Next", exact: true });
+    const fade = (length: string) => ({
+      length,
+      curve: "equal_power",
+      exclude: null,
+      lights: null,
+    });
+    const last = {
+      type: "playback",
+      is_playing: true,
+      elapsed_ms: 0,
+      song_name: "Daegrima",
+      song_duration_ms: 60000,
+      playlist_name: "setlist",
+      playlist_position: 1,
+      playlist_songs: ["Opener", "Daegrima"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      looping: true,
+    };
+
+    // The last entry, with a fade out: Next ends it.
+    await sendWsMessage(page, wsId, {
+      ...last,
+      next: { song: null, ends_loop: true, fade_out: fade("2measures") },
+    });
+    await expect(nextUp).toHaveText(
+      "Next ends the loop: fades out over 2 measures",
+    );
+    await expect(nextButton).toBeEnabled();
+
+    // Without one, the press would cut: still off.
+    await sendWsMessage(page, wsId, {
+      ...last,
+      next: { song: null, ends_loop: true, fade_out: null },
+    });
+    await expect(nextUp).toHaveText("End of playlist");
+    await expect(nextButton).toBeDisabled();
+
+    // The first entry: Previous ends it, and says so.
+    const first = {
+      ...last,
+      song_name: "Throneless Postlude",
+      playlist_position: 0,
+      playlist_songs: ["Throneless Postlude", "Thunar Prelude"],
+    };
+    await sendWsMessage(page, wsId, {
+      ...first,
+      next: {
+        song: "Thunar Prelude",
+        breaks_loop: true,
+        fade_out: fade("4s"),
+        fade_in: null,
+        auto_play_ms: null,
+      },
+    });
+    await expect(prevButton).toBeEnabled();
+    await expect(prevButton).toHaveAttribute(
+      "title",
+      "Previous ends the loop: fades out over 4s (Left Arrow)",
+    );
+    await sendWsMessage(page, wsId, {
+      ...first,
+      next: {
+        song: "Thunar Prelude",
+        breaks_loop: true,
+        fade_out: null,
+        fade_in: null,
+        auto_play_ms: null,
+      },
+    });
+    await expect(prevButton).toBeDisabled();
+
+    // Stopped, the ends of the list are the ends again.
+    await sendWsMessage(page, wsId, {
+      ...last,
+      is_playing: false,
+      next: { song: null },
+    });
+    await expect(nextButton).toBeDisabled();
+  });
+
+  test("a song taken off the list is none of its rows", async ({ page }) => {
+    // #576: an edit took the looping song playing off the list, which sits
+    // before the entry that took its place. That row showed as playing, and
+    // Next, which lands on it, was off on the last entry.
+    const wsId = `off-list-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/`);
+    await expect(page.locator(".playback-card__title")).toBeVisible();
+
+    const nextButton = page.getByRole("button", { name: "Next", exact: true });
+    const rows = page.locator(".playlist-card__row");
+    const frame = {
+      type: "playback",
+      is_playing: true,
+      elapsed_ms: 0,
+      song_name: "Daegrima",
+      song_duration_ms: 60000,
+      playlist_name: "setlist",
+      playlist_position: 1,
+      playlist_off_list: true,
+      playlist_songs: ["Opener", "Encore"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      looping: true,
+      next: {
+        song: "Encore",
+        breaks_loop: true,
+        fade_out: null,
+        fade_in: null,
+        auto_play_ms: null,
+      },
+    };
+    await sendWsMessage(page, wsId, frame);
+    await expect(rows).toHaveCount(2);
+    await expect(page.locator(".playlist-card__row--active")).toHaveCount(0);
+    await expect(page.locator(".playlist-card__playing-dot")).toHaveCount(0);
+    await expect(nextButton).toBeEnabled();
+
+    // On the list again, the row is the song's.
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      song_name: "Encore",
+      playlist_off_list: false,
+      looping: false,
+      next: { song: null },
+    });
+    await expect(rows.nth(1)).toHaveClass(/playlist-card__row--active/);
+    await expect(nextButton).toBeDisabled();
+  });
+
+  test("Previous stays on off the list before the first entry", async ({
+    page,
+  }) => {
+    // #579: off the list at position 0, Previous lands on the first entry,
+    // but the dashboard and the mini player took it as the start of the
+    // list and turned Previous off.
+    const wsId = `off-list-first-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/`);
+    await expect(page.locator(".playback-card__title")).toBeVisible();
+
+    const frame = {
+      type: "playback",
+      is_playing: false,
+      elapsed_ms: 0,
+      song_name: "Daegrima",
+      song_duration_ms: 60000,
+      playlist_name: "setlist",
+      playlist_position: 0,
+      playlist_off_list: true,
+      playlist_songs: ["Opener", "Encore"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      looping: true,
+      next: { song: "Opener", breaks_loop: false, auto_play_ms: null },
+    };
+    const prevButton = page.getByRole("button", { name: "Prev", exact: true });
+    await sendWsMessage(page, wsId, frame);
+    await expect(prevButton).toBeEnabled();
+    // Playing, with no fade out of its own to end on: still a move.
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      is_playing: true,
+      next: {
+        song: "Opener",
+        breaks_loop: true,
+        fade_out: null,
+        fade_in: null,
+        auto_play_ms: null,
+      },
+    });
+    await expect(prevButton).toBeEnabled();
+
+    // The mini player, on a narrow screen away from the dashboard, agrees.
+    await page.setViewportSize({ width: 600, height: 800 });
+    await page.evaluate(() => (window.location.hash = "#/status"));
+    const miniPrev = page
+      .locator(".miniplayer")
+      .getByRole("button", { name: "Prev", exact: true });
+    await expect(miniPrev).toBeEnabled();
+
+    // On the first entry, it is the start of the list again.
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      song_name: "Opener",
+      playlist_off_list: false,
+      looping: false,
+      next: { song: "Encore", breaks_loop: false, auto_play_ms: null },
+    });
+    await expect(miniPrev).toBeDisabled();
+  });
 });

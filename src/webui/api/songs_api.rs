@@ -144,7 +144,7 @@ fn find_yaml_path(base: &std::path::Path) -> Option<std::path::PathBuf> {
 /// Reads a YAML file in a blocking task, returning a text/yaml response.
 async fn read_yaml_response(path: std::path::PathBuf) -> axum::response::Response {
     match super::helpers::spawn_blocking_io("read song config", move || {
-        std::fs::read_to_string(&path)
+        crate::util::read_to_string(&path)
     })
     .await
     {
@@ -285,7 +285,8 @@ pub(super) async fn import_file_to_song(
         .or_else(|| source.file_name().and_then(|n| n.to_str()))
         .unwrap_or("unknown");
 
-    if let Err(e) = validate_track_filename(filename) {
+    let exists = song_has_file(&state.player, &state.songs_path, &name, filename);
+    if let Err(e) = validate_track_filename(filename, exists) {
         return *e;
     }
 
@@ -352,6 +353,12 @@ pub(super) async fn delete_song(
             }
         }
     }
+
+    // In turn with the song's edits, which would write a deleted song back,
+    // and with the playlists' saves, whose files this edits too. Held from
+    // the lookup, so the song found is the one on disk.
+    let _song_writes = SONG_WRITES.lock().await;
+    let _playlist_writes = super::playlists::PLAYLIST_WRITES.lock().await;
 
     // Resolve the song directory through the registry with path verification.
     let song_dir = match resolve_song_dir(&state.player, &state.songs_path, &name) {
@@ -629,6 +636,12 @@ pub(super) async fn get_song_files(
     (StatusCode::OK, Json(json!({"files": files}))).into_response()
 }
 
+/// Held by each write of a song's `song.yaml` or one of its lighting files,
+/// here and over MCP, and by an MCP edit from reading the file to writing
+/// it back, so the edit is not made on a copy a save has replaced since:
+/// that save would be lost (#578).
+pub(crate) static SONG_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// POST /api/songs/:name — creates a new song with the given config YAML.
 ///
 /// Creates the song directory and writes song.yaml. Returns 409 Conflict if the
@@ -651,6 +664,10 @@ pub(super) async fn post_song(
         return e;
     }
 
+    // Held from the check that the song is new: two creates of one name, or
+    // a create beside an MCP write making it, would both find it missing
+    // and the later would replace the earlier.
+    let _writing = SONG_WRITES.lock().await;
     let song_dir = match SafePath::create_dir_nested(&name, &root) {
         Ok(p) => p,
         Err(e) => return e.into_response(),
@@ -695,6 +712,9 @@ pub(super) async fn put_song(
     Path(name): Path<String>,
     body: String,
 ) -> impl IntoResponse {
+    // Held from the lookup: a song deleted before the lock was taken is
+    // not written back.
+    let _writing = SONG_WRITES.lock().await;
     // Look up the song in the registry to get its actual path (handles nested dirs).
     let song_dir = match resolve_song_dir(&state.player, &state.songs_path, &name) {
         Ok(p) => p,
@@ -735,7 +755,8 @@ pub(super) async fn upload_track_single(
     Path((name, filename)): Path<(String, String)>,
     body: Bytes,
 ) -> impl IntoResponse {
-    validate_track_filename(&filename).map_err(|e| *e)?;
+    let exists = song_has_file(&state.player, &state.songs_path, &name, &filename);
+    validate_track_filename(&filename, exists).map_err(|e| *e)?;
     let song_dir =
         resolve_or_create_song_dir(&state.player, &state.songs_path, &name).map_err(|e| *e)?;
 
@@ -790,7 +811,8 @@ pub(super) async fn upload_tracks_multipart(
             }
         };
 
-        validate_track_filename(&filename).map_err(|e| *e)?;
+        let exists = song_dir.join_filename(&filename).exists();
+        validate_track_filename(&filename, exists).map_err(|e| *e)?;
 
         let data = field.bytes().await.map_err(|e| {
             (
@@ -982,7 +1004,7 @@ fn remove_song_from_playlists(
         let filtered: Vec<String> = songs.iter().filter(|s| *s != song_name).cloned().collect();
         let updated = playlist_config.with_songs(&filtered);
         if let Ok(yaml) = crate::util::to_yaml_string(&updated) {
-            let _ = std::fs::write(path, yaml);
+            let _ = crate::util::write_file(path, yaml.as_bytes());
         }
     }
 }
@@ -1019,9 +1041,28 @@ pub(super) fn ensure_song_config(
     })
 }
 
-/// Validates that a track filename has a supported extension.
-pub(super) fn validate_track_filename(filename: &str) -> Result<(), Box<axum::response::Response>> {
-    if SafePath::validate_name(filename).is_err() {
+/// Whether song `name` has a file `filename` already, for
+/// [`validate_track_filename`]. False for a song not yet created, or a
+/// filename that is not safe to look up.
+fn song_has_file(
+    player: &crate::player::Player,
+    songs_path: &std::path::Path,
+    name: &str,
+    filename: &str,
+) -> bool {
+    SafePath::validate_name(filename).is_ok()
+        && resolve_song_dir(player, songs_path, name)
+            .is_ok_and(|dir| dir.join_filename(filename).exists())
+}
+
+/// Validates that a track filename is safe and has a supported extension.
+/// One not already in the song (`exists` false) is a new file, and must also
+/// pass the rules for new names; one there is replaced under its own name.
+pub(super) fn validate_track_filename(
+    filename: &str,
+    exists: bool,
+) -> Result<(), Box<axum::response::Response>> {
+    if SafePath::validate_name_to_write(filename, exists).is_err() {
         return Err(Box::new(
             (
                 StatusCode::BAD_REQUEST,
@@ -2402,5 +2443,57 @@ mod test {
         assert_eq!(parsed["status"], "uploaded");
         assert_eq!(parsed["file"], "show.light");
         assert!(state.songs_path.join("LightSong/show.light").exists());
+    }
+
+    #[tokio::test]
+    async fn post_song_refuses_a_song_dir_name_new_songs_may_not_have() {
+        // #578: the song directory was made by any safe name, the new-name
+        // rules unchecked, and the song loader then skipped a hidden one.
+        for (uri, dirname) in [
+            ("/songs/.hidden", ".hidden"),
+            ("/songs/%20lead", " lead"),
+            ("/songs/Artist%2F.hidden", "Artist/.hidden"),
+        ] {
+            let (state, _dir) = test_state();
+            let app = router().with_state(state.clone());
+            let response = app
+                .oneshot(
+                    http::Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .body(Body::from("name: X\ntracks: []\n"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+            // Nothing made, not even the "Artist" above the bad name.
+            let first = dirname.split('/').next().unwrap();
+            assert!(
+                !state.songs_path.join(first).exists(),
+                "{uri}: created {first:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn track_upload_to_a_new_song_refuses_a_hidden_song_dir() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/.hidden/tracks/t.wav")
+                    .body(Body::from(vec![0u8; 16]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            !state.songs_path.join(".hidden").exists(),
+            ".hidden song dir created"
+        );
     }
 }

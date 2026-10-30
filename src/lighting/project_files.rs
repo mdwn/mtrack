@@ -129,7 +129,7 @@ fn declarations<T>(
     let mut duplicates = Vec::new();
     let mut taken: HashMap<String, PathBuf> = HashMap::new();
     for file in files_under(dir, extensions) {
-        let parsed = std::fs::read_to_string(&file)
+        let parsed = crate::util::read_to_string(&file)
             .map_err(|e| e.to_string())
             .and_then(|text| parse(&text).map_err(|e| e.to_string()));
         let declared = match parsed {
@@ -198,7 +198,7 @@ pub fn fixture_types(project: &Path, types_dir: Option<&Path>) -> ProjectTypes {
         .map(|dir| files_under(dir, FIXTURE_TYPE_EXTENSIONS))
         .unwrap_or_default()
     {
-        let Ok(text) = std::fs::read_to_string(&file) else {
+        let Ok(text) = crate::util::read_to_string(&file) else {
             continue;
         };
         let Ok(types) = super::parser::parse_fixture_types(&text) else {

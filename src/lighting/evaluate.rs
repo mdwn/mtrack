@@ -143,7 +143,11 @@ where
             // Replay everything before `time`, then fire the cues landing exactly
             // on it. `start_at` stops short of `time` by design, so both halves
             // are needed for a cue at the requested instant to count.
-            let history = timeline.start_at(time);
+            // A move takes its heads from another by the fixtures they
+            // share, so the history needs the groups resolved too.
+            let history = timeline.start_at_resolving(time, &mut |effect| {
+                resolve_groups(effect.clone()).target_fixtures
+            });
             // A freeze in the history holds at `time`, as the live start
             // paths have it.
             engine.set_song_time(time);
@@ -207,17 +211,15 @@ where
         .collect()
 }
 
-/// The shows a song registers: every show its `.light` files hold, sorted by
-/// name so the order does not depend on hash iteration. Empty when the song
+/// The shows a song registers: every show its `.light` files hold, in file
+/// order and then their order in the file, as the player has them -- the
+/// order same-time cues from different shows fire in. Empty when the song
 /// has no DSL lighting loaded.
 pub fn registered_shows(song: &crate::songs::Song) -> Vec<LightShow> {
-    let mut shows: Vec<LightShow> = song
-        .dsl_lighting_shows()
+    song.dsl_lighting_shows()
         .iter()
         .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
-        .collect();
-    shows.sort_by(|a, b| a.name.cmp(&b.name));
-    shows
+        .collect()
 }
 
 /// An offline evaluation against the loaded lighting system, plus what the
@@ -422,38 +424,20 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
     }
 }
 
-/// Applies one timeline update to the engine in the same order the live path
-/// uses: layer commands, then stopped sequences, then seek-started effects in
-/// cue order, then freshly-fired effects with sequence effects first.
+/// Applies one timeline update to the engine as the live path does (see
+/// [`EffectEngine::apply_timeline_update`]), its groups resolved first.
 pub(crate) fn apply_timeline_update<F>(
     engine: &mut EffectEngine,
-    update: crate::lighting::timeline::TimelineUpdate,
+    mut update: crate::lighting::timeline::TimelineUpdate,
     resolve_groups: &mut F,
 ) where
     F: FnMut(EffectInstance) -> EffectInstance,
 {
-    engine.apply_layer_commands(&update.layer_commands, &update.layer_command_times);
-
-    for sequence_name in &update.stop_sequences {
-        engine.stop_sequence(sequence_name);
-    }
-
-    let mut with_elapsed: Vec<_> = update.effects_with_elapsed.into_values().collect();
-    with_elapsed.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
-    for (effect, elapsed) in with_elapsed {
-        let resolved = resolve_groups(effect);
-        // A cue targeting a group with no fixtures in this venue fails validation.
-        // That is a fact about the show worth surfacing elsewhere (#340), not a
-        // reason to abandon the sample.
-        let _ = engine.start_effect_with_elapsed(resolved, elapsed);
-    }
-
-    let mut effects = update.effects;
-    effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
-    for effect in effects {
-        let resolved = resolve_groups(effect);
-        let _ = engine.start_effect(resolved);
-    }
+    update.map_effects(resolve_groups);
+    // A cue targeting a group with no fixtures in this venue fails validation.
+    // That is a fact about the show worth surfacing elsewhere (#340), not a
+    // reason to abandon the sample.
+    let _ = engine.apply_timeline_update(update);
 }
 
 #[cfg(test)]

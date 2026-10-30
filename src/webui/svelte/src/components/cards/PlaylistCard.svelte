@@ -36,6 +36,11 @@
   let playlists = $derived($playbackStore.available_playlists);
   let currentPlaylist = $derived($playbackStore.playlist_name);
   let songCount = $derived($playbackStore.playlist_songs.length);
+  // Off the list, the song playing is none of the rows: the playlist sits
+  // before the one at its position.
+  let currentRow = $derived(
+    $playbackStore.playlist_off_list ? -1 : $playbackStore.playlist_position,
+  );
 </script>
 
 <section class="card playlist-card">
@@ -67,15 +72,14 @@
       <li>
         <button
           class="playlist-card__row"
-          class:playlist-card__row--active={i ===
-            $playbackStore.playlist_position}
+          class:playlist-card__row--active={i === currentRow}
           onclick={() => jumpToSong(song)}
         >
           <span class="mono playlist-card__num"
             >{String(i + 1).padStart(2, "0")}</span
           >
           <span class="playlist-card__name">{song}</span>
-          {#if i === $playbackStore.playlist_position && $playbackStore.is_playing}
+          {#if i === currentRow && $playbackStore.is_playing}
             <span
               class="playlist-card__playing-dot"
               aria-label={$t("playback.playing")}

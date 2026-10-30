@@ -32,7 +32,7 @@ pub use fixture::{
     multiplier_key, FixtureCapabilities, FixtureInfo, FixtureProfile, StrobeStrategy,
     MULTIPLIER_PREFIXES,
 };
-pub use instance::EffectInstance;
+pub use instance::{EffectInstance, MoveCut};
 pub use physical::{
     degree_span, degrees_from_bytes, fanout, resolve_degrees, resolve_normalized, resolve_physical,
     Intent, PhysicalParameter, PhysicalState, Resolved,

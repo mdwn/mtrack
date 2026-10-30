@@ -169,7 +169,7 @@ impl PlayerServer {
     /// acknowledged and quietly has no effect.
     ///
     /// Safe to do from inside a gRPC call because `start_controllers` leaves
-    /// controllers running when their config has not changed — otherwise this
+    /// each controller running whose config has not changed — otherwise this
     /// would tear down the very transport carrying the response.
     #[allow(clippy::result_large_err)]
     async fn reload_and_respond(
@@ -178,30 +178,34 @@ impl PlayerServer {
     ) -> Result<Response<UpdateConfigResponse>, Status> {
         // Flattened immediately: `Box<dyn Error>` is not Send and must not live
         // across the await that follows.
-        if let Err(e) = self
+        let reload = match self
             .player
             .reload_hardware()
             .await
             .map_err(|e| e.to_string())
         {
-            // Reported, not just logged. The most common cause is playback —
-            // `reload_hardware` refuses during it — and answering with a fresh
-            // checksum while nothing was applied is precisely the "acknowledged
-            // and quietly ineffective" behaviour this helper exists to end. The
-            // config *is* persisted at this point, so the message has to say so
-            // rather than implying the write was rolled back.
-            warn!("Hardware reload after config update failed: {}", e);
-            return Err(Status::failed_precondition(format!(
-                "the config was saved but the running hardware was not reloaded, so it \
-                 will not take effect until the next reload or restart: {e}"
-            )));
-        }
+            Ok(reload) => reload,
+            Err(e) => {
+                // Reported, not just logged. Playback is not a cause —
+                // `reload_hardware` defers until it ends — but answering with a
+                // fresh checksum while nothing was applied or deferred is
+                // precisely the "acknowledged and quietly ineffective" behaviour
+                // this helper exists to end. The config *is* persisted at this
+                // point, so the message has to say so rather than implying the
+                // write was rolled back.
+                warn!("Hardware reload after config update failed: {}", e);
+                return Err(Status::failed_precondition(format!(
+                    "the config was saved but the running hardware was not reloaded, so it \
+                     will not take effect until the next reload or restart: {e}"
+                )));
+            }
+        };
         // Deliberately not `reload_controllers`: that forces a restart, which
         // would tear down the transport carrying this response. The hardware
         // reload above already restarts controllers when their config actually
         // changed, and leaves them alone when it did not — so a caller is only
-        // disconnected by a change it made to the controllers themselves.
-        snapshot_to_update_response(snapshot)
+        // disconnected by a change it made to its own controller.
+        snapshot_to_update_response(snapshot, reload)
     }
 
     /// Why the player declined to start, determined from its current state
@@ -232,19 +236,24 @@ fn config_error_to_status(e: config::ConfigError) -> Status {
     match e {
         config::ConfigError::StaleChecksum { .. } => Status::failed_precondition(e.to_string()),
         config::ConfigError::InvalidProfileIndex { .. } => Status::out_of_range(e.to_string()),
+        config::ConfigError::Validation(_) => Status::invalid_argument(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
 }
 
-/// Converts a ConfigSnapshot to an UpdateConfigResponse by serializing to YAML.
+/// Converts a ConfigSnapshot to an UpdateConfigResponse by serializing to
+/// YAML, saying whether the hardware reload ran or waits for the player.
 fn snapshot_to_update_response(
     snapshot: config::store::ConfigSnapshot,
+    reload: crate::player::HardwareReload,
 ) -> Result<Response<UpdateConfigResponse>, Status> {
     let yaml = crate::util::to_yaml_string(&snapshot.config)
         .map_err(|e| Status::internal(format!("serialization error: {}", e)))?;
     Ok(Response::new(UpdateConfigResponse {
         yaml,
         checksum: snapshot.checksum,
+        applied: reload.applied(),
+        message: reload.message().unwrap_or_default().to_string(),
     }))
 }
 
@@ -1433,6 +1442,114 @@ mod test {
         );
         assert!(status.message().contains("config store not available"));
 
+        Ok(())
+    }
+
+    /// A config change deferred under a song answered as one applied: the
+    /// reply says whether the hardware reload ran, and why not when not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_config_update_says_whether_it_was_applied() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::{player_service_server::PlayerService, UpdateAudioRequest};
+
+        let (player, _client, device) = setup_grpc().await?;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "songs: assets/songs\n")?;
+        let store = Arc::new(config::ConfigStore::new(
+            config::Player::deserialize(&path)?,
+            path,
+        ));
+        player.set_config_store(store.clone());
+        let server = super::PlayerServer::with_config_store(player.clone(), store.clone());
+        let update = |checksum: String| UpdateAudioRequest {
+            audio_json: String::new(),
+            expected_checksum: checksum,
+        };
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        let (_, checksum) = store.read_yaml().await?;
+        let deferred = server
+            .update_audio(tonic::Request::new(update(checksum)))
+            .await?
+            .into_inner();
+        assert!(
+            !deferred.applied,
+            "a change under a song said it was applied"
+        );
+        assert!(deferred.message.contains("idle"), "{}", deferred.message);
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        player.await_hardware_ready().await;
+        let (_, checksum) = store.read_yaml().await?;
+        let applied = server
+            .update_audio(tonic::Request::new(update(checksum)))
+            .await?
+            .into_inner();
+        assert!(applied.applied);
+        assert!(applied.message.is_empty(), "{}", applied.message);
+        Ok(())
+    }
+
+    /// A config change the next start would refuse, a second MIDI
+    /// controller, was saved and applied, and mtrack then failed to start.
+    /// It is refused as an invalid argument, and the file is left as it was.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_config_update_that_would_not_load_is_an_invalid_argument(
+    ) -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::{
+            player_service_server::PlayerService, AddProfileRequest, UpdateControllersRequest,
+        };
+
+        let (player, _client, _device) = setup_grpc().await?;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "songs: assets/songs\n")?;
+        let store = Arc::new(config::ConfigStore::new(
+            config::Player::deserialize(&path)?,
+            path.clone(),
+        ));
+        player.set_config_store(store.clone());
+        let server = super::PlayerServer::with_config_store(player.clone(), store.clone());
+        let midi = config::Controller::Midi(config::MidiController::new(
+            config::midi::note_on(16, 0, 127),
+            config::midi::note_on(16, 1, 127),
+            config::midi::note_on(16, 2, 127),
+            config::midi::note_on(16, 3, 127),
+            config::midi::note_on(16, 4, 127),
+            config::midi::note_on(16, 5, 127),
+        ));
+        let controllers = serde_json::to_string(&[&midi, &midi])?;
+        let before = std::fs::read_to_string(&path)?;
+        let (_, checksum) = store.read_yaml().await?;
+
+        let refused = server
+            .update_controllers(tonic::Request::new(UpdateControllersRequest {
+                controllers_json: controllers.clone(),
+                expected_checksum: checksum.clone(),
+            }))
+            .await
+            .expect_err("two MIDI controllers were accepted");
+        assert_eq!(refused.code(), tonic::Code::InvalidArgument);
+        assert!(
+            refused.message().contains("only one can watch"),
+            "{refused}"
+        );
+
+        let profile = format!(r#"{{"hostname": "two-midi", "controllers": {controllers}}}"#);
+        let refused = server
+            .add_profile(tonic::Request::new(AddProfileRequest {
+                profile_json: profile,
+                expected_checksum: checksum.clone(),
+            }))
+            .await
+            .expect_err("a profile with two MIDI controllers was accepted");
+        assert_eq!(refused.code(), tonic::Code::InvalidArgument);
+
+        assert_eq!(std::fs::read_to_string(&path)?, before);
+        assert_eq!(store.read_yaml().await?.1, checksum);
+        config::Player::deserialize(&path)?;
         Ok(())
     }
 

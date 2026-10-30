@@ -21,7 +21,7 @@ use super::samples::{SampleDefinition, SampleTrigger, SamplesConfig, DEFAULT_MAX
 use super::statusevents::StatusEvents;
 use super::trackmappings::TrackMappings;
 use super::trigger::{MidiTriggerInput, TriggerConfig, TriggerInput};
-use config::{Config, File};
+use config::Config;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -239,7 +239,7 @@ impl Player {
     /// Legacy configs (audio + track_mappings at top level) are normalized into profiles.
     pub fn deserialize(path: &Path) -> Result<Player, ConfigError> {
         let mut player = Config::builder()
-            .add_source(File::from(path))
+            .add_source(crate::util::yaml_source(path)?)
             .build()?
             .try_deserialize::<Player>()?;
         player.load_profiles_dir(path)?;
@@ -254,7 +254,7 @@ impl Player {
     /// retired field it exists to move (inline fixtures) is not an error.
     pub fn deserialize_for_migration(path: &Path) -> Result<Player, ConfigError> {
         let mut player = Config::builder()
-            .add_source(File::from(path))
+            .add_source(crate::util::yaml_source(path)?)
             .build()?
             .try_deserialize::<Player>()?;
         player.load_profiles_dir(path)?;
@@ -327,6 +327,17 @@ impl Player {
                     }
                 }
             }
+        } else if let Some(profile) = self.legacy_profile() {
+            // A config edited in place without profiles loads as the one its
+            // legacy fields make, which the load validates whole: two MIDI
+            // controllers there passed here and failed the next start.
+            if let Err(profile_errors) = profile.validate() {
+                for e in profile_errors {
+                    if !errors.contains(&e) {
+                        errors.push(e);
+                    }
+                }
+            }
         }
 
         if errors.is_empty() {
@@ -349,9 +360,8 @@ impl Player {
 
         let mut dir_profiles: Vec<Profile> = Vec::new();
         for path in &yaml_paths {
-            let profile = Config::builder()
-                .add_source(File::from(path.as_path()))
-                .build()
+            let profile = crate::util::yaml_source(path)
+                .and_then(|source| Config::builder().add_source(source).build())
                 .and_then(|c| c.try_deserialize::<Profile>())
                 .map_err(|source| ConfigError::ProfileParse {
                     path: path.clone(),
@@ -418,7 +428,16 @@ impl Player {
             return;
         }
 
-        // Build a single profile from legacy fields.
+        let profile = self.legacy_profile();
+        self.status_events = None;
+        if let Some(profile) = profile {
+            self.profiles = Some(vec![profile]);
+        }
+    }
+
+    /// The single profile a config without profiles loads as, built from its
+    /// legacy fields, if any subsystem is configured.
+    fn legacy_profile(&self) -> Option<Profile> {
         let audio = if let Some(audio) = &self.audio {
             Some(audio.clone())
         } else {
@@ -458,7 +477,7 @@ impl Player {
         // Collect controllers from legacy top-level fields.
         let controllers = self.collect_controllers();
 
-        let status_events = self.status_events.take();
+        let status_events = self.status_events.clone();
 
         // Create a profile if any subsystem is configured.
         if audio_config.is_some()
@@ -472,7 +491,9 @@ impl Player {
             profile.set_trigger(trigger);
             profile.set_controllers(controllers);
             profile.set_status_events(status_events);
-            self.profiles = Some(vec![profile]);
+            Some(profile)
+        } else {
+            None
         }
     }
 
@@ -658,7 +679,7 @@ impl Player {
             info!(path = ?samples_path, "Loading external samples configuration");
 
             let external_config: SamplesConfig = Config::builder()
-                .add_source(File::from(samples_path.as_path()))
+                .add_source(crate::util::yaml_source(&samples_path)?)
                 .build()?
                 .try_deserialize()?;
 
@@ -802,7 +823,7 @@ impl Player {
     /// Used by the migrate command to inspect raw inline fields.
     pub fn deserialize_raw(path: &Path) -> Result<Player, ConfigError> {
         let player = Config::builder()
-            .add_source(File::from(path))
+            .add_source(crate::util::yaml_source(path)?)
             .build()?
             .try_deserialize::<Player>()?;
         Ok(player)

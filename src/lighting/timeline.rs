@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use crate::lighting::effects::EffectLayer;
+use crate::lighting::effects::{EffectLayer, MoveCut, MoveTarget};
 use crate::lighting::{
     parser::{Cue, Effect, LayerCommand, LayerCommandType, LightShow},
     EffectInstance,
@@ -41,6 +41,25 @@ pub struct TimelineUpdate {
     pub layer_command_times: Vec<Duration>,
     /// Names of sequences to stop
     pub stop_sequences: Vec<String>,
+    /// The song time of each sequence stop's cue, for cues fired as the
+    /// song plays, as for the layer commands: an update's cues apply time by
+    /// time (see `EffectEngine::apply_timeline_update`). Empty for a seek's
+    /// history.
+    pub stop_sequence_times: Vec<Duration>,
+}
+
+impl TimelineUpdate {
+    /// Passes every effect through `f`: resolving their groups, before the
+    /// update goes to an engine.
+    pub fn map_effects(&mut self, mut f: impl FnMut(EffectInstance) -> EffectInstance) {
+        self.effects = std::mem::take(&mut self.effects)
+            .into_iter()
+            .map(&mut f)
+            .collect();
+        for (effect, _) in self.effects_with_elapsed.values_mut() {
+            *effect = f(effect.clone());
+        }
+    }
 }
 
 /// A layer's freeze and speed master as a seek replays its history.
@@ -111,20 +130,205 @@ fn times_layer(cmd: &LayerCommand) -> bool {
     }
 }
 
+/// Whether a move's target is a pose of its own on both axes: one the head
+/// ends at whatever pose it started from.
+fn ends_outright(effect: &EffectInstance) -> bool {
+    let full = |target: &MoveTarget| {
+        matches!(
+            target,
+            MoveTarget::Angles {
+                pan: Some(_),
+                tilt: Some(_)
+            }
+        )
+    };
+    match &effect.effect_type {
+        crate::lighting::effects::EffectType::Move { to, .. } => full(to),
+        _ => false,
+    }
+}
+
+/// Whether a move sets its heads' pose without regard to where they were,
+/// all the way: from a pose of its own to another.
+fn moves_outright(effect: &EffectInstance) -> bool {
+    match &effect.effect_type {
+        crate::lighting::effects::EffectType::Move {
+            from:
+                Some(MoveTarget::Angles {
+                    pan: Some(_),
+                    tilt: Some(_),
+                }),
+            ..
+        } => ends_outright(effect),
+        _ => false,
+    }
+}
+
 /// What the replay has taken out of its effects as they ran their course.
 #[derive(Default)]
 struct Settled {
     /// Moves that have arrived: they stay for their pose.
     arrived: HashSet<String>,
+    /// Moves cut short on every fixture before they arrived: they stay for
+    /// the pose they were cut at (see [`cut_move`]), but are over.
+    cut: HashSet<String>,
     /// When the latest effect taken out ended.
     ended: Duration,
+    /// When each effect taken out ended, a move when it arrived.
+    ends: Vec<Duration>,
+    /// The moves arrived or cut, out of the running effects: nothing a
+    /// later cue does changes the pose they leave, and the replay would
+    /// otherwise look them over again at every cue (see [`Settled::stow`]).
+    moves: HashMap<String, EffectInstance>,
+    /// Moves arrived or cut since the last [`Settled::stow`], still among
+    /// the running effects.
+    newly: Vec<String>,
+    /// Moves cued outright since the last [`Settled::stow`].
+    outright: Vec<String>,
+    /// For each head, the moves its pose still comes from, in the order
+    /// they took it: from the latest that set it without regard to where
+    /// the head was, as each later one sweeps from, or aims nearest to,
+    /// where the one before left it.
+    owners: HashMap<String, Vec<String>>,
+    /// The heads each move's pose still counts on. A settled move down to
+    /// none has left nothing a later one does not set again, so the replay
+    /// forgets it: a long show's moves would otherwise pile up in every
+    /// seek's history.
+    held: HashMap<String, Vec<String>>,
+}
+
+impl Settled {
+    /// Marks `id` arrived or cut short on every fixture, to be stowed.
+    fn settle(&mut self, id: &str, arrived: bool) {
+        if arrived {
+            self.arrived.insert(id.to_string());
+        } else {
+            self.cut.insert(id.to_string());
+        }
+        self.newly.push(id.to_string());
+    }
+
+    /// Gives `fixtures` to the move `by`, just cued on them. If it moves
+    /// them outright, the moves their poses came from no longer count there
+    /// once it has shown them: at the end of its cue's time (see
+    /// [`Settled::stow`]), as a move cued with it may take them first.
+    fn take(&mut self, by: &EffectInstance, fixtures: &[String]) {
+        let mut held = Vec::new();
+        for name in fixtures {
+            let owners = self.owners.entry(name.clone()).or_default();
+            if owners.last() == Some(&by.id) {
+                continue;
+            }
+            owners.push(by.id.clone());
+            held.push(name.clone());
+        }
+        self.held.insert(by.id.clone(), held);
+        if moves_outright(by) {
+            self.outright.push(by.id.clone());
+        }
+    }
+
+    /// `id`, cut on `fixtures` at its own cue's time, never showed them:
+    /// their poses come from the moves before it, as if it had not been.
+    fn disown(&mut self, id: &str, fixtures: &[String]) {
+        for name in fixtures {
+            if let Some(owners) = self.owners.get_mut(name) {
+                owners.retain(|owner| owner != id);
+            }
+            if let Some(held) = self.held.get_mut(id) {
+                held.retain(|head| head != name);
+            }
+        }
+    }
+
+    /// Lets go of the moves before `id` on `heads`: their poses no longer
+    /// count there.
+    fn supersede_owners(&mut self, id: &str, heads: &[String]) {
+        let mut released = Vec::new();
+        for name in heads {
+            let Some(owners) = self.owners.get_mut(name) else {
+                continue;
+            };
+            if let Some(at) = owners.iter().position(|owner| owner == id) {
+                released.extend(owners.drain(..at).map(|earlier| (earlier, name.clone())));
+            }
+        }
+        for (earlier, name) in released {
+            self.release(&earlier, &name);
+        }
+    }
+
+    /// `id`'s pose no longer counts on `name`; a settled move it counts on
+    /// no head goes.
+    fn release(&mut self, id: &str, name: &str) {
+        let Some(held) = self.held.get_mut(id) else {
+            return;
+        };
+        held.retain(|head| head != name);
+        if held.is_empty() && self.moves.remove(id).is_some() {
+            self.forget(id);
+        }
+    }
+
+    /// Drops all the replay knows of the settled move `id`.
+    fn forget(&mut self, id: &str) {
+        self.held.remove(id);
+        self.arrived.remove(id);
+        self.cut.remove(id);
+    }
+
+    /// Takes the moves settled since the last call out of `effects`. One
+    /// that arrived at a pose of its own is, from then, all its heads'
+    /// poses come from, where no later move has taken them; one that no
+    /// head's pose comes from any more goes for good.
+    fn stow(&mut self, effects: &mut HashMap<String, (EffectInstance, Duration)>) {
+        for id in std::mem::take(&mut self.outright) {
+            let heads = self.held.get(&id).cloned().unwrap_or_default();
+            self.supersede_owners(&id, &heads);
+        }
+        for id in std::mem::take(&mut self.newly) {
+            let Some((effect, _)) = effects.remove(&id) else {
+                continue;
+            };
+            // Only where it is the last move on the head: where a later
+            // one took it, it left the pose it was cut at.
+            if self.arrived.contains(&id) && ends_outright(&effect) {
+                let heads: Vec<String> = self
+                    .held
+                    .get(&id)
+                    .into_iter()
+                    .flatten()
+                    .filter(|name| self.owners.get(*name).and_then(|o| o.last()) == Some(&id))
+                    .cloned()
+                    .collect();
+                self.supersede_owners(&id, &heads);
+            }
+            if self.held.get(&id).is_some_and(|held| !held.is_empty()) {
+                self.moves.insert(id, effect);
+            } else {
+                self.forget(&id);
+            }
+        }
+    }
+
+    /// Forgets every move's pose: a full `clear` releases pose memory.
+    fn release_poses(&mut self) {
+        self.arrived.clear();
+        self.cut.clear();
+        self.moves.clear();
+        self.newly.clear();
+        self.outright.clear();
+        self.owners.clear();
+        self.held.clear();
+    }
 }
 
 /// Takes the effects on `layer` that have run their course by `time` out
 /// of the replay -- but for moves, which stay for their pose, marked as
-/// arrived -- and moves `settled.ended` on to when the latest of them ended:
-/// its layer has held its freeze and speed since its last command, so that
-/// is how far back past its end its elapsed is.
+/// arrived, until [`Settled::stow`] puts them by -- and moves
+/// `settled.ended` on to when the latest of them ended: its layer has held
+/// its freeze and speed since its last command, so that is how far back
+/// past its end its elapsed is.
 fn settle_layer(
     layer: EffectLayer,
     time: Duration,
@@ -137,8 +341,8 @@ fn settle_layer(
     let speed = state.map_or(1.0, |layer| layer.speed);
     let since = state.map_or(Duration::ZERO, |layer| layer.since);
     effects.retain(|id, (effect, _)| {
-        // An arrived move ended when it arrived.
-        if effect.layer != layer || settled.arrived.contains(id) {
+        // An arrived move ended when it arrived, and a cut one at its cut.
+        if effect.layer != layer || is_settled_move(id, settled) {
             return true;
         }
         let elapsed = own_elapsed(effect, layers, time);
@@ -153,12 +357,98 @@ fn settle_layer(
         };
         // Not before it started, nor before the change it ran under.
         let floor = since.max(effect.cue_time.unwrap_or(Duration::ZERO));
-        settled.ended = settled.ended.max(now.saturating_sub(past).max(floor));
+        let ended = now.saturating_sub(past).max(floor);
+        settled.ended = settled.ended.max(ended);
+        settled.ends.push(ended);
         if is_move(effect) {
-            settled.arrived.insert(id.clone());
+            settled.settle(id, true);
         }
         is_move(effect)
     });
+}
+
+/// Whether the replay keeps `id` only for the pose it left: a move that has
+/// arrived, or one cut short on every fixture.
+fn is_settled_move(id: &str, settled: &Settled) -> bool {
+    settled.arrived.contains(id) || settled.cut.contains(id)
+}
+
+/// Cuts a move that has not arrived short at `time` on `fixtures`, or on all
+/// it still has for `None`. Live, a head a clear, a stop or a later move
+/// takes a move off holds the pose it was last shown at (#596), so the cut
+/// goes on the move, at its own elapsed then, for the engine to commit that
+/// pose (see `EffectInstance::cuts`). A move cut on every fixture stays for
+/// that pose, but ended at the cut.
+fn cut_move(
+    id: &str,
+    effect: &mut EffectInstance,
+    fixtures: Option<Vec<String>>,
+    time: Duration,
+    layers: &HashMap<EffectLayer, ReplayLayer>,
+    heads: &mut HashMap<String, Vec<String>>,
+    settled: &mut Settled,
+) {
+    let left = heads.entry(id.to_string()).or_default();
+    // Taking all it has left is a cut on every fixture, however they are
+    // named by the time the engine has them.
+    let fixtures = fixtures.filter(|cut| left.iter().any(|name| !cut.contains(name)));
+    let taken: Vec<String> = match &fixtures {
+        Some(cut) => left
+            .iter()
+            .filter(|name| cut.contains(name))
+            .cloned()
+            .collect(),
+        None => left.clone(),
+    };
+    left.retain(|name| !taken.contains(name));
+    // One cut on its own cue's time never rendered, so moved nothing.
+    let elapsed = (effect.cue_time != Some(time)).then(|| own_elapsed(effect, layers, time));
+    if elapsed.is_none() {
+        settled.disown(id, &taken);
+    }
+    effect.cuts.push(MoveCut { elapsed, fixtures });
+    if left.is_empty() {
+        heads.remove(id);
+        settled.settle(id, false);
+        settled.ended = settled.ended.max(time);
+    }
+}
+
+/// Takes `fixtures` at `time` from every move still on any of them, on any
+/// layer, for the move `by`: the latest move wins (#599), as the engine has
+/// it live.
+fn supersede(
+    by: &str,
+    fixtures: &[String],
+    time: Duration,
+    layers: &HashMap<EffectLayer, ReplayLayer>,
+    effects: &mut HashMap<String, (EffectInstance, Duration)>,
+    heads: &mut HashMap<String, Vec<String>>,
+    settled: &mut Settled,
+) -> bool {
+    let mut taken = Vec::new();
+    heads.retain(|id, left| {
+        // One arrived, cut or gone has no heads left to give up.
+        if !effects.contains_key(id) || is_settled_move(id, settled) {
+            return false;
+        }
+        let overlap: Vec<String> = left
+            .iter()
+            .filter(|name| fixtures.contains(name))
+            .cloned()
+            .collect();
+        if id != by && !overlap.is_empty() {
+            taken.push((id.clone(), overlap));
+        }
+        true
+    });
+    let took = !taken.is_empty();
+    for (id, overlap) in taken {
+        if let Some((effect, _)) = effects.get_mut(&id) {
+            cut_move(&id, effect, Some(overlap), time, layers, heads, settled);
+        }
+    }
+    took
 }
 
 /// Moves a layer's freeze and speed on by a freeze, unfreeze or master at
@@ -221,32 +511,43 @@ fn replay_layer_command(
 /// Where a run through some cues leaves things, as the engine would have them
 /// live: the effects started and not yet cleared or stopped (their elapsed
 /// still to be worked out), the layers' freezes and speeds, the moves that
-/// have arrived, and the sequences stopped.
+/// have arrived or been cut short, and the sequences stopped.
 #[derive(Default)]
 struct Replay {
     result: TimelineUpdate,
     layers: HashMap<EffectLayer, ReplayLayer>,
     settled: Settled,
     stopped_sequences: HashSet<String>,
+    /// Whether a move took heads from another still on them.
+    superseded: bool,
 }
+
+/// The fixtures an effect's groups stand for, as the engine will have them:
+/// a move takes its heads from another by fixture, whatever groups name them.
+pub type ResolveFixtures<'a> = &'a mut dyn FnMut(&EffectInstance) -> Vec<String>;
 
 /// Runs `cues`, in order, the way the engine runs them live: layer commands
 /// move the layers' freezes and speeds on, clears and stopped sequences take
-/// their effects out, and every effect cued goes in. The effects over by the
-/// last cue are still in; [`settle_layer`] takes them out.
-fn replay(cues: &[Cue]) -> Replay {
+/// their effects out (a move that has not arrived is cut short instead, see
+/// [`cut_move`]), a move takes its heads from the moves on them, and every
+/// effect cued goes in. The effects over by the last cue are still in;
+/// [`settle_layer`] takes them out.
+fn replay(cues: &[Cue], resolve: ResolveFixtures) -> Replay {
     let mut replay = Replay::default();
     let Replay {
         result,
         layers,
         settled,
         stopped_sequences,
+        superseded,
     } = &mut replay;
+    // Each move's fixtures it is still on, while it runs.
+    let mut heads: HashMap<String, Vec<String>> = HashMap::new();
 
-    // Cues at the same time fire in the same update live, which applies
-    // all their layer commands, then their sequence stops, then their
-    // effects: a clear in one cue does not take out an effect another cue
-    // starts at the same time.
+    // Cues at the same time apply together live: all their layer
+    // commands, then their sequence stops, then their effects, so a clear
+    // in one cue does not take out an effect another cue starts at the same
+    // time. Cues at different times apply in turn, however close.
     for group in cues.chunk_by(|a, b| a.time == b.time) {
         let time = group[0].time;
         // Cue by cue, as the timeline fires them live: a cue's sequence
@@ -255,18 +556,9 @@ fn replay(cues: &[Cue]) -> Replay {
         // after it. The effects start below, after the group's stops.
         let mut fired = Vec::new();
         for cue in group {
-            for seq_name in &cue.start_sequences {
-                stopped_sequences.remove(seq_name);
-            }
-            for effect in &cue.effects {
-                if let Some(ref seq_name) = effect.sequence_name {
-                    if stopped_sequences.contains(seq_name) {
-                        continue;
-                    }
-                }
+            for effect in fire_cue(stopped_sequences, cue, result) {
                 fired.push(LightingTimeline::create_effect_instance(effect, cue.time));
             }
-            process_stop_sequences(stopped_sequences, cue, result);
         }
 
         for cue in group {
@@ -294,9 +586,15 @@ fn replay(cues: &[Cue]) -> Replay {
                             );
                             let mut cut = false;
                             result.effects_with_elapsed.retain(|id, (effect, _)| {
-                                let keep = effect.layer != layer || settled.arrived.contains(id);
-                                cut |= !keep;
-                                keep
+                                if effect.layer != layer || is_settled_move(id, settled) {
+                                    return true;
+                                }
+                                cut = true;
+                                if !is_move(effect) {
+                                    return false;
+                                }
+                                cut_move(id, effect, None, time, layers, &mut heads, settled);
+                                true
                             });
                             if cut {
                                 settled.ended = settled.ended.max(time);
@@ -321,13 +619,14 @@ fn replay(cues: &[Cue]) -> Replay {
                             if result
                                 .effects_with_elapsed
                                 .keys()
-                                .any(|id| !settled.arrived.contains(id))
+                                .any(|id| !is_settled_move(id, settled))
                             {
                                 settled.ended = settled.ended.max(time);
                             }
                             result.effects_with_elapsed.clear();
                             layers.clear();
-                            settled.arrived.clear();
+                            settled.release_poses();
+                            heads.clear();
                         }
                     }
                     _ => {
@@ -350,12 +649,11 @@ fn replay(cues: &[Cue]) -> Replay {
             // mirroring what EffectEngine::stop_sequence() does at runtime.
             // Stopping a sequence does not release pose memory either.
             for seq_name in &cue.stop_sequences {
-                let prefix = format!("seq_{}_", seq_name);
                 let stopped: Vec<EffectLayer> = result
                     .effects_with_elapsed
-                    .iter()
-                    .filter(|(id, _)| id.starts_with(&prefix))
-                    .map(|(_, (effect, _))| effect.layer)
+                    .values()
+                    .filter(|(effect, _)| effect.is_from_sequence(seq_name))
+                    .map(|(effect, _)| effect.layer)
                     .collect();
                 for layer in stopped.into_iter().collect::<HashSet<_>>() {
                     settle_layer(
@@ -367,10 +665,16 @@ fn replay(cues: &[Cue]) -> Replay {
                     );
                 }
                 let mut cut = false;
-                result.effects_with_elapsed.retain(|id, _| {
-                    let keep = !id.starts_with(&prefix) || settled.arrived.contains(id);
-                    cut |= !keep;
-                    keep
+                result.effects_with_elapsed.retain(|id, (effect, _)| {
+                    if !effect.is_from_sequence(seq_name) || is_settled_move(id, settled) {
+                        return true;
+                    }
+                    cut = true;
+                    if !is_move(effect) {
+                        return false;
+                    }
+                    cut_move(id, effect, None, time, layers, &mut heads, settled);
+                    true
                 });
                 if cut {
                     settled.ended = settled.ended.max(time);
@@ -383,7 +687,43 @@ fn replay(cues: &[Cue]) -> Replay {
         // cues land in then renders, and expires one over already: a look
         // with no length, on a frozen layer too.
         let started: HashSet<EffectLayer> = fired.iter().map(|effect| effect.layer).collect();
+        // A move takes its heads from the moves still on them, which are
+        // settled to now first: one already there has none to give up.
+        if fired.iter().any(is_move) {
+            let all: HashSet<EffectLayer> = result
+                .effects_with_elapsed
+                .values()
+                .map(|(effect, _)| effect.layer)
+                .collect();
+            for layer in all {
+                settle_layer(
+                    layer,
+                    time,
+                    layers,
+                    &mut result.effects_with_elapsed,
+                    settled,
+                );
+            }
+        }
+        // In the order the engine starts them at one time: a sequence's
+        // effects before the show's own, so a show's own move there takes
+        // the head (#599), as played through.
+        fired.sort_by_key(|effect| effect.sequence.is_none());
         for effect_instance in fired {
+            if is_move(&effect_instance) {
+                let fixtures = resolve(&effect_instance);
+                *superseded |= supersede(
+                    &effect_instance.id,
+                    &fixtures,
+                    time,
+                    layers,
+                    &mut result.effects_with_elapsed,
+                    &mut heads,
+                    settled,
+                );
+                settled.take(&effect_instance, &fixtures);
+                heads.insert(effect_instance.id.clone(), fixtures);
+            }
             result.effects_with_elapsed.insert(
                 effect_instance.id.clone(),
                 (effect_instance, Duration::ZERO),
@@ -398,26 +738,47 @@ fn replay(cues: &[Cue]) -> Replay {
                 settled,
             );
         }
+        settled.stow(&mut result.effects_with_elapsed);
     }
     replay
 }
 
-/// When the show's last effect ends, by its own elapsed: those over by the
+/// When a show's effects end, by their own elapsed (see [`running_ends`]).
+#[derive(Default)]
+struct Ends {
+    /// When each effect that ends of itself does so. One a clear or a stop
+    /// cuts short ends at that cue instead, and is not here.
+    each: Vec<Duration>,
+    /// When the last of them ends, or is cut short.
+    last: Duration,
+    /// Whether a move took heads from another still on them, which ends
+    /// that one early (see [`replay`]).
+    superseded: bool,
+    /// Whether one is on a layer the show leaves frozen, which holds it for
+    /// good: that one has no end, and the others' still count.
+    open_ended: bool,
+}
+
+/// When the show's effects end, by their own elapsed: those over by the
 /// last cue when the replay took them out, and those still running then
 /// on from there: a slowed layer stretches an effect past its authored end, and a
-/// freeze holds it there for as long as it lasts. With whether one is on a
-/// layer the show leaves frozen, which holds it for good: that one has no
-/// end, and the others' still count.
-fn running_end(cues: &[Cue]) -> (Duration, bool) {
+/// freeze holds it there for as long as it lasts.
+///
+/// There is no venue to resolve groups by here, so a move takes heads from
+/// another only where the two name a group in common: two groups that share
+/// a fixture keep both moves on it to their ends. Only the show's end, and
+/// where analysis splits it, take that from here; a seek resolves them.
+fn running_ends(cues: &[Cue]) -> Ends {
     let Some(last) = cues.last().map(|cue| cue.time) else {
-        return (Duration::ZERO, false);
+        return Ends::default();
     };
     let Replay {
         mut result,
         layers,
         mut settled,
+        superseded,
         ..
-    } = replay(cues);
+    } = replay(cues, &mut |effect| effect.target_fixtures.clone());
     let all: HashSet<EffectLayer> = result
         .effects_with_elapsed
         .values()
@@ -433,9 +794,10 @@ fn running_end(cues: &[Cue]) -> (Duration, bool) {
         );
     }
     let mut end = settled.ended;
+    let mut each = std::mem::take(&mut settled.ends);
     let mut open_ended = false;
     for (id, (effect, _)) in &result.effects_with_elapsed {
-        if settled.arrived.contains(id) {
+        if is_settled_move(id, &settled) {
             continue;
         }
         let state = layers.get(&effect.layer);
@@ -456,11 +818,19 @@ fn running_end(cues: &[Cue]) -> (Duration, bool) {
         };
         // So slow it never ends in any time there is: as good as frozen.
         match remaining.and_then(|remaining| last.checked_add(remaining)) {
-            Some(at) => end = end.max(at),
+            Some(at) => {
+                end = end.max(at);
+                each.push(at);
+            }
             None => open_ended = true,
         }
     }
-    (end, open_ended)
+    Ends {
+        each,
+        last: end,
+        superseded,
+        open_ended,
+    }
 }
 
 /// A timeline arming's [`LightingTimeline::epoch`]: unique across every
@@ -528,46 +898,6 @@ impl LightingTimeline {
 
     /// Creates a new lighting timeline from DSL cues (for testing)
     pub(crate) fn new_with_cues(cues: Vec<Cue>) -> Self {
-        // The last effect's real end: a `clear` or a `stop sequence` cuts
-        // an effect short, and a show that ends on one is over then, not
-        // when the cleared bed would have run out. Same reckoning as the
-        // lint's; a freeze or the speed master then carries it on (below),
-        // which the lint does not know.
-        let clears: Vec<(Option<crate::lighting::effects::EffectLayer>, Duration)> = cues
-            .iter()
-            .flat_map(|cue| {
-                cue.layer_commands
-                    .iter()
-                    .filter(|cmd| cmd.command_type == LayerCommandType::Clear)
-                    .map(move |cmd| (cmd.layer, cue.time))
-            })
-            .collect();
-        let stops: Vec<(String, Duration)> = cues
-            .iter()
-            .flat_map(|cue| {
-                cue.stop_sequences
-                    .iter()
-                    .map(move |name| (name.clone(), cue.time))
-            })
-            .collect();
-        let (clears, stops) = (&clears, &stops);
-        let show_end = cues
-            .iter()
-            .flat_map(|cue| {
-                cue.effects.iter().map(move |e| {
-                    crate::lighting::lint::effective_end(
-                        cue.time + e.total_duration(),
-                        cue.time,
-                        e.layer
-                            .unwrap_or(crate::lighting::effects::EffectLayer::Background),
-                        e.sequence_name.as_deref(),
-                        clears,
-                        stops,
-                    )
-                })
-            })
-            .max()
-            .unwrap_or(Duration::ZERO);
         let mut timeline = Self {
             cues,
             current_time: Duration::ZERO,
@@ -577,11 +907,51 @@ impl LightingTimeline {
             tempo_map: None,
             stopped_sequences: HashSet::new(),
             epoch: next_epoch(),
-            show_end,
+            show_end: Duration::ZERO,
             end_cap: None,
             open_ended: false,
         };
         timeline.sort_cues();
+        let cues = &timeline.cues;
+        // The last effect's real end: a `clear` or a `stop sequence` cuts
+        // an effect short, and a show that ends on one is over then, not
+        // when the cleared bed would have run out. Same reckoning as the
+        // lint's, but over the effects the timeline fires: a sequence's
+        // passes cued after it was stopped never start, and a looping one
+        // stopped part way otherwise ran the end out to its 10,000th pass
+        // (#594). A freeze or the speed master then carries it on (below),
+        // which the lint does not know.
+        let cuts = crate::lighting::lint::Cuts::new(cues);
+        let mut stopped_sequences = HashSet::new();
+        let mut fired = TimelineUpdate::default();
+        // Moves still running, by their ends and groups: one cued over
+        // another on the same heads takes them (#599), which can end it
+        // early.
+        let mut moves: Vec<(Duration, &[String])> = Vec::new();
+        let mut overlapping_moves = false;
+        for cue in cues {
+            for e in fire_cue(&mut stopped_sequences, cue, &mut fired) {
+                let end = cuts.effective_end(
+                    cue.time + e.total_duration(),
+                    cue.time,
+                    e.layer
+                        .unwrap_or(crate::lighting::effects::EffectLayer::Background),
+                    e.sequence_name.as_deref(),
+                );
+                timeline.show_end = timeline.show_end.max(end);
+                if matches!(
+                    e.effect_type,
+                    crate::lighting::effects::EffectType::Move { .. }
+                ) {
+                    moves.retain(|(until, _)| *until > cue.time);
+                    overlapping_moves |= moves
+                        .iter()
+                        .any(|(_, groups)| groups.iter().any(|g| e.groups.contains(g)));
+                    moves.push((end, &e.groups));
+                }
+            }
+        }
+
         // A freeze or the speed master holds an effect past its authored
         // end, and the song's time stops once the show is over: an effect
         // still running then never ends (#590). So the show runs on until
@@ -591,7 +961,11 @@ impl LightingTimeline {
             .iter()
             .any(|cue| cue.layer_commands.iter().any(times_layer));
         if holds {
-            let (end, open_ended) = running_end(&timeline.cues);
+            let Ends {
+                last: end,
+                open_ended,
+                ..
+            } = running_ends(cues);
             // A look held for good has no end to wait for. Without audio
             // to run to, the show keeps at least the end it was written
             // with: an ambient show loops then, the frozen look up until it
@@ -602,6 +976,15 @@ impl LightingTimeline {
                 end
             };
             timeline.open_ended = open_ended;
+        } else if overlapping_moves {
+            // A move another took every head from ended there; the
+            // replay knows which, the lint's reckoning does not.
+            let Ends {
+                last, superseded, ..
+            } = running_ends(cues);
+            if superseded {
+                timeline.show_end = last;
+            }
         }
         timeline
     }
@@ -634,7 +1017,9 @@ impl LightingTimeline {
         self.tempo_map.as_ref()
     }
 
-    /// Sorts cues by time
+    /// Sorts cues by time, stably: same-time cues keep the order they came
+    /// in, their shows' file order and their place in each, and fire in it
+    /// the same way at every build of the timeline (#597).
     fn sort_cues(&mut self) {
         self.cues.sort_by(|a, b| a.time.cmp(&b.time));
     }
@@ -650,7 +1035,21 @@ impl LightingTimeline {
 
     /// Starts the timeline at a specific time (for seeking)
     /// This processes all cues before start_time to ensure deterministic state
+    ///
+    /// Effects' groups are taken as fixtures by name; where a venue resolves
+    /// them, [`Self::start_at_resolving`] has a move take its heads from
+    /// another by the fixtures they share.
     pub fn start_at(&mut self, start_time: Duration) -> TimelineUpdate {
+        self.start_at_resolving(start_time, &mut |effect| effect.target_fixtures.clone())
+    }
+
+    /// [`Self::start_at`], `resolve` giving the fixtures an effect's groups
+    /// stand for, as the engine will have them.
+    pub fn start_at_resolving(
+        &mut self,
+        start_time: Duration,
+        resolve: ResolveFixtures,
+    ) -> TimelineUpdate {
         self.epoch = next_epoch();
         self.is_playing = true;
         self.current_time = start_time;
@@ -671,7 +1070,8 @@ impl LightingTimeline {
             layers,
             mut settled,
             stopped_sequences,
-        } = replay(&self.cues[..self.next_cue_index]);
+            ..
+        } = replay(&self.cues[..self.next_cue_index], resolve);
         self.stopped_sequences = stopped_sequences;
 
         // Only include effects that would still be running at start_time,
@@ -691,20 +1091,9 @@ impl LightingTimeline {
                 &mut settled,
             );
         }
-        let arrived = settled.arrived;
-        for (id, (effect, elapsed)) in result.effects_with_elapsed.iter_mut() {
+        settled.stow(&mut result.effects_with_elapsed);
+        for (effect, elapsed) in result.effects_with_elapsed.values_mut() {
             *elapsed = base_elapsed(effect, &layers, start_time);
-            if arrived.contains(id) {
-                // There already. At the speed it ran at, but a clear since
-                // may have put its layer's speed back: then at its elapsed
-                // it would look part way, so it goes in as far past its end
-                // as it can be, and the engine commits it to its
-                // destination.
-                if own_elapsed(effect, &layers, start_time) < effect.total_duration() {
-                    *elapsed = Duration::MAX;
-                }
-                continue;
-            }
             // On a layer still frozen, the engine holds it at the start
             // point (where it is told the layer froze) less its time frozen:
             // counted up to the start point, that is where it froze.
@@ -712,6 +1101,21 @@ impl LightingTimeline {
                 let cue_time = effect.cue_time.unwrap_or(Duration::ZERO);
                 effect.score_frozen += start_time.saturating_sub(cue_time.max(frozen_at));
             }
+        }
+        // The moves over by now that a head's pose still comes from: one
+        // cut short commits the pose at each cut. One that arrived is there
+        // already, at the speed it ran at, but a clear since may have put
+        // its layer's speed back: then at its elapsed it would look part
+        // way, so it goes in as far past its end as it can be, and the
+        // engine commits it to its destination.
+        for (id, effect) in settled.moves {
+            let mut elapsed = base_elapsed(&effect, &layers, start_time);
+            if settled.arrived.contains(&id)
+                && own_elapsed(&effect, &layers, start_time) < effect.total_duration()
+            {
+                elapsed = Duration::MAX;
+            }
+            result.effects_with_elapsed.insert(id, (effect, elapsed));
         }
 
         let total_effects = result.effects.len() + result.effects_with_elapsed.len();
@@ -803,18 +1207,7 @@ impl LightingTimeline {
             let cue = &self.cues[self.next_cue_index];
 
             if cue.time <= song_time {
-                // Process start_sequences first: clear stopped status for new invocations
-                for seq_name in &cue.start_sequences {
-                    self.stopped_sequences.remove(seq_name);
-                }
-
-                // Process effects, skipping those from stopped sequences
-                for effect in &cue.effects {
-                    if let Some(ref seq_name) = effect.sequence_name {
-                        if self.stopped_sequences.contains(seq_name) {
-                            continue;
-                        }
-                    }
+                for effect in fire_cue(&mut self.stopped_sequences, cue, &mut result) {
                     let effect_instance = Self::create_effect_instance(effect, cue.time);
                     result.effects.push(effect_instance);
                 }
@@ -825,8 +1218,9 @@ impl LightingTimeline {
                 result
                     .layer_command_times
                     .extend(cue.layer_commands.iter().map(|_| cue.time));
-
-                process_stop_sequences(&mut self.stopped_sequences, cue, &mut result);
+                result
+                    .stop_sequence_times
+                    .resize(result.stop_sequences.len(), cue.time);
 
                 self.next_cue_index += 1;
             } else {
@@ -855,6 +1249,32 @@ impl LightingTimeline {
         self.cues
             .iter()
             .map(|cue| (cue.time, cue.effects.as_slice()))
+    }
+
+    /// When each effect the show cues ends of itself, as the show's end
+    /// reckons it: a freeze holds an effect past its authored end and the
+    /// speed master moves it, so the authored end is not when the rig
+    /// changes. One a clear or a stop cuts short ends at that cue, and one
+    /// left frozen for good never does; neither is here.
+    pub(crate) fn effect_ends(&self) -> Vec<Duration> {
+        running_ends(&self.cues).each
+    }
+
+    /// The groups the show's moves target: what a caller resolves ahead of
+    /// [`Self::start_at_resolving`] where it cannot while holding the
+    /// timeline.
+    pub fn move_groups(&self) -> HashSet<String> {
+        self.cues
+            .iter()
+            .flat_map(|cue| &cue.effects)
+            .filter(|effect| {
+                matches!(
+                    effect.effect_type,
+                    crate::lighting::effects::EffectType::Move { .. }
+                )
+            })
+            .flat_map(|effect| effect.groups.iter().cloned())
+            .collect()
     }
 
     /// Get all cues with their times and indices
@@ -898,19 +1318,36 @@ impl LightingTimeline {
         effect_instance.per_cell = effect.per_cell;
         effect_instance.spread = effect.spread;
         effect_instance.tempo_offset_secs = effect.tempo_offset_secs;
+        effect_instance.sequence = effect.sequence_name.clone();
 
         effect_instance
     }
 }
 
-/// Process stop_sequences for a cue: iteration-boundary stops (where the cue
-/// also starts effects from the same sequence) only go to the engine, while
-/// explicit stops also suppress future cues from that sequence.
-fn process_stop_sequences(
+/// Fires `cue` as the timeline does live, and gives the effects it starts:
+/// its sequence starts clear their stopped status first, an effect from a
+/// sequence stopped by then is skipped, and its stops then count for the
+/// cues after it. An iteration-boundary stop (where the cue also starts
+/// effects from the same sequence) only goes to the engine, while an
+/// explicit stop also suppresses future cues from that sequence.
+fn fire_cue<'a>(
     stopped_sequences: &mut HashSet<String>,
-    cue: &crate::lighting::parser::Cue,
+    cue: &'a Cue,
     result: &mut TimelineUpdate,
-) {
+) -> Vec<&'a Effect> {
+    for seq_name in &cue.start_sequences {
+        stopped_sequences.remove(seq_name);
+    }
+    let fired = cue
+        .effects
+        .iter()
+        .filter(|effect| {
+            effect
+                .sequence_name
+                .as_ref()
+                .is_none_or(|name| !stopped_sequences.contains(name))
+        })
+        .collect();
     let cue_sequence_names: HashSet<&String> = cue
         .effects
         .iter()
@@ -924,6 +1361,7 @@ fn process_stop_sequences(
     result
         .stop_sequences
         .extend(cue.stop_sequences.iter().cloned());
+    fired
 }
 
 #[cfg(test)]

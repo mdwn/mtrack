@@ -32,4 +32,4 @@ pub use include::included_files;
 pub use show::{
     parse_light_file, parse_light_file_within, parse_light_shows, parse_light_shows_with_tempo,
 };
-pub use types::{Cue, Effect, LayerCommand, LayerCommandType, LightShow};
+pub use types::{Cue, Effect, LayerCommand, LayerCommandType, LightShow, LightShows};

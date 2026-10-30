@@ -16,11 +16,12 @@
 //! sequences, cued off frame boundaries -- played through against a seek,
 //! `evaluate_show` and the show's end. Ignored by default: run with
 //! `--ignored` in release; `N`, `SEED` and the generator switches (`NEAR`,
-//! `CLEARS`, `MOVES`, `HOLDS`, `SEQS`) narrow it. Known gaps: #592, #594,
-//! #596, #599.
+//! `CLEARS`, `MOVES`, `HOLDS`, `SEQS`) narrow it. Known gap: a move cut
+//! less than a frame after its cue, or a seek landing on the cut, can differ
+//! by whether the move rendered a frame before it.
 
 use super::*;
-use crate::lighting::parser::parse_light_shows;
+use crate::lighting::parser::{parse_light_shows, LayerCommandType};
 use crate::lighting::types::{ChannelDef, PhysicalRange, PhysicalUnit};
 
 fn shows(source: &str) -> Vec<LightShow> {
@@ -170,7 +171,10 @@ fn diff(a: &[f64], b: &[f64]) -> String {
 }
 
 /// Played through from 0, frames at phase, phase+10, ...; snapshot per
-/// frame and the active count per frame.
+/// frame and how far the show is lit to in it, in ms (0 if not): to the
+/// next frame while an effect is active, else to the last clear or stop of
+/// a frame whose cues started an effect, which it may have cut before it
+/// rendered -- lit then, if for less than a frame.
 fn played_run(src: &str, phase: u64, until_ms: u64) -> Vec<(u64, Vec<f64>, usize)> {
     let mut tl = LightingTimeline::new(shows(src));
     let mut engine = fresh();
@@ -182,9 +186,25 @@ fn played_run(src: &str, phase: u64, until_ms: u64) -> Vec<(u64, Vec<f64>, usize
     while ms <= until_ms {
         let t = Duration::from_millis(ms);
         let u = tl.update(t);
+        let clears = u
+            .layer_commands
+            .iter()
+            .zip(&u.layer_command_times)
+            .filter(|(c, _)| c.command_type == LayerCommandType::Clear)
+            .map(|(_, at)| *at);
+        let cut = clears
+            .chain(u.stop_sequence_times.iter().copied())
+            .max()
+            .filter(|_| !u.effects.is_empty())
+            .map_or(0, |at| at.as_millis() as usize);
         apply_timeline_update(&mut engine, u, &mut |e| e);
         let _ = engine.update(step, Some(t));
-        out.push((ms, snap(&engine), engine.active_effects_count()));
+        let lit = if engine.active_effects_count() > 0 {
+            ms as usize + 10
+        } else {
+            cut
+        };
+        out.push((ms, snap(&engine), lit));
         ms += 10;
     }
     out
@@ -198,15 +218,7 @@ fn seek_run(src: &str, seek_ms: u64, at: &[u64]) -> Vec<(u64, Vec<f64>)> {
     let start = Duration::from_millis(seek_ms);
     let h = tl.start_at(start);
     engine.set_song_time(start);
-    engine.apply_layer_commands(&h.layer_commands, &[]);
-    for s in &h.stop_sequences {
-        engine.stop_sequence(s);
-    }
-    let mut we: Vec<_> = h.effects_with_elapsed.into_values().collect();
-    we.sort_by_key(|(e, _)| e.cue_time.unwrap_or(Duration::ZERO));
-    for (e, el) in we {
-        let _ = engine.start_effect_with_elapsed(e, el);
-    }
+    let _ = engine.apply_timeline_update(h);
     let step = Duration::from_millis(10);
     let last = *at.iter().max().unwrap();
     let mut out = Vec::new();
@@ -452,7 +464,8 @@ fn sweep_random_shows() {
         if do_end {
             counts[2] += 1;
             let p = run(0);
-            let last_active = p.iter().rev().find(|(_, _, a)| *a > 0).map(|(t, _, _)| *t);
+            let lit_until = p.iter().map(|(_, _, lit)| *lit as u64).max().unwrap_or(0);
+            let last_active = (lit_until > 0).then_some(lit_until.saturating_sub(10));
             let head = LightingTimeline::new(shows(&src)).show_end();
             let msg = match last_active {
                 Some(t) if t >= horizon => {
@@ -465,8 +478,7 @@ fn sweep_random_shows() {
                     })
                 }
                 _ => {
-                    let live = last_active.map(|t| t + 10).unwrap_or(0);
-                    let live = Duration::from_millis(live);
+                    let live = Duration::from_millis(lit_until);
                     (live.abs_diff(head) > Duration::from_millis(10))
                         .then(|| format!("idle from {live:?}, show_end {head:?}"))
                 }

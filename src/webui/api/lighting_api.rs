@@ -184,6 +184,9 @@ pub(super) async fn import_gdtf(
     // archive, name collision, archive conflict) surfaces as the caller error
     // it is, not a 500.
     let report = super::helpers::spawn_blocking_io("import gdtf", move || {
+        // A pinned name writes a fixture type record, in turn with the
+        // other fixture type and venue saves (#578).
+        let _guard = VENUE_WRITES.blocking_lock();
         Ok::<_, String>(
             lighting::import::import_gdtf_bytes(
                 &bytes,
@@ -299,7 +302,7 @@ pub(super) async fn get_lighting_file(
 
     let path = safe.as_path().to_path_buf();
     match super::helpers::spawn_blocking_io("read lighting file", move || {
-        std::fs::read_to_string(&path)
+        crate::util::read_to_string(&path)
     })
     .await
     {
@@ -351,6 +354,9 @@ pub(super) async fn put_lighting_file(
         Err(e) => return e.into_response(),
     };
 
+    // Held from reading the song's tempo: a song save changing it reloads
+    // the songs under this lock.
+    let _writing = super::songs_api::SONG_WRITES.lock().await;
     // Validate against the tempo the owning song loads this file with. A show
     // inheriting its song's tempo is valid content that a tempo-less parse
     // rejects, so writing it through the UI would fail for no real reason.
@@ -408,6 +414,9 @@ pub(super) async fn delete_lighting_file(
 
     // codeql[rust/path-injection] safe is verified via SafePath::resolve against songs_path root.
     let path = safe.as_path().to_path_buf();
+    // In turn with the file's writes: an MCP patch reading it before the
+    // delete would write it back after.
+    let _writing = super::songs_api::SONG_WRITES.lock().await;
     match super::helpers::spawn_blocking_io("delete lighting file", move || {
         std::fs::remove_file(&path)
     })
@@ -481,7 +490,7 @@ const FIXTURE_TYPE_EXTENSIONS: &[&str] = lighting::project_files::FIXTURE_TYPE_E
 /// The fixture type names a file declares; none if it cannot be read or
 /// does not parse.
 fn declared_fixture_types(path: &std::path::Path) -> Vec<String> {
-    std::fs::read_to_string(path)
+    crate::util::read_to_string(path)
         .ok()
         .and_then(|content| lighting::parser::parse_fixture_types(&content).ok())
         .map(|types| types.into_keys().collect())
@@ -571,8 +580,13 @@ fn existing_venue_file(dir: &std::path::Path, name: &str) -> Option<std::path::P
 }
 
 /// Serialises every read-check-write of a venue file, so two saves cannot
-/// interleave between the version check and the write.
-pub(super) static VENUE_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// interleave between the version check and the write; and every write of a
+/// fixture type file, which a fixture's settings save rewrites with its
+/// venues. MCP's venue and fixture type writes take it too, and its edits
+/// hold it from their read to their write, or a save made between the two
+/// would be lost (#578). The saves here run on a blocking thread, and take
+/// it with `blocking_lock`.
+pub(crate) static VENUE_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The version of a venue file: a hash of its bytes. A client sends back the
 /// one it read (`If-Match`); a save whose version is no longer the file's is
@@ -636,8 +650,8 @@ pub(super) fn locate_venue_file(
     let paths = lighting::project_files::files_under(dir, VENUE_EXTENSIONS);
     let mut broken: Option<LocatedVenue> = None;
     for path in paths {
-        let bytes =
-            std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let bytes = crate::util::read_file(&path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         let problem = match std::str::from_utf8(&bytes) {
             Ok(text) => match lighting::parser::parse_venues(text) {
                 Ok(venues) if venues.contains_key(name) => {
@@ -882,8 +896,19 @@ pub(super) struct LightingDirQuery {
 /// Validates that a fixture type or venue name is safe for use as a filename.
 #[allow(clippy::result_large_err)]
 pub(super) fn validate_lighting_name(name: &str) -> Result<(), axum::response::Response> {
+    validate_lighting_name_to_write(name, true)
+}
+
+/// As [`validate_lighting_name`], for a fixture type or venue being written:
+/// one not already on disk (`exists` false) is being created, and its name
+/// must also pass the rules for new names.
+#[allow(clippy::result_large_err)]
+pub(super) fn validate_lighting_name_to_write(
+    name: &str,
+    exists: bool,
+) -> Result<(), axum::response::Response> {
     use super::super::safe_path::SafePath;
-    if SafePath::validate_name(name).is_err() {
+    if SafePath::validate_name_to_write(name, exists).is_err() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Invalid name"})),
@@ -1186,7 +1211,7 @@ pub(super) async fn get_fixture_type(
     };
     let fp = file_path.clone();
     let content = super::helpers::spawn_blocking_io("read fixture type", move || {
-        std::fs::read_to_string(&fp)
+        crate::util::read_to_string(&fp)
     })
     .await?;
     let types = lighting::parser::parse_fixture_types(&content).map_err(|e| {
@@ -1228,7 +1253,7 @@ async fn gdtf_source_of(
 ) -> Result<Option<lighting::types::GdtfSource>, axum::response::Response> {
     if let Some((file_path, _)) = locate_fixture_type_file(dir, name).await? {
         let content = super::helpers::spawn_blocking_io("read fixture type", move || {
-            std::fs::read_to_string(&file_path)
+            crate::util::read_to_string(&file_path)
         })
         .await?;
         let types = lighting::parser::parse_fixture_types(&content).map_err(|e| {
@@ -1298,7 +1323,7 @@ pub(super) async fn get_fixture_type_gdtf(
     // Reading, parsing, distilling every mode and (cold) writing the rig are
     // all blocking work. The inner Result is the parse failure, a 400.
     let outcome = super::helpers::spawn_blocking_io("inspect GDTF", move || {
-        let bytes = std::fs::read(&archive)?;
+        let bytes = crate::util::read_file(&archive)?;
         let description = match lighting::gdtf::parse_archive(&bytes) {
             Ok(description) => description,
             Err(e) => return Ok::<_, std::io::Error>(Err(e.to_string())),
@@ -1495,7 +1520,7 @@ impl ArchiveCache {
             .entry(source.path.clone())
             .or_insert_with(|| {
                 let archive = resolve_referential_archive(root, name, source).ok()?;
-                let bytes = std::fs::read(archive).ok()?;
+                let bytes = crate::util::read_file(&archive).ok()?;
                 let description = lighting::gdtf::parse_archive(&bytes).ok()?;
                 Some((bytes, description))
             })
@@ -1621,9 +1646,14 @@ pub(super) async fn put_fixture_type(
     require_declared_name("fixture type", &name, &types)?;
     validate_referential_archives(&project_root(&state.config_path)?, &types)?;
 
+    // Held from finding the file to writing it, as MCP's patch holds it: a
+    // type added to a shared file between the two would pass the check on
+    // the file's other types below, and be lost to the form's save.
+    let _writing = VENUE_WRITES.lock().await;
     // Read against the resolved directory rather than the created one: every
     // refusal below should land before anything is made on disk.
     let located = locate_fixture_type_file(&dir, &name).await?;
+    validate_lighting_name_to_write(&name, located.is_some())?;
     // An existing type is saved back to the file it lives in, whatever that
     // file is called; only a new type is named after itself.
     let stem = located
@@ -1752,6 +1782,9 @@ pub(super) async fn delete_fixture_type(
         DEFAULT_FIXTURE_TYPES_DIR,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
+    // Held from finding the record to deleting it, as MCP's delete does: a
+    // save between the two would be deleted unseen (#578).
+    let _writing = VENUE_WRITES.lock().await;
     let Some((file_path, others)) = locate_fixture_type_file(&dir, &name).await? else {
         // A GDTF in the library with no record is a fixture of its own;
         // deleting it is deleting the archive.
@@ -1797,7 +1830,7 @@ pub(super) async fn delete_fixture_type(
         super::helpers::spawn_blocking_io("delete fixture type", move || {
             // A GDTF fixture's archive is mtrack's to keep, not the user's:
             // read which one this type uses before its record goes.
-            let archive = std::fs::read_to_string(&fp)
+            let archive = crate::util::read_to_string(&fp)
                 .ok()
                 .and_then(|text| lighting::parser::parse_fixture_types(&text).ok())
                 .and_then(|types| types.get(&deleted).and_then(|t| t.source().cloned()));
@@ -2390,7 +2423,7 @@ pub(super) async fn get_venues(
         let mut all = std::collections::HashMap::new();
         let mut versions = std::collections::HashMap::new();
         for declared in read.items {
-            if let Ok(bytes) = std::fs::read(&declared.file) {
+            if let Ok(bytes) = crate::util::read_file(&declared.file) {
                 versions.insert(declared.name.clone(), content_version(&bytes));
             }
             all.insert(declared.name, declared.item);
@@ -2520,10 +2553,13 @@ pub(super) async fn put_venue(
     let venue_name = name.clone();
     let outcome = super::helpers::spawn_blocking_io("write venue", move || {
         let name = venue_name;
-        let _guard = VENUE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = VENUE_WRITES.blocking_lock();
         let reply = |r: axum::response::Response| Ok::<_, String>(Err(r));
         let bad = |e: String| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
         let located = locate_venue_file(&dir, &name)?;
+        if let Err(r) = validate_lighting_name_to_write(&name, located.is_some()) {
+            return reply(r);
+        }
         if let Some(expected) = &expected {
             let current = located.as_ref().map(LocatedVenue::version);
             if current.as_deref() != Some(expected.as_str()) {
@@ -2710,6 +2746,9 @@ pub(super) async fn delete_venue(
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
     let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    // Held from reading the file to deleting it, as MCP's delete does: a
+    // save adding another venue to it between the two would be lost (#578).
+    let _writing = VENUE_WRITES.lock().await;
     // By declaration, as GET and PUT find it: an MVR import names the file by
     // its own rule, so the stem need not be this API's spelling of the name.
     let located = {

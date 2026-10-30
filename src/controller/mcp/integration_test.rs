@@ -1256,8 +1256,10 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         "rejected fixture type was written anyway",
     );
 
-    // --- patch_playlist: rename a song in place
-    let _ = call_tool(
+    // --- patch_playlist: a song the player does not have is refused, since
+    // it would not load the playlist (#578); an entry's settings edit in place.
+    let pl_before = std::fs::read_to_string(fixture.root.join("playlist.yaml"))?;
+    let renamed = call_tool(
         &client,
         &url,
         &session,
@@ -1269,14 +1271,14 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         }),
     )
     .await;
-    let pl_after = std::fs::read_to_string(fixture.root.join("playlist.yaml"))?;
     assert!(
-        pl_after.contains("Renamed Song"),
-        "patch_playlist did not apply: {pl_after}"
+        renamed.get("error").is_some() || renamed["result"]["isError"].as_bool() == Some(true),
+        "a song the player does not have should be refused: {renamed}",
     );
-    assert!(!pl_after.contains("DSL Light Show Song"));
-
-    // Restore so subsequent tools that reference the song still work.
+    assert_eq!(
+        std::fs::read_to_string(fixture.root.join("playlist.yaml"))?,
+        pl_before
+    );
     let _ = call_tool(
         &client,
         &url,
@@ -1284,7 +1286,26 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         29,
         "patch_playlist",
         json!({
-            "old_string": "- Renamed Song",
+            "old_string": "- DSL Light Show Song",
+            "new_string": "- song: DSL Light Show Song\n  auto_play: false",
+        }),
+    )
+    .await;
+    let pl_after = std::fs::read_to_string(fixture.root.join("playlist.yaml"))?;
+    assert!(
+        pl_after.contains("auto_play: false"),
+        "patch_playlist did not apply: {pl_after}"
+    );
+
+    // Restore so subsequent tools see the playlist as it was.
+    let _ = call_tool(
+        &client,
+        &url,
+        &session,
+        291,
+        "patch_playlist",
+        json!({
+            "old_string": "- song: DSL Light Show Song\n  auto_play: false",
             "new_string": "- DSL Light Show Song",
         }),
     )
@@ -3853,7 +3874,7 @@ async fn mcp_write_playlist_checks_transitions() -> Result<(), Box<dyn Error>> {
         assert_eq!(std::fs::read_to_string(&path)?, before, "nothing written");
     }
 
-    let good = "kind: playlist\nsongs:\n- song: DSL Light Show Song\n  fade_out: {length: 1measure, curve: linear, lights: 0s}\n  fade_in: 2s\n";
+    let good = "kind: playlist\nsongs:\n- song: DSL Light Show Song\n  fade_out: {length: 1measure, curve: linear, lights: 0s}\n  fade_in: 250ms\n";
     let response = call_tool(
         &client,
         &url,
@@ -3874,7 +3895,162 @@ async fn mcp_write_playlist_checks_transitions() -> Result<(), Box<dyn Error>> {
     assert_eq!(transitions["fade_out"]["lights"], "0s");
     assert!(transitions["fade_out"]["exclude"].is_null(), "the default");
     assert_eq!(transitions["next"]["song"], "DSL Light Show Song");
-    assert_eq!(transitions["next"]["fade_in"]["length"], "2s");
+    assert_eq!(transitions["next"]["fade_in"]["length"], "0.25s");
+
+    controller.shutdown();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_playlist_writes_take_turns_with_the_web_ui() -> Result<(), Box<dyn Error>> {
+    // A web save reads the file to keep what the editor does not send; a
+    // write over MCP between its read and its write was lost, and one
+    // during the rewrite read it short.
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+    let path = fixture.root.join("playlist.yaml");
+    let before = std::fs::read_to_string(&path)?;
+
+    let web_save = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
+    let good = "kind: playlist\nsongs:\n- DSL Light Show Song\n- DSL Light Show Song\n";
+    let write = tokio::spawn({
+        let (client, url, session) = (client.clone(), url.clone(), session.clone());
+        async move {
+            call_tool(
+                &client,
+                &url,
+                &session,
+                1610,
+                "write_playlist",
+                json!({"yaml": good}),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(std::fs::read_to_string(&path)?, before, "written mid-save");
+    drop(web_save);
+    write.await?;
+    assert_eq!(std::fs::read_to_string(&path)?, good);
+
+    controller.shutdown();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_write_playlist_checks_its_songs_in_turn_with_a_song_delete(
+) -> Result<(), Box<dyn Error>> {
+    // A web song delete holds SONG_WRITES + PLAYLIST_WRITES while it takes the
+    // song off every playlist file and reloads. An MCP write_playlist that
+    // validated before waiting for PLAYLIST_WRITES then writes the deleted
+    // song back into the playlist.
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+    let path = fixture.root.join("playlist.yaml");
+
+    // The web delete, as delete_song does it.
+    let song_writes = crate::webui::api::songs_api::SONG_WRITES.lock().await;
+    let web_delete = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
+    let yaml = "kind: playlist\nsongs:\n- DSL Light Show Song\n";
+    let write = tokio::spawn({
+        let (client, url, session) = (client.clone(), url.clone(), session.clone());
+        async move {
+            call_tool(
+                &client,
+                &url,
+                &session,
+                1700,
+                "write_playlist",
+                json!({"yaml": yaml}),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    std::fs::remove_file(fixture.root.join("songs/dsl-light-show-song/song.yaml"))?;
+    std::fs::write(&path, "kind: playlist\nsongs: []\n")?;
+    player.reload_songs(&fixture.root.join("songs"), None, Some(&path));
+    assert!(player.songs().get("DSL Light Show Song").is_err());
+    drop(web_delete);
+    drop(song_writes);
+    let response = write.await?;
+    let refused =
+        response.get("error").is_some() || response["result"]["isError"].as_bool() == Some(true);
+    let on_disk = std::fs::read_to_string(&path)?;
+    assert!(
+        refused || !on_disk.contains("DSL Light Show Song"),
+        "the deleted song was written back: {on_disk}\n{response}"
+    );
+    controller.shutdown();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_write_playlist_keeps_names_already_on_disk() -> Result<(), Box<dyn Error>> {
+    // A name the rules for new names refuse is still written to when the
+    // playlist is already there, from before those rules.
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+    let refused = |response: &serde_json::Value| {
+        response.get("error").is_some() || response["result"]["isError"].as_bool() == Some(true)
+    };
+    let yaml = "kind: playlist\nsongs:\n- DSL Light Show Song\n";
+    let warmup = fixture.root.join("playlists/.warmup.yaml");
+
+    let args = json!({"name": ".warmup", "yaml": yaml});
+    let response = call_tool(
+        &client,
+        &url,
+        &session,
+        1620,
+        "write_playlist",
+        args.clone(),
+    )
+    .await;
+    assert!(refused(&response), "a new .warmup: {response}");
+    assert!(!warmup.exists());
+
+    std::fs::create_dir_all(fixture.root.join("playlists"))?;
+    std::fs::write(&warmup, "songs: []\n")?;
+    let response = call_tool(&client, &url, &session, 1621, "write_playlist", args).await;
+    assert!(!refused(&response), "{response}");
+    assert_eq!(std::fs::read_to_string(&warmup)?, yaml);
 
     controller.shutdown();
     Ok(())
@@ -5318,6 +5494,421 @@ async fn mcp_ambient_mode_and_cancel_auto_play() -> Result<(), Box<dyn Error>> {
     assert_eq!(status["playing"], false);
     assert_eq!(status["current_song"]["name"], "Song 3", "{status}");
 
+    controller.shutdown();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_patch_song_keeps_a_save_made_while_it_waits() -> Result<(), Box<dyn Error>> {
+    // #578: patch_song read song.yaml, and wrote back its edit of what it
+    // read, whatever the web UI's song editor had saved in between.
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let path = fixture.root.join("songs/dsl-light-show-song/song.yaml");
+    let loaded = std::fs::read_to_string(&path)?;
+    assert!(loaded.contains("    file_channel: 1"), "{loaded}");
+
+    // A save from the web UI under way, as its song PUT holds the lock.
+    let saving = crate::webui::api::songs_api::SONG_WRITES.lock().await;
+    let patch = {
+        let (client, url, session) = (client.clone(), url.clone(), session.clone());
+        tokio::spawn(async move {
+            call_tool(
+                &client,
+                &url,
+                &session,
+                1,
+                "patch_song",
+                json!({
+                    "name": "DSL Light Show Song",
+                    "old_string": "    file_channel: 1",
+                    "new_string": "    file_channel: 3",
+                }),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let saved = format!("# saved from the web UI\n{loaded}");
+    crate::util::write_file(&path, saved.as_bytes())?;
+    drop(saving);
+    let response = patch.await?;
+    assert!(!tool_is_error(&response), "{response}");
+
+    let after = std::fs::read_to_string(&path)?;
+    assert!(
+        after.contains("# saved from the web UI"),
+        "save lost: {after}"
+    );
+    assert!(after.contains("file_channel: 3"), "patch lost: {after}");
+    controller.shutdown();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_import_gdtf_waits_for_a_venue_save() -> Result<(), Box<dyn Error>> {
+    // #578: import_gdtf wrote a fixture type record without the lock the web
+    // UI's fixture type and venue saves take.
+    let fixture = setup_standalone_fixture()?;
+    std::fs::create_dir_all(fixture.root.join("incoming"))?;
+    std::fs::write(
+        fixture.root.join("incoming/synth.gdtf"),
+        crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+        )]),
+    )?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // A save from the web UI under way, as its fixture type PUT holds the lock.
+    let saving = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
+    let import = {
+        let (client, url, session) = (client.clone(), url.clone(), session.clone());
+        tokio::spawn(async move {
+            call_tool(
+                &client,
+                &url,
+                &session,
+                1,
+                "import_gdtf",
+                json!({"path": "incoming/synth.gdtf", "name": "Brick"}),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let record = fixture.root.join("lighting/fixture_types/brick.fixture");
+    assert!(!record.exists(), "written mid-save");
+    drop(saving);
+    let response = import.await?;
+    assert!(!tool_is_error(&response), "{response}");
+    assert!(record.exists());
+    controller.shutdown();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_import_mvr_keeps_a_venue_save_made_while_it_waits() -> Result<(), Box<dyn Error>> {
+    // #578: a re-import merges into the venue file, and wrote back its merge
+    // of what it read, whatever the web UI's venue editor had saved since.
+    let fixture = setup_standalone_fixture()?;
+    let gdtf = crate::lighting::gdtf::build_zip(&[(
+        "description.xml",
+        crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+    )]);
+    let scene = r#"<GeneralSceneDescription verMajor="1" verMinor="6"><Scene><Layers>
+<Layer name="Front Truss"><ChildList>
+<Fixture name="Brick 1"><Matrix>{1,0,0}{0,1,0}{0,0,1}{-2000,3500,4200}</Matrix>
+<GDTFSpec>Astera_PB15.gdtf</GDTFSpec><GDTFMode>8: RGBS</GDTFMode>
+<Addresses><Address break="0">1.1</Address></Addresses></Fixture>
+</ChildList></Layer></Layers></Scene></GeneralSceneDescription>"#;
+    std::fs::create_dir_all(fixture.root.join("incoming"))?;
+    std::fs::write(
+        fixture.root.join("incoming/kellys.mvr"),
+        crate::lighting::gdtf::build_zip(&[
+            ("GeneralSceneDescription.xml", scene.as_bytes()),
+            ("Astera_PB15.gdtf", gdtf.as_slice()),
+        ]),
+    )?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let seeded = call_tool(
+        &client,
+        &url,
+        &session,
+        1,
+        "import_mvr",
+        json!({"path": "incoming/kellys.mvr", "origin_mm": [0, -3500, 0]}),
+    )
+    .await;
+    assert!(!tool_is_error(&seeded), "{seeded}");
+    let path = fixture.root.join("lighting/venues/kellys.venue");
+    let loaded = std::fs::read_to_string(&path)?;
+
+    // A save from the web UI under way, as its venue PUT holds the lock. The
+    // re-import moves the origin, so its merge rewrites the position.
+    let saving = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
+    let import = {
+        let (client, url, session) = (client.clone(), url.clone(), session.clone());
+        tokio::spawn(async move {
+            call_tool(
+                &client,
+                &url,
+                &session,
+                2,
+                "import_mvr",
+                json!({"path": "incoming/kellys.mvr", "origin_mm": [0, 0, 0]}),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let saved = format!("# saved from the web UI\n{loaded}");
+    crate::util::write_file(&path, saved.as_bytes())?;
+    drop(saving);
+    let response = import.await?;
+    assert!(!tool_is_error(&response), "{response}");
+
+    let after = std::fs::read_to_string(&path)?;
+    assert!(
+        after.contains("# saved from the web UI"),
+        "save lost: {after}"
+    );
+    assert_ne!(after, saved, "merge lost: {after}");
+    controller.shutdown();
+    Ok(())
+}
+
+/// A config change made over MCP takes effect on the running hardware, as
+/// one made over gRPC or the web UI does: it was saved but not applied
+/// until something else reloaded the hardware or mtrack restarted.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_config_update_reloads_the_hardware() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    assert!(player.audio_device().is_some(), "the fixture has audio");
+
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let cfg = tool_json(&call_tool(&client, &url, &session, 10, "get_config", json!({})).await);
+    let checksum = cfg["checksum"].as_str().expect("checksum").to_string();
+    let updated = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            11,
+            "update_audio",
+            json!({"body": null, "expected_checksum": checksum}),
+        )
+        .await,
+    );
+    assert_eq!(updated["applied"], json!(true), "{updated}");
+    assert!(updated.get("message").is_none(), "{updated}");
+
+    tokio::time::timeout(Duration::from_secs(10), player.await_hardware_ready())
+        .await
+        .expect("the hardware never came back up");
+    assert!(
+        player.audio_device().is_none(),
+        "the audio removed over MCP is still set up"
+    );
+    controller.shutdown();
+    Ok(())
+}
+
+/// Adding a controller over MCP restarted every controller, the MCP server
+/// answering included, which lost its sessions. Only the controller added
+/// starts; the MCP server keeps running, and its session with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_controller_change_leaves_the_mcp_server_running() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let mcp = json!({"kind": "mcp", "port": port});
+    player.start_controllers(vec![serde_json::from_value(mcp.clone())?]);
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let cfg = tool_json(&call_tool(&client, &url, &session, 10, "get_config", json!({})).await);
+    let checksum = cfg["checksum"].as_str().expect("checksum").to_string();
+    let grpc = json!({"kind": "grpc", "port": pick_free_port()});
+    let updated = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            11,
+            "update_controllers",
+            json!({"body": [mcp, grpc], "expected_checksum": checksum}),
+        )
+        .await,
+    );
+    assert_eq!(updated["applied"], json!(true), "{updated}");
+    tokio::time::timeout(Duration::from_secs(10), player.await_hardware_ready())
+        .await
+        .expect("the hardware never came back up");
+    let kinds: Vec<String> = player
+        .controller_statuses()
+        .into_iter()
+        .filter(|s| s.status == "running")
+        .map(|s| s.kind)
+        .collect();
+    assert_eq!(kinds, ["mcp", "grpc"], "the controllers running");
+
+    // The same session still answers: the server was not restarted.
+    let after = tool_json(&call_tool(&client, &url, &session, 12, "get_config", json!({})).await);
+    assert_eq!(after["checksum"], updated["checksum"]);
+    player.shutdown_controllers();
+    Ok(())
+}
+
+/// A config change the next start would refuse, here a second MIDI
+/// controller, was saved and applied, and mtrack then failed to start. It is
+/// refused as invalid params, and the config file is left as it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_refuses_a_config_change_that_would_not_load() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let mcp = json!({"kind": "mcp", "port": port});
+    player.start_controllers(vec![serde_json::from_value(mcp.clone())?]);
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let midi = serde_json::to_value(config::Controller::Midi(config::MidiController::new(
+        config::midi::note_on(16, 0, 127),
+        config::midi::note_on(16, 1, 127),
+        config::midi::note_on(16, 2, 127),
+        config::midi::note_on(16, 3, 127),
+        config::midi::note_on(16, 4, 127),
+        config::midi::note_on(16, 5, 127),
+    )))?;
+    let before = std::fs::read_to_string(&fixture.config_path)?;
+    let cfg = tool_json(&call_tool(&client, &url, &session, 10, "get_config", json!({})).await);
+    let checksum = cfg["checksum"].as_str().expect("checksum").to_string();
+    for (id, tool, body) in [
+        (11, "update_controllers", json!([mcp, midi, midi])),
+        (
+            12,
+            "add_profile",
+            json!({"kind": "hardware_profile", "hostname": "two-midi", "controllers": [midi, midi]}),
+        ),
+    ] {
+        let refused = call_tool(
+            &client,
+            &url,
+            &session,
+            id,
+            tool,
+            json!({"body": body, "expected_checksum": checksum}),
+        )
+        .await;
+        assert_eq!(refused["error"]["code"], json!(-32602), "{tool}: {refused}");
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("only one can watch")),
+            "{tool}: {refused}"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&fixture.config_path)?, before);
+    let after = tool_json(&call_tool(&client, &url, &session, 13, "get_config", json!({})).await);
+    assert_eq!(after["checksum"].as_str(), Some(checksum.as_str()));
+    player.shutdown_controllers();
+    Ok(())
+}
+
+/// A config change made over MCP while a song plays or is paused is saved,
+/// and the hardware reload waits for the song: the reply says it has not
+/// been applied yet, rather than reading as a change that took effect.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_config_update_while_paused_says_it_is_deferred() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // The fixture's show names fixtures its config does not have, so its
+    // song will not play; a paused one holds the reload as a playing one
+    // does, so it is left as a pause leaves it.
+    player.pause_at_for_test(Duration::from_millis(100));
+    assert!(player.is_paused());
+    let cfg = tool_json(&call_tool(&client, &url, &session, 10, "get_config", json!({})).await);
+    let checksum = cfg["checksum"].as_str().expect("checksum").to_string();
+    let updated = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            11,
+            "update_audio",
+            json!({"body": null, "expected_checksum": checksum}),
+        )
+        .await,
+    );
+    assert_eq!(updated["applied"], json!(false), "{updated}");
+    assert!(
+        updated["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("idle")),
+        "{updated}"
+    );
+    assert!(updated["checksum"].is_string(), "{updated}");
+    assert!(player.audio_device().is_some(), "reloaded under the pause");
+
+    player.stop().await;
     controller.shutdown();
     Ok(())
 }

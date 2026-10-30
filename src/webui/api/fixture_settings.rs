@@ -42,8 +42,8 @@ use super::super::server::WebUiState;
 use super::lighting_api::{
     canonical_project_root, content_version, existing_fixture_type_file, if_match_version,
     locate_fixture_type_file, project_root, resolve_lighting_dir, validate_lighting_name,
-    venue_error_after_save, DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR, VENUE_EXTENSIONS,
-    VENUE_WRITES,
+    validate_lighting_name_to_write, venue_error_after_save, DEFAULT_FIXTURE_TYPES_DIR,
+    DEFAULT_VENUES_DIR, VENUE_EXTENSIONS, VENUE_WRITES,
 };
 use crate::lighting;
 use crate::lighting::fixture_patch::{current_settings, patch_fixture_type, FixtureSettings};
@@ -132,7 +132,7 @@ pub(super) async fn get_settings(
     };
     let read = path.clone();
     let content = super::helpers::spawn_blocking_io("read fixture type", move || {
-        std::fs::read_to_string(&read)
+        crate::util::read_to_string(&read)
     })
     .await?;
     let Some(settings) = current_settings(&content, &name) else {
@@ -168,7 +168,7 @@ pub(super) async fn get_settings(
 /// archive that cannot be read is `null` too.
 async fn strobe_info(root: PathBuf, archive: String) -> serde_json::Value {
     tokio::task::spawn_blocking(move || {
-        let bytes = std::fs::read(root.join(&archive)).ok()?;
+        let bytes = crate::util::read_file(&root.join(&archive)).ok()?;
         let description = lighting::gdtf::parse_archive(&bytes).ok()?;
         let steps = lighting::gdtf::strobe_table_steps(&description)?;
         let automatic = StrobeCurve::automatic(true);
@@ -217,7 +217,7 @@ fn venue_files(dir: &FsPath) -> Result<Vec<(PathBuf, String)>, Refusal> {
     crate::lighting::project_files::files_under(dir, VENUE_EXTENSIONS)
         .into_iter()
         .map(|p| {
-            std::fs::read_to_string(&p)
+            crate::util::read_to_string(&p)
                 .map(|text| (p.clone(), text))
                 .map_err(|e| {
                     (
@@ -282,7 +282,7 @@ fn plan(
     let (type_path, content, type_version, new_record) =
         match existing_fixture_type_file(types_dir, name) {
             Some(path) => {
-                let content = std::fs::read_to_string(&path)
+                let content = crate::util::read_to_string(&path)
                     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
                 let version = content_version(content.as_bytes());
                 (path, content, version, false)
@@ -320,7 +320,7 @@ fn plan(
     let new_name = request.name.trim().to_string();
     let renaming = new_name != name;
     if renaming {
-        validate_lighting_name(&new_name).map_err(|_| {
+        validate_lighting_name_to_write(&new_name, false).map_err(|_| {
             bad(format!(
                 "\"{new_name}\" cannot be a fixture type name (letters, digits, spaces, \
                  hyphens and underscores; not a route name)"
@@ -462,7 +462,7 @@ fn new_record_for(
     file_name_for: &str,
     claimed: &mut Vec<PathBuf>,
 ) -> Result<(PathBuf, String), Refusal> {
-    let bytes = std::fs::read(root.join(&library_type.archive)).map_err(|e| {
+    let bytes = crate::util::read_file(&root.join(&library_type.archive)).map_err(|e| {
         (
             StatusCode::CONFLICT,
             format!("{} cannot be read: {e}", library_type.file_name),
@@ -547,7 +547,7 @@ pub(super) async fn post_settings(
     let outcome = super::helpers::spawn_blocking_io("save fixture settings", move || {
         // The same lock as a venue save: a rename's venue writes and a drag
         // on the stage plot never interleave.
-        let _guard = write.then(|| VENUE_WRITES.lock().unwrap_or_else(|e| e.into_inner()));
+        let _guard = write.then(|| VENUE_WRITES.blocking_lock());
         let plan = match plan(
             &root,
             &types_dir,

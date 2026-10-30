@@ -273,7 +273,7 @@ pub fn export_mvr_bytes(
                 let entry = match entry_of_source.get(&source_key) {
                     Some(entry) => entry.clone(),
                     None => {
-                        let bytes = std::fs::read(project.join(&source.path)).map_err(|e| {
+                        let bytes = crate::util::read_file(&project.join(&source.path)).map_err(|e| {
                             format!(
                                 "fixture type \"{type_name}\" references {}, which cannot be read: {e}",
                                 source.path

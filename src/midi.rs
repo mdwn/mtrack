@@ -54,6 +54,21 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Stops watching events.
     fn stop_watch_events(&self);
 
+    /// Opens the device afresh in place, keeping a watch going on the fresh
+    /// one. A hardware reload of an unchanged MIDI config does this rather
+    /// than open a new device, which would restart every MIDI controller.
+    /// A device unplugged and plugged back in is heard again only once
+    /// opened afresh, and may come back under the same port. Fails if the
+    /// device cannot be opened, as when it is gone, for a new one to be
+    /// opened instead.
+    fn reopen(&self) -> Result<(), Box<dyn Error>>;
+
+    /// The tempo its beat clock holds between songs, if it holds one: what a
+    /// device opened in its place carries on with.
+    fn held_tempo(&self) -> Option<std::time::Duration> {
+        None
+    }
+
     /// Plays the given song through the MIDI interface, starting from a specific time.
     /// The `ready_tx` sender signals that setup is complete. The implementation should
     /// then wait for `clock.elapsed() > Duration::ZERO` as the "go" signal.
@@ -83,6 +98,15 @@ pub fn list_devices() -> Result<Vec<Box<dyn Device>>, Box<dyn Error>> {
 
 /// Gets a device with the given name.
 pub fn get_device(config: Option<config::Midi>) -> Result<Option<Arc<dyn Device>>, Box<dyn Error>> {
+    get_device_holding(config, None)
+}
+
+/// [`get_device`], its beat clock holding `held` until a song sets another
+/// tempo.
+pub fn get_device_holding(
+    config: Option<config::Midi>,
+    held: Option<std::time::Duration>,
+) -> Result<Option<Arc<dyn Device>>, Box<dyn Error>> {
     let config = match config {
         Some(config) => config,
         None => return Ok(None),
@@ -93,7 +117,9 @@ pub fn get_device(config: Option<config::Midi>) -> Result<Option<Arc<dyn Device>
         return Ok(Some(Arc::new(mock::Device::get(device))));
     };
 
-    Ok(Some(Arc::new(midir::get(&config)?)))
+    Ok(Some(Arc::new(midir::Reopenable::open_holding(
+        config, held,
+    )?)))
 }
 
 #[cfg(test)]

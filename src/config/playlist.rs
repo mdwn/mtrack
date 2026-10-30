@@ -13,7 +13,7 @@
 //
 use std::path::Path;
 
-use config::{Config, File};
+use config::Config;
 use serde::{Deserialize, Serialize};
 
 use super::error::ConfigError;
@@ -401,7 +401,7 @@ impl Playlist {
     /// Parse a playlist from a YAML file.
     pub fn deserialize(path: &Path) -> Result<Playlist, ConfigError> {
         Ok(Config::builder()
-            .add_source(File::from(path))
+            .add_source(crate::util::yaml_source(path)?)
             .build()?
             .try_deserialize::<Playlist>()?)
     }

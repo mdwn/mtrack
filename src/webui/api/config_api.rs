@@ -30,8 +30,10 @@ use crate::config;
 pub(super) async fn get_config_raw(State(state): State<WebUiState>) -> impl IntoResponse {
     // codeql[rust/path-injection] config_path is set at startup, not from user input.
     let path = state.config_path.clone();
-    match super::helpers::spawn_blocking_io("read config", move || std::fs::read_to_string(&path))
-        .await
+    match super::helpers::spawn_blocking_io("read config", move || {
+        crate::util::read_to_string(&path)
+    })
+    .await
     {
         Ok(content) => (
             StatusCode::OK,
@@ -69,16 +71,68 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
     if let Err(errors) = config_io::validate_player_config(&body) {
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
+    // As for a profile save: the hardware is reloaded from the save, which
+    // it cannot be during playback.
+    if let Some(resp) = reject_if_playing(&state).await {
+        return resp;
+    }
 
+    // The store persists its own copy of this file on every mutation: the
+    // copy is read back from the save before any mutation can land, or the
+    // next one writes the copy from before the save over it.
+    let store = state.player.config_store();
+    let disk_write = match &store {
+        Some(store) => Some(store.lock_for_disk_write().await),
+        None => None,
+    };
     let path = state.config_path.clone();
-    match super::helpers::spawn_blocking_io("write config", move || {
-        config_io::staged_write(&path, &body)
+    let previous = match super::helpers::spawn_blocking_io("write config", move || {
+        // A missing file has nothing to put back: a failed save removes it.
+        let previous = match crate::util::read_file(&path) {
+            Ok(previous) => Some(previous),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("failed to read the config before saving: {e}")),
+        };
+        config_io::staged_write(&path, &body)?;
+        Ok(previous)
     })
     .await
     {
-        Ok(()) => (StatusCode::OK, Json(json!({"status": "saved"}))).into_response(),
-        Err(e) => e,
+        Ok(previous) => previous,
+        Err(e) => return e,
+    };
+    if let Some(disk_write) = disk_write {
+        // The store keeps its own copy and checksum, and a failed reload
+        // leaves the old ones: the file goes back as it was, still under the
+        // store's lock, so a failed save changes nothing rather than waiting
+        // for the next settings change to write over it.
+        let path = state.config_path.clone();
+        let restore = move || {
+            match previous {
+                Some(previous) => crate::util::write_file(&path, &previous),
+                None => std::fs::remove_file(&path),
+            }
+            .map_err(|e| e.to_string())
+        };
+        if let Err(e) = disk_write.reload_or_restore(restore).await {
+            warn!("Config reload after config write failed: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("the config could not be loaded, and was not saved: {e}")
+                })),
+            )
+                .into_response();
+        }
     }
+    // The running hardware was set up from the config before the save, and
+    // matches it only once reloaded from the store's copy, which now holds it.
+    let reload = reload_hardware_after_mutation(&state).await;
+    (
+        StatusCode::OK,
+        Json(with_reload(json!({"status": "saved"}), reload)),
+    )
+        .into_response()
 }
 
 /// POST /api/config/validate — validates player config YAML without saving.
@@ -99,7 +153,7 @@ fn config_store_error_response(e: config::ConfigError) -> axum::response::Respon
         config::ConfigError::StaleChecksum { .. } => {
             (StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))).into_response()
         }
-        config::ConfigError::InvalidProfileIndex { .. } => (
+        config::ConfigError::InvalidProfileIndex { .. } | config::ConfigError::Validation(_) => (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": e.to_string()})),
         )
@@ -112,14 +166,19 @@ fn config_store_error_response(e: config::ConfigError) -> axum::response::Respon
     }
 }
 
-/// Helper to convert a ConfigSnapshot into a JSON response.
+/// Helper to convert a ConfigSnapshot into a JSON response, with what became
+/// of the hardware reload.
 fn config_snapshot_response(
     snapshot: config::store::ConfigSnapshot,
     status: StatusCode,
+    reload: serde_json::Map<String, serde_json::Value>,
 ) -> axum::response::Response {
     (
         status,
-        Json(json!({"yaml": snapshot.yaml, "checksum": snapshot.checksum})),
+        Json(with_reload(
+            json!({"yaml": snapshot.yaml, "checksum": snapshot.checksum}),
+            reload,
+        )),
     )
         .into_response()
 }
@@ -138,13 +197,21 @@ fn require_config_store(
     })
 }
 
-/// Returns a 409 Conflict response if the player is currently playing.
+/// Returns a 409 Conflict response if the player is currently playing, is
+/// paused, or an auto play is waiting out its gap: the reload a save makes
+/// would leave the hardware initializing when the gap ends, and the song
+/// would not start. A reload waits for all three, so a save then would not
+/// take effect until the song stops. A position cued by a seek while stopped
+/// is not paused, and does not hold a save.
 pub(super) async fn reject_if_playing(state: &WebUiState) -> Option<axum::response::Response> {
-    if state.player.is_playing().await {
+    if state.player.is_playing().await
+        || state.player.auto_play_status().is_some()
+        || state.player.is_paused()
+    {
         Some(
             (
                 StatusCode::CONFLICT,
-                Json(json!({"error": "Cannot modify hardware config during playback"})),
+                Json(json!({"error": "Cannot modify hardware config while a song is playing or paused"})),
             )
                 .into_response(),
         )
@@ -156,13 +223,52 @@ pub(super) async fn reject_if_playing(state: &WebUiState) -> Option<axum::respon
 /// Reloads hardware and controllers from the updated config. Non-blocking —
 /// spawns async device discovery and returns immediately. The broadcast channel
 /// is already stored on the Player and will be wired when the DMX engine comes up.
-pub(super) async fn reload_hardware_after_mutation(state: &WebUiState) {
-    if let Err(e) = state.player.reload_hardware().await {
-        warn!("Hardware reload failed: {}", e);
+/// A song started since `reject_if_playing` defers the hardware reload until
+/// playback ends, so the save still answers 200: it takes effect then. Returns
+/// what the reply says of it: `applied`, and a `message` when it is not.
+pub(super) async fn reload_hardware_after_mutation(
+    state: &WebUiState,
+) -> serde_json::Map<String, serde_json::Value> {
+    let reload = state
+        .player
+        .reload_hardware()
+        .await
+        .map_err(|e| e.to_string());
+    // The reload brings the controllers in line with the config itself,
+    // restarting only those it changed, or whose MIDI device it reopened.
+    // Forcing them all here as well tore down every OSC, gRPC and MCP
+    // client for a change that was not theirs.
+    let mut fields = serde_json::Map::new();
+    match reload {
+        Ok(reload) => {
+            fields.insert("applied".into(), json!(reload.applied()));
+            if let Some(message) = reload.message() {
+                fields.insert("message".into(), json!(message));
+            }
+        }
+        Err(e) => {
+            warn!("Hardware reload failed: {}", e);
+            fields.insert("applied".into(), json!(false));
+            fields.insert(
+                "message".into(),
+                json!(format!(
+                    "The config was saved, but the hardware reload failed: {e}"
+                )),
+            );
+        }
     }
-    if let Err(e) = state.player.reload_controllers().await {
-        warn!("Controller reload failed: {}", e);
+    fields
+}
+
+/// Adds what became of a save's hardware reload to its reply.
+pub(super) fn with_reload(
+    mut body: serde_json::Value,
+    reload: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
+    if let Some(body) = body.as_object_mut() {
+        body.extend(reload);
     }
+    body
 }
 
 /// GET /api/config/store — returns config YAML + checksum via the ConfigStore.
@@ -272,8 +378,8 @@ async fn finish_config_update(
 ) -> axum::response::Response {
     match result {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(state).await;
-            config_snapshot_response(snapshot, StatusCode::OK)
+            let reload = reload_hardware_after_mutation(state).await;
+            config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -357,8 +463,8 @@ pub(super) async fn put_config_controllers(
     };
     match store.update_controllers(controllers, &checksum).await {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
-            config_snapshot_response(snapshot, StatusCode::OK)
+            let reload = reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -413,8 +519,8 @@ pub(super) async fn put_config_samples(
         .await
     {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
-            config_snapshot_response(snapshot, StatusCode::OK)
+            let reload = reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -462,7 +568,7 @@ pub(super) async fn put_config_metronome(
     let default_enabled = metronome.as_ref().is_some_and(|m| m.enabled);
     match store.update_metronome(metronome, &checksum).await {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
+            let reload = reload_hardware_after_mutation(&state).await;
             // The default-on flag is applied at song load; refresh both.
             state.player.set_default_metronome(default_enabled);
             state.player.reload_songs(
@@ -470,7 +576,7 @@ pub(super) async fn put_config_metronome(
                 state.playlists_dir.as_deref(),
                 state.legacy_playlist_path.as_deref(),
             );
-            config_snapshot_response(snapshot, StatusCode::OK)
+            config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -520,8 +626,8 @@ pub(super) async fn post_config_profile(
     };
     match store.add_profile(profile, &checksum).await {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
-            config_snapshot_response(snapshot, StatusCode::CREATED)
+            let reload = reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::CREATED, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -574,8 +680,8 @@ pub(super) async fn put_config_profile(
 
     match store.update_profile(index, profile, &checksum).await {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
-            config_snapshot_response(snapshot, StatusCode::OK)
+            let reload = reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -608,8 +714,8 @@ pub(super) async fn delete_config_profile(
     };
     match store.remove_profile(index, &checksum).await {
         Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
-            config_snapshot_response(snapshot, StatusCode::OK)
+            let reload = reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
     }
@@ -1088,6 +1194,276 @@ mod test {
         assert!(result["yaml"].is_string());
         assert!(result["checksum"].is_string());
         assert!(!result["checksum"].as_str().unwrap().is_empty());
+        assert_eq!(result["applied"], serde_json::json!(true), "{result}");
+    }
+
+    /// A raw config save wrote the file and left the store's copy as it
+    /// was: the next settings change persisted that copy over the save.
+    #[tokio::test]
+    async fn a_settings_change_after_a_raw_config_save_keeps_the_save() {
+        let (state, _dir) = test_state_with_store();
+        let config_path = state.config_path.clone();
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from("songs: other-songs\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let checksum = get_checksum(&state).await;
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/audio")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "audio": { "device": "test-device" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let written = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            written.contains("other-songs"),
+            "the raw save was written over: {written}"
+        );
+    }
+
+    /// A raw config save the store could not load back was written and left
+    /// on disk, with the store's old copy and checksum: the next settings
+    /// change wrote that copy over it, silently.
+    #[tokio::test]
+    async fn a_raw_config_save_that_cannot_be_loaded_changes_nothing() {
+        let (state, dir) = test_state_with_store();
+        let config_path = state.config_path.clone();
+        let before = std::fs::read_to_string(&config_path).unwrap();
+        let checksum = get_checksum(&state).await;
+        // Valid by itself, but its profiles directory holds a broken profile.
+        let profiles = dir.path().join("broken-profiles");
+        std::fs::create_dir(&profiles).unwrap();
+        std::fs::write(profiles.join("broken.yaml"), "audio: [[[").unwrap();
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from(
+                        "songs: other-songs\nprofiles_dir: broken-profiles\n",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let error = parsed["error"].as_str().unwrap();
+        assert!(error.contains("was not saved"), "{error}");
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+        assert_eq!(get_checksum(&state).await, checksum);
+    }
+
+    /// A raw config save reloaded the store but not the hardware, which ran
+    /// on the config from before it until a restart.
+    #[tokio::test]
+    async fn a_raw_config_save_reloads_the_hardware() {
+        let (state, _dir) = test_state_with_store();
+        assert!(state.player.audio_device().is_none());
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from(
+                        "songs: songs\naudio:\n  device: mock-device\n  track_mappings:\n    kick: [1]\n",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(body["applied"], serde_json::json!(true), "{body}");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            state.player.await_hardware_ready(),
+        )
+        .await
+        .expect("the hardware never came up");
+        assert!(
+            state.player.audio_device().is_some(),
+            "the saved audio device was not set up"
+        );
+    }
+
+    /// Sets a config store on the state's player, from its config file.
+    fn set_store(state: &crate::webui::server::WebUiState) {
+        let path = state.config_path.clone();
+        let cfg = crate::config::Player::deserialize(&path).unwrap();
+        let store = std::sync::Arc::new(crate::config::ConfigStore::new(cfg, path));
+        state.player.set_config_store(store);
+    }
+
+    /// A play landing between a save's playback check and its hardware
+    /// reload had the reload refused, and the save answered 200 while the
+    /// rig ran the old config (#578). The reload runs once the song stops.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_raced_by_a_play_reloads_the_hardware_once_it_stops() {
+        // The config holds no audio, so the reload shows as the device going.
+        let (state, _dir) = test_state_with_audio_device("mock-device");
+        set_store(&state);
+
+        assert!(super::reject_if_playing(&state).await.is_none());
+        state.player.play().await.unwrap();
+        let reload = super::reload_hardware_after_mutation(&state).await;
+        // The save's reply says it has not been applied yet.
+        assert_eq!(reload["applied"], serde_json::json!(false), "{reload:?}");
+        assert!(reload["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("idle")));
+        assert!(
+            state.player.audio_device().is_some(),
+            "the hardware was reset under the song"
+        );
+
+        state.player.stop().await;
+        crate::testutil::eventually(
+            || state.player.audio_device().is_none(),
+            "the saved config was never applied",
+        );
+    }
+
+    /// A save restarted every controller after its reload had left the
+    /// unchanged ones running: each OSC, gRPC and MCP client lost its
+    /// connection over a change that was not its own.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_leaves_the_unchanged_controllers_running() {
+        let (state, dir) = test_state_with_audio_device("mock-device");
+        let grpc = crate::config::Controller::Grpc(crate::config::GrpcController::new(0));
+        state
+            .player
+            .set_config_store(std::sync::Arc::new(crate::config::ConfigStore::new(
+                crate::config::Player::new(
+                    vec![grpc.clone()],
+                    None,
+                    None,
+                    None,
+                    std::collections::HashMap::new(),
+                    "songs",
+                ),
+                dir.path().join("config.yaml"),
+            )));
+        state.player.start_controllers(vec![grpc]);
+        let tasks = state.player.controller_tasks();
+        assert_eq!(tasks.len(), 1);
+
+        let reload = super::reload_hardware_after_mutation(&state).await;
+        assert_eq!(reload["applied"], serde_json::json!(true), "{reload:?}");
+        state.player.await_hardware_ready().await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !tasks[0].is_finished(),
+            "an unchanged controller was restarted by a save"
+        );
+        assert_eq!(state.player.controller_statuses()[0].status, "running");
+        state.player.shutdown_controllers();
+    }
+
+    /// A save in an auto play's gap reset the hardware, and the song failed
+    /// to start when the gap ended (#578): the gap counts as playing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_while_an_auto_play_waits_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("playlist.yaml");
+        std::fs::write(
+            &path,
+            "songs:\n- Song 1\n- song: Song 3\n  auto_play: 10s\n",
+        )
+        .unwrap();
+        let songs = crate::songs::get_all_songs(std::path::Path::new("assets/songs")).unwrap();
+        let playlist = crate::playlist::Playlist::new(
+            "playlist",
+            &crate::config::Playlist::deserialize(&path).unwrap(),
+            songs,
+        )
+        .unwrap();
+        let (state, _dir) = test_state_with_playlist(playlist);
+        set_store(&state);
+        state.player.next().await;
+        assert!(state.player.auto_play_status().is_some(), "waiting");
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from("songs: songs\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(state.player.cancel_waiting_auto_play());
+    }
+
+    /// A paused song is a show in progress, which a reload waits for, as for
+    /// a playing one: a save then is refused rather than left waiting.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_while_a_song_is_paused_is_refused() {
+        let (state, _dir) = test_state_with_audio_device("mock-device");
+        set_store(&state);
+        state.player.play().await.unwrap();
+        assert!(state.player.pause().await.unwrap().is_some(), "paused");
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from("songs: songs\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        state.player.stop().await;
+        assert!(super::reject_if_playing(&state).await.is_none());
+    }
+
+    /// A position cued by a seek while stopped read as a pause, and a save
+    /// was refused as "playing or paused", though nothing plays and no
+    /// lights are held.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_after_a_seek_while_stopped_is_not_refused() {
+        let (state, _dir) = test_state_with_audio_device("mock-device");
+        set_store(&state);
+        state
+            .player
+            .seek_to(std::time::Duration::from_millis(500))
+            .await
+            .unwrap();
+        assert!(!state.player.is_playing().await);
+        assert!(super::reject_if_playing(&state).await.is_none());
     }
 
     #[tokio::test]
@@ -1233,6 +1609,50 @@ mod test {
         let result: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(result["yaml"].is_string());
         assert!(!result["checksum"].as_str().unwrap().is_empty());
+    }
+
+    /// A second MIDI controller was saved and applied, and mtrack then
+    /// failed to start on the config it wrote. It is refused with a 400, and
+    /// the file is left as it was.
+    #[tokio::test]
+    async fn put_config_controllers_refuses_a_config_that_would_not_load() {
+        let (state, _dir) = test_state_with_store();
+        let checksum = get_checksum(&state).await;
+        let path = state.config_path.clone();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let midi = crate::config::Controller::Midi(crate::config::MidiController::new(
+            crate::config::midi::note_on(16, 0, 127),
+            crate::config::midi::note_on(16, 1, 127),
+            crate::config::midi::note_on(16, 2, 127),
+            crate::config::midi::note_on(16, 3, 127),
+            crate::config::midi::note_on(16, 4, 127),
+            crate::config::midi::note_on(16, 5, 127),
+        ));
+
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/controllers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "controllers": [midi, midi]
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("only one can watch"), "{body}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert_eq!(get_checksum(&state).await, checksum);
     }
 
     #[tokio::test]

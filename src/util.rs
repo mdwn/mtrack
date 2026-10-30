@@ -125,15 +125,36 @@ fn json_to_yaml(value: &serde_json::Value) -> Yaml {
 /// The suffix mtrack stages a pending write under, alongside its destination.
 ///
 /// Deliberately appended rather than substituted for the extension, so a staged
-/// `01-main.yaml.mtrack-new` is not picked up by the directory scans that look
-/// for `.yaml` and `.light` files.
+/// `01-main.yaml.1234.mtrack-new` is not picked up by the directory scans that
+/// look for `.yaml` and `.light` files.
 const STAGED_SUFFIX: &str = ".mtrack-new";
 
-/// The path a pending write to `path` is staged under.
+/// The path a pending write to `path` from this process is staged under. The
+/// process id keeps two mtrack processes writing one file from sharing it;
+/// within one, [`write_file`] has writers of a file take turns.
 pub fn staged_path(path: &Path) -> std::path::PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(STAGED_SUFFIX);
+    name.push(format!(".{}{STAGED_SUFFIX}", std::process::id()));
     path.with_file_name(name)
+}
+
+/// The lock writers of `path` in this process take turns on, and readers
+/// through [`read_file`] with them. Keyed by the path with its directory
+/// resolved, so two spellings of one file share it. One per file ever
+/// written or read so, which the files of a project bound.
+fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let key = parent_of(path)
+        .unwrap_or(Path::new("."))
+        .canonicalize()
+        .ok()
+        .zip(path.file_name())
+        .map(|(dir, name)| dir.join(name))
+        .unwrap_or_else(|| path.to_path_buf());
+    let mut locks = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    std::sync::Arc::clone(locks.entry(key).or_default())
 }
 
 /// Writes `contents` to `path`, preserving who owns the file and leaving a
@@ -154,14 +175,26 @@ pub fn staged_path(path: &Path) -> std::path::PathBuf {
 /// flushed to disk, and only removed once the destination is durable. A sidecar
 /// left behind therefore means the last write to that file may not have
 /// completed, and holds the content it was trying to write. Recovery is
-/// currently manual: copy the sidecar over the destination.
+/// currently manual: copy the sidecar over the destination. A reader can see
+/// the short file too, while the rewrite is under way, unless it reads
+/// through [`read_file`].
 ///
-/// The destination is locked for the duration, so two mtrack processes writing
-/// the same file serialise rather than interleave. The lock is advisory and
-/// only binds cooperating processes, which is all we need — the racing writer
-/// this guards against is another mtrack.
+/// Writers of the same file serialise rather than interleave. Within one
+/// process they take turns for the whole write, sidecar and all, since they
+/// share the sidecar; two mtrack processes each stage their own, and take
+/// turns on a lock on the destination for the rewrite. That lock is advisory
+/// and only binds cooperating writers, which is all we need — the racing
+/// writer this guards against is mtrack. Nothing is created at `path` until
+/// the new content is staged, so a write that fails before then (a full
+/// disk, say) leaves no empty file where there was none.
 pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
+
+    // Take turns from before staging: a writer staging while another
+    // rewrites would overwrite its sidecar, and whichever removed it first
+    // left the other's removal to fail (#578).
+    let writer_lock = writer_lock(path);
+    let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
 
     // Read the ownership we are aiming for before creating anything, since
     // creating the destination would otherwise answer the question with the
@@ -171,42 +204,119 @@ pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     // Stage the complete new content beside the destination and get it on disk,
     // so the rewrite below always has something to recover from.
     let staged = staged_path(path);
-    {
+    let stage = || -> std::io::Result<()> {
         let mut file = std::fs::File::create(&staged)?;
         if let Some(ownership) = intended {
             ownership.apply(&file, &staged)?;
         }
         file.write_all(contents)?;
+        #[cfg(test)]
+        if FAIL_STAGING.get() {
+            return Err(std::io::Error::other("injected staging failure"));
+        }
         file.sync_all()?;
-    }
-    // Flushing the file is not enough on its own: without syncing the directory
-    // too, the sidecar's *name* may not survive a crash, and an unnamed file is
-    // no use to recover from.
-    if let Some(parent) = parent_of(path) {
-        std::fs::File::open(parent)?.sync_all()?;
-    }
+        // Flushing the file is not enough on its own: without syncing the
+        // directory too, the sidecar's *name* may not survive a crash, and
+        // an unnamed file is no use to recover from.
+        if let Some(parent) = parent_of(path) {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
+        Ok(())
+    };
 
-    {
-        let mut file = std::fs::OpenOptions::new()
+    // Lock before truncating, not as part of the open: opening with
+    // truncation would discard another process's content before we had any
+    // claim to the file.
+    let claim = || -> std::io::Result<std::fs::File> {
+        let destination = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(false)
             .open(path)?;
-        // Lock before truncating, not as part of the open: opening with
-        // truncation would discard a competing writer's content before we had
-        // any claim to the file.
-        file.lock()?;
+        destination.lock()?;
         if let Some(ownership) = intended {
-            ownership.apply(&file, path)?;
+            ownership.apply(&destination, path)?;
         }
-        file.set_len(0)?;
-        file.write_all(contents)?;
-        file.sync_all()?;
-    }
+        Ok(destination)
+    };
+
+    // Until the truncation the destination is as it was, so a failure up to
+    // then takes the sidecar with it: left, it would claim a write that never
+    // touched the destination may not have completed (#578).
+    let mut destination = match stage().and_then(|()| claim()) {
+        Ok(destination) => destination,
+        Err(e) => {
+            let _ = std::fs::remove_file(&staged);
+            return Err(e);
+        }
+    };
+    destination.set_len(0)?;
+    destination.write_all(contents)?;
+    destination.sync_all()?;
 
     // The destination is durable, so the staged copy has served its purpose.
-    // Leaving it behind would falsely advertise an interrupted write.
+    // Leaving it behind would falsely advertise an interrupted write. The
+    // lock goes with the file, after.
     std::fs::remove_file(&staged)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Fails [`write_file`]'s staging on this thread once the sidecar holds
+    /// the content, as a full disk would fail its flush.
+    static FAIL_STAGING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Reads all of `path`, as [`write_file`] last wrote it, never the empty or
+/// partial file its rewrite in place passes through on the way.
+///
+/// The reader takes its turn with the writers: in this process on their
+/// lock, which also covers the moment a new file exists but is not yet
+/// locked, and with another mtrack process on a shared lock on the file,
+/// which its rewrite holds exclusively. A loader that read a file midway
+/// through a save would take it for broken: a playlist so read is skipped,
+/// and an active one falls back to all songs (#578).
+pub fn read_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    let writer_lock = writer_lock(path);
+    let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut file = std::fs::File::open(path)?;
+    file.lock_shared()?;
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)?;
+    Ok(contents)
+}
+
+/// [`read_file`], as text.
+pub fn read_to_string(path: &Path) -> std::io::Result<String> {
+    String::from_utf8(read_file(path)?)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// A config source with the content of `path`, read by [`read_file`]
+/// rather than by the config crate, which reads the file as it finds it. In
+/// the format the file's extension names, as the config crate chose it when
+/// it read the file itself; YAML, mtrack's own, for any other.
+pub fn yaml_source(
+    path: &Path,
+) -> Result<::config::File<::config::FileSourceString, ::config::FileFormat>, ::config::ConfigError>
+{
+    let text = read_to_string(path).map_err(|e| {
+        ::config::ConfigError::Foreign(Box::new(std::io::Error::new(
+            e.kind(),
+            format!("{}: {e}", path.display()),
+        )))
+    })?;
+    let format = match path.extension().and_then(|ext| ext.to_str()) {
+        Some("toml") => ::config::FileFormat::Toml,
+        Some("json") => ::config::FileFormat::Json,
+        Some("json5") => ::config::FileFormat::Json5,
+        Some("ini") => ::config::FileFormat::Ini,
+        Some("ron") => ::config::FileFormat::Ron,
+        _ => ::config::FileFormat::Yaml,
+    };
+    Ok(::config::File::from_str(&text, format))
 }
 
 /// Explains a write failure whose cause is not the file's own permissions.
@@ -973,11 +1083,44 @@ mod ownership_test {
     }
 
     #[test]
+    fn write_file_takes_the_staged_copy_with_a_failed_staging() {
+        // #578: a staging that failed left its sidecar, which reads as a
+        // write to the destination that may not have completed.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("config.yaml");
+        std::fs::write(&dest, "before").unwrap();
+
+        super::FAIL_STAGING.set(true);
+        let result = write_file(&dest, b"after");
+        super::FAIL_STAGING.set(false);
+
+        assert!(result.is_err());
+        assert!(!staged_path(&dest).exists());
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "before");
+    }
+
+    #[test]
+    fn write_file_takes_the_staged_copy_with_a_destination_it_cannot_open() {
+        // Staged, but the destination is a directory: it was never touched,
+        // so nothing is left to recover.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("config.yaml");
+        std::fs::create_dir(&dest).unwrap();
+
+        assert!(write_file(&dest, b"after").is_err());
+        assert!(!staged_path(&dest).exists());
+    }
+
+    #[test]
     fn staged_path_does_not_masquerade_as_a_config_file() {
         // Directory scans pick files by extension, so the sidecar must not keep
         // the one it was staged from.
         let staged = staged_path(Path::new("/cfg/profiles/01-main.yaml"));
-        assert_eq!(staged.file_name().unwrap(), "01-main.yaml.mtrack-new");
+        let pid = std::process::id();
+        assert_eq!(
+            staged.file_name().unwrap().to_str().unwrap(),
+            format!("01-main.yaml.{pid}.mtrack-new")
+        );
         assert_ne!(staged.extension().unwrap(), "yaml");
         assert_ne!(
             staged_path(Path::new("/cfg/show.light"))
@@ -1024,10 +1167,71 @@ mod ownership_test {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
         assert_eq!(mode_of(&path), 0o604);
     }
+
+    #[test]
+    fn a_write_that_fails_to_stage_leaves_no_new_empty_file() {
+        // Created first to lock it, the destination was left empty where
+        // there was none when staging failed (a full disk, say).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.yaml");
+        std::fs::create_dir(staged_path(&path)).unwrap(); // staging cannot open it
+        assert!(write_file(&path, b"songs: [A]\n").is_err());
+        assert!(
+            !path.exists(),
+            "an empty {} was left behind",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn concurrent_writes_to_one_file_all_succeed() {
+        // #578: writers shared the sidecar, and all but one failed to
+        // remove it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("list.yaml");
+        let writers: Vec<_> = (0..16)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || write_file(&path, format!("songs: [{i}]\n").as_bytes()))
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap().unwrap();
+        }
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.starts_with("songs: [") && written.ends_with("]\n"),
+            "{written:?}"
+        );
+        assert!(!staged_path(&path).exists());
+    }
 }
 
 #[cfg(test)]
 mod test {
+
+    #[test]
+    fn yaml_source_reads_the_format_the_extension_names() {
+        // The main config was read by the config crate, which went by the
+        // extension: a TOML or JSON config still loads.
+        let dir = tempfile::tempdir().unwrap();
+        for (name, text) in [
+            ("c.yaml", "a: 1\n"),
+            ("c.toml", "a = 1\n"),
+            ("c.json", "{\"a\": 1}"),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            let value: i64 = ::config::Config::builder()
+                .add_source(super::yaml_source(&path).unwrap())
+                .build()
+                .unwrap()
+                .get("a")
+                .unwrap();
+            assert_eq!(value, 1, "{name}");
+        }
+    }
+
     use std::time::Duration;
 
     use crate::util::duration_minutes_seconds;
@@ -1830,5 +2034,35 @@ mod create_dir_within_tests {
             &elsewhere.path().join("songs"),
             project
         )));
+    }
+
+    #[test]
+    fn a_reader_never_sees_a_half_written_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.yaml");
+        let body = "songs:\n".to_string() + &"- Some Song Name\n".repeat(2000);
+        crate::util::write_file(&path, body.as_bytes()).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (path, body, stop) = (path.clone(), body.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    crate::util::write_file(&path, body.as_bytes()).unwrap();
+                }
+            })
+        };
+        let mut torn = 0;
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(2) {
+            if crate::util::read_to_string(&path).unwrap() != body {
+                torn += 1;
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        assert_eq!(
+            torn, 0,
+            "a reader saw an empty or partial file {torn} times"
+        );
     }
 }

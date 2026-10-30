@@ -59,7 +59,9 @@ impl SafePath {
     }
 
     /// Creates a single directory under the given root and returns the verified path.
-    /// The name must be a single path segment (no slashes).
+    /// The name must be a single path segment (no slashes). A directory not
+    /// there yet takes a new name, so it must pass
+    /// [`SafePath::validate_new_name`]; one already there need only be safe.
     pub fn create_dir(
         parent: &SafePath,
         name: &str,
@@ -75,6 +77,7 @@ impl SafePath {
         }
         let target = parent.path.join(name);
         if !target.exists() {
+            Self::validate_new_name(name)?;
             crate::util::create_dir_all(&target).map_err(SafePathError::Io)?;
         }
         let canonical = target.canonicalize().map_err(|_| SafePathError::NotFound)?;
@@ -88,6 +91,10 @@ impl SafePath {
 
     /// Validates a single path segment (filename or directory name) is safe.
     /// Rejects empty strings, "..", and path separators.
+    ///
+    /// Enough for a name already on disk, to read, save, rename away from or
+    /// delete; a name being given to something new must also pass
+    /// [`SafePath::validate_new_name`].
     pub fn validate_name(name: &str) -> Result<(), SafePathError> {
         if name.is_empty()
             || name == "."
@@ -99,6 +106,33 @@ impl SafePath {
             return Err(SafePathError::InvalidName);
         }
         Ok(())
+    }
+
+    /// Validates a name for something new: safe, as [`SafePath::validate_name`]
+    /// checks, and not a name that is blank or has space at either end,
+    /// which reads as a different name or none in a list; one starting with
+    /// a dot, which the song loader skips as hidden, so what was saved
+    /// vanishes; or one with control characters. Names Windows reserves
+    /// (`CON`) are fine on the systems mtrack runs on.
+    ///
+    /// Only for a new name: files with names like these from before these
+    /// rules stay readable, savable and deletable.
+    pub fn validate_new_name(name: &str) -> Result<(), SafePathError> {
+        Self::validate_name(name)?;
+        if name.trim() != name || name.starts_with('.') || name.chars().any(char::is_control) {
+            return Err(SafePathError::InvalidName);
+        }
+        Ok(())
+    }
+
+    /// Validates a name to write to: [`SafePath::validate_new_name`]'s rules
+    /// unless `exists`, a file of that name already being there.
+    pub fn validate_name_to_write(name: &str, exists: bool) -> Result<(), SafePathError> {
+        if exists {
+            Self::validate_name(name)
+        } else {
+            Self::validate_new_name(name)
+        }
     }
 
     /// Validates a relative path under the root without creating anything.
@@ -134,6 +168,15 @@ impl SafePath {
     pub fn create_dir_nested(name: &str, root: &VerifiedRoot) -> Result<Self, SafePathError> {
         if name.is_empty() || name.contains("..") || name.contains('\\') || name.contains('\0') {
             return Err(SafePathError::InvalidName);
+        }
+        // Each segment to be created is checked before any is, so a bad name
+        // further down ("Artist/.hidden") leaves no new directory behind.
+        let mut existing = root.as_path().to_path_buf();
+        for segment in name.split('/').filter(|s| !s.is_empty()) {
+            existing.push(segment);
+            if !existing.exists() {
+                Self::validate_new_name(segment)?;
+            }
         }
         let mut current = SafePath {
             path: root.as_path().to_path_buf(),
@@ -242,6 +285,42 @@ impl SafePathError {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn validate_new_name_refuses_names_that_read_wrong_or_vanish() {
+        // #578: names like these were saved, then shown blank, as another
+        // name, or (a hidden song directory) not loaded at all.
+        for name in [" ", "  ", " lead", "trail ", ".hidden", "tab\there", "nl\n"] {
+            assert!(SafePath::validate_new_name(name).is_err(), "{name:?}");
+            assert!(
+                SafePath::validate_name_to_write(name, false).is_err(),
+                "{name:?}"
+            );
+        }
+        for name in ["Battle Scarred", "show.light", "CON", "a_b-c (2)"] {
+            assert!(SafePath::validate_new_name(name).is_ok(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_name_already_on_disk_needs_only_be_safe() {
+        // Files named before the rules for new names stay usable: saved,
+        // renamed away from, deleted.
+        for name in [" ", "trail ", ".warmup", "tab\there"] {
+            assert!(SafePath::validate_name(name).is_ok(), "{name:?}");
+            assert!(
+                SafePath::validate_name_to_write(name, true).is_ok(),
+                "{name:?}"
+            );
+        }
+        for name in ["", ".", "..", "a/b", "a\\b", "a\0b", "../x"] {
+            assert!(
+                SafePath::validate_name_to_write(name, true).is_err(),
+                "{name:?}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -296,6 +375,36 @@ mod tests {
         assert!(safe.is_dir());
         assert!(safe.as_path().ends_with("Song"));
         assert!(dir.path().join("Artist/Album/Song").exists());
+    }
+
+    #[test]
+    fn create_dir_refuses_a_new_name_the_rules_refuse() {
+        // #578: the web UI made song directories by names no new song may
+        // have, and the song loader then skipped a hidden one.
+        let dir = tempfile::tempdir().unwrap();
+        let root = VerifiedRoot::new(dir.path()).unwrap();
+        let parent = root.as_safe_path();
+        for name in [".hidden", " lead", "trail "] {
+            assert!(
+                SafePath::create_dir(&parent, name, &root).is_err(),
+                "{name:?}"
+            );
+            assert!(!dir.path().join(name).exists(), "{name:?} created");
+        }
+        // One already there, from before the rules, is still used.
+        std::fs::create_dir(dir.path().join(".warmup")).unwrap();
+        assert!(SafePath::create_dir(&parent, ".warmup", &root).is_ok());
+    }
+
+    #[test]
+    fn create_dir_nested_creates_nothing_for_a_bad_name_further_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = VerifiedRoot::new(dir.path()).unwrap();
+        assert!(SafePath::create_dir_nested("Artist/.hidden", &root).is_err());
+        assert!(!dir.path().join("Artist").exists());
+        // Under a directory from before the rules, a good name is fine.
+        std::fs::create_dir(dir.path().join(".old")).unwrap();
+        assert!(SafePath::create_dir_nested(".old/Song", &root).is_ok());
     }
 
     #[test]

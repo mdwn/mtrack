@@ -12,10 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::error::Error;
 
-use super::parser::LightShow;
 use crate::config::Lighting;
 
 /// Validation result containing information about the validation.
@@ -35,7 +34,7 @@ impl ValidationResult {
 }
 
 /// Collects all fixture group names used in the given shows.
-pub fn collect_groups(shows: &HashMap<String, LightShow>) -> HashSet<String> {
+pub fn collect_groups(shows: &crate::lighting::parser::LightShows) -> HashSet<String> {
     let mut groups = HashSet::new();
 
     for show in shows.values() {
@@ -55,7 +54,7 @@ pub fn collect_groups(shows: &HashMap<String, LightShow>) -> HashSet<String> {
 /// Returns a ValidationResult with information about the validation.
 /// If config is None, only collects groups without validation.
 pub fn validate_groups(
-    shows: &HashMap<String, LightShow>,
+    shows: &crate::lighting::parser::LightShows,
     config: Option<&Lighting>,
 ) -> ValidationResult {
     let groups = collect_groups(shows);
@@ -81,7 +80,7 @@ pub fn validate_groups(
 /// Validates light shows and returns an error if validation fails.
 /// This is the main validation function that should be used when loading shows.
 pub fn validate_light_shows(
-    shows: &HashMap<String, LightShow>,
+    shows: &crate::lighting::parser::LightShows,
     config: Option<&Lighting>,
 ) -> Result<(), Box<dyn Error>> {
     let result = validate_groups(shows, config);
@@ -107,7 +106,7 @@ mod tests {
     use crate::lighting::parser::parse_light_shows;
     use std::collections::HashMap;
 
-    fn create_test_shows() -> HashMap<String, crate::lighting::parser::LightShow> {
+    fn create_test_shows() -> crate::lighting::parser::LightShows {
         let content = r#"show "Test Show 1" {
     @00:00.000
     front_wash: static color: "blue", duration: 5s, dimmer: 60%

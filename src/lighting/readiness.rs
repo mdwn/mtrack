@@ -54,12 +54,12 @@ pub fn songs_with_lighting(songs: &crate::songs::Songs) -> Vec<(Arc<Song>, Vec<L
         if song.dsl_lighting_shows().is_empty() {
             continue;
         }
-        let mut shows: Vec<LightShow> = song
+        // In the order the player has them.
+        let shows: Vec<LightShow> = song
             .dsl_lighting_shows()
             .iter()
             .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
             .collect();
-        shows.sort_by(|a, b| a.name.cmp(&b.name));
         out.push((song, shows));
     }
     out

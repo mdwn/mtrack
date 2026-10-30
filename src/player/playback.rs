@@ -35,8 +35,7 @@ impl Player {
     /// A pending start position (set by seeking while stopped) is consumed
     /// and playback starts there instead of the beginning.
     pub async fn play(&self) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
-        let start_time = self.take_pending_start().unwrap_or(Duration::ZERO);
-        self.play_from(start_time).await
+        self.play_at(None).await
     }
 
     /// Plays the song starting from a specific time position.
@@ -46,6 +45,15 @@ impl Player {
     pub async fn play_from(
         &self,
         start_time: Duration,
+    ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
+        self.play_at(Some(start_time)).await
+    }
+
+    /// Plays the song from `start_time`, or with none, from the pending
+    /// start position, or the beginning.
+    async fn play_at(
+        &self,
+        start_time: Option<Duration>,
     ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
         // Reject playback if hardware hasn't finished initializing.
         if !*self.init_done_tx.borrow() {
@@ -78,12 +86,59 @@ impl Player {
             return Ok(None);
         }
 
+        // Taken under the join lock, as `play_locked` takes it. A pause holds
+        // a hardware reload off by its position, and one that took the lock
+        // after the position was taken found the player idle and reset the
+        // hardware: the resume was refused, its position thrown away.
+        let start_time =
+            start_time.unwrap_or_else(|| self.take_pending_start().unwrap_or(Duration::ZERO));
         self.play_from_locked(start_time, &mut join).await
+    }
+
+    /// Plays the song at the current position, as [`Player::play`] does,
+    /// with the join lock held and no playback in it: for a song the player
+    /// starts by itself, so that a stop taking the lock after the decision
+    /// to start it stops it rather than coming before it.
+    pub(super) async fn play_locked(
+        &self,
+        join: &mut Option<PlayHandles>,
+    ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
+        if !*self.init_done_tx.borrow() {
+            return Err("Hardware is still initializing".into());
+        }
+        let start_time = self.take_pending_start().unwrap_or(Duration::ZERO);
+        self.play_from_locked(start_time, join).await
     }
 
     /// Inner implementation of play_from that assumes the caller already holds the join lock
     /// and has verified it is `None` (no active playback).
     pub(super) async fn play_from_locked(
+        &self,
+        start_time: Duration,
+        join: &mut Option<PlayHandles>,
+    ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
+        // Asked again under the join lock: a hardware reload resets the
+        // hardware under it, and one that ran since the caller asked would
+        // have this start on hardware still being brought up.
+        if !*self.init_done_tx.borrow() {
+            return Err("Hardware is still initializing".into());
+        }
+        // The song counts as playing from before the playlist is read for
+        // it: a reload either swaps the playlist in first, so the song read
+        // is the new one's, or sees it playing and keeps it current.
+        {
+            let _moves = self.playlist_moves.lock();
+            self.song_playing.store(true, Ordering::Relaxed);
+        }
+        let started = self.start_locked(start_time, join).await;
+        if join.is_none() {
+            self.song_playing.store(false, Ordering::Relaxed);
+            self.reload_deferred_hardware();
+        }
+        started
+    }
+
+    async fn start_locked(
         &self,
         start_time: Duration,
         join: &mut Option<PlayHandles>,
@@ -181,6 +236,7 @@ impl Player {
         *join = Some(PlayHandles {
             join: join_handle,
             cancel: cancel_handle.clone(),
+            start_time,
         });
 
         // Spawn section boundary polling task for reactive looping.
@@ -214,14 +270,27 @@ impl Player {
                 };
 
                 let succeeded = matches!(result, PlaybackResult::Success);
+                // Whoever took this playback out of `join` -- a stop, a pause,
+                // a seek -- cleaned up after it, and a seek or a play since may
+                // have put its own there. A song ending by itself while one of
+                // them waits for the lock must leave it all alone, or it moves
+                // the playlist on under a seek's restart or a pause's kept
+                // position, and drops the playback that follows. What it ended
+                // by is read under the lock too: a loop break comes in under
+                // it, and the flags belong to whichever playback holds it.
+                // Owned, so that a loop break's next song can start under it.
+                let mut join = player.join.clone().lock_owned().await;
+                if !join
+                    .as_ref()
+                    .is_some_and(|handles| handles.cancel.same_as(&cancel_handle_for_cleanup))
+                {
+                    return;
+                }
                 let cancelled = cancel_handle_for_cleanup.is_cancelled();
                 // Playback that ended itself, as distinct from one that stop()
                 // or a seek ended: only the former has nobody to clean up after
                 // it. See decide_cleanup_action.
                 let self_cancelled = cancel_handle_for_cleanup.cancelled_due_to_failure();
-                // `loop_end` before `loop_break`, the reverse of the order a
-                // stop's cut clears them in: a break caught between the two
-                // reads as no break at all, never as one to move on from.
                 let ended = player.loop_end.swap(false, Ordering::Relaxed);
                 let loop_broken = player.loop_break.swap(false, Ordering::Relaxed);
                 let back = player.loop_break_to_prev.swap(false, Ordering::Relaxed);
@@ -235,39 +304,48 @@ impl Player {
 
                 if loop_broken && ended {
                     // A looping song ending: stopped where it is, as a stop
-                    // leaves it, while its fade plays out. Unless a stop has
-                    // cut it since, and cleaned up itself.
-                    let mut join = player.join.lock().await;
-                    if !join
-                        .as_ref()
-                        .is_some_and(|handles| handles.cancel.same_as(&cancel_handle_for_cleanup))
-                    {
-                        return;
-                    }
+                    // leaves it, while its fade plays out.
                     *player.play_start_time.lock().await = None;
                     *join = None;
+                    player.song_playing.store(false, Ordering::Relaxed);
                     player.stop_run.store(false, Ordering::Relaxed);
                     *player.start_fade.lock() = None;
+                    // Stopped, a song an edit took off the list while it
+                    // ended gives way to the entry in its place, as at a
+                    // stop's cut, or Play would start it again (#576).
+                    let (playlist, settled) = player.move_playlist(|playlist| playlist.settle());
+                    if let Some(current) = playlist.current().filter(|_| settled) {
+                        player.emit_song_change(&current);
+                    }
+                    player.reload_deferred_hardware();
                     return;
                 }
 
                 let action = decide_cleanup_action(result, cancelled, loop_broken, self_cancelled);
                 if action == CleanupAction::StopCancelled {
-                    // stop() already cleared join and play_start_time.
-                    // Touching them here would clobber state from a new play() that
-                    // may have started after stop() returned.
+                    // stop() already cleared join and play_start_time, and
+                    // took the playback out of `join` as it did, so the check
+                    // above has returned already. Kept as a backstop.
                     return;
                 }
 
                 // Natural finish or loop break: advance playlist and clean up.
                 // A loop broken by previous goes back instead.
-                let mut join = player.join.lock().await;
-                let from = playlist.position();
-                let moved = if loop_broken && back {
-                    playlist.prev()
-                } else {
-                    playlist.next()
-                };
+                // The playlist as it is now, not as it was when the song
+                // started: an edit since replaces it, the place it had got to
+                // carried over (#576).
+                let (playlist, (from, moved)) = player.move_playlist(|playlist| {
+                    let from = playlist.entry();
+                    let moved = if loop_broken && back {
+                        playlist.prev()
+                    } else {
+                        playlist.next()
+                    };
+                    // A song taken off the list ending after the last
+                    // entry has nothing to move on to, but no longer plays.
+                    playlist.settle();
+                    (from, moved.and_then(|_| playlist.current()))
+                });
                 if let Some(song) = moved {
                     player.emit_song_change(&song);
                 }
@@ -278,6 +356,7 @@ impl Player {
                 }
 
                 *join = None;
+                player.song_playing.store(false, Ordering::Relaxed);
                 player.stop_run.store(false, Ordering::Relaxed);
                 let should_auto_play = action == CleanupAction::LoopBreakAndPlay;
                 if !should_auto_play {
@@ -286,27 +365,31 @@ impl Player {
                     // A song that ended by itself moves the playlist on: the
                     // song it reaches may start by itself (its `auto_play`).
                     // Otherwise, between songs: ambient light, after its delay.
-                    let auto_play = (succeeded && playlist.position() != from)
+                    let auto_play = (succeeded && playlist.entry() != from)
                         .then(|| playlist.auto_play())
                         .flatten();
 
                     match auto_play {
                         Some(gap) => player.schedule_auto_play(gap),
-                        None => player.idle_ambient(true),
+                        None => {
+                            player.idle_ambient(true);
+                            player.reload_deferred_hardware();
+                        }
                     }
                 }
-                drop(join);
-
-                // If loop was broken (play/next during loop), auto-play the next song.
-                // Use spawn_blocking + block_on to avoid the non-Send future issue
-                // with tokio::sync::Mutex guards inside play_from.
+                // A loop broken by play or navigation starts the song it
+                // moved to under this same lock: let go of it first, and a
+                // stop in between finds nothing playing to stop, and the
+                // song starts after it regardless. On a blocking thread,
+                // since this task cannot await the start that spawned it and
+                // still be Send.
                 if should_auto_play {
-                    let player_for_play = player;
                     tokio::task::spawn_blocking(move || {
                         let rt = tokio::runtime::Handle::current();
-                        if let Err(e) = rt.block_on(player_for_play.play()) {
-                            *player_for_play.start_fade.lock() = None;
+                        if let Err(e) = rt.block_on(player.play_locked(&mut join)) {
+                            *player.start_fade.lock() = None;
                             error!(err = %e, "Failed to auto-play next song after loop break");
+                            player.reload_deferred_hardware();
                         }
                     });
                 }
@@ -518,6 +601,8 @@ impl Player {
     ///
     /// A looping song whose playlist entry has a `fade_out` ends over it
     /// instead ([`Player::end_looping_song`]); a stop while it does cuts it.
+    /// A stop during a loop break, before it has moved on, stops on the
+    /// song the break was going to.
     pub async fn stop(&self) -> Option<Arc<Song>> {
         let mut join = self.join.lock().await;
         if let Some(song) = self.end_looping_song(&join) {
@@ -530,14 +615,15 @@ impl Player {
     /// the end of the list without a `fade_out` to end on.
     pub(super) async fn cut_locked(&self, join: &mut Option<PlayHandles>) -> Option<Arc<Song>> {
         let ending = self.end_ending();
-        // A song still winding down from its ending: it is stopped now, and
-        // a song played next must not read its break as its own. See the
-        // cleanup in `play_from_locked` for the order.
-        if self.loop_end.load(Ordering::Relaxed) {
-            self.loop_break.store(false, Ordering::Relaxed);
-            self.loop_end.store(false, Ordering::Relaxed);
+        let (song, _) = self.stop_locked(join).await;
+        self.song_playing.store(false, Ordering::Relaxed);
+        // A song an edit took off the list is current only while it plays:
+        // stopped, the playlist goes on to the entry that took its place, or
+        // Play would start it again.
+        let (playlist, settled) = self.move_playlist(|playlist| playlist.settle());
+        if let Some(current) = playlist.current().filter(|_| settled) {
+            self.emit_song_change(&current);
         }
-        let song = self.stop_locked(join).await;
         if ending {
             self.cut_break_fade();
         }
@@ -545,6 +631,7 @@ impl Player {
         // ending is "now": ambient comes in at once, over its lights going
         // dark, rather than after the rest of its delay.
         self.idle_ambient(!ending);
+        self.reload_deferred_hardware();
         song
     }
 
@@ -556,7 +643,12 @@ impl Player {
     /// not end this way.
     pub(super) fn end_looping_song(&self, join: &Option<PlayHandles>) -> Option<Arc<Song>> {
         let handles = join.as_ref()?;
-        if self.loop_end.load(Ordering::Relaxed) || !self.is_current_song_looping() {
+        // A loop break under way is on its way to another song: a stop then
+        // cuts, and stops on that song, rather than ending this one.
+        if self.loop_end.load(Ordering::Relaxed)
+            || self.loop_break.load(Ordering::Relaxed)
+            || !self.is_current_song_looping()
+        {
             return None;
         }
         let playlist = self.get_playlist();
@@ -600,9 +692,15 @@ impl Player {
         let player = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(over).await;
-            let mut state = player.ending.lock();
-            if state.generation == generation && state.fading.take().is_some() {
+            let ended = {
+                let mut state = player.ending.lock();
+                state.generation == generation && state.fading.take().is_some()
+            };
+            if ended {
                 info!("The looping song has ended.");
+                // A hardware reload waited for the fade, which it would
+                // have cut short.
+                player.reload_deferred_hardware();
             }
         });
     }
@@ -613,6 +711,19 @@ impl Player {
         let mut state = self.ending.lock();
         state.generation += 1;
         state.fading.take().is_some()
+    }
+
+    /// How long until a song fading out is out, while one is: a looping
+    /// song ending, or one a loop break moved on from. A hardware reload
+    /// waits for it, as the reset would cut it short.
+    pub(super) fn fading_out(&self) -> Option<Duration> {
+        let ending = self.ending_status().map(|(_, left)| left);
+        let fading = self
+            .fading_until
+            .lock()
+            .map(|until| until.saturating_duration_since(std::time::Instant::now()))
+            .filter(|left| !left.is_zero());
+        ending.max(fading)
     }
 
     /// The looping song ending, and how long until its fade is over, while
@@ -627,11 +738,15 @@ impl Player {
         })
     }
 
-    /// Stops the song playing, if one is, for a pause: the lights hold
-    /// rather than go to ambient.
-    pub(super) async fn stop_for_pause(&self) -> Option<Arc<Song>> {
-        let mut join = self.join.lock().await;
-        self.stop_locked(&mut join).await
+    /// Stops the song playing, if one is, for a pause, with the join lock
+    /// held: the lights hold rather than go to ambient. The song still
+    /// counts as playing until the pause has kept its position, and the
+    /// caller clears `song_playing` then. Returns whether there is a
+    /// position to keep: none when a loop break asked of the song took the
+    /// playlist on to its target.
+    pub(super) async fn stop_for_pause(&self, join: &mut Option<PlayHandles>) -> bool {
+        let (_, moved) = self.stop_locked(join).await;
+        !moved
     }
 
     /// Starts the song at the playlist's position by itself after `gap`,
@@ -658,31 +773,40 @@ impl Player {
         let player = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(gap).await;
+            // Whether it is still wanted is asked under the join lock, and
+            // the song starts under it: a stop or a navigation calls an auto
+            // play off under that lock too, so it either comes first and
+            // finds it waiting, or comes after and stops the song it started.
+            let mut join = player.join.lock().await;
             {
                 let mut state = player.auto_play.lock();
-                if state.generation != generation || !state.pending {
+                if state.generation != generation || !state.pending || join.is_some() {
                     return;
                 }
                 state.pending = false;
                 state.waiting = None;
             }
-            // As the loop-break auto-play does: play's future holds tokio
-            // mutex guards that are not Send.
-            tokio::task::spawn_blocking(move || {
-                let rt = tokio::runtime::Handle::current();
-                if let Err(e) = rt.block_on(player.play()) {
-                    error!(err = %e, "Auto play failed to start the song");
-                }
-            });
+            if let Err(e) = player.play_locked(&mut join).await {
+                error!(err = %e, "Auto play failed to start the song");
+                player.reload_deferred_hardware();
+            }
         });
     }
 
     /// Calls off an auto play waiting out its gap. Returns whether one was.
     pub(super) fn cancel_auto_play(&self) -> bool {
-        let mut state = self.auto_play.lock();
-        state.generation += 1;
-        state.waiting = None;
-        std::mem::replace(&mut state.pending, false)
+        let called_off = {
+            let mut state = self.auto_play.lock();
+            state.generation += 1;
+            state.waiting = None;
+            std::mem::replace(&mut state.pending, false)
+        };
+        // A hardware reload deferred for it can run now, unless a start is
+        // what called it off: the reload then waits for that song in turn.
+        if called_off {
+            self.reload_deferred_hardware();
+        }
+        called_off
     }
 
     /// The song an auto play is waiting to start, and how long until it
@@ -750,7 +874,10 @@ impl Player {
         called_off
     }
 
-    async fn stop_locked(&self, join: &mut Option<PlayHandles>) -> Option<Arc<Song>> {
+    /// Stops the playback in `join`, if there is one, with the join lock
+    /// held. Returns the song stopped, and whether a loop break asked of it
+    /// took the playlist on to the break's target.
+    async fn stop_locked(&self, join: &mut Option<PlayHandles>) -> (Option<Arc<Song>>, bool) {
         // A stop calls off an auto play waiting out its gap.
         self.cancel_auto_play();
         let play_handles = match join.take() {
@@ -761,9 +888,10 @@ impl Player {
                 // position so the next play begins at zero.
                 self.clear_pending_start();
                 info!("Player is not active, cleared any preserved position.");
-                return None;
+                return (None, false);
             }
         };
+        let broken_to_prev = self.take_loop_break();
 
         self.cut_break_fade();
         let song = match self.get_playlist().current() {
@@ -772,7 +900,7 @@ impl Player {
                 info!("Playlist is empty, nothing to stop.");
                 play_handles.cancel.cancel();
                 drop(play_handles.join);
-                return None;
+                return (None, false);
             }
         };
         info!(song = song.name(), "Stopping playback.");
@@ -788,7 +916,58 @@ impl Player {
 
         drop(play_handles.join);
 
-        Some(song)
+        // A loop break asked of this playback has already told whoever asked
+        // for it where it goes (#545), and begun fading toward it. A stop or
+        // pause before its cleanup ran keeps the playlist move, without the
+        // start: the player stops on the break's target, with nothing kept
+        // to resume.
+        let moved = match broken_to_prev {
+            Some(back) => {
+                self.clear_pending_start();
+                let (_, target) = self.move_playlist(|playlist| {
+                    let moved = if back {
+                        playlist.prev()
+                    } else {
+                        playlist.next()
+                    };
+                    playlist.settle();
+                    moved.and_then(|_| playlist.current())
+                });
+                if let Some(target) = &target {
+                    info!(song = target.name(), "Stopped on the loop break's target.");
+                    self.emit_song_change(target);
+                    self.load_song_samples(target);
+                }
+                true
+            }
+            None => false,
+        };
+
+        (Some(song), moved)
+    }
+
+    /// Takes a loop break asked of the playback just taken out of `join`,
+    /// and returns whether it goes back, or `None` when there was none, or
+    /// it was a looping song's ending, which stays where it is. Its cleanup
+    /// finds `join` no longer its own and leaves the flags be, so whoever
+    /// took it clears them. Called with the join lock held.
+    fn take_loop_break(&self) -> Option<bool> {
+        let ending = self.loop_end.load(Ordering::Relaxed);
+        let broken = self.loop_break.load(Ordering::Relaxed);
+        let back = self.loop_break_to_prev.load(Ordering::Relaxed);
+        self.forget_loop_break();
+        (broken && !ending).then_some(back)
+    }
+
+    /// Forgets a loop break, or a looping song's ending, asked of the
+    /// playback just taken out of `join`. Its cleanup finds `join` no longer
+    /// its own and leaves the flags be, so whoever took it clears them, or
+    /// the next song played would read the break as its own and leave its
+    /// loop at the end of its pass. Called with the join lock held.
+    pub(super) fn forget_loop_break(&self) {
+        self.loop_end.store(false, Ordering::Relaxed);
+        self.loop_break.store(false, Ordering::Relaxed);
+        self.loop_break_to_prev.store(false, Ordering::Relaxed);
     }
 
     /// Returns true if a song is currently playing.
@@ -1180,6 +1359,8 @@ impl Player {
                 fading.extend(ids);
             }
         }
+        *self.fading_until.lock() =
+            fade.map(|f| std::time::Instant::now() + f.length.max(f.lights));
         *self.break_fade.lock() = fade.map(|f| crate::playsync::BreakFade {
             started: std::time::Instant::now(),
             length: f.length,
@@ -1202,6 +1383,7 @@ impl Player {
     pub(super) fn cut_break_fade(&self) {
         let ids = std::mem::take(&mut *self.break_fade_ids.lock());
         *self.break_fade.lock() = None;
+        *self.fading_until.lock() = None;
         *self.start_fade.lock() = None;
         let hw = self.hardware.read();
         if let Some(dmx) = hw.dmx_engine.as_ref() {

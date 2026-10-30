@@ -262,6 +262,9 @@ pub(super) async fn import_mvr(
         }
     }
     let outcome = super::helpers::spawn_blocking_io("import MVR", move || {
+        // A re-import merges into the venue file it reads: held from that
+        // read to its write, or a venue save between the two is lost (#578).
+        let _guard = write.then(|| VENUE_WRITES.blocking_lock());
         Ok::<_, String>(
             if write {
                 lighting::import::import_mvr_bytes(&form.bytes, &form.file_name, &options, &project)
@@ -577,11 +580,14 @@ fn add_aim_points_blocking(
         venues_dir: venues_dir.to_string(),
         ..MvrExportOptions::for_venue(venue_name)
     };
+    // Held from the analysis below, which reads the venue: a save linking a
+    // fixture between it and the write would get an aim point it no longer
+    // needs.
+    let _guard = VENUE_WRITES.blocking_lock();
     // The export's own analysis says which fixtures are fixed and which are
     // already linked, so this can never disagree with the summary.
     let (_, report) =
         lighting::export::export_mvr_bytes(&options, project).map_err(|e| e.to_string())?;
-    let _guard = VENUE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
     let unlinked: Vec<&str> = report
         .fixed_fixtures
         .iter()
@@ -599,7 +605,7 @@ fn add_aim_points_blocking(
     for path in
         lighting::project_files::files_under(&dir, lighting::project_files::VENUE_EXTENSIONS)
     {
-        let Ok(content) = std::fs::read_to_string(&path) else {
+        let Ok(content) = crate::util::read_to_string(&path) else {
             continue;
         };
         if let Ok(mut venues) = lighting::parser::parse_venues(&content) {

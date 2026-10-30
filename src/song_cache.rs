@@ -81,7 +81,7 @@ fn filename_key(file: &Path) -> Option<String> {
 
 fn read_cache(song_dir: &Path) -> Option<SongCache> {
     let cache_path = song_dir.join(CACHE_FILENAME);
-    let content = fs::read_to_string(&cache_path).ok()?;
+    let content = crate::util::read_to_string(&cache_path).ok()?;
     let cache: SongCache = serde_json::from_str(&content).ok()?;
     if cache.version != CACHE_VERSION {
         return None;
