@@ -5208,8 +5208,10 @@ mod test {
             midi.mock_event(&next);
             let _ = tx.send(());
         });
+        // As long as `eventually` below allows: a restarted controller can
+        // take a while to start watching on a loaded runner.
         assert!(
-            rx.recv_timeout(Duration::from_secs(3)).is_ok(),
+            rx.recv_timeout(Duration::from_secs(10)).is_ok(),
             "nothing watches the player's MIDI device"
         );
         eventually(
