@@ -130,6 +130,16 @@ impl OutputManager {
         Ok(())
     }
 
+    /// Adds a source straight into the mixer, not by way of the callback:
+    /// in place once this returns, for a loop's next pass or time round
+    /// scheduled under the playback's jump gate, so a loop break that takes
+    /// the gate next fades it with the rest.
+    pub(super) fn add_source_now(&self, mut source: MixerActiveSource) {
+        self.mixer.prepare_source(&mut source);
+        self.mixer
+            .push_prepared(std::sync::Arc::new(parking_lot::Mutex::new(source)));
+    }
+
     /// Starts the output thread that creates and manages the audio stream.
     /// Uses direct callback mode — no intermediate ring buffer for lowest latency.
     /// On backend errors (e.g. ALSA POLLERR), the stream is recreated automatically.
@@ -392,7 +402,34 @@ mod test {
             cancel_at_sample: None,
             gain: Default::default(),
             gain_envelope: None,
+            break_envelope: None,
         }
+    }
+
+    /// A loop's next pass or time round, added under the playback's jump
+    /// gate, is in the mixer at once: a loop break taking the gate next
+    /// fades it with the rest, rather than missing it in the channel and
+    /// letting the playback's cancel drop it.
+    #[test]
+    fn a_source_added_now_is_faded_by_a_break_that_follows() {
+        let manager = OutputManager::new(1, 44100).unwrap();
+        let playback = CancelHandle::new();
+        let mut mappings = HashMap::new();
+        mappings.insert("ch0".to_string(), vec![1]);
+        let mut source = make_active_source(make_silent_source(1), mappings);
+        source.cancel_handle = playback.clone();
+        source.start_at_sample = Some(100);
+        let id = source.id;
+        manager.add_source_now(source);
+        let fading = manager.mixer.fade_out_playback(
+            &playback,
+            4_000,
+            crate::audio::crossfade::CrossfadeCurve::Linear,
+            10,
+            |_| false,
+        );
+        assert_eq!(fading, vec![id]);
+        assert!(manager.source_rx.is_empty(), "nothing left in the channel");
     }
 
     mod start_output_thread {

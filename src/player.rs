@@ -442,10 +442,6 @@ pub struct Player {
     /// Signal to stop section looping. The current iteration finishes and
     /// the song continues from the section end.
     section_loop_break: Arc<AtomicBool>,
-    /// Accumulated real time consumed by section loop iterations.
-    /// Each completed loop iteration adds section_duration to this value.
-    /// Subtracted from raw elapsed to get the true song position.
-    loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
     /// The section loop jumps due when the section loop now armed was
     /// armed: the loop is going round once more have fallen due.
     jumps_at_arm: Arc<parking_lot::Mutex<usize>>,
@@ -702,7 +698,6 @@ impl Player {
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
-            loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
             jumps_at_arm: Arc::new(parking_lot::Mutex::new(0)),
             section_jumps: Arc::new(parking_lot::Mutex::new(Default::default())),
             reactive_loop_state: Arc::new(parking_lot::RwLock::new(ReactiveLoopState::Idle)),
@@ -3761,6 +3756,8 @@ mod test {
                 at: Duration::from_secs(100),
                 from: Duration::from_secs(100),
                 to: Duration::from_secs(4),
+                overlap: Duration::ZERO,
+                pass: false,
             });
             log.set_timeline(
                 crate::clock::PlaybackClock::wall_from(std::time::Instant::now() - since),
@@ -3802,6 +3799,8 @@ mod test {
             at: Duration::from_secs(100),
             from: Duration::from_secs(100),
             to: Duration::from_secs(4),
+            overlap: Duration::ZERO,
+            pass: false,
         });
         // Clock 10ms ahead of the wall: it reads 100.005s, the wall 99.995s.
         log.set_timeline(
@@ -3821,20 +3820,39 @@ mod test {
         Ok(())
     }
 
+    /// A looping song's passes count in the position as sections' jumps do,
+    /// each as it falls due: a pass that crossfades starts the song over its
+    /// overlap before the last one ends. (They used to be counted by the
+    /// audio apart from the log.)
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_add_loop_time_consumed() -> Result<(), Box<dyn Error>> {
+    async fn the_position_counts_whole_song_passes_from_the_log() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
-
-        // Initially zero.
-        assert_eq!(*player.loop_time_consumed.lock(), Duration::ZERO);
-
-        // Accumulates correctly.
-        player.add_loop_time_consumed(Duration::from_secs(2));
-        assert_eq!(*player.loop_time_consumed.lock(), Duration::from_secs(2));
-
-        player.add_loop_time_consumed(Duration::from_secs(3));
-        assert_eq!(*player.loop_time_consumed.lock(), Duration::from_secs(5));
-
+        let log = Arc::new(crate::playsync::SectionJumpLog::default());
+        // A 100s song crossfading over its last 4s: passes at 96s and 192s.
+        for at in [96, 192] {
+            log.push(crate::section_loop::SectionJump {
+                at: Duration::from_secs(at),
+                from: Duration::from_secs(96),
+                to: Duration::ZERO,
+                overlap: Duration::from_secs(4),
+                pass: true,
+            });
+        }
+        // 200s into the playback: 8s into its third pass.
+        log.set_timeline(
+            crate::clock::PlaybackClock::wall_from(
+                std::time::Instant::now() - Duration::from_secs(200),
+            ),
+            Duration::ZERO,
+        );
+        *player.section_jumps.lock() = log;
+        *player.play_start_time.lock().await =
+            Some(std::time::SystemTime::now() - Duration::from_secs(200));
+        let position = player.elapsed().await?.unwrap();
+        assert!(
+            position >= Duration::from_secs(8) && position < Duration::from_secs(96),
+            "not in the third pass: {position:?}"
+        );
         Ok(())
     }
 
@@ -3920,6 +3938,66 @@ mod test {
         Ok(())
     }
 
+    /// A section loops in a song looping with a crossfade, as in any other:
+    /// `loop_section` takes it (it used to refuse such a song), and reactive
+    /// looping offers its sections.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_section_loops_in_a_crossfading_song() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let songs_dir = dir.path().join("songs");
+        let song_dir = songs_dir.join("S");
+        std::fs::create_dir_all(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("t.wav"), vec![vec![0_i32; 8000 * 10]], 8000)?;
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: S\ntracks:\n  - name: t\n    file: t.wav\ntempo:\n  bpm: 120\n  \
+             time_signature: 4/4\nloop_playback: true\nloop_crossfade: 1measure\n\
+             sections:\n  - name: a\n    start_measure: 1\n    end_measure: 2\n  \
+             - name: b\n    start_measure: 2\n    end_measure: 3\n",
+        )?;
+        let playlist_path = dir.path().join("playlist.yaml");
+        std::fs::write(&playlist_path, "songs:\n- S\n")?;
+        let songs = songs::get_all_songs(&songs_dir)?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(&playlist_path)?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                songs_dir.to_str().unwrap(),
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let song = player.get_playlist().current().unwrap();
+        assert!(song.loop_crossfade().is_some());
+        let (a_start, a_end) = song.resolve_section("a").unwrap();
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        player.loop_section("a").await?;
+        let active = player.active_section().expect("the section armed");
+        assert_eq!((active.start_time, active.end_time), (a_start, a_end));
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        // Reactive looping offers the section playback is in.
+        player.check_section_boundaries(a_start + Duration::from_millis(100));
+        assert!(
+            !matches!(player.reactive_loop_state(), ReactiveLoopState::Idle),
+            "nothing offered: {:?}",
+            player.reactive_loop_state()
+        );
+        Ok(())
+    }
+
     /// Arming while another task holds `play_start_time` (a status poll in
     /// `elapsed()`, a seek) counts the jumps due as any other time: it read
     /// none (a `try_lock` that failed), so a section armed after an earlier
@@ -3969,6 +4047,8 @@ mod test {
             at: a_end,
             from: a_end,
             to: a_start,
+            overlap: Duration::ZERO,
+            pass: false,
         });
         // Now in b, mid-way: raw = a's pass put back + b's middle.
         let mid_b = b_start + (b_end - b_start) / 2;

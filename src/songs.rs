@@ -923,25 +923,6 @@ impl Song {
         self.loop_crossfade.filter(|_| self.loop_playback)
     }
 
-    /// How often a looping song starts a new pass: its length less the loop
-    /// crossfade. The playhead of a looping song is its elapsed time modulo
-    /// this.
-    pub fn loop_period(&self) -> Duration {
-        self.length()
-            .saturating_sub(self.loop_crossfade().unwrap_or_default())
-    }
-
-    /// Where `elapsed` (from the song's start, over every pass) is in the
-    /// pass it is on: elapsed itself for a song that does not loop.
-    pub fn position_in_pass(&self, elapsed: Duration) -> Duration {
-        let period = self.loop_period();
-        if self.loop_playback && !period.is_zero() {
-            Duration::from_nanos((elapsed.as_nanos() % period.as_nanos()) as u64)
-        } else {
-            elapsed
-        }
-    }
-
     /// Tracks that switch over halfway through the loop crossfade instead of
     /// fading.
     pub fn loop_crossfade_cut(&self) -> &[String] {
@@ -1103,21 +1084,6 @@ impl Song {
             },
             exclude: fade.exclude.clone().unwrap_or_default(),
         })
-    }
-
-    /// When pass `pass` of a looping song starts on the playback clock, for a
-    /// playback that began `start_time` into the song: the first pass (0) at
-    /// once, each later one a song length less the crossfade after the last.
-    pub fn loop_pass_start(&self, start_time: Duration, pass: u32) -> Duration {
-        if pass == 0 {
-            return Duration::ZERO;
-        }
-        let overlap = self.loop_crossfade().unwrap_or_default();
-        let period = self.duration.saturating_sub(overlap);
-        self.duration
-            .saturating_sub(start_time)
-            .saturating_sub(overlap)
-            + period * (pass - 1)
     }
 
     /// The loop crossfade a song config asks for, as a length of time ending
@@ -1559,6 +1525,16 @@ impl Song {
             track.duration = duration;
         }
         song.duration = duration;
+        song
+    }
+
+    /// Test helper: a song `duration` long that loops, its passes crossing
+    /// over the last `overlap` of it (its `loop_crossfade`).
+    #[cfg(test)]
+    pub fn new_for_test_crossfading(name: &str, duration: Duration, overlap: Duration) -> Song {
+        let mut song = Self::new_for_test_lasting(name, &[], duration);
+        song.loop_playback = true;
+        song.loop_crossfade = Some(overlap);
         song
     }
 
@@ -2261,33 +2237,7 @@ mod test {
         let song = looping_song("loop_crossfade: 1measure\nloop_crossfade_cut: [click]\n")?;
         assert_eq!(song.duration(), Duration::from_secs(8));
         assert_eq!(song.loop_crossfade(), Some(Duration::from_secs(2)));
-        assert_eq!(song.loop_period(), Duration::from_secs(6));
         assert_eq!(song.loop_crossfade_cut(), ["click".to_string()]);
-        // Passes every 6 s after the first, which starts its successor 2 s
-        // before its end -- or sooner, when it began part way in.
-        assert_eq!(song.loop_pass_start(Duration::ZERO, 0), Duration::ZERO);
-        assert_eq!(
-            song.loop_pass_start(Duration::ZERO, 1),
-            Duration::from_secs(6)
-        );
-        assert_eq!(
-            song.loop_pass_start(Duration::ZERO, 3),
-            Duration::from_secs(18)
-        );
-        assert_eq!(
-            song.loop_pass_start(Duration::from_secs(1), 1),
-            Duration::from_secs(5)
-        );
-        // Started inside the overlap: the next pass starts at once, and the
-        // grid runs on from there.
-        assert_eq!(
-            song.loop_pass_start(Duration::from_secs(7), 1),
-            Duration::ZERO
-        );
-        assert_eq!(
-            song.loop_pass_start(Duration::from_secs(7), 2),
-            Duration::from_secs(6)
-        );
 
         let song = looping_song("loop_crossfade: 3beats\n")?;
         assert_eq!(song.loop_crossfade(), Some(Duration::from_millis(1500)));
@@ -2297,11 +2247,6 @@ mod test {
         // No crossfade: passes abut.
         let song = looping_song("")?;
         assert_eq!(song.loop_crossfade(), None);
-        assert_eq!(song.loop_period(), Duration::from_secs(8));
-        assert_eq!(
-            song.loop_pass_start(Duration::ZERO, 2),
-            Duration::from_secs(16)
-        );
         Ok(())
     }
 
@@ -5066,28 +5011,6 @@ pilot:
         let proto = song.to_proto().unwrap();
         assert_eq!(proto.sections[0].start_beat, None);
         assert_eq!(proto.sections[0].end_beat, None);
-    }
-
-    #[test]
-    fn a_position_on_a_later_pass_is_its_place_in_the_pass() {
-        use std::time::Duration;
-        let looping = super::Song {
-            duration: Duration::from_secs(10),
-            loop_playback: true,
-            ..Default::default()
-        };
-        assert_eq!(
-            looping.position_in_pass(Duration::from_secs(23)),
-            Duration::from_secs(3)
-        );
-        let once = super::Song {
-            duration: Duration::from_secs(10),
-            ..Default::default()
-        };
-        assert_eq!(
-            once.position_in_pass(Duration::from_secs(23)),
-            Duration::from_secs(23)
-        );
     }
 
     /// A song with no audio is as long as its lighting: the last effect's

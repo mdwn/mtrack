@@ -149,7 +149,6 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             tracks,
             beat_grid,
             looping,
-            loop_period_ms,
             available_sections,
             pilot_hints,
         ) = if let Some(current_song) = playlist.current() {
@@ -230,12 +229,11 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 tracks,
                 beat_grid,
                 current_song.loop_playback(),
-                current_song.loop_period().as_millis() as u64,
                 available_sections,
                 pilot_hints,
             )
         } else {
-            (String::new(), 0, vec![], None, false, 0, vec![], vec![])
+            (String::new(), 0, vec![], None, false, vec![], vec![])
         };
 
         let available_playlists = player.list_playlists();
@@ -274,8 +272,10 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 }),
             }
         };
-        // For looping, wrap elapsed time to show position within the current
-        // loop/section iteration rather than total time since first play.
+        // The player's position is the song's: every loop jump, a section's
+        // or a looping song's pass, has put it back as it fell due. Wrapped
+        // within an armed section all the same, which leaves a position
+        // inside it as it is.
         let elapsed_ms = if let Some(ref section) = player.active_section() {
             let start_ms = section.start_time.as_millis() as u64;
             let end_ms = section.end_time.as_millis() as u64;
@@ -285,10 +285,6 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             } else {
                 raw_elapsed_ms
             }
-        } else if looping && loop_period_ms > 0 {
-            // A pass starts every period: the song's length, less its loop
-            // crossfade when passes overlap.
-            raw_elapsed_ms % loop_period_ms
         } else {
             raw_elapsed_ms
         };

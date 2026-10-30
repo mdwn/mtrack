@@ -721,6 +721,8 @@ When a section loop is active:
 - A confirmation tone plays on the outputs mapped to the reserved track name `mtrack:looping` in
   the profile's track mappings (see [Hardware Profiles](../configuration/hardware-profiles.md))
 - Next/Prev navigation is allowed during looping
+- In a looping song, the section loop comes first, even in one with `loop_crossfade`: the song's
+  own loop waits until the section loop is broken
 
 Section activation is rejected if playback has already passed the section end.
 

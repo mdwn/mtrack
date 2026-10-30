@@ -89,8 +89,6 @@ pub struct LoopControl {
     pub active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
     /// Shared flag to break out of a section loop.
     pub section_loop_break: Arc<AtomicBool>,
-    /// Accumulated time consumed by section loop iterations.
-    pub loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
     /// A loop break's fade-out (a playlist `fade_out`), set by the player as it
     /// breaks the loop.
     pub break_fade: Arc<parking_lot::Mutex<Option<BreakFade>>>,
@@ -118,6 +116,11 @@ pub struct SectionJumpLog {
     /// The playback's clock and start position: the timeline the jumps are
     /// timed on, read to know which have fallen due.
     timeline: parking_lot::Mutex<Option<(crate::clock::PlaybackClock, Duration)>>,
+    /// Set once whoever commits the jumps has stopped playing: no more will
+    /// come. Until then the followers follow, even past the end of their own
+    /// notes or cues, since a section armed late, or one looping past them,
+    /// takes them back.
+    closed: AtomicBool,
 }
 
 /// Who commits a playback's section loop jumps.
@@ -182,9 +185,25 @@ impl SectionJumpLog {
         self.publisher.load(std::sync::atomic::Ordering::Acquire) == JumpPublisherRole::Audio as u8
     }
 
+    /// How many jumps have been committed, fallen due or not.
+    pub fn committed(&self) -> usize {
+        self.jumps.lock().len()
+    }
+
     /// Records a jump committed to.
     pub fn push(&self, jump: crate::section_loop::SectionJump) {
         self.jumps.lock().push(jump);
+    }
+
+    /// Says no more jumps will come: the audio, or the publisher standing in
+    /// for it, has stopped playing.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+
+    /// Whether no more jumps will come.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 
     /// The jump at `index`, if it has been committed to.
@@ -229,6 +248,17 @@ impl JumpCursor {
     pub fn consumed(&self) -> Duration {
         self.consumed
     }
+
+    /// Whether another jump may yet come: one committed and not passed, or
+    /// the log still open.
+    pub fn may_jump(&self) -> bool {
+        self.peek().is_some() || !self.log.is_closed()
+    }
+
+    /// The log followed.
+    pub fn log(&self) -> &Arc<SectionJumpLog> {
+        &self.log
+    }
 }
 
 impl LoopControl {
@@ -238,12 +268,23 @@ impl LoopControl {
             loop_break: Arc::new(AtomicBool::new(false)),
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
-            loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
             section_jumps: Arc::new(SectionJumpLog::default()),
         }
+    }
+}
+
+impl LoopControl {
+    /// A `LoopControl` for a playback nothing commits loop jumps for: its
+    /// log closed from the start, so the lights and notes end with their
+    /// own content, as a song without loops does.
+    #[cfg(test)]
+    pub fn without_jumps() -> Self {
+        let loop_control = Self::new();
+        loop_control.section_jumps.close();
+        loop_control
     }
 }
 
@@ -274,6 +315,10 @@ pub struct CancelHandle {
     cancelled: Arc<Mutex<CancelState>>,
     /// The condvar will handle notification of cancelling.
     condvar: Arc<Condvar>,
+    /// Held while the audio schedules a loop jump, and while a loop break
+    /// fades the playback out and says it is breaking: a jump is either
+    /// scheduled before the break, and made under its fade, or not at all.
+    jumps: Arc<Mutex<()>>,
 }
 
 impl CancelHandle {
@@ -282,6 +327,7 @@ impl CancelHandle {
         CancelHandle {
             cancelled: Arc::new(Mutex::new(CancelState::Untouched)),
             condvar: Arc::new(Condvar::new()),
+            jumps: Arc::new(Mutex::new(())),
         }
     }
 }
@@ -300,6 +346,13 @@ impl CancelHandle {
     /// cleanup cares about the difference.
     pub fn is_cancelled(&self) -> bool {
         *self.cancelled.lock() != CancelState::Untouched
+    }
+
+    /// Holds off the playback's loop jumps until the guard is dropped: the
+    /// audio takes it to schedule one, a loop break to fade and break
+    /// between them.
+    pub fn hold_jumps(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.jumps.lock()
     }
 
     /// Whether `other` is a clone of this handle: the same playback.

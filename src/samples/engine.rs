@@ -339,6 +339,7 @@ impl SampleEngine {
             cancel_at_sample: Some(source_cancel_at_sample),
             gain: Default::default(),
             gain_envelope: None,
+            break_envelope: None,
         };
 
         // Prepare on this thread so the audio callback's drain only inserts.

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Section loops in every song**: a section now loops the same way whether the song does not
+  loop, loops plainly, or loops with a `loop_crossfade`; `loop_section` used to refuse a song
+  with a crossfade, and reactive looping offered none of its sections. An armed section always
+  takes precedence over the song's own loop: one reaching into the crossfade, or ending on the
+  song's end, goes round on its own 10 ms seam, and the whole-song crossfade does not start
+  early under it. Once it is broken, the song goes round as a whole again; broken inside the
+  crossfade, its next pass comes in half a second on, where a pass begun on time would be by then,
+  over what is left of the crossfade, so the click stays on the song's grid. Playback started or
+  sought inside the crossfade does the same.
+
 - **The beat clock follows a song's tempo without a MIDI file** (#602): the MIDI beat clock
   came only from tempo events in a song's MIDI file, so a song with a `tempo:` block, or only a
   click track, sent none. It now follows the MIDI file's tempo, else the song's `tempo:` (tempo
@@ -17,12 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a downbeat. Every clock runs to the end of the song, a MIDI file's on at the file's last tempo
   past where the file stops. A MIDI file's first pulse now falls at Start, beat 1, as the MIDI
   spec has it, not a pulse (about 20ms at 120 BPM) after. Every clock's first pulse follows the
-  Start or Continue message by at least a millisecond, as the spec asks. A looping song with
-  audio now has its clock loop with it, a pass every song length less its crossfade (at once for
-  a start in the crossfade's tail), where it used to play the first pass and stop; a loop of
-  whole pulses keeps them across each seam, though a count-in's leftover before its first whole
-  bar has no pulses in later passes either (nor in a crossfade's tail over it). Breaking the loop
-  stops the clock.
+  Start or Continue message by at least a millisecond, as the spec asks. A looping song's clock
+  now loops with it, going round where the audio does, where it used to play the first pass and
+  stop; a loop of whole pulses keeps them across each seam, though a count-in's leftover before
+  its first whole bar has no pulses in later passes. Breaking the loop stops the clock.
 
 - **Ending a looping song gracefully**: Stop on a looping song whose playlist entry has a
   `fade_out` now fades it out over that fade, lights included, instead of cutting; the playlist
@@ -123,6 +131,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A loop break fades whatever the loop was doing**: a loop break's `fade_out` replaced each
+  source's own envelope, so a break part way through a `loop_crossfade` held both passes where
+  they stood and then cut the outgoing one dead where its crossfade would have ended, and a break
+  in the last moments before a section's jump (or a pass's start) dropped the jump the notes and
+  lights had already made, cutting the audio at the section's end. The fade now runs over what
+  the playback was doing: a crossover carries on crossing, a jump already scheduled is made, and
+  no new one is scheduled once the break has begun.
+
+- **Notes held across a section's loop point**: a section's jump lets go of the notes it cuts,
+  which were left hanging.
+
+- **A looping song's passes are decided once, and followed by everything** (#606): the audio
+  (or, with no audio, the playback's own publisher) now decides a looping song's passes as it
+  decides section loop jumps, on the same trigger, and puts them in the same log, each with its
+  overlap; the notes, lights, beat clock and position follow them all from there instead of
+  each keeping a pass grid of its own. A plain loop now restarts on the trigger rather than when
+  the audio files run out, and a loop break's fade carries on into another pass from where the
+  pass actually ends. The notes and lights also follow the log until the playback is over,
+  rather than stopping at their last note or cue: a show whose last cue falls inside a section
+  that keeps looping is re-cued each time round, and a section armed after a song's last MIDI
+  note plays its notes again. A song without loops ends as it did.
+
+- **MCP tools refuse arguments they do not take**: an unknown argument was dropped without a word,
+  so `play_song_from` given `position` instead of `start_time` played from the top. Each tool now
+  refuses it, naming the arguments it takes.
 - **The beat clock follows section loops, and keeps with the audio over long loops** (#604): a
   section loop took the notes and audio back to the section's start at its end, but the clock ran
   on along the song. It now goes back with them, and plays on once the loop is broken. And the
