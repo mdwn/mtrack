@@ -389,13 +389,14 @@ impl AudioMixer {
     /// fades from the gain its own envelope will have reached there -- a
     /// pass part way through crossing over goes down from where it is, not
     /// from full -- and ends at `at + samples`, or sooner if it was to end
-    /// sooner anyway. Other playbacks' sources are left alone. Returns the
-    /// ids cut.
+    /// sooner anyway. Other playbacks' sources, and those `spare` names, are
+    /// left alone. Returns the ids cut.
     pub fn cut_playback_at(
         &self,
         playback: &crate::playsync::CancelHandle,
         at: u64,
         samples: u64,
+        spare: &[u64],
     ) -> Vec<u64> {
         use crate::audio::crossfade::{CrossfadeCurve, GainEnvelope};
         let now = self.current_sample();
@@ -403,7 +404,7 @@ impl AudioMixer {
         let mut cut = Vec::new();
         for source_arc in sources.iter() {
             let mut source = source_arc.lock();
-            if !source.cancel_handle.same_as(playback) {
+            if !source.cancel_handle.same_as(playback) || spare.contains(&source.id) {
                 continue;
             }
             let from = match source.gain_envelope.as_deref() {

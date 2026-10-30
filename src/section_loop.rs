@@ -40,6 +40,9 @@ pub struct SectionLoopTrigger {
     /// How much time the loops so far have put back: playback time less
     /// this is the position in the song.
     consumed: Duration,
+    /// How far ahead a pass begun late joins its grid: [`JOIN_AHEAD`], or
+    /// longer once the audio has found its builds take longer.
+    join_ahead: Duration,
 }
 
 /// A section loop's jump, as [`SectionLoopTrigger::jump`] gives it.
@@ -168,6 +171,7 @@ impl SectionLoopTrigger {
             next_trigger: None,
             armed: None,
             consumed: Duration::ZERO,
+            join_ahead: JOIN_AHEAD,
         }
     }
 
@@ -277,12 +281,29 @@ impl SectionLoopTrigger {
             // `JOIN_AHEAD`), or at the song's end at the latest.
             let grid = bounds.end_time + self.consumed;
             self.next_trigger = Some(if section.joins_grid() && grid < elapsed {
-                (elapsed + JOIN_AHEAD).min(grid + section.overlap)
+                (elapsed + self.join_ahead).min(grid + section.overlap)
             } else {
                 grid.max(elapsed)
             });
         }
         self.next_trigger
+    }
+
+    /// Has a pass begun late join its grid `ahead` on, at the least: as long
+    /// as the audio takes to build one, with some to spare.
+    pub fn join_at_least(&mut self, ahead: Duration) {
+        self.join_ahead = self.join_ahead.max(ahead);
+    }
+
+    /// Sets the pass begun late now armed to join its grid at `from` in the
+    /// song (where a pass already built, or building, starts) rather than
+    /// where it was planned: when playback reaches `from` past the
+    /// crossfade's start. Whether that is still to come is the caller's to
+    /// say.
+    pub fn join_from(&mut self, from: Duration) {
+        if let Some(section) = self.armed.as_ref().filter(|s| s.joins_grid()) {
+            self.next_trigger = Some(section.bounds.end_time + from + self.consumed);
+        }
     }
 
     /// How much playback time the loops so far have put back: playback time
@@ -990,6 +1011,43 @@ mod late_passes {
             .expect("next pass");
         assert_eq!(next.at, join + secs(96) - Duration::from_millis(1_500));
         assert_eq!((next.to, next.overlap), (Duration::ZERO, secs(4)));
+    }
+
+    /// A pass begun late joins where a pass already building starts, while
+    /// playback has yet to get there; and joins further ahead once builds
+    /// are known to take longer than half a second.
+    #[test]
+    fn a_late_pass_joins_where_its_build_starts() {
+        let whole = Some(WholeSongLoop {
+            length: secs(100),
+            overlap: secs(4),
+        });
+        let effective = effective_section(None, false, whole, false);
+        let mut t = SectionLoopTrigger::new();
+        assert_eq!(
+            t.arm(effective.as_ref(), secs(97)),
+            Some(Duration::from_millis(97_500))
+        );
+        t.join_from(secs(2));
+        assert_eq!(t.arm(effective.as_ref(), secs(97)), Some(secs(98)));
+        let jump = t
+            .jump_effective(effective.as_ref(), secs(98), Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            (jump.from, jump.to, jump.overlap),
+            (secs(98), secs(2), secs(2))
+        );
+
+        let mut t = SectionLoopTrigger::new();
+        t.join_at_least(Duration::from_millis(1_200));
+        assert_eq!(
+            t.arm(effective.as_ref(), secs(97)),
+            Some(Duration::from_millis(98_200))
+        );
+        // Never past the song's end.
+        let mut t = SectionLoopTrigger::new();
+        t.join_at_least(secs(10));
+        assert_eq!(t.arm(effective.as_ref(), secs(97)), Some(secs(100)));
     }
 
     /// Begun so late the song ends before the join: it goes round at the

@@ -663,16 +663,71 @@ impl Device {
     /// Takes in the next pass of a crossfading song loop if its build has
     /// finished.
     fn collect_pass(song_loop: &mut SongLoopCrossfade) {
-        if let Some((from, rx)) = song_loop.build_rx.take() {
+        if let Some((from, started, rx)) = song_loop.build_rx.take() {
             match rx.try_recv() {
-                Ok(Ok(sources)) => song_loop.prebuilt = Some((from, sources)),
+                Ok(Ok(sources)) => {
+                    song_loop.prebuilt = Some((from, sources));
+                    song_loop.build_took = Some(started.elapsed());
+                }
                 Ok(Err(e)) => {
                     error!(err = %e, "Failed to pre-build the next loop pass; will retry")
                 }
-                Err(mpsc::TryRecvError::Empty) => song_loop.build_rx = Some((from, rx)),
+                Err(mpsc::TryRecvError::Empty) => song_loop.build_rx = Some((from, started, rx)),
                 Err(mpsc::TryRecvError::Disconnected) => {}
             }
         }
+    }
+
+    /// Where in the song the pass built, or building, starts.
+    fn pass_from(song_loop: &SongLoopCrossfade) -> Option<Duration> {
+        song_loop
+            .prebuilt
+            .as_ref()
+            .map(|(from, _)| *from)
+            .or(song_loop.build_rx.as_ref().map(|(from, _, _)| *from))
+    }
+
+    /// Keeps a pass begun late (inside the crossfade) on a build that can
+    /// make it: one built, or building, from a point playback has yet to
+    /// reach is joined there rather than thrown away for the plan of the
+    /// moment; and with nothing building, a plan too near to build for, as
+    /// long as builds have been taking, is made again further ahead. Gives
+    /// the pass's target on the playback timeline, if it moved.
+    #[allow(clippy::too_many_arguments)]
+    fn plan_late_pass(
+        song_loop: &mut SongLoopCrossfade,
+        section: &crate::section_loop::EffectiveSection,
+        trigger: &mut crate::section_loop::SectionLoopTrigger,
+        effective: Option<&crate::section_loop::EffectiveSection>,
+        elapsed: Duration,
+        lookahead: Duration,
+    ) -> Option<Duration> {
+        Self::collect_pass(song_loop);
+        let needs = song_loop
+            .build_took
+            .map(|took| took * 3 / 2 + lookahead)
+            .unwrap_or_default();
+        trigger.join_at_least(needs);
+        let end = section.bounds.end_time;
+        let join_of = |from: Duration, consumed: Duration| end + from + consumed;
+        let target = trigger.arm(effective, elapsed)?;
+        let planned = target
+            .saturating_sub(trigger.consumed())
+            .saturating_sub(end);
+        match Self::pass_from(song_loop) {
+            Some(built)
+                if built != planned
+                    && built <= section.overlap
+                    && join_of(built, trigger.consumed()) >= elapsed + lookahead =>
+            {
+                trigger.join_from(built);
+            }
+            None if !planned.is_zero() && target < elapsed + needs => {
+                trigger.reset();
+            }
+            _ => {}
+        }
+        trigger.arm(effective, elapsed)
     }
 
     /// Has the next pass of a crossfading song loop built from `from` in
@@ -694,13 +749,8 @@ impl Device {
         {
             song_loop.prebuilt = None;
         }
-        if song_loop
-            .build_rx
-            .as_ref()
-            .is_some_and(|(at, _)| *at != from)
-        {
-            song_loop.build_rx = None;
-        }
+        // One build at a time: one under way from elsewhere is seen out
+        // (a build cannot be stopped part way) before another starts.
         if song_loop.prebuilt.is_some() || song_loop.build_rx.is_some() {
             return;
         }
@@ -720,7 +770,7 @@ impl Device {
                     song.loop_crossfade_cut(),
                 ));
             });
-        song_loop.build_rx = Some((from, rx));
+        song_loop.build_rx = Some((from, std::time::Instant::now(), rx));
     }
 
     /// Builds the next pass of a crossfading song loop ahead of its boundary,
@@ -741,8 +791,8 @@ impl Device {
     ) -> bool {
         // A pass begun late, inside the crossfade (a start or a section loop
         // broken there, or a slow build), has less of it to cross. Every
-        // track of it is built from the top, so its cut tracks stay in step
-        // whatever the overlap comes to.
+        // track of it is built from the same point, so its cut tracks stay
+        // in step whatever the overlap comes to.
         let overlap = timing.overlap.min(song_loop.overlap);
         if timing.now + PASS_PREBUILD_AHEAD >= timing.target {
             Self::prebuild_pass(song, song_loop, playback_context, mappings, timing.from);
@@ -1236,7 +1286,9 @@ struct SongLoopCrossfade {
     /// The next pass's sources, built and waiting for the boundary.
     prebuilt: Option<(Duration, GroupedSources)>,
     /// A build of the next pass's sources in flight.
-    build_rx: Option<(Duration, mpsc::Receiver<Result<GroupedSources, String>>)>,
+    build_rx: Option<PassBuild>,
+    /// How long the last build took.
+    build_took: Option<Duration>,
     /// The sample the latest pass starts at, and its sources' ids, to cancel
     /// them outright if playback ends before they have started.
     latest_start: Option<(u64, Vec<u64>)>,
@@ -1251,6 +1303,14 @@ struct SongLoopCrossfade {
 const PASS_PREBUILD_AHEAD: Duration = Duration::from_secs(5);
 
 /// Where a crossfading song loop is, for [`Device::song_loop_boundary`].
+/// A pass being built: from where in the song, since when, and where its
+/// sources come.
+type PassBuild = (
+    Duration,
+    std::time::Instant,
+    mpsc::Receiver<Result<GroupedSources, String>>,
+);
+
 struct SongLoopTiming {
     /// Where the playback is on its timeline (its start position plus the
     /// clock).
@@ -1425,6 +1485,7 @@ impl AudioDevice for Device {
             cut_ids: Vec::new(),
             prebuilt: None,
             build_rx: None,
+            build_took: None,
             latest_start: None,
             warned_late: false,
             outgoing_ids: Vec::new(),
@@ -1687,7 +1748,10 @@ impl AudioDevice for Device {
             let all_finished = source_finish_flags
                 .iter()
                 .all(|flag| flag.load(Ordering::Relaxed));
-            if all_finished && effective.is_none() {
+            let loops = effective
+                .as_ref()
+                .is_some_and(|section| section.bounds.end_time > section.bounds.start_time);
+            if all_finished && !loops {
                 break;
             }
 
@@ -1810,6 +1874,15 @@ impl AudioDevice for Device {
                 (song_loop.as_mut(), effective.as_ref(), next_jump)
             {
                 if section.is_whole_song() {
+                    let target = Self::plan_late_pass(
+                        song_loop,
+                        section,
+                        &mut section_trigger,
+                        effective.as_ref(),
+                        elapsed,
+                        loop_trigger_lookahead,
+                    )
+                    .unwrap_or(target);
                     let mut timing = SongLoopTiming {
                         now: elapsed,
                         target,
@@ -1964,10 +2037,17 @@ impl AudioDevice for Device {
                     // fading out from where its own envelope has got to
                     // by then over the short crossfade, and gone by
                     // fade_end_sample.
+                    // A pass crossing out under this one plays out its
+                    // crossfade, as its notes do.
+                    let crossing_out = song_loop
+                        .as_ref()
+                        .map(|song_loop| song_loop.outgoing_ids.clone())
+                        .unwrap_or_default();
                     self.output_manager.mixer.cut_playback_at(
                         &cancel_handle,
                         loop_sample,
                         fade_end_sample.saturating_sub(loop_sample),
+                        &crossing_out,
                     );
 
                     // Add the pre-built sources. Their own start_at_sample

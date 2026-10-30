@@ -3643,7 +3643,6 @@ mod test {
                 &HashSet::new(),
             );
             let shape: Vec<(u8, u8)> = sent.iter().map(|b| (b[0] & 0xF0, b[1])).collect();
-            eprintln!("{shape:?}");
             // pass 1: 60, 61; pass 2: 60 @200; pass1 tail 62 @260; cut at 300: off 60; restart 60 @300 ...
             assert_eq!(
                 shape.iter().filter(|s| **s == (0x80, 60)).count(),

@@ -185,12 +185,12 @@ impl SectionJumpLog {
         self.publisher.load(std::sync::atomic::Ordering::Acquire) == JumpPublisherRole::Audio as u8
     }
 
-    /// Records a jump committed to.
     /// How many jumps have been committed, fallen due or not.
     pub fn committed(&self) -> usize {
         self.jumps.lock().len()
     }
 
+    /// Records a jump committed to.
     pub fn push(&self, jump: crate::section_loop::SectionJump) {
         self.jumps.lock().push(jump);
     }
