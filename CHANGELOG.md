@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   early under it. Once it is broken, the song goes round as a whole again; broken inside the
   crossfade, its next pass comes in half a second on, where a pass begun on time would be by then,
   over what is left of the crossfade, so the click stays on the song's grid. Playback started or
-  sought inside the crossfade does the same.
+  sought inside the crossfade does the same. In reactive looping, a section that lies inside the
+  crossfade is offered while the outgoing pass plays it; taken up, it loops the next time playback
+  reaches it, the song's pass held off for it.
 
 - **The beat clock follows a song's tempo without a MIDI file** (#602): the MIDI beat clock
   came only from tempo events in a song's MIDI file, so a song with a `tempo:` block, or only a
@@ -138,6 +140,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lights had already made, cutting the audio at the section's end. The fade now runs over what
   the playback was doing: a crossover carries on crossing, a jump already scheduled is made, and
   no new one is scheduled once the break has begun.
+
+- **A seek no longer blips or cuts other sounds**: a seek faded every sound in the mixer, a
+  triggered sample or notification included, and a loop's next pass or section's next time round
+  scheduled to start a moment later survived it and played a 5 ms blip once its start came. It
+  now fades only the song's own audio, and nothing scheduled after the fade starts.
+
+- **A section can end on the song's end**: a section whose `end_measure` is past the song's last
+  measure ended on the last beat, a beat short of the end of that measure; it now ends with the
+  measure (or the song, if that comes first).
+
+- **Editing the show of a song with no audio moves its loop point**: a looping song with lights
+  but no audio went round at the length its show had when it started, whatever the show was
+  edited to while it played; it now follows the edit.
 
 - **Notes held across a section's loop point**: a section's jump lets go of the notes it cuts,
   which were left hanging.
