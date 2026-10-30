@@ -196,8 +196,9 @@ fn replay_an_arrived_move_ends_the_show_when_it_arrives() {
     assert_eq!(end_of(&mv), Duration::from_secs(1), "move over at 1 s too");
 }
 
-/// An intensity-only master at the seek point is not a freeze, unfreeze or
-/// speed change: an effect ending exactly there is over in the seek.
+/// A master at the seek point, an intensity-only one here, leaves an effect
+/// ending exactly there over in the seek, as every layer command does: none
+/// brings a look back.
 #[test]
 fn replay_an_intensity_master_does_not_hold_a_look_at_its_end() {
     let src = "show \"s\" {\n    @00:00.000\n    w: static, color: \"blue\", duration: 2s\n    \

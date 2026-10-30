@@ -660,9 +660,10 @@ impl LightingTimeline {
         // Process all cues before start_time to ensure deterministic state.
         // The layers' freezes and speed masters as the history leaves them
         // are kept as the engine keeps them live: an effect's own elapsed is
-        // its score time less its time frozen, scaled by its layer's speed,
-        // and it is that, not score time, which says whether it is still
-        // running and where it picks up (#589). Moves that have arrived did
+        // where it was at its layer's last speed change, on from there at
+        // the layer's speed in score time less its time frozen, and it is
+        // that, not score time, which says whether it is still running and
+        // where it picks up (#589). Moves that have arrived did
         // so at the speed they ran at, which a later change of speed or a
         // clear must not take back.
         let Replay {

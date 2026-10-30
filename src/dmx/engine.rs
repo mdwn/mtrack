@@ -3083,11 +3083,14 @@ mod test {
 
         #[test]
         fn a_seek_matches_a_speed_change_made_part_way() -> Result<(), Box<dyn Error>> {
-            // Slowed to half 2 s into a 4 s look: as played, it lasts to 8 s.
+            // Slowed to half 2 s into a 4 s look: its 2 s left take 4 s, so
+            // as played it lasts to 6 s.
             let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
                 duration: 4s, layer: midground, blend_mode: replace\n    @2.000\n    \
                 master(layer: midground, speed: 0.5)\n}\n";
-            for secs in [7.0, 8.5] {
+            assert_eq!(played_frame(show, 5.9)?, GREEN);
+            assert_eq!(played_frame(show, 6.1)?, DARK);
+            for secs in [4.0, 5.9, 6.1] {
                 assert_eq!(
                     seek_frame(show, secs)?,
                     played_frame(show, secs)?,

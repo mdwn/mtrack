@@ -1523,8 +1523,9 @@ impl EffectEngine {
     /// a fixed frame a tick, falls behind the song where frames run long,
     /// and an effect timed on it after an unfreeze ended late. One with no
     /// cue, or frozen with no song time to go by, keeps engine time; on a
-    /// frozen layer, the frozen time instead of now. Then scaled by the
-    /// layer's speed master (0 freezes the layer, and is not a scale).
+    /// frozen layer, the frozen time instead of now. Then on from where it
+    /// was at its layer's last speed change, at the layer's speed master
+    /// (0 freezes the layer, and is not a scale).
     pub fn elapsed_at(&self, effect: &EffectInstance, song_time: Option<Duration>) -> Duration {
         own_elapsed_from(
             effect,
