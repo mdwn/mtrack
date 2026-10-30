@@ -3169,10 +3169,10 @@ mod test {
                 at += 0.01;
                 frame_at(&engine, at);
             }
-            let lit = frame_at(&engine, 4.5);
+            assert_eq!(frame_at(&engine, 4.5), GREEN, "slowed, still up");
             assert!(
-                !(timeline_finished(&engine) && lit != DARK),
-                "timeline finished (song time stops) with the look still up: {lit:?}"
+                !timeline_finished(&engine),
+                "finished (song time stops) with the look still up"
             );
             Ok(())
         }

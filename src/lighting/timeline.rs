@@ -686,8 +686,8 @@ impl LightingTimeline {
     }
 
     /// When the show is over: its last effect's end, or the cap. A show
-    /// that leaves a look frozen for good runs to the cap; with none, it is
-    /// over at its last cue, the look held.
+    /// that leaves a look frozen for good runs to the cap; with none, it
+    /// keeps at least the end it was written with, the look held.
     pub fn show_end(&self) -> Duration {
         match self.end_cap {
             Some(cap) if self.open_ended => cap,

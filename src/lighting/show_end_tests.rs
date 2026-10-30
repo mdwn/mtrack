@@ -15,8 +15,6 @@
 //! The show's end against the lint's reckoning, for shows without holds,
 //! and against a played-through engine going idle, for shows with them.
 
-//! Review: show_end against the lint reckoning and a played-through engine.
-
 use super::*;
 use crate::lighting::parser::parse_light_shows;
 
@@ -72,7 +70,7 @@ fn live_end(source: &str, until_ms: u64) -> Option<Duration> {
     }
 }
 
-/// 11fc9f2's show end: the lint reckoning.
+/// The show's end before holds counted: the lint's reckoning.
 fn lint_end(source: &str) -> Duration {
     let cues: Vec<_> = shows(source).into_iter().flat_map(|s| s.cues).collect();
     let clears: Vec<_> = cues
@@ -158,11 +156,7 @@ fn gen_show(rng: &mut Rng, holds: bool) -> String {
         let items = 1 + rng.next() % 2;
         for _ in 0..items {
             let kinds: &[u32] = if holds {
-                if std::env::var("NOFULL").is_ok() {
-                    &[0, 0, 0, 1, 3, 4, 5, 5, 6, 7, 7]
-                } else {
-                    &[0, 0, 0, 1, 2, 3, 4, 5, 5, 6, 7]
-                }
+                &[0, 0, 0, 1, 2, 3, 4, 5, 5, 6, 7]
             } else {
                 &[0, 0, 0, 1, 2, 3, 4]
             };
@@ -213,7 +207,15 @@ fn fails(src: &str, until_ms: u64, hold_free: bool) -> Option<String> {
         let lint = lint_end(src);
         return (lint != head).then(|| format!("lint {lint:?} head {head:?}\n{src}"));
     }
-    let live = live_end(src, until_ms)?;
+    let Some(live) = live_end(src, until_ms) else {
+        // Still lit when the run stopped: held for good, so with audio the
+        // show must run to its end.
+        let cap = Duration::from_secs(1000);
+        let mut timeline = LightingTimeline::new(shows(src));
+        timeline.set_end_cap(Some(cap));
+        let capped = timeline.show_end();
+        return (capped != cap).then(|| format!("still lit, capped show_end {capped:?}\n{src}"));
+    };
     let diff = live.abs_diff(head);
     if diff > Duration::from_millis(10) {
         return Some(format!("live {live:?} head {head:?}\n{src}"));
@@ -374,19 +376,24 @@ fn show_end_seek_onto_slow_down_at_cycles_last_instant() {
 
 #[test]
 fn show_end_edge_ends() {
+    // Each show with the end it should have, checked against a played-through
+    // engine too where that lights anything.
     let cases = [
-        "show \"s\" {\n    @0.000\n    freeze(layer: foreground)\n    @3.000\n    unfreeze(layer: foreground)\n}\n",
-        "show \"s\" {\n    @0.000\n    a: static red: 100%, duration: 2s\n    clear()\n    @1.000\n    freeze(layer: foreground)\n}\n",
-        "show \"s\" {\n    @0.000\n    a: static red: 100%, duration: 2s\n    @0.000\n    clear()\n    @1.000\n    freeze(layer: foreground)\n}\n",
-        "show \"s\" {\n    @0.000\n    a: static red: 100%, hold_time: 0s\n    @1.000\n    freeze(layer: foreground)\n    @2.000\n    unfreeze(layer: foreground)\n}\n",
-        "show \"s\" {\n    @2.000\n    a: static red: 100%, hold_time: 0s, layer: midground\n    freeze(layer: midground)\n    @3.000\n    unfreeze(layer: midground)\n}\n",
-        "show \"s\" {\n    @0.000\n    a: static red: 100%, duration: 2s\n    @1.000\n    clear()\n    freeze(layer: background)\n    @3.000\n    unfreeze(layer: background)\n}\n",
+        // No effects at all.
+        ("show \"s\" {\n    @0.000\n    freeze(layer: foreground)\n    @3.000\n    unfreeze(layer: foreground)\n}\n", 0.0),
+        // A clear in the effect's own cue (or a same-time cue) runs first.
+        ("show \"s\" {\n    @0.000\n    a: static red: 100%, duration: 2s\n    clear()\n    @1.000\n    freeze(layer: foreground)\n}\n", 2.0),
+        ("show \"s\" {\n    @0.000\n    a: static red: 100%, duration: 2s\n    @0.000\n    clear()\n    @1.000\n    freeze(layer: foreground)\n}\n", 2.0),
+        // A look with no length is over at its cue, frozen layer or not.
+        ("show \"s\" {\n    @0.000\n    a: static red: 100%, hold_time: 0s\n    @1.000\n    freeze(layer: foreground)\n    @2.000\n    unfreeze(layer: foreground)\n}\n", 0.0),
+        ("show \"s\" {\n    @2.000\n    a: static red: 100%, hold_time: 0s, layer: midground\n    freeze(layer: midground)\n    @3.000\n    unfreeze(layer: midground)\n}\n", 2.0),
+        // A full clear cuts a running look, and the freeze after holds nothing.
+        ("show \"s\" {\n    @0.000\n    a: static red: 100%, duration: 2s\n    @1.000\n    clear()\n    freeze(layer: background)\n    @3.000\n    unfreeze(layer: background)\n}\n", 1.0),
     ];
-    for c in cases {
-        // A show that never lights anything has no live end to compare: a
-        // look with no length ends at its cue (see the next test).
+    for (c, expected) in cases {
+        let head = end(c);
+        assert_eq!(head, Duration::from_secs_f64(expected), "{c}");
         if let Some(live) = live_end(c, 6000).filter(|live| !live.is_zero()) {
-            let head = end(c);
             assert!(
                 live.abs_diff(head) <= Duration::from_millis(10),
                 "live {live:?} show_end {head:?}\n{c}"
