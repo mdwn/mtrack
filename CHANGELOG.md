@@ -142,6 +142,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   master, or frozen with its unfreeze as the show's last cue, outlasted that end and stayed lit for
   the rest of the song. The show now runs until such an effect has really ended; one left frozen
   for good holds to the end of the song's audio.
+- **A speed change applies from where a look is**: the layer speed master scaled a look's whole
+  time since its cue, so slowing a fade half way dropped it back to a quarter in one frame, and a
+  slow-down on a look's last instant brought it back to half way to play its second half again. A
+  speed change now applies from the moment it lands: the look carries on from where it was, faster
+  or slower.
 - **A freeze or speed change lands on its cue's own time**: a freeze held from the frame before the
   one its cue fired in, so a look frozen on the very instant it ended was held for good, and a seek
   to the same point had it over. Freezes and unfreezes (speed 0 and back too) now take their cue's

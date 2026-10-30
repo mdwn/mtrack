@@ -652,10 +652,9 @@ fn a_move_started_part_way_on_a_slowed_layer_still_runs() {
     );
 }
 
-/// A seek onto a speed change at the very instant a move ends catches the
-/// move as playing through does: the slow-down puts it back on its way.
-/// Judged arrived at the speed before the cue, it was committed to its
-/// destination instead.
+/// A seek onto a speed change at the very instant a move ends agrees with
+/// playing through: the change applies from where the move is, its end, so
+/// the head is at its destination either way.
 #[test]
 fn a_seek_onto_a_slow_down_at_a_moves_last_instant_plays_as_through() {
     use crate::lighting::evaluate::apply_timeline_update;
@@ -701,5 +700,5 @@ fn a_seek_onto_a_slow_down_at_a_moves_last_instant_plays_as_through() {
             "from {from} s: played {played:.2}°, sought {sought:.2}°"
         );
     }
-    assert!(played < 89.0, "slowed back on its way: {played:.2}°");
+    assert!((played - 90.0).abs() < 0.5, "arrived: {played:.2}°");
 }

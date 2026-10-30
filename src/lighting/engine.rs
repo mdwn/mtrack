@@ -69,6 +69,16 @@ pub(crate) fn scale_by_speed(elapsed: Duration, speed: f64) -> Duration {
     }
 }
 
+/// An effect's own elapsed from its `base` elapsed (score time less time
+/// frozen) at its layer's `speed`: where it was at the last speed change,
+/// on from there at this speed.
+pub(crate) fn own_elapsed_from(effect: &EffectInstance, base: Duration, speed: f64) -> Duration {
+    effect.elapsed_from.saturating_add(scale_by_speed(
+        base.saturating_sub(effect.speed_from),
+        speed,
+    ))
+}
+
 /// A channel's name without its section (`dimmer:background`, as GDTF
 /// profiles with several emitters name theirs) or its fine byte.
 fn base_channel(channel: &str) -> &str {
@@ -997,8 +1007,11 @@ impl EffectEngine {
         // At its layer's speed, as it would run: a move on a slowed layer
         // is part way at a base elapsed past its length.
         if matches!(effect.effect_type, EffectType::Move { .. })
-            && scale_by_speed(elapsed_time, self.get_layer_speed_master(effect.layer))
-                >= effect.total_duration()
+            && own_elapsed_from(
+                &effect,
+                elapsed_time,
+                self.get_layer_speed_master(effect.layer),
+            ) >= effect.total_duration()
         {
             for (name, pose) in
                 processing::move_final_poses(self.fixtures.as_map(), &self.focus_points, &effect)
@@ -1513,11 +1526,21 @@ impl EffectEngine {
     /// frozen layer, the frozen time instead of now. Then scaled by the
     /// layer's speed master (0 freezes the layer, and is not a scale).
     pub fn elapsed_at(&self, effect: &EffectInstance, song_time: Option<Duration>) -> Duration {
+        own_elapsed_from(
+            effect,
+            self.base_elapsed_at(effect, song_time),
+            self.get_layer_speed_master(effect.layer),
+        )
+    }
+
+    /// [`Self::elapsed_at`] before the layer's speed master: song time
+    /// since the cue less the time frozen, held while frozen.
+    fn base_elapsed_at(&self, effect: &EffectInstance, song_time: Option<Duration>) -> Duration {
         let layer = effect.layer;
         let frozen_at = self.layer_state.frozen.get(&layer).cloned();
         let frozen_song = self.layer_state.frozen_song.get(&layer).copied();
         let reference_time = frozen_at.unwrap_or(self.current_time);
-        let base_elapsed = match (effect.start_time, effect.cue_time, song_time) {
+        match (effect.start_time, effect.cue_time, song_time) {
             (Some(_), Some(cue_time), Some(now))
                 if !effect.engine_timed && (frozen_at.is_none() || frozen_song.is_some()) =>
             {
@@ -1530,8 +1553,7 @@ impl EffectEngine {
                 .start_time
                 .map(|start| reference_time.duration_since(start))
                 .unwrap_or(Duration::ZERO),
-        };
-        scale_by_speed(base_elapsed, self.get_layer_speed_master(layer))
+        }
     }
 
     /// Sets the song time a layer command applied before the next frame
@@ -1613,6 +1635,27 @@ impl EffectEngine {
     /// This multiplies with effect speeds on the layer
     /// 0.5 = half speed, 2.0 = double speed, 0.0 = frozen at current state
     pub fn set_layer_speed_master(&mut self, layer: EffectLayer, speed: f64) {
+        // The change applies from now: each effect on the layer carries on
+        // from where it is, not from its cue at the new speed.
+        let now = self.last_song_time;
+        let marks: Vec<(String, Duration, Duration)> = self
+            .active_effects
+            .iter()
+            .filter(|(_, effect)| effect.layer == layer)
+            .map(|(id, effect)| {
+                (
+                    id.clone(),
+                    self.base_elapsed_at(effect, now),
+                    self.elapsed_at(effect, now),
+                )
+            })
+            .collect();
+        for (id, base, own) in marks {
+            if let Some(effect) = self.active_effects.get_mut(&id) {
+                effect.speed_from = base;
+                effect.elapsed_from = own;
+            }
+        }
         let was_frozen = self.layer_state.frozen.contains_key(&layer);
         layers::set_layer_speed_master(
             &mut self.layer_state.speed_masters,

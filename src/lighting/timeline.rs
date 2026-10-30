@@ -81,15 +81,15 @@ fn base_elapsed(
 }
 
 /// An effect's own elapsed at `time`, as the engine renders and expires it:
-/// [`base_elapsed`] scaled by its layer's speed master (0 freezes, and is
-/// not a scale).
+/// where it was at its layer's last speed change, on from there at the
+/// layer's speed (0 freezes, and is not a scale).
 fn own_elapsed(
     effect: &EffectInstance,
     layers: &HashMap<EffectLayer, ReplayLayer>,
     time: Duration,
 ) -> Duration {
     let speed = layers.get(&effect.layer).map_or(1.0, |layer| layer.speed);
-    crate::lighting::engine::scale_by_speed(base_elapsed(effect, layers, time), speed)
+    crate::lighting::engine::own_elapsed_from(effect, base_elapsed(effect, layers, time), speed)
 }
 
 /// Whether an effect is a move: one that leaves the head where it ends.
@@ -124,17 +124,13 @@ struct Settled {
 /// of the replay -- but for moves, which stay for their pose, marked as
 /// arrived -- and moves `settled.ended` on to when the latest of them ended:
 /// its layer has held its freeze and speed since its last command, so that
-/// is how far back past its end its elapsed is. With `keep_ending`, one
-/// ending exactly at `time` stays: live, a cue fires before the frame it
-/// lands in expires anything, so a freeze or speed change on the very
-/// instant an effect ends still catches it.
+/// is how far back past its end its elapsed is.
 fn settle_layer(
     layer: EffectLayer,
     time: Duration,
     layers: &HashMap<EffectLayer, ReplayLayer>,
     effects: &mut HashMap<String, (EffectInstance, Duration)>,
     settled: &mut Settled,
-    keep_ending: bool,
 ) {
     let state = layers.get(&layer);
     let now = state.and_then(|layer| layer.frozen_since).unwrap_or(time);
@@ -146,12 +142,7 @@ fn settle_layer(
             return true;
         }
         let elapsed = own_elapsed(effect, layers, time);
-        let running = if keep_ending {
-            elapsed <= effect.total_duration()
-        } else {
-            elapsed < effect.total_duration()
-        };
-        if running {
+        if elapsed < effect.total_duration() {
             return true;
         }
         let past = elapsed.saturating_sub(effect.total_duration());
@@ -181,7 +172,7 @@ fn replay_layer_command(
     effects: &mut HashMap<String, (EffectInstance, Duration)>,
     settled: &mut Settled,
 ) {
-    settle_layer(layer, time, layers, effects, settled, true);
+    settle_layer(layer, time, layers, effects, settled);
     layers.entry(layer).or_default().since = time;
     let freeze = |layers: &mut HashMap<EffectLayer, ReplayLayer>| {
         let state = layers.entry(layer).or_default();
@@ -205,6 +196,15 @@ fn replay_layer_command(
         LayerCommandType::Unfreeze => unfreeze(layers, effects),
         LayerCommandType::Master => {
             if let Some(speed) = cmd.speed {
+                // The change applies from now: each effect carries on from
+                // where it is, as the engine has it.
+                for (effect, _) in effects.values_mut() {
+                    if effect.layer == layer {
+                        let base = base_elapsed(effect, layers, time);
+                        effect.elapsed_from = own_elapsed(effect, layers, time);
+                        effect.speed_from = base;
+                    }
+                }
                 let speed = speed.max(0.0);
                 if speed == 0.0 {
                     freeze(layers);
@@ -230,28 +230,6 @@ struct Replay {
     stopped_sequences: HashSet<String>,
 }
 
-/// Marks the moves `which` picks that end by `time` on the layers as they
-/// stood before the cues there (`before`) as arrived: live the head was at
-/// their destination by the frame before, and a clear or stop in those cues
-/// leaves it there, even after a speed change in them put the move back on
-/// its way.
-fn arrive_moves_ending_at(
-    time: Duration,
-    before: &HashMap<EffectLayer, ReplayLayer>,
-    effects: &HashMap<String, (EffectInstance, Duration)>,
-    settled: &mut Settled,
-    which: impl Fn(&str, &EffectInstance) -> bool,
-) {
-    for (id, (effect, _)) in effects {
-        if is_move(effect)
-            && which(id, effect)
-            && own_elapsed(effect, before, time) >= effect.total_duration()
-        {
-            settled.arrived.insert(id.clone());
-        }
-    }
-}
-
 /// Runs `cues`, in order, the way the engine runs them live: layer commands
 /// move the layers' freezes and speeds on, clears and stopped sequences take
 /// their effects out, and every effect cued goes in. The effects over by the
@@ -271,10 +249,6 @@ fn replay(cues: &[Cue]) -> Replay {
     // starts at the same time.
     for group in cues.chunk_by(|a, b| a.time == b.time) {
         let time = group[0].time;
-        // The layers as they stood when the group landed: a move ending on
-        // this instant has arrived by them, whatever a speed change in the
-        // group then makes of it (see `arrive_moves_ending_at`).
-        let before = layers.clone();
         // Cue by cue, as the timeline fires them live: a cue's sequence
         // starts clear its stopped status, its effects are taken unless their
         // sequence is stopped by then, and its stops then count for the cues
@@ -317,14 +291,6 @@ fn replay(cues: &[Cue]) -> Replay {
                                 layers,
                                 &mut result.effects_with_elapsed,
                                 settled,
-                                false,
-                            );
-                            arrive_moves_ending_at(
-                                time,
-                                &before,
-                                &result.effects_with_elapsed,
-                                settled,
-                                |_, effect| effect.layer == layer,
                             );
                             let mut cut = false;
                             result.effects_with_elapsed.retain(|id, (effect, _)| {
@@ -350,7 +316,6 @@ fn replay(cues: &[Cue]) -> Replay {
                                     layers,
                                     &mut result.effects_with_elapsed,
                                     settled,
-                                    false,
                                 );
                             }
                             if result
@@ -380,28 +345,6 @@ fn replay(cues: &[Cue]) -> Replay {
                 }
             }
         }
-        // The cue lands, then the frame renders and expires anything at
-        // or past its end: an effect ending on this instant was kept for
-        // the commands to catch, and one they left over goes now. A look
-        // frozen on its last instant is over, and a later change of speed
-        // must not bring it back.
-        let timed: HashSet<EffectLayer> = group
-            .iter()
-            .flat_map(|cue| &cue.layer_commands)
-            .filter(|cmd| times_layer(cmd))
-            .filter_map(|cmd| cmd.layer)
-            .collect();
-        for layer in timed {
-            settle_layer(
-                layer,
-                time,
-                layers,
-                &mut result.effects_with_elapsed,
-                settled,
-                false,
-            );
-        }
-
         for cue in group {
             // Purge already-accumulated effects from stopped sequences,
             // mirroring what EffectEngine::stop_sequence() does at runtime.
@@ -421,16 +364,8 @@ fn replay(cues: &[Cue]) -> Replay {
                         layers,
                         &mut result.effects_with_elapsed,
                         settled,
-                        false,
                     );
                 }
-                arrive_moves_ending_at(
-                    time,
-                    &before,
-                    &result.effects_with_elapsed,
-                    settled,
-                    |id, _| id.starts_with(&prefix),
-                );
                 let mut cut = false;
                 result.effects_with_elapsed.retain(|id, _| {
                     let keep = !id.starts_with(&prefix) || settled.arrived.contains(id);
@@ -461,7 +396,6 @@ fn replay(cues: &[Cue]) -> Replay {
                 layers,
                 &mut result.effects_with_elapsed,
                 settled,
-                false,
             );
         }
     }
@@ -496,7 +430,6 @@ fn running_end(cues: &[Cue]) -> (Duration, bool) {
             &layers,
             &mut result.effects_with_elapsed,
             &mut settled,
-            false,
         );
     }
     let mut end = settled.ended;
@@ -652,7 +585,7 @@ impl LightingTimeline {
         // A freeze or the speed master holds an effect past its authored
         // end, and the song's time stops once the show is over: an effect
         // still running then never ends (#590). So the show runs on until
-        // they do. The effects over before the last cue are over by it.
+        // they do: its end is when the replay has the last of them end.
         let holds = timeline
             .cues
             .iter()
@@ -742,17 +675,7 @@ impl LightingTimeline {
 
         // Only include effects that would still be running at start_time,
         // started at their own elapsed there; a finished move stays for its
-        // pose (see `settle_layer`). A freeze, unfreeze or speed change cued
-        // at the start point fires in the first frame, before it expires
-        // anything: an effect ending exactly there stays for it to catch, as
-        // it does played through.
-        let timed_at_start: HashSet<EffectLayer> = self.cues[self.next_cue_index..]
-            .iter()
-            .take_while(|cue| cue.time == start_time)
-            .flat_map(|cue| &cue.layer_commands)
-            .filter(|cmd| times_layer(cmd))
-            .filter_map(|cmd| cmd.layer)
-            .collect();
+        // pose (see `settle_layer`).
         let all: HashSet<EffectLayer> = result
             .effects_with_elapsed
             .values()
@@ -765,27 +688,20 @@ impl LightingTimeline {
                 &layers,
                 &mut result.effects_with_elapsed,
                 &mut settled,
-                timed_at_start.contains(&layer),
             );
         }
         let arrived = settled.arrived;
         for (id, (effect, elapsed)) in result.effects_with_elapsed.iter_mut() {
             *elapsed = base_elapsed(effect, &layers, start_time);
-            // Kept on its last instant for a cue at the start point: started
-            // just short of it, or the engine would judge a move arrived at
-            // the speed before the cue fires, and commit it.
-            if timed_at_start.contains(&effect.layer)
-                && !arrived.contains(id)
-                && own_elapsed(effect, &layers, start_time) == effect.total_duration()
-            {
-                *elapsed = elapsed.saturating_sub(Duration::from_nanos(1));
-            }
-            if arrived.contains(id)
-                && own_elapsed(effect, &layers, start_time) < effect.total_duration()
-            {
-                // There at the speed it ran at, which has slowed (or been
-                // cleared) since: the engine commits it to its destination.
-                *elapsed = Duration::MAX;
+            if arrived.contains(id) {
+                // There already. At the speed it ran at, but a clear since
+                // may have put its layer's speed back: then at its elapsed
+                // it would look part way, so it goes in as far past its end
+                // as it can be, and the engine commits it to its
+                // destination.
+                if own_elapsed(effect, &layers, start_time) < effect.total_duration() {
+                    *elapsed = Duration::MAX;
+                }
                 continue;
             }
             // On a layer still frozen, the engine holds it at the start
@@ -1176,12 +1092,12 @@ mod tests {
         assert_eq!(stopped.show_end(), secs(9.0), "speed 0 then 1, as a freeze");
 
         let slowed = end("    @00:01.000\n    master(layer: midground, speed: 0.5)\n");
-        // At half speed from 1 s, a 4 s look's elapsed is half its score
-        // time, as the engine scales it: 0.5 s there, so 7 s more to go.
-        assert_eq!(slowed.show_end(), secs(8.0), "slowed to half at 1 s");
+        // From 1 s into a 4 s look, at half speed: its 3 s left take 6 s.
+        assert_eq!(slowed.show_end(), secs(7.0), "slowed to half at 1 s");
 
         let quick = end("    @00:01.000\n    master(layer: midground, speed: 2)\n");
-        assert_eq!(quick.show_end(), secs(2.0), "double speed from 1 s");
+        // Its 3 s left at double speed take 1.5 s.
+        assert_eq!(quick.show_end(), secs(2.5), "double speed from 1 s");
 
         let early = end("    @00:01.000\n    freeze(layer: midground)\n    \
              @00:02.000\n    unfreeze(layer: midground)\n    \

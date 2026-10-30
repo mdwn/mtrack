@@ -3143,37 +3143,42 @@ mod test {
         }
 
         #[test]
-        fn a_slow_down_on_a_looks_last_instant_plays_it_on() -> Result<(), Box<dyn Error>> {
-            // A 4 s look, slowed to half at 4 s, the instant it ends: live,
-            // the cue lands before the frame expires anything, so the look
-            // is 2 s into 4 and runs to 8 s. A seek has to agree.
+        fn a_slow_down_on_a_looks_last_instant_ends_it() -> Result<(), Box<dyn Error>> {
+            // A 4 s look, slowed to half at 4 s, the instant it ends: the
+            // change applies from where it is, its end, so it is over -- it
+            // does not go back to half way and play its second half again.
             let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
                 duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
                 master(layer: midground, speed: 0.5)\n}\n";
             let played = played_frame(show, 6.0)?;
             let sought = seek_frame(show, 6.0)?;
-            assert_eq!(played, GREEN);
+            assert_eq!(played, DARK);
             assert_eq!(played, sought, "played {played:?} vs sought {sought:?}");
             Ok(())
         }
 
         #[test]
-        fn the_timeline_waits_for_a_look_slowed_on_its_last_instant() -> Result<(), Box<dyn Error>>
-        {
+        fn the_timeline_waits_for_a_look_slowed_part_way() -> Result<(), Box<dyn Error>> {
+            // Slowed to half 2 s into a 4 s look: 2 s of it left, at half
+            // speed, so it ends at 6 s -- and the timeline, whose end is when
+            // song time stops, runs until then.
             let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
-                duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
+                duration: 4s, layer: midground, blend_mode: replace\n    @2.000\n    \
                 master(layer: midground, speed: 0.5)\n}\n";
             let (engine, _cancel_handle) = wash_running(show)?;
             let mut at = 1.0;
-            while at < 4.5 {
+            while at < 5.9 {
                 at += 0.01;
                 frame_at(&engine, at);
             }
-            assert_eq!(frame_at(&engine, 4.5), GREEN, "slowed, still up");
+            assert_eq!(frame_at(&engine, 5.95), GREEN, "slowed, still up");
             assert!(
                 !timeline_finished(&engine),
                 "finished (song time stops) with the look still up"
             );
+            frame_at(&engine, 6.05);
+            assert_eq!(frame_at(&engine, 6.1), DARK, "over at 6 s");
+            assert!(timeline_finished(&engine));
             Ok(())
         }
 
@@ -3250,14 +3255,15 @@ mod test {
         }
 
         #[test]
-        fn a_seek_onto_a_slow_down_on_a_looks_last_instant_keeps_it() -> Result<(), Box<dyn Error>>
-        {
+        fn a_seek_onto_a_slow_down_on_a_looks_last_instant_ends_it() -> Result<(), Box<dyn Error>> {
+            // A speed change applies from where the look is: at its end, it
+            // stays over, played or sought onto the cue.
             let show = "show \"a\" {\n    @0.000\n    wash: static, color: \"green\", \
                 duration: 4s, layer: midground, blend_mode: replace\n    @4.000\n    \
                 master(layer: midground, speed: 0.5)\n}\n";
             let played = played_frame(show, 6.0)?;
             let sought = seek_then_play(show, 4.0, 6.0)?;
-            assert_eq!(played, GREEN);
+            assert_eq!(played, DARK);
             assert_eq!(
                 played, sought,
                 "played {played:?} vs seek to 4 s then played {sought:?}"

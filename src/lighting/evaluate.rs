@@ -589,7 +589,7 @@ show "t" {
     }
 
     #[test]
-    fn evaluate_at_a_slow_down_on_a_looks_last_instant() {
+    fn evaluate_at_a_slow_down_on_a_looks_last_instant_has_it_over() {
         let fixtures = vec![rgb_fixture("wash", 1)];
         let results = eval(
             "show \"s\" {\n    @00:00.000\n    wash: static, color: \"blue\", duration: 4s\n    \
@@ -599,8 +599,8 @@ show "t" {
         );
         assert_eq!(
             results[0].active_effects.len(),
-            1,
-            "live plays it on at 4 s"
+            0,
+            "over at its end: the slow-down applies from there"
         );
     }
 
@@ -617,22 +617,44 @@ show "t" {
         assert_eq!(results[0].active_effects.len(), 0, "live: over at 4 s");
     }
 
+    /// A speed change applies from where a look is: a fade-in slowed half
+    /// way carries on from half way, more slowly, with no step back.
     #[test]
-    fn evaluate_keeps_a_look_slowed_on_its_last_instant() {
-        // Live, the cue at 4 s fires before the frame that would end the
-        // look, so it plays on at half speed (elapsed 2 s of 4) until 8 s.
+    fn a_fade_slowed_part_way_carries_on_from_where_it_was() {
+        let fixtures = vec![rgb_fixture("wash", 1)];
+        let results = eval(
+            "show \"s\" {\n    @00:00.000\n    wash: static, color: \"red\", up_time: 4s, \
+             hold_time: 1s\n    @00:02.000\n    master(layer: background, speed: 0.5)\n}\n",
+            &fixtures,
+            &[1.99, 2.01, 4.0],
+        );
+        let red: Vec<i32> = results
+            .iter()
+            .map(|r| i32::from(channel(r, "wash", "red")))
+            .collect();
+        assert!(
+            (red[0] - red[1]).abs() <= 2,
+            "no step at the change: {red:?}"
+        );
+        // 2 s in at 2 s, then 1 s more of fade in the 2 s to 4 s: 3/4 up.
+        assert!((red[2] - 191).abs() <= 2, "3/4 of the fade at 4 s: {red:?}");
+    }
+
+    #[test]
+    fn evaluate_has_a_look_slowed_part_way_play_on_from_where_it_was() {
+        // Slowed to half 2 s into a 4 s look: 2 s left at half speed, so
+        // it ends at 6 s, 3 s into it at 4 s.
         let fixtures = vec![rgb_fixture("wash", 1)];
         let results = eval(
             "show \"s\" {\n    @00:00.000\n    wash: static, color: \"blue\", duration: 4s\n    \
-             @00:04.000\n    master(layer: background, speed: 0.5)\n}\n",
+             @00:02.000\n    master(layer: background, speed: 0.5)\n}\n",
             &fixtures,
-            &[6.0],
+            &[4.0, 5.9, 6.1],
         );
-        assert_eq!(
-            results[0].active_effects.len(),
-            1,
-            "evaluate drops a look the live engine still plays"
-        );
+        assert_eq!(results[0].active_effects.len(), 1);
+        assert_eq!(results[0].active_effects[0].elapsed, Duration::from_secs(3));
+        assert_eq!(results[1].active_effects.len(), 1, "still up at 5.9 s");
+        assert_eq!(results[2].active_effects.len(), 0, "over at 6 s");
     }
 
     #[test]

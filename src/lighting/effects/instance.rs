@@ -49,6 +49,13 @@ pub struct EffectInstance {
     /// on song time less this, so it resumes where it stopped and keeps to
     /// the song after.
     pub score_frozen: Duration,
+    /// Where the effect was when its layer's speed master last changed: its
+    /// base elapsed (score time less time frozen) and its own elapsed then.
+    /// A speed change applies from there on, so the look carries on faster
+    /// or slower from where it was rather than jumping. Zero for an effect
+    /// started since, which runs at its layer's speed from its cue.
+    pub speed_from: Duration,
+    pub elapsed_from: Duration,
     /// Rendered on engine time even when the frame has a song time: the
     /// effect has been through a layer freeze with no song time to measure
     /// it by, whose unfreeze shifts its `start_time` so it resumes where it
@@ -100,6 +107,8 @@ impl EffectInstance {
             start_poses: std::collections::HashMap::new(),
             tempo_offset_secs: 0.0,
             score_frozen: Duration::ZERO,
+            speed_from: Duration::ZERO,
+            elapsed_from: Duration::ZERO,
             engine_timed: false,
         }
     }
