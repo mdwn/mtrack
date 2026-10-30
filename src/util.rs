@@ -294,8 +294,10 @@ pub fn read_to_string(path: &Path) -> std::io::Result<String> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
-/// A YAML config source with the content of `path`, read by [`read_file`]
-/// rather than by the config crate, which reads the file as it finds it.
+/// A config source with the content of `path`, read by [`read_file`]
+/// rather than by the config crate, which reads the file as it finds it. In
+/// the format the file's extension names, as the config crate chose it when
+/// it read the file itself; YAML, mtrack's own, for any other.
 pub fn yaml_source(
     path: &Path,
 ) -> Result<::config::File<::config::FileSourceString, ::config::FileFormat>, ::config::ConfigError>
@@ -306,7 +308,15 @@ pub fn yaml_source(
             format!("{}: {e}", path.display()),
         )))
     })?;
-    Ok(::config::File::from_str(&text, ::config::FileFormat::Yaml))
+    let format = match path.extension().and_then(|ext| ext.to_str()) {
+        Some("toml") => ::config::FileFormat::Toml,
+        Some("json") => ::config::FileFormat::Json,
+        Some("json5") => ::config::FileFormat::Json5,
+        Some("ini") => ::config::FileFormat::Ini,
+        Some("ron") => ::config::FileFormat::Ron,
+        _ => ::config::FileFormat::Yaml,
+    };
+    Ok(::config::File::from_str(&text, format))
 }
 
 /// Explains a write failure whose cause is not the file's own permissions.
@@ -1199,6 +1209,29 @@ mod ownership_test {
 
 #[cfg(test)]
 mod test {
+
+    #[test]
+    fn yaml_source_reads_the_format_the_extension_names() {
+        // The main config was read by the config crate, which went by the
+        // extension: a TOML or JSON config still loads.
+        let dir = tempfile::tempdir().unwrap();
+        for (name, text) in [
+            ("c.yaml", "a: 1\n"),
+            ("c.toml", "a = 1\n"),
+            ("c.json", "{\"a\": 1}"),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            let value: i64 = ::config::Config::builder()
+                .add_source(super::yaml_source(&path).unwrap())
+                .build()
+                .unwrap()
+                .get("a")
+                .unwrap();
+            assert_eq!(value, 1, "{name}");
+        }
+    }
+
     use std::time::Duration;
 
     use crate::util::duration_minutes_seconds;
