@@ -35,8 +35,7 @@ impl Player {
     /// A pending start position (set by seeking while stopped) is consumed
     /// and playback starts there instead of the beginning.
     pub async fn play(&self) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
-        let start_time = self.take_pending_start().unwrap_or(Duration::ZERO);
-        self.play_from(start_time).await
+        self.play_at(None).await
     }
 
     /// Plays the song starting from a specific time position.
@@ -46,6 +45,15 @@ impl Player {
     pub async fn play_from(
         &self,
         start_time: Duration,
+    ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
+        self.play_at(Some(start_time)).await
+    }
+
+    /// Plays the song from `start_time`, or with none, from the pending
+    /// start position, or the beginning.
+    async fn play_at(
+        &self,
+        start_time: Option<Duration>,
     ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
         // Reject playback if hardware hasn't finished initializing.
         if !*self.init_done_tx.borrow() {
@@ -78,6 +86,12 @@ impl Player {
             return Ok(None);
         }
 
+        // Taken under the join lock, as `play_locked` takes it. A pause holds
+        // a hardware reload off by its position, and one that took the lock
+        // after the position was taken found the player idle and reset the
+        // hardware: the resume was refused, its position thrown away.
+        let start_time =
+            start_time.unwrap_or_else(|| self.take_pending_start().unwrap_or(Duration::ZERO));
         self.play_from_locked(start_time, &mut join).await
     }
 

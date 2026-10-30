@@ -5063,6 +5063,46 @@ mod test {
         Ok(())
     }
 
+    /// A resume took the paused position before the join lock, and a reload
+    /// that took the lock in between found the player idle: it reset the
+    /// hardware, and the resume was refused with its position thrown away.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_resume_racing_a_reload_keeps_the_pause() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _store = set_store_without_audio(&player)?;
+        player.play().await?;
+        elapsed_eventually(&player).await?;
+        let paused = player.pause().await?;
+        assert!(paused.is_some());
+
+        // The reload and the resume both wait on the join lock, the reload
+        // first.
+        let join = player.join.lock().await;
+        let p = player.clone();
+        let reload =
+            tokio::spawn(async move { p.reload_hardware().await.map_err(|e| e.to_string()) });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let p = player.clone();
+        let resume = tokio::spawn(async move {
+            p.play()
+                .await
+                .map(|s| s.map(|s| s.name().to_string()))
+                .map_err(|e| e.to_string())
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(join);
+
+        let reload = reload.await?;
+        let resume = resume.await?;
+        assert!(
+            matches!(resume, Ok(Some(_))),
+            "resume refused: {resume:?}; reload: {reload:?}"
+        );
+        assert!(player.audio_device().is_some(), "reloaded under the pause");
+        player.stop().await;
+        Ok(())
+    }
+
     /// A MIDI controller listening for the pedalboard's footswitches.
     fn midi_controller() -> config::Controller {
         config::Controller::Midi(config::MidiController::new(
