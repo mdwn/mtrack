@@ -18,6 +18,7 @@
   import { setLocked } from "../lib/api/config";
   import { playerClient } from "../lib/grpc/client";
   import { formatMs } from "../lib/util/format";
+  import { playlistEnds } from "../lib/nextUp";
   import { showConfirm } from "../lib/dialog.svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -90,14 +91,12 @@
     }
   }
 
+  let ends = $derived(playlistEnds($playbackStore));
   let canPrev = $derived(
-    $playbackStore.playlist_songs.length > 0 &&
-      $playbackStore.playlist_position > 0,
+    $playbackStore.playlist_songs.length > 0 && !ends.atFirst,
   );
   let canNext = $derived(
-    $playbackStore.playlist_songs.length > 0 &&
-      $playbackStore.playlist_position <
-        $playbackStore.playlist_songs.length - 1,
+    $playbackStore.playlist_songs.length > 0 && !ends.atLast,
   );
 
   let displayName = $derived($playbackStore.song_name || $t("playback.noSong"));

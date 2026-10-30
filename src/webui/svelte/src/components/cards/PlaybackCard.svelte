@@ -19,7 +19,7 @@
   import { sectionColor } from "../../lib/sectionColors";
   import BeatIndicator from "./BeatIndicator.svelte";
   import { formatFadeLength, formatMs } from "../../lib/util/format";
-  import { describeNext, loopEndFade } from "../../lib/nextUp";
+  import { describeNext, loopEndFade, playlistEnds } from "../../lib/nextUp";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -292,11 +292,9 @@
   let loopEnd = $derived(
     $playbackStore.is_playing ? loopEndFade($playbackStore.next) : null,
   );
-  let atFirst = $derived($playbackStore.playlist_position <= 0);
-  let atLast = $derived(
-    $playbackStore.playlist_position >=
-      $playbackStore.playlist_songs.length - 1,
-  );
+  let ends = $derived(playlistEnds($playbackStore));
+  let atFirst = $derived(ends.atFirst);
+  let atLast = $derived(ends.atLast);
   let canPrev = $derived(
     $playbackStore.playlist_songs.length > 0 && (!atFirst || !!loopEnd),
   );

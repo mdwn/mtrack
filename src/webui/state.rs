@@ -138,6 +138,9 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
 
         let playlist_name = playlist.name().to_string();
         let playlist_position = playlist.position();
+        // A song an edit took off the list, playing on: the position is the
+        // entry the playlist sits before, which is not the song playing.
+        let playlist_off_list = playlist.entry().is_none();
         let playlist_songs: Vec<String> = playlist.songs().clone();
 
         let (
@@ -311,6 +314,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             "song_duration_ms": song_duration_ms,
             "playlist_name": playlist_name,
             "playlist_position": playlist_position,
+            "playlist_off_list": playlist_off_list,
             "playlist_songs": playlist_songs,
             "tracks": tracks,
             "available_playlists": available_playlists,

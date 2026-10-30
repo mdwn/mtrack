@@ -314,4 +314,55 @@ test.describe("Dashboard: next up", () => {
     });
     await expect(nextButton).toBeDisabled();
   });
+
+  test("a song taken off the list is none of its rows", async ({ page }) => {
+    // #576: an edit took the looping song playing off the list, which sits
+    // before the entry that took its place. That row showed as playing, and
+    // Next, which lands on it, was off on the last entry.
+    const wsId = `off-list-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/`);
+    await expect(page.locator(".playback-card__title")).toBeVisible();
+
+    const nextButton = page.getByRole("button", { name: "Next", exact: true });
+    const rows = page.locator(".playlist-card__row");
+    const frame = {
+      type: "playback",
+      is_playing: true,
+      elapsed_ms: 0,
+      song_name: "Daegrima",
+      song_duration_ms: 60000,
+      playlist_name: "setlist",
+      playlist_position: 1,
+      playlist_off_list: true,
+      playlist_songs: ["Opener", "Encore"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      looping: true,
+      next: {
+        song: "Encore",
+        breaks_loop: true,
+        fade_out: null,
+        fade_in: null,
+        auto_play_ms: null,
+      },
+    };
+    await sendWsMessage(page, wsId, frame);
+    await expect(rows).toHaveCount(2);
+    await expect(page.locator(".playlist-card__row--active")).toHaveCount(0);
+    await expect(page.locator(".playlist-card__playing-dot")).toHaveCount(0);
+    await expect(nextButton).toBeEnabled();
+
+    // On the list again, the row is the song's.
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      song_name: "Encore",
+      playlist_off_list: false,
+      looping: false,
+      next: { song: null },
+    });
+    await expect(rows.nth(1)).toHaveClass(/playlist-card__row--active/);
+    await expect(nextButton).toBeDisabled();
+  });
 });

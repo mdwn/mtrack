@@ -105,6 +105,9 @@ export interface PlaybackState {
   song_duration_ms: number;
   playlist_name: string;
   playlist_position: number;
+  /** A song an edit took off the list, playing on: the playlist sits before
+   *  the entry at `playlist_position` rather than on it. */
+  playlist_off_list: boolean;
   playlist_songs: string[];
   tracks: TrackInfo[];
   available_playlists: string[];
@@ -227,6 +230,7 @@ export const playbackStore = writable<PlaybackState>({
   song_duration_ms: 0,
   playlist_name: "",
   playlist_position: 0,
+  playlist_off_list: false,
   playlist_songs: [],
   tracks: [],
   available_playlists: [],
@@ -300,6 +304,7 @@ on("playback", (msg) => {
     song_duration_ms: m.song_duration_ms,
     playlist_name: m.playlist_name,
     playlist_position: m.playlist_position,
+    playlist_off_list: m.playlist_off_list ?? false,
     playlist_songs: m.playlist_songs,
     tracks: m.tracks ?? [],
     available_playlists: m.available_playlists ?? [],

@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import type { FadeInfo, NextUp } from "./ws/stores";
+import type { FadeInfo, NextUp, PlaybackState } from "./ws/stores";
 import { formatFadeLength, formatGapMs, isZeroLength } from "./util/format";
 
 type Translate = (
@@ -71,4 +71,22 @@ export function loopEndFade(next: NextUp | null | undefined): FadeInfo | null {
   if (!next || !(next.breaks_loop || next.ends_loop)) return null;
   const out = next.fade_out;
   return out && !isZeroLength(out.length) ? out : null;
+}
+
+/** Whether the playlist is at its first entry, with nothing for Previous to
+ *  move back to, and at its last, with nothing for Next. Off the list, it
+ *  sits before the entry at its position, which Next lands on. */
+export function playlistEnds(
+  state: Pick<
+    PlaybackState,
+    "playlist_position" | "playlist_off_list" | "playlist_songs"
+  >,
+): { atFirst: boolean; atLast: boolean } {
+  const lastEntry = state.playlist_songs.length - 1;
+  return {
+    atFirst: state.playlist_position <= 0,
+    atLast: state.playlist_off_list
+      ? state.playlist_position > lastEntry
+      : state.playlist_position >= lastEntry,
+  };
 }
