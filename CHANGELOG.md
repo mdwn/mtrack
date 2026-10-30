@@ -138,9 +138,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section while one looped jumped them forward; and the notes stopped for good at a break, or
   went quiet into a section armed while another looped. Now each jump is decided once -- by the
   audio when it plays, otherwise (no audio, or none that starts) by the playback itself -- as it is
-  committed to, and the
-  lights, notes and beat clock follow it, playing on from wherever it leaves the song. A section
-  armed loops from where playback reaches its end, counting the time loops so far have put back;
+  committed to, and the lights, notes and beat clock follow it, playing on from wherever it
+  leaves the song. A section armed loops from where playback reaches its end, counting the time
+  loops so far have put back;
   a loop the audio had nothing ready for goes round a moment late rather than not at all, and the
   section the playhead is in is ready to loop after a break too. The notes' replays start on the
   loop point rather than as much as 5ms early.
