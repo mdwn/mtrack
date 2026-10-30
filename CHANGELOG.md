@@ -285,6 +285,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to reloading the player. The player reads a playlist, song, profile or lighting file whole,
   never caught midway through a save, which it took for broken: a playlist so read was skipped,
   an active one falling back to all songs.
+- **A raw config save takes effect, or changes nothing (#578)**: `PUT /api/config` (the config
+  editor's raw save) wrote the file but left the running config and hardware on the old one, so
+  the next settings change wrote the old config back over the save. It now reloads the config and
+  the hardware, as a profile save does, and like one is refused during playback. A save the
+  player cannot load (a broken profile in its `profiles_dir`, say) puts the file back as it was
+  and reports that it was not saved.
 - **The dashboard can end a looping song at either end of the list (#579)**: Next on the last
   entry, or Previous on the first, ends a looping song over its `fade_out`, but the dashboard
   turned those buttons off there, so the ending could only be reached from MCP, OSC or gRPC.

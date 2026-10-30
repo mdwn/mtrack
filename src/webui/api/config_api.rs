@@ -71,6 +71,11 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
     if let Err(errors) = config_io::validate_player_config(&body) {
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
+    // As for a profile save: the hardware is reloaded from the save, which
+    // it cannot be during playback.
+    if let Some(resp) = reject_if_playing(&state).await {
+        return resp;
+    }
 
     // The store persists its own copy of this file on every mutation: the
     // copy is read back from the save before any mutation can land, or the
@@ -120,6 +125,9 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
                 .into_response();
         }
     }
+    // The running hardware was set up from the config before the save, and
+    // matches it only once reloaded from the store's copy, which now holds it.
+    reload_hardware_after_mutation(&state).await;
     (StatusCode::OK, Json(json!({"status": "saved"}))).into_response()
 }
 
@@ -1212,6 +1220,39 @@ mod test {
         assert!(error.contains("was not saved"), "{error}");
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
         assert_eq!(get_checksum(&state).await, checksum);
+    }
+
+    /// A raw config save reloaded the store but not the hardware, which ran
+    /// on the config from before it until a restart.
+    #[tokio::test]
+    async fn a_raw_config_save_reloads_the_hardware() {
+        let (state, _dir) = test_state_with_store();
+        assert!(state.player.audio_device().is_none());
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from(
+                        "songs: songs\naudio:\n  device: mock-device\n  track_mappings:\n    kick: [1]\n",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            state.player.await_hardware_ready(),
+        )
+        .await
+        .expect("the hardware never came up");
+        assert!(
+            state.player.audio_device().is_some(),
+            "the saved audio device was not set up"
+        );
     }
 
     #[tokio::test]
