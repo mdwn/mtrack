@@ -421,6 +421,9 @@ pub struct Player {
     /// The mixer sources fading out after a loop break, which a stop or seek
     /// cuts rather than letting them finish.
     break_fade_ids: Arc<parking_lot::Mutex<Vec<u64>>>,
+    /// When a song fading out after a loop break, or as it ends, is out,
+    /// audio and lights both. A hardware reload waits for it.
+    fading_until: Arc<parking_lot::Mutex<Option<std::time::Instant>>>,
     /// How the song a loop break moves to fades in under the one fading out
     /// (a playlist `fade_in`), taken by the audio device as it starts.
     start_fade: Arc<parking_lot::Mutex<Option<crate::playsync::StartFade>>>,
@@ -677,6 +680,7 @@ impl Player {
             ambient_mode: Arc::new(parking_lot::Mutex::new(Default::default())),
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            fading_until: Arc::new(parking_lot::Mutex::new(None)),
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
@@ -4907,6 +4911,79 @@ mod test {
         assert_eq!(
             zeros, 0,
             "{zeros}/10 pauses straight after a seek to 5 s kept 0"
+        );
+        Ok(())
+    }
+
+    /// A reload deferred under a looping song ran as the song's ending
+    /// began, and tore the audio down under its fade-out. It waits for the
+    /// fade, and runs once it is over.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_waits_for_a_looping_songs_ending_fade() -> Result<(), Box<dyn Error>>
+    {
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 5s\n- C\n").await?;
+        let _store = set_store_without_audio(&player)?;
+        player.reload_hardware().await?;
+        assert!(player.audio_device().is_some(), "deferred");
+        // Stop ends B over its 5 s fade-out.
+        player.stop().await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(player.ending_status().is_some(), "still fading out");
+        assert!(
+            player.audio_device().is_some(),
+            "the deferred reload tore the audio device down under the ending fade"
+        );
+        eventually(
+            || player.ending_status().is_none() && player.audio_device().is_none(),
+            "The deferred reload never ran after the fade",
+        );
+        Ok(())
+    }
+
+    /// A loop break's fade can outlast the song it moved to, which leaves
+    /// the player idle with nothing to come along and run a reload waiting
+    /// for the fade: it runs once the fade is over.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_waits_for_a_loop_breaks_fade() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _store = set_store_without_audio(&player)?;
+        *player.fading_until.lock() = Some(std::time::Instant::now() + Duration::from_millis(800));
+        player.reload_hardware().await?;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            player.audio_device().is_some(),
+            "the reload tore the audio device down under the fade"
+        );
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran after the fade",
+        );
+        Ok(())
+    }
+
+    /// Next during an ending forgets it, the fade left to play out: a
+    /// reload waiting for the ending runs once the fade is over, though
+    /// the ending will not say so.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_runs_after_an_ending_navigated_away_from(
+    ) -> Result<(), Box<dyn Error>> {
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 1s\n- C\n").await?;
+        let _store = set_store_without_audio(&player)?;
+        player.reload_hardware().await?;
+        player.stop().await;
+        eventually(|| player.ending_status().is_some(), "B never began to end");
+        eventually(
+            || player.join.try_lock().is_ok_and(|j| j.is_none()),
+            "stopped",
+        );
+        player.next().await;
+        assert!(player.ending_status().is_none(), "the ending is forgotten");
+        assert!(player.audio_device().is_some(), "reloaded under the fade");
+        eventually(
+            || player.audio_device().is_none(),
+            "The deferred reload never ran after the fade",
         );
         Ok(())
     }

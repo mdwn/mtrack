@@ -298,7 +298,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A config save raced by a play applies when the song stops (#578)**: a song started between a
   save's playback check and its hardware reload had the reload refused, while the save still
   answered "saved" and the rig ran on the old config until something else reloaded it. The
-  reload now waits for the player to go idle and runs then.
+  reload now waits for the player to go idle, and for a song still fading out (a looping song's
+  ending, or after a loop break) to be out, and runs then.
 - **A config save no longer drops a waiting auto play (#578)**: a save while an `auto_play` entry
   waited out its gap reloaded the hardware, and when the gap ended the song failed to start
   ("Hardware is still initializing") and was not retried. The gap now counts as playing: the web

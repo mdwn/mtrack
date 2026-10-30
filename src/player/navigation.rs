@@ -158,6 +158,11 @@ impl Player {
             None if called_off || ending => self.idle_ambient(true),
             None => {}
         }
+        // An ending forgotten here no longer runs a reload waiting for it
+        // when its fade is over: the reload looks again now.
+        if ending {
+            self.reload_deferred_hardware();
+        }
         drop(join);
         self.load_song_samples(&song);
         Some(song)
@@ -205,7 +210,10 @@ impl Player {
         *self.active_playlist.write() = name.to_string();
         self.clear_pending_start();
         self.cancel_auto_play();
-        self.end_ending();
+        // As for a navigation: a reload waiting on the ending looks again.
+        if self.end_ending() {
+            self.reload_deferred_hardware();
+        }
 
         // Persist the choice to the config store, unless it's "all_songs" (session-only).
         if name != "all_songs" {

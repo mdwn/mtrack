@@ -563,7 +563,9 @@ impl Player {
     /// callers check for playback before saving a config, but a play can
     /// still land between that check and this reload: refusing it then left
     /// the save acknowledged and the rig running the old config until
-    /// something else reloaded it (#578).
+    /// something else reloaded it (#578). A song still fading out, as a
+    /// looping song ends or after a loop break, holds it too: the reset
+    /// would cut the fade short.
     pub async fn reload_hardware(self: &Arc<Self>) -> Result<(), Box<dyn Error>> {
         let store = self.config_store().ok_or("No config store available")?;
 
@@ -581,8 +583,20 @@ impl Player {
         let join = self.join.lock().await;
         // An auto play waiting counts as playing: the reset would leave the
         // hardware initializing when its gap ends, and its start would fail.
-        if join.is_some() || self.auto_play_status().is_some() {
+        let playing = join.is_some() || self.auto_play_status().is_some();
+        let fading = self.fading_out();
+        if playing || fading.is_some() {
             self.hardware_reload_pending.store(true, Ordering::Relaxed);
+            // An ending runs the reload once its fade is over. A loop break's
+            // fade outlasting the song it moved to has nothing that would,
+            // with the player idle: a timer does.
+            if let (false, Some(left), None) = (playing, fading, self.ending_status()) {
+                let player = self.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(left).await;
+                    player.reload_deferred_hardware();
+                });
+            }
             info!("Hardware reload deferred until playback ends");
             return Ok(());
         }
@@ -642,8 +656,9 @@ impl Player {
     }
 
     /// Runs a hardware reload deferred by playback, if one is pending, now
-    /// that the player may be idle. Called wherever a song stops or an auto
-    /// play is called off; the reload looks again under the join lock, and
+    /// that the player may be idle. Called wherever a song stops, an auto
+    /// play is called off or a song's fade-out is over; the reload looks
+    /// again under the join lock, and
     /// defers once more if the player is not idle after all — a song a loop
     /// break moves to, or one started in the meantime.
     pub(super) fn reload_deferred_hardware(&self) {

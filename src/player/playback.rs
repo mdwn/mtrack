@@ -678,9 +678,15 @@ impl Player {
         let player = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(over).await;
-            let mut state = player.ending.lock();
-            if state.generation == generation && state.fading.take().is_some() {
+            let ended = {
+                let mut state = player.ending.lock();
+                state.generation == generation && state.fading.take().is_some()
+            };
+            if ended {
                 info!("The looping song has ended.");
+                // A hardware reload waited for the fade, which it would
+                // have cut short.
+                player.reload_deferred_hardware();
             }
         });
     }
@@ -691,6 +697,19 @@ impl Player {
         let mut state = self.ending.lock();
         state.generation += 1;
         state.fading.take().is_some()
+    }
+
+    /// How long until a song fading out is out, while one is: a looping
+    /// song ending, or one a loop break moved on from. A hardware reload
+    /// waits for it, as the reset would cut it short.
+    pub(super) fn fading_out(&self) -> Option<Duration> {
+        let ending = self.ending_status().map(|(_, left)| left);
+        let fading = self
+            .fading_until
+            .lock()
+            .map(|until| until.saturating_duration_since(std::time::Instant::now()))
+            .filter(|left| !left.is_zero());
+        ending.max(fading)
     }
 
     /// The looping song ending, and how long until its fade is over, while
@@ -1326,6 +1345,8 @@ impl Player {
                 fading.extend(ids);
             }
         }
+        *self.fading_until.lock() =
+            fade.map(|f| std::time::Instant::now() + f.length.max(f.lights));
         *self.break_fade.lock() = fade.map(|f| crate::playsync::BreakFade {
             started: std::time::Instant::now(),
             length: f.length,
@@ -1348,6 +1369,7 @@ impl Player {
     pub(super) fn cut_break_fade(&self) {
         let ids = std::mem::take(&mut *self.break_fade_ids.lock());
         *self.break_fade.lock() = None;
+        *self.fading_until.lock() = None;
         *self.start_fade.lock() = None;
         let hw = self.hardware.read();
         if let Some(dmx) = hw.dmx_engine.as_ref() {
