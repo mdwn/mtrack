@@ -177,12 +177,14 @@ impl super::Driver for Driver {
             }
         }
 
+        // Stops the watch however this task ends. A restart aborts it, and
+        // the device's watcher ran on: nothing could watch that device again,
+        // and a mock device's watcher thread kept the runtime from shutting
+        // down. Made here, not on the task, as a task aborted before its first
+        // poll never runs any of its body.
+        let watch = StopWatchOnDrop(device);
         tokio::spawn(async move {
-            // Stops the watch however this task ends. A restart aborts it,
-            // and the device's watcher ran on: nothing could watch that
-            // device again, and a mock device's watcher thread kept the
-            // runtime from shutting down.
-            let _watch = StopWatchOnDrop(device);
+            let _watch = watch;
             loop {
                 let raw_event = match midi_events_rx.recv().await {
                     Some(raw_event) => raw_event,
@@ -506,6 +508,56 @@ mod test {
 
         midi_device.stop_watch_events();
 
+        Ok(())
+    }
+
+    /// A driver's task stops the device's watch when it ends, but one
+    /// aborted before its first poll ran none of its body: the watch
+    /// started for it ran on, and nothing could watch the device again.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_driver_aborted_before_it_runs_stops_its_watch() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let mut playlists = HashMap::new();
+        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
+        let player = Player::new(
+            playlists,
+            "all_songs".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                Some(config::Midi::new("mock-aborted-driver", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let device = player.midi_device().expect("midi device");
+        let driver = super::Driver::new(
+            MidiController::new(
+                config::midi::note_on(16, 0, 127),
+                config::midi::note_on(16, 1, 127),
+                config::midi::note_on(16, 2, 127),
+                config::midi::note_on(16, 3, 127),
+                config::midi::note_on(16, 4, 127),
+                config::midi::note_on(16, 5, 127),
+            ),
+            player.clone(),
+        )?;
+        let handle = crate::controller::Driver::monitor_events(&*driver);
+        // As a stop landing right after the start does: on this runtime the
+        // task has not been polled yet.
+        handle.abort();
+        let _ = handle.await;
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let rewatch = device.watch_events(tx);
+        device.stop_watch_events();
+        assert!(
+            rewatch.is_ok(),
+            "the aborted driver left the device watched: {:?}",
+            rewatch.err().map(|e| e.to_string())
+        );
         Ok(())
     }
 
