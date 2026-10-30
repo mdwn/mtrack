@@ -108,6 +108,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A hardware reload keeps the audio triggers**: dropping the trigger engine only signalled its
+  input thread, which noticed up to half a second later, so the replacement opened the input device
+  while the old stream still held it, failed with "device busy", and went on with no triggers until
+  the next reload. The engine now wakes the thread at once and waits for it to close the stream, and
+  a retry backoff no longer outlasts shutdown.
 - **A config change made over MCP takes effect**: `update_audio`, `update_midi`, `update_dmx`,
   `update_controllers` and the profile tools saved the change but never reloaded the hardware, so it
   did nothing until something else reloaded it or mtrack restarted. They now reload it, as the gRPC
