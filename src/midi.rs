@@ -63,6 +63,12 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// opened instead.
     fn reopen(&self) -> Result<(), Box<dyn Error>>;
 
+    /// The tempo its beat clock holds between songs, if it holds one: what a
+    /// device opened in its place carries on with.
+    fn held_tempo(&self) -> Option<std::time::Duration> {
+        None
+    }
+
     /// Plays the given song through the MIDI interface, starting from a specific time.
     /// The `ready_tx` sender signals that setup is complete. The implementation should
     /// then wait for `clock.elapsed() > Duration::ZERO` as the "go" signal.
@@ -92,6 +98,15 @@ pub fn list_devices() -> Result<Vec<Box<dyn Device>>, Box<dyn Error>> {
 
 /// Gets a device with the given name.
 pub fn get_device(config: Option<config::Midi>) -> Result<Option<Arc<dyn Device>>, Box<dyn Error>> {
+    get_device_holding(config, None)
+}
+
+/// [`get_device`], its beat clock holding `held` until a song sets another
+/// tempo.
+pub fn get_device_holding(
+    config: Option<config::Midi>,
+    held: Option<std::time::Duration>,
+) -> Result<Option<Arc<dyn Device>>, Box<dyn Error>> {
     let config = match config {
         Some(config) => config,
         None => return Ok(None),
@@ -102,7 +117,9 @@ pub fn get_device(config: Option<config::Midi>) -> Result<Option<Arc<dyn Device>
         return Ok(Some(Arc::new(mock::Device::get(device))));
     };
 
-    Ok(Some(Arc::new(midir::Reopenable::open(config)?)))
+    Ok(Some(Arc::new(midir::Reopenable::open_holding(
+        config, held,
+    )?)))
 }
 
 #[cfg(test)]

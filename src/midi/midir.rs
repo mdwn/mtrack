@@ -86,12 +86,13 @@ impl Device {
         self.beat_clock_engine.as_ref()?.held_tempo()
     }
 
-    /// Tells its beat clock to stop, without waiting for it: a device about
-    /// to be replaced goes quiet before its successor's clock starts, so the
-    /// port never carries two clocks at once.
-    fn silence_beat_clock(&self) {
+    /// Stops its beat clock and waits for it: a device about to be replaced
+    /// goes quiet before its successor's clock starts, so the port never
+    /// carries two clocks at once, and a schedule it was running has set
+    /// the tempo it holds by then.
+    fn stop_beat_clock(&self) {
         if let Some(engine) = &self.beat_clock_engine {
-            let _ = engine.tx.send(BeatClockCommand::Shutdown);
+            engine.stop();
         }
     }
 }
@@ -486,11 +487,6 @@ fn validate_device_match<T: fmt::Display>(name: &str, matches: &[T]) -> Result<(
     Ok(())
 }
 
-/// Gets the given midir device.
-pub fn get(config: &config::Midi) -> Result<Device, Box<dyn Error>> {
-    get_holding(config, None)
-}
-
 /// Gets the given midir device, its beat clock holding `held` until a song
 /// sets another tempo.
 fn get_holding(config: &config::Midi, held: Option<Duration>) -> Result<Device, Box<dyn Error>> {
@@ -545,9 +541,14 @@ pub struct Reopenable {
 }
 
 impl Reopenable {
-    /// Opens the device `config` names.
-    pub fn open(config: config::Midi) -> Result<Reopenable, Box<dyn Error>> {
-        let device = get(&config)?;
+    /// Opens the device `config` names, its beat clock holding `held` until
+    /// a song sets another tempo: a device opened in place of one that could
+    /// not be reopened goes on with the tempo it held.
+    pub fn open_holding(
+        config: config::Midi,
+        held: Option<Duration>,
+    ) -> Result<Reopenable, Box<dyn Error>> {
+        let device = get_holding(&config, held)?;
         Ok(Reopenable::with_device(config, device))
     }
 
@@ -573,15 +574,18 @@ impl Reopenable {
     ) -> Result<(), Box<dyn Error>> {
         use super::Device as _;
 
-        let mut watch = self.watch.lock().expect("unable to get lock");
-        // The old clock stops before the fresh one starts with the tempo it
-        // held: both at once double every clock pulse the gear following
-        // them sees. Should the fresh device not open, the reload opens one
-        // anew, with a clock of its own.
+        // The old clock stops, and is waited on, before the fresh one starts
+        // with the tempo it held: both at once double every clock pulse the
+        // gear following them sees, and a schedule it was still running sets
+        // its tempo as it ends. Outside the lock: a watch starting or
+        // stopping need not wait on it. Should the fresh device not open,
+        // the reload opens one anew holding the same tempo
+        // (`Device::held_tempo`).
         let current = self.current();
+        current.stop_beat_clock();
         let held = current.held_tempo();
-        current.silence_beat_clock();
         drop(current);
+        let mut watch = self.watch.lock().expect("unable to get lock");
         let fresh = open(held)?;
         // The old watch goes first: both at once would hear every event
         // twice for a moment, and a pedal press taken twice is worse than
@@ -630,6 +634,10 @@ impl super::Device for Reopenable {
         // The tempo held between songs carries over: a fresh beat clock
         // knows none, and gear following it would stop until the next song.
         self.reopen_with(|held| get_holding(&self.config, held))
+    }
+
+    fn held_tempo(&self) -> Option<Duration> {
+        self.current().held_tempo()
     }
 
     fn play_from(
@@ -1066,6 +1074,15 @@ impl BeatClockEngine {
     /// The tempo it holds between songs: the last a song set, if any.
     fn held_tempo(&self) -> Option<Duration> {
         *self.tempo.lock().expect("beat clock tempo lock")
+    }
+
+    /// Stops the engine thread and waits for it to end. The tempo it held
+    /// stays readable.
+    fn stop(&self) {
+        let _ = self.tx.send(BeatClockCommand::Shutdown);
+        if let Some(handle) = self.join.lock().expect("beat clock engine lock").take() {
+            let _ = handle.join();
+        }
     }
 
     /// Submits a song's schedule to the engine.
@@ -1820,6 +1837,83 @@ mod test {
             *free.lock().unwrap(),
             Some(true),
             "dropped under the watch lock"
+        );
+    }
+
+    /// A reopen whose fresh device cannot be opened has stopped the old
+    /// clock already, but the tempo it held stays readable through the
+    /// device (`Device::held_tempo`), for the device the reload opens in its
+    /// place to go on with.
+    #[test]
+    fn a_failed_reopen_keeps_the_held_tempo_for_the_device_opened_instead() {
+        let (tx, rx) = mpsc::channel();
+        let mut old = Device::new_default("test".to_string());
+        old.beat_clock_engine = Some(Arc::new(BeatClockEngine {
+            tx,
+            join: Mutex::new(None),
+            tempo: Arc::new(Mutex::new(Some(Duration::from_millis(20)))),
+        }));
+        let device = Reopenable::with_device(config::Midi::new("test", None), old);
+        assert!(device.reopen_with(|_| Err("device gone".into())).is_err());
+        assert!(
+            matches!(rx.try_recv(), Ok(BeatClockCommand::Shutdown)),
+            "the old clock was not stopped before the fresh device was tried"
+        );
+        assert_eq!(
+            crate::midi::Device::held_tempo(&device),
+            Some(Duration::from_millis(20))
+        );
+    }
+
+    /// A reopen while a song's beat clock schedule still runs (a clock
+    /// outlasting the song's audio) waits for the old clock to stop, so the
+    /// fresh one is handed the tempo that schedule set, not the one before.
+    #[test]
+    fn a_reopen_mid_schedule_carries_the_schedule_tempo() {
+        struct Null;
+        impl MidiSender for Null {
+            fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
+                Ok(())
+            }
+        }
+        let (tx, rx) = mpsc::channel();
+        // The previous song left 20ms; this schedule ticks every 10ms.
+        let tempo = Arc::new(Mutex::new(Some(Duration::from_millis(20))));
+        let engine_tempo = tempo.clone();
+        let join = std::thread::spawn(move || {
+            beat_clock_engine_loop(&mut Null, true, &engine_tempo, &rx);
+        });
+        let clock = PlaybackClock::wall();
+        clock.start();
+        let ticks: Vec<Duration> = (0..1000).map(|i| Duration::from_millis(10 * i)).collect();
+        let cancel = CancelHandle::new();
+        tx.send(BeatClockCommand::Play(BeatClockPlay {
+            ticks: Arc::new(ticks),
+            start_time: Duration::ZERO,
+            playback_delay: Duration::ZERO,
+            cancel: cancel.clone(),
+            clock,
+        }))
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let mut old = Device::new_default("test".to_string());
+        old.beat_clock_engine = Some(Arc::new(BeatClockEngine {
+            tx,
+            join: Mutex::new(Some(join)),
+            tempo,
+        }));
+        let device = Reopenable::with_device(config::Midi::new("test", None), old);
+        let mut handed = None;
+        device
+            .reopen_with(|held| {
+                handed = Some(held);
+                Ok(device_holding("test", held))
+            })
+            .unwrap();
+        assert_eq!(
+            handed,
+            Some(Some(Duration::from_millis(10))),
+            "the fresh clock was handed the tempo from before the running schedule"
         );
     }
 
