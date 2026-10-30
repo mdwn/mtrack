@@ -2616,6 +2616,27 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_once_an_auto_plays_gap_is_up_keeps_its_song_from_starting(
+    ) -> Result<(), Box<dyn Error>> {
+        // The gap ran out and the auto play, done waiting, went to start its
+        // song; a stop that took the join lock first found nothing playing
+        // and nothing waiting, and the song started after it regardless.
+        let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 100ms\n- Song 5\n";
+        let player = make_test_player_with_playlist(yaml).await?;
+        player.next().await;
+        {
+            // Held over the end of the gap, as by a stop on a busy machine.
+            let mut join = player.join.lock().await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            player.cut_locked(&mut join).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!player.is_playing().await, "Song 3 started after the stop");
+        assert_eq!(current_name(&player).await, "Song 3");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn cancelling_a_waiting_auto_play_stops_on_its_song() -> Result<(), Box<dyn Error>> {
         let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 500ms\n- Song 5\n";
         let player = make_test_player_with_playlist(yaml).await?;
@@ -4571,6 +4592,44 @@ mod test {
             !player.loop_break.load(Ordering::Relaxed),
             "the break outlived the stop"
         );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_after_a_loop_breaks_cleanup_keeps_the_next_song_from_starting(
+    ) -> Result<(), Box<dyn Error>> {
+        // Next breaks looping B's loop, and its cleanup moves on to C and
+        // starts it. It let go of the join lock in between, and a stop that
+        // took the lock there found nothing playing to stop: C started
+        // after it regardless.
+        let (player, _dir) = player_looping_b().await?;
+        elapsed_eventually(&player).await?;
+        let b = player.join.lock().await.as_ref().unwrap().cancel.clone();
+        player.next().await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut stopped = false;
+        while std::time::Instant::now() < deadline {
+            let mut join = player.join.lock().await;
+            // The first chance after the cleanup has had the lock.
+            if !join
+                .as_ref()
+                .is_some_and(|handles| handles.cancel.same_as(&b))
+            {
+                player.cut_locked(&mut join).await;
+                stopped = true;
+                break;
+            }
+            drop(join);
+            tokio::task::yield_now().await;
+        }
+        assert!(stopped, "the break's cleanup never ran");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !player.is_playing().await,
+            "C started after the stop: {}",
+            current_name(&player).await
+        );
+        assert_eq!(current_name(&player).await, "C");
         Ok(())
     }
 }

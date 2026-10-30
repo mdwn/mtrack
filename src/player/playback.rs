@@ -81,6 +81,21 @@ impl Player {
         self.play_from_locked(start_time, &mut join).await
     }
 
+    /// Plays the song at the current position, as [`Player::play`] does,
+    /// with the join lock held and no playback in it: for a song the player
+    /// starts by itself, so that a stop taking the lock after the decision
+    /// to start it stops it rather than coming before it.
+    pub(super) async fn play_locked(
+        &self,
+        join: &mut Option<PlayHandles>,
+    ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
+        if !*self.init_done_tx.borrow() {
+            return Err("Hardware is still initializing".into());
+        }
+        let start_time = self.take_pending_start().unwrap_or(Duration::ZERO);
+        self.play_from_locked(start_time, join).await
+    }
+
     /// Inner implementation of play_from that assumes the caller already holds the join lock
     /// and has verified it is `None` (no active playback).
     pub(super) async fn play_from_locked(
@@ -241,7 +256,8 @@ impl Player {
                 // position, and drops the playback that follows. What it ended
                 // by is read under the lock too: a loop break comes in under
                 // it, and the flags belong to whichever playback holds it.
-                let mut join = player.join.lock().await;
+                // Owned, so that a loop break's next song can start under it.
+                let mut join = player.join.clone().lock_owned().await;
                 if !join
                     .as_ref()
                     .is_some_and(|handles| handles.cancel.same_as(&cancel_handle_for_cleanup))
@@ -335,17 +351,17 @@ impl Player {
                         None => player.idle_ambient(true),
                     }
                 }
-                drop(join);
-
-                // If loop was broken (play/next during loop), auto-play the next song.
-                // Use spawn_blocking + block_on to avoid the non-Send future issue
-                // with tokio::sync::Mutex guards inside play_from.
+                // A loop broken by play or navigation starts the song it
+                // moved to under this same lock: let go of it first, and a
+                // stop in between finds nothing playing to stop, and the
+                // song starts after it regardless. On a blocking thread,
+                // since this task cannot await the start that spawned it and
+                // still be Send.
                 if should_auto_play {
-                    let player_for_play = player;
                     tokio::task::spawn_blocking(move || {
                         let rt = tokio::runtime::Handle::current();
-                        if let Err(e) = rt.block_on(player_for_play.play()) {
-                            *player_for_play.start_fade.lock() = None;
+                        if let Err(e) = rt.block_on(player.play_locked(&mut join)) {
+                            *player.start_fade.lock() = None;
                             error!(err = %e, "Failed to auto-play next song after loop break");
                         }
                     });
@@ -700,22 +716,22 @@ impl Player {
         let player = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(gap).await;
+            // Whether it is still wanted is asked under the join lock, and
+            // the song starts under it: a stop or a navigation calls an auto
+            // play off under that lock too, so it either comes first and
+            // finds it waiting, or comes after and stops the song it started.
+            let mut join = player.join.lock().await;
             {
                 let mut state = player.auto_play.lock();
-                if state.generation != generation || !state.pending {
+                if state.generation != generation || !state.pending || join.is_some() {
                     return;
                 }
                 state.pending = false;
                 state.waiting = None;
             }
-            // As the loop-break auto-play does: play's future holds tokio
-            // mutex guards that are not Send.
-            tokio::task::spawn_blocking(move || {
-                let rt = tokio::runtime::Handle::current();
-                if let Err(e) = rt.block_on(player.play()) {
-                    error!(err = %e, "Auto play failed to start the song");
-                }
-            });
+            if let Err(e) = player.play_locked(&mut join).await {
+                error!(err = %e, "Auto play failed to start the song");
+            }
         });
     }
 
