@@ -41,9 +41,8 @@ messages. Accurate tempo requires elevated thread priority:
 The thread priority can be tuned with `MTRACK_THREAD_PRIORITY` (0–99, default 70)
 or disabled entirely with `MTRACK_DISABLE_RT_AUDIO=1`.
 
-The beat clock loops with a looping song that has audio, but it does not yet follow section
-loops: during one, it runs on along the song as if the section had not repeated. A song with no
-audio plays its clock once. Before bar 1, a `tempo:` count-in pulses only in whole bars (rounded
+The beat clock loops with a looping song that has audio, and follows a section loop as the notes
+and audio do. A song with no audio plays its clock once. Before bar 1, a `tempo:` count-in pulses only in whole bars (rounded
 down to whole quarter notes); any leftover before them has no pulses, in the first pass or later
 ones.
 

@@ -29,24 +29,6 @@ use crate::{playsync::CancelHandle, songs::Song};
 
 use super::{Engine, MidiDmxPlayback};
 
-/// Song time to write while resuming after a section-loop break.
-///
-/// `break_clock` is the song-absolute clock captured at the break instant
-/// (`start_time + clock.elapsed()` then). The live playback clock is
-/// stream-relative (zero at playback start), so it must be offset by
-/// `start_time` the same way before taking the delta — otherwise the resume
-/// drops an extra `start_time`, freezing then lagging DMX song time after a
-/// loop that was started mid-song (seek / section chip).
-fn resume_song_time(
-    resume_time: Duration,
-    break_clock: Duration,
-    start_time: Duration,
-    clock_elapsed: Duration,
-) -> Duration {
-    let since_break = (start_time + clock_elapsed).saturating_sub(break_clock);
-    resume_time + since_break
-}
-
 impl Engine {
     /// Plays the given song through the DMX interface.
     pub fn play(
@@ -63,8 +45,7 @@ impl Engine {
         } = sync;
         let crate::playsync::LoopControl {
             loop_break,
-            active_section,
-            section_loop_break,
+            section_jumps,
             ..
         } = loop_control;
         // A song owns the lights: a fixture test stops when one starts.
@@ -336,123 +317,60 @@ impl Engine {
             })
         });
 
-        // Section loop: continuously update song time to wrap within section bounds.
-        // Runs alongside the timeline watcher and song time tracker. When active,
-        // it overrides the song time tracker's writes with the wrapped time.
+        // Section loop: the lights go back where and when the playback's
+        // section loop jumps go -- committed by the audio, or the playback's
+        // own publisher without it -- and play on from the song position the
+        // jumps leave: the playback time less what they have put back. Once
+        // one has, this writes the song time in place of the tracker, whose
+        // time leaves the loops out.
         let section_loop_thread = {
             let cancel_handle = cancel_handle.clone();
-            let active_section = active_section.clone();
-            let section_loop_break = section_loop_break.clone();
             let section_owns_time = section_owns_time.clone();
             let dmx_engine = dmx_engine.clone();
             let clock = clock.clone();
             let timeline_finished = dmx_engine.timeline_finished.clone();
+            let mut jumps = crate::playsync::JumpCursor::new(section_jumps.clone());
             thread::spawn(move || {
-                let mut section_monitor = crate::section_loop::SectionLoopMonitor::new();
-                let mut iteration_start: Option<Duration> = None;
-                // After loop break: (resume_time, clock_at_break). The thread
-                // keeps writing song time advancing from the resume point.
-                let mut continue_from: Option<(Duration, Duration)> = None;
-
-                loop {
-                    if cancel_handle.is_cancelled() || timeline_finished.load(Ordering::Relaxed) {
-                        break;
-                    }
-
-                    // Post-break: advance song time from resume point. The
-                    // clock is offset by start_time inside resume_song_time so
-                    // the delta since the break is measured in the same
-                    // (song-absolute) space break_clock was stored in.
-                    if let Some((resume_time, break_clock)) = continue_from {
-                        let song_time =
-                            resume_song_time(resume_time, break_clock, start_time, clock.elapsed());
-                        dmx_engine.update_song_time(song_time);
-                        thread::sleep(Duration::from_millis(10));
-                        continue;
-                    }
-
-                    // Check for loop break first (before reading active_section,
-                    // which may already be cleared by stop_section_loop).
-                    if section_loop_break.load(Ordering::Relaxed) {
-                        if let Some(section) = section_monitor.cached_section().cloned() {
-                            let elapsed = start_time + clock.elapsed();
-                            let current_pos = if let Some(iter_start) = iteration_start {
-                                let time_since = elapsed.saturating_sub(iter_start);
-                                let sd = section.end_time.saturating_sub(section.start_time);
-                                section.start_time + time_since.min(sd)
-                            } else {
-                                section.end_time
-                            };
-                            info!(
-                                position = ?current_pos,
-                                "DMX section loop: breaking, continuing from current position"
-                            );
-                            dmx_engine.update_song_time(current_pos);
-                            // The restart clears the MIDI DMX store: what the
-                            // events up to here set goes back with it (#583).
-                            dmx_engine.start_lighting_timeline_with(
-                                current_pos,
-                                super::timeline::MidiDmxStart::Seek,
-                            );
-                            continue_from = Some((current_pos, elapsed));
-                        } else {
-                            // No cached section — just hand back to tracker.
-                            section_owns_time.store(false, Ordering::Relaxed);
-                        }
-                        thread::sleep(Duration::from_millis(10));
-                        continue;
-                    }
-
+                while !cancel_handle.is_cancelled() && !timeline_finished.load(Ordering::Relaxed) {
                     // Section bounds are song-absolute; the clock counts from
                     // this playback's start, so offset by the start position.
                     let elapsed = start_time + clock.elapsed();
-                    match section_monitor.poll(&active_section, elapsed) {
-                        crate::section_loop::LoopPoll::Waiting(ref section) => {
-                            let section_duration =
-                                section.end_time.saturating_sub(section.start_time);
-                            if section_duration.is_zero() {
-                                break;
-                            }
-                            if let Some(iter_start) = iteration_start {
-                                let time_since = elapsed.saturating_sub(iter_start);
-                                let position = time_since.min(section_duration);
-                                dmx_engine.update_song_time(section.start_time + position);
-                            }
-                        }
-                        crate::section_loop::LoopPoll::Triggered(ref section) => {
-                            info!(
-                                section = section.name,
-                                "DMX section loop: resetting for next iteration"
-                            );
-                            // Rewind the clock and take ownership of it *before*
-                            // arming. Arming first leaves a window in which the
-                            // song-time tracker is still writing end-of-section
-                            // time, and the 44Hz effects loop can advance the
-                            // freshly rewound timeline straight past every cue
-                            // in the section — silencing the loop for good,
-                            // since the cue pointer never moves backwards.
-                            // Every sibling path writes before arming.
-                            section_owns_time.store(true, Ordering::Relaxed);
-                            dmx_engine.update_song_time(section.start_time);
-                            // The restart clears the MIDI DMX store: what the
-                            // events before the section set goes back with
-                            // it (#583).
-                            dmx_engine.start_lighting_timeline_with(
-                                section.start_time,
-                                super::timeline::MidiDmxStart::Seek,
-                            );
-                            iteration_start = Some(elapsed);
-                        }
-                        crate::section_loop::LoopPoll::SectionCleared => {
-                            iteration_start = None;
-                            section_owns_time.store(false, Ordering::Relaxed);
-                        }
-                        crate::section_loop::LoopPoll::NoSection => {
-                            iteration_start = None;
-                            section_owns_time.store(false, Ordering::Relaxed);
-                        }
+                    while let Some(jump) = jumps.due(elapsed) {
+                        let position = elapsed.saturating_sub(jumps.consumed());
+                        info!(
+                            from = ?jump.from,
+                            to = ?jump.to,
+                            "DMX section loop: going back"
+                        );
+                        // Rewind the clock and take ownership of it *before*
+                        // arming. Arming first leaves a window in which the
+                        // song-time tracker is still writing end-of-section
+                        // time, and the 44Hz effects loop can advance the
+                        // freshly rewound timeline straight past every cue
+                        // in the section -- silencing the loop for good,
+                        // since the cue pointer never moves backwards.
+                        section_owns_time.store(true, Ordering::Relaxed);
+                        dmx_engine.update_song_time(position);
+                        // The restart clears the MIDI DMX store: what the
+                        // events before the section set goes back with it
+                        // (#583).
+                        dmx_engine.start_lighting_timeline_with(
+                            position,
+                            super::timeline::MidiDmxStart::Seek,
+                        );
                     }
-
+                    let position = elapsed.saturating_sub(jumps.consumed());
+                    if let Some(next) = jumps.peek() {
+                        // A jump committed and coming: this takes the time
+                        // from the tracker now, not once the jump falls due.
+                        // Left to the tracker until then, the time went on
+                        // past the section's end, and a cue on it played for
+                        // a frame before the restart.
+                        section_owns_time.store(true, Ordering::Relaxed);
+                        dmx_engine.update_song_time(position.min(next.from));
+                    } else if !jumps.consumed().is_zero() {
+                        dmx_engine.update_song_time(position);
+                    }
                     thread::sleep(Duration::from_millis(10));
                 }
             })
@@ -571,8 +489,9 @@ impl Engine {
             pass_start = pass_end;
         }
 
-        // Stop section loop thread.
-        section_loop_break.store(true, Ordering::Relaxed);
+        // The section loop thread stops with the timeline. (It used to be
+        // stopped by setting the player's section loop break, which then
+        // stayed set into the songs after.)
         if let Err(e) = section_loop_thread.join() {
             error!("Error joining section loop thread: {:?}", e);
         }
@@ -734,59 +653,5 @@ impl Engine {
                 thread::sleep(Duration::from_millis(10));
             }
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::resume_song_time;
-    use std::time::Duration;
-
-    fn secs(s: u64) -> Duration {
-        Duration::from_secs(s)
-    }
-
-    #[test]
-    fn resume_advances_from_song_top() {
-        // Played from the top (start_time = 0). The loop broke at the section
-        // end (resume_time = 50s) with a song-absolute break_clock of 40s.
-        // 2s of wall-clock later the DMX song time should be 52s.
-        let start_time = secs(0);
-        let break_clock = start_time + secs(40); // song-absolute
-        let resume_time = secs(50);
-        assert_eq!(
-            resume_song_time(resume_time, break_clock, start_time, secs(42)),
-            secs(52),
-        );
-    }
-
-    #[test]
-    fn resume_advances_when_started_mid_song() {
-        // Regression for the section-loop-offset review: playback started
-        // mid-song (start_time = 30s). The loop broke 10s of wall-clock in, so
-        // the stored break_clock is song-absolute 40s, at the section end
-        // (resume_time = 50s). The stream-relative clock reads 10s at the
-        // break and 12s two seconds later.
-        let start_time = secs(30);
-        let break_clock = start_time + secs(10); // = 40s, song-absolute
-        let resume_time = secs(50);
-
-        // At the break instant: no advance yet.
-        assert_eq!(
-            resume_song_time(resume_time, break_clock, start_time, secs(10)),
-            secs(50),
-        );
-        // 2s of wall-clock later: advanced by exactly 2s. The pre-fix formula
-        // `clock.elapsed().saturating_sub(break_clock)` = 12s - 40s saturates
-        // to zero here, freezing DMX song time at 50s — this asserts 52s.
-        assert_eq!(
-            resume_song_time(resume_time, break_clock, start_time, secs(12)),
-            secs(52),
-        );
-        // Still tracks 1:1 further along.
-        assert_eq!(
-            resume_song_time(resume_time, break_clock, start_time, secs(15)),
-            secs(55),
-        );
     }
 }

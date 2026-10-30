@@ -1356,6 +1356,7 @@ impl AudioDevice for Device {
             break_fade,
             break_fade_ids,
             start_fade,
+            section_jumps,
         } = loop_control;
         // Only for the song it was meant for, from the top.
         let start_fade = start_fade
@@ -1587,6 +1588,10 @@ impl AudioDevice for Device {
         // DIAGNOSTIC: per-swap counter to compare the first loop against later ones.
         let mut loop_iteration: u64 = 0;
 
+        // Playing now, the audio commits the playback's section loop jumps,
+        // which the notes, lights and beat clock follow.
+        let publishes_jumps = section_jumps.claim(crate::playsync::JumpPublisherRole::Audio);
+
         'monitor: loop {
             if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
                 break;
@@ -1689,14 +1694,18 @@ impl AudioDevice for Device {
             // performer arms, even on the section's final beat. (During looping
             // the raw clock runs past the section end, so we rely on `armed`
             // rather than the playhead lookup.)
-            let prewarm_target = if break_requested {
-                None
-            } else if armed.is_some() {
-                armed.clone()
-            } else {
+            //
+            // After a break too: reactive looping arms the next section as
+            // playback reaches it, and with nothing warm a late arm loops late.
+            let prewarm_target = match &armed {
+                Some(_) if !break_requested => armed.clone(),
                 // The clock is stream-relative; section bounds are
-                // song-absolute. Offset by the playback start position.
-                current_playhead_section(&song, start_time + clock.elapsed())
+                // song-absolute. Offset by the playback start position, and
+                // take off what loops have put back to have the song's.
+                _ => current_playhead_section(
+                    &song,
+                    (start_time + clock.elapsed()).saturating_sub(section_trigger.consumed()),
+                ),
             };
 
             // Collect the result of a finished background build. Take the
@@ -1765,6 +1774,13 @@ impl AudioDevice for Device {
                 }
             }
 
+            // A break, or the section cleared: the next one armed, even the
+            // same one again, is set from where playback is then, not from
+            // the grid of the one just left.
+            if break_requested || armed.is_none() {
+                section_trigger.reset();
+            }
+
             // Only loop when the section is actually armed.
             if let Some(section) = armed {
                 if !break_requested {
@@ -1774,17 +1790,19 @@ impl AudioDevice for Device {
                     // boundary `start_time` too late — the audio runs past the
                     // section end while the UI wraps on the correct grid.
                     let elapsed = start_time + clock.elapsed();
-                    if let Some(trigger_time) =
-                        section_trigger.check(&section, elapsed, loop_trigger_lookahead)
+                    if let Some(jump) =
+                        section_trigger.jump(&section, elapsed, loop_trigger_lookahead)
                     {
+                        let trigger_time = jump.at;
                         let pending = match pending_sources.take() {
                             Some((_, srcs)) => srcs,
                             None => {
                                 warn!(
                                     section = section.name,
                                     "Audio section loop: trigger fired with no pre-built \
-                                     sources; skipping this boundary"
+                                     sources; looping once they are ready"
                                 );
+                                section_trigger.retract(&jump);
                                 thread::sleep(Duration::from_millis(10));
                                 continue 'monitor;
                             }
@@ -1889,8 +1907,10 @@ impl AudioDevice for Device {
                         // Defer the consumed-time bump until the audio thread
                         // actually crosses the boundary, so the user-visible
                         // elapsed doesn't briefly jump backwards.
-                        let section_duration = section.end_time.saturating_sub(section.start_time);
-                        pending_consumption.push((loop_sample, section_duration));
+                        // The position counts it from the log as it falls due.
+                        if publishes_jumps {
+                            section_jumps.push(jump.clone());
+                        }
 
                         continue 'monitor;
                     }

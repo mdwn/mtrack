@@ -24,9 +24,7 @@ use crate::dmx::ola_client::OlaClientFactory;
 use engine::Engine;
 #[cfg(not(test))]
 use ola::client::StreamingClientConfig;
-#[cfg(not(test))]
 use std::thread;
-#[cfg(not(test))]
 use std::time::Duration;
 use std::{error::Error, path::Path, sync::Arc};
 use tracing::info;
@@ -56,17 +54,61 @@ impl From<Box<dyn Error + Send + Sync>> for DmxError {
 /// Creates a DMX engine, connecting to the OLA daemon for output.
 /// Falls back to a no-op OLA client if the OLA daemon is unavailable, so the
 /// lighting/effects engine can still run without physical hardware (web UI, etc.).
+/// Calls `connect` up to `attempts` times, `pause` apart, until it succeeds;
+/// the pause is taken in short steps, ending early once `stop` says so.
+/// Gives back what it got: the value, or the last error.
+fn retry_connect<T, E>(
+    attempts: u32,
+    pause: Duration,
+    stop: &dyn Fn() -> bool,
+    mut connect: impl FnMut() -> Result<T, E>,
+) -> (Option<T>, Option<E>) {
+    const STEP: Duration = Duration::from_millis(100);
+    let mut last_err = None;
+    for attempt in 0..attempts {
+        if attempt > 0 {
+            let resume = std::time::Instant::now() + pause;
+            while std::time::Instant::now() < resume {
+                if stop() {
+                    return (None, last_err);
+                }
+                thread::sleep(
+                    STEP.min(resume.saturating_duration_since(std::time::Instant::now())),
+                );
+            }
+        }
+        match connect() {
+            Ok(value) => return (Some(value), None),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    (None, last_err)
+}
+
 pub fn create_engine(
     config: Option<&config::Dmx>,
     base_path: Option<&Path>,
 ) -> Result<Option<Arc<Engine>>, Box<dyn Error>> {
-    create_engine_inner(config, base_path, true)
+    create_engine_inner(config, base_path, true, &|| false)
+}
+
+/// As [`create_engine`], giving up its wait for olad as soon as `stop` says
+/// so: a hardware init round that has been cancelled. Its retries took up to
+/// 45s in one blocking call, and a reload waits for the round it replaced to
+/// finish before opening devices of its own.
+pub fn create_engine_until(
+    config: Option<&config::Dmx>,
+    base_path: Option<&Path>,
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<Arc<Engine>>, Box<dyn Error>> {
+    create_engine_inner(config, base_path, true, stop)
 }
 
 fn create_engine_inner(
     config: Option<&config::Dmx>,
     base_path: Option<&Path>,
     allow_null_client: bool,
+    #[cfg_attr(test, allow(unused_variables))] stop: &dyn Fn() -> bool,
 ) -> Result<Option<Arc<Engine>>, Box<dyn Error>> {
     let config = match config {
         Some(config) => config,
@@ -99,21 +141,11 @@ fn create_engine_inner(
             auto_start: false,
         };
         // Retry connecting to OLA a few times with backoff
-        let mut last_err: Option<Box<dyn Error>> = None;
-        let mut found: Option<Box<dyn ola_client::OlaClient>> = None;
-        for attempt in 0..10 {
-            if attempt > 0 {
-                thread::sleep(Duration::from_secs(5));
-            }
-            match OlaClientFactory::create_real_client(ola_client_config.clone()) {
-                Ok(client) => {
-                    found = Some(client);
-                    break;
-                }
-                Err(e) => {
-                    last_err = Some(e);
-                }
-            }
+        let (found, last_err) = retry_connect(10, Duration::from_secs(5), stop, || {
+            OlaClientFactory::create_real_client(ola_client_config.clone())
+        });
+        if found.is_none() && stop() {
+            return Err("DMX engine creation was cancelled".into());
         }
         match (found, last_err) {
             (Some(client), _) => {
@@ -166,6 +198,39 @@ fn create_engine_inner(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// A wait for olad gives up within a step of being told to stop: a
+    /// cancelled init round is not held for the rest of its retries, which a
+    /// reload waits out before opening devices of its own.
+    #[test]
+    fn retry_connect_stops_when_told() {
+        let started = std::time::Instant::now();
+        let stop = || started.elapsed() > Duration::from_millis(150);
+        let mut calls = 0;
+        let (found, last_err) = retry_connect(10, Duration::from_secs(5), &stop, || {
+            calls += 1;
+            Err::<(), _>("olad is down")
+        });
+        assert!(found.is_none());
+        assert_eq!(last_err, Some("olad is down"));
+        assert_eq!(calls, 1);
+    }
+
+    /// It retries until it connects.
+    #[test]
+    fn retry_connect_retries_until_it_connects() {
+        let mut calls = 0;
+        let (found, last_err) = retry_connect(10, Duration::from_millis(1), &|| false, || {
+            calls += 1;
+            if calls < 3 {
+                Err("not yet")
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(found, Some(3));
+        assert_eq!(last_err, None);
+    }
 
     #[test]
     fn create_engine_none_config_returns_none() {

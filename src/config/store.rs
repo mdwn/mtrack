@@ -939,15 +939,9 @@ profiles:
         );
     }
 
-    /// The same, on a `profiles_dir` layout: the owning file is rewritten and
-    /// the main config is not turned into an inline copy of the directory.
-    /// A store mutation is checked as the next load checks it. A second
-    /// MIDI controller, through `update_controllers` or a profile, was
-    /// written and applied, and the config then failed to load. It is
-    /// refused, and neither the file nor the store changes.
-    /// REVIEW: set_track_gains now keeps a rollback for a refused gain, but
-    /// a gain that validates and then fails to persist stays in memory: the
-    /// store serves gains the file does not have, lost at the next restart.
+    /// A gain that validates but cannot be written is rolled back: kept in
+    /// memory, the store served gains the file did not have, lost at the
+    /// next restart.
     #[tokio::test]
     async fn track_gains_that_cannot_be_written_are_rolled_back() {
         let yaml = "songs: songs\nprofiles:\n  - audio:\n      device: a\n      track_mappings:\n        click: [1]\n";
@@ -969,6 +963,10 @@ profiles:
         );
     }
 
+    /// A store mutation is checked as the next load checks it. A second
+    /// MIDI controller, through `update_controllers` or a profile, was
+    /// written and applied, and the config then failed to load. It is
+    /// refused, and neither the file nor the store changes.
     #[tokio::test]
     async fn a_mutation_the_next_load_would_refuse_is_not_written() {
         let yaml = "songs: songs\nprofiles:\n  - audio:\n      device: a\n      track_mappings:\n        click: [1]\n";
@@ -1010,6 +1008,9 @@ profiles:
         Player::deserialize(&path).expect("the config still loads");
     }
 
+    /// As `update_controllers_reaches_the_active_profile`, on a
+    /// `profiles_dir` layout: the owning file is rewritten and the main
+    /// config is not turned into an inline copy of the directory.
     #[tokio::test]
     async fn update_midi_profiles_dir_writes_the_owning_profile_file() {
         let dir = tempfile::tempdir().unwrap();

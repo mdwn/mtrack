@@ -34,6 +34,32 @@ use crate::player::SectionBounds;
 /// [`check`]: SectionLoopTrigger::check
 pub struct SectionLoopTrigger {
     next_trigger: Option<Duration>,
+    /// The section `next_trigger` was set for: arming another, or the same
+    /// one again after a break, starts afresh from where playback is.
+    armed: Option<SectionBounds>,
+    /// How much time the loops so far have put back: playback time less
+    /// this is the position in the song.
+    consumed: Duration,
+}
+
+/// A section loop's jump, as [`SectionLoopTrigger::jump`] gives it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SectionJump {
+    /// When on the playback timeline (the start position plus the clock)
+    /// the jump falls.
+    pub at: Duration,
+    /// Where in the song it jumps from: the section's end, or wherever
+    /// playback had got to, for a section armed past its end.
+    pub from: Duration,
+    /// Where in the song it jumps to: the section's start.
+    pub to: Duration,
+}
+
+impl SectionJump {
+    /// How much playback time the jump puts back.
+    pub fn amount(&self) -> Duration {
+        self.from.saturating_sub(self.to)
+    }
 }
 
 impl SectionLoopTrigger {
@@ -44,44 +70,92 @@ impl SectionLoopTrigger {
     ///
     /// [`check`]: SectionLoopTrigger::check
     pub fn new() -> Self {
-        Self { next_trigger: None }
+        Self {
+            next_trigger: None,
+            armed: None,
+            consumed: Duration::ZERO,
+        }
     }
 
-    /// Returns `Some(trigger_time)` when a loop transition should fire.
-    ///
-    /// On the first call the trigger is initialised to `section.end_time`.
-    /// When `elapsed + margin >= trigger`, the method fires and schedules
-    /// the next trigger at `trigger + section_duration` (grid-locked).
-    ///
-    /// Returns `None` if the section has zero duration or the trigger time
-    /// has not been reached.
+    /// Returns `Some(trigger_time)` when a loop transition should fire; see
+    /// [`SectionLoopTrigger::jump`].
     pub fn check(
         &mut self,
         section: &SectionBounds,
         elapsed: Duration,
         margin: Duration,
     ) -> Option<Duration> {
+        self.jump(section, elapsed, margin).map(|jump| jump.at)
+    }
+
+    /// Returns the jump when a loop transition should fire.
+    ///
+    /// Armed for a section (first, or another than before, or again after a
+    /// [`reset`]), the trigger is set to when playback reaches the section's
+    /// end: its end plus the time loops so far have put back. When
+    /// `elapsed` plus `margin` reaches it, the jump fires and the next is
+    /// set a section's length later (grid-locked). A section armed with playback already past
+    /// its end fires at once, from where playback is.
+    ///
+    /// Returns `None` if the section has zero duration or the trigger time
+    /// has not been reached.
+    ///
+    /// [`reset`]: SectionLoopTrigger::reset
+    pub fn jump(
+        &mut self,
+        section: &SectionBounds,
+        elapsed: Duration,
+        margin: Duration,
+    ) -> Option<SectionJump> {
         let section_duration = section.end_time.saturating_sub(section.start_time);
         if section_duration.is_zero() {
             return None;
         }
-
-        let trigger = *self.next_trigger.get_or_insert(section.end_time);
-
-        if elapsed + margin >= trigger {
-            self.next_trigger = Some(trigger + section_duration);
-            Some(trigger)
-        } else {
-            None
+        if self.armed.as_ref() != Some(section) {
+            self.armed = Some(section.clone());
+            // Armed with playback past the end already: now. Only here: a
+            // poll that comes late to a trigger set on the grid keeps the
+            // grid.
+            self.next_trigger = Some((section.end_time + self.consumed).max(elapsed));
         }
+
+        let at = self
+            .next_trigger
+            .unwrap_or(section.end_time + self.consumed);
+        if elapsed + margin < at {
+            return None;
+        }
+        let jump = SectionJump {
+            at,
+            from: at.saturating_sub(self.consumed),
+            to: section.start_time,
+        };
+        self.consumed += jump.amount();
+        self.next_trigger = Some(at + section_duration);
+        Some(jump)
     }
 
-    /// Clears the trigger state so the next [`check`] re-initialises from
-    /// the section end time.
-    ///
-    /// [`check`]: SectionLoopTrigger::check
+    /// How much playback time the loops so far have put back: playback time
+    /// less this is the position in the song.
+    pub fn consumed(&self) -> Duration {
+        self.consumed
+    }
+
+    /// Takes back a jump given but not made (the audio had nothing ready to
+    /// loop to): the time it put back is uncounted, and the section is set
+    /// again from where playback is, so it goes round a moment late rather
+    /// than not at all.
+    pub fn retract(&mut self, jump: &SectionJump) {
+        self.consumed = self.consumed.saturating_sub(jump.amount());
+        self.reset();
+    }
+
+    /// Forgets the section armed, for a break or a section cleared: the next
+    /// one armed, even the same one, is set from where playback is then. The
+    /// time loops have put back is kept, as playback keeps it.
     pub fn reset(&mut self) {
         self.next_trigger = None;
+        self.armed = None;
     }
 }
 
@@ -121,98 +195,73 @@ pub fn loop_boundary_sample(
 ///
 /// Each variant tells the caller what happened so it can run the
 /// subsystem-specific restart or cleanup logic.
-#[derive(Debug, PartialEq)]
-pub enum LoopPoll {
-    /// No active section — the caller should idle.
-    NoSection,
-    /// A section is active but the trigger time has not been reached yet.
-    /// The contained bounds are the current section.
-    Waiting(SectionBounds),
-    /// The trigger fired — the caller should restart playback from
-    /// `section.start_time`.
-    Triggered(SectionBounds),
-    /// A previously active section was cleared (no break requested).
-    /// The caller should reset any section-specific state.
-    SectionCleared,
+/// How far ahead of a jump [`publish_jumps`] commits to it, as the audio
+/// does: the followers wait until it falls due.
+const PUBLISH_LOOKAHEAD: Duration = Duration::from_millis(30);
+
+/// What [`publish_jumps`] needs from a playback.
+pub struct JumpPublisher {
+    pub clock: crate::clock::PlaybackClock,
+    pub start_time: Duration,
+    pub cancel: crate::playsync::CancelHandle,
+    /// Set once the playback's subsystems have finished.
+    pub done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// For a playback with audio, set once the audio has stopped: if it
+    /// stopped without taking on the jumps (it failed at the start), this
+    /// does. `None` for a playback without, which this commits from the
+    /// start.
+    pub audio_gone: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub loop_control: crate::playsync::LoopControl,
 }
 
-/// Combines [`SectionLoopTrigger`] with shared section-reading and caching
-/// so each engine only needs to act on the [`LoopPoll`] result.
-///
-/// Engines that need section looping create one of these and call [`poll`]
-/// on every iteration. The actual restart mechanism (MIDI cursor, DMX
-/// timeline, etc.) remains in the caller.
-///
-/// [`poll`]: SectionLoopMonitor::poll
-pub struct SectionLoopMonitor {
-    trigger: SectionLoopTrigger,
-    /// Cached section bounds for use after `active_section` is cleared.
-    cached_section: Option<SectionBounds>,
-}
-
-impl SectionLoopMonitor {
-    /// Creates a new monitor with no cached state.
-    pub fn new() -> Self {
-        Self {
-            trigger: SectionLoopTrigger::new(),
-            cached_section: None,
+/// Commits a playback's section loop jumps when it plays no audio, which
+/// otherwise commits to them: armed and not broken, a section loops at its
+/// end, as the audio would loop it; the notes, lights and beat clock follow
+/// the jumps from the log, as does the player's position.
+pub fn publish_jumps(publisher: JumpPublisher) {
+    use std::sync::atomic::Ordering;
+    let JumpPublisher {
+        clock,
+        start_time,
+        cancel,
+        done,
+        audio_gone,
+        loop_control,
+    } = publisher;
+    let finished = || cancel.is_cancelled() || done.load(Ordering::Relaxed);
+    while !clock.wait_for_start_or_cancel_until(&cancel, Duration::from_millis(10)) {
+        if finished() {
+            return;
         }
     }
-
-    /// Returns the currently cached section bounds, if any.
-    pub fn cached_section(&self) -> Option<&SectionBounds> {
-        self.cached_section.as_ref()
-    }
-
-    /// Polls the section loop state.
-    ///
-    /// `active_section` is the shared lock from [`LoopControl`].
-    /// `elapsed` is the current clock time.
-    ///
-    /// The return value tells the caller what action to take. See
-    /// [`LoopPoll`] for the full set of outcomes.
-    ///
-    /// [`LoopControl`]: crate::playsync::LoopControl
-    pub fn poll(
-        &mut self,
-        active_section: &parking_lot::RwLock<Option<SectionBounds>>,
-        elapsed: Duration,
-    ) -> LoopPoll {
-        let section = active_section.read().clone();
-        if let Some(section) = section {
-            self.cached_section = Some(section.clone());
-            let crossfade_margin = crate::audio::crossfade::DEFAULT_CROSSFADE_DURATION;
-            if self
-                .trigger
-                .check(&section, elapsed, crossfade_margin)
-                .is_some()
-            {
-                LoopPoll::Triggered(section)
-            } else {
-                LoopPoll::Waiting(section)
-            }
-        } else {
-            if self.cached_section.take().is_some() {
-                // Had a section, now cleared — notify caller.
-                self.trigger.reset();
-                LoopPoll::SectionCleared
-            } else {
-                self.trigger.reset();
-                LoopPoll::NoSection
-            }
+    // With audio, it commits the jumps once it plays; this only if it never
+    // does.
+    let log = &loop_control.section_jumps;
+    loop {
+        if finished() || log.claimed_by_audio() {
+            return;
         }
+        let audio_failed = audio_gone
+            .as_ref()
+            .is_none_or(|gone| gone.load(Ordering::Acquire));
+        if audio_failed && log.claim(crate::playsync::JumpPublisherRole::Fallback) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
-
-    /// Resets the trigger and cached section state.
-    pub fn reset(&mut self) {
-        self.trigger.reset();
-        self.cached_section = None;
-    }
-}
-
-impl Default for SectionLoopMonitor {
-    fn default() -> Self {
-        Self::new()
+    let mut trigger = SectionLoopTrigger::new();
+    while !finished() {
+        let elapsed = start_time + clock.elapsed();
+        let armed = loop_control.active_section.read().clone();
+        match armed {
+            Some(section) if !loop_control.section_loop_break.load(Ordering::Relaxed) => {
+                if let Some(jump) = trigger.jump(&section, elapsed, PUBLISH_LOOKAHEAD) {
+                    loop_control.section_jumps.push(jump);
+                }
+            }
+            _ => trigger.reset(),
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -344,13 +393,180 @@ mod tests {
         let elapsed = section.end_time - margin;
         assert!(trigger.check(&section, elapsed, margin).is_some());
 
-        // Reset and verify it re-initialises from section.end_time.
+        // Reset, and armed again it is set from where playback is: the
+        // section's end plus the 8s the loop put back, not its end alone,
+        // which playback passed a loop ago (and re-armed, jumped at once).
         trigger.reset();
-        let elapsed = section.end_time - margin;
+        let elapsed = section.end_time + Duration::from_secs(8) - margin;
         assert_eq!(
             trigger.check(&section, elapsed, margin),
-            Some(section.end_time),
-            "After reset, trigger should re-initialise from section.end_time"
+            Some(section.end_time + Duration::from_secs(8)),
+            "After reset, trigger should re-initialise from where playback reaches the end"
+        );
+    }
+
+    /// Another section armed while one loops is set from where playback
+    /// reaches its end, counting the time the loops so far put back, and the
+    /// jumps say how much each put back.
+    #[test]
+    fn another_section_armed_is_set_from_where_playback_is() {
+        let a = make_section(10, 18);
+        let b = make_section(20, 30);
+        let mut trigger = SectionLoopTrigger::new();
+        let jump = trigger
+            .jump(&a, Duration::from_secs(18), Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            jump,
+            SectionJump {
+                at: Duration::from_secs(18),
+                from: Duration::from_secs(18),
+                to: Duration::from_secs(10)
+            }
+        );
+        // 8s put back: B's end is reached at 38s, not at A's next boundary
+        // (26s) nor B's own end (30s).
+        assert_eq!(
+            trigger.jump(&b, Duration::from_secs(26), Duration::ZERO),
+            None
+        );
+        assert_eq!(
+            trigger.jump(&b, Duration::from_secs(30), Duration::ZERO),
+            None
+        );
+        let jump = trigger
+            .jump(&b, Duration::from_secs(38), Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            (jump.from, jump.to, jump.amount()),
+            (
+                Duration::from_secs(30),
+                Duration::from_secs(20),
+                Duration::from_secs(10)
+            )
+        );
+    }
+
+    /// Armed past its end, a section jumps at once, from where playback is,
+    /// and goes round its full length from there.
+    #[test]
+    fn a_section_armed_past_its_end_jumps_at_once() {
+        let a = make_section(10, 18);
+        let mut trigger = SectionLoopTrigger::new();
+        let jump = trigger
+            .jump(&a, Duration::from_secs(20), Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            (jump.at, jump.from, jump.amount()),
+            (
+                Duration::from_secs(20),
+                Duration::from_secs(20),
+                Duration::from_secs(10)
+            )
+        );
+        assert_eq!(
+            trigger.jump(&a, Duration::from_secs(27), Duration::ZERO),
+            None
+        );
+        assert_eq!(
+            trigger.check(&a, Duration::from_secs(28), Duration::ZERO),
+            Some(Duration::from_secs(28))
+        );
+    }
+
+    /// A poll that comes late to a trigger on the grid keeps the grid.
+    #[test]
+    fn a_late_poll_keeps_the_grid() {
+        let a = make_section(10, 18);
+        let mut trigger = SectionLoopTrigger::new();
+        assert_eq!(
+            trigger.check(&a, Duration::from_secs(5), Duration::ZERO),
+            None
+        );
+        let late = Duration::from_millis(18_003);
+        assert_eq!(
+            trigger.check(&a, late, Duration::ZERO),
+            Some(Duration::from_secs(18))
+        );
+        assert_eq!(
+            trigger.check(&a, Duration::from_millis(26_004), Duration::ZERO),
+            Some(Duration::from_secs(26))
+        );
+    }
+
+    /// A jump taken back leaves the time unchanged and fires again at once,
+    /// from where playback has got to.
+    #[test]
+    fn a_retracted_jump_fires_again_from_where_playback_is() {
+        let a = make_section(10, 18);
+        let mut trigger = SectionLoopTrigger::new();
+        let jump = trigger
+            .jump(&a, Duration::from_secs(18), Duration::ZERO)
+            .unwrap();
+        trigger.retract(&jump);
+        assert_eq!(trigger.consumed(), Duration::ZERO);
+        let again = trigger
+            .jump(&a, Duration::from_millis(18_010), Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            (again.from, again.to),
+            (Duration::from_millis(18_010), Duration::from_secs(10))
+        );
+    }
+
+    /// The publisher commits jumps only when the audio does not: not while
+    /// the audio may yet play, and not once it has taken them on; but if the
+    /// audio stops without taking them on (it failed at the start), it does.
+    #[test]
+    fn the_publisher_stands_in_only_for_audio_that_never_plays() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let run = |audio_takes_them: bool| {
+            let mut loop_control = crate::playsync::LoopControl::new();
+            loop_control.active_section = Arc::new(parking_lot::RwLock::new(Some(SectionBounds {
+                name: "a".to_string(),
+                start_time: Duration::ZERO,
+                end_time: Duration::from_millis(50),
+            })));
+            let clock = crate::clock::PlaybackClock::wall();
+            let audio_gone = Arc::new(AtomicBool::new(false));
+            let done = Arc::new(AtomicBool::new(false));
+            let log = loop_control.section_jumps.clone();
+            let publisher = JumpPublisher {
+                clock: clock.clone(),
+                start_time: Duration::ZERO,
+                cancel: crate::playsync::CancelHandle::new(),
+                done: done.clone(),
+                audio_gone: Some(audio_gone.clone()),
+                loop_control,
+            };
+            let thread = std::thread::spawn(move || publish_jumps(publisher));
+            clock.start();
+            std::thread::sleep(Duration::from_millis(150));
+            let while_pending = crate::playsync::JumpCursor::new(log.clone())
+                .peek()
+                .is_some();
+            if audio_takes_them {
+                assert!(log.claim(crate::playsync::JumpPublisherRole::Audio));
+            }
+            audio_gone.store(true, Ordering::Release);
+            std::thread::sleep(Duration::from_millis(150));
+            done.store(true, Ordering::Relaxed);
+            thread.join().unwrap();
+            (
+                while_pending,
+                crate::playsync::JumpCursor::new(log).peek().is_some(),
+            )
+        };
+        assert_eq!(
+            run(false),
+            (false, true),
+            "the audio failed: the publisher commits"
+        );
+        assert_eq!(
+            run(true),
+            (false, false),
+            "the audio commits: the publisher does not"
         );
     }
 
@@ -369,49 +585,5 @@ mod tests {
             trigger.check(&section, Duration::from_secs(100), margin),
             None
         );
-    }
-
-    #[test]
-    fn monitor_no_section() {
-        let active = parking_lot::RwLock::new(None);
-        let mut monitor = SectionLoopMonitor::new();
-        assert_eq!(monitor.poll(&active, Duration::ZERO), LoopPoll::NoSection);
-    }
-
-    #[test]
-    fn monitor_waiting_then_triggered() {
-        let section = make_section(10, 18);
-        let active = parking_lot::RwLock::new(Some(section.clone()));
-        let mut monitor = SectionLoopMonitor::new();
-
-        // Well before trigger time — should be Waiting.
-        let result = monitor.poll(&active, Duration::from_secs(5));
-        assert_eq!(result, LoopPoll::Waiting(section.clone()));
-
-        // At trigger time — should fire.
-        let margin = crate::audio::crossfade::DEFAULT_CROSSFADE_DURATION;
-        let elapsed = section.end_time - margin;
-        let result = monitor.poll(&active, elapsed);
-        assert_eq!(result, LoopPoll::Triggered(section));
-    }
-
-    #[test]
-    fn monitor_section_cleared() {
-        let section = make_section(10, 18);
-        let active = parking_lot::RwLock::new(Some(section.clone()));
-        let mut monitor = SectionLoopMonitor::new();
-
-        // Establish cached section.
-        let _ = monitor.poll(&active, Duration::from_secs(5));
-        assert!(monitor.cached_section().is_some());
-
-        // Clear active section.
-        *active.write() = None;
-        let result = monitor.poll(&active, Duration::from_secs(5));
-        assert_eq!(result, LoopPoll::SectionCleared);
-
-        // Second poll with no section — back to NoSection.
-        let result = monitor.poll(&active, Duration::from_secs(5));
-        assert_eq!(result, LoopPoll::NoSection);
     }
 }

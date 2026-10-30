@@ -371,6 +371,9 @@ pub struct Player {
     /// Cancellation token for the current hardware init round. On reload,
     /// the old token is cancelled and a new one is created.
     init_cancel: Arc<parking_lot::Mutex<CancellationToken>>,
+    /// The latest hardware init round's task. A round starts only once the
+    /// one before it has finished (see `hardware::spawn_after`).
+    init_round: Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Serializes `reload_hardware` from start to spawn.
     ///
     /// The config is read before the cancellation token is replaced, and that
@@ -443,6 +446,12 @@ pub struct Player {
     /// Each completed loop iteration adds section_duration to this value.
     /// Subtracted from raw elapsed to get the true song position.
     loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
+    /// The section loop jumps due when the section loop now armed was
+    /// armed: the loop is going round once more have fallen due.
+    jumps_at_arm: Arc<parking_lot::Mutex<usize>>,
+    /// The playing song's section loop jumps (its playback's log): the
+    /// position counts them as they fall due, exactly.
+    section_jumps: Arc<parking_lot::Mutex<Arc<crate::playsync::SectionJumpLog>>>,
     /// Reactive loop state machine.
     reactive_loop_state: Arc<parking_lot::RwLock<ReactiveLoopState>>,
     /// Start position for the next play(), set by a pause or by seeking
@@ -563,7 +572,7 @@ impl Player {
         let config = config.clone();
         let bp = base_path.map(Path::to_path_buf);
         let init_cancel = player.init_cancel.lock().clone();
-        tokio::spawn(async move {
+        hardware::spawn_after(&player.init_round, async move {
             init_player
                 .init_hardware_async(config, bp, init_cancel)
                 .await;
@@ -671,6 +680,7 @@ impl Player {
             config_store: Arc::new(parking_lot::Mutex::new(None)),
             default_metronome: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             init_cancel: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
+            init_round: Arc::new(parking_lot::Mutex::new(None)),
             reload_lock: Arc::new(tokio::sync::Mutex::new(())),
             hardware_reload_pending: Arc::new(AtomicBool::new(false)),
             broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
@@ -693,6 +703,8 @@ impl Player {
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
             loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
+            jumps_at_arm: Arc::new(parking_lot::Mutex::new(0)),
+            section_jumps: Arc::new(parking_lot::Mutex::new(Default::default())),
             reactive_loop_state: Arc::new(parking_lot::RwLock::new(ReactiveLoopState::Idle)),
             pending_start: Arc::new(parking_lot::Mutex::new(None)),
             notification_engine: Arc::new(crate::notification::NotificationEngine::with_defaults(
@@ -3733,6 +3745,82 @@ mod test {
         Ok(())
     }
 
+    /// Just past a section loop's jump, the position is already back in the
+    /// section: it counts the jumps from the playback's log as they fall
+    /// due, not from the counter the audio bumped up to a monitor poll late,
+    /// which read past the section's end and flipped the reactive offer to
+    /// the next section and back at every loop.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_position_counts_a_section_loop_jump_as_it_falls_due() -> Result<(), Box<dyn Error>>
+    {
+        let player = make_test_player().await?;
+        // Gaps of tens of seconds, so a slow runner cannot cross them.
+        let at = |since: Duration| {
+            let log = Arc::new(crate::playsync::SectionJumpLog::default());
+            log.push(crate::section_loop::SectionJump {
+                at: Duration::from_secs(100),
+                from: Duration::from_secs(100),
+                to: Duration::from_secs(4),
+            });
+            log.set_timeline(
+                crate::clock::PlaybackClock::wall_from(std::time::Instant::now() - since),
+                Duration::ZERO,
+            );
+            (log, std::time::SystemTime::now() - since)
+        };
+        // Just past the jump: back in the section, not 96s past its end.
+        let (log, start) = at(Duration::from_millis(100_003));
+        *player.section_jumps.lock() = log;
+        *player.play_start_time.lock().await = Some(start);
+        let position = player.elapsed().await?.unwrap();
+        assert!(
+            position >= Duration::from_secs(4) && position < Duration::from_secs(50),
+            "{position:?}"
+        );
+        // Well before it falls due, the song is where the clock says.
+        let (log, start) = at(Duration::from_secs(50));
+        *player.section_jumps.lock() = log;
+        *player.play_start_time.lock().await = Some(start);
+        let position = player.elapsed().await?.unwrap();
+        assert!(
+            position >= Duration::from_secs(50) && position < Duration::from_secs(100),
+            "{position:?}"
+        );
+        Ok(())
+    }
+
+    /// The position runs on the playback's clock once it starts, as the
+    /// jumps it counts do. Taken from the wall clock instead, it read just
+    /// before the section's start after a jump whenever the playback clock
+    /// read a little ahead (the audio's counter, just after a callback): the
+    /// reactive offer reset at every loop.
+    #[tokio::test]
+    async fn the_position_runs_on_the_playback_clock() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let log = Arc::new(crate::playsync::SectionJumpLog::default());
+        log.push(crate::section_loop::SectionJump {
+            at: Duration::from_secs(100),
+            from: Duration::from_secs(100),
+            to: Duration::from_secs(4),
+        });
+        // Clock 10ms ahead of the wall: it reads 100.005s, the wall 99.995s.
+        log.set_timeline(
+            crate::clock::PlaybackClock::wall_from(
+                std::time::Instant::now() - Duration::from_millis(100_005),
+            ),
+            Duration::ZERO,
+        );
+        *player.section_jumps.lock() = log;
+        *player.play_start_time.lock().await =
+            Some(std::time::SystemTime::now() - Duration::from_millis(99_995));
+        let position = player.elapsed().await?.unwrap();
+        assert!(
+            position >= Duration::from_secs(4),
+            "before the section: {position:?}"
+        );
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_add_loop_time_consumed() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
@@ -3768,6 +3856,146 @@ mod test {
         assert_eq!(active.start_time, Duration::from_secs(10));
         assert_eq!(active.end_time, Duration::from_secs(20));
 
+        Ok(())
+    }
+
+    /// Reactive looping, with sections back to back (as a song's are): a
+    /// loop broken in one, playback goes straight on into the next, which is
+    /// offered for its own ack. It used to stay on the broken loop for good,
+    /// as only a stretch outside every section moved it on.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_broken_loop_offers_the_section_after_it() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let songs_dir = dir.path().join("songs");
+        let song_dir = songs_dir.join("S");
+        std::fs::create_dir_all(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("t.wav"), vec![vec![0_i32; 8000 * 10]], 8000)?;
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: S\ntracks:\n  - name: t\n    file: t.wav\ntempo:\n  bpm: 120\n  \
+             time_signature: 4/4\nsections:\n  - name: a\n    start_measure: 1\n    \
+             end_measure: 2\n  - name: b\n    start_measure: 2\n    end_measure: 3\n",
+        )?;
+        let playlist_path = dir.path().join("playlist.yaml");
+        std::fs::write(&playlist_path, "songs:\n- S\n")?;
+        let songs = songs::get_all_songs(&songs_dir)?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(&playlist_path)?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                songs_dir.to_str().unwrap(),
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let song = player.get_playlist().current().unwrap();
+        let (a_start, a_end) = song.resolve_section("a").unwrap();
+        let (_, b_end) = song.resolve_section("b").unwrap();
+        *player.reactive_loop_state.write() = ReactiveLoopState::Looping(SectionBounds {
+            name: "a".to_string(),
+            start_time: a_start,
+            end_time: a_end,
+        });
+        player.stop_section_loop();
+        // Still in a, finishing its pass; then into b.
+        player.check_section_boundaries(a_end - Duration::from_millis(100));
+        player.check_section_boundaries(a_end + Duration::from_millis(100));
+        assert!(b_end > a_end + Duration::from_millis(100));
+        let state = player.reactive_loop_state();
+        assert!(
+            matches!(&state, ReactiveLoopState::SectionOffered(b) if b.name == "b"),
+            "{state:?}"
+        );
+        assert!(player.section_ack().await.is_ok());
+        Ok(())
+    }
+
+    /// Arming while another task holds `play_start_time` (a status poll in
+    /// `elapsed()`, a seek) counts the jumps due as any other time: it read
+    /// none (a `try_lock` that failed), so a section armed after an earlier
+    /// loop in the same playback showed Looping at once, before it had gone
+    /// round.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn arming_under_contention_does_not_report_looping_early() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let songs_dir = dir.path().join("songs");
+        let song_dir = songs_dir.join("S");
+        std::fs::create_dir_all(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("t.wav"), vec![vec![0_i32; 8000 * 10]], 8000)?;
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: S\ntracks:\n  - name: t\n    file: t.wav\ntempo:\n  bpm: 120\n  \
+             time_signature: 4/4\nsections:\n  - name: a\n    start_measure: 1\n    \
+             end_measure: 2\n  - name: b\n    start_measure: 2\n    end_measure: 3\n",
+        )?;
+        let playlist_path = dir.path().join("playlist.yaml");
+        std::fs::write(&playlist_path, "songs:\n- S\n")?;
+        let songs = songs::get_all_songs(&songs_dir)?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(&playlist_path)?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                songs_dir.to_str().unwrap(),
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let song = player.get_playlist().current().unwrap();
+        let (a_start, a_end) = song.resolve_section("a").unwrap();
+        let (b_start, b_end) = song.resolve_section("b").unwrap();
+        // a looped once, long ago on the playback timeline.
+        let log = Arc::new(crate::playsync::SectionJumpLog::default());
+        log.push(crate::section_loop::SectionJump {
+            at: a_end,
+            from: a_end,
+            to: a_start,
+        });
+        // Now in b, mid-way: raw = a's pass put back + b's middle.
+        let mid_b = b_start + (b_end - b_start) / 2;
+        let raw = mid_b + (a_end - a_start);
+        log.set_timeline(
+            crate::clock::PlaybackClock::wall_from(std::time::Instant::now() - raw),
+            Duration::ZERO,
+        );
+        *player.section_jumps.lock() = log;
+        *player.play_start_time.lock().await = Some(std::time::SystemTime::now() - raw);
+        let b = SectionBounds {
+            name: "b".to_string(),
+            start_time: b_start,
+            end_time: b_end,
+        };
+        *player.reactive_loop_state.write() = ReactiveLoopState::SectionOffered(b);
+        {
+            // Another task in elapsed() / a seek, holding the lock.
+            let _held = player.play_start_time.lock().await;
+            assert!(player.section_ack().await.is_ok());
+        }
+        player.check_section_boundaries(mid_b);
+        let state = player.reactive_loop_state();
+        assert!(
+            matches!(&state, ReactiveLoopState::LoopArmed(_)),
+            "b has not gone round, yet: {state:?}"
+        );
         Ok(())
     }
 
@@ -5204,8 +5432,10 @@ mod test {
             midi.mock_event(&next);
             let _ = tx.send(());
         });
+        // As long as `eventually` below allows: a restarted controller can
+        // take a while to start watching on a loaded runner.
         assert!(
-            rx.recv_timeout(Duration::from_secs(3)).is_ok(),
+            rx.recv_timeout(Duration::from_secs(10)).is_ok(),
             "nothing watches the player's MIDI device"
         );
         eventually(
